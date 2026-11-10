@@ -962,7 +962,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - An admin creates a service agent and its token in the CLI and signs its grant (`docs/protocol/README.md`, "Service grant"); the token value is shown once.
 - Stateless HPKE for ephemeral agents; a long-lived service agent with persistent state is an MLS member like a device (`architecture.md`, "Cryptography").
 - How a service agent without a persistent disk pins its account's master key and the roster revision it starts from between runs: added to `docs/protocol/membership.md`.
-- What the server token alone may do: whether reading and acking the device's mailbox and sending Commits need proof of the device key, or the server checks Commit signatures (Story 13). The result goes into `docs/protocol/delivery.md`, "Security considerations", and `docs/threat-model.md`, "A leaked CI secret".
+- What the server token alone may do: whether the server takes, from the token without proof of the device key, mailbox reads and acks, Commits, GroupInfo, links, wraps and queue key objects. Story 35 changes the server checks that Stories 12 and 13 built; a proof-of-key requirement starts in `api/openapi.json`. The result goes into `docs/protocol/delivery.md`, "Mailbox" and "Security considerations", `docs/protocol/membership.md`, "MLS profile", "Commit ordering" and "Wraps", `docs/protocol/queues.md`, "Queue key", and `docs/threat-model.md`, "A leaked CI secret".
 - The "Service agents and tokens" web UI section: permissions, expiry, last use, revocation.
 - The number of service agents is capped by the space's limit (`features.md`, "Product").
 - **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected; content from a service agent without a valid grant is rejected.
@@ -970,7 +970,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 14, Story 22
-- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography", "Membership", `docs/protocol/README.md`, `docs/protocol/membership.md`
+- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography", "Membership", `docs/protocol/README.md`, `docs/protocol/membership.md`, `docs/protocol/delivery.md`, `docs/protocol/queues.md`, `docs/threat-model.md`
 
 ### Story 41: ask_user and attachments
 
