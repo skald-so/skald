@@ -1,0 +1,70 @@
+/* Status labels of the design screens: the operator account status, a device's last seen, menu badges. */
+.ok {
+  --tone: var(--color-ok);
+  --tone-soft: var(--color-ok-soft);
+  --tone-mark: var(--color-ok);
+}
+
+.warning {
+  --tone: var(--color-warning);
+  --tone-soft: var(--color-warning-soft);
+  --tone-mark: var(--color-warning);
+}
+
+.danger {
+  --tone: var(--color-danger);
+  --tone-soft: var(--color-danger-soft);
+  --tone-mark: var(--color-danger);
+}
+
+.accent {
+  --tone: var(--color-accent);
+  --tone-soft: var(--color-accent-soft);
+  --tone-mark: var(--color-accent);
+}
+
+/* The design has no muted label: it takes the hover gray. */
+.muted {
+  --tone: var(--color-muted);
+  --tone-soft: var(--color-hover);
+  --tone-mark: var(--color-idle);
+}
+
+.label,
+.count {
+  display: inline-block;
+  box-sizing: border-box;
+  background: var(--tone-soft);
+  color: var(--tone);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.label {
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.count {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--tone);
+}
+
+.mark {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone-mark);
+}

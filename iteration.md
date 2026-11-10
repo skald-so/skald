@@ -33,7 +33,7 @@
 
 ## Story 62: Web UI kit: theme, shells and components
 - [x] **62.1:** Theme, fonts and the kit page
-- [ ] **62.2:** Buttons, status labels and the warning banner
+- [x] **62.2:** Buttons, status labels and the warning banner
 - [ ] **62.3:** Sortable table, empty and loading states
 - [ ] **62.4:** Filter buttons and search
 - [ ] **62.5:** Dropdown filter

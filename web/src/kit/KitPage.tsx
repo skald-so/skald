@@ -1,5 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { KitBanners } from "./KitBanners.tsx";
+import { KitButtons } from "./KitButtons.tsx";
 import styles from "./KitPage.module.css";
+import { KitStatuses } from "./KitStatuses.tsx";
 
 export type Theme = "light" | "dark";
 
@@ -112,6 +115,10 @@ export function KitPage({ theme }: { theme?: Theme }) {
           ))}
         </ul>
       </section>
+
+      <KitButtons />
+      <KitStatuses />
+      <KitBanners />
     </main>
   );
 }

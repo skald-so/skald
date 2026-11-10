@@ -1,0 +1,98 @@
+/* Kinds and sizes of the buttons on the design screens. */
+.button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  font-family: var(--font-text);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled, [aria-disabled="true"]) {
+  background: var(--button-hover, var(--color-hover));
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button[aria-busy="true"] {
+  cursor: progress;
+}
+
+.primary,
+.danger-primary {
+  font-weight: 600;
+  --button-hover: color-mix(in srgb, var(--button-fill) 86%, var(--color-text));
+}
+
+.primary {
+  --button-fill: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-accent-text);
+}
+
+.danger {
+  color: var(--color-danger);
+}
+
+.danger-primary {
+  --button-fill: var(--color-danger);
+  border-color: var(--color-danger);
+  background: var(--color-danger);
+  color: var(--color-danger-text);
+}
+
+.large {
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.medium {
+  min-height: 40px;
+  padding: 0 16px;
+  font-size: 14px;
+}
+
+.small {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.spinner {
+  flex: none;
+  box-sizing: border-box;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
+}
