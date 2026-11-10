@@ -576,21 +576,28 @@ impl<D: Device> Group<D> {
         }
     }
 
-    /// The size of `object` in bytes.
-    pub fn size(&self, object: Object) -> usize {
-        let welcome = |commit: &Commit| commit.welcome.as_ref().map_or(0, Vec::len);
+    /// The encoding of `object`; none for a missing Welcome.
+    pub fn object(&self, object: Object) -> &[u8] {
+        fn welcome(commit: &Commit) -> &[u8] {
+            commit.welcome.as_deref().unwrap_or_default()
+        }
         match object {
-            Object::KeyPackage => self.key_package.len(),
-            Object::CreateCommit => self.created.commit.len(),
-            Object::AddCommit => self.add.commit.len(),
-            Object::RemoveCommit => self.remove.commit.len(),
-            Object::EmptyCommit => self.empty.commit.len(),
-            Object::ExternalCommit => self.external.commit.len(),
+            Object::KeyPackage => &self.key_package,
+            Object::CreateCommit => &self.created.commit,
+            Object::AddCommit => &self.add.commit,
+            Object::RemoveCommit => &self.remove.commit,
+            Object::EmptyCommit => &self.empty.commit,
+            Object::ExternalCommit => &self.external.commit,
             Object::CreateWelcome => welcome(&self.created),
             Object::AddWelcome => welcome(&self.add),
-            Object::GroupInfo => self.created.group_info.len(),
-            Object::State => self.fleet.state(1).len(),
+            Object::GroupInfo => &self.created.group_info,
+            Object::State => self.fleet.state(1),
         }
+    }
+
+    /// The size of `object` in bytes.
+    pub fn size(&self, object: Object) -> usize {
+        self.object(object).len()
     }
 }
 
@@ -984,6 +991,116 @@ mod tests {
     #[test]
     fn mls_rs_runs_check_what_they_did() {
         runs_check_what_they_did::<mls_proto_mls_rs::MlsRsDevice>();
+    }
+
+    /// Each object is the one it names.
+    fn objects_are_what_they_name<D: Device>() {
+        let lib = D::LIBRARY;
+        let group = Group::<D>::new(3).unwrap();
+        let (joiner, removed, outsider) = (3, 2, 4);
+        let object = |object| group.object(object);
+
+        let key_package = wire::key_package(object(Object::KeyPackage)).unwrap();
+        assert_eq!(
+            key_package.identity,
+            group.fleet.identity(joiner).device_id(),
+            "{lib}: the KeyPackage of the joiner"
+        );
+
+        let created = wire::framing(object(Object::CreateCommit)).unwrap();
+        assert_eq!(
+            (created.epoch, created.content_type),
+            (0, wire::COMMIT),
+            "{lib}: the Commit of epoch 0"
+        );
+        let add = object(Object::AddCommit);
+        assert_eq!(
+            wire::framing(add).unwrap().epoch,
+            1,
+            "{lib}: an Add of epoch 1"
+        );
+        assert!(
+            group.process(add, 0, &[joiner], &[]).is_ok(),
+            "{lib}: the Add of the joiner"
+        );
+        let commit = |object| wire::public_commit(group.object(object)).unwrap();
+        let (sender, none) = (wire::CommitSender::Member(0), Vec::<u32>::new());
+        let remove = commit(Object::RemoveCommit);
+        assert_eq!(
+            (remove.sender, &remove.removed, remove.external_init),
+            (sender, &vec![removed as u32], false),
+            "{lib}: device 0's Remove of leaf {removed}"
+        );
+        let empty = commit(Object::EmptyCommit);
+        assert_eq!(
+            (empty.sender, &empty.removed, empty.external_init),
+            (sender, &none, false),
+            "{lib}: device 0's empty Commit"
+        );
+        assert!(
+            empty.path && empty.other_proposals == 0,
+            "{lib}: an UpdatePath and no proposals"
+        );
+        let external = commit(Object::ExternalCommit);
+        assert_eq!(
+            (external.sender, external.external_init),
+            (wire::CommitSender::NewMember, true),
+            "{lib}: an external Commit"
+        );
+        assert!(
+            group
+                .process(object(Object::ExternalCommit), outsider, &[outsider], &[])
+                .is_ok(),
+            "{lib}: the outsider's external Commit"
+        );
+
+        let reference = |key_package: &[u8]| wire::key_package_ref(key_package).unwrap();
+        let recipients = |object| wire::welcome_recipients(group.object(object)).unwrap();
+        assert_eq!(
+            recipients(Object::CreateWelcome),
+            group
+                .key_packages
+                .iter()
+                .map(|key_package| reference(key_package))
+                .collect::<Vec<_>>(),
+            "{lib}: the Welcome for devices 1 and 2"
+        );
+        assert_eq!(
+            recipients(Object::AddWelcome),
+            [reference(&group.key_package)],
+            "{lib}: the Welcome for the joiner"
+        );
+
+        let group_info = wire::group_info(object(Object::GroupInfo)).unwrap();
+        assert_eq!(
+            (
+                group_info.group_id.as_slice(),
+                group_info.epoch,
+                group_info.signer
+            ),
+            (CHANNEL, 1, 0),
+            "{lib}: the group's GroupInfo of epoch 1, by device 0"
+        );
+
+        let mut member = D::load(group.fleet.identity(1), object(Object::State)).unwrap();
+        assert_eq!(
+            member.process(CHANNEL, &group.message).unwrap(),
+            Received::Application {
+                sender: leaf(group.fleet.identity(0)),
+                data: vec![0x5a; MESSAGE_LEN],
+            },
+            "{lib}: device 1's state reads device 0's message"
+        );
+    }
+
+    #[test]
+    fn openmls_objects_are_what_they_name() {
+        objects_are_what_they_name::<mls_proto_openmls::OpenMlsDevice>();
+    }
+
+    #[test]
+    fn mls_rs_objects_are_what_they_name() {
+        objects_are_what_they_name::<mls_proto_mls_rs::MlsRsDevice>();
     }
 
     #[test]
