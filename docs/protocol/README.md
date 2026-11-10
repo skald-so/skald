@@ -9,7 +9,8 @@ Documents:
 - [delivery.md](delivery.md): mailbox, delivery, receipts and attachments;
 - [membership.md](membership.md): accounts, devices, rosters, invites, channels and history;
 - [queues.md](queues.md): queues, tasks, claims and results;
-- [agents.md](agents.md): persons, presence and `ask_user`.
+- [agents.md](agents.md): persons, presence and `ask_user`;
+- [test-vectors.md](test-vectors.md): envelopes, content and receipts in hex, for implementations.
 
 ## Contents
 - [Conventions](#conventions)
