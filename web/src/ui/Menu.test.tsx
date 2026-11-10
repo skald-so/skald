@@ -162,6 +162,34 @@ test("Tab closes the menu without a choice and goes on from the button", async (
   expect(onSelect).not.toHaveBeenCalled();
 });
 
+test("Shift+Tab closes the menu without a choice and goes back from the button", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  renderMenu({ onSelect });
+
+  act(() => button().focus());
+  await user.keyboard("{Enter}");
+  await user.tab({ shift: true });
+  expect(menu()).toBeNull();
+  expect(focused()).toBe("Before");
+  expect(onSelect).not.toHaveBeenCalled();
+});
+
+test("the focus leaving for an outside element closes the menu without a choice", async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  renderMenu({ onSelect });
+
+  act(() => button().focus());
+  await user.keyboard("{Enter}");
+  const after = screen.getByRole("button", { name: "After" });
+  act(() => after.focus());
+  expect(menu()).toBeNull();
+  expect(button().getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(after);
+  expect(onSelect).not.toHaveBeenCalled();
+});
+
 test("a click outside or on the button closes the menu without a choice", async () => {
   const user = userEvent.setup();
   const onSelect = vi.fn();
@@ -190,3 +218,19 @@ test("a menu open from the first render leaves the focus where it is", () => {
   expect(button().getAttribute("aria-expanded")).toBe("true");
   expect(document.activeElement).toBe(document.body);
 });
+
+test.each([
+  ["{ArrowDown}", "Sign-in methods"],
+  ["{ArrowUp}", "Sign out"],
+])(
+  "%s on the button of a menu open from the first render focuses %s",
+  async (key, action) => {
+    const user = userEvent.setup();
+    renderMenu({ defaultOpen: true });
+
+    act(() => button().focus());
+    await user.keyboard(key);
+    expect(menu()).not.toBeNull();
+    expect(focused()).toBe(action);
+  },
+);
