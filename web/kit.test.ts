@@ -30,16 +30,29 @@ const tokens = [
   ["Warning", "--color-warning", "#94470A", "#F2A65A"],
   ["Danger", "--color-danger", "#B3312A", "#F28B80"],
 ];
+/** Tones of the design sources beyond the README tokens: soft backgrounds and text on fills. */
+const sourceTones = [
+  ["Accent text", "#FFFFFF", "#0F1013"],
+  ["Accent soft", "#EDF0FC", "#1C2342"],
+  ["OK soft", "#E6F3EB", "#12261B"],
+  ["Warning soft", "#FCF0E2", "#2B1D0F"],
+  ["Danger text", "#FFFFFF", "#0F1013"],
+  ["Danger soft", "#FAE9E7", "#2D1513"],
+  ["Idle", "#9A9CA3", "#6B6E76"],
+  ["Hover", "#ECECE8", "#202127"],
+];
 const fonts = [
   "Inter Variable",
   "Space Grotesk Variable",
   "JetBrains Mono Variable",
 ];
 
-/** A design token's color in `theme`, as the browser computes it: `rgb(48, 70, 200)`. */
+/** A design color in `theme`, as the browser computes it: `rgb(48, 70, 200)`. */
 function color(label: string, theme: Theme): string {
-  const token = tokens.find(([name]) => name === label)!;
-  const hex = token[theme === "light" ? 2 : 3]!;
+  const token = tokens.find(([name]) => name === label);
+  const hex = token
+    ? token[theme === "light" ? 2 : 3]!
+    : sourceTones.find(([name]) => name === label)![theme === "light" ? 1 : 2]!;
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   return `rgb(${r}, ${g}, ${b})`;
 }
@@ -80,6 +93,123 @@ test("the kit page shows every color token of the design in both themes", async 
   );
   await view.page.close();
 });
+
+const transparent = "rgba(0, 0, 0, 0)";
+
+test.each(themes)(
+  "buttons, status labels and banners have the design colors in the %s theme",
+  async (theme) => {
+    const c = (label: string) => color(label, theme);
+    const view = await kit.open({ width: 1440, system: theme });
+    const looks = await view.page.evaluate(() => {
+      const look = (element: Element) => {
+        const style = getComputedStyle(element);
+        return {
+          background: style.backgroundColor,
+          color: style.color,
+          border: style.borderTopColor,
+        };
+      };
+      const cards = [...document.querySelectorAll("#kit-buttons + ul > li")];
+      const rows = [
+        ...document.querySelectorAll("#kit-statuses + table tbody tr"),
+      ];
+      const banner = document.querySelector("#kit-banners + div [role=alert]")!;
+      return {
+        kinds: cards.slice(0, 4).map((card) => {
+          const [normal, disabled] = card.querySelectorAll("button");
+          return {
+            ...look(normal!),
+            opacity: [
+              getComputedStyle(normal!).opacity,
+              getComputedStyle(disabled!).opacity,
+            ],
+          };
+        }),
+        heights: [...cards[4]!.querySelectorAll("button")].map(
+          (button) => button.getBoundingClientRect().height,
+        ),
+        tinted: {
+          card: look(cards[6]!),
+          buttons: [...cards[6]!.querySelectorAll("button")].map(look),
+        },
+        tones: rows.map((row) => {
+          const [label, dot, count] = [...row.querySelectorAll("td > span")];
+          return {
+            tone: row.querySelector("th")!.textContent,
+            label: look(label!),
+            dot: [
+              look(dot!).color,
+              look(dot!.querySelector("[aria-hidden]")!).background,
+            ],
+            count: look(count!),
+          };
+        }),
+        banner: look(banner),
+        action: look(banner.querySelector("button")!),
+      };
+    });
+
+    expect(looks.kinds).toEqual(
+      [
+        {
+          background: c("Accent"),
+          color: c("Accent text"),
+          border: c("Accent"),
+        },
+        { background: c("Background"), color: c("Text"), border: c("Line") },
+        { background: transparent, color: c("Danger"), border: c("Line") },
+        {
+          background: c("Danger"),
+          color: c("Danger text"),
+          border: c("Danger"),
+        },
+      ].map((kind) => ({ ...kind, opacity: ["1", "0.5"] })),
+    );
+    expect(looks.heights).toEqual([44, 40, 36]);
+    // As the join request in 08-machines.png: the secondary kind keeps the page background.
+    expect(looks.tinted).toEqual({
+      card: {
+        background: c("Accent soft"),
+        color: c("Text"),
+        border: c("Accent"),
+      },
+      buttons: [
+        {
+          background: c("Accent"),
+          color: c("Accent text"),
+          border: c("Accent"),
+        },
+        { background: c("Background"), color: c("Text"), border: c("Line") },
+      ],
+    });
+    expect(looks.tones).toEqual(
+      [
+        ["OK", "OK", "OK soft", "OK"],
+        ["Warning", "Warning", "Warning soft", "Warning"],
+        ["Danger", "Danger", "Danger soft", "Danger"],
+        ["Accent", "Accent", "Accent soft", "Accent"],
+        ["Muted", "Muted text", "Hover", "Idle"],
+      ].map(([tone, fg, soft, mark]) => ({
+        tone,
+        label: { background: c(soft!), color: c(fg!), border: c(fg!) },
+        dot: [c(fg!), c(mark!)],
+        count: { background: c(soft!), color: c(fg!), border: c(fg!) },
+      })),
+    );
+    expect(looks.banner).toEqual({
+      background: c("Warning soft"),
+      color: c("Warning"),
+      border: c("Warning"),
+    });
+    expect(looks.action).toEqual({
+      background: transparent,
+      color: c("Warning"),
+      border: c("Warning"),
+    });
+    await view.page.close();
+  },
+);
 
 test.each(themes)(
   "without the URL parameter the kit page follows the %s system theme",

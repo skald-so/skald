@@ -12,6 +12,16 @@
   --color-warning: light-dark(#94470a, #f2a65a);
   --color-danger: light-dark(#b3312a, #f28b80);
 
+  /* Tones from the design sources, beyond the README tokens. */
+  --color-accent-text: light-dark(#ffffff, #0f1013);
+  --color-accent-soft: light-dark(#edf0fc, #1c2342);
+  --color-ok-soft: light-dark(#e6f3eb, #12261b);
+  --color-warning-soft: light-dark(#fcf0e2, #2b1d0f);
+  --color-danger-text: light-dark(#ffffff, #0f1013);
+  --color-danger-soft: light-dark(#fae9e7, #2d1513);
+  --color-idle: light-dark(#9a9ca3, #6b6e76);
+  --color-hover: light-dark(#ecece8, #202127);
+
   --font-text: "Inter Variable", system-ui, sans-serif;
   --font-heading: "Space Grotesk Variable", "Inter Variable", sans-serif;
   --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;

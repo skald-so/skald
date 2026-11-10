@@ -10,6 +10,7 @@ Static SPA: TypeScript, Vite, React. Calls the API only through the client gener
 
 ## UI kit
 
+- Components live in `src/ui/`.
 - The kit page shows every part of the UI with fixture data: `/kit.html` on the dev server, e.g. `http://localhost:5173/kit.html`. It is not in the production build.
 - The theme follows the system setting; `?theme=light` or `?theme=dark` forces one.
 - `npm run kit:screenshots [-- <dir>]` saves the kit page in both themes at 1440 and 360 px, default `kit-screenshots/`; reviews compare them with the approved design screenshots, `design/png/` in `skald-cloud`.
