@@ -79,7 +79,7 @@ let kit: Kit;
 beforeAll(async () => {
   kit = await startKit();
 }, 60_000);
-// Under load, as with the pinned Chrome in Docker at the same time, Chrome can take over 10 s to quit.
+// Under load Chrome can take over 10 s to quit.
 afterAll(() => kit?.close(), 60_000);
 
 async function pageColors(page: Page) {
