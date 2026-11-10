@@ -30,13 +30,14 @@ Documents:
 
 ## Identifiers
 - An ID is a UUID [[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)]: 16 bytes on the wire, the lowercase hyphenated form in text, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10`. Any other text form is invalid.
-- The issuer generates a UUIDv7 with random bits from a cryptographically secure generator, so IDs of different servers do not collide in practice.
-- Receivers treat IDs as opaque. An ID is not a secret and grants no access.
+- Except for device IDs, the issuer generates a UUIDv7 with random bits from a cryptographically secure generator, so IDs of different servers do not collide in practice.
+- A device ID is derived from the device's Ed25519 public signing key: a UUIDv8 [[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562), §5.8] of the first 16 bytes of SHA-256 over the encoded `["skald device", signing]`, the key as a byte string, with the version field (the high 4 bits of byte 6, counting from 0) set to 8 and the variant field (the high 2 bits of byte 8) to `0b10`. Why and how it is checked: [Device certificate](membership.md#device-certificate).
+- Receivers treat IDs as opaque, except that a device ID is checked against its certificate's signing key. An ID is not a secret and grants no access.
 
 | Entity | Identified by | Issued by |
 |---|---|---|
 | Account | ID | Server, at sign-up |
-| Device | ID | Server, at registration |
+| Device | ID, derived from its signing key | The device, when it generates its keys |
 | Space | ID; its name appears in addresses | Server, at creation |
 | Channel | ID, which is also the `group_id` of its MLS group | Server, at creation |
 | Agent | [Agent address](#agent-address) | Its owner |

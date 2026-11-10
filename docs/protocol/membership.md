@@ -32,7 +32,8 @@ signed<body> = [
 
 - The signature is Ed25519 over the encoded CBOR array of the object's label and `body` as a byte string ([Conventions](README.md#conventions)).
 - The signer is a device, with the signing key of its certificate, or the account's master key where this document says so.
-- Labels: `skald account`, `skald cert`, `skald link`, `skald anchors`, `skald revocation`, `skald roster`, `skald invite`, `skald acceptance`, `skald wrap`, `skald history`. The [SSH signature](#device-certificate) has its own form, with the label `skald ssh`.
+- A [certificate](#device-certificate) also carries a second signature, its device's `proof`.
+- Labels: `skald account`, `skald cert`, `skald proof`, `skald link`, `skald anchors`, `skald revocation`, `skald roster`, `skald invite`, `skald acceptance`, `skald wrap`, `skald history`. The [SSH signature](#device-certificate) has its own form, with the label `skald ssh`.
 
 ## Account
 Each account has two keys, both created on its first device:
@@ -65,11 +66,15 @@ master-backup = [
 A certificate binds a device's keys to its account.
 
 ```cddl
-cert = signed<cert-body>         ; label "skald cert", by `issuer`
+cert = [
+  body: bstr .cbor cert-body,
+  signature: bstr .size 64,  ; by `issuer`, over ["skald cert", body]
+  proof: bstr .size 64,      ; by `signing`, over ["skald proof", body]
+]
 
 cert-body = {
   1 => id,                 ; account
-  2 => id,                 ; device
+  2 => id,                 ; device: derived from `signing`
   3 => device-kind,
   4 => bstr .size 32,      ; signing: the Ed25519 public key
   5 => bstr .size 32,      ; hpke: the X25519 public key
@@ -84,6 +89,9 @@ device-kind = &(client: 1, browser: 2, service: 3, custodian: 4, auditor: 5)
 ```
 
 - Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it.
+- `device` is the ID derived from `signing` ([Identifiers](README.md#identifiers)), and `proof` is signed by the device itself. So only the holder of a device's signing key makes a certificate for its ID: no other device can certify an existing device's ID, with other keys or with its own.
+- A device signs `proof` for one certificate only, the one issued for it when it joins the account. A client that sees two different certificates of one `device`, each with a `proof` that verifies, treats neither as valid and warns its user.
+- A device ID thus names one device everywhere it appears, such as a revocation's `device`, `keep` and `also`, a member's `excluded` and an MLS credential.
 - Issuers:
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
   - a `client` device of the same account: any kind.
@@ -93,9 +101,10 @@ device-kind = &(client: 1, browser: 2, service: 3, custodian: 4, auditor: 5)
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
-A new device registers its public keys and `name` with the server, which assigns its ID, then gets a certificate:
+A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it already has. It then gets a certificate:
 - **From a linked device:** the user confirms the link on a `client` device of the account, which issues the certificate.
   - Both devices show the link fingerprint: the first 10 bytes of SHA-256 over the encoded `["skald fingerprint", master, signing, hpke, name]`, in base32 as above. The new device computes it with its keys, its `name` and the master key the server gave it; the issuing device with the keys and `name` it received and its own master key, and certifies that `name`. The user confirms they match, by eye or by scanning a QR code that carries it.
+  - The issuing device stores the certificate's `body` and `signature`; the new device checks that `body` holds its account, ID, keys and `name`, signs `proof` and stores the complete certificate.
   - A `browser` is linked only this way.
   - With the certificate, the issuing device stores a link object for the new device: the [roster](#roster) revisions it starts from.
 - **With the recovery key**, entered only in the CLI or `skald ui`: the new device unlocks the master key and issues its own certificate with it. It shows its user the account's devices, revoked or not, and in this order:
@@ -166,7 +175,7 @@ revocation-body = {
 A server signature alone never admits a device: a client trusts a device only through its certificate chain to the account's master key.
 
 A certificate is valid when:
-1. its signature verifies: with the master key when `issuer` is absent; otherwise with the signing key of the issuer's certificate;
+1. `device` is the ID derived from `signing`, `proof` verifies with `signing`, and `signature` verifies: with the master key when `issuer` is absent; otherwise with the signing key of the issuer's certificate;
 2. its chain, the certificate and those of its issuers in turn, ends at the master key without repeating a device; every issuer is a `client` device of the same account;
 3. no counting revocation names the device in `device` or `also`;
 4. for each revoked issuer in the chain, every counting revocation of it lists in `keep` the next device down the chain.
@@ -353,7 +362,7 @@ A channel is an MLS group [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)] w
 
 ### MLS profile
 - Ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (`0x0001`).
-- Credential: `basic`, its `identity` the 16-byte device ID. A leaf's `signature_key` MUST equal the `signing` key of the device's certificate.
+- Credential: `basic`, its `identity` the 16-byte device ID. A leaf's `signature_key` MUST equal the `signing` key of the device's certificate, so `identity` is the ID derived from `signature_key`.
 - Members: devices of kind `client`, `custodian` and `auditor`, and `service` devices that keep state. A `browser` and a stateless `service` device are never members.
 - Application messages are PrivateMessages. Proposals and Commits are PublicMessages, so the server knows each epoch's member devices.
 - Each Commit's sender uploads the GroupInfo of the new epoch, with the `ratchet_tree` and `external_pub` extensions, over HTTPS. Any member device of the current epoch uploads one if the server has none. The server keeps the latest.
@@ -510,8 +519,9 @@ A reader MUST drop an entry unless:
 - The recovery key reads every epoch wrapped to it: a device linked with it reads the account's history before it rejoins the channels.
 
 ## Security considerations
+- A device ID keeps 122 bits of a hash of the signing key. Taking an existing device's ID means finding a key for it, about 2^122 hashes. Two keys with one ID take about 2^61; both are then their finder's, and a client that sees both certificates treats neither as valid.
 - The server gives the certificates, revocations and revisions. It cannot forge them, but it can withhold them: a hidden revocation keeps a device trusted for those who do not see it, and a hidden revision keeps clients on an older roster.
-- A stolen device can revoke the account's other devices and certify new ones, and its revocations count even after another device revokes it. The recovery key restores the account: a device linked with it revokes the stolen one with the master key. That one object voids every revocation the stolen device and the devices it certified signed, and lists in `also` the devices that stay revoked, so the server cannot restore them by withholding a second object.
+- A stolen device can revoke the account's other devices and certify new ones, but not under an existing device's ID, and its revocations count even after another device revokes it. The recovery key restores the account: a device linked with it revokes the stolen one with the master key. That one object voids every revocation the stolen device and the devices it certified signed, and lists in `also` the devices that stay revoked, so the server cannot restore them by withholding a second object.
 - The master key cannot be rotated. A leaked recovery key, current or old, with any copy of a master backup it opens, gives away the master key for good: its holder can certify and revoke devices and sign an account record with its own `recovery`, so member devices wrap history keys to it. A new recovery key does not lock it out: the holder signs a record with a higher `revision` again. Clients warn when `recovery` changes.
 - A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
