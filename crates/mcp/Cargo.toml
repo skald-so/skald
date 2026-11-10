@@ -3,3 +3,4 @@ name = "skald-mcp"
 description = "Skald MCP server for AI agents."
 version.workspace = true
 edition.workspace = true
+license.workspace = true

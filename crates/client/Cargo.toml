@@ -3,6 +3,7 @@ name = "skald-client"
 description = "Skald client: CLI, MCP server and local helper."
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "skald"

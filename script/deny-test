@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Tests the license and vulnerability policy: workspace crates declare their planned licenses;
+# cargo-deny with deny.toml accepts permissive dependencies and rejects disallowed licenses,
+# unlicensed crates and known vulnerabilities.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "deny-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# Workspace crates: the server is AGPL-3.0, the rest are MIT OR Apache-2.0.
+crates=$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-version 1 --locked |
+  jq -r '.packages[] | "\(.name) \(.license)"')
+[[ $(wc -l <<<"$crates") -ge 6 ]] || fail "expected at least 6 workspace crates, got: $crates"
+while read -r name license; do
+  want='MIT OR Apache-2.0'
+  [[ $name == skald-server ]] && want='AGPL-3.0-only'
+  [[ $license == "$want" ]] || fail "$name: license '$license', want '$want'"
+done <<<"$crates"
+
+# Creates the fixture <case>: an MIT package that depends on <dependency>.
+fixture() {
+  local case=$1 dependency=$2
+  mkdir -p "$tmp/$case/src"
+  touch "$tmp/$case/src/lib.rs"
+  cat >"$tmp/$case/Cargo.toml" <<TOML
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+$dependency
+TOML
+}
+
+# Creates the fixture <case> with a local dependency `dep` declaring [license].
+local_fixture() {
+  local case=$1 license=${2:-}
+  fixture "$case" 'dep = { path = "dep" }'
+  mkdir -p "$tmp/$case/dep/src"
+  touch "$tmp/$case/dep/src/lib.rs"
+  {
+    printf '[package]\nname = "dep"\nversion = "0.1.0"\nedition = "2024"\n'
+    [[ -z $license ]] || printf 'license = "%s"\n' "$license"
+  } >"$tmp/$case/dep/Cargo.toml"
+}
+
+# expect <case> <pass|code> <check>...: runs cargo-deny on the fixture <case>;
+# expects it to pass or to fail with error[<code>].
+expect() {
+  local case=$1 want=$2 output
+  shift 2
+  if output=$(cargo deny --manifest-path "$tmp/$case/Cargo.toml" --config "$root/deny.toml" \
+    --color never check "$@" 2>&1); then
+    [[ $want == pass ]] || fail "$case: expected error[$want], cargo-deny passed"
+  elif [[ $want == pass ]]; then
+    fail "$case: expected pass, cargo-deny failed:"$'\n'"$output"
+  elif [[ $output != *"error[$want]"* ]]; then
+    fail "$case: expected error[$want], got:"$'\n'"$output"
+  fi
+}
+
+local_fixture permissive 'MIT OR Apache-2.0'
+expect permissive pass advisories licenses
+
+local_fixture gpl 'GPL-3.0-only'
+expect gpl rejected licenses
+
+local_fixture agpl 'AGPL-3.0-only'
+expect agpl rejected licenses
+
+local_fixture unlicensed
+expect unlicensed unlicensed licenses
+
+# RUSTSEC-2021-0003: buffer overflow in SmallVec::insert_many.
+fixture vulnerable 'smallvec = "=1.6.0"'
+expect vulnerable vulnerability advisories
+
+if [[ $failures -ne 0 ]]; then
+  echo "deny-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "deny-test: all cases passed"
