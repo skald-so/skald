@@ -9,9 +9,13 @@
     "lint": "oxlint --deny-warnings && prettier --check .",
     "test": "vitest run",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "kit:screenshots": "node kit-screenshots.ts"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/space-grotesk": "^5.3.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -23,10 +27,12 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
+    "axe-core": "^4.14.0",
     "jsdom": "^31.0.0",
     "msw": "^3.0.4",
     "orval": "^8.47.0",
     "oxlint": "^1.93.0",
+    "playwright-core": "^1.65.0",
     "prettier": "^3.9.10",
     "typescript": "~7.0.2",
     "vite": "^8.3.7",

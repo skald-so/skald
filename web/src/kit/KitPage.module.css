@@ -1,0 +1,152 @@
+/* Spacing and type sizes follow the page area of the design screens. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px 28px 32px;
+  font-size: 14px;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  h1 {
+    margin: 0;
+    font-family: var(--font-heading);
+    font-size: 26px;
+    font-weight: 600;
+  }
+
+  p {
+    margin: 0;
+    color: var(--color-muted);
+  }
+}
+
+.themes {
+  display: flex;
+  gap: 4px;
+
+  a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    padding: 0 10px;
+    border-radius: 8px;
+    color: var(--color-accent);
+    font-weight: 500;
+  }
+
+  a[aria-current] {
+    color: var(--color-text);
+    font-weight: 600;
+    text-decoration: none;
+  }
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 980px;
+
+  h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+}
+
+.colors,
+.fonts {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.colors {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+}
+
+.name {
+  font-weight: 600;
+}
+
+.use,
+.token,
+.weight,
+.scheme {
+  color: var(--color-muted);
+  font-weight: 400;
+}
+
+.token {
+  font-size: 12px;
+}
+
+.swatch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chip {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+}
+
+.light {
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
+}
+
+.scheme {
+  width: 36px;
+}
+
+.sample {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.weight {
+  flex: none;
+  width: 28px;
+}
+
+@media (max-width: 600px) {
+  .page {
+    padding: 20px 16px 28px;
+  }
+}

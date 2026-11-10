@@ -13,6 +13,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
 - Docker.
 - Node.js 26 with npm.
+- Google Chrome: the web tests run it headless ([web/README.md](web/README.md)).
 
 ## Running locally
 PostgreSQL 19 in a container:
