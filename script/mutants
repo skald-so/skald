@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Mutation check of the Rust code changed since <base-ref>: cargo-mutants mutates only the lines of the
+# diff <base-ref>...HEAD and runs the tests of the mutated crate, with PostgreSQL as in script/test.
+# Exits 0 only if the tests catch every mutant; otherwise lists the mutants they miss.
+# Usage: script/mutants <base-ref>, in the repository to check, with its changes committed.
+# CARGO_MUTANTS_JOBS sets how many mutants are tested in parallel; the default is half the CPUs.
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <base-ref>" >&2
+  exit 2
+fi
+base=$1
+source "$(dirname "$0")/lib/postgres.sh"
+
+for tool in cargo-mutants docker; do
+  if ! command -v "$tool" >/dev/null; then
+    echo "script/mutants: $tool is missing; see CONTRIBUTING.md, \"Requirements\"" >&2
+    exit 1
+  fi
+done
+
+cd "$(git rev-parse --show-toplevel)"
+if ! merge_base=$(git merge-base "$base" HEAD 2>/dev/null); then
+  echo "script/mutants: cannot find where HEAD branched from '$base'" >&2
+  exit 2
+fi
+# The mutants are copies of the working tree; the diff describes HEAD.
+if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
+  echo "script/mutants: commit or discard the changes first: the check covers HEAD" >&2
+  exit 2
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"; postgres_stop' EXIT
+
+# Plumbing ignores the diff settings of the user's git config; -M limits a moved file to its changed lines.
+git diff-tree -p -M "$merge_base" HEAD -- '*.rs' >"$tmp/changes.diff"
+mutate=(--workspace --in-diff "$tmp/changes.diff")
+
+mutants=$(cargo mutants --list "${mutate[@]}")
+if [[ -z $mutants ]]; then
+  echo "script/mutants: no mutants in the Rust code changed since $base"
+  exit 0
+fi
+
+ncpu=$(getconf _NPROCESSORS_ONLN)
+postgres_start
+postgres_wait
+# cargo-mutants prints each mutant the tests miss as MISSED; its report goes out of the working tree.
+cargo mutants "${mutate[@]}" --test-workspace=false --jobs "${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}" \
+  --output "$tmp"

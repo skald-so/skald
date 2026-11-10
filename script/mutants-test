@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Tests script/mutants on a scratch Cargo workspace: it passes when the tests catch every mutant of the
+# code changed since the base, fails naming the survivors otherwise, never mutates unchanged code,
+# runs the tests with PostgreSQL and removes it afterwards, and leaves the working tree clean.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "mutants-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# script/mutants starts its own PostgreSQL: a database of the caller, e.g. script/test, must not hide it.
+unset SKALD_TEST_DATABASE_URL
+# The fixture's survivors are expected: no GitHub annotations for them in CI.
+unset GITHUB_ACTION
+
+# run <base>: runs script/mutants <base>, setting $status and $output.
+run() {
+  status=0
+  output=$("$root/script/mutants" "$1" 2>&1) || status=$?
+}
+
+# expect_clean <case>: the run left the working tree and the index as they were.
+expect_clean() {
+  local changes
+  changes=$(git status --porcelain --ignored --untracked-files=all)
+  [[ -z $changes ]] || fail "$1: the working tree changed:"$'\n'"$changes"
+}
+
+# expect_postgres_removed <case>: the fixture's tests reached PostgreSQL, which is now gone.
+expect_postgres_removed() {
+  local url
+  url=$(cat "$tmp/postgres-url" 2>/dev/null) || {
+    fail "$1: the tests did not reach PostgreSQL"
+    return
+  }
+  rm "$tmp/postgres-url"
+  local addr=${url##*@}
+  if (exec 3<>"/dev/tcp/${addr%:*}/${addr##*:}") 2>/dev/null; then
+    fail "$1: PostgreSQL at $addr still runs"
+  fi
+}
+
+# A scratch repository, isolated from the user's git config.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+mkdir "$tmp/repo"
+cd "$tmp/repo"
+git init --quiet --initial-branch dev
+
+# A workspace like this one: a virtual manifest and crates/*. `untested` has no test and is never
+# changed; `postgres_is_reachable` records the database it reached for expect_postgres_removed.
+mkdir -p crates/calc/src
+printf '[workspace]\nmembers = ["crates/*"]\nresolver = "3"\n' >Cargo.toml
+printf '[package]\nname = "calc"\nversion = "0.1.0"\nedition = "2024"\n' >crates/calc/Cargo.toml
+cat >crates/calc/src/lib.rs <<RUST
+pub fn double(x: u32) -> u32 {
+    x * 2
+}
+
+pub fn untested(x: u32) -> u32 {
+    x + 1
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn double() {
+        assert_eq!(super::double(3), 6);
+    }
+
+    #[test]
+    fn postgres_is_reachable() {
+        let url = std::env::var("SKALD_TEST_DATABASE_URL").expect("SKALD_TEST_DATABASE_URL is set");
+        let addr = url.rsplit('@').next().expect("an address");
+        std::net::TcpStream::connect(addr).expect("connect to PostgreSQL");
+        std::fs::write(r"$tmp/postgres-url", url).expect("record the database");
+    }
+}
+RUST
+echo /target >.gitignore
+echo '# calc' >README.md
+cargo generate-lockfile --quiet --offline
+git add --all
+git commit --quiet --message base
+git branch base
+
+# A covered change: every mutant is caught. A later change of `untested` in the base branch
+# is not part of the diff, and neither is the rest of the file.
+git checkout --quiet -b covered
+sed -i.bak 's/x \* 2/x << 1/' crates/calc/src/lib.rs && rm crates/calc/src/lib.rs.bak
+git commit --quiet --all --message covered
+git checkout --quiet dev
+sed -i.bak 's/x + 1/x + 2/' crates/calc/src/lib.rs && rm crates/calc/src/lib.rs.bak
+git commit --quiet --all --message 'change untested'
+git checkout --quiet covered
+run dev
+[[ $status -eq 0 ]] || fail "covered: exit code $status, want 0:"$'\n'"$output"
+[[ $output != *untested* ]] || fail "covered: mutated unchanged code:"$'\n'"$output"
+expect_clean covered
+expect_postgres_removed covered
+
+# A new function tested only by another crate, next to a covered change, in a moved crate: the run
+# fails and names only the survivors in the changed lines. Only the mutated crate's tests count.
+git checkout --quiet -b uncovered base
+git mv crates/calc crates/math
+sed -i.bak 's/x \* 2/x << 1/' crates/math/src/lib.rs && rm crates/math/src/lib.rs.bak
+printf '\npub fn triple(x: u32) -> u32 {\n    x * 3\n}\n' >>crates/math/src/lib.rs
+mkdir -p crates/report/src
+printf '[package]\nname = "report"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n%s\n' \
+  'calc = { path = "../math" }' >crates/report/Cargo.toml
+printf '#[test]\nfn triple() {\n    assert_eq!(calc::triple(2), 6);\n}\n' >crates/report/src/lib.rs
+cargo generate-lockfile --quiet --offline
+git add --all
+git commit --quiet --message uncovered
+run base
+[[ $status -ne 0 ]] || fail "uncovered: exit code 0, want non-zero:"$'\n'"$output"
+[[ $output =~ crates/math/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ triple\ -\>\ u32\ with\ 0 ]] ||
+  fail "uncovered: the survivor is not named:"$'\n'"$output"
+[[ $output != *untested* && $output != *double* ]] ||
+  fail "uncovered: names mutants outside the changed lines or caught ones:"$'\n'"$output"
+expect_clean uncovered
+expect_postgres_removed uncovered
+
+# No Rust changes: nothing to mutate, PostgreSQL is not needed.
+git checkout --quiet -b docs base
+echo 'A calculator.' >>README.md
+git commit --quiet --all --message docs
+run base
+[[ $status -eq 0 && $output == *'no mutants'* ]] || fail "docs: exit code $status, want 0:"$'\n'"$output"
+[[ ! -e $tmp/postgres-url ]] || fail "docs: the tests ran"
+
+# Uncommitted changes: the diff would not describe the mutated tree.
+echo '// draft' >>crates/calc/src/lib.rs
+run base
+[[ $status -ne 0 && $output == *commit* ]] || fail "dirty: exit code $status, want non-zero:"$'\n'"$output"
+[[ $(git status --porcelain) == ' M crates/calc/src/lib.rs' ]] || fail "dirty: the changes were touched"
+git checkout --quiet -- crates/calc/src/lib.rs
+
+run no-such-ref
+[[ $status -ne 0 ]] || fail "expected an error for an unknown base"
+status=0
+"$root/script/mutants" >/dev/null 2>&1 || status=$?
+[[ $status -eq 2 ]] || fail "expected a usage error without arguments, got exit code $status"
+
+if [[ $failures -ne 0 ]]; then
+  echo "mutants-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "mutants-test: all cases passed"
