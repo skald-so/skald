@@ -26,6 +26,13 @@ afterAll(async () => {
   await kit?.close();
 });
 
+test("the pinned Chrome redraws whole tiles, without partial raster", async () => {
+  // Without the flag a repainted tile can leave a view one step off its reference.
+  const cdp = await kit.browser.newBrowserCDPSession();
+  const { commandLine } = await cdp.send("SystemInfo.getInfo");
+  expect(commandLine.split(" ")).toContain("--disable-partial-raster");
+});
+
 const light1440 = views.find(
   ({ screen, theme, width }) =>
     screen === "kit" && theme === "light" && width === 1440,

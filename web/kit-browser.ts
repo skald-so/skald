@@ -173,8 +173,11 @@ async function connectPinnedChrome(): Promise<Browser> {
       "run-server",
       "--host=0.0.0.0",
       "--port=3000",
-      // Takes the flags of this client; the server is reachable from this machine only.
+      // --unsafe takes the Chrome flags of the client, and with them any program to run. Other
+      // containers on the Docker network reach the server too: it serves one client, this one,
+      // which connects as soon as it listens.
       "--unsafe",
+      "--max-clients=1",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
