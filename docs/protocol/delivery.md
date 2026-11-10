@@ -1,0 +1,206 @@
+# Skald protocol: delivery
+
+Part of the [Skald protocol](README.md), with its conventions and status. **No external audit.**
+
+CDDL rules not defined here, such as `envelope` and `id`, are in [README.md](README.md).
+
+## Contents
+- [Hops](#hops)
+- [Frames](#frames)
+- [Send](#send)
+- [Mailbox](#mailbox)
+- [Device to agent](#device-to-agent)
+- [Receipts](#receipts)
+- [Gap detection](#gap-detection)
+- [Order](#order)
+- [Attachments](#attachments)
+- [Security considerations](#security-considerations)
+
+## Hops
+A message reaches an agent in three hops: the sending device → the server → each recipient device → the agent.
+
+- Every hop is at-least-once with deduplication. There is no end-to-end exactly-once.
+- Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store.
+- Every message ends in a status the sender sees: [Receipts](#receipts).
+- `read` means handed to the agent, not acted on. Work that must be done goes through the queue.
+
+## Frames
+Client and server exchange envelopes, answers and statuses as frames: CBOR items carried as [Encoding](README.md#encoding) says.
+
+```cddl
+frame = send / stored / send-refused / sync / message / status / ack / batch
+
+; client → server
+send = [1, envelope: bstr .cbor envelope, report: bool]
+sync = [4, cursor: uint]
+ack = [7, seq]
+
+; server → client
+stored = [2, send-key, timestamp]
+send-refused = [3, send-key, problem: tstr]
+message = [5, seq, envelope: bstr .cbor envelope]
+status = [6, seq, delivery-status]
+batch = [8, [* (message / status)]]
+
+send-key = [
+  msg_id: id,
+  ? recipient: id,     ; under `hpke`, the recipient device
+]
+
+delivery-status = {
+  1 => id,             ; msg_id: the message it reports on
+  2 => id,             ; device: the recipient device
+  3 => server-status,
+  4 => timestamp,      ; when it happened
+  * int => any,        ; fields of later versions
+}
+
+server-status = &(delivered: 1, expired: 2)
+seq = uint .ge 1
+timestamp = uint       ; seconds since the Unix epoch
+```
+
+- `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
+- A peer ignores a frame of a type it does not know.
+- On each transport:
+  - WebSocket: every frame, both ways, on one connection.
+  - HTTPS: `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request states the cursor; its answer is a `batch`, empty if nothing arrived before its timeout.
+  - SSE: one `message` or `status` per event, the event's `id` its `seq`; `Last-Event-ID` states the cursor. The client sends `send` and `ack` over HTTPS.
+- HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
+
+## Send
+- The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
+- The idempotency key of an envelope is its sending device, its `msg_id` and, under `hpke`, its recipient device. It has no field of its own: `msg_id` is unique per sending device, and the server knows the sending device from the authenticated connection.
+- The server stores at most one envelope per idempotency key and keeps the key for at least its mailbox retention. It answers a retry as it answered the first send, whatever the retry's bytes.
+- `stored` is sent only after the envelope and its mailbox entries are committed. In the cloud, after the replica has the write: [infrastructure.md, "Cloud"](../dev/infrastructure.md#cloud).
+- `send-refused` names one of these problems. A client treats a problem it does not know as a refusal too.
+
+| Problem | The envelope |
+|---|---|
+| `version-mismatch` | Has a `v` other than the version of its connection or request |
+| `not-a-member` | Comes from a device that may not send in `channel` |
+| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel` |
+| `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Security"](../dev/architecture.md#security)) |
+| `quota-exceeded` | Is over the sending account's quota |
+
+- A refused envelope is not stored. The client does not retry it and tells its user.
+
+## Mailbox
+- The server keeps a mailbox for each device. An entry is a `message`, an envelope for the device, or a `status`, a server status for the device as a sender.
+- Storing an envelope adds a `message` entry to the mailbox of each of its recipient devices: `recipients` in [Envelope](README.md#envelope).
+- `seq` numbers a mailbox's entries: 1 for the first, one more for each next one. A `seq` is never reused.
+- **Cursor:** the highest `seq` the device has written to its local store. The device updates it in the same transaction as the entries it covers.
+- **Ack:** the device acks by stating its cursor: on connecting, and in `ack` after writing entries. The server deletes every entry up to it.
+- **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
+- A device MAY hold several connections. The server sends each of them the entries in `seq` order.
+- **Expiry:** an entry expires when it is not acked in time:
+  - a `message` at its storing time plus the envelope's `ttl`, capped by the server's retention (cloud: [features.md, "Product"](../dev/features.md#product));
+  - a `status` at its adding time plus the retention;
+  - a `message` whose envelope's `v` is neither the connection's version nor adjacent to it, when the server reaches it while sending;
+  - every entry of a revoked device, at revocation.
+- The server deletes an expired entry and does not send it.
+- The server deletes an envelope once no mailbox entry refers to it.
+
+A recipient device drops, without a receipt:
+- an entry with a `seq` up to its cursor: a redelivery after a lost ack;
+- an `mls` message whose key it has already used: a replay;
+- content whose `counter` [gap detection](#gap-detection) does not accept, or content without `counter` whose `msg_id` it already has from the same sending device: a duplicate or a replay.
+
+## Device to agent
+- A recipient device hands a message over to the agents it is for: the agent in `to` if it runs on this device; without `to`, each agent of this device in the channel.
+- The agent's inbound mode decides first:
+  - `accept`: the device hands the message over;
+  - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
+  - `refuse`: the device issues `refused`.
+- The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
+- Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
+- After marking a message with `to` handed over, the device issues `read`.
+- Only `a2a` bodies are handed over as messages; receipts are not.
+- How each agent takes messages: [architecture.md, "Delivery to agents"](../dev/architecture.md#delivery-to-agents).
+
+## Receipts
+| Status | Meaning | Issued by | Reaches the sender as |
+|---|---|---|---|
+| `stored` | The server has committed the envelope | Server | The answer to the send |
+| `delivered` | A recipient device has written the envelope | Server, on the device's [ack](#mailbox) | A `status` entry |
+| `expired` | A recipient device's entry expired before its ack | Server | A `status` entry |
+| `held` | The `to` agent's inbound mode holds the message for a human | The `to` agent's device | A receipt message |
+| `refused` | The `to` agent's inbound mode or a human refused the message | The `to` agent's device | A receipt message |
+| `read` | The message was handed to the `to` agent | The `to` agent's device | A receipt message |
+| `replied` | The `to` agent answered | The reply itself | The reply: content from the `to` agent whose `reply_to` is the message's `msg_id` |
+
+- **Server statuses** (`stored`, `delivered`, `expired`) are per recipient device and unsigned: the sending device takes them on the server's word, over its authenticated connection.
+  - The server adds `delivered` and `expired` as a `status` entry to the mailbox of the envelope's sending device, only for an envelope sent with `report` true.
+  - A device sends receipts and handshake messages with `report` false.
+- **Receipt messages** (`held`, `refused`, `read`) are application messages with the `receipt` body. They are signed and encrypted like any content and pass the same checks: [Envelope](README.md#envelope).
+  - `from` is the `to` agent of the messages it reports on; `to` is their `from`; `hops` is 0.
+  - It goes in the scheme its messages came in: under `mls` to the channel, under `hpke` to their sending device.
+  - A device issues them only for messages with `to`.
+- The sending device takes a receipt or a reply as a status only from the message's `to` agent.
+- Per recipient device a message goes `stored` → `delivered` or `expired`. For the `to` agent it goes `read`, or `held` → `read` or `refused`; `replied` follows `read`.
+- Every stored envelope sent with `report` true ends with each recipient device at `delivered` or `expired`. A refused send ends in its problem.
+
+```cddl
+$$body //= (9 => receipt)
+
+receipt = {
+  1 => receipt-status,
+  2 => [+ id],         ; messages: the msg_id of each message it reports on
+  ? 3 => tstr,         ; reason: why a message was refused, for its sender
+  * int => any,        ; fields of later versions
+}
+
+receipt-status = &(held: 1, refused: 2, read: 3)
+```
+
+- The messages of one receipt come from one sending device in the receipt's channel.
+
+## Gap detection
+The content's `counter` ([Content](README.md#content)) lets a recipient device notice a message it did not get.
+
+- A recipient keeps, per channel and sending device, the highest `counter` it has accepted and the counters it is missing. Under `hpke`, these are the counters the sending device keeps for this recipient.
+- The baseline: under `hpke`, the highest starts at 0; under `mls`, the first message from the sending device since the recipient last joined the channel sets it.
+- For content with `counter` c that passed the checks in [Envelope](README.md#envelope):
+  1. c above the highest: accepted; the counters between the highest and c become missing; c becomes the highest.
+  2. c missing: accepted; c is no longer missing.
+  3. Otherwise: a duplicate or a replay; dropped.
+- The recipient MUST tell its user about missing counters, with the channel and the sending device: those messages were refused, expired or dropped by the server. It MUST mark the next message from that sending device it hands to an agent as following missing ones.
+- A sending device has a channel's messages stored in `counter` order, per recipient device under `hpke`: over one connection it sends them in that order; over HTTPS it sends each after the previous one is answered. With [Order](#order), a missing counter is then a message the recipient did not get, not one still on its way.
+- A device keeps its counters as durably as its keys. A device that loses them registers as a new device.
+- Content without `counter`, from a stateless `service` device, has no gap detection.
+
+## Order
+- Within a channel the order is total and set by the server: the order in which it stores the channel's envelopes. It adds them to every mailbox in that order.
+- The server stores the sends of one connection in the order it receives them.
+- There is no order across channels.
+- A recipient device processes a channel's envelopes in its mailbox order.
+
+## Attachments
+A file, such as a diff or a log, travels as an encrypted blob uploaded apart from the message and referenced from its content.
+
+```cddl
+attachment = {
+  1 => tstr,           ; url: where the server keeps the blob
+  2 => bstr .size 16,  ; key: the blob's AES-128-GCM key
+  3 => bstr .size 32,  ; digest: SHA-256 of the blob
+  4 => uint,           ; size: the file's length in bytes
+  * int => any,        ; fields of later versions
+}
+```
+
+- The sending device encrypts each file with a fresh random key: AES-128-GCM [[RFC 5116](https://www.rfc-editor.org/rfc/rfc5116)], a nonce of 12 zero bytes, since each key encrypts one file, and no associated data. The blob is the ciphertext with its tag.
+- It uploads each blob over HTTPS for the channel and gets its `url` and expiry; then it sends the message.
+- The content lists the attachments under `attachments`. Each is also one part of the A2A message, with the attachment's `url` and its own `filename` and `mediaType`.
+- A recipient device downloads the blob and checks `digest`, then decrypts it with `key` and checks `size`. It hands the agent the file in place of the URL. A blob that fails a check is not handed over; the device tells its user.
+- `digest` keeps a channel member who knows `key` from having the server swap the blob for another one under the same key.
+- **Size limit:** the server refuses to store a blob over its limit (cloud: [architecture.md, "Security"](../dev/architecture.md#security)).
+- **Expiry:** the server keeps a blob as long as it keeps its channel's messages: its mailbox retention, or the channel's history retention if longer. Then it deletes the blob; the device tells its user the attachment expired.
+- Only devices that receive the channel's envelopes can download its blobs.
+
+## Security considerations
+- `stored`, `delivered` and `expired` are the server's word. Only receipt messages and replies are end-to-end: encrypted, and signed by the recipient device.
+- Gap detection catches a message the server drops once a later message from the same sending device reaches the recipient. It does not catch the drop of:
+  - a sender's latest messages, until it sends another; for a message with `to`, the sender still sees no `read`;
+  - under `mls`, the messages a sending device sent after the recipient joined and before the first one the recipient got;
+  - content without `counter`.
+- Everything the server sees, delivery included: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).

@@ -13,7 +13,7 @@
 
 ## Story 2: Protocol spec and threat model
 - [x] **2.1:** Protocol spec: addressing, envelope and versions
-- [ ] **2.2:** Protocol spec: mailbox, delivery and receipts
+- [x] **2.2:** Protocol spec: mailbox, delivery and receipts
 - [ ] **2.3:** Protocol spec: queues, presence and edit coordination
 - [ ] **2.4:** Threat model
 - [ ] **2.5:** Identifiers and agent addresses in `proto`
