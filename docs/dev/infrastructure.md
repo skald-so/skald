@@ -40,7 +40,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container.
 - **Frontend:** lint, tests, build.
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
-- **Tooling:** tests of the CI scripts, Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, Renovate config validation.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, with Conventional Commits titles; config in `renovate.json`.

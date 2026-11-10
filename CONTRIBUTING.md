@@ -10,7 +10,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
-- `cargo-deny`: `cargo install cargo-deny --locked`.
+- `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
 - Docker.
 - Node.js 26 with npm.
 
@@ -36,6 +36,8 @@ Web UI: [web/README.md](web/README.md).
 
 ## Tests
 `./script/test` builds everything and runs all checks; exit code 0 only if all of them pass. It starts its own PostgreSQL container and removes it afterwards. CI runs the same script.
+
+`./script/mutants origin/dev` mutates the Rust code changed on your branch and runs the tests of each mutated crate; it lists every mutant no test catches (rule 2 in [rules.md](rules.md)).
 
 ## Sending a PR
 - Fork the repository and branch from `dev`: `feature/iteration-<N>.<M>`.
