@@ -6,7 +6,7 @@
 - [x] **1.3:** Licenses, policies and `cargo-deny`
 - [x] **1.4:** Server health check and OpenAPI spec
 - [x] **1.5:** PostgreSQL and migrations
-- [ ] **1.6:** SPA skeleton with generated API client
+- [x] **1.6:** SPA skeleton with generated API client
 - [ ] **1.7:** CI path filters and Renovate
 - [ ] **1.8:** Branch protection and `CONTRIBUTING.md`
 

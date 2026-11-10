@@ -8,6 +8,10 @@ if ! command -v cargo-deny >/dev/null; then
   echo "script/test: cargo-deny is missing; install it: cargo install cargo-deny --locked" >&2
   exit 1
 fi
+if ! command -v npm >/dev/null; then
+  echo "script/test: npm is missing; the web UI needs Node.js: https://nodejs.org" >&2
+  exit 1
+fi
 if ! command -v docker >/dev/null; then
   echo "script/test: docker is missing; the integration tests run PostgreSQL in a container" >&2
   exit 1
@@ -38,3 +42,12 @@ SKALD_TEST_DATABASE_URL="postgres://postgres:skald@$(docker port "$postgres" 543
 cargo deny --locked check advisories licenses
 script/deny-test
 script/check-pr-title-test
+
+# Web UI: lint, tests (including the check that the API client is generated from the spec) and build.
+(
+  cd web
+  npm ci --no-audit --no-fund
+  npm run lint
+  npm test
+  npm run build
+)
