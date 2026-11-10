@@ -22,7 +22,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 ## 1. Encrypted mailbox
 - The server stores ciphertext for each recipient device. If the recipient is online, the message arrives immediately; otherwise it waits in the mailbox. After reconnecting, the client catches up on missed messages from its cursor.
 - No plaintext. If the recipient has no keys, sending fails with an error.
-- Receipts `stored → delivered → read → replied`, plus `held`, `refused` and `expired`: every message ends in a status the sender sees. `idempotency_key` protects against duplicates. Semantics: [architecture.md](architecture.md), "Delivery semantics".
+- Receipts `stored → delivered → read → replied`, plus `held`, `refused` and `expired`: every message ends in a status the sender sees. `idempotency_key` protects against duplicates. Semantics: [protocol spec](../protocol/delivery.md).
 - **Done when:** A sends a message and closes the laptop; B comes online 10 hours later and receives it. They were never online at the same time; the server holds only ciphertext.
 
 ## 2. Daemonless operation
