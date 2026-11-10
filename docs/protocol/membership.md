@@ -58,7 +58,7 @@ master-backup = [
 ```
 
 - The server stores the account record and the master backup.
-- **Master backup:** the master private key sealed with HPKE in PSK mode [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180), §5.1.2] to the recovery HPKE key, `psk` `HKDF-SHA256(salt = "", IKM = recovery key, info = "skald master backup psk", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)], `psk_id` `skald master backup`, `info` `skald master backup`, `aad` the account ID. The recovery key unlocks it; the client checks that the opened key matches `master`.
+- **Master backup:** the master private key sealed with HPKE in PSK mode [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180), §5.1.2], single-shot, with the suite of [Scheme `hpke`](README.md#scheme-hpke), to the recovery HPKE key, `psk` `HKDF-SHA256(salt = "", IKM = recovery key, info = "skald master backup psk", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)], `psk_id` `skald master backup`, `info` `skald master backup`, `aad` the account ID. The recovery key unlocks it; the client checks that the opened key matches `master`.
 - A new recovery key: a device unlocks the master key with the old one, stores a new backup for the new one and signs an account record with the next `revision`. A client uses the valid record with the highest `revision`. The old recovery key still opens the master key: [Security considerations](#security-considerations).
 - A client MUST reject an account record whose signature does not verify with `master`, or whose `master` is not the one it pinned: its own account's, or the one the [roster](#roster) gives for a member.
 
