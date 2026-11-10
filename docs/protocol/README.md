@@ -95,7 +95,12 @@ scheme = &(mls: 1, hpke: 2)
 A recipient routes by the header but trusts only what the payload authenticates. It MUST reject an application message unless:
 1. the payload authenticates the sending device as its scheme says: [`mls`](#scheme-mls), [`hpke`](#scheme-hpke);
 2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself, a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device));
-3. the A2A `messageId` is `msg_id` in text form.
+3. the sender may send in `channel`:
+   - a `service` device: its content carries a [grant](#service-grant) for `channel`;
+   - any other device: the account that owns `from` is a member of `channel`, that is, one of its devices is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
+4. the A2A `messageId` is `msg_id` in text form.
+
+A recipient outside the channel's MLS group, such as a linked browser, takes the group's members from the latest GroupInfo with the ratchet tree [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §12.4.3], signed by a member device.
 
 ### Scheme `mls`
 - The payload is an MLSMessage [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §6]. An application message is a PrivateMessage whose application data is the [content](#content); handshake messages travel in envelopes too.
@@ -139,6 +144,7 @@ content = {
   ? 5 => id,           ; reply_to: msg_id of the message this one answers
   $$body,
   ? 7 => delegation,   ; only from a custodian device
+  ? 8 => grant,        ; only from a service device
   * int => any,        ; fields of later versions
 }
 
@@ -150,8 +156,32 @@ $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 - `counter`: 1 for the first application message a device sends in a channel, one more for each next one. Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
 - `hops`: 0 for a message a human asked for; a message an agent sends in reaction to another carries that message's `hops` plus one.
 - `delegation`: required in content from a `custodian` device, absent otherwise: [Custodian device](#custodian-device).
+- `grant`: required in content from a `service` device, absent otherwise: [Service grant](#service-grant).
 - A content carries exactly one body. Other bodies, such as receipts, get their own keys.
 - The thread, text and attachments are in the A2A message: [A2A extension](#a2a-extension).
+
+### Service grant
+A space admin lets a `service` device send in channels of the space by signing a grant on one of their `client` or `browser` devices. The service device puts it in every content it sends.
+
+```cddl
+grant = [
+  body: bstr .cbor grant-body,
+  signature: bstr .size 64,  ; by `signer`, over ["skald grant", body]
+]
+
+grant-body = {
+  1 => id,             ; service: the service device
+  2 => [+ id],         ; channels: the channels it may send in
+  3 => id,             ; signer: the admin's device
+  4 => uint,           ; expires: seconds since the Unix epoch
+  * int => any,        ; fields of later versions
+}
+```
+
+A recipient MUST reject content from a `service` device unless:
+1. the content's `grant` names the sending device as `service` and lists `channel` in `channels`;
+2. `signer` is an unrevoked `client` or `browser` device of an admin of `space`, and `signature` verifies with its certificate;
+3. `expires` has not passed.
 
 ## Encoding
 - API: JSON over HTTPS, described by the OpenAPI spec, [api/openapi.json](../../api/openapi.json).
