@@ -109,7 +109,7 @@ A recipient routes by the header but trusts only what the payload authenticates.
 2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device)), an `auditor` device sends no application message, and only a `client` or `browser` device sends as a [person](agents.md#person);
 3. the sender may send in `channel`:
    - a `service` device: its content carries a [grant](#service-grant) for `channel`;
-   - any other device: the account that owns `from` is a member of `channel`, that is, one of its devices other than a `custodian` or `auditor` device is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
+   - any other device: the account that owns `from` is a member of `channel`, that is, one of its `client` devices is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
 4. the A2A `messageId` is `msg_id` in text form.
 
 A recipient outside the channel's MLS group, such as a linked browser, takes the group's members from the latest GroupInfo with the ratchet tree [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §12.4.3], signed by a member device.
