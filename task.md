@@ -181,7 +181,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** Pin down the protocol and the threat model that all other stories rely on.
 
 **Scope:**
-- Spec: envelope (plaintext header + ciphertext), agent address with the server name, receipts and their transitions, mailbox and cursor, queues and fencing, presence, edit coordination via HMAC fingerprints.
+- Spec: envelope (plaintext header + ciphertext), agent address with the server name, delivery semantics and receipts (who issues each), a per-sender counter for gap detection, mailbox and cursor, queues and fencing, presence, edit coordination via HMAC fingerprints.
 - The protocol accounts from the start for the custodian device (feature 13), the auditor device (`ee/`) and federation (feature 15).
 - Threat model: what the server sees and does not see, trade-offs, prompt injection, loops.
 - The protocol version is a separate number; the server accepts the current and previous ones and tells a too-old client "please update".
@@ -337,16 +337,16 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Envelope: a plaintext header and opaque ciphertext; a separate mailbox for each recipient device.
-- Recipient online: an immediate WebSocket push; offline: the message waits; after reconnecting, the client catches up from the cursor; an ack removes the message from the mailbox.
+- Recipient online: an immediate WebSocket push; offline: the message waits; after reconnecting, the client catches up from the cursor; the device acks after writing the message locally, and the ack removes it from the mailbox; a redelivered message is dropped by `envelope_id`.
 - Server instances wake each other via PostgreSQL `LISTEN/NOTIFY`.
-- Receipts `stored → delivered → read → replied`, plus `expired` and `refused`; `idempotency_key` rejects duplicates.
+- Receipts `stored → delivered → read → replied`, plus `held`, `refused` and `expired`, issued as in `architecture.md`, "Delivery semantics"; `idempotency_key` rejects duplicates.
 - Cloud limits as per-account settings: spaces, devices, messages per month, text up to 64 KB, undelivered messages kept for 7 days.
 - CLI: send and receive a message.
-- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `idempotency_key` does not create a duplicate.
+- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `idempotency_key` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message.
 
 - **Release:** MVP
 - **Depends on:** Story 11
-- **Docs:** `features.md` §1, "Product", `architecture.md` — "Network", "Data model", "Security"
+- **Docs:** `features.md` §1, "Product", `architecture.md` — "Network", "Data model", "Delivery semantics", "Security"
 
 ### Story 13: MLS channels, roles and device revocation
 
@@ -533,12 +533,12 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The cloud is ready for the public MVP launch.
 
 **Scope:**
-- Production on dedicated Hetzner servers: a primary and a replica, PostgreSQL 19 with streaming replication, WAL-G backups to object storage.
+- Production on dedicated Hetzner servers: a primary and a replica, PostgreSQL 19 with synchronous replication that switches to asynchronous with an alert when the replica is down, WAL-G backups to object storage.
 - Docker Compose + Caddy with automatic TLS; the same image that is published for self-hosting.
 - One-click release rollout to production with manual approval in GitHub Environments.
 - Monitoring: Prometheus, Grafana, Sentry, uptime checks, status page.
 - Addresses: `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation; the website and docs are built from `docs/` on GitHub Pages.
-- **Done when:** a release is deployed to production with one click; restore from backup has been tested; monitoring alerts arrive.
+- **Done when:** a release is deployed to production with one click; restore from backup has been tested; losing the primary loses no `stored` message; monitoring alerts arrive.
 
 - **Release:** MVP
 - **Depends on:** Story 6, Story 7
@@ -550,13 +550,14 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Named queues; a task is an encrypted payload plus plaintext scheduling fields; `idempotency_key`.
-- Atomic claim; a heartbeat extends the lease; an expired lease returns the task to the queue.
+- Atomic claim; a heartbeat extends the lease.
+- Mode per queue: at-least-once (default) returns a task with an expired lease or a failure to the queue; at-most-once sends it to the DLQ without a retry.
 - Fencing: `claim_id` with an increasing generation, extension and completion via compare-and-swap; whoever lost the lease gets `claim_lost`.
 - Retries with exponential backoff, then DLQ.
-- The result returns to the sender as an encrypted message; at-least-once semantics.
+- The result returns to the sender as an encrypted message.
 - CLI to enqueue, claim, extend and complete; the helper sends the heartbeat.
 - Queue load test.
-- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ.
+- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice.
 
 - **Release:** MVP
 - **Depends on:** Story 13, Story 15
