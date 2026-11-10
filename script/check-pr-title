@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Checks that a PR title follows Conventional Commits (rule 3 in rules.md):
+#   <type>[(<scope>)][!]: <summary>
+# Usage: script/check-pr-title <title>. Exits 0 if the title is valid.
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <title>" >&2
+  exit 2
+fi
+
+types='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+pattern="^($types)(\([^()[:space:]]+\))?!?: [^[:space:]].*\$"
+
+if [[ ! $1 =~ $pattern ]]; then
+  cat >&2 <<MSG
+PR title does not follow Conventional Commits: $1
+Expected: <type>[(<scope>)][!]: <summary>
+Types: ${types//|/, }
+MSG
+  exit 1
+fi

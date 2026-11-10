@@ -28,7 +28,8 @@ A human takes one action per release: merging the Release PR.
 - PR titles: rule 3 in [rules.md](../../rules.md).
 
 ## PR checks
-All checks except e2e run via `script/test`, the same script agents and people use.
+All checks except e2e and the PR title run via `script/test`, the same script agents and people use.
+- **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container.
 - **Frontend:** lint, tests, build.
 - **`cargo-deny`:** dependency licenses and vulnerabilities.

@@ -2,7 +2,7 @@
 
 ## Story 1: Monorepo skeleton and CI
 - [x] **1.1:** Cargo workspace, `skald --version` and `script/test`
-- [ ] **1.2:** CI checks on pull requests
+- [x] **1.2:** CI checks on pull requests
 - [ ] **1.3:** Licenses, policies and `cargo-deny`
 - [ ] **1.4:** Server health check and OpenAPI spec
 - [ ] **1.5:** PostgreSQL and migrations
