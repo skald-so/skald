@@ -243,7 +243,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - `skald-server` Docker image; on a merge into `dev`, CI builds the `:edge` image and publishes it to GHCR.
 - Private `skald-cloud` repository with configs and deployment.
-- Staging on a small VPS: Docker Compose, PostgreSQL, Caddy with automatic TLS.
+- Staging on an existing VPS shared with other projects: Docker Compose, PostgreSQL; the server's shared Caddy with automatic TLS.
 - Migrations are backward compatible only.
 - **Done when:** a merge into `dev` shows up on staging within a few minutes; the health check responds over HTTPS.
 
