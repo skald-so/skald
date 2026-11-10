@@ -249,12 +249,42 @@ fn attachments_need_an_a2a_body() {
     );
     assert_eq!(
         decode::<Content>(&format!(
-            "a4 01{ADDRESS} 0400 09a2 0103 0281{ID} {attachment}"
+            "a5 01{ADDRESS} 02{ADDRESS} 0400 09a2 0103 0281{ID} {attachment}"
         )),
         field("content.attachments", FieldProblem::NotAllowed)
     );
     assert_eq!(
-        decode::<Content>(&format!("a3 01{ADDRESS} 0400 09a2 0103 0281{ID}")),
+        decode::<Content>(&format!(
+            "a4 01{ADDRESS} 02{ADDRESS} 0400 09a2 0103 0281{ID}"
+        )),
+        Ok(())
+    );
+}
+
+#[test]
+fn receipt_messages_go_from_an_agent_to_the_sender_with_no_hops() {
+    // "a/b/user@d"
+    let person = "6a612f622f757365724064";
+    let receipt = format!("09a2 0103 0281{ID}");
+    assert_eq!(
+        decode::<Content>(&format!("a3 01{ADDRESS} 0400 {receipt}")),
+        field("content.to", FieldProblem::Missing)
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a4 01{ADDRESS} 02{ADDRESS} 0401 {receipt}")),
+        field("content.hops", FieldProblem::Value(1))
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a4 01{person} 02{ADDRESS} 0400 {receipt}")),
+        field("content.from", FieldProblem::NotAllowed)
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a4 01{ADDRESS} 02{person} 0400 {receipt}")),
+        Ok(())
+    );
+    // The rules are the receipt's: an `a2a` body may come from a person, to every agent, after hops.
+    assert_eq!(
+        decode::<Content>(&format!("a3 01{person} 0401 06{JSON}")),
         Ok(())
     );
 }

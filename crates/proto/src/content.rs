@@ -170,11 +170,8 @@ impl Codec for Content {
             (None, None) if fields.is_empty() => return Err(body_error(FieldProblem::NoBody)),
             (a2a, receipt) => a2a.or(receipt),
         };
-        if attachments.is_some() && matches!(body, Some(Body::Receipt(_))) {
-            return Err(DecodeError::Field {
-                field: "content.attachments",
-                problem: FieldProblem::NotAllowed,
-            });
+        if matches!(body, Some(Body::Receipt(_))) {
+            check_receipt(&from, to.as_ref(), hops, attachments.is_some())?;
         }
         Ok(Self {
             from,
@@ -189,6 +186,27 @@ impl Codec for Content {
             unknown: fields.unknown(),
         })
     }
+}
+
+/// The fields `docs/protocol/delivery.md`, "Receipts" fixes for content with a `receipt` body.
+fn check_receipt(
+    from: &Address,
+    to: Option<&Address>,
+    hops: u64,
+    attachments: bool,
+) -> Result<(), DecodeError> {
+    let (field, problem) = if from.is_person() {
+        ("content.from", FieldProblem::NotAllowed)
+    } else if to.is_none() {
+        ("content.to", FieldProblem::Missing)
+    } else if hops != 0 {
+        ("content.hops", FieldProblem::Value(hops))
+    } else if attachments {
+        ("content.attachments", FieldProblem::NotAllowed)
+    } else {
+        return Ok(());
+    };
+    Err(DecodeError::Field { field, problem })
 }
 
 fn body_error(problem: FieldProblem) -> DecodeError {
