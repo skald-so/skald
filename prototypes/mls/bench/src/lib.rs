@@ -554,6 +554,9 @@ impl<D: Device> Group<D> {
                 if service.epoch(CHANNEL) != Some(2) {
                     return Err("the service is not in the Commit's epoch".into());
                 }
+                if service.members(CHANNEL)? != Some(leaves(&self.fleet, 0..self.size)) {
+                    return Err("the service has other members".into());
+                }
                 Ok(elapsed)
             }
             Operation::BrowserCheck => {
