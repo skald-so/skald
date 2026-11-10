@@ -1348,11 +1348,17 @@ pub fn commits_carry_the_new_epochs_group_info<D: Device>() {
     let latest = remove.group_info.clone();
     let signer = network.fleet.identity(2).clone();
     let without = |extension_type: u16| {
-        resigned_group_info(&latest, &signer, |fields| {
+        let group_info = resigned_group_info(&latest, &signer, |fields| {
             fields
                 .extensions
                 .retain(|extension| extension.extension_type != extension_type)
-        })
+        });
+        let fields = wire::group_info(&group_info).unwrap();
+        assert!(
+            !fields.has(extension_type) && fields.extensions.len() == 1,
+            "{lib}: a GroupInfo without extension {extension_type}"
+        );
+        group_info
     };
     for (device, group_info, why) in [
         (0, create.group_info.clone(), "a GroupInfo of epoch 1"),
