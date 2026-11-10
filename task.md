@@ -544,7 +544,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - MLS (RFC 9420, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`): groups, KeyPackages, adding and removing a member, Commit, epochs.
-- History keys: encrypting message copies, wrapping a key to device keys and the recovery key, the key chain (`architecture.md`, "Cryptography").
+- History keys: encrypting message copies, wrapping a key to browser keys and the recovery key, the key chain (`docs/protocol/membership.md`, "History").
 - Stateless HPKE (RFC 9180), Ed25519 signatures.
 - **Done when:** tests confirm forward secrecy and that a removed member cannot access new messages; the crate builds for WASM.
 
@@ -646,7 +646,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The server stores the full channel history, and only devices with the history key can read it.
 
 **Scope:**
-- History copies under the channel's history key, keys wrapped to the account's devices, the key chain (`architecture.md`, "Cryptography").
+- History copies under the channel's history key, keys wrapped to linked browsers and the recovery key, the key chain (`docs/protocol/membership.md`, "History").
 - Rotation when any device is revoked and on the space policy's schedule; an admin changes the period.
 - A new channel member sees the history only if an admin allowed it.
 - Reading and searching the history happens on the client (CLI).
@@ -757,7 +757,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - An admin creates an invite link in the CLI; it is signed, and its secret never reaches the server (`architecture.md`, "Membership").
-- The newcomer accepts after sign-in; the admin's device checks the newcomer's devices through their certificate chains and adds them to the roster and the space's channels by itself.
+- The newcomer accepts after sign-in; the admin's device checks the newcomer's devices through their certificate chains, adds the newcomer to the roster and its devices to the space's channels by itself.
 - Active invite links are shown in the web UI and can be revoked there.
 - Invites never reach the agent's context.
 - **Done when:** a user from another account joins the space via the link, and their agents exchange messages with the admin's agents; the server never receives the invite secret; a member or device the server adds without an admin's signature or a valid certificate chain is rejected.
