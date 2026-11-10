@@ -198,3 +198,147 @@ test("Show a warning adds a banner and Hide the warning removes it", async () =>
   await user.click(section.getByRole("button", { name: "Hide the warning" }));
   expect(section.getAllByRole("alert")).toHaveLength(3);
 });
+
+/** The text of every cell of `table`'s body rows, row by row. */
+function cells(table: HTMLElement): string[][] {
+  const [, ...rows] = within(table).getAllByRole("row");
+  return rows.map((row) =>
+    within(row)
+      .getAllByRole("cell")
+      .map((cell) => cell.textContent!),
+  );
+}
+
+test("shows the fixture tables in the order the screens set", () => {
+  render(<KitPage />);
+  const section = within(screen.getByRole("region", { name: "Tables" }));
+
+  expect(
+    section
+      .getAllByRole("table")
+      .map((table) => table.getAttribute("aria-label")),
+  ).toEqual([
+    "Devices",
+    "Accounts",
+    "All queues",
+    "Devices, empty",
+    "Devices, loading",
+  ]);
+  expect(cells(section.getByRole("table", { name: "Devices" }))).toEqual([
+    [
+      "ana-laptop",
+      "Machine · macOS",
+      "Online",
+      "7F3A 91C2 0B5E 44D8Verified with your GitHub SSH key",
+      "Revoke",
+    ],
+    [
+      "Chromethis browser",
+      "Browser · macOS",
+      "Online",
+      "E2C7 0A9D 3B16 F4A2Approved by ana-laptop",
+      "Revoke",
+    ],
+    [
+      "ana-cloud",
+      "Machine · Linux sandbox",
+      "3 h ago",
+      "A06E 13FB 72C9 5E01Approved by ana-laptop",
+      "Revoke",
+    ],
+    [
+      "ana-desktop",
+      "Machine · Windows",
+      "1 day ago",
+      "19BE 4F02 D7A3 C680Not verified · compare keys",
+      "Revoke",
+    ],
+  ]);
+  expect(
+    cells(section.getByRole("table", { name: "Accounts" })).map((row) => [
+      row[0],
+      row[4],
+    ]),
+  ).toEqual([
+    ["NorthwindSSO · northwind.io", "6.1M"],
+    ["spam-relayGitHub · spam-relay", "980k"],
+    ["Acme CIGoogle · ci@acme.dev", "920k"],
+    ["Ana KovacGitHub · ana", "12k"],
+    ["Lee ParkGoogle · lee.park@gmail.com", "3k"],
+    ["free-tokensGitHub · free-tokens", "0"],
+  ]);
+  expect(cells(section.getByRole("table", { name: "All queues" }))).toEqual([
+    ["deploy", "0", "0", "2", "—"],
+    ["research", "1", "2", "0", "40 s"],
+    ["review", "3", "1", "0", "2 min"],
+  ]);
+  expect(cells(section.getByRole("table", { name: "Devices, empty" }))).toEqual(
+    [
+      [
+        "No machines yet. Connect one to send and receive messages from its agents.Connect a machine",
+      ],
+    ],
+  );
+  const loading = section.getByRole("table", { name: "Devices, loading" });
+  expect(loading.getAttribute("aria-busy")).toBe("true");
+  expect(cells(loading)).toEqual([["Loading devices"]]);
+});
+
+test("the fixture tables sort by a click on a header", async () => {
+  const user = userEvent.setup();
+  render(<KitPage />);
+  const section = within(screen.getByRole("region", { name: "Tables" }));
+  const accounts = section.getByRole("table", { name: "Accounts" });
+  const created = () => cells(accounts).map((row) => row[1]);
+
+  await user.click(within(accounts).getByRole("button", { name: "Created" }));
+  expect(created()).toEqual([
+    "Aug 1",
+    "Sep 14",
+    "Oct 2",
+    "Oct 30",
+    "Nov 4",
+    "Nov 9",
+  ]);
+  await user.click(within(accounts).getByRole("button", { name: "Created" }));
+  expect(created()).toEqual([
+    "Nov 9",
+    "Nov 4",
+    "Oct 30",
+    "Oct 2",
+    "Sep 14",
+    "Aug 1",
+  ]);
+
+  const queues = section.getByRole("table", { name: "All queues" });
+  await user.click(
+    within(queues).getByRole("button", { name: "Oldest waiting" }),
+  );
+  expect(cells(queues).map((row) => row[4])).toEqual(["—", "40 s", "2 min"]);
+  await user.click(
+    within(queues).getByRole("button", { name: "Oldest waiting" }),
+  );
+  expect(cells(queues).map((row) => row[4])).toEqual(["2 min", "40 s", "—"]);
+
+  const devices = section.getByRole("table", { name: "Devices" });
+  await user.click(within(devices).getByRole("button", { name: "Last seen" }));
+  expect(cells(devices).map((row) => row[2])).toEqual([
+    "1 day ago",
+    "3 h ago",
+    "Online",
+    "Online",
+  ]);
+});
+
+test("shows the empty and loading states on a card and on a tinted card", () => {
+  render(<KitPage />);
+  const section = screen.getByRole("region", { name: "Tables" });
+
+  const cards = within(section).getAllByRole("listitem");
+  expect(cards.map((card) => card.textContent)).toEqual([
+    "Empty · on a cardNo tasks are running.Open the queues",
+    "Loading · on a cardLoading tasks",
+    "Empty · on a tinted cardNo tasks are running.Open the queues",
+    "Loading · on a tinted cardLoading tasks",
+  ]);
+});

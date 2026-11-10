@@ -1,0 +1,155 @@
+/* The tables of the design screens: machines, accounts, queues. Every row is a grid of the same tracks. */
+.frame {
+  /* Holds the text for screen readers, positioned absolutely, inside the scrolling frame. */
+  position: relative;
+  overflow-x: auto;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+}
+
+.table {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  border-spacing: 0;
+  font-size: 14px;
+  line-height: 1.2;
+
+  thead,
+  tbody {
+    display: block;
+  }
+
+  tr {
+    display: grid;
+    grid-template-columns: var(--tracks);
+    gap: 12px;
+    align-items: center;
+    padding: 0 18px;
+  }
+
+  thead tr {
+    padding: 6px 18px;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  tbody tr {
+    min-height: 52px;
+  }
+
+  tbody tr + tr {
+    border-top: 1px solid var(--color-line);
+  }
+
+  th,
+  td {
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  th {
+    display: flex;
+    align-items: center;
+    min-height: 32px;
+    color: var(--color-muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  td {
+    padding: 12px 0;
+  }
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+th[aria-sort] .sort {
+  color: var(--color-accent);
+}
+
+.idle {
+  opacity: 0.5;
+}
+
+.highlight {
+  background: var(--color-danger-soft);
+}
+
+.muted {
+  color: var(--color-muted);
+}
+
+.emphasis {
+  font-weight: 600;
+}
+
+.ok {
+  color: var(--color-ok);
+}
+
+.warning {
+  color: var(--color-warning);
+}
+
+.danger {
+  color: var(--color-danger);
+}
+
+.accent {
+  color: var(--color-accent);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+
+  > * {
+    flex: 1;
+  }
+}
+
+/* The empty and loading states stay in the visible part of a frame that scrolls. */
+.table .placeholder {
+  position: sticky;
+  left: 18px;
+  grid-column: 1 / -1;
+  width: calc(var(--frame-width) - 36px);
+  padding: 0;
+}
+
+.lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.name {
+  font-weight: 600;
+}
+
+.code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.detail {
+  font-size: 12px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
