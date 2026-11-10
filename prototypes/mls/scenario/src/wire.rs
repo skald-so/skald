@@ -20,6 +20,9 @@ pub const KEY_PACKAGE: u16 = 5;
 pub const APPLICATION: u8 = 1;
 pub const COMMIT: u8 = 3;
 
+/// The `remove` `ProposalType`.
+pub const REMOVE: u16 = 3;
+
 /// The fields of a KeyPackage's leaf that the Skald profile fixes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPackage {
@@ -36,6 +39,20 @@ pub struct Framing {
     pub group_id: Vec<u8>,
     pub epoch: u64,
     pub content_type: u8,
+}
+
+/// A Commit in a PublicMessage: its sender, `authenticated_data`, proposals and path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicCommit {
+    /// The sender's leaf index.
+    pub sender: u32,
+    pub authenticated_data: Vec<u8>,
+    /// The leaf indexes of its Remove proposals, by value.
+    pub removed: Vec<u32>,
+    /// The number of its other proposals, by value or by reference.
+    pub other_proposals: usize,
+    /// Whether it has an UpdatePath.
+    pub path: bool,
 }
 
 /// The profile's fields of a KeyPackage message.
@@ -97,6 +114,49 @@ pub fn framing(message: &[u8]) -> Result<Framing> {
         group_id,
         epoch,
         content_type,
+    })
+}
+
+/// The Commit of a PublicMessage from a member.
+pub fn public_commit(message: &[u8]) -> Result<PublicCommit> {
+    let mut input = Input(message);
+    expect_wire_format(&mut input, PUBLIC_MESSAGE)?;
+    input.vector()?; // group_id
+    input.u64()?; // epoch
+    if input.u8()? != 1 {
+        return Err("PublicMessage: not from a member".into());
+    }
+    let sender = input.u32()?;
+    let authenticated_data = input.vector()?.to_vec();
+    if input.u8()? != COMMIT {
+        return Err("PublicMessage: not a Commit".into());
+    }
+    let mut proposals = Input(input.vector()?);
+    let (mut removed, mut other_proposals) = (Vec::new(), 0);
+    while !proposals.0.is_empty() {
+        match proposals.u8()? {
+            1 => match proposals.u16()? {
+                REMOVE => removed.push(proposals.u32()?),
+                other => return Err(format!("Commit: proposal type {other} by value").into()),
+            },
+            2 => {
+                proposals.vector()?;
+                other_proposals += 1;
+            }
+            other => return Err(format!("Commit: ProposalOrRef type {other}").into()),
+        }
+    }
+    let path = match input.u8()? {
+        0 => false,
+        1 => true,
+        other => return Err(format!("Commit: optional path {other}").into()),
+    };
+    Ok(PublicCommit {
+        sender,
+        authenticated_data,
+        removed,
+        other_proposals,
+        path,
     })
 }
 
@@ -227,5 +287,72 @@ mod tests {
 
         assert!(framing(&[0, 1, 0, 3]).is_err());
         assert!(framing(&[0, 2, 0, 1]).is_err());
+    }
+
+    /// A member's PublicMessage of epoch 1 with `content`, from leaf 2 with `ad`.
+    fn public_message(ad: &[u8], content: &[u8]) -> Vec<u8> {
+        let mut message = vec![0, 1, 0, 1, 1, b'g'];
+        message.extend_from_slice(&1u64.to_be_bytes());
+        message.extend_from_slice(&[1, 0, 0, 0, 2]);
+        message.push(ad.len() as u8);
+        message.extend_from_slice(ad);
+        message.extend_from_slice(content);
+        message
+    }
+
+    #[test]
+    fn reads_a_public_commit() {
+        // A Remove of leaf 0x01020304 by value, a proposal by reference, and a path.
+        let content = [COMMIT, 11, 1, 0, 3, 1, 2, 3, 4, 2, 2, 0xaa, 0xbb, 1, 0xff];
+        assert_eq!(
+            public_commit(&public_message(b"ad", &content)).unwrap(),
+            PublicCommit {
+                sender: 2,
+                authenticated_data: b"ad".to_vec(),
+                removed: vec![0x0102_0304],
+                other_proposals: 1,
+                path: true,
+            }
+        );
+
+        let empty = public_commit(&public_message(b"", &[COMMIT, 0, 1])).unwrap();
+        assert_eq!((empty.removed, empty.other_proposals), (vec![], 0));
+        assert!(empty.path);
+        assert!(
+            !public_commit(&public_message(b"", &[COMMIT, 0, 0]))
+                .unwrap()
+                .path
+        );
+    }
+
+    #[test]
+    fn rejects_what_is_not_a_members_public_commit() {
+        let mut private = vec![0, 1, 0, 2, 1, b'g'];
+        private.extend_from_slice(&[0; 8]);
+        for (message, why) in [
+            (private, "a PrivateMessage"),
+            (
+                public_message(b"", &[APPLICATION, 0]),
+                "an application message",
+            ),
+            (
+                public_message(b"", &[COMMIT, 3, 1, 0, 1]),
+                "an Add by value",
+            ),
+            (
+                public_message(b"", &[COMMIT, 1, 3]),
+                "an unknown ProposalOrRef type",
+            ),
+            (
+                public_message(b"", &[COMMIT, 0, 2]),
+                "a malformed optional path",
+            ),
+            (public_message(b"", &[COMMIT, 0]), "a truncated Commit"),
+        ] {
+            assert!(public_commit(&message).is_err(), "{why}");
+        }
+        let mut external = public_message(b"", &[COMMIT, 0, 1]);
+        external[14] = 4;
+        assert!(public_commit(&external).is_err(), "a new member's Commit");
     }
 }

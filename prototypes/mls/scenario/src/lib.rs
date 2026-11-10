@@ -4,7 +4,9 @@
 //! Every step loads the device from its saved state and saves it afterwards, as one-shot mode does:
 //! [`Fleet::step`]. Scenarios and findings: `docs/dev/mls-prototypes.md`.
 
+pub mod cbor;
 pub mod identity;
+pub mod revocation;
 pub mod scenarios;
 pub mod state;
 pub mod wire;
@@ -32,6 +34,21 @@ pub struct Commit {
     pub commit: Vec<u8>,
     /// The encoded `MLSMessage` with the Welcome for the added devices, if it adds any.
     pub welcome: Option<Vec<u8>>,
+}
+
+/// The label and length of a channel's history key: `MLS-Exporter("skald history", "", 16)`
+/// (`docs/protocol/membership.md`, "History key").
+pub const HISTORY_LABEL: &str = "skald history";
+pub type HistoryKey = [u8; 16];
+
+/// A Commit by another member that the device has processed but not merged yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Staged {
+    /// The leaf of its sender.
+    pub sender: Leaf,
+    /// The leaves it removes, as they are in the current epoch.
+    pub removed: Vec<Leaf>,
+    pub authenticated_data: Vec<u8>,
 }
 
 /// What a device got from processing a group's message.
@@ -66,19 +83,43 @@ pub trait Device: Sized {
     /// Commits the Add of every KeyPackage. The Commit stays pending until
     /// [`Device::merge_pending_commit`].
     fn add(&mut self, group_id: &[u8], key_packages: &[Vec<u8>]) -> Result<Commit>;
+    /// Commits the Remove of the members whose credential's `identity` is in `devices`, with
+    /// `authenticated_data`. Pending until [`Device::merge_pending_commit`].
+    fn remove(
+        &mut self,
+        group_id: &[u8],
+        devices: &[Vec<u8>],
+        authenticated_data: &[u8],
+    ) -> Result<Commit>;
+    /// Commits an empty Commit, with an UpdatePath and no proposals, with `authenticated_data`.
+    /// Pending until [`Device::merge_pending_commit`].
+    fn empty_commit(&mut self, group_id: &[u8], authenticated_data: &[u8]) -> Result<Commit>;
     /// Merges the device's pending Commit: the group moves to its new epoch.
     fn merge_pending_commit(&mut self, group_id: &[u8]) -> Result<()>;
     /// Joins a group from a Welcome; returns its `group_id`.
     fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>>;
     /// Encrypts an application message as an encoded `MLSMessage`.
     fn encrypt(&mut self, group_id: &[u8], data: &[u8]) -> Result<Vec<u8>>;
+    /// Processes a group's message from another member. A Commit is merged only if `check`
+    /// passes on it: the device reads the Commit before it enters the new epoch.
+    fn process_with(
+        &mut self,
+        group_id: &[u8],
+        message: &[u8],
+        check: impl FnOnce(&Staged) -> Result<()>,
+    ) -> Result<Received>;
     /// Processes a group's message from another member; merges a Commit at once.
-    fn process(&mut self, group_id: &[u8], message: &[u8]) -> Result<Received>;
+    fn process(&mut self, group_id: &[u8], message: &[u8]) -> Result<Received> {
+        self.process_with(group_id, message, |_| Ok(()))
+    }
 
     /// The group's current epoch.
     fn epoch(&self, group_id: &[u8]) -> Result<u64>;
     /// The leaves of the group's members, in leaf order.
     fn members(&self, group_id: &[u8]) -> Result<Vec<Leaf>>;
+    /// The history key of the group's current epoch, from the MLS exporter with
+    /// [`HISTORY_LABEL`].
+    fn history_key(&self, group_id: &[u8]) -> Result<HistoryKey>;
 }
 
 /// Defines one `#[test]` per scenario of [`scenarios`] for the [`Device`] type `$device`.
@@ -103,6 +144,26 @@ macro_rules! scenario_tests {
         #[test]
         fn replayed_message_is_rejected() {
             $crate::scenarios::replayed_message_is_rejected::<$device>();
+        }
+
+        #[test]
+        fn removed_device_reads_nothing_later() {
+            $crate::scenarios::removed_device_reads_nothing_later::<$device>();
+        }
+
+        #[test]
+        fn revocations_are_read_before_merging() {
+            $crate::scenarios::revocations_are_read_before_merging::<$device>();
+        }
+
+        #[test]
+        fn empty_commit_starts_a_new_epoch() {
+            $crate::scenarios::empty_commit_starts_a_new_epoch::<$device>();
+        }
+
+        #[test]
+        fn history_key_rotates_with_each_epoch() {
+            $crate::scenarios::history_key_rotates_with_each_epoch::<$device>();
         }
     };
 }

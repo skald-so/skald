@@ -3,7 +3,7 @@
 use std::{collections::HashMap, sync::RwLock};
 
 use mls_scenario::{
-    Commit, Device, Identity, Leaf, Received, Result,
+    Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
     state::{Reader, Writer},
 };
 use openmls::prelude::{tls_codec::Deserialize as _, *};
@@ -98,6 +98,13 @@ fn leaf(member: Member) -> Result<Leaf> {
     })
 }
 
+fn commit(commit: MlsMessageOut, welcome: Option<MlsMessageOut>) -> Result<Commit> {
+    Ok(Commit {
+        commit: commit.to_bytes()?,
+        welcome: welcome.map(|welcome| welcome.to_bytes()).transpose()?,
+    })
+}
+
 fn message(bytes: &[u8]) -> Result<MlsMessageBodyIn> {
     Ok(MlsMessageIn::tls_deserialize_exact(bytes)?.extract())
 }
@@ -185,12 +192,50 @@ impl Device for OpenMlsDevice {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut group = self.group(group_id)?;
-        let (commit, welcome, _) =
+        let (added, welcome, _) =
             group.add_members(&self.provider, &self.signer(), &key_packages)?;
-        Ok(Commit {
-            commit: commit.to_bytes()?,
-            welcome: Some(welcome.to_bytes()?),
-        })
+        commit(added, Some(welcome))
+    }
+
+    fn remove(
+        &mut self,
+        group_id: &[u8],
+        devices: &[Vec<u8>],
+        authenticated_data: &[u8],
+    ) -> Result<Commit> {
+        let mut group = self.group(group_id)?;
+        let members = group
+            .members()
+            .map(|member| Ok((leaf(member.clone())?.identity, member.index)))
+            .collect::<Result<Vec<_>>>()?;
+        let leaves = devices
+            .iter()
+            .map(|device| {
+                members
+                    .iter()
+                    .find(|(identity, _)| identity == device)
+                    .map(|(_, index)| *index)
+                    .ok_or_else(|| "no member with the device ID".into())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // The AAD of the next message only: OpenMLS resets it after the Commit.
+        group.set_aad(authenticated_data.to_vec());
+        let (removal, welcome, _) =
+            group.remove_members(&self.provider, &self.signer(), &leaves)?;
+        commit(removal, welcome)
+    }
+
+    fn empty_commit(&mut self, group_id: &[u8], authenticated_data: &[u8]) -> Result<Commit> {
+        let mut group = self.group(group_id)?;
+        group.set_aad(authenticated_data.to_vec());
+        // With no proposals, OpenMLS's self-update is an empty Commit with an UpdatePath.
+        let bundle = group.self_update(
+            &self.provider,
+            &self.signer(),
+            LeafNodeParameters::default(),
+        )?;
+        let welcome = bundle.to_welcome_msg();
+        commit(bundle.into_commit(), welcome)
     }
 
     fn merge_pending_commit(&mut self, group_id: &[u8]) -> Result<()> {
@@ -221,7 +266,12 @@ impl Device for OpenMlsDevice {
         Ok(message.to_bytes()?)
     }
 
-    fn process(&mut self, group_id: &[u8], bytes: &[u8]) -> Result<Received> {
+    fn process_with(
+        &mut self,
+        group_id: &[u8],
+        bytes: &[u8],
+        check: impl FnOnce(&Staged) -> Result<()>,
+    ) -> Result<Received> {
         let message = MlsMessageIn::tls_deserialize_exact(bytes)?.try_into_protocol_message()?;
         let mut group = self.group(group_id)?;
         let processed = group.process_message(&self.provider, message)?;
@@ -229,12 +279,23 @@ impl Device for OpenMlsDevice {
             return Err("a message from a non-member".into());
         };
         let sender = Self::leaf(&group, index)?;
+        let authenticated_data = processed.aad().to_vec();
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(message) => Ok(Received::Application {
                 sender,
                 data: message.into_bytes(),
             }),
             ProcessedMessageContent::StagedCommitMessage(commit) => {
+                // The Commit is staged: the group stays in its epoch until the merge.
+                let removed = commit
+                    .remove_proposals()
+                    .map(|remove| Self::leaf(&group, remove.remove_proposal().removed()))
+                    .collect::<Result<_>>()?;
+                check(&Staged {
+                    sender: sender.clone(),
+                    removed,
+                    authenticated_data,
+                })?;
                 group.merge_staged_commit(&self.provider, *commit)?;
                 Ok(Received::Commit { sender })
             }
@@ -248,5 +309,15 @@ impl Device for OpenMlsDevice {
 
     fn members(&self, group_id: &[u8]) -> Result<Vec<Leaf>> {
         self.group(group_id)?.members().map(leaf).collect()
+    }
+
+    fn history_key(&self, group_id: &[u8]) -> Result<HistoryKey> {
+        let key = self.group(group_id)?.export_secret(
+            self.provider.crypto(),
+            HISTORY_LABEL,
+            &[],
+            size_of::<HistoryKey>(),
+        )?;
+        Ok(key.as_slice().try_into()?)
     }
 }
