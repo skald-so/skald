@@ -116,6 +116,8 @@
 
 ## Story 38: Codex background agents via app-server
 
+## Story 68: Team plan and billing
+
 ## Story 39: Shared channels between organizations
 
 ## Story 40: Corporate IdP sign-in
