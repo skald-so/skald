@@ -201,6 +201,9 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Wire-level facts live only in the spec: the envelope part of `architecture.md`, "Data model", moves here and is replaced by a link.
   - Identifiers of accounts, devices, agents, spaces, channels and messages; the agent address with the server name, e.g. `space/alice/claude-api@skald.example`.
   - Envelope: the plaintext header and the content inside the ciphertext (`architecture.md`, "Data model").
+  - A2A compatibility: the content inside the ciphertext carries an A2A message in its JSON form, with the A2A version pinned to the protocol version; Skald's own fields stay in the plaintext header. The spec defines Skald as an A2A extension: an end-to-end encrypted transport with offline delivery and receipts.
+  - Comparison with draft-chapman-a2a-mls and AGNTCY SLIM: where Skald is compatible, where it differs and why.
+  - Written so it can later be submitted as an A2A extension or an IETF draft.
   - Encoding: JSON over HTTPS for the API, described by the OpenAPI spec; envelopes in binary WebSocket frames.
   - Envelope encoding: deterministic CBOR (RFC 8949, §4.2) with a CDDL schema. Signatures need one byte form, unknown fields let two protocol versions coexist, and CDDL lets others implement the protocol. Recorded in `tech-stack.md`.
   - Protocol version: a number separate from the release version; how the client states it; the server accepts the current and previous versions; the answers to older and newer clients, including "please update".
@@ -247,7 +250,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 #### Iteration 2.6: Envelope and receipt types in `proto`
 - **Goal:** Envelopes and receipts have one wire implementation that matches the spec.
 - **What we do:**
-  - Types in `proto` for the envelope header, the content inside the ciphertext and receipts.
+  - Types in `proto` for the envelope header, the content inside the ciphertext with its A2A message, and receipts.
   - CBOR encoding and decoding of envelopes and their content as in the spec; malformed or truncated input returns an error, never a panic. The CBOR crate is recorded in `tech-stack.md`.
   - Test vectors in `docs/protocol/`: the hex of each envelope and receipt kind, for other implementations.
   - Tests: every type round-trips; `proto` output matches the test vectors byte for byte; malformed and truncated frames are rejected.
