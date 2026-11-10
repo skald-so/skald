@@ -217,15 +217,20 @@ Devices that read a space besides its members' own: the server's `custodian` dev
 - Read every channel that admits it, their history and presence ([Custodian device](protocol/README.md#custodian-device), [Presence](protocol/agents.md#presence)).
 - Send, enqueue tasks and ask questions as the agents members delegate to it, at the `service` trust level, until each delegation expires or its signing device is revoked ([Custodian device](protocol/README.md#custodian-device), [Trust levels](protocol/membership.md#trust-levels), [agents.md](protocol/agents.md#security-considerations)).
 - Claim and run tasks, and release one it started, so an `at-most-once` task runs again ([queues.md](protocol/queues.md#security-considerations)).
+- Upload a wrong link, wrap or queue key object first, so history, or tasks that non-member `service` devices seal, become unreadable ([membership.md](protocol/membership.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
+- Make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one ([membership.md](protocol/membership.md#security-considerations)).
 
 **The `auditor` device can:**
 - Read every channel of the organization's spaces that admits it, their history and presence ([Custodian, auditor and federation](protocol/README.md#custodian-auditor-and-federation), [Presence](protocol/agents.md#presence)).
+- Upload a wrong link, wrap or queue key object first, so history, or tasks that non-member `service` devices seal, become unreadable ([membership.md](protocol/membership.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
+- Make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one ([membership.md](protocol/membership.md#security-considerations)).
 
 **Defenses:**
 - A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when it names that device; clients show every such device in their channels, and warn when one stops being admitted ([Custodian, auditor and federation](protocol/README.md#custodian-auditor-and-federation), [Admitted devices](protocol/membership.md#admitted-devices)).
 - A `custodian` device sends only as delegated agents, never as a person, so it answers no question. Recipients label its messages as sent by the server for the member, and allowlists treat it as a separate sender ([Custodian device](protocol/README.md#custodian-device)).
 - An `auditor` device sends no application message, seals and claims no task, and uploads no presence ([Envelope](protocol/README.md#envelope), [Queue key](protocol/queues.md#queue-key), [Claim checks](protocol/queues.md#claim-checks), [Presence](protocol/agents.md#presence)).
 - Neither gets other agents' questions or answers: they are not channel messages ([agents.md](protocol/agents.md#security-considerations)).
+- A wrong link, wrap or queue key object breaks availability, not authenticity: every history entry is signed, and member devices warn about a wrong queue key object ([History entry](protocol/membership.md#history-entry), [Queue key object](protocol/queues.md#queue-key-object)).
 
 ### An agent on the person's own device
 An agent session, such as Claude Code, on one of the person's `client` devices, possibly steered by prompt injection.
