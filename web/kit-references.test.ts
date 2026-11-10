@@ -27,7 +27,8 @@ afterAll(async () => {
 });
 
 const light1440 = views.find(
-  ({ theme, width }) => theme === "light" && width === 1440,
+  ({ screen, theme, width }) =>
+    screen === "kit" && theme === "light" && width === 1440,
 )!;
 
 /** A screenshot of `view` after `change` alters the page. */
@@ -39,10 +40,11 @@ async function take(
     width: view.width,
     system: view.theme,
     theme: view.theme,
+    screen: view.screen,
   });
   try {
     await change?.(page);
-    return await screenshot(page);
+    return await screenshot(page, { window: view.window });
   } finally {
     await page.close();
   }
@@ -93,7 +95,7 @@ function failure(file: string, actual: Buffer, result: Comparison): string {
 }
 
 describe.each(views)(
-  "the kit page in the $theme theme at $width px",
+  "the $screen screen of the kit page in the $theme theme at $width px",
   (view) => {
     test("matches its reference screenshot", async () => {
       const actual = await take(view);

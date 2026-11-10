@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { KitBanners } from "./KitBanners.tsx";
 import { KitButtons } from "./KitButtons.tsx";
+import { KitShell } from "./KitCabinet.tsx";
 import { KitDropdowns } from "./KitDropdowns.tsx";
 import { KitFilters } from "./KitFilters.tsx";
 import styles from "./KitPage.module.css";
@@ -125,6 +126,7 @@ export function KitPage({ theme }: { theme?: Theme }) {
       <KitTables />
       <KitFilters />
       <KitDropdowns />
+      <KitShell query={theme ? `theme=${theme}&` : ""} />
     </main>
   );
 }

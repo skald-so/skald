@@ -1,0 +1,250 @@
+/* The cabinet frame of 08-machines.png: the side menu and the page area. */
+.shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* The side menu stays in the window while the page scrolls. */
+.side {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  box-sizing: border-box;
+  height: 100vh;
+  padding: 18px 14px;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-line);
+  background: var(--color-side);
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.menuButton {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.menuButton:hover {
+  background: var(--color-hover);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 6px;
+  color: var(--color-text);
+  font-family: var(--font-heading);
+  font-size: 19px;
+  font-weight: 600;
+  text-decoration: none;
+
+  svg {
+    flex: none;
+  }
+}
+
+.panel {
+  display: flex;
+  flex: auto;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.sections,
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.items {
+  padding: 2px 0 6px 10px;
+}
+
+.section,
+.item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+  color: var(--color-text);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.section {
+  min-height: 40px;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
+.item {
+  min-height: 34px;
+  border-radius: 6px;
+  color: var(--color-muted);
+  font-weight: 400;
+}
+
+.section:hover,
+.item:hover {
+  background: var(--color-hover);
+}
+
+/* The current section, also when one of its sub-items is current. */
+.section[aria-current] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.item[aria-current] {
+  background: var(--color-hover);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The count of a sub-item, as unread messages of a channel: the number alone, in its tone. */
+.count {
+  flex: none;
+  color: var(--tone);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 12px 6px 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.avatar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.who {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.signIn {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.backdrop {
+  display: none;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 24px 28px 32px;
+  font-size: 14px;
+}
+
+/* Phone width, as phoneQuery in Shell.tsx: a bar with the menu button; the menu opens over the page. */
+@media (width < 800px) {
+  .shell {
+    --bar: 56px;
+
+    display: block;
+  }
+
+  .side {
+    z-index: 20;
+    height: var(--bar);
+    padding: 0 12px;
+    overflow: visible;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .top {
+    height: 100%;
+  }
+
+  .menuButton {
+    display: flex;
+  }
+
+  .panel {
+    display: none;
+  }
+
+  .panel[data-open] {
+    position: fixed;
+    top: var(--bar);
+    bottom: 0;
+    left: 0;
+    display: flex;
+    box-sizing: border-box;
+    width: min(280px, 100vw - 48px);
+    padding: 18px 14px;
+    overflow-y: auto;
+    border-right: 1px solid var(--color-line);
+    background: var(--color-side);
+  }
+
+  .backdrop {
+    position: fixed;
+    z-index: 19;
+    inset: var(--bar) 0 0;
+    display: block;
+    background: rgb(0 0 0 / 40%);
+  }
+
+  .page {
+    padding: 20px 16px 28px;
+  }
+}

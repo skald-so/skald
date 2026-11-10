@@ -12,6 +12,9 @@ export const themes: Theme[] = ["light", "dark"];
 /** Check widths: the design screenshots and a phone. */
 export const widths = [1440, 360];
 
+/** The screens of the kit page: the kit itself, the cabinet, the cabinet with the phone side menu open. */
+export type Screen = "kit" | "cabinet" | "cabinet-menu";
+
 export interface KitView {
   page: Page;
   /** URLs of every request the page made. */
@@ -23,10 +26,15 @@ export interface Kit {
   origin: string;
   browser: Browser;
   /**
-   * Opens the kit page `width` pixels wide with the system set to `system`, rendered and with fonts
-   * loaded. `theme` adds the URL parameter that forces a theme.
+   * Opens a screen of the kit page, default the kit itself, `width` pixels wide with the system set
+   * to `system`, rendered and with fonts loaded. `theme` adds the URL parameter that forces a theme.
    */
-  open(view: { width: number; system: Theme; theme?: Theme }): Promise<KitView>;
+  open(view: {
+    width: number;
+    system: Theme;
+    theme?: Theme;
+    screen?: Screen;
+  }): Promise<KitView>;
   close(): Promise<void>;
 }
 
@@ -60,14 +68,18 @@ export async function startKit({ pinned = false } = {}): Promise<Kit> {
   return {
     origin,
     browser,
-    async open({ width, system, theme }) {
+    async open({ width, system, theme, screen = "kit" }) {
       const page = await browser.newPage({
         viewport: { width, height: 900 },
         colorScheme: system,
       });
       const requests: string[] = [];
       page.on("request", (request) => requests.push(request.url()));
-      await page.goto(`${origin}/kit.html${theme ? `?theme=${theme}` : ""}`);
+      const query = new URLSearchParams({
+        ...(screen !== "kit" && { screen }),
+        ...(theme && { theme }),
+      }).toString();
+      await page.goto(`${origin}/kit.html${query ? `?${query}` : ""}`);
       await page.locator("h1").waitFor();
       await page.evaluate(async () => {
         await document.fonts.ready;
@@ -81,10 +93,16 @@ export async function startKit({ pinned = false } = {}): Promise<Kit> {
   };
 }
 
-/** A full-page screenshot with animations stopped and the text caret hidden, as a PNG. */
-export function screenshot(page: Page): Promise<Buffer> {
+/**
+ * A screenshot with animations stopped and the text caret hidden, as a PNG: of the full page, or of
+ * the window with `window`.
+ */
+export function screenshot(
+  page: Page,
+  { window = false } = {},
+): Promise<Buffer> {
   return page.screenshot({
-    fullPage: true,
+    fullPage: !window,
     animations: "disabled",
     caret: "hide",
   });

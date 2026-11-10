@@ -24,6 +24,7 @@
     "vite.config.ts",
     "orval.config.ts",
     "api.test.ts",
+    "cabinet.test.ts",
     "kit-browser.ts",
     "kit-references.ts",
     "kit-references.test.ts",

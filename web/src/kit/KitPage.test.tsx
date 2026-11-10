@@ -584,3 +584,54 @@ test("shows a set dropdown filter with its list open", () => {
     ["tasks", "true"],
   ]);
 });
+
+test.each<[Theme | undefined, string]>([
+  [undefined, ""],
+  ["dark", "theme=dark&"],
+])("with the theme %s, links to the cabinet views keep it", (theme, query) => {
+  render(<KitPage theme={theme} />);
+  const section = within(screen.getByRole("region", { name: "Cabinet" }));
+
+  expect(
+    section
+      .getAllByRole("link")
+      .map((link) => [link.textContent, link.getAttribute("href")]),
+  ).toEqual([
+    ["The cabinet around Machines", `kit.html?${query}screen=cabinet`],
+    [
+      "The side menu open at phone width",
+      `kit.html?${query}screen=cabinet-menu`,
+    ],
+  ]);
+});
+
+test("shows the space switcher and the account menu open", () => {
+  render(<KitPage />);
+  const section = within(screen.getByRole("region", { name: "Cabinet" }));
+
+  const switcher = section.getByRole("button", { name: "Space team-b" });
+  expect(switcher.getAttribute("aria-expanded")).toBe("true");
+  expect(
+    section
+      .getAllByRole("option")
+      .map((option) => [
+        option.textContent,
+        option.getAttribute("aria-selected"),
+      ]),
+  ).toEqual([
+    ["team-a", "false"],
+    ["team-b", "true"],
+    ["ana", "false"],
+  ]);
+  expect(
+    section
+      .getByRole("button", { name: "Account" })
+      .getAttribute("aria-expanded"),
+  ).toBe("true");
+  expect(
+    within(section.getByRole("menu", { name: "Account" }))
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent),
+  ).toEqual(["Sign-in methods", "Sign out"]);
+  expect(section.getByText("Ana Kovac")).toBeTruthy();
+});
