@@ -145,7 +145,7 @@ queue-key-body = {
 | `queued` | Waits for a claim; after a failed attempt, not before its backoff ends |
 | `claimed` | Held by one device until its lease ends |
 | `done` | Completed by its last claim |
-| `dead` | In the queue's DLQ: failed for good, released 5 times, or past its deadline |
+| `dead` | In the queue's DLQ: failed for good, released 5 times by any devices, or past its deadline |
 | `cancelled` | Cancelled by a human |
 
 | From | Event | To |
@@ -155,7 +155,7 @@ queue-key-body = {
 | `queued` | `deadline` passes | `dead` |
 | `claimed` | Extend | `claimed`, with a new lease |
 | `claimed` | Complete | `done` |
-| `claimed` | Release, the 1st to 4th since enqueue or the last restart | `queued` at once; attempts minus one; never again handed to the releasing device until a restart |
+| `claimed` | Release, the n-th since enqueue or the last restart, n from 1 to 4 | `queued` at once; attempts minus one; not handed to the releasing device for `10 × 2^(n−1)` seconds |
 | `claimed` | Release, the 5th since enqueue or the last restart | `dead` |
 | `claimed` | Fail with retry, or the lease ends, under `at-least-once` with attempts below `max_attempts` | `queued` after the backoff |
 | `claimed` | Any other fail, or the end of the lease | `dead` |
@@ -169,7 +169,7 @@ queue-key-body = {
 - The server deletes a `done`, `dead` or `cancelled` task once the channel's history retention has passed since it got there, and every task of a deleted queue.
 
 ## Claims and leases
-A device claims a task from a queue, stating its tags and the templates its client has. The server answers with the first task by `priority`, then by storing order, that is `queued`, past its backoff and before its `deadline`, not released by the claimer since enqueue or the last restart, whose `tags` are all among the claimer's and whose `template`, if any, is among the claimer's; or with none.
+A device claims a task from a queue, stating its tags and the templates its client has. The server answers with the first task by `priority`, then by storing order, that is `queued`, past its backoff and before its `deadline`, not in the claimer's wait after its release ([Task states](#task-states)), whose `tags` are all among the claimer's and whose `template`, if any, is among the claimer's; or with none.
 
 ```cddl
 claim = {
@@ -210,7 +210,7 @@ On `claim-lost` the holder stops the work and sends no result.
 | For | Idempotent work, as the default | Work that must not repeat: a deploy, sending mail |
 | A fail with retry, or the end of the lease | Back to `queued` after the backoff, until `max_attempts`; then `dead` | `dead` |
 | A fail without retry | `dead` | `dead` |
-| A release | Back to `queued` at once, the attempt not counted, never again to that device until a restart; the 5th release since enqueue or the last restart: `dead` | The same, so the next claim has `attempt` 1 |
+| A release | Back to `queued` at once, the attempt not counted, kept from that device for a wait by the release count ([Task states](#task-states)); the 5th release since enqueue or the last restart: `dead` | The same, so the next claim has `attempt` 1 |
 | After `dead` | A human restarts it | A human restarts it |
 
 - Under `at-least-once`, a task can run more than once, also at the same time on two devices after a lease ends: its handler must be idempotent.
