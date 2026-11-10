@@ -21,8 +21,13 @@ pub const KEY_PACKAGE: u16 = 5;
 pub const APPLICATION: u8 = 1;
 pub const COMMIT: u8 = 3;
 
-/// The `remove` `ProposalType`.
+/// `ProposalType` values.
 pub const REMOVE: u16 = 3;
+pub const EXTERNAL_INIT: u16 = 6;
+
+/// `SenderType` values.
+const MEMBER: u8 = 1;
+const NEW_MEMBER_COMMIT: u8 = 4;
 
 /// The `last_resort` KeyPackage extension type [draft-ietf-mls-extensions, §5].
 pub const LAST_RESORT: u16 = 0x000a;
@@ -315,14 +320,24 @@ pub struct Framing {
     pub content_type: u8,
 }
 
+/// The sender of a Commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitSender {
+    /// A member, by its leaf index.
+    Member(u32),
+    /// A new member: an external Commit.
+    NewMember,
+}
+
 /// A Commit in a PublicMessage: its sender, `authenticated_data`, proposals and path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicCommit {
-    /// The sender's leaf index.
-    pub sender: u32,
+    pub sender: CommitSender,
     pub authenticated_data: Vec<u8>,
     /// The leaf indexes of its Remove proposals, by value.
     pub removed: Vec<u32>,
+    /// Whether it has an ExternalInit proposal by value, as an external Commit does.
+    pub external_init: bool,
     /// The number of its other proposals, by value or by reference.
     pub other_proposals: usize,
     /// Whether it has an UpdatePath.
@@ -366,26 +381,31 @@ pub fn framing(message: &[u8]) -> Result<Framing> {
     })
 }
 
-/// The Commit of a PublicMessage from a member.
+/// The Commit of a PublicMessage from a member or a new member.
 pub fn public_commit(message: &[u8]) -> Result<PublicCommit> {
     let mut input = Input(message);
     expect_wire_format(&mut input, PUBLIC_MESSAGE)?;
     input.vector()?; // group_id
     input.u64()?; // epoch
-    if input.u8()? != 1 {
-        return Err("PublicMessage: not from a member".into());
-    }
-    let sender = input.u32()?;
+    let sender = match input.u8()? {
+        MEMBER => CommitSender::Member(input.u32()?),
+        NEW_MEMBER_COMMIT => CommitSender::NewMember,
+        other => return Err(format!("PublicMessage: a Commit from sender type {other}").into()),
+    };
     let authenticated_data = input.vector()?.to_vec();
     if input.u8()? != COMMIT {
         return Err("PublicMessage: not a Commit".into());
     }
     let mut proposals = Input(input.vector()?);
-    let (mut removed, mut other_proposals) = (Vec::new(), 0);
+    let (mut removed, mut external_init, mut other_proposals) = (Vec::new(), false, 0);
     while !proposals.0.is_empty() {
         match proposals.u8()? {
             1 => match proposals.u16()? {
                 REMOVE => removed.push(proposals.u32()?),
+                EXTERNAL_INIT if !external_init => {
+                    proposals.vector()?; // kem_output
+                    external_init = true;
+                }
                 other => return Err(format!("Commit: proposal type {other} by value").into()),
             },
             2 => {
@@ -404,6 +424,7 @@ pub fn public_commit(message: &[u8]) -> Result<PublicCommit> {
         sender,
         authenticated_data,
         removed,
+        external_init,
         other_proposals,
         path,
     })
@@ -757,9 +778,10 @@ mod tests {
         assert_eq!(
             public_commit(&public_message(b"ad", &content)).unwrap(),
             PublicCommit {
-                sender: 2,
+                sender: CommitSender::Member(2),
                 authenticated_data: b"ad".to_vec(),
                 removed: vec![0x0102_0304],
+                external_init: false,
                 other_proposals: 1,
                 path: true,
             }
@@ -767,7 +789,7 @@ mod tests {
 
         let empty = public_commit(&public_message(b"", &[COMMIT, 0, 1])).unwrap();
         assert_eq!((empty.removed, empty.other_proposals), (vec![], 0));
-        assert!(empty.path);
+        assert!(empty.path && !empty.external_init);
         assert!(
             !public_commit(&public_message(b"", &[COMMIT, 0, 0]))
                 .unwrap()
@@ -798,11 +820,57 @@ mod tests {
                 "a malformed optional path",
             ),
             (public_message(b"", &[COMMIT, 0]), "a truncated Commit"),
+            (
+                external_commit(&[COMMIT, 10, 1, 0, 6, 1, 0xaa, 1, 0, 6, 1, 0xbb, 1]),
+                "two ExternalInit proposals",
+            ),
         ] {
             assert!(public_commit(&message).is_err(), "{why}");
         }
-        let mut external = public_message(b"", &[COMMIT, 0, 1]);
-        external[14] = 4;
-        assert!(public_commit(&external).is_err(), "a new member's Commit");
+        for sender_type in [2, 3] {
+            let mut message = public_message(b"", &[COMMIT, 0, 1]);
+            message[14] = sender_type;
+            assert!(
+                public_commit(&message).is_err(),
+                "a Commit from sender type {sender_type}"
+            );
+        }
+    }
+
+    /// A new member's PublicMessage of epoch 1 with `content`, without `authenticated_data`.
+    fn external_commit(content: &[u8]) -> Vec<u8> {
+        let mut message = vec![0, 1, 0, 1, 1, b'g'];
+        message.extend_from_slice(&1u64.to_be_bytes());
+        message.extend_from_slice(&[4, 0]);
+        message.extend_from_slice(content);
+        message
+    }
+
+    #[test]
+    fn reads_an_external_commit() {
+        // An ExternalInit and the Remove of leaf 2 by value, and a path.
+        let content = [
+            COMMIT, 13, 1, 0, 6, 2, 0xaa, 0xbb, 1, 0, 3, 0, 0, 0, 2, 1, 0xff,
+        ];
+        assert_eq!(
+            public_commit(&external_commit(&content)).unwrap(),
+            PublicCommit {
+                sender: CommitSender::NewMember,
+                authenticated_data: Vec::new(),
+                removed: vec![2],
+                external_init: true,
+                other_proposals: 0,
+                path: true,
+            }
+        );
+        assert_eq!(
+            framing(&external_commit(&content)).unwrap(),
+            Framing {
+                wire_format: PUBLIC_MESSAGE,
+                group_id: b"g".to_vec(),
+                epoch: 1,
+                content_type: COMMIT,
+            }
+        );
     }
 }

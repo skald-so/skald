@@ -4,13 +4,13 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Commit, DeliveryService, Device, DeviceId, Fleet, Identity, Leaf, Received, Refusal, Result,
-    Staged,
+    Admitted, Commit, DeliveryService, Device, DeviceId, Fleet, Identity, Joining, Leaf, Received,
+    Refusal, Result, Staged,
     certificate::Kind,
     identity::device_id,
     key_packages,
     revocation::{self, AccountId},
-    wire::{self, Framing, PublicCommit},
+    wire::{self, CommitSender, Framing, PublicCommit},
 };
 
 /// The channel ID, a UUIDv7, used as the group's `group_id`.
@@ -466,9 +466,10 @@ pub fn removed_device_reads_nothing_later<D: Device>() {
     assert_eq!(
         wire::public_commit(&commit.commit).unwrap(),
         PublicCommit {
-            sender: 1,
+            sender: CommitSender::Member(1),
             authenticated_data: revocations(&fleet, 1, &[identity.device_id()]),
             removed: vec![3],
+            external_init: false,
             other_proposals: 0,
             path: true,
         },
@@ -624,9 +625,10 @@ pub fn empty_commit_starts_a_new_epoch<D: Device>() {
         assert_eq!(
             wire::public_commit(&commit.commit).unwrap(),
             PublicCommit {
-                sender: committer as u32,
+                sender: CommitSender::Member(committer as u32),
                 authenticated_data: authenticated_data.clone(),
                 removed: Vec::new(),
+                external_init: false,
                 other_proposals: 0,
                 path: true,
             },
@@ -1098,9 +1100,10 @@ pub fn device_added_without_admission_is_removed<D: Device>() {
     assert_eq!(
         wire::public_commit(&remove.commit).unwrap(),
         PublicCommit {
-            sender: 0,
+            sender: CommitSender::Member(0),
             authenticated_data: Vec::new(),
             removed: vec![3],
+            external_init: false,
             other_proposals: 0,
             path: true,
         },
@@ -1212,12 +1215,57 @@ impl<D: Device> Network<D> {
         sent
     }
 
-    /// Device `device` joins from `welcome`, the Welcome of the last Commit the service accepted.
+    /// Device `device` joins from `welcome`, the Welcome of the last Commit the service accepted,
+    /// once [`check_joining`] passes on it with the fleet's admitted devices.
     pub fn join(&mut self, device: usize, welcome: &[u8]) {
-        let group_id = self.fleet.step(device, |d| d.join(welcome)).unwrap();
+        let admitted = self.fleet.admitted();
+        self.join_with(device, welcome, &admitted);
+    }
+
+    /// Device `device` joins from `welcome`, the Welcome of the last Commit the service accepted,
+    /// once [`check_joining`] passes on it with `admitted`, the device's view of the roster.
+    pub fn join_with(&mut self, device: usize, welcome: &[u8], admitted: &Admitted) {
+        let group_id = self
+            .fleet
+            .step(device, |d| {
+                d.join_with(welcome, |joining| check_joining(admitted, joining))
+            })
+            .unwrap();
         assert_eq!(group_id, CHANNEL, "{}: device {device} joined", D::LIBRARY);
         self.processed
             .insert(device, self.service.commits(CHANNEL).len());
+    }
+
+    /// Device `device` commits its external join from the service's latest GroupInfo, as
+    /// [`join_external`] does with `admitted`, the device's view of the roster. Returns the
+    /// Commit and what the device read of the GroupInfo.
+    pub fn external_commit(&mut self, device: usize, admitted: &Admitted) -> (Commit, Joining) {
+        let group_info = self
+            .service
+            .group_info(CHANNEL)
+            .expect("a GroupInfo")
+            .to_vec();
+        let (read, commit) = join_external(&mut self.fleet, device, &group_info, admitted);
+        (commit.unwrap(), read.expect("the GroupInfo checked"))
+    }
+
+    /// Device `device` sends `commit`, its external Commit. If the service accepts it, the device
+    /// uploads its GroupInfo; if the service refuses it, the device drops the group.
+    pub fn send_external(&mut self, device: usize, commit: &Commit) -> Result<(), Refusal> {
+        let id = self.id(device);
+        let sent = self.service.send(&id, &commit.commit);
+        if sent.is_ok() {
+            self.service
+                .upload_group_info(&id, &commit.group_info)
+                .unwrap();
+            self.processed
+                .insert(device, self.service.commits(CHANNEL).len());
+        } else {
+            self.fleet
+                .step(device, |d| d.delete_group(CHANNEL))
+                .unwrap();
+        }
+        sent
     }
 
     /// Device `device` processes, in their order, the accepted Commits it has not processed, each
@@ -1714,4 +1762,534 @@ pub fn two_creators_end_in_the_kept_group<D: Device>() {
     network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
     assert_reads(&mut network.fleet, CHANNEL, 1, 0);
     assert_reads(&mut network.fleet, CHANNEL, 0, 2);
+}
+
+/// The check a device makes of a group before it joins it, by external Commit or from a Welcome
+/// ("Group changes"): the GroupInfo's signer and every member it lists are admitted.
+pub fn check_joining(admitted: &Admitted, joining: &Joining) -> Result<()> {
+    admitted.check(&joining.signer)?;
+    joining
+        .members
+        .iter()
+        .try_for_each(|member| admitted.check(member))
+}
+
+/// Device `device` joins by external Commit from `group_info` once [`check_joining`] passes on
+/// it with `admitted`, the device's view of the roster. Returns what the check read, if the
+/// library verified the GroupInfo, and the Commit.
+pub fn join_external<D: Device>(
+    fleet: &mut Fleet<D>,
+    device: usize,
+    group_info: &[u8],
+    admitted: &Admitted,
+) -> (Option<Joining>, Result<Commit>) {
+    let mut read = None;
+    let commit = fleet.step(device, |d| {
+        d.join_external(group_info, |joining| {
+            read = Some(joining.clone());
+            check_joining(admitted, joining)
+        })
+    });
+    (read, commit)
+}
+
+/// Device `device` joins from `welcome` once [`check_joining`] passes on it with the fleet's
+/// admitted devices. Returns what the check read, if the library got that far, and the result.
+pub fn join_from_welcome<D: Device>(
+    fleet: &mut Fleet<D>,
+    device: usize,
+    welcome: &[u8],
+) -> (Option<Joining>, Result<Vec<u8>>) {
+    let admitted = fleet.admitted();
+    let mut read = None;
+    let joined = fleet.step(device, |d| {
+        d.join_with(welcome, |joining| {
+            read = Some(joining.clone());
+            check_joining(&admitted, joining)
+        })
+    });
+    (read, joined)
+}
+
+/// What a member reads from the external Commit of `joiner`, which removes `removed`: the joiner,
+/// its new leaf, is the sender and the one device added.
+pub fn external_read(joiner: Leaf, removed: Vec<Leaf>, not_admitted: Vec<Leaf>) -> Read {
+    Read {
+        staged: Staged {
+            sender: joiner.clone(),
+            removed,
+            added: vec![joiner],
+            authenticated_data: Vec::new(),
+        },
+        revoked: Vec::new(),
+        not_admitted,
+    }
+}
+
+/// An admitted device outside the group joins by itself ("Group changes"): it checks the latest
+/// GroupInfo's signer and members and joins with an external Commit, which the service accepts
+/// only from it. Members check the joiner as an Add. A second joiner's external Commit from the
+/// same GroupInfo gets `epoch-mismatch`; it drops the group and joins from the latest GroupInfo.
+pub fn device_joins_by_itself<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    // Device 1 commits, so the latest GroupInfo is not the creator's.
+    let empty = network
+        .fleet
+        .step(1, |d| d.empty_commit(CHANNEL, &[]))
+        .unwrap();
+    network.send(1, &empty).unwrap();
+    for member in [0, 2] {
+        network.sync(member);
+    }
+    let [joiner, late] = [0, 1].map(|_| network.fleet.add_device().unwrap());
+    let admitted = network.fleet.admitted();
+
+    let (commit, read) = network.external_commit(joiner, &admitted);
+    assert_eq!(
+        read,
+        Joining {
+            signer: leaf(network.fleet.identity(1)),
+            members: leaves(&network.fleet, 0..3),
+        },
+        "{lib}: the joiner read the GroupInfo"
+    );
+    assert!(
+        commit.welcome.is_none(),
+        "{lib}: an external Commit's Welcome"
+    );
+    assert_eq!(
+        wire::framing(&commit.commit).unwrap(),
+        Framing {
+            wire_format: wire::PUBLIC_MESSAGE,
+            group_id: CHANNEL.to_vec(),
+            epoch: 2,
+            content_type: wire::COMMIT,
+        },
+        "{lib}: the external Commit is a PublicMessage of epoch 2"
+    );
+    assert_eq!(
+        wire::public_commit(&commit.commit).unwrap(),
+        PublicCommit {
+            sender: CommitSender::NewMember,
+            authenticated_data: Vec::new(),
+            removed: Vec::new(),
+            external_init: true,
+            other_proposals: 0,
+            path: true,
+        },
+        "{lib}: the external Commit"
+    );
+    assert_group(&mut network.fleet, [joiner], 3, 0..4);
+    let (stale, _) = network.external_commit(late, &admitted);
+
+    // Only the joiner sends its external Commit.
+    for device in [0, late] {
+        let id = network.id(device);
+        assert_eq!(
+            network.service.send(&id, &commit.commit),
+            Err(Refusal::NotAMember),
+            "{lib}: the joiner's Commit from device {device}"
+        );
+    }
+    assert_eq!(network.service.epoch(CHANNEL), Some(2), "{lib}: the epoch");
+    assert_eq!(
+        network.send_external(joiner, &commit),
+        Ok(()),
+        "{lib}: the joiner's Commit"
+    );
+    let group_info = wire::group_info(network.service.group_info(CHANNEL).unwrap()).unwrap();
+    assert_eq!(
+        (group_info.epoch, group_info.signer),
+        (3, 3),
+        "{lib}: the service keeps the joiner's GroupInfo"
+    );
+    assert_eq!(
+        network.send_external(late, &stale),
+        Err(Refusal::EpochMismatch),
+        "{lib}: an external Commit of epoch 2"
+    );
+    assert!(
+        network.fleet.step(late, |d| d.epoch(CHANNEL)).is_err(),
+        "{lib}: the refused joiner dropped the group"
+    );
+
+    let joiner_leaf = leaf(network.fleet.identity(joiner));
+    for member in 0..3 {
+        assert_eq!(
+            network.sync(member),
+            [external_read(joiner_leaf.clone(), Vec::new(), Vec::new())],
+            "{lib}: device {member} read the external Commit"
+        );
+    }
+    let (again, _) = network.external_commit(late, &admitted);
+    assert_eq!(
+        network.send_external(late, &again),
+        Ok(()),
+        "{lib}: the second joiner's Commit from the latest GroupInfo"
+    );
+    for device in [0, 1, 2, joiner] {
+        network.sync(device);
+    }
+    network.assert_converged(&[0, 1, 2, joiner, late], &[0, 1, 2, joiner, late]);
+    assert_reads(&mut network.fleet, CHANNEL, joiner, 0);
+    assert_reads(&mut network.fleet, CHANNEL, 2, late);
+}
+
+/// A device that is not admitted joins by itself, as anyone with the latest GroupInfo can. Members
+/// check it as an Add, find it not admitted and remove it ("Admitted devices").
+pub fn joiner_that_is_not_admitted_is_removed<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    let outsider = network.fleet.add_device_without_certificate().unwrap();
+    let outsider_leaf = leaf(network.fleet.identity(outsider));
+    let view = network.fleet.admitted().with(&outsider_leaf);
+    let (commit, _) = network.external_commit(outsider, &view);
+    assert_eq!(
+        network.send_external(outsider, &commit),
+        Ok(()),
+        "{lib}: the outsider's external Commit"
+    );
+
+    let want = external_read(
+        outsider_leaf.clone(),
+        Vec::new(),
+        vec![outsider_leaf.clone()],
+    );
+    assert_eq!(
+        network.sync(0),
+        [want],
+        "{lib}: device 0 read the external Commit"
+    );
+    let id = network.id(outsider).to_vec();
+    let remove = network
+        .fleet
+        .step(0, |d| d.remove(CHANNEL, &[id], &[]))
+        .unwrap();
+    assert_eq!(network.send(0, &remove), Ok(()), "{lib}: the Remove");
+    for device in [1, 2, outsider] {
+        network.sync(device);
+    }
+    network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
+    for member in 0..3 {
+        assert!(
+            remove_not_admitted(&mut network.fleet, member)
+                .unwrap()
+                .is_none(),
+            "{lib}: device {member} has no one left to remove"
+        );
+    }
+    let message = network
+        .fleet
+        .step(2, |d| d.encrypt(CHANNEL, b"after"))
+        .unwrap();
+    assert!(
+        network
+            .fleet
+            .step(outsider, |d| d.process(CHANNEL, &message))
+            .is_err(),
+        "{lib}: the removed outsider reads a later message"
+    );
+}
+
+/// A device joining by itself refuses a GroupInfo whose signer is not a member, signed by another
+/// key than its signer leaf's or for a leaf that does not exist, or not admitted, and one that
+/// lists a member that is not admitted; it joins nothing. It joins from one that passes.
+pub fn group_info_that_fails_a_check_is_refused<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    let outsider = network.fleet.add_device_without_certificate().unwrap();
+    let joiner = network.fleet.add_device().unwrap();
+    let outsider_identity = network.fleet.identity(outsider).clone();
+    let outsider_leaf = leaf(&outsider_identity);
+    let admitted = network.fleet.admitted();
+
+    // Device 1 adds the outsider, as a member with another view of the roster would; the outsider
+    // commits; device 0 removes it.
+    let view = admitted.clone().with(&outsider_leaf);
+    let key_package = network.fleet.step(outsider, |d| d.key_package()).unwrap();
+    let add = network
+        .fleet
+        .step(1, |d| d.add(CHANNEL, &[key_package], &view))
+        .unwrap();
+    network.send(1, &add).unwrap();
+    network.join_with(outsider, &add.welcome.clone().expect("a Welcome"), &view);
+    let by_outsider = network
+        .fleet
+        .step(outsider, |d| d.empty_commit(CHANNEL, &[]))
+        .unwrap();
+    network.send(outsider, &by_outsider).unwrap();
+    network.sync(0);
+    let id = network.id(outsider).to_vec();
+    let remove = network
+        .fleet
+        .step(0, |d| d.remove(CHANNEL, &[id], &[]))
+        .unwrap();
+    network.send(0, &remove).unwrap();
+    let latest = remove.group_info.clone();
+
+    let with_outsider: Vec<_> = leaves(&network.fleet, [0, 1, 2, outsider]);
+    for (group_info, want, why) in [
+        (
+            add.group_info.clone(),
+            Some(Joining {
+                signer: leaf(network.fleet.identity(1)),
+                members: with_outsider.clone(),
+            }),
+            "a GroupInfo that lists a member that is not admitted",
+        ),
+        (
+            by_outsider.group_info.clone(),
+            Some(Joining {
+                signer: outsider_leaf.clone(),
+                members: with_outsider.clone(),
+            }),
+            "a GroupInfo signed by a member that is not admitted",
+        ),
+        (
+            resigned_group_info(&latest, &outsider_identity, |_| {}),
+            None,
+            "a GroupInfo signed by another key than its signer leaf's",
+        ),
+        (
+            resigned_group_info(&latest, &outsider_identity, |fields| fields.signer = 9),
+            None,
+            "a GroupInfo signed for a leaf that does not exist",
+        ),
+    ] {
+        let (read, commit) = join_external(&mut network.fleet, joiner, &group_info, &admitted);
+        assert!(commit.is_err(), "{lib}: {why} is refused");
+        assert_eq!(read, want, "{lib}: what the joiner read of {why}");
+        assert!(
+            network.fleet.step(joiner, |d| d.epoch(CHANNEL)).is_err(),
+            "{lib}: {why} leaves the joiner without the group"
+        );
+    }
+
+    let (commit, read) = network.external_commit(joiner, &admitted);
+    assert_eq!(
+        read,
+        Joining {
+            signer: leaf(network.fleet.identity(0)),
+            members: leaves(&network.fleet, 0..3),
+        },
+        "{lib}: the joiner read the latest GroupInfo"
+    );
+    assert_eq!(network.send_external(joiner, &commit), Ok(()));
+    for device in [0, 1, 2] {
+        network.sync(device);
+    }
+    network.assert_converged(&[0, 1, 2, joiner], &[0, 1, 2, joiner]);
+}
+
+/// A device that gets a Welcome checks its signer and members as a GroupInfo ("Group changes"):
+/// it refuses one whose group lists a member that is not admitted, and one from a device that is
+/// not admitted, in a group of its own with the channel's ID; it joins nothing. It joins from one
+/// that passes.
+pub fn welcome_that_fails_a_check_is_refused<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut fleet = channel::<D>(3);
+    let outsider = fleet.add_device_without_certificate().unwrap();
+    let joiner = fleet.add_device().unwrap();
+    let outsider_leaf = leaf(fleet.identity(outsider));
+    let joiner_leaf = leaf(fleet.identity(joiner));
+    let [outsider_kp, joiner_kp] =
+        [outsider, joiner].map(|device| fleet.step(device, |d| d.key_package()).unwrap());
+    let view = fleet.admitted().with(&outsider_leaf);
+
+    // Device 1, with another view of the roster, adds both; it never sends the Commit.
+    let listing = fleet
+        .step(1, |d| {
+            let commit = d.add(CHANNEL, &[outsider_kp, joiner_kp.clone()], &view)?;
+            d.clear_pending_commit(CHANNEL)?;
+            commit
+                .welcome
+                .ok_or_else(|| "an Add without a Welcome".into())
+        })
+        .unwrap();
+    let forged = add_to_new_group(&mut fleet, outsider, CHANNEL, &joiner_kp);
+
+    let mut with_outsider = leaves(&fleet, [0, 1, 2, outsider]);
+    with_outsider.push(joiner_leaf.clone());
+    for (welcome, want, why) in [
+        (
+            listing,
+            Joining {
+                signer: leaf(fleet.identity(1)),
+                members: with_outsider,
+            },
+            "a Welcome to a group with a member that is not admitted",
+        ),
+        (
+            forged,
+            Joining {
+                signer: outsider_leaf.clone(),
+                members: vec![outsider_leaf.clone(), joiner_leaf.clone()],
+            },
+            "a Welcome from a device that is not admitted",
+        ),
+    ] {
+        let (read, joined) = join_from_welcome(&mut fleet, joiner, &welcome);
+        assert!(joined.is_err(), "{lib}: {why} is refused");
+        assert_eq!(read, Some(want), "{lib}: what the joiner read of {why}");
+        assert!(
+            fleet.step(joiner, |d| d.epoch(CHANNEL)).is_err(),
+            "{lib}: {why} leaves the joiner without the group"
+        );
+    }
+
+    let admitted = fleet.admitted();
+    let commit = fleet
+        .step(0, |d| {
+            let commit = d.add(CHANNEL, &[joiner_kp], &admitted)?;
+            d.merge_pending_commit(CHANNEL)?;
+            Ok(commit)
+        })
+        .unwrap();
+    let (read, joined) = join_from_welcome(&mut fleet, joiner, &commit.welcome.expect("a Welcome"));
+    assert_eq!(joined.unwrap(), CHANNEL, "{lib}: the joiner joined");
+    let mut members = leaves(&fleet, 0..3);
+    members.push(joiner_leaf);
+    assert_eq!(
+        read,
+        Some(Joining {
+            signer: leaf(fleet.identity(0)),
+            members,
+        }),
+        "{lib}: what the joiner read of the Welcome"
+    );
+    for member in [1, 2] {
+        process_commit(&mut fleet, member, &commit.commit).unwrap();
+    }
+    assert_group(&mut fleet, [0, 1, 2, joiner], 2, [0, 1, 2, joiner]);
+    assert_reads(&mut fleet, CHANNEL, joiner, 1);
+}
+
+/// A device that missed a Commit fails on the next one. It rejoins with an external Commit that
+/// also removes its old leaf ("Rejoining"): members read the Commit as its Remove and its Add, and
+/// it holds one leaf.
+pub fn device_that_missed_a_commit_rejoins<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    for committer in [0, 1] {
+        network.sync(committer);
+        let commit = network
+            .fleet
+            .step(committer, |d| d.empty_commit(CHANNEL, &[]))
+            .unwrap();
+        network.send(committer, &commit).unwrap();
+    }
+    // Device 2 missed device 0's Commit and gets device 1's.
+    let next = network.service.commits(CHANNEL)[2].clone();
+    assert!(
+        process_commit(&mut network.fleet, 2, &next).is_err(),
+        "{lib}: device 2 processed the Commit after the one it missed"
+    );
+    assert_group(&mut network.fleet, [2], 1, 0..3);
+    network.sync(0);
+
+    let admitted = network.fleet.admitted();
+    let (commit, read) = network.external_commit(2, &admitted);
+    assert_eq!(
+        read,
+        Joining {
+            signer: leaf(network.fleet.identity(1)),
+            members: leaves(&network.fleet, 0..3),
+        },
+        "{lib}: device 2 read the latest GroupInfo"
+    );
+    assert_eq!(
+        wire::public_commit(&commit.commit).unwrap(),
+        PublicCommit {
+            sender: CommitSender::NewMember,
+            authenticated_data: Vec::new(),
+            removed: vec![2],
+            external_init: true,
+            other_proposals: 0,
+            path: true,
+        },
+        "{lib}: the external Commit removes the old leaf"
+    );
+    assert_eq!(
+        network.send_external(2, &commit),
+        Ok(()),
+        "{lib}: the rejoin"
+    );
+    let own = leaf(network.fleet.identity(2));
+    for member in [0, 1] {
+        assert_eq!(
+            network.sync(member),
+            [external_read(own.clone(), vec![own.clone()], Vec::new())],
+            "{lib}: device {member} read the rejoin"
+        );
+    }
+    network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
+    assert_reads(&mut network.fleet, CHANNEL, 2, 0);
+    assert_reads(&mut network.fleet, CHANNEL, 1, 2);
+}
+
+/// The Commits a device that was offline misses in [`offline_device_catches_up`].
+pub const MISSED_COMMITS: usize = 100;
+
+/// A device offline for [`MISSED_COMMITS`] Commits, among them an Add and a Remove, processes each
+/// in order, then reads and sends new messages ("Rejoining").
+pub fn offline_device_catches_up<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    let visitor = network.fleet.add_device().unwrap();
+    let visitor_leaf = leaf(network.fleet.identity(visitor));
+    let (added, removed) = (40, 70);
+    let admitted = network.fleet.admitted();
+    for n in 0..MISSED_COMMITS {
+        let committer = n % 2;
+        network.sync(committer);
+        let commit = if n == added {
+            let key_package = network.fleet.step(visitor, |d| d.key_package()).unwrap();
+            network
+                .fleet
+                .step(committer, |d| d.add(CHANNEL, &[key_package], &admitted))
+        } else if n == removed {
+            let id = network.id(visitor).to_vec();
+            network
+                .fleet
+                .step(committer, |d| d.remove(CHANNEL, &[id], &[]))
+        } else {
+            network
+                .fleet
+                .step(committer, |d| d.empty_commit(CHANNEL, &[]))
+        }
+        .unwrap();
+        network.send(committer, &commit).unwrap();
+        if let Some(welcome) = &commit.welcome {
+            network.join(visitor, welcome);
+        }
+    }
+
+    let read = network.sync(2);
+    assert_eq!(
+        read.len(),
+        MISSED_COMMITS,
+        "{lib}: the Commits device 2 read"
+    );
+    for (n, read) in read.iter().enumerate() {
+        let committer = leaf(network.fleet.identity(n % 2));
+        let (added, removed) = match n {
+            n if n == added => (vec![visitor_leaf.clone()], Vec::new()),
+            n if n == removed => (Vec::new(), vec![visitor_leaf.clone()]),
+            _ => (Vec::new(), Vec::new()),
+        };
+        assert_eq!(
+            (
+                &read.staged.sender,
+                &read.staged.added,
+                &read.staged.removed
+            ),
+            (&committer, &added, &removed),
+            "{lib}: missed Commit {n}"
+        );
+    }
+    network.sync(0);
+    network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
+    assert_reads(&mut network.fleet, CHANNEL, 0, 2);
+    assert_reads(&mut network.fleet, CHANNEL, 2, 1);
 }

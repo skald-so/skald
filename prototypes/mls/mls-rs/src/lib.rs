@@ -37,8 +37,8 @@ use mls_rs_core::{
 };
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use mls_scenario::{
-    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Observer, Received,
-    Result, Staged, key_packages,
+    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Joining, Leaf, Observer,
+    Received, Result, Staged, key_packages,
     state::{Reader, Writer},
 };
 use zeroize::Zeroizing;
@@ -310,6 +310,14 @@ impl MlsRsDevice {
         Ok(message.to_bytes()?)
     }
 
+    /// The leaves of a group's members, in leaf order.
+    fn leaves(members: &[mls_rs::group::Member]) -> Result<Vec<Leaf>> {
+        members
+            .iter()
+            .map(|member| Self::leaf(&member.signing_identity))
+            .collect()
+    }
+
     fn leaf(signing_identity: &SigningIdentity) -> Result<Leaf> {
         let credential = signing_identity
             .credential
@@ -464,12 +472,60 @@ impl Device for MlsRsDevice {
             .ok_or_else(|| "no such group".into())
     }
 
-    fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>> {
-        let (mut group, _) =
+    fn join_with(
+        &mut self,
+        welcome: &[u8],
+        check: impl FnOnce(&Joining) -> Result<()>,
+    ) -> Result<Vec<u8>> {
+        // The joined group is checked before it is written.
+        let (mut group, joined) =
             self.client()
                 .join_group(None, &MlsMessage::from_bytes(welcome)?, None)?;
+        let roster = group.roster();
+        check(&Joining {
+            signer: Self::leaf(&roster.member_with_index(joined.sender)?.signing_identity)?,
+            members: Self::leaves(&roster.members())?,
+        })?;
         group.write_to_storage()?;
         Ok(group.group_id().to_vec())
+    }
+
+    fn join_external(
+        &mut self,
+        group_info: &[u8],
+        check: impl FnOnce(&Joining) -> Result<()>,
+    ) -> Result<Commit> {
+        // The party outside the group verifies the GroupInfo and gives its members.
+        let observed = MlsRsObserver::observe(group_info)?;
+        let signer = MlsMessage::from_bytes(group_info)?
+            .into_group_info()
+            .ok_or("not a GroupInfo")?
+            .sender();
+        let roster = observed.group.roster();
+        let members = roster.members();
+        check(&Joining {
+            signer: Self::leaf(&roster.member_with_index(signer)?.signing_identity)?,
+            members: Self::leaves(&members)?,
+        })?;
+        // mls-rs removes the device's old leaf only if asked to.
+        let own = members.iter().find(|member| {
+            member.signing_identity.signature_key.as_bytes() == self.identity.public_key()
+        });
+        let mut builder = self.client().external_commit_builder()?;
+        if let Some(own) = own {
+            builder = builder.with_removal(own.index);
+        }
+        // The Commit is applied at once: mls-rs keeps no pending external Commit. The new group
+        // replaces the device's old state of it in the store.
+        let (mut group, external) = builder.build(MlsMessage::from_bytes(group_info)?)?;
+        group.write_to_storage()?;
+        Ok(Commit {
+            commit: external.to_bytes()?,
+            welcome: None,
+            group_info: group
+                .group_info_message_allowing_ext_commit(true)?
+                .to_bytes()?,
+        })
     }
 
     fn encrypt(&mut self, group_id: &[u8], data: &[u8]) -> Result<Vec<u8>> {
@@ -520,7 +576,19 @@ impl Device for MlsRsDevice {
                         _ => {}
                     }
                 }
-                let sender = leaf(commit.committer)?;
+                let sender = if commit.is_external {
+                    // The joiner's new leaf, which only the new epoch has.
+                    let joiner = Self::leaf(
+                        &group
+                            .roster()
+                            .member_with_index(commit.committer)?
+                            .signing_identity,
+                    )?;
+                    added.push(joiner.clone());
+                    joiner
+                } else {
+                    leaf(commit.committer)?
+                };
                 check(&Staged {
                     sender: sender.clone(),
                     removed,
@@ -592,7 +660,13 @@ impl Observer for MlsRsObserver {
         else {
             return Err("not a Commit".into());
         };
-        let sender = self.group.roster().member_with_index(commit.committer)?;
+        // An external Commit's sender is the joiner's new leaf, which only the new epoch has.
+        let roster = if commit.is_external {
+            next.roster()
+        } else {
+            self.group.roster()
+        };
+        let sender = roster.member_with_index(commit.committer)?;
         check(&MlsRsDevice::leaf(&sender.signing_identity)?)?;
         self.group = next;
         Ok(())
