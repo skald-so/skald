@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Mutation check of the Rust code changed since <base-ref>: cargo-mutants mutates only the lines of the
-# diff <base-ref>...HEAD and runs the tests of the mutated crate, with PostgreSQL as in script/test.
+# diff <base-ref>...HEAD and runs the tests of the mutated crate, with PostgreSQL as in script/test;
+# in the MLS prototypes' workspace, prototypes/mls, the tests of the whole workspace.
 # Exits 0 only if the tests catch every mutant; otherwise lists the mutants they miss.
 # Usage: script/mutants <base-ref>, in the repository to check, with its changes committed.
 # CARGO_MUTANTS_JOBS sets how many mutants are tested in parallel; the default is half the CPUs.
@@ -34,19 +35,41 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"; postgres_stop' EXIT
 
-# Plumbing ignores the diff settings of the user's git config; -M limits a moved file to its changed lines.
-git diff-tree -p -M "$merge_base" HEAD -- '*.rs' >"$tmp/changes.diff"
-mutate=(--workspace --in-diff "$tmp/changes.diff")
+# Each Cargo workspace gets its diff with paths relative to it. Plumbing ignores the diff settings of
+# the user's git config; -M limits a moved file to its changed lines.
+# The product crates count only the mutated crate's tests. The MLS prototypes count the whole
+# workspace's: their scenario code runs only in the prototype crates' tests.
+git diff-tree -p -M "$merge_base" HEAD -- '*.rs' ':(exclude)prototypes/mls' >"$tmp/root.diff"
+git diff-tree -p -M --relative=prototypes/mls "$merge_base" HEAD -- '*.rs' >"$tmp/prototypes.diff"
+root=(--workspace --in-diff "$tmp/root.diff")
+prototypes=(--dir prototypes/mls --workspace --in-diff "$tmp/prototypes.diff")
 
-mutants=$(cargo mutants --list "${mutate[@]}")
-if [[ -z $mutants ]]; then
+# has_mutants <diff> <cargo-mutants args...>: the diff changes Rust code that has mutants.
+has_mutants() {
+  [[ -s $1 && -n $(cargo mutants --list "${@:2}") ]]
+}
+root_changed=false prototypes_changed=false
+if has_mutants "$tmp/root.diff" "${root[@]}"; then root_changed=true; fi
+if has_mutants "$tmp/prototypes.diff" "${prototypes[@]}"; then prototypes_changed=true; fi
+if ! $root_changed && ! $prototypes_changed; then
   echo "script/mutants: no mutants in the Rust code changed since $base"
   exit 0
 fi
 
 ncpu=$(getconf _NPROCESSORS_ONLN)
-postgres_start
-postgres_wait
-# cargo-mutants prints each mutant the tests miss as MISSED; its report goes out of the working tree.
-cargo mutants "${mutate[@]}" --test-workspace=false --jobs "${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}" \
-  --output "$tmp"
+jobs=(--jobs "${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}")
+# cargo-mutants prints each mutant the tests miss as MISSED; its reports go out of the working tree.
+status=0
+if $root_changed; then
+  postgres_start
+  postgres_wait
+  mkdir "$tmp/root"
+  cargo mutants "${root[@]}" --test-workspace=false "${jobs[@]}" --output "$tmp/root" || status=$?
+fi
+if $prototypes_changed; then
+  echo "script/mutants: the MLS prototypes in prototypes/mls"
+  mkdir "$tmp/prototypes"
+  cargo mutants "${prototypes[@]}" --test-workspace=true "${jobs[@]}" --output "$tmp/prototypes" ||
+    status=$?
+fi
+exit $status
