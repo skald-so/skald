@@ -44,14 +44,14 @@ git diff-tree -p -M --relative=prototypes/mls "$merge_base" HEAD -- '*.rs' >"$tm
 root=(--workspace --in-diff "$tmp/root.diff")
 prototypes=(--dir prototypes/mls --workspace --in-diff "$tmp/prototypes.diff")
 
-# has_mutants <diff> <cargo-mutants args...>: the diff changes Rust code that has mutants.
-has_mutants() {
-  [[ -s $1 && -n $(cargo mutants --list "${@:2}") ]]
+# list_mutants <diff> <cargo-mutants args...>: lists the mutants of the Rust code the diff changes.
+# Called in plain assignments, so that a failing list stops the script.
+list_mutants() {
+  if [[ -s $1 ]]; then cargo mutants --list "${@:2}"; fi
 }
-root_changed=false prototypes_changed=false
-if has_mutants "$tmp/root.diff" "${root[@]}"; then root_changed=true; fi
-if has_mutants "$tmp/prototypes.diff" "${prototypes[@]}"; then prototypes_changed=true; fi
-if ! $root_changed && ! $prototypes_changed; then
+root_mutants=$(list_mutants "$tmp/root.diff" "${root[@]}")
+prototypes_mutants=$(list_mutants "$tmp/prototypes.diff" "${prototypes[@]}")
+if [[ -z $root_mutants && -z $prototypes_mutants ]]; then
   echo "script/mutants: no mutants in the Rust code changed since $base"
   exit 0
 fi
@@ -60,13 +60,13 @@ ncpu=$(getconf _NPROCESSORS_ONLN)
 jobs=(--jobs "${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}")
 # cargo-mutants prints each mutant the tests miss as MISSED; its reports go out of the working tree.
 status=0
-if $root_changed; then
+if [[ -n $root_mutants ]]; then
   postgres_start
   postgres_wait
   mkdir "$tmp/root"
   cargo mutants "${root[@]}" --test-workspace=false "${jobs[@]}" --output "$tmp/root" || status=$?
 fi
-if $prototypes_changed; then
+if [[ -n $prototypes_mutants ]]; then
   echo "script/mutants: the MLS prototypes in prototypes/mls"
   mkdir "$tmp/prototypes"
   cargo mutants "${prototypes[@]}" --test-workspace=true "${jobs[@]}" --output "$tmp/prototypes" ||

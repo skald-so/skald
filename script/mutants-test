@@ -2,7 +2,8 @@
 # Tests script/mutants on a scratch Cargo workspace: it passes when the tests catch every mutant of the
 # code changed since the base, fails naming the survivors otherwise, never mutates unchanged code,
 # runs the tests with PostgreSQL and removes it afterwards, checks the MLS prototypes' workspace with
-# the tests of all its crates, and leaves the working tree clean.
+# the tests of all its crates, fails when cargo-mutants cannot list the mutants, and leaves the working
+# tree clean.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -149,6 +150,17 @@ run base
   fail "prototypes: the survivor is not named:"$'\n'"$output"
 [[ $output != *half* ]] || fail "prototypes: names a caught mutant:"$'\n'"$output"
 expect_clean prototypes
+
+# A cargo-mutants config it rejects: listing the mutants fails, and so does the run, testing nothing.
+git checkout --quiet -b bad-config prototypes
+mkdir prototypes/mls/.cargo
+echo 'exclude_re = ["("]' >prototypes/mls/.cargo/mutants.toml
+git add --all
+git commit --quiet --message 'bad config'
+run base
+[[ $status -ne 0 && $output != *'no mutants'* && $output != *MISSED* ]] ||
+  fail "bad config: exit code $status, want non-zero without testing:"$'\n'"$output"
+expect_clean bad-config
 
 # No Rust changes: nothing to mutate, PostgreSQL is not needed.
 git checkout --quiet -b docs base
