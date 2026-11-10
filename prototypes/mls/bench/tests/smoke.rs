@@ -1,6 +1,8 @@
 //! The smoke run of the benchmarks: each runs once on the smallest group, on both prototypes,
 //! natively and in WASM.
 
+use std::time::Duration;
+
 use mls_bench::{Budget, Group, Object, Operation, Results, SIZES, run};
 use mls_proto_mls_rs::MlsRsDevice;
 use mls_proto_openmls::OpenMlsDevice;
@@ -22,6 +24,10 @@ fn runs_once<D: Device>() {
     for (operation, stats) in &results.times {
         assert_eq!(stats.len(), 1, "{lib}: {operation:?}");
         assert_eq!(stats[0].runs, 1, "{lib}: {operation:?}");
+        assert!(
+            stats[0].median > Duration::ZERO,
+            "{lib}: {operation:?} took no time"
+        );
     }
     assert_eq!(
         results.objects.iter().map(|(o, _)| *o).collect::<Vec<_>>(),

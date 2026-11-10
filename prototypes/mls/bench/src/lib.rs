@@ -790,6 +790,40 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_commit_before_merging_it() {
+        use mls_scenario::{Identity, Leaf};
+
+        let leaf = |identity: &Identity| Leaf {
+            identity: identity.device_id().to_vec(),
+            signature_key: identity.public_key().to_vec(),
+        };
+        let (admitted, other) = (leaf(&Identity::generate()), leaf(&Identity::generate()));
+        let roster = Roster::default();
+        let staged = |added: Vec<Leaf>, authenticated_data: &[u8]| Staged {
+            sender: admitted.clone(),
+            removed: Vec::new(),
+            added,
+            authenticated_data: authenticated_data.to_vec(),
+        };
+        let admits = Admitted::default().with(&admitted);
+        assert!(read_commit(&staged(Vec::new(), b""), &roster, &admits).is_ok());
+        assert!(read_commit(&staged(vec![admitted.clone()], b""), &roster, &admits).is_ok());
+        assert!(
+            read_commit(
+                &staged(vec![admitted.clone(), other], b""),
+                &roster,
+                &admits
+            )
+            .is_err(),
+            "adds a device that is not admitted"
+        );
+        assert!(
+            read_commit(&staged(Vec::new(), b"\xff"), &roster, &admits).is_err(),
+            "authenticated_data that is no list of revocations"
+        );
+    }
+
+    #[test]
     fn names_every_operation_and_object_once() {
         let operations: std::collections::BTreeSet<_> =
             Operation::ALL.iter().map(|op| op.name()).collect();
