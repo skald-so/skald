@@ -219,12 +219,11 @@ Devices that read a space besides its members' own: the server's `custodian` dev
 
 **The `auditor` device can:**
 - Read every channel of the organization's spaces that admits it, their history and presence ([Custodian, auditor and federation](protocol/README.md#custodian-auditor-and-federation), [Presence](protocol/agents.md#presence)).
-- Send in those channels as any agent of the organization admin's account other than the person, at the `service` trust level: envelope check 2 sets an `auditor` device no further limit ([Envelope](protocol/README.md#envelope), [Trust levels](protocol/membership.md#trust-levels)).
 
 **Defenses:**
 - A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when it names that device; clients show every such device in their channels, and warn when one stops being admitted ([Custodian, auditor and federation](protocol/README.md#custodian-auditor-and-federation), [Admitted devices](protocol/membership.md#admitted-devices)).
 - A `custodian` device sends only as delegated agents, never as a person, so it answers no question. Recipients label its messages as sent by the server for the member, and allowlists treat it as a separate sender ([Custodian device](protocol/README.md#custodian-device)).
-- An `auditor` device claims no task and uploads no presence ([Claim checks](protocol/queues.md#claim-checks), [Presence](protocol/agents.md#presence)).
+- An `auditor` device sends no application message, seals and claims no task, and uploads no presence ([Envelope](protocol/README.md#envelope), [Queue key](protocol/queues.md#queue-key), [Claim checks](protocol/queues.md#claim-checks), [Presence](protocol/agents.md#presence)).
 - Neither gets other agents' questions or answers: they are not channel messages ([agents.md](protocol/agents.md#security-considerations)).
 
 ### An agent on the person's own device

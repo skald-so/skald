@@ -112,7 +112,7 @@ Each epoch of a channel's group has a queue key pair, an HPKE key pair of DHKEM(
 **Sealing.** `enc` and `ct` are HPKE in base mode, single-shot, with the suite of [Scheme `hpke`](README.md#scheme-hpke), to the `pk` of `epoch`. `info` is the ASCII string `skald task payload`; `aad` the encoded `[channel, queue, task, epoch]`, IDs as byte strings and `epoch` an unsigned integer.
 
 A device seals a task only as follows:
-- a member device, to the `pk` of its current epoch, an epoch it judged [clean](membership.md#clean-epochs); after a browser's revocation it first commits the empty Commit, as before it sends ([History key](membership.md#history-key));
+- a member device other than an `auditor` device, to the `pk` of its current epoch, an epoch it judged [clean](membership.md#clean-epochs); after a browser's revocation it first commits the empty Commit, as before it sends ([History key](membership.md#history-key));
 - a `browser` device, to the `pk` it derives from a wrap of the epoch it may write entries in, as [Wraps](membership.md#wraps) says;
 - a `service` device that is not a member, to the `key` of a [queue key object](#queue-key-object) whose `channel` and `epoch` are those of the channel's latest GroupInfo. It MUST NOT seal unless that GroupInfo passes the checks a browser makes before it writes ([Wraps](membership.md#wraps)), it lists the object's `signer` as a member, and the object's signature verifies with the certificate of `signer`, a valid device ([Device checks](membership.md#device-checks)).
 
