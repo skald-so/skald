@@ -4,3 +4,7 @@ description = "Skald wire protocol types."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+getrandom = "0.4"
+sha2 = { version = "0.11", default-features = false }
