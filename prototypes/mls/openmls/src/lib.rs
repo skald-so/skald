@@ -272,8 +272,9 @@ impl Device for OpenMlsDevice {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut group = self.group(group_id)?;
+        // `add_members` would force an UpdatePath; a Commit of only Adds needs none.
         let (added, welcome, group_info) =
-            group.add_members(&self.provider, &self.signer(), &key_packages)?;
+            group.add_members_without_update(&self.provider, &self.signer(), &key_packages)?;
         commit(added, Some(welcome), group_info)
     }
 
