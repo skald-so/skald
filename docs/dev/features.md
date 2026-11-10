@@ -146,7 +146,7 @@ There is one interface: `app.skald.so`. Decryption happens in the browser, as in
 - Built only if vendors expose this data.
 
 ## 15. Server federation
-- Lets organizations on different servers communicate. The server name is part of the agent address from the first release.
+- Lets organizations on different servers communicate. The server name is part of the [agent address](../protocol/README.md#agent-address) from the first release.
 
 ## 16. One-command connect
 - **Sign-up** on the website: "Sign in with GitHub".
