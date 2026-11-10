@@ -4,14 +4,16 @@
 //!
 //! A benchmark times only its operation: each run loads its device from the saved state of
 //! [`Group`], untimed, and drops it after the operation. The operation reads its group from the
-//! library's storage and writes it back, as each step of one-shot mode does.
+//! library's storage and writes it back, as each step of one-shot mode does. Each run then checks,
+//! untimed, that the operation did what it names, and fails if not.
 
 use std::{fmt::Write as _, time::Duration};
 
 use mls_scenario::{
     Admitted, Commit, DeliveryService, Device, Fleet, Joining, Received, Result, Roster, Staged,
-    browser, revocation,
-    scenarios::{CHANNEL, check_joining, leaf, revocations},
+    browser, key_packages, revocation,
+    scenarios::{CHANNEL, check_joining, leaf, leaves, revocations},
+    wire,
 };
 use web_time::Instant;
 
@@ -346,12 +348,39 @@ impl<D: Device> Group<D> {
         D::load(self.fleet.identity(device), self.fleet.state(device))
     }
 
-    /// Device 1 processes `commit`, by `sender`, and merges it once [`read_commit`] passes.
-    fn process(&self, commit: &[u8], sender: usize) -> Result<Duration> {
+    /// Fails unless `d` is in the group at `epoch` with the devices `devices`, in leaf order.
+    fn check_group(
+        &self,
+        d: &D,
+        epoch: u64,
+        devices: impl IntoIterator<Item = usize>,
+    ) -> Result<()> {
+        let (got, want) = (d.epoch(CHANNEL)?, epoch);
+        if got != want {
+            return Err(format!("at epoch {got}, want {want}").into());
+        }
+        if d.members(CHANNEL)? != leaves(&self.fleet, devices) {
+            return Err("other members".into());
+        }
+        Ok(())
+    }
+
+    /// Device 1 processes `commit`, by `sender`, and merges it once [`read_commit`] passes. Fails
+    /// unless the Commit adds the devices `added` and removes the devices `removed`.
+    fn process(
+        &self,
+        commit: &[u8],
+        sender: usize,
+        added: &[usize],
+        removed: &[usize],
+    ) -> Result<Duration> {
         let mut d = self.load(1)?;
+        let mut changes = None;
         let (received, elapsed) = time(|| {
             d.process_with(CHANNEL, commit, |staged| {
-                read_commit(staged, self.fleet.roster(), &self.admitted)
+                read_commit(staged, self.fleet.roster(), &self.admitted)?;
+                changes = Some((staged.added.clone(), staged.removed.clone()));
+                Ok(())
             })
         })?;
         let want = Received::Commit {
@@ -360,16 +389,65 @@ impl<D: Device> Group<D> {
         if received != want {
             return Err(format!("processed {received:?}, want {want:?}").into());
         }
+        let want = (
+            leaves(&self.fleet, added.iter().copied()),
+            leaves(&self.fleet, removed.iter().copied()),
+        );
+        if changes.as_ref() != Some(&want) {
+            return Err(format!("added and removed {changes:?}, want {want:?}").into());
+        }
         Ok(elapsed)
     }
 
-    /// Device 0 makes a Commit with `commit` and merges it.
-    fn commit(&self, commit: impl FnOnce(&mut D) -> Result<Commit>) -> Result<Duration> {
+    /// Device 0 makes a Commit with `commit` and merges it. Fails unless the group then has the
+    /// devices `members`.
+    fn commit(
+        &self,
+        members: impl IntoIterator<Item = usize>,
+        commit: impl FnOnce(&mut D) -> Result<Commit>,
+    ) -> Result<Duration> {
         let mut d = self.load(0)?;
         let ((), elapsed) = time(|| {
             commit(&mut d)?;
             d.merge_pending_commit(CHANNEL)
         })?;
+        self.check_group(&d, 2, members)?;
+        Ok(elapsed)
+    }
+
+    /// Fails unless `key_package` is a KeyPackage of device 1 that holds now and that its key
+    /// signed: signed again with that key, it is the same bytes.
+    fn check_key_package(&self, key_package: &[u8]) -> Result<()> {
+        let identity = self.fleet.identity(1);
+        let fields = wire::key_package(key_package)?;
+        if (fields.identity.as_slice(), fields.signature_key.as_slice())
+            != (&identity.device_id()[..], &identity.public_key()[..])
+        {
+            return Err("a KeyPackage of another device".into());
+        }
+        if !fields.lifetime.holds(key_packages::now()) {
+            return Err("a KeyPackage that does not hold now".into());
+        }
+        let mut signed = fields.clone();
+        signed.sign(identity);
+        if signed.encode() != key_package {
+            return Err("a KeyPackage with another signature".into());
+        }
+        Ok(())
+    }
+
+    /// Device 1 decrypts `message`. Fails unless it is device 0's message of [`MESSAGE_LEN`]
+    /// bytes.
+    fn decrypt(&self, message: &[u8]) -> Result<Duration> {
+        let mut d = self.load(1)?;
+        let (received, elapsed) = time(|| d.process(CHANNEL, message))?;
+        let want = Received::Application {
+            sender: leaf(self.fleet.identity(0)),
+            data: vec![0x5a; MESSAGE_LEN],
+        };
+        if received != want {
+            return Err(format!("decrypted {received:?}").into());
+        }
         Ok(elapsed)
     }
 
@@ -385,7 +463,7 @@ impl<D: Device> Group<D> {
 
     /// One run of `operation`: the time of its timed part.
     fn run(&self, operation: Operation) -> Result<Duration> {
-        let (outsider, joiner) = (self.size + 1, self.size);
+        let (outsider, joiner, removed) = (self.size + 1, self.size, self.size - 1);
         match operation {
             Operation::CreateGroup => {
                 let mut d = D::new(self.fleet.identity(0))?;
@@ -394,23 +472,24 @@ impl<D: Device> Group<D> {
                     d.add(CHANNEL, &self.key_packages, &self.admitted)?;
                     d.merge_pending_commit(CHANNEL)
                 })?;
+                self.check_group(&d, 1, 0..self.size)?;
                 Ok(elapsed)
             }
-            Operation::CommitAdd => self.commit(|d| {
+            Operation::CommitAdd => self.commit(0..=joiner, |d| {
                 d.add(
                     CHANNEL,
                     std::slice::from_ref(&self.key_package),
                     &self.admitted,
                 )
             }),
-            Operation::ProcessAdd => self.process(&self.add.commit, 0),
-            Operation::CommitRemove => self.commit(|d| {
-                let removed = self.fleet.identity(self.size - 1).device_id();
+            Operation::ProcessAdd => self.process(&self.add.commit, 0, &[joiner], &[]),
+            Operation::CommitRemove => self.commit(0..removed, |d| {
+                let removed = self.fleet.identity(removed).device_id();
                 d.remove(CHANNEL, &[removed.to_vec()], &self.authenticated_data)
             }),
-            Operation::ProcessRemove => self.process(&self.remove.commit, 0),
-            Operation::EmptyCommit => self.commit(|d| d.empty_commit(CHANNEL, &[])),
-            Operation::ProcessEmptyCommit => self.process(&self.empty.commit, 0),
+            Operation::ProcessRemove => self.process(&self.remove.commit, 0, &[], &[removed]),
+            Operation::EmptyCommit => self.commit(0..self.size, |d| d.empty_commit(CHANNEL, &[])),
+            Operation::ProcessEmptyCommit => self.process(&self.empty.commit, 0, &[], &[]),
             Operation::JoinFromWelcome => {
                 let welcome = self.add.welcome.as_deref().ok_or("no Welcome")?;
                 let mut d = self.load(joiner)?;
@@ -418,37 +497,32 @@ impl<D: Device> Group<D> {
                 if group_id != CHANNEL {
                     return Err("joined another group".into());
                 }
+                self.check_group(&d, 2, 0..=joiner)?;
                 Ok(elapsed)
             }
             Operation::JoinByExternalCommit => {
                 let mut d = self.load(outsider)?;
                 let (_, elapsed) =
                     time(|| d.join_external(&self.created.group_info, self.joining()))?;
+                self.check_group(&d, 2, (0..self.size).chain([outsider]))?;
                 Ok(elapsed)
             }
-            Operation::ProcessExternalCommit => self.process(&self.external.commit, outsider),
+            Operation::ProcessExternalCommit => {
+                self.process(&self.external.commit, outsider, &[outsider], &[])
+            }
             Operation::KeyPackage => {
                 let mut d = self.load(1)?;
-                let (_, elapsed) = time(|| d.key_package())?;
+                let (key_package, elapsed) = time(|| d.key_package())?;
+                self.check_key_package(&key_package)?;
                 Ok(elapsed)
             }
             Operation::Encrypt => {
                 let mut d = self.load(0)?;
-                let (_, elapsed) = time(|| d.encrypt(CHANNEL, &[0x5a; MESSAGE_LEN]))?;
+                let (message, elapsed) = time(|| d.encrypt(CHANNEL, &[0x5a; MESSAGE_LEN]))?;
+                self.decrypt(&message)?;
                 Ok(elapsed)
             }
-            Operation::Decrypt => {
-                let mut d = self.load(1)?;
-                let (received, elapsed) = time(|| d.process(CHANNEL, &self.message))?;
-                let want = Received::Application {
-                    sender: leaf(self.fleet.identity(0)),
-                    data: vec![0x5a; MESSAGE_LEN],
-                };
-                if received != want {
-                    return Err(format!("decrypted {received:?}").into());
-                }
-                Ok(elapsed)
-            }
+            Operation::Decrypt => self.decrypt(&self.message),
             Operation::CatchUp => {
                 let mut d = self.load(1)?;
                 let ((), elapsed) = time(|| {
@@ -478,6 +552,9 @@ impl<D: Device> Group<D> {
                         .send(&creator, &self.empty.commit)
                         .map_err(|refusal| format!("{refusal:?}").into())
                 })?;
+                if service.epoch(CHANNEL) != Some(2) {
+                    return Err("the service is not in the Commit's epoch".into());
+                }
                 Ok(elapsed)
             }
             Operation::BrowserCheck => {
@@ -821,6 +898,92 @@ mod tests {
             read_commit(&staged(Vec::new(), b"\xff"), &roster, &admits).is_err(),
             "authenticated_data that is no list of revocations"
         );
+    }
+
+    /// Each run fails when its operation does something else than it names.
+    fn runs_check_what_they_did<D: Device>() {
+        let lib = D::LIBRARY;
+        let group = Group::<D>::new(3).unwrap();
+        let (joiner, removed, outsider) = (3, 2, 4);
+        let (add, remove, empty) = (&group.add.commit, &group.remove.commit, &group.empty.commit);
+        for (commit, sender, added, removed, what) in [
+            (
+                empty,
+                0,
+                &[joiner][..],
+                &[][..],
+                "an empty Commit as an Add",
+            ),
+            (add, 0, &[], &[], "an Add as an empty Commit"),
+            (empty, 0, &[], &[removed], "an empty Commit as a Remove"),
+            (remove, 0, &[], &[], "a Remove as an empty Commit"),
+            (add, 0, &[outsider], &[], "an Add of another device"),
+            (empty, 1, &[], &[], "a Commit by another device"),
+        ] {
+            assert!(
+                group.process(commit, sender, added, removed).is_err(),
+                "{lib}: processed {what}"
+            );
+        }
+        let empty_commit = |d: &mut D| d.empty_commit(CHANNEL, &[]);
+        assert!(
+            group.commit(0..removed, empty_commit).is_err(),
+            "{lib}: a Remove"
+        );
+        assert!(
+            group.commit(0..=joiner, empty_commit).is_err(),
+            "{lib}: an Add"
+        );
+        assert!(
+            group.commit(0..3, empty_commit).is_ok(),
+            "{lib}: an empty Commit"
+        );
+
+        let other = group.load(0).unwrap();
+        assert!(group.check_group(&other, 1, 0..3).is_ok());
+        assert!(
+            group.check_group(&other, 2, 0..3).is_err(),
+            "{lib}: another epoch"
+        );
+        assert!(
+            group.check_group(&other, 1, 0..2).is_err(),
+            "{lib}: other members"
+        );
+
+        assert!(group.check_key_package(&group.key_packages[0]).is_ok());
+        let mut forged = group.key_packages[0].clone();
+        *forged.last_mut().unwrap() ^= 1;
+        assert!(
+            group.check_key_package(&forged).is_err(),
+            "{lib}: a bad signature"
+        );
+        assert!(
+            group.check_key_package(&group.key_package).is_err(),
+            "{lib}: another device's KeyPackage"
+        );
+
+        assert!(group.decrypt(&group.message).is_ok());
+        let other = group
+            .load(1)
+            .unwrap()
+            .encrypt(CHANNEL, &[0x5a; MESSAGE_LEN])
+            .unwrap();
+        assert!(
+            group.decrypt(&other).is_err(),
+            "{lib}: device 1's own message"
+        );
+        let other = group.load(0).unwrap().encrypt(CHANNEL, b"other").unwrap();
+        assert!(group.decrypt(&other).is_err(), "{lib}: another message");
+    }
+
+    #[test]
+    fn openmls_runs_check_what_they_did() {
+        runs_check_what_they_did::<mls_proto_openmls::OpenMlsDevice>();
+    }
+
+    #[test]
+    fn mls_rs_runs_check_what_they_did() {
+        runs_check_what_they_did::<mls_proto_mls_rs::MlsRsDevice>();
     }
 
     #[test]
