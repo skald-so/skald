@@ -52,7 +52,7 @@ impl Value {
                     value.write(out);
                 }
             }
-            Value::Simple(value) => out.push(0xe0 | value),
+            Value::Simple(value) => out.push(0xe0 + value),
         }
     }
 
@@ -70,20 +70,21 @@ impl Value {
 }
 
 fn head(out: &mut Vec<u8>, major: u8, n: u64) {
+    // The major type takes the top 3 bits and the additional information the low 5.
     let major = major << 5;
     match n {
-        0..24 => out.push(major | n as u8),
-        24..0x100 => out.extend_from_slice(&[major | 24, n as u8]),
+        0..24 => out.push(major + n as u8),
+        24..0x100 => out.extend_from_slice(&[major + 24, n as u8]),
         0x100..0x1_0000 => {
-            out.push(major | 25);
+            out.push(major + 25);
             out.extend_from_slice(&(n as u16).to_be_bytes());
         }
         0x1_0000..0x1_0000_0000 => {
-            out.push(major | 26);
+            out.push(major + 26);
             out.extend_from_slice(&(n as u32).to_be_bytes());
         }
         _ => {
-            out.push(major | 27);
+            out.push(major + 27);
             out.extend_from_slice(&n.to_be_bytes());
         }
     }

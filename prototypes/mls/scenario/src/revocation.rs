@@ -134,27 +134,24 @@ impl Fields {
             return Err("revocation-body: not a map".into());
         };
         let (mut account, mut device, mut signer, mut timestamp, mut also) =
-            (None, None, None, false, false);
+            (None, None, None, None, false);
         for (key, value) in entries {
             match (key, value) {
                 (Value::Uint(ACCOUNT), value) => account = Some(id(value)?),
                 (Value::Uint(DEVICE), value) => device = Some(id(value)?),
                 (Value::Uint(KEEP), value) => ids(value)?,
                 (Value::Uint(SIGNER), value) => signer = Some(id(value)?),
-                (Value::Uint(TIMESTAMP), Value::Uint(_)) => timestamp = true,
+                (Value::Uint(TIMESTAMP), value) => timestamp = Some(uint(value)?),
                 (Value::Uint(ALSO), value) => {
                     ids(value)?;
                     also = true;
-                }
-                (Value::Uint(key @ (ACCOUNT..=ALSO)), _) => {
-                    return Err(format!("revocation-body: malformed field {key}").into());
                 }
                 (Value::Uint(_) | Value::Nint(_), _) => {} // a field of a later version
                 _ => return Err("revocation-body: a key that is not an integer".into()),
             }
         }
         match (account, device, timestamp) {
-            (Some(account), Some(device), true) => Ok(Self {
+            (Some(account), Some(device), Some(_)) => Ok(Self {
                 account,
                 device,
                 signer,
@@ -162,6 +159,14 @@ impl Fields {
             }),
             _ => Err("revocation-body: a required field is missing".into()),
         }
+    }
+}
+
+/// A `uint`, such as a `timestamp`.
+fn uint(value: Value) -> Result<u64> {
+    match value {
+        Value::Uint(n) => Ok(n),
+        _ => Err("not an unsigned integer".into()),
     }
 }
 
@@ -335,6 +340,11 @@ mod tests {
             .encode()
         };
 
+        let Value::Array(parts) = Value::decode(&counts).unwrap() else {
+            unreachable!()
+        };
+        let counted_body = parts[0].clone();
+
         assert!(list(&[]).is_err());
         assert!(list(&[vec![0x82]]).is_err());
         for (ad, why) in [
@@ -351,7 +361,7 @@ mod tests {
                 "a revocation without a signature",
             ),
             (
-                Value::Array(vec![Value::Array(vec![bytes(b"body"), bytes(&[0; 63])])]).encode(),
+                Value::Array(vec![Value::Array(vec![counted_body, bytes(&[0; 63])])]).encode(),
                 "a short signature",
             ),
             (
