@@ -114,15 +114,15 @@ A recipient device drops, without a receipt:
 - content whose `counter` [gap detection](#gap-detection) does not accept, or content without `counter` whose `msg_id` it already has from the same sending device: a duplicate or a replay.
 
 ## Device to agent
-- A recipient device hands a message over to the agents it is for: the agent in `to` if it runs on this device; without `to`, each agent of this device in the channel.
-- The agent's inbound mode decides first:
+- A recipient device hands a message over to the agents it is for: the agent in `to` if it runs on this device; without `to`, each agent of this device in the channel. Content to a [person](agents.md#person) goes to no agent.
+- The agent's inbound mode decides first, except for an [`ask_user` answer](agents.md#ask_user):
   - `accept`: the device hands the message over;
   - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
   - `refuse`: the device issues `refused`.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
 - Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
 - After marking a message with `to` handed over, the device issues `read`.
-- Only `a2a` and [`task-result`](queues.md#results) bodies are handed over as messages; receipts are not.
+- Only `a2a`, [`task-result`](queues.md#results) and [`ask-answer`](agents.md#ask_user) bodies are handed over as messages; receipts are not.
 - How each agent takes messages: [architecture.md, "Delivery to agents"](../dev/architecture.md#delivery-to-agents).
 
 ## Receipts
@@ -142,7 +142,7 @@ A recipient device drops, without a receipt:
 - **Receipt messages** (`held`, `refused`, `read`) are application messages with the `receipt` body. They are signed and encrypted like any content and pass the same checks: [Envelope](README.md#envelope).
   - `from` is the `to` agent of the messages it reports on; `to` is their `from`; `hops` is 0.
   - It goes in the scheme its messages came in: under `mls` to the channel, under `hpke` to their sending device.
-  - A device issues them only for messages with `to`.
+  - A device issues them only for messages whose `to` is an agent, not a [person](agents.md#person).
 - The sending device takes a receipt or a reply as a status only from the message's `to` agent.
 - Per recipient device a message goes `stored` → `delivered` or `expired`. For the `to` agent it goes `read`, `refused`, or `held` → `read` or `refused`; `replied` follows `read`.
 - Every stored envelope sent with `report` true ends with each recipient device at `delivered` or `expired`. A refused send ends in its problem.
@@ -165,7 +165,7 @@ receipt-status = &(held: 1, refused: 2, read: 3)
 ## Gap detection
 The content's `counter` ([Content](README.md#content)) lets a recipient device notice a message it did not get.
 
-- A recipient keeps, per channel and sending device, the highest `counter` it has accepted and the counters it is missing. Under `hpke`, these are the counters the sending device keeps for this recipient.
+- A recipient keeps, per channel, sending device and scheme, the highest `counter` it has accepted and the counters it is missing. Under `hpke`, these are the counters the sending device keeps for this recipient.
 - The baseline: under `hpke`, the highest starts at 0; under `mls`, the first message from the sending device since the recipient last joined the channel sets it.
 - For content with `counter` c that passed the checks in [Envelope](README.md#envelope):
   1. c above the highest: accepted; the counters between the highest and c become missing; c becomes the highest.
@@ -207,8 +207,8 @@ attachment = {
 
 ## Security considerations
 - `stored`, `delivered` and `expired` are the server's word. Only receipt messages and replies are end-to-end: encrypted, and signed by the recipient device.
-- Gap detection catches a message the server drops once a later message from the same sending device reaches the recipient. It does not catch the drop of:
-  - a sender's latest messages, until it sends another; for a message with `to`, the sender still sees no `read`;
+- Gap detection catches a message the server drops once a later message from the same sending device under the same scheme reaches the recipient. It does not catch the drop of:
+  - a sender's latest messages under a scheme, until it sends another under it; for a message with `to`, the sender still sees no `read`;
   - under `mls`, the messages a sending device sent after the recipient joined and before the first one the recipient got;
   - content without `counter`.
 - Attachments carry a blob ID, not a URL. A sender, such as a malicious channel member or an agent steered by prompt injection, cannot make a recipient device fetch from a host of its choice: that would leak the device's credentials, IP address and timing, or reach internal addresses (SSRF). `digest` is checked only after the download, so it does not prevent this.

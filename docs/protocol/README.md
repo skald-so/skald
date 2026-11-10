@@ -8,7 +8,8 @@ Documents:
 - this file: identifiers, addresses, the envelope, encoding and versions;
 - [delivery.md](delivery.md): mailbox, delivery, receipts and attachments;
 - [membership.md](membership.md): accounts, devices, rosters, invites, channels and history;
-- [queues.md](queues.md): queues, tasks, claims and results.
+- [queues.md](queues.md): queues, tasks, claims and results;
+- [agents.md](agents.md): persons, presence and `ask_user`.
 
 ## Contents
 - [Conventions](#conventions)
@@ -66,6 +67,7 @@ alnum   = %x61-7A / %x30-39    ; a-z, 0-9
 - `server` is at most 253 characters, in A-label form for internationalized names; its last label is not all digits.
 - A form the grammar does not produce is invalid: uppercase letters, other characters, empty or extra segments, a port, a trailing dot.
 - A client MAY lowercase user input and complete a short form such as `alice/claude-api` from the current space. The wire always carries the full address.
+- The agent name `user` is reserved: `space/owner/user@server` is a [person address](agents.md#person).
 - Envelopes carry agent names only inside the ciphertext.
 
 ## Envelope
@@ -104,7 +106,7 @@ scheme = &(mls: 1, hpke: 2)
 
 A recipient routes by the header but trusts only what the payload authenticates. It MUST reject an application message unless:
 1. the payload authenticates the sending device as its scheme says: [`mls`](#scheme-mls), [`hpke`](#scheme-hpke);
-2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device));
+2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device)), and only a `client` or `browser` device sends as a [person](agents.md#person);
 3. the sender may send in `channel`:
    - a `service` device: its content carries a [grant](#service-grant) for `channel`;
    - any other device: the account that owns `from` is a member of `channel`, that is, one of its devices is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
@@ -117,7 +119,7 @@ A recipient outside the channel's MLS group, such as a linked browser, takes the
 - It authenticates the sending device when it decrypts in the MLS group whose `group_id` is `channel`; the sending device is the member that sent it.
 
 ### Scheme `hpke`
-For messages from or to a device outside the channel's MLS group, such as a linked `browser` or an ephemeral `service` agent. The payload is sealed to one device and signed by the sending device.
+For messages from or to a device outside the channel's MLS group, such as a linked `browser` or an ephemeral `service` agent, and for [`ask_user`](agents.md#ask_user) questions and answers. The payload is sealed to one device and signed by the sending device.
 
 ```cddl
 hpke-payload = [
@@ -352,3 +354,4 @@ The two are not wire-compatible; a bridge that is a member on both sides could r
 - Delivery and receipts: [delivery.md](delivery.md#security-considerations).
 - Devices, rosters, channels and history: [membership.md](membership.md#security-considerations).
 - Queues and tasks: [queues.md](queues.md#security-considerations).
+- Presence and `ask_user`: [agents.md](agents.md#security-considerations).

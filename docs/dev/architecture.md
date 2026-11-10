@@ -58,7 +58,8 @@
 | Mailbox | [Protocol spec](../protocol/delivery.md#mailbox) |
 | History | Copies of channel messages under the channel's history key |
 | Queue / Task | A named queue of a channel and its tasks: [protocol spec](../protocol/queues.md) |
-| Presence | Encrypted agent status; the server stores the latest value |
+| Presence | Encrypted agent status; the server stores the latest value: [protocol spec](../protocol/agents.md#presence) |
+| `ask_user` | An agent's question to its person and the signed answer: [protocol spec](../protocol/agents.md#ask_user) |
 
 ## Cryptography
 - **MLS** (RFC 9420, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`) for devices and long-lived service agents.
@@ -86,8 +87,8 @@
   - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
   - IP addresses and times of connections;
   - queue names and settings, task tags and templates;
-  - when presence changes, not its value;
-  - notifications: the address, and the class of each event a device triggers;
+  - when presence changes, and its size in steps of 4 KB, not its value;
+  - notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question;
   - HMAC fingerprints of edits;
   - space, channel and device identifiers;
   - which device messages whom;
@@ -100,7 +101,7 @@
   - each space's plan, member count and billing contact; card data stays with the payment provider.
 - **The server does not see:** message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads, edited paths and code.
 - **Trade-offs:**
-  - HPKE messages (ephemeral agents, browser actions) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
+  - HPKE messages (ephemeral agents, browser actions, `ask_user` questions and answers) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
   - in managed-keys mode the server reads the space and writes as the agents delegated to it; a delegation lasts until it expires or its signing device is revoked;
   - a leaked recovery key exposes the history;
   - the history is outside MLS forward secrecy: [features.md §4](features.md#4-mls-group-encryption);
