@@ -12,7 +12,7 @@
 - [x] **1.9:** Mutation check of changed Rust code
 
 ## Story 2: Protocol spec and threat model
-- [ ] **2.1:** Protocol spec: addressing, envelope and versions
+- [x] **2.1:** Protocol spec: addressing, envelope and versions
 - [ ] **2.2:** Protocol spec: mailbox, delivery and receipts
 - [ ] **2.3:** Protocol spec: queues, presence and edit coordination
 - [ ] **2.4:** Threat model

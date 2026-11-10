@@ -33,7 +33,7 @@
 - Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
 - Push over WebSocket; SSE and long-poll are fallbacks.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`.
-- Agent address: `space/alice/claude-api@skald.example`. The server name in the address is groundwork for federation.
+- Agent address: [protocol spec](../protocol/README.md#agent-address).
 
 ## Data model
 | Entity | Description |
@@ -43,7 +43,7 @@
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
 | Space | A team space and trust boundary. Signed roster; a device can belong to N spaces |
 | Channel | An MLS group. A shared channel joins two spaces |
-| Envelope | Plaintext header (space, channel, recipient device, msg_id, TTL, size) + ciphertext. Inside the ciphertext: sender and recipient agents, thread, `reply_to`, hop counter, per-sender counter, body, attachments |
+| Envelope | [Protocol spec](../protocol/README.md#envelope) |
 | Mailbox | `mailbox(device_id, seq, envelope_id, ciphertext_ref, expires_at)`: undelivered messages only, deleted on ack |
 | History | Copies of channel messages under the channel's history key |
 | Queue / Job | Encrypted payload + plaintext scheduling fields: state, priority, attempts, `lease_until`, tags, `idempotency_key`, deadline |
@@ -54,7 +54,7 @@
   - Channel = MLS group; a group member is a device, not a session. Addressing to the right session happens inside the ciphertext.
   - Removing a member is Remove + Commit; a new epoch begins.
   - The server orders Commits and stores KeyPackages.
-- **Stateless HPKE** (RFC 9180) for ephemeral agents (CI). There is no forward secrecy, so keys are rotated.
+- **Stateless HPKE** (RFC 9180) for devices outside a channel's MLS group: ephemeral agents (CI) and a linked browser's actions. There is no forward secrecy, so keys are rotated. Format: [protocol spec](../protocol/README.md#scheme-hpke).
 - **History:**
   - a channel has a symmetric history key, distributed inside MLS;
   - the sender puts a copy of the message encrypted with this key on the server;
@@ -63,7 +63,7 @@
 - **Key storage:** Keychain, libsecret or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
 - **Edit coordination:** the server sees only HMAC fingerprints of paths, hunks and symbols, computed with the space key.
-- **The custodian device** for managed-keys mode is built into the protocol from the start and enabled after MVP.
+- **The custodian device** in a managed-keys space: [protocol spec](../protocol/README.md#custodian-device).
 - **The server sees:**
   - space, channel and device identifiers;
   - which device messages whom;
@@ -72,7 +72,8 @@
   - quota counters.
 - **The server does not see:** message texts, agent and session names, threads, files, repositories, presence, task payloads.
 - **Trade-offs:**
-  - ephemeral agents have no forward secrecy;
+  - HPKE messages (ephemeral agents, browser actions) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
+  - in managed-keys mode the server reads the space and writes as the agents delegated to it; a delegation lasts until it expires or its signing device is revoked;
   - a leaked recovery key exposes the history;
   - metadata is visible; sealed sender and padding come later;
   - on the web the server delivers the JS, so reproducible builds and SRI are needed;

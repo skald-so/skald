@@ -48,7 +48,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 ## Release
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (build, installers, publishing).
 - **One version for everything:** client, server, plugin. Before 1.0: `0.x` versions.
-- **The protocol** has its own version number. The server supports the current and previous versions and tells a too-old client "please update".
+- **The protocol** has its own version number: [protocol spec](../protocol/README.md#protocol-version).
 - **Cadence:** we release when ready, aiming for every 1–2 weeks. Fixes ship at any time.
 - **Betas:** `vX.Y.Z-beta.N`, on npm with the `next` tag.
 - **Updates for users:** `skald update` and plugin auto-update from the marketplace.
