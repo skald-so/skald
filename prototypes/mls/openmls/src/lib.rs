@@ -142,6 +142,17 @@ fn node_leaf(leaf_node: &LeafNode) -> Result<Leaf> {
     })
 }
 
+/// RFC 9420, §12.2: an external Commit removes at most one leaf, the joiner's old one, with the
+/// joiner's `identity`. OpenMLS leaves this check to the application.
+fn check_external_removes(joiner: &Leaf, removed: &[Leaf]) -> Result<()> {
+    match removed {
+        [] => Ok(()),
+        [old] if old.identity == joiner.identity => Ok(()),
+        [_] => Err("an external Commit that removes another device".into()),
+        _ => Err("an external Commit with more than one Remove".into()),
+    }
+}
+
 /// A Commit with its Welcome and the GroupInfo OpenMLS makes with it when the group's config has
 /// `use_ratchet_tree_extension`: with the `ratchet_tree` and `external_pub` extensions.
 fn commit(
@@ -416,7 +427,7 @@ impl Device for OpenMlsDevice {
                 let removed = commit
                     .remove_proposals()
                     .map(|remove| Self::leaf(&group, remove.remove_proposal().removed()))
-                    .collect::<Result<_>>()?;
+                    .collect::<Result<Vec<_>>>()?;
                 let mut added = commit
                     .add_proposals()
                     .map(|add| key_package_leaf(add.add_proposal().key_package()))
@@ -430,6 +441,7 @@ impl Device for OpenMlsDevice {
                                 .update_path_leaf_node()
                                 .ok_or("an external Commit without a path")?,
                         )?;
+                        check_external_removes(&joiner, &removed)?;
                         added.push(joiner.clone());
                         joiner
                     }
@@ -506,14 +518,32 @@ impl Observer for OpenMlsObserver {
             return Err("not a Commit".into());
         };
         let leaf = match sender {
-            Sender::Member(index) => self.group.leaf(index).ok_or("no member at the leaf")?,
+            Sender::Member(index) => {
+                node_leaf(self.group.leaf(index).ok_or("no member at the leaf")?)?
+            }
             // An external Commit: the joiner's new leaf is its UpdatePath's.
-            Sender::NewMemberCommit => staged
-                .update_path_leaf_node()
-                .ok_or("an external Commit without a path")?,
+            Sender::NewMemberCommit => {
+                let joiner = node_leaf(
+                    staged
+                        .update_path_leaf_node()
+                        .ok_or("an external Commit without a path")?,
+                )?;
+                let removed = staged
+                    .remove_proposals()
+                    .map(|remove| {
+                        node_leaf(
+                            self.group
+                                .leaf(remove.remove_proposal().removed())
+                                .ok_or("no member at the leaf")?,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                check_external_removes(&joiner, &removed)?;
+                joiner
+            }
             _ => return Err("a Commit from a non-member".into()),
         };
-        check(&node_leaf(leaf)?)?;
+        check(&leaf)?;
         self.group.merge_commit(&self.storage, *staged)?;
         Ok(())
     }
@@ -528,5 +558,87 @@ impl Observer for OpenMlsObserver {
 
     fn members(&self) -> Result<Vec<Leaf>> {
         self.group.members().map(leaf).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use mls_scenario::{
+        Refusal,
+        scenarios::{CHANNEL, Network, assert_group, leaf},
+    };
+
+    use super::*;
+
+    #[test]
+    fn external_commit_removes_only_the_joiners_old_leaf() {
+        let joiner = leaf(&Identity::generate());
+        let other = leaf(&Identity::generate());
+        assert!(check_external_removes(&joiner, &[]).is_ok());
+        assert!(check_external_removes(&joiner, std::slice::from_ref(&joiner)).is_ok());
+        assert!(check_external_removes(&joiner, std::slice::from_ref(&other)).is_err());
+        assert!(check_external_removes(&joiner, &[joiner.clone(), joiner.clone()]).is_err());
+        assert!(check_external_removes(&joiner, &[joiner.clone(), other]).is_err());
+    }
+
+    /// OpenMLS itself accepts an external Commit that removes another device; the Delivery
+    /// Service and the members refuse it. OpenMLS's builder removes only a leaf with the joiner's
+    /// signature key, so this joiner has device 1's signing key and another device ID.
+    #[test]
+    fn external_commit_that_removes_another_device_is_refused() {
+        let mut network = Network::<OpenMlsDevice>::channel(3);
+        let group_info = network.service.group_info(CHANNEL).unwrap().to_vec();
+        let MlsMessageBodyIn::GroupInfo(group_info) = message(&group_info).unwrap() else {
+            panic!("not a GroupInfo");
+        };
+        let victim = network.fleet.identity(1).clone();
+        let joiner = Identity::generate().device_id();
+        let provider = Provider::default();
+        let credential = CredentialWithKey {
+            credential: BasicCredential::new(joiner.to_vec()).into(),
+            signature_key: victim.public_key().to_vec().into(),
+        };
+        let (_, bundle) = MlsGroup::external_commit_builder()
+            .with_config(join_config())
+            .build_group(&provider, group_info, credential)
+            .unwrap()
+            .load_psks(provider.storage())
+            .unwrap()
+            .build(
+                provider.rand(),
+                provider.crypto(),
+                &DeviceSigner(&victim),
+                |_| true,
+            )
+            .unwrap()
+            .finalize(&provider)
+            .unwrap();
+        let commit = bundle.into_commit().to_bytes().unwrap();
+        assert_eq!(
+            wire::public_commit(&commit).unwrap().removed,
+            [1],
+            "the external Commit removes device 1"
+        );
+
+        assert_eq!(
+            network.service.send(&joiner, &commit),
+            Err(Refusal::NotAMember),
+            "the service"
+        );
+        assert_eq!(
+            network.service.epoch(CHANNEL),
+            Some(1),
+            "the service's epoch"
+        );
+        for member in [0, 2] {
+            assert!(
+                network
+                    .fleet
+                    .step(member, |d| d.process(CHANNEL, &commit))
+                    .is_err(),
+                "device {member} processed the external Commit"
+            );
+        }
+        assert_group(&mut network.fleet, 0..3, 1, 0..3);
     }
 }
