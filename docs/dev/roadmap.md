@@ -9,7 +9,7 @@ Numbers in parentheses are features from [features.md](features.md).
 - Edit comparison prototype with HMAC fingerprints.
 
 ## MVP
-**Demo:** Claude on account A asks Codex on machine B under account C for a review. The sender closes the laptop; the reply waits in their mailbox.
+**Demo:** Claude on account A asks Codex on machine B under account C for a review through the task queue. The sender closes the laptop; the reply waits in their mailbox. The user follows the thread and the task in a linked browser.
 
 - Encrypted mailbox: cursor, receipts, `idempotency_key`, WebSocket push, quotas (1).
 - Client: one-shot mode and helper (2).
@@ -20,6 +20,8 @@ Numbers in parentheses are features from [features.md](features.md).
 - Claude Code and Codex adapters: MCP, hooks, Channels (7).
 - Presence, receipts, loop protection, `accept / hold / refuse` (8).
 - Web UI `app.skald.so`, non-secret sections: quotas, devices, sessions, members and invites, connecting machines (12).
+- Task queue: claim, lease, retries, DLQ (10).
+- Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis (12, 6).
 - One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code and Codex, new device confirmation, invite by link, Claude Code plugin (16).
 - Admin rights transfer, "only one admin" warning, account deletion (4, 5).
 - Load testing before launch.
@@ -30,9 +32,8 @@ Numbers in parentheses are features from [features.md](features.md).
 ## Post-MVP
 List order is priority.
 - Service and CI agents: HPKE, scoped tokens, rotation, GitHub Action (9).
-- Task queue (10).
+- Task queue: scheduling and agent integration (10).
 - Codex background agents via app-server (7).
-- Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis (12, 6).
 - Shared channels between organizations (3).
 - Key verification via the SSH key on GitHub, cross-signing, fingerprints, DNS root of trust, Google and corporate IdPs (5).
 - `ask_user`, attachments, shared team instructions (8).

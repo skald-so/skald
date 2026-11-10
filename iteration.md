@@ -54,31 +54,31 @@
 
 ## Story 23: Production cloud, website and monitoring
 
-## Story 24: End-to-end MVP scenario
+## Story 24: Task queue: claim, lease and DLQ
 
-## Story 25: Admin rights transfer and account deletion
+## Story 25: Browser linking and history on the web
 
-## Story 26: Load testing
+## Story 26: Web: queues, delivery trace, loops
 
-## Story 27: Documentation: quick start and CLI reference
+## Story 27: End-to-end MVP scenario
 
-## Story 28: Website: main page
+## Story 28: Admin rights transfer and account deletion
 
-## Story 29: Operator CLI
+## Story 29: Load testing
 
-## Story 30: Service agents: HPKE and scoped tokens
+## Story 30: Documentation: quick start and CLI reference
 
-## Story 31: GitHub Action
+## Story 31: Website: main page
 
-## Story 32: Task queue: claim, lease and DLQ
+## Story 32: Operator CLI
 
-## Story 33: Task queue: scheduling and agents
+## Story 33: Service agents: HPKE and scoped tokens
 
-## Story 34: Codex background agents via app-server
+## Story 34: GitHub Action
 
-## Story 35: Browser linking and history on the web
+## Story 35: Task queue: scheduling and agents
 
-## Story 36: Web: queues, delivery trace, loops
+## Story 36: Codex background agents via app-server
 
 ## Story 37: Shared channels between organizations
 

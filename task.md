@@ -27,43 +27,43 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 21 | Space invite by link | MVP | 12, 13, 20 |
 | 22 | One-command machine connect | MVP | 7, 13, 16, 17, 18, 20 |
 | 23 | Production cloud, website and monitoring | MVP | 6, 7 |
-| 24 | End-to-end MVP scenario | MVP | 19, 21, 22 |
-| 25 | Admin rights transfer and account deletion | MVP | 12, 15, 20 |
-| 26 | Load testing | MVP | 19, 23 |
-| 27 | Documentation: quick start and CLI reference | MVP | 22, 23 |
-| 28 | Website: main page | MVP | 23 |
-| 29 | Operator CLI | MVP | 11, 25 |
-| 30 | Service agents: HPKE and scoped tokens | Post-MVP | 12, 20 |
-| 31 | GitHub Action | Post-MVP | 13, 30 |
-| 32 | Task queue: claim, lease and DLQ | Post-MVP | 12, 14 |
-| 33 | Task queue: scheduling and agents | Post-MVP | 17, 18, 31, 32 |
-| 34 | Codex background agents via app-server | Post-MVP | 18 |
-| 35 | Browser linking and history on the web | Post-MVP | 9, 16, 20 |
-| 36 | Web: queues, delivery trace, loops | Post-MVP | 19, 32, 35 |
+| 24 | Task queue: claim, lease and DLQ | MVP | 12, 14 |
+| 25 | Browser linking and history on the web | MVP | 9, 16, 20 |
+| 26 | Web: queues, delivery trace, loops | MVP | 19, 24, 25 |
+| 27 | End-to-end MVP scenario | MVP | 19, 21, 22, 24, 25, 26 |
+| 28 | Admin rights transfer and account deletion | MVP | 12, 15, 20 |
+| 29 | Load testing | MVP | 19, 23 |
+| 30 | Documentation: quick start and CLI reference | MVP | 22, 23 |
+| 31 | Website: main page | MVP | 23 |
+| 32 | Operator CLI | MVP | 11, 28 |
+| 33 | Service agents: HPKE and scoped tokens | Post-MVP | 12, 20 |
+| 34 | GitHub Action | Post-MVP | 13, 33 |
+| 35 | Task queue: scheduling and agents | Post-MVP | 17, 18, 24, 34 |
+| 36 | Codex background agents via app-server | Post-MVP | 18 |
 | 37 | Shared channels between organizations | Post-MVP | 12, 20 |
 | 38 | Key verification without trusting the server | Post-MVP | 16 |
 | 39 | Google and corporate IdP sign-in | Post-MVP | 8 |
 | 40 | ask_user and attachments | Post-MVP | 19 |
 | 41 | Shared team instructions | Post-MVP | 17, 18 |
 | 42 | Gemini, Cursor, OpenCode and Copilot adapters | Post-MVP | 14, 22 |
-| 43 | Edit coordination: file level | Post-MVP | 5, 17, 18, 32 |
+| 43 | Edit coordination: file level | Post-MVP | 5, 17, 18, 24 |
 | 44 | Edit coordination: hunk and symbol | Post-MVP | 43 |
-| 45 | Web: security center, human inbox, edit map | Post-MVP | 35, 38, 40, 43 |
+| 45 | Web: security center, human inbox, edit map | Post-MVP | 25, 38, 40, 43 |
 | 46 | Public cloud: anti-abuse | Post-MVP | 20, 23 |
-| 47 | Operator console | Post-MVP | 25, 46 |
-| 48 | Alerts, analytics and token usage | Post-MVP | 30, 32, 35 |
+| 47 | Operator console | Post-MVP | 28, 46 |
+| 48 | Alerts, analytics and token usage | Post-MVP | 24, 25, 33 |
 | 49 | Enterprise: SSO, SAML, SCIM and license | Post-MVP | 39 |
 | 50 | Enterprise: audit and retention policies | Post-MVP | 15, 49 |
 | 51 | Self-host: Docker Compose, Helm, documentation | Post-MVP | 7, 39, 49 |
 | 52 | History export and migration to a self-hosted server | Post-MVP | 15, 16, 51 |
-| 53 | Python and TypeScript SDKs | Post-MVP | 13, 32 |
+| 53 | Python and TypeScript SDKs | Post-MVP | 13, 24 |
 | 54 | Homebrew, winget and cargo-binstall | Post-MVP | 7 |
-| 55 | Managed keys: custodian device | Post-MVP | 15, 35 |
+| 55 | Managed keys: custodian device | Post-MVP | 15, 25 |
 | 56 | Hosted MCP for ChatGPT and Claude.ai | Post-MVP | 14, 55 |
-| 57 | skald ui | Post-MVP | 7, 35 |
+| 57 | skald ui | Post-MVP | 7, 25 |
 | 58 | Sealed sender and padding | Post-MVP | 11, 12 |
 | 59 | Server federation | Post-MVP | 37, 38 |
-| 60 | Capacity view | Post-MVP | 4, 33 |
+| 60 | Capacity view | Post-MVP | 4, 35 |
 
 **Order and parallelism**
 
@@ -72,17 +72,18 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Wave 1: 1.
 - Wave 2: 2, 3, 4, 5, 6, 7.
 - Wave 3: 8, 9, 23 (23 can be postponed until launch).
-- Wave 4: 10, 28.
+- Wave 4: 10, 31.
 - Wave 5: 11.
 - Wave 6: 12, 13, 14, 20.
-- Wave 7: 15, 17, 18, 19, 21.
-- Wave 8: 16, 25, 26.
-- Wave 9: 22, 29.
-- Wave 10: 24, 27 — end of MVP.
-- Wave 11: 30, 32, 34, 35, 37, 38, 39, 40, 41, 42, 46, 54, 58.
-- Wave 12: 31, 36, 43, 47, 48, 49, 53, 55, 57, 59.
-- Wave 13: 33, 44, 45, 50, 51, 56.
-- Wave 14: 52, 60.
+- Wave 7: 15, 17, 18, 19, 21, 24.
+- Wave 8: 16, 28, 29.
+- Wave 9: 22, 25, 32.
+- Wave 10: 26, 30.
+- Wave 11: 27 — end of MVP.
+- Wave 12: 33, 36, 37, 38, 39, 40, 41, 42, 43, 46, 53, 54, 55, 57, 58.
+- Wave 13: 34, 44, 45, 47, 48, 49, 56, 59.
+- Wave 14: 35, 50, 51.
+- Wave 15: 52, 60.
 
 ### Story 1: Monorepo skeleton and CI
 
@@ -511,22 +512,72 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 6, Story 7
 - **Docs:** `infrastructure.md` — "Cloud", "Channels"
 
-### Story 24: End-to-end MVP scenario
+### Story 24: Task queue: claim, lease and DLQ
+
+**Goal:** A queue in which a task is never lost and never runs on two agents at once.
+
+**Scope:**
+- Named queues; a task is an encrypted payload plus plaintext scheduling fields; `idempotency_key`.
+- Atomic claim; a heartbeat extends the lease; an expired lease returns the task to the queue.
+- Fencing: `claim_id` with an increasing generation, extension and completion via compare-and-swap; whoever lost the lease gets `claim_lost`.
+- Retries with exponential backoff, then DLQ.
+- The result returns to the sender as an encrypted message; at-least-once semantics.
+- CLI to enqueue, claim, extend and complete; the helper sends the heartbeat.
+- Queue load test.
+- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ.
+
+- **Release:** MVP
+- **Depends on:** Story 12, Story 14
+- **Docs:** `features.md` §10, `architecture.md` — "Queue", "Data model"
+
+### Story 25: Browser linking and history on the web
+
+**Goal:** The browser becomes a linked device and shows content, decrypting it locally.
+
+**Scope:**
+- Layout per the approved design in `../skald-cloud/design/`.
+- The "Link this browser" button: a code or QR from a linked machine, or the recovery key; the browser key is in IndexedDB and can be revoked.
+- A WASM build of the Rust core in the SPA; the browser reads through history keys wrapped to its key and sends actions as signed messages via HPKE.
+- Sections: message texts and threads, a "which agent messages whom" graph, history search in the browser.
+- SRI and reproducible builds for the JS served by the server.
+- **Done when:** a linked browser shows the channel history, and the server receives only ciphertext; a revoked browser cannot read new messages.
+
+- **Release:** MVP
+- **Depends on:** Story 9, Story 16, Story 20
+- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Cryptography"
+
+### Story 26: Web: queues, delivery trace, loops
+
+**Goal:** The browser shows what happens to tasks and messages and lets you control it.
+
+**Scope:**
+- Layout per the approved design in `../skald-cloud/design/`.
+- Queue panel: who holds a task, how much lease is left, `claim_lost`, retries, DLQ with "restart" and "cancel" buttons.
+- Delivery trace: the `stored → delivered → read` path and the reason if a message was not delivered.
+- Loop analysis: agent↔agent threads without a human, a "pause" button.
+- **Done when:** a task from the DLQ is restarted from the browser, and a looping thread is paused.
+
+- **Release:** MVP
+- **Depends on:** Story 19, Story 24, Story 25
+- **Docs:** `features.md` §12
+
+### Story 27: End-to-end MVP scenario
 
 **Goal:** The MVP demo passes in full, automatically, on real agents.
 
 **Scope:**
 - Demo: Claude Code on account A asks Codex on machine B under account C for a review; the sender goes offline, and the reply waits in their mailbox.
+- The review request goes through the task queue; the user follows the thread and the task in a linked browser.
 - The scenario starts with the new-user path: sign-up, one-command machine connect, invite by link.
 - Daily run on staging with real Claude Code and Codex in CI.
-- It checks the "Done when" criteria of features 1, 4, 6 and 16.
+- It checks the "Done when" criteria of features 1, 4, 6, 10 and 16.
 - **Done when:** the demo passes automatically; the run report is available in CI.
 
 - **Release:** MVP
-- **Depends on:** Story 19, Story 21, Story 22
-- **Docs:** `roadmap.md` — "MVP", `features.md` §1, §4, §6, §16, `infrastructure.md` — "PR checks"
+- **Depends on:** Story 19, Story 21, Story 22, Story 24, Story 25, Story 26
+- **Docs:** `roadmap.md` — "MVP", `features.md` §1, §4, §6, §10, §16, `infrastructure.md` — "PR checks"
 
-### Story 25: Admin rights transfer and account deletion
+### Story 28: Admin rights transfer and account deletion
 
 **Goal:** A space is never left without an admin, and a user can delete their account.
 
@@ -543,7 +594,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 12, Story 15, Story 20
 - **Docs:** `features.md` §4, §5, `architecture.md` — "Data model", "Cryptography"
 
-### Story 26: Load testing
+### Story 29: Load testing
 
 **Goal:** Before the public launch, know what load the server can handle and remove bottlenecks.
 
@@ -558,7 +609,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 19, Story 23
 - **Docs:** `features.md` — "Product", `architecture.md` — "Network", `infrastructure.md` — "Cloud"
 
-### Story 27: Documentation: quick start and CLI reference
+### Story 30: Documentation: quick start and CLI reference
 
 **Goal:** A new user connects and starts working from the docs, without help from the author.
 
@@ -573,7 +624,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 22, Story 23
 - **Docs:** `features.md` §16, `architecture.md` — "Cryptography", `infrastructure.md` — "Channels", "Cloud"
 
-### Story 28: Website: main page
+### Story 31: Website: main page
 
 **Goal:** `skald.so` explains what Skald is and leads to sign-up.
 
@@ -587,20 +638,20 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 23
 - **Docs:** `features.md` — "Product", `architecture.md` — "Cryptography", `infrastructure.md` — "Channels", "Cloud"
 
-### Story 29: Operator CLI
+### Story 32: Operator CLI
 
 **Goal:** The operator runs the MVP cloud without SQL.
 
 **Scope:**
 - `skald-server admin`: list accounts with quota usage, disable and re-enable an account, delete an account.
 - Metadata only, like the server itself.
-- **Done when:** an operator finds an account and disables it, and the account loses access; deletion removes the data as in Story 25.
+- **Done when:** an operator finds an account and disables it, and the account loses access; deletion removes the data as in Story 28.
 
 - **Release:** MVP
-- **Depends on:** Story 11, Story 25
+- **Depends on:** Story 11, Story 28
 - **Docs:** `features.md` §17
 
-### Story 30: Service agents: HPKE and scoped tokens
+### Story 33: Service agents: HPKE and scoped tokens
 
 **Goal:** A service agent (`ci/deploy-bot`) without a persistent disk exchanges end-to-end encrypted messages using a scoped token.
 
@@ -615,7 +666,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 12, Story 20
 - **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography"
 
-### Story 31: GitHub Action
+### Story 34: GitHub Action
 
 **Goal:** A GitHub Actions workflow with a single secret sends and receives encrypted messages.
 
@@ -625,28 +676,10 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a GitHub Action with a single secret sends and receives an encrypted message, including behind a proxy.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 13, Story 30
+- **Depends on:** Story 13, Story 33
 - **Docs:** `features.md` §2, §9, §16, `architecture.md` — "Components"
 
-### Story 32: Task queue: claim, lease and DLQ
-
-**Goal:** A queue in which a task is never lost and never runs on two agents at once.
-
-**Scope:**
-- Named queues; a task is an encrypted payload plus plaintext scheduling fields; `idempotency_key`.
-- Atomic claim; a heartbeat extends the lease; an expired lease returns the task to the queue.
-- Fencing: `claim_id` with an increasing generation, extension and completion via compare-and-swap; whoever lost the lease gets `claim_lost`.
-- Retries with exponential backoff, then DLQ.
-- The result returns to the sender as an encrypted message; at-least-once semantics.
-- CLI to enqueue, claim, extend and complete; the helper sends the heartbeat.
-- Queue load test.
-- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ.
-
-- **Release:** Post-MVP
-- **Depends on:** Story 12, Story 14
-- **Docs:** `features.md` §10, `architecture.md` — "Queue", "Data model"
-
-### Story 33: Task queue: scheduling and agents
+### Story 35: Task queue: scheduling and agents
 
 **Goal:** Claude Code, Codex and CI work through a shared queue according to priorities and capabilities.
 
@@ -657,10 +690,10 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** Claude Code, Codex and CI process 100 tasks, duplicates are rejected, failed tasks go to the DLQ.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 17, Story 18, Story 31, Story 32
+- **Depends on:** Story 17, Story 18, Story 24, Story 34
 - **Docs:** `features.md` §10, "Product"
 
-### Story 34: Codex background agents via app-server
+### Story 36: Codex background agents via app-server
 
 **Goal:** A Codex background agent receives messages without an open interactive session and without tmux.
 
@@ -672,37 +705,6 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** Post-MVP
 - **Depends on:** Story 18
 - **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents"
-
-### Story 35: Browser linking and history on the web
-
-**Goal:** The browser becomes a linked device and shows content, decrypting it locally.
-
-**Scope:**
-- Layout per the approved design in `../skald-cloud/design/`.
-- The "Link this browser" button: a code or QR from a linked machine, or the recovery key; the browser key is in IndexedDB and can be revoked.
-- A WASM build of the Rust core in the SPA; the browser reads through history keys wrapped to its key and sends actions as signed messages via HPKE.
-- Sections: message texts and threads, a "which agent messages whom" graph, history search in the browser.
-- SRI and reproducible builds for the JS served by the server.
-- **Done when:** a linked browser shows the channel history, and the server receives only ciphertext; a revoked browser cannot read new messages.
-
-- **Release:** Post-MVP
-- **Depends on:** Story 9, Story 16, Story 20
-- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Cryptography"
-
-### Story 36: Web: queues, delivery trace, loops
-
-**Goal:** The browser shows what happens to tasks and messages and lets you control it.
-
-**Scope:**
-- Layout per the approved design in `../skald-cloud/design/`.
-- Queue panel: who holds a task, how much lease is left, `claim_lost`, retries, DLQ with "restart" and "cancel" buttons.
-- Delivery trace: the `stored → delivered → read` path and the reason if a message was not delivered.
-- Loop analysis: agent↔agent threads without a human, a "pause" button.
-- **Done when:** a task from the DLQ is restarted from the browser, and a looping thread is paused.
-
-- **Release:** Post-MVP
-- **Depends on:** Story 19, Story 32, Story 35
-- **Docs:** `features.md` §12
 
 ### Story 37: Shared channels between organizations
 
@@ -797,7 +799,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** two agents on different machines editing the same file get a warning before merge; the server does not know the paths.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 5, Story 17, Story 18, Story 32
+- **Depends on:** Story 5, Story 17, Story 18, Story 24
 - **Docs:** `features.md` §11, `architecture.md` — "Cryptography"
 
 ### Story 44: Edit coordination: hunk and symbol
@@ -825,7 +827,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** an `ask_user` is approved from a phone; a device is revoked with one click; the map shows overlapping edits.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 35, Story 38, Story 40, Story 43
+- **Depends on:** Story 25, Story 38, Story 40, Story 43
 - **Docs:** `features.md` §12
 
 ### Story 46: Public cloud: anti-abuse
@@ -854,7 +856,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** an operator bans an account and handles a deletion request from the console, without SQL; a regular user does not see the section.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 25, Story 46
+- **Depends on:** Story 28, Story 46
 - **Docs:** `features.md` §17, §12, `architecture.md` — "Security"
 
 ### Story 48: Alerts, analytics and token usage
@@ -869,7 +871,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** DLQ growth and an expiring token arrive as Telegram alerts; analytics is visible only in a linked browser.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 30, Story 32, Story 35
+- **Depends on:** Story 24, Story 25, Story 33
 - **Docs:** `features.md` §12
 
 ### Story 49: Enterprise: SSO, SAML, SCIM and license
@@ -942,7 +944,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a Python example and a TypeScript example send a message and process a task from the queue.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 13, Story 32
+- **Depends on:** Story 13, Story 24
 - **Docs:** `tech-stack.md`
 
 ### Story 54: Homebrew, winget and cargo-binstall
@@ -970,7 +972,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** in a managed-keys space, the web shows the history without linking the browser; members see that the mode is on.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 15, Story 35
+- **Depends on:** Story 15, Story 25
 - **Docs:** `features.md` §13, `architecture.md` — "Cryptography"
 
 ### Story 56: Hosted MCP for ChatGPT and Claude.ai
@@ -995,7 +997,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** `skald ui` opens the web UI from localhost, and the content sections work without loading JS from the server.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 7, Story 35
+- **Depends on:** Story 7, Story 25
 - **Docs:** `features.md` §12, `architecture.md` — "Components"
 
 ### Story 58: Sealed sender and padding
@@ -1036,5 +1038,5 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** the team sees members' limits; a task for an agent with an exhausted limit waits for it to reset.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 4, Story 33
+- **Depends on:** Story 4, Story 35
 - **Docs:** `features.md` §14
