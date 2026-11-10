@@ -28,7 +28,7 @@ A message reaches an agent in three hops: the sending device → the server → 
 Client and server exchange envelopes, answers and statuses as frames: CBOR items carried as [Encoding](README.md#encoding) says.
 
 ```cddl
-frame = send / stored / send-refused / sync / message / status / ack / batch
+frame = send / stored / send-refused / sync / message / status / ack / batch / space-notice
 
 ; client → server
 send = [1, envelope: bstr .cbor envelope, report: bool]
@@ -40,7 +40,8 @@ stored = [2, send-key, timestamp]
 send-refused = [3, send-key, problem: tstr]
 message = [5, seq, envelope: bstr .cbor envelope]
 status = [6, seq, delivery-status]
-batch = [8, [* (message / status)]]
+batch = [8, [* (message / status / space-notice)]]
+space-notice = [9, space: id]
 
 send-key = [
   msg_id: id,
@@ -61,11 +62,12 @@ timestamp = uint       ; seconds since the Unix epoch
 ```
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
+- `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
 - A peer ignores a frame of a type it does not know.
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request states the cursor; its answer is a `batch`, empty if nothing arrived before its timeout.
-  - SSE: one `message` or `status` per event, the event's `id` its `seq`; `Last-Event-ID` states the cursor. The client sends `send` and `ack` over HTTPS.
+  - SSE: one `message`, `status` or `space-notice` per event, the event's `id` the `seq` of a `message` or `status`; `Last-Event-ID` states the cursor. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
 
 ## Send
@@ -78,7 +80,8 @@ timestamp = uint       ; seconds since the Unix epoch
 | Problem | The envelope |
 |---|---|
 | `version-mismatch` | Has a `v` other than the version of its connection or request |
-| `not-a-member` | Comes from a device that may not send in `channel` |
+| `not-a-member` | Comes from a device that may not send in `channel`, or holds a Commit from a device that may not commit it ([Commit ordering](membership.md#commit-ordering)) |
+| `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
 | `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel` |
 | `too-large` | Has a payload over the server's limit (cloud: [features.md, "Product"](../dev/features.md#product)) |
 | `quota-exceeded` | Is over the sending account's quota |

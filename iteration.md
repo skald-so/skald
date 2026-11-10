@@ -14,7 +14,7 @@
 ## Story 2: Protocol spec and threat model
 - [x] **2.1:** Protocol spec: addressing, envelope and versions
 - [x] **2.2:** Protocol spec: mailbox, delivery and receipts
-- [ ] **2.3:** Protocol spec: devices, roster and channels
+- [x] **2.3:** Protocol spec: devices, roster and channels
 - [ ] **2.4:** Protocol spec: queues and tasks
 - [ ] **2.5:** Protocol spec: presence and `ask_user`
 - [ ] **2.6:** Threat model
