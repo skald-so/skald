@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Prints the size of each MLS prototype's WASM module for the browser, raw and compressed, as a
+# Markdown table: with only the browser's GroupInfo check (`*-browser-check`) and with the whole
+# scenario suite (`*-suite`). Each module is built with the `wasm` profile, run through
+# wasm-bindgen for the web without its name and producers sections, then `wasm-opt -Oz`; gzip and
+# Brotli at their highest levels.
+# Needs the tools of the WASM tests (CONTRIBUTING.md, "Requirements"), wasm-opt and brotli.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+for tool in wasm-bindgen wasm-opt brotli; do
+  if ! command -v "$tool" >/dev/null; then
+    echo "wasm-size: $tool is missing; see docs/dev/mls-prototypes.md, \"WASM\"" >&2
+    exit 1
+  fi
+done
+
+cargo build --workspace --examples --profile wasm --target wasm32-unknown-unknown --locked
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+
+# kib <bytes>: the size in KiB with one decimal.
+kib() { awk -v bytes="$1" 'BEGIN { printf "%.1f", bytes / 1024 }'; }
+
+echo '| Module | Raw, KiB | gzip -9, KiB | Brotli -q 11, KiB |'
+echo '|---|---|---|---|'
+for module in openmls_browser_check openmls_suite mls_rs_browser_check mls_rs_suite; do
+  wasm-bindgen --target web --remove-name-section --remove-producers-section --out-dir "$out" \
+    "target/wasm32-unknown-unknown/wasm/examples/$module.wasm"
+  wasm=$out/$module.wasm
+  wasm-opt -Oz --all-features "$out/${module}_bg.wasm" -o "$wasm"
+  printf '| `%s` | %s | %s | %s |\n' "${module//_/-}" "$(kib "$(wc -c <"$wasm")")" \
+    "$(kib "$(gzip -9 -c "$wasm" | wc -c)")" "$(kib "$(brotli -q 11 -c "$wasm" | wc -c)")"
+done

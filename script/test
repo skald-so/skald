@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the workspace and runs every check. Exits 0 only if all of them pass.
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
-#   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
+#   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls,
+#            natively and in WASM
 #   tooling  tests of the scripts in script/, Renovate config validation
 #   web      web UI lint, tests (with the kit page screenshots against their references) and build
 set -euo pipefail
@@ -27,6 +28,24 @@ echo "script/test: checking$parts"
 if checks rust && ! command -v cargo-deny >/dev/null; then
   echo "script/test: cargo-deny is missing; install it: cargo install cargo-deny --locked" >&2
   exit 1
+fi
+if checks rust; then
+  # The MLS prototypes' WASM tests run in Node.js with the wasm-bindgen of their Cargo.lock.
+  wasm_bindgen=$(awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/"/, "", $3); print $3 }' \
+    prototypes/mls/Cargo.lock)
+  if [[ ! -d $(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown ]]; then
+    echo "script/test: the WASM target is missing; install it: rustup target add wasm32-unknown-unknown" >&2
+    exit 1
+  fi
+  if [[ $(wasm-bindgen-test-runner --version 2>/dev/null) != "wasm-bindgen-test-runner $wasm_bindgen" ]]; then
+    echo "script/test: wasm-bindgen-test-runner $wasm_bindgen is missing; install it:" \
+      "cargo install wasm-bindgen-cli --version $wasm_bindgen --locked" >&2
+    exit 1
+  fi
+  if ! command -v node >/dev/null; then
+    echo "script/test: node is missing; the MLS prototypes' WASM tests run in Node.js: https://nodejs.org" >&2
+    exit 1
+  fi
 fi
 if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
@@ -63,6 +82,14 @@ if checks rust; then
   cargo fmt "${prototypes[@]}" --all --check
   cargo clippy "${prototypes[@]}" --workspace --all-targets --locked -- -D warnings
   cargo test "${prototypes[@]}" --workspace --locked
+  # The prototypes in WASM: the scenario suite runs in Node.js, the test runner that
+  # prototypes/mls/.cargo/config.toml sets. Cargo reads that config only from its directory.
+  (
+    cd prototypes/mls
+    cargo clippy --target wasm32-unknown-unknown --workspace --all-targets --locked -- -D warnings
+    cargo test --target wasm32-unknown-unknown -p mls-proto-openmls -p mls-proto-mls-rs \
+      --test scenarios --locked
+  )
 fi
 
 if checks tooling; then

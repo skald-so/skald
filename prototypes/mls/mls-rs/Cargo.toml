@@ -14,3 +14,24 @@ mls-rs = { version = "0.57", features = ["external_client", "last_resort_key_pac
 mls-rs-core = "0.27"
 mls-rs-crypto-rustcrypto = "0.23"
 zeroize = "1"
+
+# The browser's random number generator on WASM; mls-rs itself takes the browser's clock there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+mls-rs-crypto-rustcrypto = { version = "0.23", features = ["browser"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[dev-dependencies]
+wasm-bindgen = "0.2"
+
+# WASM modules for their size, built by `wasm-size`: only the browser check, and the whole suite.
+[[example]]
+name = "mls-rs-browser-check"
+path = "examples/browser_check.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "mls-rs-suite"
+path = "examples/suite.rs"
+crate-type = ["cdylib"]
