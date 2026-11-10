@@ -88,10 +88,10 @@ After each step, every member is at the same epoch with the same members in leaf
 ## Benchmarks
 `mls-bench` times each channel operation on both prototypes through the suite's `Device`, `Fleet` and `DeliveryService`, on groups of 2, 10, 100 and 1000 devices. [`prototypes/mls/benchmarks`](../../prototypes/mls/benchmarks) runs them and prints the results below; it needs the WASM test tools. `script/test` runs each benchmark once on a group of 2, natively and in WASM.
 
-- Group: device 0 creates it with the other devices from their KeyPackages; only device 1 joins from the Welcome. Every benchmark starts from that epoch 1. No other member has committed, so a Commit's UpdatePath encrypts mostly to members' leaves: the costliest Commit at that size.
+- Group: device 0 creates it with the other devices from their KeyPackages; only device 1 joins from the Welcome. Every benchmark starts from that epoch 1, whose tree biases the results: [Tree](#tree).
 - A run loads its device from the saved state, untimed, and times only the operation. The operation reads the group from the library's storage and writes it back, as a one-shot step does.
 - Each benchmark runs at least 5 times, then until its runs take 1 s, at most 100 times. A cell is the median and, in parentheses, the fastest and the slowest run, in ms.
-- Natively, both libraries run parts of their tree operations in parallel with rayon: on every core, and with `RAYON_NUM_THREADS=1` on one. WASM has one thread.
+- Natively, the benchmarks run on every core and, with `RAYON_NUM_THREADS=1`, on one: "Parallelism" in [OpenMLS](#openmls) and [mls-rs](#mls-rs). WASM has one thread.
 
 | Operation | Timed |
 |---|---|
@@ -112,6 +112,14 @@ After each step, every member is at the same epoch with the same members in leaf
 | Browser's GroupInfo check | `mls_scenario::browser::members` on the GroupInfo, for a wrap by device 0 |
 
 Objects: a KeyPackage; the Commits of the operations; the Welcome creating the group, for all devices but its creator, and that of an Add, for one; the GroupInfo with `ratchet_tree` and `external_pub`; the saved state of device 1, a member of only this group.
+
+### Tree
+No member but device 0 has committed, so the group's tree has no parent nodes but those the creating Commit's UpdatePath sets. Once members have committed, most parent nodes are set. Against such a group of n devices:
+- **Commits:** an UpdatePath encrypts a path secret to each node in the resolution of the committer's copath: here about n − 1 leaves, 82 bytes each; once members have committed, about log2(n) nodes. Every Commit with an UpdatePath, all but mls-rs's of an Add, is the most a group of n has: 82647 bytes for OpenMLS's empty Commit at 1000 devices, against about 10 ciphertexts. Its time grows with the recipients: on one core, an empty Commit takes about 50 µs more per device from 100 to 1000 devices. The times of committing and of joining by external Commit are the most for the size.
+- **Processing:** a member decrypts one path secret either way, but here it decodes and verifies a Commit of about n ciphertexts instead of about log2(n). The rows that process a Commit with an UpdatePath, "Catch up on missed Commits" and "Delivery Service's Commit check" among them, are high by that work.
+- **Joining:** a joining device and the browser verify the tree: here without parent nodes' parent hashes. "Join from a Welcome", the tree check of "Join by external Commit" and "Browser's GroupInfo check" are low by that work.
+- **Sizes:** a set parent node adds 68 bytes to the encoded tree, its HPKE public key and parent hash: about 68 KB at 1000 devices. The GroupInfo, the Welcome of an Add and the saved state hold the tree: they are low by that. The Commit and the Welcome creating the group are those of any channel.
+- **Per library:** OpenMLS's creating Commit has an UpdatePath, which sets device 0's direct path; mls-rs's has none ([mls-rs](#mls-rs), "Commits of Adds"). A joiner by external Commit, at leaf n, encrypts to the node over leaves 0 to 511 at 1000 devices on OpenMLS and to those 512 leaves on mls-rs: about 490 against about 1000 recipients, 40684 against 82592 bytes. The rows "Join by external Commit", "Process an external Commit" and "External Commit" compare unlike work. Device 0's Commits encrypt to the same leaves on both.
 
 ### Results
 - Machine: Apple M3 Max, 14 cores, 36 GiB, macOS on arm64, shared with other workloads.
@@ -260,7 +268,7 @@ Object sizes, the same on every run but OpenMLS's saved state, whose length vari
 - **WASM build:** needs the `js` feature, for the browser's clock and random number generator; without it, a `compile_error!` names the feature. `openmls_rust_crypto` also takes getrandom 0.2 through `rand_core` 0.6, which `js` does not reach: the prototype turns on getrandom 0.2's `js` feature itself. The module holds getrandom 0.2 and 0.4.
 - **Browser check:** `PublicGroup::from_external` checks the tree first: each leaf's signature (`InvalidNodeSignature`), then the tree hash against the GroupInfo's (`TreeHashMismatch`). Then the signer's leaf (`UnknownSender` for a blank or missing one) and the GroupInfo's signature (`InvalidGroupInfoSignature`).
 - **Parallelism:** natively, tree operations run in parallel with rayon, a required dependency; `RAYON_NUM_THREADS` limits it.
-- **Commits of Adds:** every Commit has an UpdatePath, one of only Adds too: at 1000 devices, the Commit of one Add is 81 KiB.
+- **Commits of Adds:** every Commit has an UpdatePath, one of only Adds too. In the benchmarks' [tree](#tree), where no member but the creator has committed, the Commit of one Add is 81 KiB at 1000 devices; once members have committed, its UpdatePath holds about log2(n) ciphertexts.
 - **Saved state size:** the storage keeps its values as JSON: a member's state is 1 MB at 1000 devices, and its length varies by tens of bytes with the values' bytes.
 
 ### mls-rs
