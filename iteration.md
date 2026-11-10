@@ -11,6 +11,14 @@
 - [ ] **1.8:** Branch protection and `CONTRIBUTING.md`
 
 ## Story 2: Protocol spec and threat model
+- [ ] **2.1:** Protocol spec: addressing, envelope and versions
+- [ ] **2.2:** Protocol spec: mailbox, delivery and receipts
+- [ ] **2.3:** Protocol spec: queues, presence and edit coordination
+- [ ] **2.4:** Threat model
+- [ ] **2.5:** Identifiers and agent addresses in `proto`
+- [ ] **2.6:** Envelope and receipt types in `proto`
+- [ ] **2.7:** Protocol version check on the server
+- [ ] **2.8:** Protocol version check in the client
 
 ## Story 3: MLS prototypes and library choice
 
