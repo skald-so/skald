@@ -500,6 +500,396 @@ test("Chrome exposes the tables with their column headers and cells", async () =
   await view.page.close();
 });
 
+/** The filters section of the kit page. */
+const filters = "section[aria-labelledby=kit-filters]";
+
+test.each(themes)(
+  "filter buttons and search have the design looks in the %s theme",
+  async (theme) => {
+    const c = (label: string) => color(label, theme);
+    const view = await kit.open({ width: 1440, system: theme });
+    const looks = await view.page.evaluate((filters) => {
+      const section = document.querySelector(filters)!;
+      const look = (element: Element) => {
+        const style = getComputedStyle(element);
+        return {
+          background: style.backgroundColor,
+          color: style.color,
+          border: `${style.borderTopWidth} ${style.borderTopColor}`,
+          font: `${style.fontFamily.split(",")[0]!.replaceAll('"', "")} ${style.fontSize} ${style.fontWeight}`,
+          height: element.getBoundingClientRect().height,
+        };
+      };
+      const group = (name: string) =>
+        section.querySelector(`[role=group][aria-label="${name}"]`)!;
+      const field = (name: string) =>
+        section.querySelector(`input[aria-label="${name}"]`)!;
+      const gaps = (element: Element) => {
+        const boxes = [...element.children].map((child) =>
+          child.getBoundingClientRect(),
+        );
+        return boxes.slice(1).map((box, i) => box.left - boxes[i]!.right);
+      };
+      const joined = group("View");
+      const clear = section.querySelector("button[aria-label='Clear search']")!;
+      const members = field("Search members").getBoundingClientRect();
+      const cross = clear.getBoundingClientRect();
+      return {
+        separate: [...group("Filter accounts").children].map(look),
+        separateGaps: gaps(group("Filter accounts")),
+        joined: {
+          frame: [
+            look(joined).border,
+            getComputedStyle(joined).borderTopLeftRadius,
+          ],
+          buttons: [...joined.children].map(look),
+          gaps: gaps(joined),
+        },
+        searches: ["Search accounts", "Search messages", "Search members"].map(
+          (name) => ({
+            ...look(field(name)),
+            width: field(name).getBoundingClientRect().width,
+            placeholder: getComputedStyle(field(name), "::placeholder").color,
+          }),
+        ),
+        clear: {
+          color: getComputedStyle(clear).color,
+          background: getComputedStyle(clear).backgroundColor,
+          // The cross sits inside the field at its right end, centered on its height.
+          right: members.right - cross.right,
+          centered:
+            Math.abs(
+              cross.top - members.top - (members.bottom - cross.bottom),
+            ) <= 1,
+          padding: getComputedStyle(field("Search members")).paddingRight,
+        },
+      };
+    }, filters);
+
+    const inter = "Inter Variable";
+    const active = {
+      background: c("Accent soft"),
+      color: c("Accent"),
+      border: `1px ${c("Accent soft")}`,
+      font: `${inter} 13px 500`,
+      height: 40,
+    };
+    const idle = {
+      background: transparent,
+      color: c("Muted text"),
+      border: `1px ${c("Line")}`,
+      font: `${inter} 13px 500`,
+      height: 40,
+    };
+    // As 13-operator-accounts.png: the first choice is active.
+    expect(looks.separate).toEqual([active, idle, idle, idle]);
+    expect(looks.separateGaps).toEqual([4, 4, 4]);
+    // As 04-messages.png: one frame, the active choice bold.
+    expect(looks.joined).toEqual({
+      frame: [`1px ${c("Line")}`, "8px"],
+      buttons: [
+        {
+          ...active,
+          border: `0px ${c("Accent")}`,
+          font: `${inter} 13px 600`,
+        },
+        { ...idle, border: `0px ${c("Muted text")}` },
+      ],
+      gaps: [0],
+    });
+    expect(looks.searches).toEqual(
+      [280, 240, 260].map((width) => ({
+        background: c("Side panel"),
+        color: c("Text"),
+        border: `1px ${c("Line")}`,
+        font: `${inter} 14px 400`,
+        height: 40,
+        width,
+        placeholder: c("Muted text"),
+      })),
+    );
+    expect(looks.clear).toEqual({
+      color: c("Muted text"),
+      background: transparent,
+      right: 6,
+      centered: true,
+      padding: "40px",
+    });
+    await view.page.close();
+  },
+);
+
+/** The colors of the pixels in a box of a PNG image, as Chrome draws them: `rgb(15, 16, 19)`. */
+async function boxColors(
+  png: Buffer,
+  box: { x: number; y: number; width: number; height: number },
+): Promise<string[]> {
+  const page = await kit.browser.newPage();
+  try {
+    return await page.evaluate(
+      async ({ src, box }) => {
+        const image = new Image();
+        image.src = src;
+        await image.decode();
+        const canvas = document.createElement("canvas");
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context = canvas.getContext("2d")!;
+        context.drawImage(image, 0, 0);
+        const { data } = context.getImageData(
+          box.x,
+          box.y,
+          box.width,
+          box.height,
+        );
+        const colors = new Set<string>();
+        for (let i = 0; i < data.length; i += 4)
+          colors.add(`rgb(${data[i]}, ${data[i + 1]}, ${data[i + 2]})`);
+        return [...colors];
+      },
+      { src: `data:image/png;base64,${png.toString("base64")}`, box },
+    );
+  } finally {
+    await page.close();
+  }
+}
+
+test("a search field with a query shows its own clear button, not Chrome's", async () => {
+  const view = await kit.open({ width: 1440, system: "light", theme: "light" });
+  const field = view.page.getByRole("searchbox", { name: "Search members" });
+  await field.focus();
+  const { width, height } = (await field.boundingBox())!;
+  const png = await field.screenshot({ scale: "css" });
+  // Between the text and the clear button: only the field background, where Chrome puts its own.
+  const strip = { x: width - 70, y: 4, width: 28, height: height - 8 };
+  expect(await boxColors(png, strip)).toEqual([color("Side panel", "light")]);
+  // The clear button draws its cross.
+  const cross = { x: width - 34, y: 6, width: 28, height: height - 12 };
+  expect((await boxColors(png, cross)).length).toBeGreaterThan(1);
+  await view.page.close();
+});
+
+describe("filter buttons and search in Chrome", () => {
+  let view: KitView;
+  beforeAll(async () => {
+    view = await kit.open({ width: 1440, system: "light" });
+  }, 30_000);
+  afterAll(() => view?.page.close());
+
+  const section = () => view.page.locator(filters);
+  const search = () =>
+    section().getByRole("searchbox", { name: "Search accounts" });
+  /** The account names in the filtered table, or the empty state. */
+  const shown = () =>
+    section()
+      .getByRole("table", { name: "Filtered accounts" })
+      .locator("tbody tr")
+      .evaluateAll((rows) =>
+        rows.map(
+          (row) => (row.querySelector("td span span") ?? row).textContent ?? "",
+        ),
+      );
+  /** Each choice of the accounts filter with whether it is pressed. */
+  const choices = () =>
+    section()
+      .getByRole("group", { name: "Filter accounts" })
+      .getByRole("button")
+      .evaluateAll((buttons) =>
+        buttons.map((button) => [
+          button.textContent,
+          button.getAttribute("aria-pressed"),
+        ]),
+      );
+  const focused = () =>
+    view.page.evaluate(
+      () =>
+        document.activeElement?.getAttribute("aria-label") ??
+        document.activeElement?.textContent,
+    );
+  const everyone = [
+    "Northwind",
+    "spam-relay",
+    "Acme CI",
+    "Ana Kovac",
+    "Lee Park",
+    "free-tokens",
+  ];
+
+  test("Tab, Space and Enter make a filter choice the only active one", async () => {
+    await section().getByRole("button", { name: "All", exact: true }).focus();
+    await view.page.keyboard.press("Tab");
+    expect(await focused()).toBe("Flagged");
+    await view.page.keyboard.press("Space");
+    expect(await choices()).toEqual([
+      ["All", "false"],
+      ["Flagged", "true"],
+      ["Banned", "false"],
+      ["Enterprise", "false"],
+    ]);
+    expect(await shown()).toEqual(["spam-relay"]);
+    expect(await focused()).toBe("Flagged");
+
+    await view.page.keyboard.press("Tab");
+    await view.page.keyboard.press("Tab");
+    expect(await focused()).toBe("Enterprise");
+    await view.page.keyboard.press("Enter");
+    expect(await choices()).toEqual([
+      ["All", "false"],
+      ["Flagged", "false"],
+      ["Banned", "false"],
+      ["Enterprise", "true"],
+    ]);
+    expect(await shown()).toEqual(["Northwind"]);
+
+    await view.page.keyboard.press("Shift+Tab");
+    await view.page.keyboard.press("Shift+Tab");
+    await view.page.keyboard.press("Shift+Tab");
+    await view.page.keyboard.press("Enter");
+    expect(await shown()).toEqual(everyone);
+  });
+
+  test("typing narrows the table and Escape clears the query, keeping the focus", async () => {
+    await search().click();
+    await view.page.keyboard.type("park");
+    expect(await shown()).toEqual(["Lee Park"]);
+    await view.page.keyboard.press("Escape");
+    expect(await search().inputValue()).toBe("");
+    expect(await shown()).toEqual(everyone);
+    expect(await focused()).toBe("Search accounts");
+  });
+
+  test("the clear button clears the query by a click or Enter and returns the focus to the field", async () => {
+    // The field's own clear button, next to it.
+    const clear = search().locator("xpath=following-sibling::button");
+    await search().click();
+    await view.page.keyboard.type("ana");
+    expect(await shown()).toEqual(["Ana Kovac"]);
+    await clear.click();
+    expect(await search().inputValue()).toBe("");
+    expect(await shown()).toEqual(everyone);
+    expect(await focused()).toBe("Search accounts");
+    expect(await clear.count()).toBe(0);
+
+    await view.page.keyboard.type("north");
+    await view.page.keyboard.press("Tab");
+    expect(await focused()).toBe("Clear search");
+    await view.page.keyboard.press("Enter");
+    expect(await search().inputValue()).toBe("");
+    expect(await focused()).toBe("Search accounts");
+  });
+
+  test("Chrome exposes the choices as pressed or not and the named search field", async () => {
+    await section().getByRole("button", { name: "Banned" }).click();
+    const cdp = await view.page.context().newCDPSession(view.page);
+    const { nodes } = await cdp.send("Accessibility.getFullAXTree");
+    const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+    const group = nodes.find(
+      (node) =>
+        node.role?.value === "group" && node.name?.value === "Filter accounts",
+    )!;
+    const buttons = (group.childIds ?? [])
+      .map((id) => byId.get(id)!)
+      .map((node) => [
+        node.role?.value,
+        node.name?.value,
+        node.properties?.find(({ name }) => name === "pressed")?.value.value,
+      ]);
+    expect(buttons).toEqual([
+      ["button", "All", "false"],
+      ["button", "Flagged", "false"],
+      ["button", "Banned", "true"],
+      ["button", "Enterprise", "false"],
+    ]);
+    expect(
+      nodes
+        .filter((node) => node.role?.value === "searchbox")
+        .map((node) => node.name?.value),
+    ).toEqual(["Search accounts", "Search messages", "Search members"]);
+    await section().getByRole("button", { name: "All", exact: true }).click();
+  });
+});
+
+test("in a container narrower than them, filter buttons wrap and the search field shrinks", async () => {
+  const view = await kit.open({ width: 1440, system: "light" });
+  const layout = await view.page.evaluate((filters) => {
+    const section = document.querySelector(filters)!;
+    const group = section.querySelector(
+      "[role=group][aria-label='Filter accounts']",
+    )!;
+    const search = section.querySelector(
+      "input[aria-label='Search accounts']",
+    )!;
+    const toolbar = group.parentElement! as HTMLElement;
+    toolbar.style.width = "180px";
+    const right = toolbar.getBoundingClientRect().right;
+    const buttons = [...group.children].map((button) =>
+      button.getBoundingClientRect(),
+    );
+    return {
+      lines: new Set(buttons.map((button) => button.top)).size,
+      inside: [...buttons, search.getBoundingClientRect()].every(
+        (box) => box.right <= right,
+      ),
+      searchWidth: search.getBoundingClientRect().width,
+    };
+  }, filters);
+  expect(layout).toEqual({ lines: 2, inside: true, searchWidth: 180 });
+  await view.page.close();
+});
+
+/** Where the accounts filter and search sit: on one line or two, and inside the page. */
+function toolbarLayout(page: Page) {
+  return page.evaluate((filters) => {
+    const section = document.querySelector(filters)!;
+    const group = section
+      .querySelector("[role=group][aria-label='Filter accounts']")!
+      .getBoundingClientRect();
+    const search = section
+      .querySelector("input[aria-label='Search accounts']")!
+      .getBoundingClientRect();
+    const page = document.querySelector("main")!.getBoundingClientRect();
+    return {
+      oneLine: search.top === group.top,
+      inside:
+        Math.max(group.right, search.right) <= page.right - 16 &&
+        Math.min(group.left, search.left) >= page.left + 16,
+      searchWidth: search.width,
+    };
+  }, filters);
+}
+
+const toolbar = (width: number) => ({
+  oneLine: width >= 760,
+  inside: true,
+  searchWidth: 280,
+});
+
+describe.each(widths)("filter buttons and search at %i px", (width) => {
+  test(
+    width < 760 ? "wrap and stay inside the page" : "sit on one line",
+    async () => {
+      const view = await kit.open({ width, system: "light" });
+      expect(await toolbarLayout(view.page)).toEqual(toolbar(width));
+      await view.page.close();
+    },
+  );
+});
+
+describe.each(widths.map((from, i) => [from, widths[1 - i]!]))(
+  "filter buttons and search opened at %i px and resized to %i px",
+  (from, to) => {
+    test(
+      to < 760 ? "wrap and stay inside the page" : "join one line",
+      async () => {
+        const view = await kit.open({ width: from, system: "light" });
+        await view.page.setViewportSize({ width: to, height: 900 });
+        await expect.poll(() => toolbarLayout(view.page)).toEqual(toolbar(to));
+        await view.page.close();
+      },
+    );
+  },
+);
+
 test.each(themes)(
   "without the URL parameter the kit page follows the %s system theme",
   async (theme) => {
