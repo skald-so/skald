@@ -31,6 +31,15 @@
 
 ## Story 7: Release pipeline
 
+## Story 62: Web UI kit: theme, shells and components
+- [ ] **62.1:** Theme, fonts and the kit page
+- [ ] **62.2:** Buttons, status labels and the warning banner
+- [ ] **62.3:** Sortable table, empty and loading states
+- [ ] **62.4:** Filter buttons and search
+- [ ] **62.5:** Dropdown filter
+- [ ] **62.6:** Cabinet shell
+- [ ] **62.7:** Operator console shell
+
 ## Story 8: GitHub sign-in and device certificate
 
 ## Story 9: Google sign-in and linked sign-in methods

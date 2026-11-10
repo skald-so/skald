@@ -11,6 +11,7 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 5 | Edit comparison prototype with HMAC fingerprints | MVP | 1 |
 | 6 | Staging environment | MVP | 1 |
 | 7 | Release pipeline | MVP | 1 |
+| 62 | Web UI kit: theme, shells and components | MVP | 1 |
 | 8 | GitHub sign-in and device certificate | MVP | 1, 2 |
 | 9 | Google sign-in and linked sign-in methods | MVP | 8 |
 | 10 | Crypto core | MVP | 2, 3 |
@@ -25,7 +26,7 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 19 | Claude Code adapter and plugin | MVP | 4, 14, 15 |
 | 20 | Codex adapter | MVP | 4, 14, 15 |
 | 21 | Presence, statuses and loop protection | MVP | 13, 15 |
-| 22 | Web UI: non-secret sections | MVP | 8, 9, 11, 12 |
+| 22 | Web UI: non-secret sections | MVP | 8, 9, 11, 12, 62 |
 | 23 | Space invite by link | MVP | 13, 14, 22 |
 | 24 | One-command machine connect | MVP | 7, 14, 17, 19, 20, 22 |
 | 25 | Production cloud, website and monitoring | MVP | 6, 7 |
@@ -36,7 +37,7 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 30 | Admin rights transfer and account deletion | MVP | 13, 16, 22 |
 | 31 | Load testing | MVP | 21, 25 |
 | 32 | Documentation: quick start and CLI reference | MVP | 24, 25 |
-| 33 | Website: main page | MVP | 25 |
+| 33 | Website: main page | MVP | 25, 62 |
 | 34 | Operator CLI | MVP | 12, 30 |
 | 35 | Service agents: HPKE and scoped tokens | Post-MVP | 13, 22 |
 | 36 | GitHub Action | Post-MVP | 14, 35 |
@@ -71,7 +72,7 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 A wave starts when the dependencies of its stories are done; stories within a wave can be done in parallel. Priority is the order in this file.
 
 - Wave 1: 1.
-- Wave 2: 2, 3, 4, 5, 6, 7.
+- Wave 2: 2, 3, 4, 5, 6, 7, 62.
 - Wave 3: 8, 10, 25 (25 can be postponed until launch).
 - Wave 4: 9, 11, 33.
 - Wave 5: 12.
@@ -357,6 +358,104 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 1
 - **Docs:** `infrastructure.md` — "Flow", "Release", "Channels", "Trust in builds", `tech-stack.md`
 
+### Story 62: Web UI kit: theme, shells and components
+
+**Goal:** Web UI screens are assembled from ready parts that match the approved design, so screen stories only connect the API.
+
+**Scope:**
+- Look per the approved design in `../skald-cloud/design/`: tokens, fonts and rules in its `README.md`.
+- Theme: light and dark tokens that follow the system setting; fonts.
+- Shells: the cabinet with the side menu, space switcher and account footer; the operator console with top tabs.
+- Components: a table sorted by a click on a column header, with an arrow on the active column; filter buttons; a dropdown filter; search; a warning banner; buttons; status labels; empty and loading states.
+- A kit page shows every component in every state with fixture data, without API calls.
+- Desktop and phone width; usable from the keyboard and with a screen reader.
+- **Done when:** the kit page matches the approved design in both themes at desktop and phone width; component tests run in `script/test`.
+
+- **Release:** MVP
+- **Depends on:** Story 1
+- **Docs:** `features.md` §12, `architecture.md` — "Components", `tech-stack.md`
+
+#### Iteration 62.1: Theme, fonts and the kit page
+- **Goal:** The web UI has the approved colors and fonts in both themes, and one page shows the whole kit.
+- **What we do:**
+  - Light and dark tokens from "Tokens" in the design `README.md`; the theme follows the system setting.
+  - Fonts: Inter for text, Space Grotesk for headings and numbers, JetBrains Mono for code, keys and IDs; bundled with the build, no requests to third-party hosts.
+  - A visible keyboard focus outline on every interactive element.
+  - The kit page: opens from the dev server separately from the app and stays out of the production build; uses only fixture data and never calls the API; shows the color tokens and font samples. Later iterations add each component to it.
+  - A URL parameter forces the light or dark theme on the kit page.
+  - A command saves kit page screenshots with headless Chrome, in both themes at both check widths; reviews compare them with the design `png/`.
+  - Check widths: 1440 px as in the design screenshots, 360 px for a phone; the page never scrolls sideways.
+  - `web/README.md`: how to open the kit page. The styling approach, the font packages and the accessibility checker are recorded in `tech-stack.md`.
+  - Tests: the kit page renders without network requests and passes an automated accessibility check that covers every component added later.
+- **Definition of done:** the kit page shows the tokens and fonts as in the design `README.md`, light or dark per the system setting or the URL parameter; the screenshot command saves all four views; component tests pass in `script/test`.
+
+#### Iteration 62.2: Buttons, status labels and the warning banner
+- **Goal:** Screens show actions and statuses that look and read as in the design.
+- **What we do:**
+  - Buttons: primary, secondary and danger kinds as on the design screens; disabled and busy states.
+  - Status labels in the OK, warning, danger, accent and muted tones: a filled label ("Active", "Flagged"), a dot with text ("Online"), a count badge. The text carries the meaning without color.
+  - Warning banner: a message with optional actions, as the loop banner in `04-messages.png`; a screen reader announces it when it appears.
+  - Every kind and state on the kit page.
+  - Tests: a button acts on a click and from the keyboard, not while disabled or busy; the busy state is announced; the banner's text and actions reach a screen reader.
+- **Definition of done:** the kit page shows these components as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+
+#### Iteration 62.3: Sortable table, empty and loading states
+- **Goal:** Every list on a screen is a table sorted by a click on a column header, with clear empty and loading states.
+- **What we do:**
+  - Table as in `08-machines.png` and `13-operator-accounts.png`: two-line cells, monospace cells for keys and IDs, an actions column, a highlighted row as in `07-queues.png`.
+  - A click on a sortable column header reports the column and direction; a second click reverses it. The screen sorts the rows itself or asks the API, since long lists are sorted on the server; a helper sorts short lists in the browser. The active column shows an arrow with the direction, other sortable columns a neutral mark; the screen sets the initial order.
+  - Headers sort from the keyboard; a screen reader hears the active column and its direction.
+  - Empty state: a short message with an optional action. Loading state: a placeholder that a screen reader hears as busy. The table shows them in place of rows; both also work outside a table.
+  - At phone width the table scrolls inside its frame.
+  - Every state on the kit page with fixture rows.
+  - Tests: sorting by click and keyboard in both directions, with the arrow and the announced direction following; a non-sortable column does not sort; the empty and loading states replace the rows.
+- **Definition of done:** the kit page shows the table and both states as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+
+#### Iteration 62.4: Filter buttons and search
+- **Goal:** Long lists can be narrowed with filter buttons and search.
+- **What we do:**
+  - Filter buttons: a group with one active choice, as "All · Flagged · Banned · Enterprise" in `13-operator-accounts.png` and "Thread · Graph" in `04-messages.png`; a screen reader hears which choice is active.
+  - Search: a labelled field that reports the query as the user types and can be cleared.
+  - Both on the kit page, narrowing a fixture table.
+  - Tests: a choice by click or keyboard becomes the only active one and is reported; typing reports the query; clearing reports an empty one.
+- **Definition of done:** the kit page shows filter buttons and search as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+
+#### Iteration 62.5: Dropdown filter
+- **Goal:** A screen offers several filters and a sort order in one compact bar.
+- **What we do:**
+  - Dropdown filter as in `04-messages.png`: a button with the filter name and the current value ("From anyone", "Sort Oldest first") that opens a list of options; a value other than the default is highlighted.
+  - "Clear" next to the filters resets them to their defaults; shown only while a filter is set.
+  - Keyboard: Enter, Space or an arrow key opens the list, arrows move, Enter chooses, Escape closes; focus returns to the button. A screen reader hears the name, the value and whether the list is open.
+  - At phone width the bar wraps and the list stays on screen.
+  - On the kit page: a filter bar over a fixture table.
+  - Tests: choosing an option by mouse and keyboard reports it and updates the button; Escape and a click outside close the list without a change; "Clear" restores the defaults.
+- **Definition of done:** the kit page shows the filter bar as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+
+#### Iteration 62.6: Cabinet shell
+- **Goal:** Every cabinet screen sits in the same frame with the side menu, space switcher and account footer.
+- **What we do:**
+  - Side menu as in `08-machines.png`: the logo, the space switcher, sections with optional sub-items and count badges, the current section highlighted; the account footer with initials, name, sign-in method and a menu of account actions.
+  - The space switcher works like the dropdown filter and reports the chosen space.
+  - The page area: a heading with a subtitle and actions on the right.
+  - Sections, spaces and the account come from the screen; the kit page passes fixtures.
+  - At phone width the side menu hides behind a menu button and opens over the page; choosing a section or Escape closes it.
+  - Landmarks for the menu and the page; a screen reader hears the current section as current.
+  - On the kit page: the shell around a page built from the earlier components, as `08-machines.png`.
+  - Tests: the current section is marked; choosing a space reports it; the menu button opens and closes the side menu, and Escape returns focus to it; the account menu works from the keyboard.
+- **Definition of done:** the kit page shows the cabinet as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+
+#### Iteration 62.7: Operator console shell
+- **Goal:** Operator screens sit in their own frame with top tabs.
+- **What we do:**
+  - Top bar as in `13-operator-accounts.png`: the logo with the "operator" label, tabs with optional count badges, the instance name on the right; the current tab highlighted.
+  - The page area as in the cabinet shell.
+  - Tabs and the instance name come from the screen; the kit page passes the tabs of the design, Inbox first.
+  - At phone width the tabs wrap or scroll inside the bar.
+  - A screen reader hears the current tab as current and each tab's count.
+  - On the kit page: the shell around filter buttons, search and a table, as `13-operator-accounts.png`.
+  - Tests: the current tab is marked; a tab's count is part of its accessible name.
+- **Definition of done:** the kit page shows the operator console as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+
 ### Story 8: GitHub sign-in and device certificate
 
 **Goal:** The user signs in with GitHub, and the machine gets its own keys and a device certificate.
@@ -589,7 +688,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a new user signs up in one click and sees their quotas, devices and space members.
 
 - **Release:** MVP
-- **Depends on:** Story 8, Story 9, Story 11, Story 12
+- **Depends on:** Story 8, Story 9, Story 11, Story 12, Story 62
 - **Docs:** `features.md` §12, §16, `architecture.md` — "Components", `tech-stack.md`
 
 ### Story 23: Space invite by link
@@ -769,7 +868,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** `skald.so` shows the main page as in the approved design, at desktop and phone width; all links resolve.
 
 - **Release:** MVP
-- **Depends on:** Story 25
+- **Depends on:** Story 25, Story 62
 - **Docs:** `features.md` — "Product", `architecture.md` — "Cryptography", `infrastructure.md` — "Channels", "Cloud"
 
 ### Story 34: Operator CLI
