@@ -11,11 +11,21 @@
         "summary": "Server health",
         "responses": {
           "200": {
-            "description": "The server is up.",
+            "description": "The server is up and PostgreSQL answers.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "PostgreSQL is unreachable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthUnavailable"
                 }
               }
             }
@@ -51,6 +61,17 @@
           "status": {
             "type": "string",
             "enum": ["ok"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "HealthUnavailable": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["unavailable"]
           }
         },
         "additionalProperties": false

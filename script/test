@@ -8,11 +8,33 @@ if ! command -v cargo-deny >/dev/null; then
   echo "script/test: cargo-deny is missing; install it: cargo install cargo-deny --locked" >&2
   exit 1
 fi
+if ! command -v docker >/dev/null; then
+  echo "script/test: docker is missing; the integration tests run PostgreSQL in a container" >&2
+  exit 1
+fi
+
+# PostgreSQL for the integration tests, removed on exit. 19rc1 until PostgreSQL 19.0 is released.
+postgres=$(docker run --detach --rm --env POSTGRES_PASSWORD=skald --publish 127.0.0.1::5432 \
+  postgres:19rc1 -c fsync=off)
+trap 'docker rm --force "$postgres" >/dev/null' EXIT
 
 cargo build --workspace --all-targets --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+
+# The image's init scripts run on a server without TCP; the final server listens on TCP.
+for _ in $(seq 120); do
+  docker exec "$postgres" pg_isready --quiet --host 127.0.0.1 --username postgres && break
+  sleep 0.5
+done
+if ! docker exec "$postgres" pg_isready --quiet --host 127.0.0.1 --username postgres; then
+  echo "script/test: PostgreSQL did not start" >&2
+  docker logs "$postgres" >&2
+  exit 1
+fi
+SKALD_TEST_DATABASE_URL="postgres://postgres:skald@$(docker port "$postgres" 5432/tcp | head -n 1)" \
+  cargo test --workspace --locked
+
 cargo deny --locked check advisories licenses
 script/deny-test
 script/check-pr-title-test

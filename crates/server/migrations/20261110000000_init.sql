@@ -1,0 +1,1 @@
+-- The initial schema is empty: each feature adds its tables in its own migration.

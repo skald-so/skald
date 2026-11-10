@@ -1,0 +1,2 @@
+# Migration checksums cover the exact bytes: keep line endings the same on every platform.
+*.sql text eol=lf
