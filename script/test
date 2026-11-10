@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the workspace and runs every check. Exits 0 only if all of them pass.
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
-#   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny
+#   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
 #   tooling  tests of the scripts in script/, Renovate config validation
 #   web      web UI lint, tests (with the kit page screenshots against their references) and build
 set -euo pipefail
@@ -55,6 +55,14 @@ if checks rust; then
 
   cargo deny --locked check advisories licenses
   script/deny-test
+
+  # The MLS prototypes: a workspace of their own, apart from the product crates (script/deny-test).
+  # They never ship, so cargo-deny does not check them.
+  prototypes=(--manifest-path prototypes/mls/Cargo.toml)
+  cargo build "${prototypes[@]}" --workspace --all-targets --locked
+  cargo fmt "${prototypes[@]}" --all --check
+  cargo clippy "${prototypes[@]}" --workspace --all-targets --locked -- -D warnings
+  cargo test "${prototypes[@]}" --workspace --locked
 fi
 
 if checks tooling; then

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Prints which parts of script/test the changes from <base> to HEAD touch, as `<part>=true|false`
 # lines for $GITHUB_OUTPUT. CI checks only those parts; script/test alone checks all of them.
-#   rust     crates/, Cargo.toml, Cargo.lock, deny.toml
+#   rust     crates/, Cargo.toml, Cargo.lock, deny.toml, prototypes/
 #   web      web/
 #   none     docs/, Markdown files in the root
 #   all      any other path: the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
@@ -22,7 +22,8 @@ while IFS= read -r path; do
     continue
   elif [[ $path == web/* ]]; then
     web=true
-  elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock || $path == deny.toml ]]; then
+  elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock || $path == deny.toml ||
+    $path == prototypes/* ]]; then
     rust=true
   elif [[ $path == docs/* || ($path == *.md && $path != */*) ]]; then
     continue

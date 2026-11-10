@@ -24,7 +24,7 @@
 - [ ] **2.10:** Protocol version check in the client
 
 ## Story 3: MLS prototypes and library choice
-- [ ] **3.1:** Prototype harness and a channel group on both libraries
+- [x] **3.1:** Prototype harness and a channel group on both libraries
 - [ ] **3.2:** Removing a device with a new epoch
 - [ ] **3.3:** KeyPackages and admission checks
 - [ ] **3.4:** Commit ordering through a minimal Delivery Service
