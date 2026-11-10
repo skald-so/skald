@@ -1,0 +1,5 @@
+[package]
+name = "skald-proto"
+description = "Skald wire protocol types."
+version.workspace = true
+edition.workspace = true

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Builds the workspace and runs every check. Exits 0 only if all of them pass.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+cargo build --workspace --all-targets --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked

@@ -1,0 +1,5 @@
+[package]
+name = "skald-adapters"
+description = "Skald adapters for AI agent tools."
+version.workspace = true
+edition.workspace = true
