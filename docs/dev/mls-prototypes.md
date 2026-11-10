@@ -114,7 +114,7 @@ After each step, every member is at the same epoch with the same members in leaf
 Objects: a KeyPackage; the Commits of the operations; the Welcome creating the group, for all devices but its creator, and that of an Add, for one; the GroupInfo with `ratchet_tree` and `external_pub`; the saved state of device 1, a member of only this group.
 
 ### Tree
-The creating Commit has no UpdatePath and no member has committed one, so the group's tree has no parent nodes. Once members have committed, most parent nodes are set. Against such a group of n devices:
+The creating Commit has no UpdatePath ([OpenMLS](#openmls) and [mls-rs](#mls-rs), "Commits of Adds") and no member has committed one, so the group's tree has no parent nodes. Once members have committed, most parent nodes are set. Against such a group of n devices:
 - **Commits:** an UpdatePath encrypts a path secret to each node in the resolution of the committer's copath: here about n − 1 leaves, 82 bytes each; once members have committed, about log2(n) nodes. Every Commit with an UpdatePath, all but those of Adds, is the most a group of n has: 82647 bytes for OpenMLS's empty Commit at 1000 devices, against about 10 ciphertexts. Its time grows with the recipients: on one core, an empty Commit takes about 50 µs more per device from 100 to 1000 devices. The times of committing a Remove or an empty Commit and of joining by external Commit are the most for the size.
 - **Processing:** a member decrypts one path secret either way, but here it decodes and verifies a Commit of about n ciphertexts instead of about log2(n). The rows that process a Commit with an UpdatePath, "Catch up on missed Commits" and "Delivery Service's Commit check" among them, are high by that work.
 - **Joining:** a joining device and the browser verify the tree: here without parent nodes' parent hashes. "Join from a Welcome", the tree check of "Join by external Commit" and "Browser's GroupInfo check" are low by that work.
@@ -266,7 +266,7 @@ Object sizes, the same on every run but OpenMLS's saved state, whose length vari
 - **WASM build:** needs the `js` feature, for the browser's clock and random number generator; without it, a `compile_error!` names the feature. `openmls_rust_crypto` also takes getrandom 0.2 through `rand_core` 0.6, which `js` does not reach: the prototype turns on getrandom 0.2's `js` feature itself. The module holds getrandom 0.2 and 0.4.
 - **Browser check:** `PublicGroup::from_external` checks the tree first: each leaf's signature (`InvalidNodeSignature`), then the tree hash against the GroupInfo's (`TreeHashMismatch`). Then the signer's leaf (`UnknownSender` for a blank or missing one) and the GroupInfo's signature (`InvalidGroupInfoSignature`).
 - **Parallelism:** natively, tree operations run in parallel with rayon, a required dependency; `RAYON_NUM_THREADS` limits it.
-- **Commits of Adds:** `add_members` forces an UpdatePath; `add_members_without_update` and `commit_builder`, whose `force_self_update` defaults to `false`, commit only Adds without one, as RFC 9420, §12.4, allows. The prototype uses `add_members_without_update`: the Commit of one Add is 464 bytes at every size, and after a group is created its tree has no parent nodes.
+- **Commits of Adds:** `add_members` forces an UpdatePath; `add_members_without_update` and `commit_builder`, whose `force_self_update` defaults to `false`, commit only Adds without one, as RFC 9420, §12.4, allows. The prototype uses `add_members_without_update`.
 - **Saved state size:** the storage keeps its values as JSON: a member's state is 1 MB at 1000 devices, and its length varies by up to 150 bytes with the values' bytes.
 
 ### mls-rs
@@ -303,7 +303,7 @@ Object sizes, the same on every run but OpenMLS's saved state, whose length vari
 - **WASM build:** on `wasm32`, mls-rs itself takes getrandom's `wasm_js` and reads the clock with `Date.now` through wasm-bindgen; the RustCrypto provider's `browser` feature turns on `wasm_js` for its own getrandom. Nothing else changes.
 - **Browser check:** `ExternalClient::observe_group` checks the tree hash first: an altered tree fails with `TreeHashMismatch`, signed again or not. Then the signer's leaf (`ExpectedNode` for a blank one, `InvalidNodeIndex` past the tree) and the GroupInfo's signature (`InvalidSignature`).
 - **Parallelism:** natively, with the default `rayon` feature, tree operations run in parallel; `RAYON_NUM_THREADS` limits it.
-- **Commits of Adds:** a Commit of only Adds has no UpdatePath, as RFC 9420, §12.4, allows, unless the client's `MlsRules` give `CommitOptions::with_path_required`: the Commit of one Add is 466 bytes at every size, and after a group is created its tree has no parent nodes.
+- **Commits of Adds:** a Commit of only Adds has no UpdatePath, as RFC 9420, §12.4, allows, unless the client's `MlsRules` give `CommitOptions::with_path_required`.
 
 ### Spec
 - The server cannot check a channel's first Commit: it has no state of epoch 0. Nor can it tie the GroupInfo of epoch 1 to that Commit, so [Creating a channel](../protocol/membership.md#creating-a-channel) leaves open whose GroupInfo it takes.

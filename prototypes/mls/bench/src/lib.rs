@@ -260,9 +260,8 @@ pub fn read_commit(staged: &Staged, roster: &Roster, admitted: &Admitted) -> Res
 ///
 /// Device 0 created the group with devices `1..size` from their KeyPackages, as "Creating a
 /// channel" says; only device 1 joined from the Welcome. The creating Commit has no UpdatePath and
-/// no member has committed one, so the tree has no parent nodes: a Commit's UpdatePath encrypts
-/// to members' leaves, the costliest case for a group of that size. Device `size` has a KeyPackage
-/// for [`Operation::CommitAdd`]; device `size + 1`, admitted, is outside the group.
+/// no member has committed one. Device `size` has a KeyPackage for [`Operation::CommitAdd`];
+/// device `size + 1`, admitted, is outside the group.
 pub struct Group<D: Device> {
     size: usize,
     fleet: Fleet<D>,
