@@ -11,4 +11,4 @@ Read [rules.md](rules.md) before starting work.
 - [docs/dev/roadmap.md](docs/dev/roadmap.md) — releases: MVP and Post-MVP
 - [docs/protocol/README.md](docs/protocol/README.md) — protocol spec, no external audit
 - [task.md](task.md) — stories and iterations
-- [iteration.md](iteration.md) — completed iterations
+- [iteration.md](iteration.md) — iterations of each story and their status
