@@ -104,6 +104,76 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** —
 - **Docs:** `tech-stack.md`, `infrastructure.md` — "Repositories", "Branches", "PR checks", "Trust in builds", `features.md` — "Product"
 
+#### Iteration 1.1: Cargo workspace, `skald --version` and `script/test`
+- **Goal:** The workspace builds, and one command checks everything.
+- **What we do:**
+  - Cargo workspace with the crates `proto`, `crypto`, `server`, `client`, `mcp`, `adapters`.
+  - The `client` crate builds the `skald` binary; `skald --version` prints the version.
+  - `script/test`: builds the workspace, checks `fmt`, runs `clippy` with warnings as errors and all tests; exit code 0 only if everything passed; the working tree stays clean.
+  - Tests: `skald --version` output.
+- **Definition of done:** `script/test` passes and exits non-zero on a broken test, a `fmt` or a `clippy` violation; `skald --version` prints the workspace version; CLI integration test.
+
+#### Iteration 1.2: CI checks on pull requests
+- **Goal:** Every PR to `dev` is checked automatically.
+- **What we do:**
+  - A GitHub Actions workflow runs `script/test` on every PR to `dev`.
+  - A check fails a PR whose title does not follow Conventional Commits (rule 3 in `rules.md`).
+- **Definition of done:** both checks run and pass on this iteration's PR; a title without a Conventional Commits type fails the title check.
+
+#### Iteration 1.3: Licenses, policies and `cargo-deny`
+- **Goal:** Licenses and contribution terms are fixed before outside contributions.
+- **What we do:**
+  - `server` under AGPL-3.0; `proto`, `crypto`, `client`, `mcp`, `adapters` under `MIT OR Apache-2.0`; license texts in the repository.
+  - An `ee/` directory under a commercial license.
+  - `cargo-deny` in `script/test`: dependency licenses compatible with the crate licenses, known vulnerabilities.
+  - `TRADEMARKS.md`: the policy for the Skald name and logo.
+  - `SECURITY.md`: vulnerabilities are reported privately; private vulnerability reporting is enabled on GitHub.
+  - CLA via CLA Assistant: the CLA text and a CLA check on PRs; bots are exempt.
+- **Definition of done:** each crate declares its license; `script/test` fails on a dependency with a disallowed license or a known vulnerability; the CLA check runs on PRs; private vulnerability reporting is on.
+
+#### Iteration 1.4: Server health check and OpenAPI spec
+- **Goal:** `skald-server` starts and publishes its API contract.
+- **What we do:**
+  - The OpenAPI spec in the repository describes the health check (rule 4 in `rules.md`).
+  - The `server` crate builds `skald-server`: it starts, serves the health check and publishes the spec.
+  - Tests: the health check response conforms to the spec; the published spec matches the one in the repository.
+- **Definition of done:** `skald-server` runs locally; the health check and the spec respond over HTTP; integration tests run in `script/test`.
+
+#### Iteration 1.5: PostgreSQL and migrations
+- **Goal:** The server works with PostgreSQL and keeps its schema up to date.
+- **What we do:**
+  - `skald-server` connects to PostgreSQL and applies pending migrations at start; a connection or migration failure stops the start with an error.
+  - The health check fails when PostgreSQL is unreachable; the spec is updated first.
+  - `script/test` starts PostgreSQL 19 in a container for integration tests and removes it afterwards.
+  - Tests: migrations on an empty database, a restart without re-applying them, the health check with the database up and down.
+- **Definition of done:** `skald-server` runs locally against PostgreSQL; integration tests with PostgreSQL in a container pass in `script/test` and CI.
+
+#### Iteration 1.6: SPA skeleton with generated API client
+- **Goal:** The web UI builds and talks to the server only through the client generated from the spec.
+- **What we do:**
+  - SPA on TypeScript, Vite and React, licensed `MIT OR Apache-2.0`.
+  - The API client and mocks are generated from the OpenAPI spec; a stale client cannot pass `script/test`.
+  - The page shows the server health via the generated client.
+  - `script/test` runs frontend lint, tests and build.
+  - Tests: the page renders the health status using the generated mocks.
+- **Definition of done:** the SPA builds and shows the health status of a local server; frontend component tests pass in `script/test` and CI.
+
+#### Iteration 1.7: CI path filters and Renovate
+- **Goal:** CI checks only the changed parts, and dependencies stay up to date.
+- **What we do:**
+  - Path filters: a PR skips the Rust or frontend checks when their files are unchanged; changes to the OpenAPI spec, `script/test` or CI run everything.
+  - Renovate opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, with Conventional Commits titles.
+- **Definition of done:** a frontend-only PR skips the Rust checks and vice versa; `script/test` run locally still checks everything; the Renovate config passes validation.
+
+#### Iteration 1.8: Branch protection and `CONTRIBUTING.md`
+- **Goal:** Changes reach `dev` only through checked PRs, and a contributor knows how to send one.
+- **What we do:**
+  - `dev` is the default branch; it accepts changes only through PRs with all checks green, without required approvals.
+  - Only squash merges, with the PR title as the commit title.
+  - Only CI can update `main`.
+  - `CONTRIBUTING.md`: picking a story from `task.md`, running `skald-server` and `skald` locally, `script/test`, sending a PR to `dev`, the CLA; links to `rules.md` instead of repeating it.
+- **Definition of done:** a PR to `dev` passes all checks and merges, including one with checks skipped by path filters; branch rules reject direct pushes to `dev` and `main`; following `CONTRIBUTING.md`, the server and `skald` run locally.
+
 ### Story 2: Protocol spec and threat model
 
 **Goal:** Pin down the protocol and the threat model that all other stories rely on.
