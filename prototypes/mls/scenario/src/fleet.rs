@@ -40,15 +40,26 @@ impl<D: Device> Fleet<D> {
 
     /// Adds a new `client` device of [`ACCOUNT`]; returns its index.
     pub fn add_device(&mut self) -> Result<usize> {
-        let device = self.add_device_without_certificate()?;
+        self.add_device_with(D::new)
+    }
+
+    /// Adds a new `client` device of [`ACCOUNT`] that `new` makes from its signing key, in place
+    /// of [`Device::new`]; returns its index.
+    pub fn add_device_with(&mut self, new: impl FnOnce(&Identity) -> Result<D>) -> Result<usize> {
+        let device = self.push(new)?;
         self.certify(device, ACCOUNT, Kind::Client)?;
         Ok(device)
     }
 
     /// Adds a new device without a certificate; returns its index.
     pub fn add_device_without_certificate(&mut self) -> Result<usize> {
+        self.push(D::new)
+    }
+
+    /// Adds a new device that `new` makes from a new signing key; returns its index.
+    fn push(&mut self, new: impl FnOnce(&Identity) -> Result<D>) -> Result<usize> {
         let identity = Identity::generate();
-        let state = D::new(&identity)?.save()?;
+        let state = new(&identity)?.save()?;
         self.devices.push(Saved { identity, state });
         Ok(self.devices.len() - 1)
     }
@@ -207,6 +218,29 @@ mod tests {
         let added = fleet.add_device().unwrap();
         assert_eq!(added, 1);
         assert_ne!(fleet.identity(0).device_id(), fleet.identity(1).device_id());
+    }
+
+    #[test]
+    fn adds_a_certified_device_that_its_function_makes() {
+        let mut fleet = Fleet::<Counter>::new(1).unwrap();
+        let mut key = None;
+        let added = fleet
+            .add_device_with(|identity| {
+                key = Some(identity.public_key());
+                Ok(Counter(7))
+            })
+            .unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(key, Some(fleet.identity(added).public_key()));
+        assert_eq!(fleet.state(added), [7]);
+        assert!(fleet.admitted().admits(&leaf(fleet.identity(added))));
+
+        assert!(fleet.add_device_with(|_| Err("fails".into())).is_err());
+        assert_eq!(
+            fleet.add_device().unwrap(),
+            2,
+            "a failed device is not added"
+        );
     }
 
     #[test]

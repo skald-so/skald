@@ -9,6 +9,7 @@ pub mod cbor;
 pub mod certificate;
 pub mod delivery;
 pub mod identity;
+pub mod interop;
 pub mod key_packages;
 pub mod object;
 pub mod revocation;

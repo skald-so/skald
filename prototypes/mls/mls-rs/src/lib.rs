@@ -516,7 +516,13 @@ impl Device for MlsRsDevice {
             builder = builder.with_removal(own.index);
         }
         // The Commit is applied at once: mls-rs keeps no pending external Commit. The new group
-        // replaces the device's old state of it in the store.
+        // replaces the device's old state of it in the store. mls-rs gives the new group the prior
+        // epochs the store keeps of its group ID, and fails with `InvalidEpoch` on the first one
+        // it adds after them: the store drops the old state first. A failed step is not saved.
+        self.store
+            .lock()
+            .groups
+            .remove(&observed.group.group_context().group_id);
         let (mut group, external) = builder.build(MlsMessage::from_bytes(group_info)?)?;
         group.write_to_storage()?;
         Ok(Commit {
