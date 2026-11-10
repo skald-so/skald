@@ -260,8 +260,8 @@ pub fn read_commit(staged: &Staged, roster: &Roster, admitted: &Admitted) -> Res
 /// channel" says; only device 1 joined from the Welcome. The tree's parent nodes are only those
 /// the creating Commit's UpdatePath set, if it has one: no other member has committed, so a
 /// Commit's UpdatePath encrypts mostly to members' leaves, the costliest case for a group of that
-/// size. Device `size` has a KeyPackage for
-/// [`Operation::CommitAdd`]; device `size + 1`, admitted, is outside the group.
+/// size. Device `size` has a KeyPackage for [`Operation::CommitAdd`]; device `size + 1`,
+/// admitted, is outside the group.
 pub struct Group<D: Device> {
     size: usize,
     fleet: Fleet<D>,
