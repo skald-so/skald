@@ -3,7 +3,7 @@
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny
 #   tooling  tests of the scripts in script/, Renovate config validation
-#   web      web UI lint, tests and build
+#   web      web UI lint, tests (with the kit page screenshots against their references) and build
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -32,8 +32,8 @@ if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
   exit 1
 fi
-if { checks rust || checks tooling; } && ! command -v docker >/dev/null; then
-  echo "script/test: docker is missing; the integration tests run PostgreSQL in a container" >&2
+if { checks rust || checks tooling || checks web; } && ! command -v docker >/dev/null; then
+  echo "script/test: docker is missing; the integration tests run PostgreSQL and the kit page screenshots run Chrome in containers" >&2
   exit 1
 fi
 if { checks web || checks tooling; } && ! command -v npm >/dev/null; then
@@ -65,7 +65,9 @@ if checks tooling; then
   npx --yes --package renovate@44.225.1 -- renovate-config-validator --strict --no-global renovate.json
 fi
 
-# Web UI: lint, tests (including the check that the API client is generated from the spec) and build.
+# Web UI: lint, tests (including the check that the API client is generated from the spec and the
+# kit page screenshots against web/kit-references/) and build. A failed screenshot saves a diff image
+# to web/kit-diff/.
 if checks web; then
   (
     cd web

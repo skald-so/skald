@@ -25,6 +25,7 @@ import {
   type KitView,
   type Theme,
 } from "./kit-browser.ts";
+import { compare, referenceDir } from "./kit-references.ts";
 
 /** "Tokens" in the design README, with the CSS custom property of each. */
 const tokens = [
@@ -1595,7 +1596,7 @@ async function topLeftPixel(png: Buffer): Promise<string> {
   }
 }
 
-test("the screenshot command saves the kit page in both themes at both widths", async () => {
+test("the screenshot command saves the kit page in both themes at both widths, as the references", async () => {
   const dir = mkdtempSync(join(tmpdir(), "skald-kit-"));
   try {
     await promisify(execFile)(process.execPath, ["kit-screenshots.ts", dir], {
@@ -1618,11 +1619,16 @@ test("the screenshot command saves the kit page in both themes at both widths", 
       expect(png.readUInt32BE(16), file).toBe(width);
       // The top left corner is the page background.
       expect(await topLeftPixel(png), file).toBe(color("Background", theme));
+      // The same pinned Chrome as the comparison: `npm run kit:references` saves passing references.
+      expect(
+        compare(png, readFileSync(join(referenceDir, file))).same,
+        file,
+      ).toBe(true);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}, 60_000);
+}, 600_000);
 
 describe("the production build", () => {
   let output: Rolldown.RolldownOutput["output"];
