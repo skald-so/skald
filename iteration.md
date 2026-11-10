@@ -40,6 +40,8 @@
 - [ ] **62.6:** Cabinet shell
 - [ ] **62.7:** Operator console shell
 
+## Story 64: Self-host: Docker Compose
+
 ## Story 8: GitHub sign-in and device certificate
 
 ## Story 9: Google sign-in and linked sign-in methods
@@ -82,6 +84,18 @@
 
 ## Story 28: Web: queues, delivery trace, loops
 
+## Story 35: Service agents: HPKE and scoped tokens
+
+## Story 41: ask_user and attachments
+
+## Story 65: Queue templates: review, test, ask
+
+## Story 63: Notifications to people
+
+## Story 66: Restricted mode for tasks from other people
+
+## Story 36: GitHub Action
+
 ## Story 29: End-to-end MVP scenario
 
 ## Story 30: Admin rights transfer and account deletion
@@ -94,19 +108,15 @@
 
 ## Story 34: Operator CLI
 
-## Story 35: Service agents: HPKE and scoped tokens
-
-## Story 36: GitHub Action
-
 ## Story 37: Task queue: scheduling and agents
 
 ## Story 38: Codex background agents via app-server
 
+## Story 67: A2A gateway
+
 ## Story 39: Shared channels between organizations
 
 ## Story 40: Corporate IdP sign-in
-
-## Story 41: ask_user and attachments
 
 ## Story 42: Shared team instructions
 
@@ -122,13 +132,13 @@
 
 ## Story 48: Operator console
 
-## Story 49: Alerts, analytics and token usage
+## Story 49: Analytics and token usage
 
 ## Story 50: Enterprise: SSO, SAML, SCIM and license
 
 ## Story 51: Enterprise: audit and retention policies
 
-## Story 52: Self-host: Docker Compose, Helm, documentation
+## Story 52: Self-host: Helm and isolated networks
 
 ## Story 53: History export and migration to a self-hosted server
 

@@ -13,7 +13,7 @@ Numbers in parentheses are features from [features.md](features.md).
 
 - Encrypted mailbox: cursor, receipts, `idempotency_key`, WebSocket push, quotas (1).
 - Client: one-shot mode and helper (2).
-- Multiple spaces per device, agent address with the server name (3, 15).
+- Multiple spaces per device, a personal space for each account, agent address with the server name (3, 15).
 - MLS for devices, roles, device revocation (4).
 - GitHub and Google sign-in, linked sign-in methods, device flow, device certificate (5).
 - Key verification without trusting the server: the device key signed with the SSH key from GitHub, cross-signing, key change warnings, fingerprints, DNS root of trust (5).
@@ -21,7 +21,11 @@ Numbers in parentheses are features from [features.md](features.md).
 - Claude Code and Codex adapters: MCP, hooks, Channels (7).
 - Presence, receipts, loop protection, `accept / hold / refuse` (8).
 - Web UI `app.skald.so`, non-secret sections: quotas, devices, sessions, members and invites, connecting machines (12).
-- Task queue: claim, lease, retries, DLQ (10).
+- Task queue: claim, lease, retries, DLQ; templates review, test, ask (10).
+- Service and CI agents: HPKE, scoped tokens, rotation, GitHub Action, tasks from issue and PR comments (9).
+- `ask_user` and attachments up to 10 MB (8).
+- Notifications to Telegram, Slack or a webhook (12).
+- Restricted mode for tasks from other people.
 - Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis (12, 6).
 - One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code and Codex, new device confirmation, invite by link, Claude Code plugin (16).
 - Admin rights transfer, "only one admin" warning, account deletion (4, 5).
@@ -29,23 +33,24 @@ Numbers in parentheses are features from [features.md](features.md).
 - Documentation: quick start, CLI reference.
 - Website main page.
 - Operator CLI `skald-server admin` (17).
+- Self-host with Docker Compose.
 
 ## Post-MVP
 List order is priority.
-- Service and CI agents: HPKE, scoped tokens, rotation, GitHub Action (9).
 - Task queue: scheduling and agent integration (10).
+- A2A gateway.
 - Codex background agents via app-server (7).
 - Shared channels between organizations (3).
 - Corporate IdPs (5).
-- `ask_user`, attachments, shared team instructions (8).
+- Shared team instructions (8).
 - Gemini, Cursor, OpenCode, Copilot adapters (7).
 - Edit coordination: file level first, then hunk and symbol (11).
 - Security center, human inbox with approval from a phone, edit map (12).
 - Public cloud: anti-abuse.
 - Operator console (17).
-- Alerts, analytics, LLM token usage per task (12).
+- Analytics, LLM token usage per task (12).
 - Enterprise (`ee/`): license and billing, audit log, SSO and SAML, SCIM, auditor device, retention policies (12).
-- Self-host documentation, Docker Compose, Helm.
+- Self-host: Helm, isolated networks.
 - History export and migration from the cloud to a self-hosted server (6).
 - Python and TypeScript SDKs.
 - Homebrew, winget, cargo-binstall (16).
