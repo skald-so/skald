@@ -155,25 +155,26 @@ queue-key-body = {
 | `queued` | `deadline` passes | `dead` |
 | `claimed` | Extend | `claimed`, with a new lease |
 | `claimed` | Complete | `done` |
+| `claimed` | Release | `queued` at once; attempts minus one |
 | `claimed` | Fail with retry, or the lease ends, under `at-least-once` with attempts below `max_attempts` | `queued` after the backoff |
 | `claimed` | Any other fail, or the end of the lease | `dead` |
 | `dead` | Restart | `queued`, attempts 0 |
 | `queued`, `claimed` or `dead` | Cancel | `cancelled` |
 
-- Extend, complete and fail pass the [fencing check](#fencing) first.
+- Extend, complete, fail and release pass the [fencing check](#fencing) first.
 - **Backoff:** after the n-th failed attempt, the task waits `min(10 × 2^(n−1), 3600)` seconds.
 - **Restart and cancel:** a `client` or `browser` device of the account that uploaded the task or of an admin of the space restarts a `dead` task or cancels a task; the server refuses others with `not-allowed`, a restart of a task in another state with `not-dead`, and a cancel of a `done` or `cancelled` task with `not-cancellable`. The holder of a cancelled claim gets `claim-lost`.
 - The server gives a task's `queued-task`, state, attempts and its last claim's `claim_id`, `generation` and device only to devices that may send in the channel.
 - The server deletes a `done`, `dead` or `cancelled` task once the channel's history retention has passed since it got there, and every task of a deleted queue.
 
 ## Claims and leases
-A device claims a task from a queue, stating its tags. The server answers with the first task by `priority`, then by storing order, that is `queued`, past its backoff and before its `deadline`, and whose `tags` are all among the claimer's; or with none.
+A device claims a task from a queue, stating its tags and the templates its client has. The server answers with the first task by `priority`, then by storing order, that is `queued`, past its backoff and before its `deadline`, whose `tags` are all among the claimer's and whose `template`, if any, is among the claimer's; or with none.
 
 ```cddl
 claim = {
   1 => id,                 ; claim_id: issued by the server for this claim
   2 => uint .ge 1,         ; generation
-  3 => uint .ge 1,         ; attempt: claims since enqueue or the last restart
+  3 => uint .ge 1,         ; attempt: claims since enqueue or the last restart, released ones not counted
   4 => uint,               ; lease: seconds
   5 => queue-mode,         ; the queue's mode
   6 => id,                 ; uploader: the device that uploaded the task
@@ -188,16 +189,17 @@ claim = {
   - with the helper, the helper sends it while the agent session that holds the claim runs;
   - in one-shot mode without the helper, the process running the task sends it;
   - a holder whose process stops sends none, so the lease ends.
-- Extend, complete and fail name the task, `claim_id` and `generation`; fail also states whether to retry.
+- Extend, complete, fail and release name the task, `claim_id` and `generation`; fail also states whether to retry.
+- **Release:** the holder hands back a task it did not start, with no result. It MUST NOT release a task it started.
 
 ### Fencing
-The server takes an extend, complete or fail only if, checked and applied in one transaction:
+The server takes an extend, complete, fail or release only if, checked and applied in one transaction:
 1. the task is `claimed`;
 2. its current claim has the request's `claim_id` and `generation`;
 3. the requesting device holds that claim;
 4. the lease has not ended.
 
-Otherwise it answers `claim-lost`. A repeated complete or fail that the server took gets the answer of the first.
+Otherwise it answers `claim-lost`. A repeated complete, fail or release that the server took gets the answer of the first.
 
 On `claim-lost` the holder stops the work and sends no result.
 
@@ -207,13 +209,14 @@ On `claim-lost` the holder stops the work and sends no result.
 | For | Idempotent work, as the default | Work that must not repeat: a deploy, sending mail |
 | A fail with retry, or the end of the lease | Back to `queued` after the backoff, until `max_attempts`; then `dead` | `dead` |
 | A fail without retry | `dead` | `dead` |
+| A release | Back to `queued` at once, the attempt not counted | The same, so the next claim has `attempt` 1 |
 | After `dead` | A human restarts it | A human restarts it |
 
 - Under `at-least-once`, a task can run more than once, also at the same time on two devices after a lease ends: its handler must be idempotent.
 - Under `at-most-once`, an honest server hands out a claim with `attempt` 1 only.
 
 ## Claim checks
-The server hands out a task, and takes an extend, complete or fail of its claim, only from a device that at that moment:
+The server hands out a task, and takes an extend, complete, fail or release of its claim, only from a device that at that moment:
 1. is a member device of the channel's current epoch, as it knows from the Commits it accepted ([Commit ordering](membership.md#commit-ordering));
 2. is of kind `client`, `service` or `custodian`;
 3. is not revoked by the revocations it stores ([Revocation](membership.md#revocation));
@@ -228,7 +231,7 @@ The claiming device MUST NOT run a task unless, when it starts it:
 4. the content passes checks 2 and 3 of [Envelope](README.md#envelope) with `sender` as the sending device; it has a `task` body, no `to` and no `counter`; the `request`'s `messageId` is `task` in text form;
 5. `deadline`, if any, has not passed, and under `at-most-once` the claim's `attempt` is 1.
 
-- A task that fails check 1 because the device lacks the epoch's key, or that the device cannot run, such as one without the [template](#templates) or the restricted mode it needs: the device fails it with retry.
+- A task that fails check 1 because the device lacks the epoch's key, or that needs a restricted mode the device cannot enforce: the device releases it.
 - A task that fails any other check: the device fails it without retry and tells its user.
 - The device runs the task in the restricted mode the [policy](membership.md#policy) sets for the [trust level](membership.md#trust-levels) of `sender`, and hands the agent the `request` with its `from` and that level. A mode the agent cannot enforce is refused, not weakened.
 
@@ -265,7 +268,7 @@ It takes the first result with `done` that passes as the task's result.
 ## Templates
 A template, such as `review`, `test` or `ask` ([features.md §10](../dev/features.md#10-task-queue)), sets the agent's instructions and the formats of the task's input and result.
 
-- A task names its template in `sched`, so a claim can route by it.
+- A task names its template in `sched`; a claim gets it only if it states that template ([Claims and leases](#claims-and-leases)).
 - The input travels in `request` as one part with `data`, the input object in the template's format; the result in `response` the same way. Other parts, such as text and files, travel beside them.
 - A claiming device takes a template's instructions and formats only from a template built into its client, or from a team template signed by a valid `client` or `browser` device of an admin of the space. It MUST NOT take them from the server unsigned. Team templates come in a later revision of this document; adding them needs no new protocol version.
 - The template does not change the restricted mode: that comes from the sender's trust level.
@@ -281,7 +284,7 @@ Queue requests are refused with a problem details object, as in [Server answers]
 | `unknown-task` | Names a task the queue does not have |
 | `duplicate` | Uploads a task whose ID another device used, or whose `idempotency_key` another task of the queue has; the extension member `task` names that task |
 | `epoch-mismatch` | Uploads a task sealed under an epoch other than the channel's current or previous one |
-| `claim-lost` | Fails the [fencing check](#fencing) |
+| `claim-lost` | Extends, completes, fails or releases a claim that fails the [fencing check](#fencing) |
 | `not-dead` | Restarts a task that is not `dead` |
 | `not-cancellable` | Cancels a task that is `done` or `cancelled` |
 | `too-large` | Uploads a task over the limit |
