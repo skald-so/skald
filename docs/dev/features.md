@@ -46,6 +46,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 
 ## 5. Identity
 - Sign-in via GitHub (OAuth 2.0), Google and corporate IdPs (OIDC). A self-hosted server uses its own IdP. Device flow for machines without a browser.
+- One account can have several sign-in methods; a method is linked explicitly, accounts are never merged by email.
 - Device certificate: "device key → account".
 - **Verification without trusting our server:** the device key is signed with the user's SSH key from GitHub; the client checks the signature directly against GitHub.
 - Device cross-signing, key change warnings, fingerprints for manual verification.

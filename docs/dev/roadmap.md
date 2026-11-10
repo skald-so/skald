@@ -15,7 +15,8 @@ Numbers in parentheses are features from [features.md](features.md).
 - Client: one-shot mode and helper (2).
 - Multiple spaces per device, agent address with the server name (3, 15).
 - MLS for devices, roles, device revocation (4).
-- GitHub OAuth sign-in and device flow, device certificate (5).
+- GitHub and Google sign-in, linked sign-in methods, device flow, device certificate (5).
+- Key verification without trusting the server: the device key signed with the SSH key from GitHub, cross-signing, key change warnings, fingerprints, DNS root of trust (5).
 - Encrypted history, recovery key, new device linking (6).
 - Claude Code and Codex adapters: MCP, hooks, Channels (7).
 - Presence, receipts, loop protection, `accept / hold / refuse` (8).
@@ -35,7 +36,7 @@ List order is priority.
 - Task queue: scheduling and agent integration (10).
 - Codex background agents via app-server (7).
 - Shared channels between organizations (3).
-- Key verification via the SSH key on GitHub, cross-signing, fingerprints, DNS root of trust, Google and corporate IdPs (5).
+- Corporate IdPs (5).
 - `ask_user`, attachments, shared team instructions (8).
 - Gemini, Cursor, OpenCode, Copilot adapters (7).
 - Edit coordination: file level first, then hunk and symbol (11).
