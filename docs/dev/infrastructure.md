@@ -88,4 +88,5 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 
 ## Self-host
 - `docker compose up` brings up `skald-server`, PostgreSQL and Caddy. The user sets their domain in a single variable, and HTTPS works right away.
+- Attachments are kept in a disk volume by default; an external S3-compatible bucket is optional.
 - Helm later.

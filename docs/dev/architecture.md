@@ -20,19 +20,21 @@
 ## Device linking
 - The one-time code from the website ([features.md §16](features.md#16-one-command-connect)) binds the device to the account.
 - Keys are generated on the machine.
-- The server signs every device certificate. A new device is also signed by an already linked device (cross-signing) or by the recovery key; its key can also be signed with the user's SSH key from GitHub ([features.md §5](features.md#5-identity)).
+- **Account master key:** the first device creates it. It is the account's root of trust and is stored on the server encrypted under the recovery key.
+- Every device certificate chains to the master key: a new device is signed by an already linked device or by the recovery key. A server signature alone never admits a device.
+- The device key can also be signed with the user's SSH key from GitHub ([features.md §5](features.md#5-identity)).
 - The recovery key is entered only in the CLI and `skald ui`, never in a web page.
 - **A browser is also a linked device**, linked only with a code or QR from an already linked device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
   - it reads through history keys wrapped to its key;
   - it sends actions (approve, answer `ask_user`, restart a task) as signed messages via HPKE.
 
 ## Membership
-- **Roster:** a space's members, their roles and devices, and its service agents. An admin's device signs every change; clients reject a change without a valid signature.
+- **Roster:** a space's members, their roles and devices, and its service agents. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
 - **Space policy:** restricted mode per trust level, the history key rotation period, the space mode ([protocol spec](../protocol/README.md#custodian-auditor-and-federation)), the edit-coordination action ([features.md §11](features.md#11-cross-machine-edit-coordination)). An admin's device signs it; clients reject a policy without a valid signature.
 - **Invite:**
   - an admin's device signs it;
   - its secret travels only in the link's fragment and never reaches the server;
-  - the admin's device admits the newcomer only with the secret, checks each of the newcomer's devices through its certificate chain, then adds them to the roster and the channels.
+  - the admin's device admits the newcomer only with the secret, checks each of the newcomer's devices through its certificate chain to the newcomer's master key, then adds them to the roster and the channels.
 - Without a linked browser, the web UI only shows the roster, the policy and invites, and revokes invites.
 
 ## Network
@@ -44,7 +46,7 @@
 ## Data model
 | Entity | Description |
 |---|---|
-| Account | A person or organization. Bound to a GitHub or OIDC identity and optionally to an SSH key on GitHub |
+| Account | A person or organization. Bound to a GitHub or OIDC identity and optionally to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking) |
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
 | Space | A team space and trust boundary. Signed roster and policy: [Membership](#membership); a device can belong to N spaces |
@@ -52,7 +54,7 @@
 | Envelope | [Protocol spec](../protocol/README.md#envelope) |
 | Mailbox | [Protocol spec](../protocol/delivery.md#mailbox) |
 | History | Copies of channel messages under the channel's history key |
-| Queue / Job | A named queue. A job is an encrypted payload + plaintext scheduling fields: state, priority, attempts, `lease_until`, tags, template, `idempotency_key`, deadline |
+| Queue / Job | A named queue of a channel. A job is an encrypted payload + plaintext scheduling fields: state, priority, attempts, `lease_until`, tags, template, `idempotency_key`, deadline |
 | Presence | Encrypted agent status; the server stores the latest value |
 
 ## Cryptography
@@ -81,13 +83,13 @@
   - IP addresses and times of connections;
   - queue names, task tags and templates;
   - when presence changes, not its value;
-  - notifications: the event class and the notification address;
+  - notifications: the address, and the class of each event a device triggers;
   - HMAC fingerprints of edits;
   - space, channel and device identifiers;
   - which device messages whom;
   - message size and time;
   - when each device takes its messages;
-  - which envelopes ask for delivery statuses, so which are likely receipts or handshake messages;
+  - which envelopes ask for delivery statuses, so which are likely receipts, and which hold MLS handshake messages;
   - attachment sizes, uploads and downloads;
   - task scheduling fields;
   - quota counters.
@@ -105,8 +107,9 @@
 [Protocol spec](../protocol/delivery.md).
 
 ## Queue
+- A queue belongs to a channel. A task payload is encrypted with the channel's MLS group, so any device of the channel can claim the task.
 - Claim: `SELECT … FOR UPDATE SKIP LOCKED`.
-- A heartbeat extends the lease.
+- A heartbeat extends the lease. In one-shot mode without the helper, the process running the task sends the heartbeats.
 - Fencing:
   - `claim_id` + an increasing generation;
   - extension and completion via compare-and-swap;
@@ -140,5 +143,5 @@ Adapters are separate modules with e2e tests against real CLIs.
 - **Cloud:**
   - sign-in only via GitHub OAuth or OIDC, no passwords;
   - quotas and size limits: [features.md](features.md), "Product";
-  - bans based on reports.
+  - bans: manual by the operator; abuse reports and automatic detection.
 - **Invites** never reach the agent's context.

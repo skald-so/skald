@@ -33,6 +33,7 @@ Numbers in parentheses are features from [features.md](features.md).
 - Documentation: quick start, CLI reference.
 - Website main page.
 - Operator CLI `skald-server admin` (17).
+- Public cloud launch, protected by quotas, rate limits and manual bans in the operator CLI.
 - Self-host with Docker Compose.
 
 ## Post-MVP
@@ -46,7 +47,7 @@ List order is priority.
 - Gemini, Cursor, OpenCode, Copilot adapters (7).
 - Edit coordination: file level first, then hunk and symbol (11).
 - Security center, human inbox with approval from a phone, edit map (12).
-- Public cloud: anti-abuse.
+- Public cloud: abuse reports and automatic abuse detection.
 - Operator console (17).
 - Analytics, LLM token usage per task (12).
 - Enterprise (`ee/`): license and billing, audit log, SSO and SAML, SCIM, auditor device, retention policies (12).

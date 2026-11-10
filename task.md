@@ -32,7 +32,7 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 | 24 | One-command machine connect | MVP | 7, 14, 17, 18, 19, 20, 22 |
 | 25 | Production cloud, website and monitoring | MVP | 6, 7, 12 |
 | 26 | Task queue: claim, lease and DLQ | MVP | 13, 14, 15 |
-| 27 | Browser linking and history on the web | MVP | 10, 17, 22 |
+| 27 | Browser linking and history on the web | MVP | 10, 17, 22, 23 |
 | 28 | Web: queues, delivery trace, loops, ask_user | MVP | 21, 26, 27, 41 |
 | 35 | Service agents: HPKE and scoped tokens | MVP | 13, 14, 22 |
 | 41 | ask_user and attachments | MVP | 21 |
@@ -84,8 +84,8 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Wave 6: 13, 25 (25 can be postponed until launch).
 - Wave 7: 14, 16, 22, 33.
 - Wave 8: 15, 17, 35.
-- Wave 9: 18, 19, 20, 21, 23, 26, 27, 30.
-- Wave 10: 24, 31, 34, 41, 65, 66.
+- Wave 9: 18, 19, 20, 21, 23, 26, 30.
+- Wave 10: 24, 27, 31, 34, 41, 65, 66.
 - Wave 11: 28, 32, 36, 63.
 - Wave 12: 29 — end of MVP.
 - Wave 13: 37, 38, 39, 40, 42, 43, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67.
@@ -197,7 +197,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Spec in `docs/protocol/`: identifiers and the agent address with the server name; the envelope in deterministic CBOR with the `mls` and `hpke` schemes; Skald as an A2A extension; protocol versions.
 - Mailbox, delivery and receipts, with the per-sender counter for gap detection.
-- Devices, roster and channels: the device certificate chain, the signed roster, invites and space policy, KeyPackages and Commit ordering, history keys.
+- Devices, roster and channels: the account master key and the device certificate chain, the signed roster, invites and space policy, KeyPackages and Commit ordering, history keys.
 - Queues and tasks, presence, `ask_user`.
 - The edit-coordination wire format comes with Story 44, after Story 5's findings.
 - Room for the custodian device (feature 13), the auditor device (`ee/`) and federation (feature 15) without a new protocol version.
@@ -242,10 +242,11 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Goal:** The spec fixes how devices, members and channel keys are certified, so the identity, space, channel and history stories build on one contract.
 - **What we do:**
   - `docs/protocol/membership.md`, listed in the index in `README.md`.
-  - Device certificate: its fields, the device kind among them; who signs it; its chain to the account's root of trust through the server, already linked devices, the recovery key and the user's SSH key from GitHub; the checks a client makes on it.
+  - Account master key and device certificate (`architecture.md`, "Device linking"): the certificate's fields, the device kind among them; the master key the first device creates and its copy encrypted under the recovery key; the chain from a certificate to the master key through already linked devices or the recovery key, and the optional SSH key signature; the checks a client makes, so that a server signature alone never admits a device.
   - Sender trust levels: an own device, a space member, a service agent; how a recipient derives them from the certificate chain and the roster.
   - Space roster and policy (`architecture.md`, "Membership"): their fields, the admin's signature on every change, how a client checks a change and what it does with one that fails.
   - Invite: the signed invite, the secret in the link fragment, how the newcomer proves it holds the secret, how the admin's device checks the newcomer's devices.
+  - Admin actions from a linked browser, which is not an MLS member: how a roster change it signs reaches the MLS groups.
   - MLS channels: creating a channel's group; KeyPackages: who publishes them, how many and for how long; Commit ordering by the server; who commits the Add of a member's new device; how a device rejoins a channel after missing Commits, after a wipe or offline past the mailbox retention.
   - History key: distribution inside MLS; wrapping to devices, linked browsers and the recovery key; rotation on revocation and on the policy's schedule; the encrypted key chain; what a new member without history access gets.
   - `architecture.md` keeps the decisions and links here for the formats; stories' "Docs:" lines that cite a fact this iteration moves link here.
@@ -256,11 +257,11 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **What we do:**
   - `docs/protocol/queues.md`, listed in the index; the wire part of `architecture.md`, "Queue" (claim, lease, fencing, modes), moves there and is replaced by a link.
   - Queues: plaintext scheduling fields and the encrypted payload; claim, lease with heartbeat, fencing with `claim_id` and generation, `claim_lost`; at-least-once and at-most-once modes, retries, DLQ; the result returned as an encrypted message.
-  - How a queue relates to a channel, and which key encrypts a task payload.
-  - Who sends the heartbeat for a task claimed in one-shot mode, without the helper.
+  - A queue belongs to a channel; a task payload is encrypted with the channel's MLS group, so any device of the channel can claim the task (`architecture.md`, "Queue").
+  - The heartbeat in one-shot mode without the helper: the process running the task sends it.
   - Task templates: how a task names its template and carries the template's input and result.
   - Stories' "Docs:" lines that cite "Queue" link to the new place.
-- **Definition of done:** each item above has its section; the task states and transitions, the fencing checks and the CDDL of the payload and the result are defined; `architecture.md`, "Queue", keeps only server-side decisions and a link.
+- **Definition of done:** each item above has its section; the task states and transitions, the fencing checks, the claim check against the channel's members and the CDDL of the payload and the result are defined; `architecture.md`, "Queue", keeps only server-side decisions and a link.
 
 #### Iteration 2.5: Protocol spec: presence and `ask_user`
 - **Goal:** The spec fixes the agent status and the questions agents ask people.
@@ -368,12 +369,12 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - `skald-server` Docker image; on a merge into `dev`, CI builds the `:edge` image and publishes it to GHCR.
 - Private `skald-cloud` repository with configs and deployment.
-- Staging as in `infrastructure.md`, "Cloud", with an S3-compatible bucket for attachments (`tech-stack.md`, "Files").
+- Staging as in `infrastructure.md`, "Cloud"; attachments in a disk volume, the self-host default (`infrastructure.md`, "Self-host").
 - **Done when:** a merge into `dev` shows up on staging within a few minutes; the health check responds over HTTPS.
 
 - **Release:** MVP
 - **Depends on:** Story 1
-- **Docs:** `infrastructure.md` — "Flow", "Repositories", "Cloud", `tech-stack.md`
+- **Docs:** `infrastructure.md` — "Flow", "Repositories", "Cloud", "Self-host", `tech-stack.md`
 
 ### Story 7: Release pipeline
 
@@ -494,10 +495,10 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Self-host as in `infrastructure.md`, "Self-host": one `docker compose up`, the domain in a single variable, HTTPS right away.
 - Sign-in on a self-hosted server: GitHub or Google with the admin's own OAuth apps; corporate IdPs come with Story 40.
-- Attachment storage (`tech-stack.md`, "Files"). To decide: an S3-compatible service in the Compose file or an external bucket.
+- Attachments in a disk volume by default, optionally in an external S3-compatible bucket (`infrastructure.md`, "Self-host").
 - Backups and upgrades with documented commands.
 - Self-host documentation.
-- **Done when:** following the docs, a working Skald with its own domain comes up on a clean server; an upgrade keeps the data.
+- **Done when:** following the docs, a working Skald with its own domain comes up on a clean server, with attachments on its disk or in an external bucket; an upgrade keeps the data.
 
 - **Release:** MVP
 - **Depends on:** Story 6, Story 7, Story 9
@@ -510,10 +511,10 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Sign-in via GitHub OAuth; device flow (RFC 8628) for machines without a browser. The account is created on first sign-in.
 - Device keys (signing and HPKE) are generated on the machine and never leave it; key storage as in `architecture.md`, "Cryptography".
-- The device certificate as the spec defines it (iteration 2.3), signed by the server (`architecture.md`, "Device linking"); signatures by other devices and the recovery key come with Story 17.
+- The first device creates the account master key, which signs its certificate, as the spec defines (iteration 2.3); a server signature alone never admits a device (`architecture.md`, "Device linking"). Signing by other devices and the master key's copy under the recovery key come with Story 17.
 - Client local state in SQLite.
 - CLI: sign in, sign out, list your devices.
-- **Done when:** on a machine without a browser, `skald` signs in via device flow and gets a certificate; the server stores only public keys.
+- **Done when:** on a machine without a browser, `skald` signs in via device flow and gets a certificate signed by the account master key; a certificate signed only by the server is rejected; the server stores only public keys.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -662,7 +663,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The user links new devices and does not lose the history, even if all devices are wiped.
 
 **Scope:**
-- The recovery key is generated on the machine on first connect and shown to the user; history keys are wrapped to it as well.
+- The recovery key is generated on the machine on first connect and shown to the user; the account master key and the history keys are encrypted to it (`architecture.md`, "Device linking").
 - The recovery key is entered only in the CLI (`architecture.md`, "Device linking").
 - A new device is confirmed on an already linked device or with the recovery key, which signs its certificate. It then joins the account's channels and gets the history keys as the spec defines (iteration 2.3), also when the recovery key replaced every device.
 - **Done when:** all devices are wiped; the recovery key is entered on a new laptop, and the full history is there; its agents exchange messages in the old channels again.
@@ -698,6 +699,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a message sent to an agent appears in the context of a running Claude Code session.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 4, Story 14, Story 15
 - **Docs:** `features.md` §7, §16, `architecture.md` — "Components", "Delivery to agents", `infrastructure.md` — "Channels", "Release", "PR checks"
 
@@ -711,6 +713,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a message sent to an agent appears in the context of a running Codex session.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 4, Story 14, Story 15
 - **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents", `infrastructure.md` — "PR checks"
 
@@ -789,9 +792,11 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Production as in `infrastructure.md`, "Cloud": a primary and a replica with synchronous replication, WAL-G backups, the image published for self-hosting, rollout with manual approval, monitoring, the addresses.
 - An S3-compatible bucket for attachments (`tech-stack.md`, "Files").
 - The website and docs built from `docs/` on GitHub Pages (`infrastructure.md`, "Channels").
+- Abuse protection at the public launch: quotas, rate limits and manual bans in the operator CLI (Story 34); automatic abuse detection comes with Story 47.
 - **Done when:** a release is deployed to production with one click; restore from backup has been tested; losing the primary loses no `stored` message; monitoring alerts arrive.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 6, Story 7, Story 12
 - **Docs:** `infrastructure.md` — "Cloud", "Channels", `tech-stack.md`
 
@@ -802,9 +807,10 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Named queues and tasks as in `features.md` §10 and `architecture.md`, "Queue": an encrypted payload with plaintext scheduling fields, `idempotency_key`, atomic claim, lease with heartbeat, fencing and `claim_lost`, both modes, retries with exponential backoff, DLQ.
 - The result returns to the sender as an encrypted message.
-- CLI to enqueue, claim, extend and complete; the helper sends the heartbeat, and in one-shot mode it goes as the spec defines (iteration 2.4).
+- A queue belongs to a channel; any device of the channel can claim its tasks (`architecture.md`, "Queue").
+- CLI to enqueue, claim, extend and complete; the helper sends the heartbeat, in one-shot mode the process running the task.
 - Queue load test.
-- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice; a repeated enqueue with the same `idempotency_key` is rejected.
+- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice; a repeated enqueue with the same `idempotency_key` is rejected; a device outside the queue's channel cannot claim or read a task.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -821,13 +827,14 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - A WASM build of the Rust core in the SPA; the browser reads through history keys wrapped to its key and sends actions as signed messages via HPKE.
 - Revoking a browser rotates the history key (`architecture.md`, "Cryptography").
 - Sections: message texts and threads, a "which agent messages whom" graph, history search in the browser.
+- Admin actions signed in the browser: creating invites, making a member an admin, removing a member; the MLS changes follow as the spec defines (iteration 2.3).
 - A reproducible web build (`infrastructure.md`, "Trust in builds").
-- **Done when:** a linked browser shows the channel history, and the server receives only ciphertext; a revoked browser reads nothing written after its revocation, history included; a rebuild from the release tag matches the files `app.skald.so` serves.
+- **Done when:** a linked browser shows the channel history, and the server receives only ciphertext; a revoked browser reads nothing written after its revocation, history included; an admin creates an invite and removes a member from a linked browser; a rebuild from the release tag matches the files `app.skald.so` serves.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 10, Story 17, Story 22
-- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Cryptography", `infrastructure.md` — "Trust in builds"
+- **Depends on:** Story 10, Story 17, Story 22, Story 23
+- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Membership", "Cryptography", `infrastructure.md` — "Trust in builds"
 
 ### Story 28: Web: queues, delivery trace, loops, ask_user
 
@@ -898,9 +905,10 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Channels: Telegram, Slack, a webhook; set per person in the web UI.
 - The events of `features.md` §12.
-- The person's device triggers each notification; the server only relays it and sees the event class and the address (`architecture.md`, "Cryptography"). A notification carries no content.
+- The server sends the events it sees in metadata; the person's device triggers the events that come from content, and the server relays them (`features.md` §12). What the server sees: `architecture.md`, "Cryptography".
+- No content in notifications, no content preview.
 - Rate limits, quiet hours, unsubscribe in one click.
-- **Done when:** an `ask_user` and a DLQ entry arrive in Telegram and on a webhook within seconds; for each, the server receives only the event class.
+- **Done when:** an `ask_user` triggered by the person's device and a DLQ entry noticed by the server arrive in Telegram and on a webhook within seconds; for the `ask_user`, the server receives only the event class.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -969,7 +977,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Only the recovery key restores admin rights; there is no server-side reset.
 - Account deletion from the web UI and CLI, deferred as in `features.md` §5.
 - Spaces where the account was the only member are deleted. The only admin of a space with other members must transfer their rights first; otherwise deletion fails.
-- **Done when:** a space with a single admin shows a warning; after the transfer, the new admin removes members; after account deletion, its former devices cannot read new messages, and once its channels have removed them, the server has none of its data.
+- **Done when:** a space with a single admin shows a warning; after the transfer, the new admin removes members; after account deletion, its former devices cannot read new messages, and 30 days later the server has none of its data.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -1025,7 +1033,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The operator runs the MVP cloud without SQL.
 
 **Scope:**
-- `skald-server admin`: list accounts with quota usage, disable and re-enable an account, delete an account, deferred as in `features.md` §5.
+- `skald-server admin`: list accounts with quota usage, disable (a manual ban) and re-enable an account, delete an account, deferred as in `features.md` §5.
 - Metadata only, like the server itself.
 - **Done when:** an operator finds an account and disables it, and the account loses access; deletion removes the data as in Story 30.
 
@@ -1180,7 +1188,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The cloud is protected from abuse.
 
 **Scope:**
-- Reports and bans based on reports; rules in `skald-cloud`.
+- Abuse reports, automatic abuse detection and bans based on them; rules in `skald-cloud`. Manual bans come with Story 34.
 - **Done when:** a banned account loses access.
 
 - **Release:** Post-MVP

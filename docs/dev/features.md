@@ -31,7 +31,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 ## 1. Encrypted mailbox
 - The server stores ciphertext for each recipient device. If the recipient is online, the message arrives immediately; otherwise it waits in the mailbox. After reconnecting, the client catches up on missed messages from its cursor.
 - No plaintext. If the recipient has no keys, sending fails with an error.
-- Receipts `stored → delivered → read → replied`, plus `held`, `refused` and `expired`: every message ends in a status the sender sees. `idempotency_key` protects against duplicates. Semantics: [protocol spec](../protocol/delivery.md).
+- Receipts `stored → delivered → read → replied`, plus `held`, `refused` and `expired`: every message ends in a status the sender sees. A retry with the same `msg_id` from the same device creates no duplicate. Semantics: [protocol spec](../protocol/delivery.md).
 - **Done when:** A sends a message and closes the laptop; B comes online 10 hours later and receives it. They were never online at the same time; the server holds only ciphertext.
 
 ## 2. Daemonless operation
@@ -64,8 +64,8 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - Optional DNS root of trust (TXT record) for organizations with their own domain.
 - **Account deletion** is deferred:
   - at once, the server ends the account's sign-ins and tokens, deletes its mailboxes and stops delivery to its devices;
-  - the next online member device of each of the account's channels removes the account's devices and rotates the history key;
-  - once every channel has removed them, the server erases the account, its devices and wrapped keys.
+  - the first member device of each of the account's channels to come online removes the account's devices and rotates the history key;
+  - 30 days after the deletion, the server erases the account, its devices and wrapped keys, whether or not every channel has removed them.
   - Messages in channels with other members stay with them.
 - **Done when:** the client detects a key swap on the server; a self-hosted server works with its own IdP without our cloud.
 
@@ -141,13 +141,15 @@ There is one interface: `app.skald.so`. Content is decrypted in the browser.
   - **queue panel:** who holds a task, how much lease is left, `claim_lost`, retries, DLQ with "restart" and "cancel" buttons;
   - **delivery trace:** the `stored → delivered → read` path and the reason if a message was not delivered;
   - answers to `ask_user`;
+  - admin actions signed in the browser: invites, making a member an admin, removing a member;
   - **security center:** devices and fingerprints, one-click revocation, key rotation, "who can read the channel";
   - **human inbox:** all `hold` and `ask_user` items in one list, approval from a phone (the phone's browser is a linked device);
   - **loop analysis:** agent↔agent threads without a human, a "pause" button;
   - **analytics:** computed by the client, stored encrypted;
   - **edit map.**
 - **Notifications** to Telegram, Slack or a webhook: a task, `hold` or `ask_user` waiting for a person, DLQ is growing, an agent is gone, a key changed, a token is expiring.
-  - The person's device triggers each notification; the server only relays it. A notification needs a running device of the person.
+  - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
+  - The person's device triggers the events that come from content: a task, `hold` or `ask_user` waiting for the person, a key changed. The server only relays them, so they need a running device of the person.
   - A notification carries no content. What the server sees of it: [architecture.md](architecture.md), "Cryptography".
 - **Auditor device (ee):** the organization admin sees all conversations; members know about it.
 - LLM token usage is shown only from what the CLI itself shows the user. Low priority.

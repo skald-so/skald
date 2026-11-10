@@ -8,7 +8,7 @@ Versions as of 2026-11-09.
 |---|---|
 | HTTP, WebSocket | axum 0.8 + tokio; SSE and long-poll as fallbacks |
 | Database | PostgreSQL 19 (in production, from 19.1), sqlx 0.9: `SKIP LOCKED`, `LISTEN/NOTIFY` |
-| Files | S3-compatible storage (Cloudflare R2 or Hetzner Object Storage) |
+| Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage) |
 | MLS | OpenMLS 0.9 or mls-rs 0.57, chosen after prototyping |
 | HPKE, signatures | hpke 0.15, ed25519-dalek 3, x25519-dalek 3 |
 | Keys | keyring 4, fallback: a 0600 file |
