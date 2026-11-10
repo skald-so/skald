@@ -176,6 +176,14 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - `CONTRIBUTING.md`: picking a story from `task.md`, running `skald-server` and `skald` locally, `script/test`, sending a PR to `dev`, the CLA; links to `rules.md` instead of repeating it.
 - **Definition of done:** a PR to `dev` passes all checks and merges, including one with checks skipped by path filters; branch rules reject direct pushes to `dev` and `main`; following `CONTRIBUTING.md`, the server and `skald` run locally.
 
+#### Iteration 1.9: Mutation check of changed Rust code
+- **Goal:** A review shows which changes in Rust code no test notices.
+- **What we do:**
+  - `script/mutants <base-ref>`: cargo-mutants mutates only the Rust lines changed since `<base-ref>` and runs the tests of the mutated crate, in parallel, with PostgreSQL as in `script/test`. Exit code 0 only if every mutant is caught; the output names the survivors; the working tree stays clean.
+  - `CONTRIBUTING.md` lists cargo-mutants among the tools.
+  - Tests: on a small fixture project, the script passes for a change covered by a test and fails, naming the survivor, for an uncovered one.
+- **Definition of done:** `script/mutants origin/dev` on a PR branch reports survivors only in the changed Rust code; `script/test` runs the script's tests.
+
 ### Story 2: Protocol spec and threat model
 
 **Goal:** Pin down the protocol and the threat model that all other stories rely on.
@@ -362,6 +370,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** on a machine without a browser, `skald` signs in via device flow and gets a certificate; the server stores only public keys.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 1, Story 2
 - **Docs:** `features.md` §5, `architecture.md` — "Device linking", "Data model", "Cryptography"
 
@@ -378,6 +387,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a user signs in with Google, links GitHub to the same account and signs in with either; `skald` signs in via device flow with a Google account.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 8
 - **Docs:** `features.md` §5
 
@@ -392,6 +402,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** tests confirm forward secrecy and that a removed member cannot access new messages; the crate builds for WASM.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 2, Story 3
 - **Docs:** `architecture.md` — "Cryptography", `features.md` §4, §6, `tech-stack.md`
 
@@ -424,6 +435,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `idempotency_key` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 11
 - **Docs:** `features.md` §1, "Product", `architecture.md` — "Network", "Data model", "Delivery semantics", "Security"
 
@@ -440,6 +452,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** an automated test shows that a removed device with a full copy of its disk cannot read any message sent after the removal.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 10, Story 12
 - **Docs:** `features.md` §4, `architecture.md` — "Cryptography", "Data model"
 
@@ -486,6 +499,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a member's new device reads the channel history; a removed member cannot read messages sent after the removal.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 13
 - **Docs:** `features.md` §6, "Product", `architecture.md` — "Cryptography", "Data model"
 
@@ -499,6 +513,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** all devices are wiped; the recovery key is entered on a new laptop, and the full history is there.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 16
 - **Docs:** `features.md` §6, §16, `architecture.md` — "Device linking", "Cryptography"
 
@@ -514,6 +529,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** the client detects a key swap on the server (automated test).
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 17
 - **Docs:** `features.md` §5, `architecture.md` — "Device linking"
 
@@ -588,6 +604,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a user from another account joins the space via the link, and their agents exchange messages with the admin's agents.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 13, Story 14, Story 22
 - **Docs:** `features.md` §16, §12, `architecture.md` — "Security"
 
@@ -604,6 +621,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** one-click sign-up, one command per machine; after that, Claude Code and Codex on two machines exchange messages.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 7, Story 14, Story 17, Story 19, Story 20, Story 22
 - **Docs:** `features.md` §16, `architecture.md` — "Device linking", `infrastructure.md` — "Channels"
 
@@ -639,6 +657,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 13, Story 15
 - **Docs:** `features.md` §10, `architecture.md` — "Queue", "Data model"
 
@@ -655,6 +674,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a linked browser shows the channel history, and the server receives only ciphertext; a revoked browser cannot read new messages.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 10, Story 17, Story 22
 - **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Cryptography"
 
@@ -704,6 +724,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a space with a single admin shows a warning; after the transfer, the new admin removes members; after account deletion, the server has none of its data, and its former devices cannot read new messages.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 13, Story 16, Story 22
 - **Docs:** `features.md` §4, §5, `architecture.md` — "Data model", "Cryptography"
 
@@ -776,6 +797,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 13, Story 22
 - **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography"
 
@@ -829,6 +851,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a freelancer is in three spaces, with a clientA↔clientB shared channel; after one side disables it, no messages pass through it.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 13, Story 22
 - **Docs:** `features.md` §3, §12, `architecture.md` — "Data model"
 
@@ -842,6 +865,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a self-hosted server works with its own IdP without our cloud.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 9
 - **Docs:** `features.md` §5
 
@@ -855,6 +879,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** the agent gets a human's answer to `ask_user`; an attachment reaches the recipient, and the server sees only ciphertext.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 21
 - **Docs:** `features.md` §8, `architecture.md` — "Security"
 
@@ -986,6 +1011,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** an employee removed in the organization's IdP automatically loses access; without a license key, `ee/` features are off; an organization that buys the cloud Enterprise plan gets `ee/` features right away.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 40
 - **Docs:** `features.md` — "Product", `infrastructure.md` — "Cloud"
 
@@ -1000,6 +1026,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** the auditor device reads the organization's channels, and members see an audit notice; history is deleted per policy.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 16, Story 50
 - **Docs:** `features.md` — "Product", §12
 
@@ -1029,6 +1056,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a space has moved from the cloud to a self-hosted server, and members read all the previous history; `skald export` outputs the history in a readable form.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 16, Story 17, Story 52
 - **Docs:** `features.md` §6, `infrastructure.md` — "Self-host"
 
@@ -1071,6 +1099,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** in a managed-keys space, the web shows the history without linking the browser; members see that the mode is on.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 16, Story 27
 - **Docs:** `features.md` §13, `architecture.md` — "Cryptography"
 
@@ -1084,6 +1113,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** ChatGPT and Claude.ai send and read the space's messages via hosted MCP.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 15, Story 56
 - **Docs:** `features.md` §9, §13
 
@@ -1110,6 +1140,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** the envelope's plaintext header has no sender, and ciphertext sizes are evened out.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 12, Story 13
 - **Docs:** `architecture.md` — "Cryptography"
 
@@ -1123,6 +1154,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** agents on two different servers exchange messages through a shared channel.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 18, Story 39
 - **Docs:** `features.md` §15, `architecture.md` — "Network"
 
