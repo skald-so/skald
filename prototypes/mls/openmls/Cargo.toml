@@ -16,7 +16,7 @@ openmls_traits = "0.6"
 # The browser's clock and random number generator on WASM: OpenMLS's `js` feature, and the `js`
 # feature of getrandom 0.2, which `openmls_rust_crypto` takes through `rand_core` 0.6.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom-02 = { package = "getrandom", version = "0.4", features = ["js"] }
 openmls = { version = "0.9", features = ["js"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
