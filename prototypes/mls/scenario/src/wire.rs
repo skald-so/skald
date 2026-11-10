@@ -23,13 +23,190 @@ pub const COMMIT: u8 = 3;
 /// The `remove` `ProposalType`.
 pub const REMOVE: u16 = 3;
 
-/// The fields of a KeyPackage's leaf that the Skald profile fixes.
+/// The `last_resort` KeyPackage extension type [draft-ietf-mls-extensions, §5].
+pub const LAST_RESORT: u16 = 0x000a;
+/// The `key_package` `LeafNodeSource`.
+const KEY_PACKAGE_SOURCE: u8 = 1;
+
+/// A KeyPackage's `lifetime`, in seconds since the Unix epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lifetime {
+    pub not_before: u64,
+    pub not_after: u64,
+}
+
+impl Lifetime {
+    /// Whether `now` is within it.
+    pub fn holds(&self, now: u64) -> bool {
+        (self.not_before..=self.not_after).contains(&now)
+    }
+}
+
+/// An extension: its type and its `extension_data`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extension {
+    pub extension_type: u16,
+    pub data: Vec<u8>,
+}
+
+/// A KeyPackage [RFC 9420, §10] with a leaf from a KeyPackage [§7.2], field by field. The fields
+/// the scenarios do not read keep their encoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPackage {
     pub cipher_suite: u16,
+    pub init_key: Vec<u8>,
+    pub encryption_key: Vec<u8>,
     pub signature_key: Vec<u8>,
     pub credential_type: u16,
+    /// A `basic` credential's `identity`; for another type, the content of its one vector.
     pub identity: Vec<u8>,
+    /// The encoded `Capabilities`.
+    pub capabilities: Vec<u8>,
+    pub lifetime: Lifetime,
+    /// The content of the leaf's `extensions` vector.
+    pub leaf_extensions: Vec<u8>,
+    pub leaf_signature: Vec<u8>,
+    pub extensions: Vec<Extension>,
+    pub signature: Vec<u8>,
+}
+
+impl KeyPackage {
+    /// Whether it carries the `last_resort` extension.
+    pub fn last_resort(&self) -> bool {
+        self.extensions
+            .iter()
+            .any(|extension| extension.extension_type == LAST_RESORT)
+    }
+
+    /// The encoded `MLSMessage` with the KeyPackage.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = header_bytes(KEY_PACKAGE);
+        out.extend_from_slice(&self.tbs());
+        put_vector(&mut out, &self.signature);
+        out
+    }
+
+    /// Signs the leaf and then the KeyPackage with `signer`'s key, as `SignWithLabel` with
+    /// `LeafNodeTBS` and `KeyPackageTBS` [RFC 9420, §5.1.2].
+    pub fn sign(&mut self, signer: &crate::Identity) {
+        self.leaf_signature = signer
+            .sign(&sign_content("LeafNodeTBS", &self.leaf_tbs()))
+            .to_vec();
+        self.signature = signer
+            .sign(&sign_content("KeyPackageTBS", &self.tbs()))
+            .to_vec();
+    }
+
+    /// The `LeafNodeTBS` of a leaf from a KeyPackage.
+    fn leaf_tbs(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        put_vector(&mut out, &self.encryption_key);
+        put_vector(&mut out, &self.signature_key);
+        out.extend_from_slice(&self.credential_type.to_be_bytes());
+        put_vector(&mut out, &self.identity);
+        out.extend_from_slice(&self.capabilities);
+        out.push(KEY_PACKAGE_SOURCE);
+        out.extend_from_slice(&self.lifetime.not_before.to_be_bytes());
+        out.extend_from_slice(&self.lifetime.not_after.to_be_bytes());
+        put_vector(&mut out, &self.leaf_extensions);
+        out
+    }
+
+    /// The `KeyPackageTBS`, with the signed leaf.
+    fn tbs(&self) -> Vec<u8> {
+        let mut out = PROTOCOL_VERSION.to_be_bytes().to_vec();
+        out.extend_from_slice(&self.cipher_suite.to_be_bytes());
+        put_vector(&mut out, &self.init_key);
+        out.extend_from_slice(&self.leaf_tbs());
+        put_vector(&mut out, &self.leaf_signature);
+        let mut extensions = Vec::new();
+        for extension in &self.extensions {
+            extensions.extend_from_slice(&extension.extension_type.to_be_bytes());
+            put_vector(&mut extensions, &extension.data);
+        }
+        put_vector(&mut out, &extensions);
+        out
+    }
+}
+
+/// A KeyPackage message.
+pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
+    let mut input = Input(message);
+    expect_wire_format(&mut input, KEY_PACKAGE)?;
+    if input.u16()? != PROTOCOL_VERSION {
+        return Err("KeyPackage: not mls10".into());
+    }
+    let cipher_suite = input.u16()?;
+    let init_key = input.vector()?.to_vec();
+    let encryption_key = input.vector()?.to_vec();
+    let signature_key = input.vector()?.to_vec();
+    let credential_type = input.u16()?;
+    let identity = input.vector()?.to_vec();
+    let rest = input.0;
+    for _ in 0..5 {
+        input.vector()?; // versions, cipher_suites, extensions, proposals, credentials
+    }
+    let capabilities = rest[..rest.len() - input.0.len()].to_vec();
+    if input.u8()? != KEY_PACKAGE_SOURCE {
+        return Err("KeyPackage: a leaf that is not from a KeyPackage".into());
+    }
+    let lifetime = Lifetime {
+        not_before: input.u64()?,
+        not_after: input.u64()?,
+    };
+    let leaf_extensions = input.vector()?.to_vec();
+    let leaf_signature = input.vector()?.to_vec();
+    let mut list = Input(input.vector()?);
+    let mut extensions = Vec::new();
+    while !list.0.is_empty() {
+        extensions.push(Extension {
+            extension_type: list.u16()?,
+            data: list.vector()?.to_vec(),
+        });
+    }
+    let signature = input.vector()?.to_vec();
+    if !input.0.is_empty() {
+        return Err("KeyPackage: trailing bytes".into());
+    }
+    Ok(KeyPackage {
+        cipher_suite,
+        init_key,
+        encryption_key,
+        signature_key,
+        credential_type,
+        identity,
+        capabilities,
+        lifetime,
+        leaf_extensions,
+        leaf_signature,
+        extensions,
+        signature,
+    })
+}
+
+/// The `SignContent` of `SignWithLabel(_, label, content)`.
+fn sign_content(label: &str, content: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_vector(&mut out, format!("MLS 1.0 {label}").as_bytes());
+    put_vector(&mut out, content);
+    out
+}
+
+/// The `MLSMessage` header with `wire_format`.
+fn header_bytes(wire_format: u16) -> Vec<u8> {
+    [PROTOCOL_VERSION.to_be_bytes(), wire_format.to_be_bytes()].concat()
+}
+
+/// Appends a vector with the shortest variable-length size [RFC 9420, §2.1.2].
+fn put_vector(out: &mut Vec<u8>, value: &[u8]) {
+    let len = value.len();
+    match len {
+        0..0x40 => out.push(len as u8),
+        // The top two bits give the size; the length is below them.
+        0x40..0x4000 => out.extend_from_slice(&(0x4000 + len as u16).to_be_bytes()),
+        _ => out.extend_from_slice(&(0x8000_0000 + len as u32).to_be_bytes()),
+    }
+    out.extend_from_slice(value);
 }
 
 /// The plaintext header of a PublicMessage or a PrivateMessage.
@@ -53,31 +230,6 @@ pub struct PublicCommit {
     pub other_proposals: usize,
     /// Whether it has an UpdatePath.
     pub path: bool,
-}
-
-/// The profile's fields of a KeyPackage message.
-pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
-    let mut input = Input(message);
-    expect_wire_format(&mut input, KEY_PACKAGE)?;
-    if input.u16()? != PROTOCOL_VERSION {
-        return Err("KeyPackage: not mls10".into());
-    }
-    let cipher_suite = input.u16()?;
-    input.vector()?; // init_key
-    input.vector()?; // leaf_node.encryption_key
-    let signature_key = input.vector()?.to_vec();
-    let credential_type = input.u16()?;
-    let identity = if credential_type == BASIC {
-        input.vector()?.to_vec()
-    } else {
-        Vec::new()
-    };
-    Ok(KeyPackage {
-        cipher_suite,
-        signature_key,
-        credential_type,
-        identity,
-    })
 }
 
 /// The `cipher_suite` of a Welcome message.
@@ -242,21 +394,141 @@ mod tests {
         assert!(Input(b"\x03ab").vector().is_err());
     }
 
-    #[test]
-    fn reads_a_key_package() {
+    /// A KeyPackage message with a last-resort extension and its fields.
+    fn a_key_package() -> (Vec<u8>, KeyPackage) {
         let mut message = vec![0, 1, 0, 5, 0, 1, 0, 1];
         message.extend_from_slice(b"\x01i\x01e\x02sk\x00\x01\x03dev");
+        let capabilities = b"\x02\x00\x01\x02\x00\x01\x02\x00\x0a\x00\x02\x00\x01";
+        message.extend_from_slice(capabilities);
+        message.push(1);
+        message.extend_from_slice(&1u64.to_be_bytes());
+        message.extend_from_slice(&2u64.to_be_bytes());
+        message.extend_from_slice(b"\x00\x02ls\x03\x00\x0a\x00\x02sg");
+        let fields = KeyPackage {
+            cipher_suite: CIPHER_SUITE,
+            init_key: b"i".to_vec(),
+            encryption_key: b"e".to_vec(),
+            signature_key: b"sk".to_vec(),
+            credential_type: BASIC,
+            identity: b"dev".to_vec(),
+            capabilities: capabilities.to_vec(),
+            lifetime: Lifetime {
+                not_before: 1,
+                not_after: 2,
+            },
+            leaf_extensions: Vec::new(),
+            leaf_signature: b"ls".to_vec(),
+            extensions: vec![Extension {
+                extension_type: LAST_RESORT,
+                data: Vec::new(),
+            }],
+            signature: b"sg".to_vec(),
+        };
+        (message, fields)
+    }
+
+    #[test]
+    fn reads_and_encodes_a_key_package() {
+        let (message, fields) = a_key_package();
+        assert_eq!(key_package(&message).unwrap(), fields);
+        assert_eq!(fields.encode(), message);
+        assert!(fields.last_resort());
+
+        let mut other = fields.clone();
+        other.extensions = vec![
+            Extension {
+                extension_type: 0xff00,
+                data: b"x".to_vec(),
+            },
+            Extension {
+                extension_type: 0x0009,
+                data: Vec::new(),
+            },
+        ];
+        other.leaf_extensions = b"\x00\x0b\x00".to_vec();
+        assert!(!other.last_resort());
+        assert_eq!(key_package(&other.encode()).unwrap(), other);
+    }
+
+    #[test]
+    fn rejects_what_is_not_a_key_package() {
+        let (message, _) = a_key_package();
+        let changed = |at: usize, byte: u8| {
+            let mut message = message.clone();
+            message[at] = byte;
+            message
+        };
+        // The leaf's source follows the 13 bytes of capabilities.
+        let source = message.len() - 28;
+        assert_eq!(message[source], 1);
+        for (message, why) in [
+            (changed(3, 3), "a Welcome"),
+            (changed(5, 2), "not mls10"),
+            (changed(source, 2), "a leaf from an Update"),
+            ([message.clone(), vec![0]].concat(), "trailing bytes"),
+            (message[..message.len() - 1].to_vec(), "truncated"),
+            (changed(message.len() - 7, 0x04), "a truncated extension"),
+        ] {
+            assert!(key_package(&message).is_err(), "{why}");
+        }
+    }
+
+    #[test]
+    fn signs_the_leaf_and_then_the_key_package() {
+        let (_, mut fields) = a_key_package();
+        let signer = crate::Identity::generate();
+        fields.sign(&signer);
+
+        // The leaf's TBS is the message from its encryption key up to its signature.
+        let (message, _) = a_key_package();
+        let leaf_tbs = &message[10..message.len() - 10];
+        let mut leaf_content = b"\x13MLS 1.0 LeafNodeTBS".to_vec();
+        leaf_content.push(leaf_tbs.len() as u8);
+        leaf_content.extend_from_slice(leaf_tbs);
+        assert_eq!(fields.leaf_signature, signer.sign(&leaf_content));
+
+        let encoded = fields.encode();
+        let tbs = &encoded[4..encoded.len() - 66];
+        let mut content = b"\x15MLS 1.0 KeyPackageTBS".to_vec();
+        content.push(0x40 | (tbs.len() >> 8) as u8);
+        content.push(tbs.len() as u8);
+        content.extend_from_slice(tbs);
+        assert_eq!(fields.signature, signer.sign(&content));
         assert_eq!(
-            key_package(&message).unwrap(),
-            KeyPackage {
-                cipher_suite: CIPHER_SUITE,
-                signature_key: b"sk".to_vec(),
-                credential_type: BASIC,
-                identity: b"dev".to_vec(),
-            }
+            &encoded[encoded.len() - 66..encoded.len() - 64],
+            [0x40, 0x40]
         );
-        message[3] = 3;
-        assert!(key_package(&message).is_err());
+        assert_eq!(key_package(&encoded).unwrap(), fields);
+    }
+
+    #[test]
+    fn writes_vectors_with_the_shortest_length() {
+        for (len, prefix) in [
+            (0, &[0x00][..]),
+            (0x3f, &[0x3f]),
+            (0x40, &[0x40, 0x40]),
+            (0x3fff, &[0x7f, 0xff]),
+            (0x4000, &[0x80, 0x00, 0x40, 0x00]),
+            (0x1_0203, &[0x80, 0x01, 0x02, 0x03]),
+        ] {
+            let value = vec![7; len];
+            let mut out = Vec::new();
+            put_vector(&mut out, &value);
+            assert_eq!(&out[..prefix.len()], prefix, "{len}");
+            assert_eq!(Input(&out).vector().unwrap(), value, "{len}");
+            assert_eq!(out.len(), prefix.len() + len, "{len}");
+        }
+    }
+
+    #[test]
+    fn a_lifetime_holds_between_its_bounds() {
+        let lifetime = Lifetime {
+            not_before: 10,
+            not_after: 20,
+        };
+        for (now, want) in [(9, false), (10, true), (20, true), (21, false)] {
+            assert_eq!(lifetime.holds(now), want, "{now}");
+        }
     }
 
     #[test]

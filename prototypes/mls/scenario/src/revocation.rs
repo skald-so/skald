@@ -2,12 +2,16 @@
 //! `[+ revocation]` a Remove or an empty Commit carries in its `authenticated_data` ("Group
 //! changes").
 //!
-//! The prototypes have no certificates yet: a member leaf of the group stands in for the
-//! certificate of a revocation's `signer`, a `client` device of the one account all devices share.
+//! Whether a revocation counts comes from the certificates and master keys of a [`Roster`]. No
+//! scenario has a stolen device, so a master-key revocation voids nothing here.
 
-use ed25519_dalek::{Signature, VerifyingKey};
-
-use crate::{DeviceId, Identity, Leaf, Result, cbor::Value};
+use crate::{
+    DeviceId, Identity, Result,
+    cbor::Value,
+    certificate::Kind,
+    object::{self, signed, verifies},
+    roster::Roster,
+};
 
 /// A 16-byte account ID.
 pub type AccountId = [u8; 16];
@@ -41,8 +45,7 @@ pub fn revoke(
         (Value::Uint(TIMESTAMP), Value::Uint(timestamp)),
     ])
     .encode();
-    let signature = signer.sign(&signed(&body));
-    Value::Array(vec![Value::Bytes(body), Value::Bytes(signature.to_vec())]).encode()
+    object::sign(signer, LABEL, body)
 }
 
 /// The `authenticated_data` of a Commit with the revocations: the encoded `[+ revocation]`.
@@ -58,17 +61,11 @@ pub fn list(revocations: &[Vec<u8>]) -> Result<Vec<u8>> {
 }
 
 /// What a member device reads from a Commit's `authenticated_data` before it merges the Commit:
-/// the devices that the counting revocations revoke, in their order. `members` are the leaves of
-/// the group's current epoch.
+/// the devices that the counting revocations revoke, each one's `device` and `also` in turn.
 ///
-/// Fails unless `authenticated_data` is an encoded `[+ revocation]`. A revocation counts if its
-/// `account` is `account`, it has no `also`, which needs the master key, and its signature verifies
-/// with the key of its `signer`'s leaf in `members`; one that does not count is ignored.
-pub fn revoked(
-    authenticated_data: &[u8],
-    account: &AccountId,
-    members: &[Leaf],
-) -> Result<Vec<DeviceId>> {
+/// Fails unless `authenticated_data` is an encoded `[+ revocation]`; one that does not count is
+/// ignored.
+pub fn revoked(authenticated_data: &[u8], roster: &Roster) -> Result<Vec<DeviceId>> {
     let Value::Array(revocations) = Value::decode(authenticated_data)? else {
         return Err("authenticated_data: not an array of revocations".into());
     };
@@ -77,124 +74,86 @@ pub fn revoked(
     }
     let mut revoked = Vec::new();
     for revocation in revocations {
-        let (body, signature) = signed_body(revocation)?;
-        let fields = Fields::decode(&body)?;
-        if fields.account != *account || fields.also {
-            continue;
-        }
-        let Some(signer) = fields.signer else {
-            continue;
-        };
-        let Some(leaf) = members.iter().find(|leaf| leaf.identity == signer) else {
-            continue;
-        };
-        if verifies(&leaf.signature_key, &signed(&body), &signature) {
-            revoked.push(fields.device);
+        if let Some(counts) = counting(revocation, roster)? {
+            revoked.push(counts.device);
+            revoked.extend(counts.also);
         }
     }
     Ok(revoked)
 }
 
-/// What a revocation's signature covers: the encoded `[label, body]`.
-fn signed(body: &[u8]) -> Vec<u8> {
-    Value::Array(vec![Value::Text(LABEL.into()), Value::Bytes(body.to_vec())]).encode()
+/// A decoded `revocation-body`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revocation {
+    pub account: AccountId,
+    pub device: DeviceId,
+    pub keep: Vec<DeviceId>,
+    /// Absent: the master key.
+    pub signer: Option<DeviceId>,
+    pub also: Vec<DeviceId>,
 }
 
-fn signed_body(revocation: Value) -> Result<(Vec<u8>, Vec<u8>)> {
-    let Value::Array(parts) = revocation else {
-        return Err("revocation: not an array".into());
-    };
-    match <[Value; 2]>::try_from(parts) {
-        Ok([Value::Bytes(body), Value::Bytes(signature)]) if signature.len() == 64 => {
-            Ok((body, signature))
-        }
-        _ => Err("revocation: not [body, signature]".into()),
+impl Revocation {
+    /// Whether it names `device` in `device` or `also`.
+    pub fn names(&self, device: &DeviceId) -> bool {
+        self.device == *device || self.also.contains(device)
     }
 }
 
-fn verifies(key: &[u8], message: &[u8], signature: &[u8]) -> bool {
-    let (Ok(key), Ok(signature)) = (<[u8; 32]>::try_from(key), Signature::from_slice(signature))
-    else {
-        return false;
-    };
-    VerifyingKey::from_bytes(&key).is_ok_and(|key| key.verify_strict(message, &signature).is_ok())
-}
-
-/// The fields of a `revocation-body` that decide whether it counts here.
-struct Fields {
-    account: AccountId,
-    device: DeviceId,
-    signer: Option<DeviceId>,
-    also: bool,
-}
-
-impl Fields {
-    fn decode(body: &[u8]) -> Result<Self> {
-        let Value::Map(entries) = Value::decode(body)? else {
-            return Err("revocation-body: not a map".into());
-        };
-        let (mut account, mut device, mut signer, mut timestamp, mut also) =
-            (None, None, None, None, false);
-        for (key, value) in entries {
-            match (key, value) {
-                (Value::Uint(ACCOUNT), value) => account = Some(id(value)?),
-                (Value::Uint(DEVICE), value) => device = Some(id(value)?),
-                (Value::Uint(KEEP), value) => ids(value)?,
-                (Value::Uint(SIGNER), value) => signer = Some(id(value)?),
-                (Value::Uint(TIMESTAMP), value) => timestamp = Some(uint(value)?),
-                (Value::Uint(ALSO), value) => {
-                    ids(value)?;
-                    also = true;
-                }
-                (Value::Uint(_) | Value::Nint(_), _) => {} // a field of a later version
-                _ => return Err("revocation-body: a key that is not an integer".into()),
-            }
-        }
-        match (account, device, timestamp) {
-            (Some(account), Some(device), Some(_)) => Ok(Self {
-                account,
-                device,
-                signer,
-                also,
-            }),
-            _ => Err("revocation-body: a required field is missing".into()),
-        }
-    }
-}
-
-/// A `uint`, such as a `timestamp`.
-fn uint(value: Value) -> Result<u64> {
-    match value {
-        Value::Uint(n) => Ok(n),
-        _ => Err("not an unsigned integer".into()),
-    }
-}
-
-/// An `id`: a 16-byte string.
-fn id(value: Value) -> Result<[u8; 16]> {
-    match value {
-        Value::Bytes(bytes) => Ok(bytes.try_into().map_err(|_| "an id of a wrong size")?),
-        _ => Err("an id that is not a byte string".into()),
-    }
-}
-
-/// A `[+ id]`.
-fn ids(value: Value) -> Result<()> {
-    match value {
-        Value::Array(items) if !items.is_empty() => items.into_iter().try_for_each(|item| {
-            id(item)?;
-            Ok(())
+/// The revocation if it counts: its signature verifies with the master key `roster` pins for its
+/// `account`, or it has no `also` and its signature verifies with the certificate of `signer`, a
+/// `client` or `browser` device of `account` whose certificate passes checks 1 and 2 of "Device
+/// checks". Fails unless `revocation` is a `signed<revocation-body>`.
+pub fn counting(revocation: Value, roster: &Roster) -> Result<Option<Revocation>> {
+    let (body, signatures) = object::parts(revocation, 1)?;
+    let revocation = decode(&body)?;
+    let key = match revocation.signer {
+        None => roster.master(&revocation.account),
+        Some(signer) if revocation.also.is_empty() => roster.chain(&signer).and_then(|chain| {
+            let cert = &chain[0];
+            (cert.account == revocation.account
+                && matches!(cert.kind, Kind::Client | Kind::Browser))
+            .then_some(cert.signing)
         }),
-        _ => Err("not a list of ids".into()),
+        Some(_) => None,
+    };
+    let counts = key.is_some_and(|key| verifies(&key, &signed(LABEL, &body), &signatures[0]));
+    Ok(counts.then_some(revocation))
+}
+
+fn decode(body: &[u8]) -> Result<Revocation> {
+    let (mut account, mut device, mut keep, mut signer, mut timestamp, mut also) =
+        (None, None, Vec::new(), None, None, Vec::new());
+    for (key, value) in object::fields(body)? {
+        match key {
+            ACCOUNT => account = Some(object::id(value)?),
+            DEVICE => device = Some(object::id(value)?),
+            KEEP => keep = object::ids(value)?,
+            SIGNER => signer = Some(object::id(value)?),
+            TIMESTAMP => timestamp = Some(object::uint(value)?),
+            ALSO => also = object::ids(value)?,
+            _ => {} // a field of a later version
+        }
+    }
+    match (account, device, timestamp) {
+        (Some(account), Some(device), Some(_)) => Ok(Revocation {
+            account,
+            device,
+            keep,
+            signer,
+            also,
+        }),
+        _ => Err("revocation-body: a required field is missing".into()),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenarios::leaf;
+    use crate::certificate::{Body, issue};
 
     const ACCOUNT_ID: AccountId = [0xac; 16];
+    const OTHER_ID: AccountId = [0xad; 16];
 
     fn body(entries: Vec<(Value, Value)>) -> Vec<u8> {
         Value::Map(entries).encode()
@@ -202,8 +161,7 @@ mod tests {
 
     /// A revocation of `body` signed by `signer`.
     fn signed_by(signer: &Identity, body: Vec<u8>) -> Vec<u8> {
-        let signature = signer.sign(&signed(&body));
-        Value::Array(vec![Value::Bytes(body), Value::Bytes(signature.to_vec())]).encode()
+        object::sign(signer, LABEL, body)
     }
 
     fn bytes(value: &[u8]) -> Value {
@@ -217,6 +175,30 @@ mod tests {
             (Value::Uint(SIGNER), bytes(&signer.device_id())),
             (Value::Uint(TIMESTAMP), Value::Uint(1_700_000_000)),
         ]
+    }
+
+    /// The account's master key, its roster and a device of `kind` certified by the master key.
+    struct Fixture {
+        master: Identity,
+        roster: Roster,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let master = Identity::generate();
+            let mut roster = Roster::default();
+            roster.pin(ACCOUNT_ID, master.public_key());
+            Self { master, roster }
+        }
+
+        fn device(&mut self, account: AccountId, kind: Kind) -> Identity {
+            let device = Identity::generate();
+            let body = Body::new(account, &device, kind, None);
+            self.roster
+                .add_certificate(&issue(&body, &self.master, &device))
+                .unwrap();
+            device
+        }
     }
 
     #[test]
@@ -243,25 +225,35 @@ mod tests {
     }
 
     #[test]
-    fn counts_revocations_signed_by_a_member() {
-        let (signer, other) = (Identity::generate(), Identity::generate());
-        let members = [leaf(&other), leaf(&signer)];
+    fn counts_revocations_by_client_and_browser_devices_and_the_master_key() {
+        let mut fixture = Fixture::new();
+        let client = fixture.device(ACCOUNT_ID, Kind::Client);
+        let browser = fixture.device(ACCOUNT_ID, Kind::Browser);
+        let mut by_master = fields(&client, &[3; 16]);
+        by_master.remove(2);
+        by_master.push((Value::Uint(ALSO), Value::Array(vec![bytes(&[4; 16])])));
         let ad = list(&[
-            revoke(&signer, &ACCOUNT_ID, &[1; 16], 1),
-            revoke(&signer, &ACCOUNT_ID, &[2; 16], 2),
+            revoke(&client, &ACCOUNT_ID, &[1; 16], 1),
+            revoke(&browser, &ACCOUNT_ID, &[2; 16], 2),
+            signed_by(&fixture.master, body(by_master)),
         ])
         .unwrap();
-        assert_eq!(ad[0], 0x82);
+        assert_eq!(ad[0], 0x83);
         assert_eq!(
-            revoked(&ad, &ACCOUNT_ID, &members).unwrap(),
-            [[1; 16], [2; 16]]
+            revoked(&ad, &fixture.roster).unwrap(),
+            [[1; 16], [2; 16], [3; 16], [4; 16]]
         );
     }
 
     #[test]
     fn ignores_revocations_that_do_not_count() {
-        let (signer, outsider) = (Identity::generate(), Identity::generate());
-        let members = [leaf(&signer)];
+        let mut fixture = Fixture::new();
+        let signer = fixture.device(ACCOUNT_ID, Kind::Client);
+        let service = fixture.device(ACCOUNT_ID, Kind::Service);
+        let custodian = fixture.device(ACCOUNT_ID, Kind::Custodian);
+        let foreign = fixture.device(OTHER_ID, Kind::Client);
+        fixture.roster.pin(OTHER_ID, fixture.master.public_key());
+        let outsider = Identity::generate();
         let device = [7; 16];
         let counts = revoke(&signer, &ACCOUNT_ID, &device, 1);
 
@@ -282,19 +274,31 @@ mod tests {
         let Value::Bytes(counted) = parts[0].clone() else {
             unreachable!()
         };
-        parts[1] = bytes(&outsider.sign(&signed(&counted)));
+        parts[1] = bytes(&outsider.sign(&signed(LABEL, &counted)));
 
         for (revocation, why) in [
             (revoke(&signer, &[0; 16], &device, 1), "another account"),
             (
+                revoke(&foreign, &ACCOUNT_ID, &device, 1),
+                "a signer of another account",
+            ),
+            (
                 revoke(&outsider, &ACCOUNT_ID, &device, 1),
-                "a signer outside the group",
+                "a signer without a certificate",
+            ),
+            (
+                revoke(&service, &ACCOUNT_ID, &device, 1),
+                "a service signer",
+            ),
+            (
+                revoke(&custodian, &ACCOUNT_ID, &device, 1),
+                "a custodian signer",
             ),
             (forged.encode(), "a signature that does not verify"),
             (impostor.encode(), "a signature by another key"),
             (
                 signed_by(&signer, body(master_key)),
-                "no signer: the master key",
+                "no signer, but not signed by the master key",
             ),
             (
                 signed_by(&signer, body(with_also)),
@@ -302,33 +306,58 @@ mod tests {
             ),
         ] {
             let ad = list(&[revocation, counts.clone()]).unwrap();
-            assert_eq!(
-                revoked(&ad, &ACCOUNT_ID, &members).unwrap(),
-                [device],
-                "{why}"
-            );
+            assert_eq!(revoked(&ad, &fixture.roster).unwrap(), [device], "{why}");
         }
+        let unpinned = Roster::default();
+        let ad = list(&[counts]).unwrap();
+        assert!(
+            revoked(&ad, &unpinned).unwrap().is_empty(),
+            "no certificates"
+        );
     }
 
     #[test]
     fn reads_keep_and_fields_of_later_versions() {
-        let signer = Identity::generate();
+        let mut fixture = Fixture::new();
+        let signer = fixture.device(ACCOUNT_ID, Kind::Client);
         let device = [7; 16];
         let mut entries = fields(&signer, &device);
         entries.insert(2, (Value::Uint(KEEP), Value::Array(vec![bytes(&[9; 16])])));
         entries.push((Value::Uint(7), Value::Text("later".into())));
         entries.push((Value::Nint(0), Value::Simple(21)));
-        let ad = list(&[signed_by(&signer, body(entries))]).unwrap();
+        let revocation = signed_by(&signer, body(entries));
         assert_eq!(
-            revoked(&ad, &ACCOUNT_ID, &[leaf(&signer)]).unwrap(),
-            [device]
+            counting(Value::decode(&revocation).unwrap(), &fixture.roster).unwrap(),
+            Some(Revocation {
+                account: ACCOUNT_ID,
+                device,
+                keep: vec![[9; 16]],
+                signer: Some(signer.device_id()),
+                also: Vec::new(),
+            })
         );
+        let ad = list(&[revocation]).unwrap();
+        assert_eq!(revoked(&ad, &fixture.roster).unwrap(), [device]);
+    }
+
+    #[test]
+    fn names_its_device_and_also() {
+        let revocation = Revocation {
+            account: ACCOUNT_ID,
+            device: [1; 16],
+            keep: vec![[2; 16]],
+            signer: None,
+            also: vec![[3; 16]],
+        };
+        assert!(revocation.names(&[1; 16]));
+        assert!(revocation.names(&[3; 16]));
+        assert!(!revocation.names(&[2; 16]));
     }
 
     #[test]
     fn rejects_authenticated_data_that_is_not_a_revocation_list() {
-        let signer = Identity::generate();
-        let members = [leaf(&signer)];
+        let mut fixture = Fixture::new();
+        let signer = fixture.device(ACCOUNT_ID, Kind::Client);
         let device = [7; 16];
         let counts = revoke(&signer, &ACCOUNT_ID, &device, 1);
         let malformed = |change: fn(&mut Vec<(Value, Value)>)| {
@@ -401,7 +430,7 @@ mod tests {
                 "a key that is not an integer",
             ),
         ] {
-            assert!(revoked(&ad, &ACCOUNT_ID, &members).is_err(), "{why}");
+            assert!(revoked(&ad, &fixture.roster).is_err(), "{why}");
         }
     }
 }

@@ -26,7 +26,7 @@
 ## Story 3: MLS prototypes and library choice
 - [x] **3.1:** Prototype harness and a channel group on both libraries
 - [x] **3.2:** Removing a device with a new epoch
-- [ ] **3.3:** KeyPackages and admission checks
+- [x] **3.3:** KeyPackages and admission checks
 - [ ] **3.4:** Commit ordering through a minimal Delivery Service
 - [ ] **3.5:** Joining by itself and rejoining
 - [ ] **3.6:** WASM build and size

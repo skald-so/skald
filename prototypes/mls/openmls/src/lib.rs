@@ -3,7 +3,8 @@
 use std::{collections::HashMap, sync::RwLock};
 
 use mls_scenario::{
-    Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
+    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
+    key_packages,
     state::{Reader, Writer},
 };
 use openmls::prelude::{tls_codec::Deserialize as _, *};
@@ -78,6 +79,27 @@ impl OpenMlsDevice {
         }
     }
 
+    /// A KeyPackage with the lifetime from now and `last_resort` in its leaf's capabilities:
+    /// `KeyPackageIn::validate` refuses a KeyPackage with an extension its capabilities lack.
+    fn new_key_package(&mut self, last_resort: bool) -> Result<Vec<u8>> {
+        let lifetime = key_packages::lifetime(key_packages::now());
+        let capabilities =
+            Capabilities::new(None, None, Some(&[ExtensionType::LastResort]), None, None);
+        let mut builder = KeyPackage::builder()
+            .key_package_lifetime(Lifetime::init(lifetime.not_before, lifetime.not_after))
+            .leaf_node_capabilities(capabilities);
+        if last_resort {
+            builder = builder.mark_as_last_resort();
+        }
+        let bundle = builder.build(
+            CIPHERSUITE,
+            &self.provider,
+            &self.signer(),
+            self.credential(),
+        )?;
+        Ok(MlsMessageOut::from(bundle.key_package().clone()).to_bytes()?)
+    }
+
     fn group(&self, group_id: &[u8]) -> Result<MlsGroup> {
         MlsGroup::load(self.provider.storage(), &GroupId::from_slice(group_id))?
             .ok_or_else(|| "no such group".into())
@@ -95,6 +117,17 @@ fn leaf(member: Member) -> Result<Leaf> {
             .identity()
             .to_vec(),
         signature_key: member.signature_key,
+    })
+}
+
+/// The leaf a KeyPackage gives its device.
+fn key_package_leaf(key_package: &KeyPackage) -> Result<Leaf> {
+    let leaf_node = key_package.leaf_node();
+    Ok(Leaf {
+        identity: BasicCredential::try_from(leaf_node.credential().clone())?
+            .identity()
+            .to_vec(),
+        signature_key: leaf_node.signature_key().as_slice().to_vec(),
     })
 }
 
@@ -156,13 +189,11 @@ impl Device for OpenMlsDevice {
     }
 
     fn key_package(&mut self) -> Result<Vec<u8>> {
-        let bundle = KeyPackage::builder().build(
-            CIPHERSUITE,
-            &self.provider,
-            &self.signer(),
-            self.credential(),
-        )?;
-        Ok(MlsMessageOut::from(bundle.key_package().clone()).to_bytes()?)
+        self.new_key_package(false)
+    }
+
+    fn last_resort_key_package(&mut self) -> Result<Vec<u8>> {
+        self.new_key_package(true)
     }
 
     fn create_group(&mut self, group_id: &[u8]) -> Result<()> {
@@ -181,14 +212,24 @@ impl Device for OpenMlsDevice {
         Ok(())
     }
 
-    fn add(&mut self, group_id: &[u8], key_packages: &[Vec<u8>]) -> Result<Commit> {
+    fn add(
+        &mut self,
+        group_id: &[u8],
+        key_packages: &[Vec<u8>],
+        admitted: &Admitted,
+    ) -> Result<Commit> {
+        // `validate` checks the signatures and the lifetime, and the Commit the ciphersuite; the
+        // credential is the device's to check.
         let key_packages = key_packages
             .iter()
-            .map(|bytes| match message(bytes)? {
-                MlsMessageBodyIn::KeyPackage(key_package) => {
-                    Ok(key_package.validate(self.provider.crypto(), ProtocolVersion::Mls10)?)
-                }
-                _ => Err("not a KeyPackage".into()),
+            .map(|bytes| {
+                let MlsMessageBodyIn::KeyPackage(key_package) = message(bytes)? else {
+                    return Err("not a KeyPackage".into());
+                };
+                let key_package =
+                    key_package.validate(self.provider.crypto(), ProtocolVersion::Mls10)?;
+                admitted.check(&key_package_leaf(&key_package)?)?;
+                Ok(key_package)
             })
             .collect::<Result<Vec<_>>>()?;
         let mut group = self.group(group_id)?;
@@ -291,9 +332,14 @@ impl Device for OpenMlsDevice {
                     .remove_proposals()
                     .map(|remove| Self::leaf(&group, remove.remove_proposal().removed()))
                     .collect::<Result<_>>()?;
+                let added = commit
+                    .add_proposals()
+                    .map(|add| key_package_leaf(add.add_proposal().key_package()))
+                    .collect::<Result<_>>()?;
                 check(&Staged {
                     sender: sender.clone(),
                     removed,
+                    added,
                     authenticated_data,
                 })?;
                 group.merge_staged_commit(&self.provider, *commit)?;
