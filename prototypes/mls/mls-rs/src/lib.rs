@@ -14,7 +14,15 @@ use mls_rs::{
     crypto::{SignaturePublicKey, SignatureSecretKey},
     error::IntoAnyError,
     extension::{ExtensionType, MlsExtension, recommended::LastResortKeyPackageExt},
-    group::{CommitEffect, CommitOutput, ReceivedMessage, proposal::Proposal},
+    external_client::{
+        ExternalClient, ExternalGroup, ExternalReceivedMessage,
+        builder::{ExternalBaseConfig, WithCryptoProvider, WithIdentityProvider},
+    },
+    group::{
+        CommitEffect, CommitOutput, ReceivedMessage,
+        mls_rules::{CommitOptions, DefaultMlsRules},
+        proposal::Proposal,
+    },
     identity::{
         CredentialType, SigningIdentity,
         basic::{BasicCredential, BasicIdentityProvider, BasicIdentityProviderError},
@@ -29,8 +37,8 @@ use mls_rs_core::{
 };
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use mls_scenario::{
-    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
-    key_packages,
+    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Observer, Received,
+    Result, Staged, key_packages,
     state::{Reader, Writer},
 };
 use zeroize::Zeroizing;
@@ -262,7 +270,9 @@ impl MlsRsDevice {
 
     /// A client with the device's `basic` credential and signing key, `admission` and KeyPackages
     /// of the longest lifetime with `last_resort` in their capabilities. mls-rs takes the Ed25519
-    /// key as the 64 bytes of the secret and the public key.
+    /// key as the 64 bytes of the secret and the public key. Each Commit comes with the new
+    /// epoch's GroupInfo, with the `ratchet_tree` and `external_pub` extensions: mls-rs makes it
+    /// only for a group that allows external Commits.
     fn client_with(&self, admission: Admission) -> Client<impl MlsConfig> {
         let credential = BasicCredential::new(self.identity.device_id().to_vec());
         let public_key = SignaturePublicKey::new(self.identity.public_key().to_vec());
@@ -272,6 +282,10 @@ impl MlsRsDevice {
         Client::builder()
             .crypto_provider(RustCryptoProvider::default())
             .identity_provider(admission)
+            .mls_rules(
+                DefaultMlsRules::new()
+                    .with_commit_options(CommitOptions::new().with_allow_external_commit(true)),
+            )
             .extension_type(ExtensionType::LAST_RESORT_KEY_PACKAGE)
             .key_package_lifetime(Duration::from_secs(key_packages::MAX_LIFETIME))
             .group_state_storage(self.store.clone())
@@ -314,14 +328,19 @@ fn commit(output: CommitOutput) -> Result<Commit> {
         [welcome] => Some(welcome.to_bytes()?),
         _ => return Err("more than one Welcome".into()),
     };
+    let group_info = output
+        .external_commit_group_info
+        .ok_or("a Commit without a GroupInfo")?;
     Ok(Commit {
         commit: output.commit_message.to_bytes()?,
         welcome,
+        group_info: group_info.to_bytes()?,
     })
 }
 
 impl Device for MlsRsDevice {
     const LIBRARY: &'static str = "mls-rs";
+    type Observer = MlsRsObserver;
 
     fn new(identity: &Identity) -> Result<Self> {
         Ok(Self {
@@ -425,6 +444,26 @@ impl Device for MlsRsDevice {
         Ok(())
     }
 
+    fn clear_pending_commit(&mut self, group_id: &[u8]) -> Result<()> {
+        let mut group = self.client().load_group(group_id)?;
+        if !group.has_pending_commit() {
+            return Err("no pending Commit".into());
+        }
+        group.clear_pending_commit();
+        group.write_to_storage()?;
+        Ok(())
+    }
+
+    fn delete_group(&mut self, group_id: &[u8]) -> Result<()> {
+        // mls-rs's storage trait has no delete: the store drops the group itself.
+        self.store
+            .lock()
+            .groups
+            .remove(group_id)
+            .map(drop)
+            .ok_or_else(|| "no such group".into())
+    }
+
     fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>> {
         let (mut group, _) =
             self.client()
@@ -517,6 +556,63 @@ impl Device for MlsRsDevice {
             size_of::<HistoryKey>(),
         )?;
         Ok(key.as_bytes().try_into()?)
+    }
+}
+
+/// The config of mls-rs's party outside a group with the `basic` credential.
+type ExternalConfig = WithIdentityProvider<
+    BasicIdentityProvider,
+    WithCryptoProvider<RustCryptoProvider, ExternalBaseConfig>,
+>;
+
+/// A party outside the group: mls-rs's `ExternalGroup`.
+pub struct MlsRsObserver {
+    group: ExternalGroup<ExternalConfig>,
+}
+
+impl Observer for MlsRsObserver {
+    fn observe(group_info: &[u8]) -> Result<Self> {
+        let client = ExternalClient::builder()
+            .crypto_provider(RustCryptoProvider::default())
+            .identity_provider(BasicIdentityProvider)
+            .build();
+        let group = client.observe_group(MlsMessage::from_bytes(group_info)?, None, None)?;
+        Ok(Self { group })
+    }
+
+    fn process_commit(
+        &mut self,
+        commit: &[u8],
+        check: impl FnOnce(&Leaf) -> Result<()>,
+    ) -> Result<()> {
+        // mls-rs moves the group to the new epoch as it processes the Commit: a copy processes it.
+        let mut next = self.group.clone();
+        let ExternalReceivedMessage::Commit(commit) =
+            next.process_incoming_message(MlsMessage::from_bytes(commit)?)?
+        else {
+            return Err("not a Commit".into());
+        };
+        let sender = self.group.roster().member_with_index(commit.committer)?;
+        check(&MlsRsDevice::leaf(&sender.signing_identity)?)?;
+        self.group = next;
+        Ok(())
+    }
+
+    fn epoch(&self) -> u64 {
+        self.group.group_context().epoch
+    }
+
+    fn context(&self) -> Result<Vec<u8>> {
+        Ok(self.group.group_context().mls_encode_to_vec()?)
+    }
+
+    fn members(&self) -> Result<Vec<Leaf>> {
+        self.group
+            .roster()
+            .members()
+            .iter()
+            .map(|member| MlsRsDevice::leaf(&member.signing_identity))
+            .collect()
     }
 }
 

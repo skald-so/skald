@@ -112,6 +112,7 @@ mod tests {
 
     impl Device for Counter {
         const LIBRARY: &'static str = "counter";
+        type Observer = crate::delivery::tests::Unused;
 
         fn new(_: &Identity) -> Result<Self> {
             Ok(Self(0))
@@ -143,6 +144,12 @@ mod tests {
             unimplemented!()
         }
         fn merge_pending_commit(&mut self, _: &[u8]) -> Result<()> {
+            unimplemented!()
+        }
+        fn clear_pending_commit(&mut self, _: &[u8]) -> Result<()> {
+            unimplemented!()
+        }
+        fn delete_group(&mut self, _: &[u8]) -> Result<()> {
             unimplemented!()
         }
         fn join(&mut self, _: &[u8]) -> Result<Vec<u8>> {

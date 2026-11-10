@@ -3,11 +3,18 @@
 use std::{collections::HashMap, sync::RwLock};
 
 use mls_scenario::{
-    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
-    key_packages,
+    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Observer, Received,
+    Result, Staged, key_packages,
     state::{Reader, Writer},
 };
-use openmls::prelude::{tls_codec::Deserialize as _, *};
+use openmls::{
+    group::ProposalStore,
+    messages::group_info::GroupInfo,
+    prelude::{
+        tls_codec::{Deserialize as _, Serialize as _},
+        *,
+    },
+};
 use openmls_memory_storage::MemoryStorage;
 use openmls_rust_crypto::RustCrypto;
 use openmls_traits::{
@@ -122,7 +129,10 @@ fn leaf(member: Member) -> Result<Leaf> {
 
 /// The leaf a KeyPackage gives its device.
 fn key_package_leaf(key_package: &KeyPackage) -> Result<Leaf> {
-    let leaf_node = key_package.leaf_node();
+    node_leaf(key_package.leaf_node())
+}
+
+fn node_leaf(leaf_node: &LeafNode) -> Result<Leaf> {
     Ok(Leaf {
         identity: BasicCredential::try_from(leaf_node.credential().clone())?
             .identity()
@@ -131,10 +141,18 @@ fn key_package_leaf(key_package: &KeyPackage) -> Result<Leaf> {
     })
 }
 
-fn commit(commit: MlsMessageOut, welcome: Option<MlsMessageOut>) -> Result<Commit> {
+/// A Commit with its Welcome and the GroupInfo OpenMLS makes with it when the group's config has
+/// `use_ratchet_tree_extension`: with the `ratchet_tree` and `external_pub` extensions.
+fn commit(
+    commit: MlsMessageOut,
+    welcome: Option<MlsMessageOut>,
+    group_info: Option<GroupInfo>,
+) -> Result<Commit> {
+    let group_info = group_info.ok_or("a Commit without a GroupInfo")?;
     Ok(Commit {
         commit: commit.to_bytes()?,
         welcome: welcome.map(|welcome| welcome.to_bytes()).transpose()?,
+        group_info: MlsMessageOut::from(group_info).to_bytes()?,
     })
 }
 
@@ -144,6 +162,7 @@ fn message(bytes: &[u8]) -> Result<MlsMessageBodyIn> {
 
 impl Device for OpenMlsDevice {
     const LIBRARY: &'static str = "OpenMLS";
+    type Observer = OpenMlsObserver;
 
     fn new(identity: &Identity) -> Result<Self> {
         Ok(Self {
@@ -233,9 +252,9 @@ impl Device for OpenMlsDevice {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut group = self.group(group_id)?;
-        let (added, welcome, _) =
+        let (added, welcome, group_info) =
             group.add_members(&self.provider, &self.signer(), &key_packages)?;
-        commit(added, Some(welcome))
+        commit(added, Some(welcome), group_info)
     }
 
     fn remove(
@@ -261,9 +280,9 @@ impl Device for OpenMlsDevice {
             .collect::<Result<Vec<_>>>()?;
         // The AAD of the next message only: OpenMLS resets it after the Commit.
         group.set_aad(authenticated_data.to_vec());
-        let (removal, welcome, _) =
+        let (removal, welcome, group_info) =
             group.remove_members(&self.provider, &self.signer(), &leaves)?;
-        commit(removal, welcome)
+        commit(removal, welcome, group_info)
     }
 
     fn empty_commit(&mut self, group_id: &[u8], authenticated_data: &[u8]) -> Result<Commit> {
@@ -276,7 +295,8 @@ impl Device for OpenMlsDevice {
             LeafNodeParameters::default(),
         )?;
         let welcome = bundle.to_welcome_msg();
-        commit(bundle.into_commit(), welcome)
+        let (empty, _, group_info) = bundle.into_contents();
+        commit(empty, welcome, group_info)
     }
 
     fn merge_pending_commit(&mut self, group_id: &[u8]) -> Result<()> {
@@ -285,6 +305,20 @@ impl Device for OpenMlsDevice {
             return Err("no pending Commit".into());
         }
         group.merge_pending_commit(&self.provider)?;
+        Ok(())
+    }
+
+    fn clear_pending_commit(&mut self, group_id: &[u8]) -> Result<()> {
+        let mut group = self.group(group_id)?;
+        if group.pending_commit().is_none() {
+            return Err("no pending Commit".into());
+        }
+        group.clear_pending_commit(self.provider.storage())?;
+        Ok(())
+    }
+
+    fn delete_group(&mut self, group_id: &[u8]) -> Result<()> {
+        self.group(group_id)?.delete(self.provider.storage())?;
         Ok(())
     }
 
@@ -365,5 +399,66 @@ impl Device for OpenMlsDevice {
             size_of::<HistoryKey>(),
         )?;
         Ok(key.as_slice().try_into()?)
+    }
+}
+
+/// A party outside the group: OpenMLS's `PublicGroup`, with a storage of its own.
+pub struct OpenMlsObserver {
+    crypto: RustCrypto,
+    storage: MemoryStorage,
+    group: PublicGroup,
+}
+
+impl Observer for OpenMlsObserver {
+    fn observe(group_info: &[u8]) -> Result<Self> {
+        let MlsMessageBodyIn::GroupInfo(group_info) = message(group_info)? else {
+            return Err("not a GroupInfo".into());
+        };
+        let tree = group_info
+            .extensions()
+            .ratchet_tree()
+            .ok_or("a GroupInfo without ratchet_tree")?
+            .ratchet_tree()
+            .clone();
+        let (crypto, storage) = (RustCrypto::default(), MemoryStorage::default());
+        let (group, _) =
+            PublicGroup::from_external(&crypto, &storage, tree, group_info, ProposalStore::new())?;
+        Ok(Self {
+            crypto,
+            storage,
+            group,
+        })
+    }
+
+    fn process_commit(
+        &mut self,
+        commit: &[u8],
+        check: impl FnOnce(&Leaf) -> Result<()>,
+    ) -> Result<()> {
+        let message = MlsMessageIn::tls_deserialize_exact(commit)?.try_into_protocol_message()?;
+        let processed = self.group.process_message(&self.crypto, message)?;
+        let Sender::Member(index) = *processed.sender() else {
+            return Err("a Commit from a non-member".into());
+        };
+        check(&node_leaf(
+            self.group.leaf(index).ok_or("no member at the leaf")?,
+        )?)?;
+        let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() else {
+            return Err("not a Commit".into());
+        };
+        self.group.merge_commit(&self.storage, *staged)?;
+        Ok(())
+    }
+
+    fn epoch(&self) -> u64 {
+        self.group.group_context().epoch().as_u64()
+    }
+
+    fn context(&self) -> Result<Vec<u8>> {
+        Ok(self.group.group_context().tls_serialize_detached()?)
+    }
+
+    fn members(&self) -> Result<Vec<Leaf>> {
+        self.group.members().map(leaf).collect()
     }
 }

@@ -14,6 +14,7 @@ pub const BASIC: u16 = 1;
 pub const PUBLIC_MESSAGE: u16 = 1;
 pub const PRIVATE_MESSAGE: u16 = 2;
 pub const WELCOME: u16 = 3;
+pub const GROUP_INFO: u16 = 4;
 pub const KEY_PACKAGE: u16 = 5;
 
 /// `ContentType` values.
@@ -25,6 +26,9 @@ pub const REMOVE: u16 = 3;
 
 /// The `last_resort` KeyPackage extension type [draft-ietf-mls-extensions, §5].
 pub const LAST_RESORT: u16 = 0x000a;
+/// The `ratchet_tree` and `external_pub` GroupInfo extension types [RFC 9420, §12.4.3].
+pub const RATCHET_TREE: u16 = 0x0002;
+pub const EXTERNAL_PUB: u16 = 0x0004;
 /// The `key_package` `LeafNodeSource`.
 const KEY_PACKAGE_SOURCE: u8 = 1;
 
@@ -119,12 +123,7 @@ impl KeyPackage {
         put_vector(&mut out, &self.init_key);
         out.extend_from_slice(&self.leaf_tbs());
         put_vector(&mut out, &self.leaf_signature);
-        let mut extensions = Vec::new();
-        for extension in &self.extensions {
-            extensions.extend_from_slice(&extension.extension_type.to_be_bytes());
-            put_vector(&mut extensions, &extension.data);
-        }
-        put_vector(&mut out, &extensions);
+        put_vector(&mut out, &encode_extensions(&self.extensions));
         out
     }
 }
@@ -156,14 +155,7 @@ pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
     };
     let leaf_extensions = input.vector()?.to_vec();
     let leaf_signature = input.vector()?.to_vec();
-    let mut list = Input(input.vector()?);
-    let mut extensions = Vec::new();
-    while !list.0.is_empty() {
-        extensions.push(Extension {
-            extension_type: list.u16()?,
-            data: list.vector()?.to_vec(),
-        });
-    }
+    let extensions = extensions(input.vector()?)?;
     let signature = input.vector()?.to_vec();
     if !input.0.is_empty() {
         return Err("KeyPackage: trailing bytes".into());
@@ -182,6 +174,111 @@ pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
         extensions,
         signature,
     })
+}
+
+/// The content of an `extensions` vector.
+fn extensions(list: &[u8]) -> Result<Vec<Extension>> {
+    let mut list = Input(list);
+    let mut extensions = Vec::new();
+    while !list.0.is_empty() {
+        extensions.push(Extension {
+            extension_type: list.u16()?,
+            data: list.vector()?.to_vec(),
+        });
+    }
+    Ok(extensions)
+}
+
+/// The content of an `extensions` vector with `extensions`.
+fn encode_extensions(extensions: &[Extension]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for extension in extensions {
+        out.extend_from_slice(&extension.extension_type.to_be_bytes());
+        put_vector(&mut out, &extension.data);
+    }
+    out
+}
+
+/// A GroupInfo [RFC 9420, §12.4.3], field by field. The fields the scenarios do not read keep
+/// their encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupInfo {
+    pub cipher_suite: u16,
+    pub group_id: Vec<u8>,
+    pub epoch: u64,
+    pub tree_hash: Vec<u8>,
+    pub confirmed_transcript_hash: Vec<u8>,
+    /// The content of the group context's `extensions` vector.
+    pub context_extensions: Vec<u8>,
+    pub extensions: Vec<Extension>,
+    pub confirmation_tag: Vec<u8>,
+    /// The signer's leaf index.
+    pub signer: u32,
+    pub signature: Vec<u8>,
+}
+
+impl GroupInfo {
+    /// Whether it carries an extension of `extension_type`.
+    pub fn has(&self, extension_type: u16) -> bool {
+        self.extensions
+            .iter()
+            .any(|extension| extension.extension_type == extension_type)
+    }
+
+    /// The encoded `MLSMessage` with the GroupInfo.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = header_bytes(GROUP_INFO);
+        out.extend_from_slice(&self.tbs());
+        put_vector(&mut out, &self.signature);
+        out
+    }
+
+    /// Signs it with `signer`'s key, as `SignWithLabel` with `GroupInfoTBS` [RFC 9420, §12.4.3].
+    pub fn sign(&mut self, signer: &crate::Identity) {
+        self.signature = signer
+            .sign(&sign_content("GroupInfoTBS", &self.tbs()))
+            .to_vec();
+    }
+
+    /// The `GroupInfoTBS`.
+    fn tbs(&self) -> Vec<u8> {
+        let mut out = PROTOCOL_VERSION.to_be_bytes().to_vec();
+        out.extend_from_slice(&self.cipher_suite.to_be_bytes());
+        put_vector(&mut out, &self.group_id);
+        out.extend_from_slice(&self.epoch.to_be_bytes());
+        put_vector(&mut out, &self.tree_hash);
+        put_vector(&mut out, &self.confirmed_transcript_hash);
+        put_vector(&mut out, &self.context_extensions);
+        put_vector(&mut out, &encode_extensions(&self.extensions));
+        put_vector(&mut out, &self.confirmation_tag);
+        out.extend_from_slice(&self.signer.to_be_bytes());
+        out
+    }
+}
+
+/// A GroupInfo message.
+pub fn group_info(message: &[u8]) -> Result<GroupInfo> {
+    let mut input = Input(message);
+    expect_wire_format(&mut input, GROUP_INFO)?;
+    if input.u16()? != PROTOCOL_VERSION {
+        return Err("GroupInfo: not mls10".into());
+    }
+    let group_info = GroupInfo {
+        cipher_suite: input.u16()?,
+        group_id: input.vector()?.to_vec(),
+        epoch: input.u64()?,
+        tree_hash: input.vector()?.to_vec(),
+        confirmed_transcript_hash: input.vector()?.to_vec(),
+        context_extensions: input.vector()?.to_vec(),
+        extensions: extensions(input.vector()?)?,
+        confirmation_tag: input.vector()?.to_vec(),
+        signer: input.u32()?,
+        signature: input.vector()?.to_vec(),
+    };
+    if !input.0.is_empty() {
+        return Err("GroupInfo: trailing bytes".into());
+    }
+    Ok(group_info)
 }
 
 /// The `SignContent` of `SignWithLabel(_, label, content)`.
@@ -535,6 +632,87 @@ mod tests {
     fn reads_a_welcomes_cipher_suite() {
         assert_eq!(welcome_cipher_suite(&[0, 1, 0, 3, 0, 3]).unwrap(), 3);
         assert!(welcome_cipher_suite(&[0, 1, 0, 5, 0, 3]).is_err());
+    }
+
+    /// A GroupInfo message of group `g1` at epoch 7 with `extensions`, signed by leaf 3.
+    fn a_group_info(extensions: &[u8]) -> Vec<u8> {
+        let mut message = vec![0, 1, 0, 4, 0, 1, 0, 1, 2, b'g', b'1'];
+        message.extend_from_slice(&7u64.to_be_bytes());
+        message.extend_from_slice(b"\x02th\x03cth\x03\x00\x01\x00");
+        message.push(extensions.len() as u8);
+        message.extend_from_slice(extensions);
+        message.extend_from_slice(b"\x01t\x00\x00\x00\x03\x02sg");
+        message
+    }
+
+    #[test]
+    fn reads_and_encodes_a_group_info() {
+        let message = a_group_info(b"\x00\x02\x02rt\x00\x04\x01x");
+        let fields = group_info(&message).unwrap();
+        assert_eq!(
+            fields,
+            GroupInfo {
+                cipher_suite: CIPHER_SUITE,
+                group_id: b"g1".to_vec(),
+                epoch: 7,
+                tree_hash: b"th".to_vec(),
+                confirmed_transcript_hash: b"cth".to_vec(),
+                context_extensions: b"\x00\x01\x00".to_vec(),
+                extensions: vec![
+                    Extension {
+                        extension_type: RATCHET_TREE,
+                        data: b"rt".to_vec(),
+                    },
+                    Extension {
+                        extension_type: EXTERNAL_PUB,
+                        data: b"x".to_vec(),
+                    },
+                ],
+                confirmation_tag: b"t".to_vec(),
+                signer: 3,
+                signature: b"sg".to_vec(),
+            }
+        );
+        assert_eq!(fields.encode(), message);
+        assert!(fields.has(RATCHET_TREE) && fields.has(EXTERNAL_PUB));
+        assert!(!fields.has(LAST_RESORT));
+        let bare = group_info(&a_group_info(b"")).unwrap();
+        assert_eq!(bare.extensions, []);
+        assert!(!bare.has(RATCHET_TREE));
+    }
+
+    #[test]
+    fn signs_a_group_info() {
+        let mut fields = group_info(&a_group_info(b"")).unwrap();
+        let signer = crate::Identity::generate();
+        fields.sign(&signer);
+
+        // The TBS is the message from its version up to its signature.
+        let message = a_group_info(b"");
+        let tbs = &message[4..message.len() - 3];
+        let mut content = b"\x14MLS 1.0 GroupInfoTBS".to_vec();
+        content.push(tbs.len() as u8);
+        content.extend_from_slice(tbs);
+        assert_eq!(fields.signature, signer.sign(&content));
+        assert_eq!(group_info(&fields.encode()).unwrap(), fields);
+    }
+
+    #[test]
+    fn rejects_what_is_not_a_group_info() {
+        let message = a_group_info(b"");
+        let changed = |at: usize, byte: u8| {
+            let mut message = message.clone();
+            message[at] = byte;
+            message
+        };
+        for (message, why) in [
+            (changed(3, 3), "a Welcome"),
+            (changed(5, 2), "not mls10"),
+            ([message.clone(), vec![0]].concat(), "trailing bytes"),
+            (message[..message.len() - 1].to_vec(), "truncated"),
+        ] {
+            assert!(group_info(&message).is_err(), "{why}");
+        }
     }
 
     #[test]

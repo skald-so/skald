@@ -6,6 +6,7 @@
 
 pub mod cbor;
 pub mod certificate;
+pub mod delivery;
 pub mod identity;
 pub mod key_packages;
 pub mod object;
@@ -17,6 +18,7 @@ pub mod wire;
 
 mod fleet;
 
+pub use delivery::{DeliveryService, Refusal};
 pub use fleet::Fleet;
 pub use identity::{DeviceId, Identity};
 pub use roster::{Admitted, Roster};
@@ -39,6 +41,9 @@ pub struct Commit {
     pub commit: Vec<u8>,
     /// The encoded `MLSMessage` with the Welcome for the added devices, if it adds any.
     pub welcome: Option<Vec<u8>>,
+    /// The encoded `MLSMessage` with the GroupInfo of the Commit's new epoch, with the
+    /// `ratchet_tree` and `external_pub` extensions (`docs/protocol/membership.md`, "MLS profile").
+    pub group_info: Vec<u8>,
 }
 
 /// The label and length of a channel's history key: `MLS-Exporter("skald history", "", 16)`
@@ -75,6 +80,8 @@ pub enum Received {
 pub trait Device: Sized {
     /// The library's name in test output and the report.
     const LIBRARY: &'static str;
+    /// The library's party outside the group, for the [`DeliveryService`].
+    type Observer: Observer;
 
     /// A new device without groups or KeyPackages.
     fn new(identity: &Identity) -> Result<Self>;
@@ -116,6 +123,10 @@ pub trait Device: Sized {
     fn empty_commit(&mut self, group_id: &[u8], authenticated_data: &[u8]) -> Result<Commit>;
     /// Merges the device's pending Commit: the group moves to its new epoch.
     fn merge_pending_commit(&mut self, group_id: &[u8]) -> Result<()>;
+    /// Drops the device's pending Commit: the group stays in its epoch. Fails if there is none.
+    fn clear_pending_commit(&mut self, group_id: &[u8]) -> Result<()>;
+    /// Drops the group and everything the device keeps for it.
+    fn delete_group(&mut self, group_id: &[u8]) -> Result<()>;
     /// Joins a group from a Welcome; returns its `group_id`.
     fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>>;
     /// Encrypts an application message as an encoded `MLSMessage`.
@@ -140,6 +151,30 @@ pub trait Device: Sized {
     /// The history key of the group's current epoch, from the MLS exporter with
     /// [`HISTORY_LABEL`].
     fn history_key(&self, group_id: &[u8]) -> Result<HistoryKey>;
+}
+
+/// A party outside a group that follows its epoch and members from its GroupInfo and
+/// PublicMessages only, with the library's support for one: what [`DeliveryService`] knows of a
+/// channel.
+pub trait Observer: Sized {
+    /// The group as an encoded `MLSMessage` with a GroupInfo and the `ratchet_tree` extension
+    /// gives it. Fails unless the GroupInfo's signature verifies with its signer's leaf in that
+    /// tree and the tree is valid.
+    fn observe(group_info: &[u8]) -> Result<Self>;
+    /// Processes a member's Commit, an encoded `MLSMessage` with a PublicMessage, of the current
+    /// epoch: the library verifies it, then `check` gets the leaf of its sender. Only if both pass
+    /// does the observer move to the Commit's new epoch.
+    fn process_commit(
+        &mut self,
+        commit: &[u8],
+        check: impl FnOnce(&Leaf) -> Result<()>,
+    ) -> Result<()>;
+    /// The group's current epoch.
+    fn epoch(&self) -> u64;
+    /// The encoded `GroupContext` of the current epoch [RFC 9420, §8.1].
+    fn context(&self) -> Result<Vec<u8>>;
+    /// The leaves of the group's members, in leaf order.
+    fn members(&self) -> Result<Vec<Leaf>>;
 }
 
 /// Defines one `#[test]` per scenario of [`scenarios`] for the [`Device`] type `$device`.
@@ -209,6 +244,36 @@ macro_rules! scenario_tests {
         #[test]
         fn device_added_without_admission_is_removed() {
             $crate::scenarios::device_added_without_admission_is_removed::<$device>();
+        }
+
+        #[test]
+        fn commits_carry_the_new_epochs_group_info() {
+            $crate::scenarios::commits_carry_the_new_epochs_group_info::<$device>();
+        }
+
+        #[test]
+        fn two_commits_in_one_epoch_converge() {
+            $crate::scenarios::two_commits_in_one_epoch_converge::<$device>();
+        }
+
+        #[test]
+        fn three_commits_in_one_epoch_converge() {
+            $crate::scenarios::three_commits_in_one_epoch_converge::<$device>();
+        }
+
+        #[test]
+        fn commit_for_an_old_epoch_is_refused() {
+            $crate::scenarios::commit_for_an_old_epoch_is_refused::<$device>();
+        }
+
+        #[test]
+        fn commit_from_a_non_member_is_refused() {
+            $crate::scenarios::commit_from_a_non_member_is_refused::<$device>();
+        }
+
+        #[test]
+        fn two_creators_end_in_the_kept_group() {
+            $crate::scenarios::two_creators_end_in_the_kept_group::<$device>();
         }
     };
 }
