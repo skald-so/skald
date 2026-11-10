@@ -209,7 +209,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - **Release:** MVP
 - **Depends on:** Story 1
-- **Docs:** `docs/protocol/README.md`, `roadmap.md` — "Preparation", `architecture.md` — "Membership", "Data model", "Cryptography", "Queue", "Security", `infrastructure.md` — "Release", `features.md` §1, §4, §5, §6, §10, §13, §15
+- **Docs:** `docs/protocol/README.md`, `docs/threat-model.md`, `roadmap.md` — "Preparation", `architecture.md` — "Membership", "Data model", "Cryptography", "Queue", "Security", `infrastructure.md` — "Release", `features.md` §1, §4, §5, §6, §10, §13, §15
 
 #### Iteration 2.1: Protocol spec: addressing, envelope and versions
 - **Goal:** A public spec fixes the identifiers, the envelope and the protocol version that every other story builds on.
@@ -983,7 +983,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 21
-- **Docs:** `features.md` §8, "Product", `architecture.md` — "Security", `docs/protocol/delivery.md`, `docs/protocol/agents.md`, `tech-stack.md`
+- **Docs:** `features.md` §8, "Product", `architecture.md` — "Security", `docs/protocol/delivery.md`, `docs/protocol/agents.md`, `docs/threat-model.md`, `tech-stack.md`
 
 ### Story 65: Queue for agents: MCP tools and templates
 
@@ -1009,7 +1009,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Channels: Telegram, Slack, a webhook; set per person in the web UI.
 - The events of `features.md` §12.
-- The server sends the events it sees in metadata; the person's device triggers the events that come from content, and the server relays them (`features.md` §12). What the server sees: `architecture.md`, "Cryptography".
+- The server sends the events it sees in metadata; the person's device triggers the events that come from content, and the server relays them (`features.md` §12). What the server sees: `docs/threat-model.md`, "The server sees".
 - No content in notifications, no content preview.
 - Rate limits, quiet hours, unsubscribe in one click.
 - **Done when:** an `ask_user` triggered by the person's device and a DLQ entry noticed by the server arrive in Telegram and on a webhook within seconds; for the `ask_user`, the server receives only the event class.
@@ -1017,7 +1017,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 18, Story 21, Story 22, Story 26, Story 35, Story 41
-- **Docs:** `features.md` §12, `architecture.md` — "Cryptography", "Security", `docs/protocol/agents.md`
+- **Docs:** `features.md` §12, `architecture.md` — "Security", `docs/protocol/agents.md`, `docs/threat-model.md`
 
 ### Story 66: Restricted mode for tasks from other people
 
@@ -1033,7 +1033,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 19, Story 20, Story 21, Story 26
-- **Docs:** `architecture.md` — "Security", "Membership", `features.md` §10, `docs/protocol/membership.md`
+- **Docs:** `architecture.md` — "Security", "Membership", `features.md` §10, `docs/protocol/membership.md`, `docs/threat-model.md`
 
 ### Story 36: GitHub Action
 
@@ -1116,7 +1116,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - **Release:** MVP
 - **Depends on:** Story 24, Story 25
-- **Docs:** `features.md` §16, `architecture.md` — "Cryptography", `infrastructure.md` — "Channels", "Cloud"
+- **Docs:** `features.md` §16, `docs/threat-model.md`, `infrastructure.md` — "Channels", "Cloud"
 
 ### Story 33: Website: main page
 
@@ -1130,7 +1130,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - **Release:** MVP
 - **Depends on:** Story 25, Story 62
-- **Docs:** `features.md` — "Product", `architecture.md` — "Cryptography", `infrastructure.md` — "Channels", "Cloud"
+- **Docs:** `features.md` — "Product", `docs/threat-model.md`, `infrastructure.md` — "Channels", "Cloud"
 
 ### Story 34: Operator CLI
 
@@ -1195,12 +1195,12 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - The Free limits of the table in `features.md`, "Product", start to apply in the cloud; the server refuses a roster change that takes a Free space over its member limit.
 - Team and Enterprise spaces stop counting toward the spaces an account owns; a space can return to Free only while its owner is under the Free number of spaces.
 - A space already over a Free limit when the limits start, or a Team space left unpaid, keeps its members, devices, service agents and history but cannot add more until it is within the limits; history beyond the Free retention is deleted 30 days after a notice to the space's admins. An unpaid Team space whose owner already has the Free number of spaces moves to the Free limits all the same; the owner then creates no new spaces until under the limit.
-- What the server sees for billing: `architecture.md`, "Cryptography".
+- What the server sees for billing: `docs/threat-model.md`, "The server sees".
 - **Done when:** the 4th member of a Free space is refused until the space moves to Team; after payment the space gets the Team limits; an account with two Free spaces cannot move a third space back to Free; an unpaid Team space keeps its data, cannot grow, and loses history beyond the Free retention 30 days after the notice.
 
 - **Release:** Post-MVP
 - **Depends on:** Story 22, Story 25
-- **Docs:** `features.md` — "Product", §12, `architecture.md` — "Cryptography"
+- **Docs:** `features.md` — "Product", §12, `docs/threat-model.md`
 
 ### Story 39: Shared channels between organizations
 
@@ -1450,7 +1450,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** Post-MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 16, Story 27
-- **Docs:** `features.md` §13, `architecture.md` — "Cryptography"
+- **Docs:** `features.md` §13, `architecture.md` — "Cryptography", `docs/threat-model.md`
 
 ### Story 57: Hosted MCP for ChatGPT and Claude.ai
 
@@ -1492,7 +1492,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** Post-MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 12, Story 13
-- **Docs:** `architecture.md` — "Cryptography"
+- **Docs:** `architecture.md` — "Cryptography", `docs/threat-model.md`
 
 ### Story 60: Server federation
 

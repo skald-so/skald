@@ -207,9 +207,9 @@ attachment = {
 
 ## Security considerations
 - `stored`, `delivered` and `expired` are the server's word. Only receipt messages and replies are end-to-end: encrypted, and signed by the recipient device.
-- Gap detection catches a message the server drops once a later message from the same sending device under the same scheme reaches the recipient. It does not catch the drop of:
-  - a sender's latest messages under a scheme, until it sends another under it; for a message with `to`, the sender still sees no `read`;
+- Gap detection catches a message the server drops once a later message from the same sending device in the same channel under the same scheme reaches the recipient. It does not catch the drop of:
+  - a sender's latest messages in a channel under a scheme, until it sends another there under it; for a message with `to`, the sender still sees no `read`;
   - under `mls`, the messages a sending device sent after the recipient joined and before the first one the recipient got;
   - content without `counter`.
 - Attachments carry a blob ID, not a URL. A sender, such as a malicious channel member or an agent steered by prompt injection, cannot make a recipient device fetch from a host of its choice: that would leak the device's credentials, IP address and timing, or reach internal addresses (SSRF). `digest` is checked only after the download, so it does not prevent this.
-- Everything the server sees, delivery included: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
+- Everything the server sees, delivery included: [threat model, "The server sees"](../threat-model.md#the-server-sees).

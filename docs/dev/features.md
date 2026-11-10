@@ -155,7 +155,7 @@ There is one interface: `app.skald.so`. Content is decrypted in the browser.
 - **Notifications** to Telegram, Slack or a webhook: a task, `hold` or `ask_user` waiting for a person, DLQ is growing, an agent is gone, a key changed, a token is expiring.
   - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
   - The person's device triggers the events that come from content: a task, `hold` or `ask_user` waiting for the person, a key changed. The server only relays them, so they need a running device of the person.
-  - A notification carries no content. What the server sees of it: [architecture.md](architecture.md), "Cryptography".
+  - A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 - **Auditor device (ee):** the organization admin sees all conversations; members know about it.
 - LLM token usage is shown only from what the CLI itself shows the user. Low priority.
 - **`skald ui`** (on demand) — the same page served from localhost by a signed binary. Where the recovery key is entered: [architecture.md](architecture.md), "Device linking".

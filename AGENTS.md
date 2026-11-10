@@ -10,5 +10,6 @@ Read [rules.md](rules.md) before starting work.
 - [docs/dev/infrastructure.md](docs/dev/infrastructure.md) — infrastructure, CI, releases, cloud
 - [docs/dev/roadmap.md](docs/dev/roadmap.md) — releases: MVP and Post-MVP
 - [docs/protocol/README.md](docs/protocol/README.md) — protocol spec, no external audit
+- [docs/threat-model.md](docs/threat-model.md) — threat model, no external audit
 - [task.md](task.md) — stories and iterations
 - [iteration.md](iteration.md) — iterations of each story and their status

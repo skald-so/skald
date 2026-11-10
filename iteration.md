@@ -17,7 +17,7 @@
 - [x] **2.3:** Protocol spec: devices, roster and channels
 - [x] **2.4:** Protocol spec: queues and tasks
 - [x] **2.5:** Protocol spec: presence and `ask_user`
-- [ ] **2.6:** Threat model
+- [x] **2.6:** Threat model
 - [ ] **2.7:** Identifiers and agent addresses in `proto`
 - [ ] **2.8:** Envelope and receipt types in `proto`
 - [ ] **2.9:** Protocol version check on the server

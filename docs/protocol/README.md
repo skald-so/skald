@@ -106,10 +106,10 @@ scheme = &(mls: 1, hpke: 2)
 
 A recipient routes by the header but trusts only what the payload authenticates. It MUST reject an application message unless:
 1. the payload authenticates the sending device as its scheme says: [`mls`](#scheme-mls), [`hpke`](#scheme-hpke);
-2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device)), and only a `client` or `browser` device sends as a [person](agents.md#person);
+2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device)), an `auditor` device sends no application message, and only a `client` or `browser` device sends as a [person](agents.md#person);
 3. the sender may send in `channel`:
    - a `service` device: its content carries a [grant](#service-grant) for `channel`;
-   - any other device: the account that owns `from` is a member of `channel`, that is, one of its devices is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
+   - any other device: the account that owns `from` is a member of `channel`, that is, one of its `client` devices is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
 4. the A2A `messageId` is `msg_id` in text form.
 
 A recipient outside the channel's MLS group, such as a linked browser, takes the group's members from the latest GroupInfo with the ratchet tree [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §12.4.3], signed by a member device.
@@ -280,7 +280,7 @@ Version 1 already has what these need: enabling them changes neither the envelop
 - **Space mode.** A space admin signs the space's mode: whether it is in managed-keys mode, and which `auditor` device, if any, reads it. Members see it. Format: [Policy](membership.md#policy).
 - **Admission.** A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when the signed mode of every space of the channel names it: of both spaces, for a shared channel. A device the channel does not admit is handled as in [Admitted devices](membership.md#admitted-devices).
 - **Custodian device:** [below](#custodian-device).
-- **Auditor device** (`ee/`): a device of kind `auditor` on an organization admin's account, a member of every channel of the organization's spaces that admits it. It decrypts like any member device.
+- **Auditor device** (`ee/`): a device of kind `auditor` on an organization admin's account, a member of every channel of the organization's spaces that admits it. It decrypts like any member device and sends no application message.
 - **Federation** ([features.md §15](../dev/features.md#15-server-federation)): addresses carry the server name; IDs do not collide across servers; servers forward envelopes as received bytes. Federation adds an API between servers, not a change for clients. A server MUST refuse an ID from another server that collides with one it knows.
 
 ### Custodian device
@@ -350,8 +350,9 @@ Differs:
 The two are not wire-compatible; a bridge that is a member on both sides could relay between them.
 
 ## Security considerations
-- The server sees every header field, the payload size and the timing; the content stays encrypted. Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
+- The server sees every header field, the payload size and the timing; the content stays encrypted. Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).
 - Delivery and receipts: [delivery.md](delivery.md#security-considerations).
 - Devices, rosters, channels and history: [membership.md](membership.md#security-considerations).
 - Queues and tasks: [queues.md](queues.md#security-considerations).
 - Presence and `ask_user`: [agents.md](agents.md#security-considerations).
+- Attackers, what each can do and the defenses: [threat model](../threat-model.md).
