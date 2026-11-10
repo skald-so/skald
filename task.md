@@ -1093,13 +1093,13 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Moving a space to Team and back; payment per member per month through a payment provider; invoices in the web UI.
 - The Free limits of the table in `features.md`, "Product", start to apply in the cloud; the server refuses a roster change that takes a Free space over its member limit.
 - Team and Enterprise spaces stop counting toward the spaces an account owns; a space can return to Free only while its owner is under the Free number of spaces.
-- A space already over a Free limit when the limits start, or a Team space left unpaid, keeps its members, devices, service agents and history but cannot add more until it is within the limits; history beyond the Free retention is deleted 30 days after a notice to the space's admins.
-- What the server sees for billing: `architecture.md`, "Security".
+- A space already over a Free limit when the limits start, or a Team space left unpaid, keeps its members, devices, service agents and history but cannot add more until it is within the limits; history beyond the Free retention is deleted 30 days after a notice to the space's admins. An unpaid Team space whose owner already has the Free number of spaces moves to the Free limits all the same; the owner then creates no new spaces until under the limit.
+- What the server sees for billing: `architecture.md`, "Cryptography".
 - **Done when:** the 4th member of a Free space is refused until the space moves to Team; after payment the space gets the Team limits; an account with two Free spaces cannot move a third space back to Free; an unpaid Team space keeps its data, cannot grow, and loses history beyond the Free retention 30 days after the notice.
 
 - **Release:** Post-MVP
 - **Depends on:** Story 22, Story 25
-- **Docs:** `features.md` — "Product", §12, `architecture.md` — "Security"
+- **Docs:** `features.md` — "Product", §12, `architecture.md` — "Cryptography"
 
 ### Story 39: Shared channels between organizations
 
