@@ -54,8 +54,9 @@ fn sizes(results: &Results, object: Object) -> &[usize] {
         .1
 }
 
-/// The objects that hold the tree or a secret for each member grow with the group; a
-/// KeyPackage and a Commit with one Remove do not.
+/// The objects that hold the tree or a secret for each member are bigger at 10 devices than at 2;
+/// a KeyPackage is the same size at both. The Commits of an Add, a Remove and an empty Commit at 2
+/// devices are smaller than the Welcome of an Add at 10.
 fn sizes_follow_the_group<D: Device>() {
     let lib = D::LIBRARY;
     let results = run::<D>(&[2, 10], &[], Budget::ONCE, |_| {}).unwrap();
