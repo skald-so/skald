@@ -31,7 +31,7 @@ const CIPHER_SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 /// The prior epochs kept per group, as mls-rs's in-memory storage keeps them.
 const EPOCH_RETENTION: usize = 3;
 
-/// The device's MLS state. mls-rs's in-memory storages cannot be saved, so this one replaces both.
+/// The device's MLS state. mls-rs's in-memory storages have no save or load; this replaces both.
 #[derive(Clone, Default)]
 struct Store(Arc<Mutex<StoreData>>);
 

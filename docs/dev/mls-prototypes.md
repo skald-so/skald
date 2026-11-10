@@ -19,7 +19,7 @@ Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Sto
 ## Findings
 
 ### OpenMLS
-- **Saving state:** `OpenMlsRustCrypto` cannot take a loaded storage, and `MemoryStorage` serializes only with `test-utils`. Workaround: a provider of `RustCrypto` and `MemoryStorage` that saves the storage's public `values` map.
+- **Saving state:** `MemoryStorage` saves and loads only as a JSON file, with the `persistence` feature; its `load_from_file` panics on a malformed entry. `OpenMlsRustCrypto` cannot take a loaded storage. Workaround: a provider of `RustCrypto` and `MemoryStorage` that saves the storage's public `values` map as bytes, the form a device's state takes.
 - **Signing key:** the `Signer` trait, two methods, signs with the device's key; the key never enters the storage.
 - **Wire formats:** `PURE_PLAINTEXT_WIRE_FORMAT_POLICY` makes handshake messages PublicMessages; application messages are always PrivateMessages. The policy goes into both the create and the join config.
 - **Decoding:** `MlsMessageIn::into_keypackage` and `into_welcome` exist only with `test-utils`; the prototype matches `extract()` and validates the KeyPackage with `KeyPackageIn::validate`.
@@ -29,7 +29,7 @@ Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Sto
 - **Own messages:** processing an application message the device sent gives `OwnPrivateMessage`, not an error.
 
 ### mls-rs
-- **Saving state:** `InMemoryGroupStateStorage` and `InMemoryKeyPackageStorage` cannot be exported. Workaround: one store implementing `GroupStateStorage` and `KeyPackageStorage`, about 100 lines; its `GroupState` and `EpochRecord` need a direct dependency on `mls-rs-core`.
+- **Saving state:** the in-memory storages have no save or load. `InMemoryKeyPackageStorage` exports through `key_packages()` and imports through `insert()`. `InMemoryGroupStateStorage` exports through `stored_groups()` and its `GroupStateStorage` methods, but lists no prior epoch IDs: an export walks back from `max_epoch_id`. Workaround: one store implementing `GroupStateStorage` and `KeyPackageStorage` that saves its maps directly, about 100 lines, instead of export and import code over two storages; its `GroupState` and `EpochRecord` need a direct dependency on `mls-rs-core`.
 - **Signing key in the state:** a group's saved state holds the signer's secret key, so the device's Ed25519 key leaves its key store for every group's state.
 - **Signing key format:** `SignatureSecretKey` for Ed25519 is the 64 bytes of the seed and the public key; the docs do not say so.
 - **Client:** the client's config type cannot be named without spelling out the builder's generics; the prototype builds a client per step in a function returning `Client<impl MlsConfig>`.
