@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Prints which parts of script/test the changes from <base> to HEAD touch, as `<part>=true|false`
+# lines for $GITHUB_OUTPUT. CI checks only those parts; script/test alone checks all of them.
+#   rust     crates/, Cargo.toml, Cargo.lock, deny.toml
+#   web      web/
+#   none     docs/, Markdown files in the root
+#   all      any other path: the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
+# Usage: script/changed-parts <base>, in the repository to check.
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <base>" >&2
+  exit 2
+fi
+
+# --no-renames lists both paths of a moved file. Unusual names stay quoted and check everything.
+paths=$(git -c core.quotePath=false diff --name-only --no-renames "$1" HEAD)
+
+rust=false web=false tooling=false
+while IFS= read -r path; do
+  if [[ -z $path ]]; then
+    continue
+  elif [[ $path == web/* ]]; then
+    web=true
+  elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock || $path == deny.toml ]]; then
+    rust=true
+  elif [[ $path == docs/* || ($path == *.md && $path != */*) ]]; then
+    continue
+  else
+    rust=true web=true tooling=true
+  fi
+done <<<"$paths"
+
+printf 'rust=%s\nweb=%s\ntooling=%s\n' "$rust" "$web" "$tooling"

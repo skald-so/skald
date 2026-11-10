@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Tests script/changed-parts on a scratch repository: a PR checks only the parts of script/test it
+# changes; the OpenAPI spec, scripts, CI and unknown paths check everything; docs check nothing.
+# Also tests that script/test rejects an unknown part instead of skipping it.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "changed-parts-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# parts <base>: the parts changed-parts reports as true, space-separated, or `none`.
+parts() {
+  local output
+  output=$("$root/script/changed-parts" "$1")
+  output=$(sed -n 's/=true$//p' <<<"$output" | paste -sd ' ' -)
+  echo "${output:-none}"
+}
+
+# apply <change>: `path` edits or creates a file, `-path` deletes it, `old->new` moves it.
+apply() {
+  case $1 in
+    -*) git rm --quiet "${1#-}" ;;
+    *'->'*)
+      mkdir -p "$(dirname "${1#*->}")"
+      git mv "${1%%->*}" "${1#*->}"
+      ;;
+    *)
+      mkdir -p "$(dirname "$1")"
+      echo change >>"$1"
+      ;;
+  esac
+}
+
+# expect <want> [<change>...]: a commit with <change>s on top of the base changes the parts <want>.
+expect() {
+  local want=$1 got
+  shift
+  git checkout --quiet --detach "$base"
+  for change in "$@"; do apply "$change"; done
+  git add --all
+  git commit --quiet --allow-empty --message change
+  got=$(parts "$base")
+  [[ $got == "$want" ]] || fail "changes '$*': got '$got', want '$want'"
+}
+
+# A scratch repository, isolated from the user's git config.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+cd "$tmp"
+git init --quiet
+for file in api/openapi.json Cargo.toml Cargo.lock deny.toml crates/server/src/lib.rs \
+  web/package.json web/src/App.tsx web/README.md docs/dev/roadmap.md task.md \
+  script/test .github/workflows/ci.yml renovate.json .gitattributes; do
+  apply "$file"
+done
+git add --all
+git commit --quiet --message base
+base=$(git rev-parse HEAD)
+
+expect web web/src/App.tsx
+expect web web/README.md
+expect web -web/package.json
+expect web web/src/App.tsx docs/dev/roadmap.md task.md
+
+expect rust crates/server/src/lib.rs
+expect rust crates/server/README.md
+expect rust Cargo.toml
+expect rust Cargo.lock
+expect rust deny.toml
+expect rust crates/server/src/lib.rs docs/dev/roadmap.md
+
+expect 'rust web' crates/server/src/lib.rs web/src/App.tsx
+
+expect 'rust web tooling' api/openapi.json
+expect 'rust web tooling' script/test
+expect 'rust web tooling' script/new-check
+expect 'rust web tooling' .github/workflows/ci.yml
+expect 'rust web tooling' renovate.json
+expect 'rust web tooling' .gitattributes
+expect 'rust web tooling' ee/LICENSE
+expect 'rust web tooling' api/README.md
+expect 'rust web tooling' web/src/App.tsx api/openapi.json
+
+expect none docs/dev/roadmap.md
+expect none docs/dev/new.md task.md README.md
+expect none
+
+# A moved file counts in both places.
+expect rust 'crates/server/src/lib.rs->docs/lib.rs'
+expect web 'docs/dev/roadmap.md->web/roadmap.md'
+
+# CI checks out the PR merged into dev and compares it with its first parent, dev:
+# changes that reached dev after the PR branched do not count.
+git checkout --quiet --detach "$base"
+apply web/src/App.tsx
+git commit --quiet --all --message pr
+pr=$(git rev-parse HEAD)
+git checkout --quiet --detach "$base"
+apply crates/server/src/lib.rs
+git commit --quiet --all --message dev
+git merge --quiet --no-edit "$pr"
+got=$(parts HEAD^1)
+[[ $got == web ]] || fail "merged PR: got '$got', want 'web'"
+
+# The exact output, for $GITHUB_OUTPUT.
+git checkout --quiet --detach "$base"
+apply crates/server/src/lib.rs
+git commit --quiet --all --message rust
+got=$("$root/script/changed-parts" "$base")
+want=$'rust=true\nweb=false\ntooling=false'
+[[ $got == "$want" ]] || fail "output: got '$got', want '$want'"
+
+if "$root/script/changed-parts" >/dev/null 2>&1; then
+  fail "expected a usage error without arguments"
+fi
+if "$root/script/changed-parts" no-such-commit >/dev/null 2>&1; then
+  fail "expected an error for an unknown base"
+fi
+
+# A typo in SKALD_TEST_PARTS must not skip checks.
+status=0
+SKALD_TEST_PARTS='rust,web' "$root/script/test" >/dev/null 2>&1 || status=$?
+[[ $status -eq 2 ]] || fail "script/test with an unknown part: exit code $status, want 2"
+
+if [[ $failures -ne 0 ]]; then
+  echo "changed-parts-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "changed-parts-test: all cases passed"

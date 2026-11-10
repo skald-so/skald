@@ -7,7 +7,7 @@
 - [x] **1.4:** Server health check and OpenAPI spec
 - [x] **1.5:** PostgreSQL and migrations
 - [x] **1.6:** SPA skeleton with generated API client
-- [ ] **1.7:** CI path filters and Renovate
+- [x] **1.7:** CI path filters and Renovate
 - [ ] **1.8:** Branch protection and `CONTRIBUTING.md`
 
 ## Story 2: Protocol spec and threat model

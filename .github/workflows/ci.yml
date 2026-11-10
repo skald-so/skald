@@ -11,9 +11,30 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Each job runs one part of script/test, only when the PR changes it: see script/changed-parts.
+# A job skipped by its condition counts as passed.
 jobs:
-  test:
-    name: script/test
+  changes:
+    name: Changed parts
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.parts.outputs.rust }}
+      tooling: ${{ steps.parts.outputs.tooling }}
+      web: ${{ steps.parts.outputs.web }}
+    steps:
+      # The checkout is the PR merged into dev; its first parent is dev.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: parts
+        shell: bash # -o pipefail: a failure of changed-parts fails the step
+        run: script/changed-parts HEAD^1 | tee -a "$GITHUB_OUTPUT"
+
+  rust:
+    name: Rust
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,13 +44,44 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deny@0.20.2
       - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: rust
+
+  tooling:
+    name: Tooling
+    needs: changes
+    if: needs.changes.outputs.tooling == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: tooling
+
+  web:
+    name: Web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: web
