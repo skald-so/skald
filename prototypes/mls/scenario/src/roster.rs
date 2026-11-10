@@ -84,7 +84,8 @@ impl Roster {
     pub fn chain(&self, device: &DeviceId) -> Option<Vec<Body>> {
         let mut chain: Vec<Body> = Vec::new();
         let mut next = *device;
-        loop {
+        // A chain without a repeated device is at most as long as the list of certificates.
+        for _ in 0..=self.certificates.len() {
             if chain.iter().any(|body| body.device == next) {
                 return None;
             }
@@ -110,6 +111,7 @@ impl Roster {
                 Some(issuer) => next = issuer,
             }
         }
+        None
     }
 
     /// The revocations that count.

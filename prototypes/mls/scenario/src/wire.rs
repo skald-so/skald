@@ -202,8 +202,9 @@ fn put_vector(out: &mut Vec<u8>, value: &[u8]) {
     let len = value.len();
     match len {
         0..0x40 => out.push(len as u8),
-        0x40..0x4000 => out.extend_from_slice(&(0x4000 | len as u16).to_be_bytes()),
-        _ => out.extend_from_slice(&(0x8000_0000 | len as u32).to_be_bytes()),
+        // The top two bits give the size; the length is below them.
+        0x40..0x4000 => out.extend_from_slice(&(0x4000 + len as u16).to_be_bytes()),
+        _ => out.extend_from_slice(&(0x8000_0000 + len as u32).to_be_bytes()),
     }
     out.extend_from_slice(value);
 }

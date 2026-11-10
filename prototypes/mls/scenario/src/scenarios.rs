@@ -814,15 +814,28 @@ pub fn device_keeps_key_packages<D: Device>() {
             "{lib}: KeyPackage {n}'s profile"
         );
         let lifetime = fields.lifetime;
+        let made = lifetime.not_before + key_packages::SKEW;
         assert!(
-            (start..=end).any(|now| key_packages::lifetime(now) == lifetime),
-            "{lib}: KeyPackage {n}'s lifetime {lifetime:?}"
+            (start..=end).contains(&made),
+            "{lib}: KeyPackage {n} made at {made}"
+        );
+        assert_eq!(
+            lifetime,
+            key_packages::lifetime(made),
+            "{lib}: KeyPackage {n}'s lifetime"
+        );
+        assert_eq!(
+            lifetime.not_after - lifetime.not_before,
+            key_packages::MAX_LIFETIME,
+            "{lib}: KeyPackage {n}'s lifetime is 60 days"
         );
         assert!(
-            lifetime.not_after - lifetime.not_before <= key_packages::MAX_LIFETIME
-                && lifetime.holds(end)
-                && !key_packages::due(&lifetime, end),
-            "{lib}: KeyPackage {n}'s lifetime {lifetime:?}"
+            lifetime.holds(end),
+            "{lib}: KeyPackage {n}'s lifetime holds"
+        );
+        assert!(
+            !key_packages::due(&lifetime, end),
+            "{lib}: KeyPackage {n} is not due for replacement"
         );
         assert_eq!(
             fields.last_resort(),
@@ -883,10 +896,9 @@ pub fn key_packages_that_fail_a_check_are_refused<D: Device>() {
         "{lib}: the KeyPackage signed again"
     );
 
-    let now = key_packages::now();
-    let hour = 60 * 60;
     let mut bad_signature = valid.clone();
-    *bad_signature.last_mut().unwrap() ^= 1;
+    let last = bad_signature.len() - 1;
+    bad_signature[last] = !bad_signature[last];
     let other_key_package = fleet.step(other, |d| d.key_package()).unwrap();
     let refused = [
         (bad_signature, "a KeyPackage signature that does not verify"),
@@ -897,8 +909,8 @@ pub fn key_packages_that_fail_a_check_are_refused<D: Device>() {
         (
             resigned(&valid, &identity, |kp| {
                 kp.lifetime = wire::Lifetime {
-                    not_before: now - key_packages::MAX_LIFETIME - hour,
-                    not_after: now - hour,
+                    not_before: 1_700_000_000,
+                    not_after: 1_705_184_000,
                 }
             }),
             "an expired lifetime",
@@ -906,8 +918,8 @@ pub fn key_packages_that_fail_a_check_are_refused<D: Device>() {
         (
             resigned(&valid, &identity, |kp| {
                 kp.lifetime = wire::Lifetime {
-                    not_before: now + hour,
-                    not_after: now + hour + key_packages::MAX_LIFETIME,
+                    not_before: 4_000_000_000,
+                    not_after: 4_005_184_000,
                 }
             }),
             "a lifetime that has not begun",
