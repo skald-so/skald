@@ -343,6 +343,72 @@ test.each(themes)(
   },
 );
 
+const tableNames = [
+  "Devices",
+  "Accounts",
+  "All queues",
+  "Devices, empty",
+  "Devices, loading",
+];
+
+/** Each table frame in the tables section: whether it scrolls and how it takes the focus. */
+function tableFrames(page: Page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll("#kit-tables ~ div table")].map((table) => {
+      const frame = table.parentElement!;
+      return {
+        name: table.getAttribute("aria-label"),
+        scrolls: frame.scrollWidth > frame.clientWidth,
+        tabIndex: frame.tabIndex,
+        role: frame.getAttribute("role"),
+        label: frame.getAttribute("aria-label"),
+      };
+    }),
+  );
+}
+
+/** The table frames as they should be at `width`: on a phone they scroll and take the focus. */
+function expectedFrames(width: number) {
+  const phone = width < 760;
+  return tableNames.map((name) => ({
+    name,
+    scrolls: phone,
+    tabIndex: phone ? 0 : -1,
+    role: phone ? "region" : null,
+    label: phone ? name : null,
+  }));
+}
+
+/**
+ * Whether the empty and loading states are inside the visible part of their frames and centered
+ * in it, with the empty frame scrolled sideways.
+ */
+async function stateBoxes(page: Page) {
+  const frame = page
+    .getByRole("table", { name: "Devices, empty" })
+    .locator("..");
+  await frame.evaluate((element) => element.scrollTo({ left: 200 }));
+  return page.evaluate(() =>
+    ["Devices, empty", "Devices, loading"].map((name) => {
+      const table = document.querySelector(`table[aria-label="${name}"]`)!;
+      const frame = table.parentElement!.getBoundingClientRect();
+      const state = table
+        .querySelector("tbody td > *")!
+        .getBoundingClientRect();
+      return {
+        inside: state.left >= frame.left && state.right <= frame.right,
+        centered:
+          Math.abs(state.left - frame.left - (frame.right - state.right)) <= 2,
+      };
+    }),
+  );
+}
+
+const statesInView = [
+  { inside: true, centered: true },
+  { inside: true, centered: true },
+];
+
 describe.each(widths)("tables at %i px", (width) => {
   let view: KitView;
   beforeAll(async () => {
@@ -355,65 +421,41 @@ describe.each(widths)("tables at %i px", (width) => {
       ? "scroll inside their frames, which take the focus"
       : "fit their frames and take no focus",
     async () => {
-      const frames = await view.page.evaluate(() =>
-        [...document.querySelectorAll("#kit-tables ~ div table")].map(
-          (table) => {
-            const frame = table.parentElement!;
-            return {
-              name: table.getAttribute("aria-label"),
-              scrolls: frame.scrollWidth > frame.clientWidth,
-              tabIndex: frame.tabIndex,
-              role: frame.getAttribute("role"),
-              label: frame.getAttribute("aria-label"),
-            };
-          },
-        ),
-      );
-      const phone = width < 760;
-      expect(frames).toEqual(
-        [
-          "Devices",
-          "Accounts",
-          "All queues",
-          "Devices, empty",
-          "Devices, loading",
-        ].map((name) => ({
-          name,
-          scrolls: phone,
-          tabIndex: phone ? 0 : -1,
-          role: phone ? "region" : null,
-          label: phone ? name : null,
-        })),
-      );
+      expect(await tableFrames(view.page)).toEqual(expectedFrames(width));
     },
   );
 
   test("keep the empty and loading states in the visible part of the frame", async () => {
-    const frame = view.page
-      .getByRole("table", { name: "Devices, empty" })
-      .locator("..");
-    await frame.evaluate((element) => element.scrollTo({ left: 200 }));
-    const boxes = await view.page.evaluate(() =>
-      ["Devices, empty", "Devices, loading"].map((name) => {
-        const table = document.querySelector(`table[aria-label="${name}"]`)!;
-        const frame = table.parentElement!.getBoundingClientRect();
-        const state = table
-          .querySelector("tbody td > *")!
-          .getBoundingClientRect();
-        return {
-          inside: state.left >= frame.left && state.right <= frame.right,
-          centered:
-            Math.abs(state.left - frame.left - (frame.right - state.right)) <=
-            2,
-        };
-      }),
-    );
-    expect(boxes).toEqual([
-      { inside: true, centered: true },
-      { inside: true, centered: true },
-    ]);
+    expect(await stateBoxes(view.page)).toEqual(statesInView);
   });
 });
+
+describe.each(widths.map((from, i) => [from, widths[1 - i]!]))(
+  "tables opened at %i px and resized to %i px",
+  (from, to) => {
+    let view: KitView;
+    beforeAll(async () => {
+      view = await kit.open({ width: from, system: "light" });
+      await view.page.setViewportSize({ width: to, height: 900 });
+    }, 30_000);
+    afterAll(() => view?.page.close());
+
+    test(
+      to < 760
+        ? "start to scroll inside their frames, which take the focus"
+        : "stop scrolling and their frames give up the focus",
+      async () => {
+        await expect
+          .poll(() => tableFrames(view.page))
+          .toEqual(expectedFrames(to));
+      },
+    );
+
+    test("keep the empty and loading states in the visible part of the frame", async () => {
+      await expect.poll(() => stateBoxes(view.page)).toEqual(statesInView);
+    });
+  },
+);
 
 test("Chrome exposes the tables with their column headers and cells", async () => {
   const view = await kit.open({ width: 1440, system: "light" });
