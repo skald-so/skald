@@ -46,6 +46,13 @@ export const pinnedChrome =
   "mcr.microsoft.com/playwright:v1.65.0-noble@sha256:bc4fbb329a25287ed23e9216c97063646abdd1bf2da669a9895fa3e2078b2302";
 
 /**
+ * Flags of the pinned Chrome. Without partial raster a repaint redraws whole tiles, so the pixels
+ * do not depend on whether a tile was drawn before the page settled: with it, a repainted text's
+ * LCD fringe and a rounded corner could come out one step off.
+ */
+const pinnedChromeArgs = ["--disable-partial-raster"];
+
+/**
  * Starts the dev server and headless Chrome. `pinned` takes the Chrome of `pinnedChrome` in Docker;
  * otherwise the local Google Chrome, or the binary in `SKALD_CHROME`.
  */
@@ -65,7 +72,7 @@ export async function startKit({ pinned = false } = {}): Promise<Kit> {
   }
   const origin = new URL(server.resolvedUrls!.local[0]!).origin;
 
-  return {
+  const kit: Kit = {
     origin,
     browser,
     async open({ width, system, theme, screen = "kit" }) {
@@ -91,6 +98,15 @@ export async function startKit({ pinned = false } = {}): Promise<Kit> {
       await server.close();
     },
   };
+  try {
+    // The first load pre-bundles the dependencies, transforms every module and starts a renderer:
+    // seconds on a busy machine. It happens here, in the setup, not in the first test.
+    await (await kit.open({ width: widths[0]!, system: "light" })).page.close();
+  } catch (error) {
+    await kit.close();
+    throw error;
+  }
+  return kit;
 }
 
 /**
@@ -157,6 +173,8 @@ async function connectPinnedChrome(): Promise<Browser> {
       "run-server",
       "--host=0.0.0.0",
       "--port=3000",
+      // Takes the flags of this client; the server is reachable from this machine only.
+      "--unsafe",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -193,6 +211,11 @@ async function connectPinnedChrome(): Promise<Browser> {
       .trim();
     const browser = await chromium.connect(`ws://${address}/`, {
       exposeNetwork: "<loopback>",
+      headers: {
+        "x-playwright-launch-options": JSON.stringify({
+          args: pinnedChromeArgs,
+        }),
+      },
       timeout: 60_000,
     });
     browser.on("disconnected", remove);
