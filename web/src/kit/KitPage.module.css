@@ -95,6 +95,11 @@
   border-radius: 12px;
 }
 
+.tinted {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
 .name {
   font-weight: 600;
 }

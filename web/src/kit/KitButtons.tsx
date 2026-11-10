@@ -47,6 +47,11 @@ const sizes: {
   { size: "small", kind: "secondary", name: "Small", label: "Manage" },
 ];
 
+/** Kinds that keep their own background on a tinted card, as the join request in `08-machines.png`. */
+const tinted = kinds.filter(
+  (item) => item.kind === "primary" || item.kind === "secondary",
+);
+
 /** How long a sample action stays busy after a press. */
 export const busyMs = 2000;
 
@@ -101,6 +106,20 @@ export function KitButtons() {
           </span>
           <div className={styles.samples}>
             <SaveSample />
+          </div>
+        </li>
+        <li className={[styles.card, styles.tinted].join(" ")}>
+          <span className={styles.name}>
+            On a tinted card{" "}
+            <span className={styles.use}>· as the join request</span>
+          </span>
+          <div className={styles.samples}>
+            {tinted.map((item) => (
+              <div key={item.kind} className={styles.sample}>
+                <Button kind={item.kind}>{item.label}</Button>
+                <span className={styles.caption}>{item.name}</span>
+              </div>
+            ))}
           </div>
         </li>
       </ul>

@@ -100,6 +100,13 @@ test("shows every button kind in every state", () => {
       name: "Busy on press · for 2 seconds",
       buttons: [["Save", "", false, false]],
     },
+    {
+      name: "On a tinted card · as the join request",
+      buttons: [
+        ["Approve", "Primary", false, false],
+        ["Reject", "Secondary", false, false],
+      ],
+    },
   ]);
 });
 

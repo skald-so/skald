@@ -129,6 +129,10 @@ test.each(themes)(
         heights: [...cards[4]!.querySelectorAll("button")].map(
           (button) => button.getBoundingClientRect().height,
         ),
+        tinted: {
+          card: look(cards[6]!),
+          buttons: [...cards[6]!.querySelectorAll("button")].map(look),
+        },
         tones: rows.map((row) => {
           const [label, dot, count] = [...row.querySelectorAll("td > span")];
           return {
@@ -153,7 +157,7 @@ test.each(themes)(
           color: c("Accent text"),
           border: c("Accent"),
         },
-        { background: transparent, color: c("Text"), border: c("Line") },
+        { background: c("Background"), color: c("Text"), border: c("Line") },
         { background: transparent, color: c("Danger"), border: c("Line") },
         {
           background: c("Danger"),
@@ -163,6 +167,22 @@ test.each(themes)(
       ].map((kind) => ({ ...kind, opacity: ["1", "0.5"] })),
     );
     expect(looks.heights).toEqual([44, 40, 36]);
+    // As the join request in 08-machines.png: the secondary kind keeps the page background.
+    expect(looks.tinted).toEqual({
+      card: {
+        background: c("Accent soft"),
+        color: c("Text"),
+        border: c("Accent"),
+      },
+      buttons: [
+        {
+          background: c("Accent"),
+          color: c("Accent text"),
+          border: c("Accent"),
+        },
+        { background: c("Background"), color: c("Text"), border: c("Line") },
+      ],
+    });
     expect(looks.tones).toEqual(
       [
         ["OK", "OK", "OK soft", "OK"],

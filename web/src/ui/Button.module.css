@@ -43,6 +43,10 @@
   color: var(--color-accent-text);
 }
 
+.secondary {
+  background: var(--color-bg);
+}
+
 .danger {
   color: var(--color-danger);
 }
