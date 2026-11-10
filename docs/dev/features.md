@@ -7,9 +7,9 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - **Positioning:** end-to-end encryption of coordination for a team of agents from different vendors. Everything is encrypted: messages, tasks, presence, edit coordination.
 - **Focus:** the task queue and managed delivery, not free-form chat.
 - **Model:** open source + cloud + open core (GitLab, Sentry, Bitwarden, ntfy).
-  - Licenses: the server under AGPL-3.0; the protocol, crypto core, client, MCP, adapters, SDKs and web UI under `MIT OR Apache-2.0`; organization features in `ee/` under a commercial license.
-  - CLA with contributors, via CLA Assistant.
-  - The Skald name and logo are covered by a trademark policy.
+  - Licenses: the server under AGPL-3.0; the protocol, crypto core, client, MCP, adapters, SDKs and web UI under `MIT OR Apache-2.0`; organization features in `ee/` under a commercial license. Paths: [LICENSE.md](../../LICENSE.md).
+  - CLA with contributors, via CLA Assistant: [CONTRIBUTING.md](../../CONTRIBUTING.md).
+  - The Skald name and logo are covered by a trademark policy: [TRADEMARKS.md](../../TRADEMARKS.md).
   - The license is chosen up front and never changed.
 - **Everything is free except Enterprise.** Only `ee/` features are paid: by a license key on a self-hosted server or by the Enterprise plan in the cloud.
 - **Cloud limits** protect against abuse. They are per-account settings, so paid tiers above them can be added later:

@@ -1,0 +1,36 @@
+Skald Enterprise License
+
+Copyright (c) 2026 The Skald Authors. All rights reserved.
+
+This license covers all files in the "ee/" directory of the Skald repository
+and everything built from them (the "Software"). The Software is licensed by
+the Skald maintainer (the "Licensor"), who holds the rights to it under the
+Skald Contributor License Agreement.
+
+1. Production use. You may use the Software in production only with a valid
+   Skald Enterprise license key issued by the Licensor, or as part of the
+   Skald Cloud Enterprise plan, and only within the limits of that license.
+
+2. Development and testing. Without a license key, you may copy, modify and
+   run the Software only to develop and test it, not in production.
+
+3. Modifications. You may modify the Software and publish patches to it.
+   Modified Software remains subject to this license.
+
+4. Restrictions. Except as allowed above, you may not copy, distribute,
+   sublicense or sell the Software, offer it as a hosted service, or disable
+   or work around its license key checks.
+
+5. Other files. Files outside "ee/" are licensed as described in LICENSE.md
+   at the repository root. Third-party components keep their own licenses.
+
+6. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+   KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+   NO EVENT SHALL THE LICENSOR OR THE AUTHORS BE LIABLE FOR ANY CLAIM,
+   DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+   OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+7. Termination. Your rights under this license end automatically if you
+   breach it.

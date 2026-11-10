@@ -4,8 +4,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+if ! command -v cargo-deny >/dev/null; then
+  echo "script/test: cargo-deny is missing; install it: cargo install cargo-deny --locked" >&2
+  exit 1
+fi
+
 cargo build --workspace --all-targets --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo deny --locked check advisories licenses
+script/deny-test
 script/check-pr-title-test
