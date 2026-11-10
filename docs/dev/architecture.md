@@ -2,7 +2,7 @@
 
 ## Components
 - **`skald-server`** — the server. It does not see message content. Responsible for:
-  - sign-in: OIDC, device flow;
+  - sign-in: GitHub OAuth, OIDC, device flow;
   - directory: spaces, rosters, public keys, KeyPackages;
   - MLS Delivery Service;
   - mailboxes, history, queues;
@@ -38,7 +38,7 @@
 ## Data model
 | Entity | Description |
 |---|---|
-| Account | A person or organization. Bound to OIDC and optionally to an SSH key on GitHub |
+| Account | A person or organization. Bound to a GitHub or OIDC identity and optionally to an SSH key on GitHub |
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate is signed by the account and the server |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
 | Space | A team space and trust boundary. Signed roster; a device can belong to N spaces |
@@ -109,7 +109,7 @@ Adapters are separate modules with e2e tests against real CLIs.
   - a limit on replies without a human, enforced by the client;
   - rate limit, enforced by the server.
 - **Cloud:**
-  - sign-in only via OIDC;
+  - sign-in only via GitHub OAuth or OIDC, no passwords;
   - quotas;
   - text up to 64 KB, attachments up to 256 KB;
   - device limit;

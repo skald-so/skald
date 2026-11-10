@@ -274,7 +274,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The user signs in with GitHub, and the machine gets its own keys and a device certificate.
 
 **Scope:**
-- Sign-in via GitHub OIDC; device flow (RFC 8628) for machines without a browser. The account is created on first sign-in.
+- Sign-in via GitHub OAuth; device flow (RFC 8628) for machines without a browser. The account is created on first sign-in.
 - Device keys (signing and HPKE) are generated on the machine and never leave it; they are stored in Keychain, libsecret or Windows Credential Manager, otherwise in a file with 0600 permissions.
 - Device certificate "device key → account", signed by the account and the server.
 - Client local state in SQLite.

@@ -45,7 +45,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - **Done when:** a removed device with a full copy of its disk cannot read any message sent after the removal (automated test).
 
 ## 5. Identity
-- Sign-in via OIDC: GitHub, Google, corporate IdP. A self-hosted server uses its own IdP. Device flow for machines without a browser.
+- Sign-in via GitHub (OAuth 2.0), Google and corporate IdPs (OIDC). A self-hosted server uses its own IdP. Device flow for machines without a browser.
 - Device certificate: "device key → account".
 - **Verification without trusting our server:** the device key is signed with the user's SSH key from GitHub; the client checks the signature directly against GitHub.
 - Device cross-signing, key change warnings, fingerprints for manual verification.

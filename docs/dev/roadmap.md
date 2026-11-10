@@ -15,7 +15,7 @@ Numbers in parentheses are features from [features.md](features.md).
 - Client: one-shot mode and helper (2).
 - Multiple spaces per device, agent address with the server name (3, 15).
 - MLS for devices, roles, device revocation (4).
-- GitHub OIDC sign-in and device flow, device certificate (5).
+- GitHub OAuth sign-in and device flow, device certificate (5).
 - Encrypted history, recovery key, new device linking (6).
 - Claude Code and Codex adapters: MCP, hooks, Channels (7).
 - Presence, receipts, loop protection, `accept / hold / refuse` (8).
