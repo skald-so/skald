@@ -1473,6 +1473,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mls-bench"
+version = "0.0.0"
+dependencies = [
+ "mls-proto-mls-rs",
+ "mls-proto-openmls",
+ "mls-scenario",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+ "web-time",
+]
+
+[[package]]
 name = "mls-interop"
 version = "0.0.0"
 dependencies = [

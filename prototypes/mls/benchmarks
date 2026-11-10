@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Runs the benchmarks of the MLS prototypes (crate `mls-bench`) and prints their results as
+# Markdown: the machine, its load before and after the runs, and the versions; the time of each
+# operation on each library at every group size natively, with the libraries' parallel tree
+# operations on every core and on one; the size of each object; and the time of the browser's
+# GroupInfo check in WASM, in Node.js. What runs next goes to stderr.
+# Needs the tools of the WASM tests (CONTRIBUTING.md, "Requirements").
+set -euo pipefail
+
+cd "$(dirname "$0")"
+for tool in wasm-bindgen node; do
+  if ! command -v "$tool" >/dev/null; then
+    echo "benchmarks: $tool is missing; see CONTRIBUTING.md, \"Requirements\"" >&2
+    exit 1
+  fi
+done
+
+# Everything is built before the runs, so that the build adds nothing to the load.
+cargo bench -p mls-bench --bench channel --locked --no-run
+cargo build -p mls-bench --example mls-bench-browser-check --release --target wasm32-unknown-unknown \
+  --locked
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+wasm-bindgen --target nodejs --out-dir "$out" \
+  target/wasm32-unknown-unknown/release/examples/mls_bench_browser_check.wasm
+
+# version <crate>: the crate's version in Cargo.lock.
+version() { awk -v name="name = \"$1\"" '$0 == name { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock; }
+# load: the load averages over 1, 5 and 15 minutes.
+load() { uptime | sed 's/.*load averages*: //'; }
+
+if [[ $(uname) == Darwin ]]; then
+  cpu=$(sysctl -n machdep.cpu.brand_string)
+  memory=$(($(sysctl -n hw.memsize) / 1024 ** 3))
+else
+  cpu=$(awk -F': ' '/^model name/ { print $2; exit }' /proc/cpuinfo)
+  memory=$(awk '/^MemTotal/ { print int($2 / 1024 ** 2) }' /proc/meminfo)
+fi
+echo "- Machine: $cpu, $(getconf _NPROCESSORS_ONLN) cores, $memory GiB, $(uname -sm)."
+echo "- Versions: OpenMLS $(version openmls), openmls_rust_crypto $(version openmls_rust_crypto)," \
+  "mls-rs $(version mls-rs), mls-rs-crypto-rustcrypto $(version mls-rs-crypto-rustcrypto);" \
+  "$(rustc --version | cut -d' ' -f1-2), Node.js $(node --version)."
+echo "- Load averages before: $(load)."
+
+# Both libraries run parts of their tree operations in parallel with rayon natively.
+echo
+echo '### Native, every core'
+echo
+cargo bench -p mls-bench --bench channel --locked
+echo
+echo '### Native, one core'
+echo
+RAYON_NUM_THREADS=1 cargo bench -p mls-bench --bench channel --locked -- --times
+echo
+echo '### WASM'
+echo
+node -e 'console.log(require(process.argv[1]).browser_check())' "$out/mls_bench_browser_check.js"
+echo "- Load averages after: $(load)."

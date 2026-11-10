@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the workspace and runs every check. Exits 0 only if all of them pass.
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
-#   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls,
-#            natively and in WASM
+#   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
+#            and their benchmarks' smoke run, natively and in WASM
 #   tooling  tests of the scripts in script/, Renovate config validation
 #   web      web UI lint, tests (with the kit page screenshots against their references) and build
 set -euo pipefail
@@ -82,13 +82,15 @@ if checks rust; then
   cargo fmt "${prototypes[@]}" --all --check
   cargo clippy "${prototypes[@]}" --workspace --all-targets --locked -- -D warnings
   cargo test "${prototypes[@]}" --workspace --locked
-  # The prototypes in WASM: the scenario suite runs in Node.js, the test runner that
-  # prototypes/mls/.cargo/config.toml sets. Cargo reads that config only from its directory.
+  # The prototypes in WASM: the scenario suite and the benchmarks' smoke run run in Node.js, the
+  # test runner that prototypes/mls/.cargo/config.toml sets. Cargo reads that config only from its
+  # directory.
   (
     cd prototypes/mls
     cargo clippy --target wasm32-unknown-unknown --workspace --all-targets --locked -- -D warnings
     cargo test --target wasm32-unknown-unknown -p mls-proto-openmls -p mls-proto-mls-rs \
       --test scenarios --locked
+    cargo test --target wasm32-unknown-unknown -p mls-bench --test smoke --locked
   )
 fi
 

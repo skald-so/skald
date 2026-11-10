@@ -31,7 +31,7 @@
 - [x] **3.5:** Joining by itself and rejoining
 - [x] **3.6:** WASM build and size
 - [x] **3.7:** Interoperability between the libraries
-- [ ] **3.8:** Benchmarks
+- [x] **3.8:** Benchmarks
 - [ ] **3.9:** Comparison report and the library choice
 
 ## Story 4: Verifying delivery to Claude Code and Codex
