@@ -87,11 +87,11 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - A message reaches a live session of Claude Code, Codex (without tmux), Gemini CLI, Cursor, OpenCode, Copilot or any agent with a shell. Paths: [architecture.md](architecture.md), "Delivery to agents".
 
 ## 8. Core features (parity with competitors)
-- Presence directory (encrypted).
+- Presence directory (encrypted): [protocol spec](../protocol/agents.md#presence).
 - Receipts and `message_status`.
 - Loop protection.
 - Inbound modes `accept / hold / refuse`.
-- `ask_user`: confirmation from a human, who answers in the CLI or in a linked browser.
+- `ask_user`: confirmation from a human, who answers in the CLI or in a linked browser: [protocol spec](../protocol/agents.md#ask_user).
 - Encrypted attachments, such as diffs and logs, within the cloud limit ([Product](#product)).
 - Shared team instructions: versions, distribution to machines, injection into `AGENTS.md` or `CLAUDE.md`, all encrypted.
 

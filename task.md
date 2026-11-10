@@ -834,7 +834,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 15
-- **Docs:** `features.md` §8, `architecture.md` — "Data model", "Security", `docs/protocol/delivery.md`
+- **Docs:** `features.md` §8, `architecture.md` — "Data model", "Security", `docs/protocol/delivery.md`, `docs/protocol/agents.md`
 
 ### Story 22: Web UI: non-secret sections
 
@@ -951,7 +951,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - **Release:** MVP
 - **Depends on:** Story 21, Story 26, Story 27, Story 41
-- **Docs:** `features.md` §12, `architecture.md` — "Device linking"
+- **Docs:** `features.md` §12, `architecture.md` — "Device linking", `docs/protocol/agents.md`
 
 ### Story 35: Service agents: HPKE and scoped tokens
 
@@ -982,7 +982,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 21
-- **Docs:** `features.md` §8, "Product", `architecture.md` — "Security", `docs/protocol/delivery.md`, `tech-stack.md`
+- **Docs:** `features.md` §8, "Product", `architecture.md` — "Security", `docs/protocol/delivery.md`, `docs/protocol/agents.md`, `tech-stack.md`
 
 ### Story 65: Queue for agents: MCP tools and templates
 
@@ -1016,7 +1016,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 18, Story 21, Story 22, Story 26, Story 35, Story 41
-- **Docs:** `features.md` §12, `architecture.md` — "Cryptography", "Security"
+- **Docs:** `features.md` §12, `architecture.md` — "Cryptography", "Security", `docs/protocol/agents.md`
 
 ### Story 66: Restricted mode for tasks from other people
 
@@ -1300,7 +1300,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** Post-MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 18, Story 27, Story 41, Story 44
-- **Docs:** `features.md` §12
+- **Docs:** `features.md` §12, `docs/protocol/agents.md`
 
 ### Story 47: Public cloud: anti-abuse
 
