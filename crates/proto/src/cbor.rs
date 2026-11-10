@@ -15,7 +15,7 @@ use ciborium_ll::{Decoder, Encoder, Header};
 use crate::address::{Address, AddressError};
 use crate::id::{Id, Kind};
 
-/// The deepest nesting of arrays and maps a decoder accepts. The deepest the spec defines is 3.
+/// The deepest nesting of arrays and maps the spec allows, the outermost included: "Encoding".
 pub const MAX_DEPTH: usize = 64;
 
 /// A type with one deterministic CBOR form, as the spec defines it.
@@ -117,6 +117,8 @@ pub enum FieldProblem {
     NoBody,
     /// Content carries more than one body.
     TwoBodies,
+    /// A field is present where the spec does not allow it.
+    NotAllowed,
     /// An agent address is invalid.
     Address(AddressError),
     /// A byte string that holds a CBOR item does not decode.
@@ -166,6 +168,7 @@ impl fmt::Display for FieldProblem {
             Self::KeyType => f.write_str("a map key that is not an integer"),
             Self::NoBody => f.write_str("no body"),
             Self::TwoBodies => f.write_str("more than one body"),
+            Self::NotAllowed => f.write_str("not allowed here"),
             Self::Address(error) => write!(f, "{error}"),
             Self::Embedded(error) => write!(f, "{error}"),
         }

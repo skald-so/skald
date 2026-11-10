@@ -9,7 +9,8 @@ use std::num::NonZeroU64;
 use skald_proto::{
     Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation, DelegationBody,
     DeliveryStatus, DeviceId, Envelope, Grant, GrantBody, Header, HpkePayload, HpkePlaintext,
-    MessageId, NonEmpty, Receipt, ReceiptStatus, Scheme, ServerStatus, SpaceId, Unknown,
+    MessageId, NonEmpty, Receipt, ReceiptStatus, Scheme, SendKey, ServerStatus, SpaceId, Stored,
+    Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -113,10 +114,30 @@ pub fn header(msg_id: MessageId, scheme: Scheme) -> Header {
     }
 }
 
+/// An A2A message in JSON with this `messageId` and these parts, each in JSON.
+fn a2a_parts(msg_id: MessageId, parts: &[String]) -> String {
+    format!(
+        r#"{{"messageId":"{msg_id}","contextId":"019a6f20-0000-7000-8000-00000000c0de","role":"ROLE_USER","parts":[{}]}}"#,
+        parts.join(",")
+    )
+}
+
 /// An A2A message in JSON with this `messageId` and text.
 pub fn a2a(msg_id: MessageId, text: &str) -> String {
-    format!(
-        r#"{{"messageId":"{msg_id}","contextId":"019a6f20-0000-7000-8000-00000000c0de","role":"ROLE_USER","parts":[{{"text":"{text}"}}]}}"#
+    a2a_parts(msg_id, &[format!(r#"{{"text":"{text}"}}"#)])
+}
+
+/// An A2A message in JSON with this `messageId`, text and the file part of [`attachment`].
+pub fn a2a_with_attachment(msg_id: MessageId, text: &str) -> String {
+    a2a_parts(
+        msg_id,
+        &[
+            format!(r#"{{"text":"{text}"}}"#),
+            format!(
+                r#"{{"url":"urn:uuid:{}","filename":"pr-12.diff","mediaType":"text/x-diff"}}"#,
+                attachment().blob
+            ),
+        ],
     )
 }
 
@@ -185,6 +206,17 @@ pub fn receipt(status: ReceiptStatus, messages: Vec<MessageId>, reason: Option<&
                 unknown: Unknown::default(),
             }),
         )
+    }
+}
+
+/// `stored` for the envelope of the `hpke` vector.
+pub fn stored() -> Stored {
+    Stored {
+        send_key: SendKey {
+            msg_id: msg(2),
+            recipient: Some(bob_device()),
+        },
+        timestamp: 1_762_819_200,
     }
 }
 
@@ -262,7 +294,10 @@ pub fn vectors() -> Vec<Vector> {
                 hops: 1,
                 reply_to: Some(msg(3)),
                 attachments: Some(NonEmpty::new(attachment())),
-                ..content(alice(), Body::A2a(a2a(msg(4), "Here is the diff")))
+                ..content(
+                    alice(),
+                    Body::A2a(a2a_with_attachment(msg(4), "Here is the diff")),
+                )
             },
         ),
         vector(
@@ -302,6 +337,7 @@ pub fn vectors() -> Vec<Vector> {
             "Receipt `read`",
             receipt(ReceiptStatus::Read, vec![msg(1), msg(4)], None),
         ),
+        vector("Server status `stored`", stored()),
         vector(
             "Server status `delivered`",
             delivery_status(ServerStatus::Delivered),

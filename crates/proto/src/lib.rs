@@ -17,4 +17,4 @@ pub use id::{
     AccountId, BlobId, ChannelId, ClaimId, DeviceId, Id, IdError, Issued, Kind, MessageId, QueueId,
     SpaceId, TaskId, kind,
 };
-pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, ServerStatus};
+pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};

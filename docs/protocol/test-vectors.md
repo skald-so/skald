@@ -6,7 +6,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the service and custodian device from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, and the server's `delivery-status` for `delivered` and `expired`. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment); `stored` travels in a [frame](delivery.md#frames).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's [`stored` frame](delivery.md#frames), and its `delivery-status` for `delivered` and `expired`. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -18,6 +18,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Receipt `held`](#receipt-held)
 - [Receipt `refused`](#receipt-refused)
 - [Receipt `read`](#receipt-read)
+- [Server status `stored`](#server-status-stored)
 - [Server status `delivered`](#server-status-delivered)
 - [Server status `expired`](#server-status-expired)
 
@@ -110,7 +111,7 @@ c5c6c7c8c9cacbcccdcecf
   3: 7,
   4: 1,
   5: h'019a6f201a007c008a00000000000003',
-  6: "{\"messageId\":\"019a6f20-1a00-7c00-8a00-000000000004\",\"contextId\":\"019a6f20-0000-7000-8000-00000000c0de\",\"role\":\"ROLE_USER\",\"parts\":[{\"text\":\"Here is the diff\"}]}",
+  6: "{\"messageId\":\"019a6f20-1a00-7c00-8a00-000000000004\",\"contextId\":\"019a6f20-0000-7000-8000-00000000c0de\",\"role\":\"ROLE_USER\",\"parts\":[{\"text\":\"Here is the diff\"},{\"url\":\"urn:uuid:019a6f20-1b00-7d00-8b00-00000000b10b\",\"filename\":\"pr-12.diff\",\"mediaType\":\"text/x-diff\"}]}",
   10: [
     {
       1: h'019a6f201b007d008b0000000000b10b',
@@ -125,15 +126,18 @@ c5c6c7c8c9cacbcccdcecf
 ```hex
 a701782361636d652f616c6963652f636c617564652d61706940736b616c642e
 6578616d706c6502781c61636d652f626f622f636f64657840736b616c642e65
-78616d706c65030704010550019a6f201a007c008a000000000000030678a07b
-226d6573736167654964223a2230313961366632302d316130302d376330302d
-386130302d303030303030303030303034222c22636f6e746578744964223a22
-30313961366632302d303030302d373030302d383030302d3030303030303030
-63306465222c22726f6c65223a22524f4c455f55534552222c22706172747322
-3a5b7b2274657874223a2248657265206973207468652064696666227d5d7d0a
-81a40150019a6f201b007d008b0000000000b10b02506b6b6b6b6b6b6b6b6b6b
-6b6b6b6b6b6b035820d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1
-d1d1d1d1d1d1d1d1d1041904d2
+78616d706c65030704010550019a6f201a007c008a000000000000030679010a
+7b226d6573736167654964223a2230313961366632302d316130302d37633030
+2d386130302d303030303030303030303034222c22636f6e746578744964223a
+2230313961366632302d303030302d373030302d383030302d30303030303030
+3063306465222c22726f6c65223a22524f4c455f55534552222c227061727473
+223a5b7b2274657874223a2248657265206973207468652064696666227d2c7b
+2275726c223a2275726e3a757569643a30313961366632302d316230302d3764
+30302d386230302d303030303030303062313062222c2266696c656e616d6522
+3a2270722d31322e64696666222c226d6564696154797065223a22746578742f
+782d64696666227d5d7d0a81a40150019a6f201b007d008b0000000000b10b02
+506b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b035820d1d1d1d1d1d1d1d1d1d1d1d1
+d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1041904d2
 ```
 
 ## Content from a service device
@@ -278,6 +282,24 @@ a501781c61636d652f626f622f636f64657840736b616c642e6578616d706c65
 02782361636d652f616c6963652f636c617564652d61706940736b616c642e65
 78616d706c650305040009a20103028250019a6f201a007c008a000000000000
 0150019a6f201a007c008a00000000000004
+```
+
+## Server status `stored`
+
+```cbor-diag
+[
+  2,
+  [
+    h'019a6f201a007c008a00000000000002',
+    h'188e6ae45b2d8247b1e1583b84bd49c7'
+  ],
+  1762819200
+]
+```
+
+```hex
+83028250019a6f201a007c008a0000000000000250188e6ae45b2d8247b1e158
+3b84bd49c71a69127c80
 ```
 
 ## Server status `delivered`

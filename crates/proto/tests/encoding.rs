@@ -320,6 +320,7 @@ fn errors_explain_themselves() {
         (FieldProblem::KeyType, "a map key that is not an integer"),
         (FieldProblem::NoBody, "no body"),
         (FieldProblem::TwoBodies, "more than one body"),
+        (FieldProblem::NotAllowed, "not allowed here"),
         (
             FieldProblem::Address(AddressError::ExtraAt),
             "invalid agent address: more than one '@'",

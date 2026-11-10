@@ -10,7 +10,8 @@ use common::*;
 use skald_proto::{
     AddressError, Attachment, Body, Cbor, Content, DecodeError, Delegation, DelegationBody,
     DeliveryStatus, Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload, HpkePlaintext,
-    NameError, NonEmpty, Receipt, ReceiptStatus, Scheme, Segment, ServerStatus, Unknown,
+    NameError, NonEmpty, Receipt, ReceiptStatus, Scheme, Segment, SendKey, ServerStatus, Stored,
+    Unknown,
 };
 
 /// The encoding of a 16-byte ID: `h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6'`.
@@ -76,6 +77,10 @@ fn every_type_round_trips() {
         recipients: Some(NonEmpty::from_vec(vec![alice_device(), bob_device()]).unwrap()),
         ttl: Some(0),
         v: nonzero(2),
+        ..header(msg(1), Scheme::Mls)
+    });
+    round_trip(&Header {
+        recipients: Some(NonEmpty::new(alice_device())),
         ..header(msg(1), Scheme::Hpke)
     });
     round_trip(&Envelope {
@@ -113,6 +118,16 @@ fn every_type_round_trips() {
     for status in [ServerStatus::Delivered, ServerStatus::Expired] {
         round_trip(&delivery_status(status));
     }
+    round_trip(&stored());
+    let mls_key = SendKey {
+        msg_id: msg(1),
+        recipient: None,
+    };
+    round_trip(&mls_key);
+    round_trip(&Stored {
+        send_key: mls_key,
+        timestamp: u64::MAX,
+    });
 }
 
 #[test]
@@ -136,6 +151,31 @@ fn fields_encode_under_the_keys_of_the_spec() {
             to_hex(&cbor_id(bob_device().as_bytes()))
         )
         .replace(' ', "")
+    );
+}
+
+#[test]
+fn stored_is_its_frame() {
+    let id = |id: &[u8; 16]| to_hex(&cbor_id(id));
+    assert_eq!(
+        to_hex(&stored().to_cbor()),
+        format!(
+            "83 02 82{}{} 1a69127c80",
+            id(msg(2).as_bytes()),
+            id(bob_device().as_bytes())
+        )
+        .replace(' ', "")
+    );
+    let mls = Stored {
+        send_key: SendKey {
+            msg_id: msg(1),
+            recipient: None,
+        },
+        timestamp: 0,
+    };
+    assert_eq!(
+        to_hex(&mls.to_cbor()),
+        format!("83 02 81{} 00", id(msg(1).as_bytes())).replace(' ', "")
     );
 }
 
@@ -192,6 +232,29 @@ fn content_needs_exactly_one_body() {
     );
     assert_eq!(
         decode::<Content>(&format!("a3 01{ADDRESS} 0400 06{JSON}")),
+        Ok(())
+    );
+}
+
+#[test]
+fn attachments_need_an_a2a_body() {
+    let attachment = format!(
+        "0a81 a4 01{ID} 0250{} 035820{} 0400",
+        "00".repeat(16),
+        "00".repeat(32)
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a4 01{ADDRESS} 0400 06{JSON} {attachment}")),
+        Ok(())
+    );
+    assert_eq!(
+        decode::<Content>(&format!(
+            "a4 01{ADDRESS} 0400 09a2 0103 0281{ID} {attachment}"
+        )),
+        field("content.attachments", FieldProblem::NotAllowed)
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a3 01{ADDRESS} 0400 09a2 0103 0281{ID}")),
         Ok(())
     );
 }
@@ -311,6 +374,113 @@ fn header_rejects_invalid_fields() {
     assert_eq!(
         decode::<Header>(&header_with(1, "07616e")),
         field("header.ttl", FieldProblem::Type("an unsigned integer"))
+    );
+}
+
+/// A header with `scheme` and the `recipients` entry `recipients`, already encoded, if any.
+fn header_for(scheme: u8, recipients: Option<String>) -> String {
+    format!(
+        "{:02x} 0101 02{ID} 03{ID} 04{ID} 05{scheme:02x} {}",
+        0xa5 + usize::from(recipients.is_some()),
+        recipients.map_or(String::new(), |list| format!("06{list}"))
+    )
+}
+
+#[test]
+fn hpke_headers_name_exactly_one_recipient() {
+    let one = Some(format!("81{ID}"));
+    let two = Some(format!("82{ID}{ID}"));
+    assert_eq!(decode::<Header>(&header_for(2, one.clone())), Ok(()));
+    assert_eq!(
+        decode::<Header>(&header_for(2, None)),
+        field("header.recipients", FieldProblem::Missing)
+    );
+    assert_eq!(
+        decode::<Header>(&header_for(2, two.clone())),
+        field(
+            "header.recipients",
+            FieldProblem::Items {
+                expected: 1,
+                actual: 2
+            }
+        )
+    );
+    for recipients in [None, one, two] {
+        assert_eq!(decode::<Header>(&header_for(1, recipients)), Ok(()));
+    }
+}
+
+#[test]
+fn stored_rejects_invalid_fields() {
+    let key = format!("82{ID}{ID}");
+    assert_eq!(decode::<Stored>(&format!("83 02 {key} 00")), Ok(()));
+    assert_eq!(decode::<Stored>(&format!("83 02 81{ID} 00")), Ok(()));
+    assert_eq!(
+        decode::<Stored>(&format!("83 03 {key} 00")),
+        field("stored.type", FieldProblem::Value(3))
+    );
+    assert_eq!(
+        decode::<Stored>(&format!("83 60 {key} 00")),
+        field("stored.type", FieldProblem::Type("an unsigned integer"))
+    );
+    assert_eq!(
+        decode::<Stored>(&format!("82 02 {key}")),
+        field(
+            "stored",
+            FieldProblem::Items {
+                expected: 3,
+                actual: 2
+            }
+        )
+    );
+    assert_eq!(
+        decode::<Stored>("a0"),
+        field("stored", FieldProblem::Type("an array"))
+    );
+    assert_eq!(
+        decode::<Stored>(&format!("83 02 {key} 20")),
+        field(
+            "stored.timestamp",
+            FieldProblem::Type("an unsigned integer")
+        )
+    );
+    assert_eq!(
+        decode::<Stored>("83 02 80 00"),
+        field("send-key.msg_id", FieldProblem::Missing)
+    );
+    assert_eq!(
+        decode::<Stored>(&format!("83 02 83{ID}{ID}{ID} 00")),
+        field(
+            "send-key",
+            FieldProblem::Items {
+                expected: 2,
+                actual: 3
+            }
+        )
+    );
+    assert_eq!(
+        decode::<Stored>(&format!("83 02 {ID} 00")),
+        field("send-key", FieldProblem::Type("an array"))
+    );
+    assert_eq!(
+        decode::<Stored>("83 02 814100 00"),
+        field(
+            "send-key.msg_id",
+            FieldProblem::Length {
+                expected: 16,
+                actual: 1
+            }
+        )
+    );
+    assert_eq!(
+        decode::<Stored>(&format!("83 02 82{ID}4100 00")),
+        field(
+            "send-key.recipient",
+            FieldProblem::Length {
+                expected: 16,
+                actual: 1
+            }
+        )
     );
 }
 
@@ -521,9 +691,7 @@ fn receipt_statuses_have_the_values_of_the_spec() {
         assert_eq!(decoded.status, status);
     }
     for (scheme, value) in [(Scheme::Mls, 1), (Scheme::Hpke, 2)] {
-        let header =
-            Header::from_cbor(&hex(&format!("a5 0101 02{ID} 03{ID} 04{ID} 05{value:02x}")))
-                .unwrap();
+        let header = Header::from_cbor(&hex(&header_for(value, Some(format!("81{ID}"))))).unwrap();
         assert_eq!(header.scheme, scheme);
     }
 }

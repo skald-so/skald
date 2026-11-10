@@ -94,7 +94,7 @@ impl Codec for Header {
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let mut fields = item.map("header")?;
-        Ok(Self {
+        let header = Self {
             v: fields.required(1, "header.v")?.positive("header.v")?,
             space: fields.required(2, "header.space")?.id("header.space")?,
             channel: fields.required(3, "header.channel")?.id("header.channel")?,
@@ -109,6 +109,19 @@ impl Codec for Header {
                 .map(|item| item.uint("header.ttl"))
                 .transpose()?,
             unknown: fields.unknown(),
+        };
+        // Under `hpke`, `recipients` holds exactly one device.
+        let problem = match (header.scheme, &header.recipients) {
+            (Scheme::Hpke, None) => FieldProblem::Missing,
+            (Scheme::Hpke, Some(devices)) if devices.len() > 1 => FieldProblem::Items {
+                expected: 1,
+                actual: devices.len(),
+            },
+            _ => return Ok(header),
+        };
+        Err(DecodeError::Field {
+            field: "header.recipients",
+            problem,
         })
     }
 }

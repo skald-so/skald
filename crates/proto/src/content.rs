@@ -170,6 +170,12 @@ impl Codec for Content {
             (None, None) if fields.is_empty() => return Err(body_error(FieldProblem::NoBody)),
             (a2a, receipt) => a2a.or(receipt),
         };
+        if attachments.is_some() && matches!(body, Some(Body::Receipt(_))) {
+            return Err(DecodeError::Field {
+                field: "content.attachments",
+                problem: FieldProblem::NotAllowed,
+            });
+        }
         Ok(Self {
             from,
             to,

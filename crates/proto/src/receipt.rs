@@ -26,6 +26,25 @@ pub enum ReceiptStatus {
     Read = 3,
 }
 
+/// The `stored` frame: the server has committed a sent envelope. Unsigned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stored {
+    pub send_key: SendKey,
+    /// When the server committed it, in seconds since the Unix epoch.
+    pub timestamp: u64,
+}
+
+/// Which sent envelope a server answer is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SendKey {
+    pub msg_id: MessageId,
+    /// Under `hpke`, the recipient device.
+    pub recipient: Option<DeviceId>,
+}
+
+/// The frame type of [`Stored`].
+const STORED: u64 = 2;
+
 /// A server status of one message for one recipient device, unsigned: the payload of a
 /// `status` frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +109,58 @@ impl Codec for Receipt {
     }
 }
 
+impl Codec for Stored {
+    fn encode(&self) -> Vec<u8> {
+        cbor::array([
+            cbor::uint(STORED),
+            self.send_key.encode(),
+            cbor::uint(self.timestamp),
+        ])
+    }
+
+    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
+        let [frame_type, send_key, timestamp] = item.tuple("stored")?;
+        match frame_type.uint("stored.type")? {
+            STORED => Ok(Self {
+                send_key: SendKey::decode(send_key)?,
+                timestamp: timestamp.uint("stored.timestamp")?,
+            }),
+            other => Err(value_error("stored.type", other)),
+        }
+    }
+}
+
+impl Codec for SendKey {
+    fn encode(&self) -> Vec<u8> {
+        cbor::array(
+            std::iter::once(cbor::id(&self.msg_id)).chain(self.recipient.as_ref().map(cbor::id)),
+        )
+    }
+
+    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
+        match item.array("send-key")? {
+            [] => Err(DecodeError::Field {
+                field: "send-key.msg_id",
+                problem: FieldProblem::Missing,
+            }),
+            [msg_id, recipient @ ..] if recipient.len() <= 1 => Ok(Self {
+                msg_id: msg_id.id("send-key.msg_id")?,
+                recipient: recipient
+                    .first()
+                    .map(|id| id.id("send-key.recipient"))
+                    .transpose()?,
+            }),
+            items => Err(DecodeError::Field {
+                field: "send-key",
+                problem: FieldProblem::Items {
+                    expected: 2,
+                    actual: items.len(),
+                },
+            }),
+        }
+    }
+}
+
 impl Codec for DeliveryStatus {
     fn encode(&self) -> Vec<u8> {
         MapOut::new(&self.unknown)
@@ -125,4 +196,4 @@ impl Codec for DeliveryStatus {
     }
 }
 
-cbor::cbor!(Receipt, DeliveryStatus);
+cbor::cbor!(Receipt, Stored, SendKey, DeliveryStatus);
