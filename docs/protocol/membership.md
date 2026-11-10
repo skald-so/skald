@@ -89,8 +89,8 @@ device-kind = &(client: 1, browser: 2, service: 3, custodian: 4, auditor: 5)
 ```
 
 - Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it.
-- `device` is the ID derived from `signing` ([Identifiers](README.md#identifiers)), and `proof` is signed by the device itself. So only the holder of a device's signing key makes a certificate for its ID: no other device can certify an existing device's ID, with other keys or with its own.
-- A device signs `proof` for one certificate only, the one issued for it when it joins the account. A client that sees two different certificates of one `device`, each with a `proof` that verifies, treats neither as valid and warns its user.
+- **Proof check:** a client MUST discard a certificate unless `device` is the ID derived from `signing` ([Identifiers](README.md#identifiers)) and `proof` verifies with `signing`. A discarded certificate counts nowhere and is not shown: the certificate of a device ID, a device's chain and issuers, the signer of an object and the devices a device certified come only from certificates that pass this check, here and in [README.md](README.md). So only the holder of a device's signing key makes a certificate for its ID: no other device can certify an existing device's ID, with other keys or with its own.
+- A device signs `proof` for one certificate only, the one issued for it when it joins the account. A client that sees two different certificates of one `device` that pass the proof check treats neither as valid and warns its user.
 - A device ID thus names one device everywhere it appears, such as a revocation's `device`, `keep` and `also`, a member's `excluded` and an MLS credential.
 - Issuers:
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
@@ -166,7 +166,7 @@ revocation-body = {
 - The signer is a `client` or `browser` device of the account, or its master key.
 - A revocation revokes `device`, each device in `also`, and every device one of them certified, except those in `keep`. The revoking device shows its user the certified devices to choose from.
 - Of several counting revocations of one device, a device it certified stays valid only if every one lists it in `keep`.
-- A client MUST ignore a revocation unless its signature verifies with the master key, or it has no `also` and its signature verifies with the certificate of `signer`, a `client` or `browser` device of `account` whose chain ends at the master key. Otherwise it counts, whether or not its signer is revoked itself, until a master-key revocation voids it.
+- A client MUST ignore a revocation unless its signature verifies with the master key, or it has no `also` and its signature verifies with the certificate of `signer`, a `client` or `browser` device of `account` whose certificate passes checks 1 and 2 of [Device checks](#device-checks). Otherwise it counts, whether or not its signer is revoked itself, until a master-key revocation voids it.
 - A master-key revocation marks as stolen `device` and every device whose chain passes through it other than through a device in `keep`, and voids every revocation they signed. The device that signs it shows its user the devices the voided revocations named; it lists in `also` those the user keeps revoked, so one object voids and re-revokes.
 - Only voiding undoes a revocation; a master-key revocation is never undone.
 - The server stores revocations and gives them with the certificates.
@@ -175,8 +175,8 @@ revocation-body = {
 A server signature alone never admits a device: a client trusts a device only through its certificate chain to the account's master key.
 
 A certificate is valid when:
-1. `device` is the ID derived from `signing`, `proof` verifies with `signing`, and `signature` verifies: with the master key when `issuer` is absent; otherwise with the signing key of the issuer's certificate;
-2. its chain, the certificate and those of its issuers in turn, ends at the master key without repeating a device; every issuer is a `client` device of the same account;
+1. it passes the [proof check](#device-certificate), and `signature` verifies: with the master key when `issuer` is absent; otherwise with the signing key of the issuer's certificate;
+2. its chain, the certificate and those of its issuers in turn, ends at the master key without repeating a device; every certificate of the chain passes check 1, and every issuer is a `client` device of the same account;
 3. no counting revocation names the device in `device` or `also`;
 4. for each revoked issuer in the chain, every counting revocation of it lists in `keep` the next device down the chain.
 
@@ -344,7 +344,7 @@ The newcomer's device MUST, from the link:
 3. only then prove it holds the secret: sign an acceptance with the invite key, for its own account, master key and handle.
 
 An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
-1. checks the invite: its signature by an admin's device of the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;
+1. checks the invite: its signature with the certificate of `signer`, a valid device of an admin in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;
 2. checks the acceptance's signature with the invite's `key`;
 3. checks that the account is not a member and the handle is free;
 4. checks each of the newcomer's devices: a valid certificate chained to `master` from the acceptance, not to one the server gives.
@@ -469,7 +469,7 @@ wrap-recipient = [1, device: id] / [2, account: id]  ; a browser, or an account'
 ```
 
 - HPKE in base mode as in [Scheme `hpke`](README.md#scheme-hpke), to the `hpke` key of a `browser` device's certificate or to the recovery HPKE key of an account's [record](#account); `info` `skald history wrap`, `aad` the encoded `[channel, epoch, recipient]`.
-- Each clean epoch's key is wrapped to every unrevoked browser and the recovery key of each account among the channel's members. `client` devices take keys from MLS and the key chain and need no wrap.
+- Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate. `client` devices take keys from MLS and the key chain and need no wrap.
 - A browser linked later gets wraps of the current epochs from member devices that find them missing.
 
 A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, revoked or not. That certificate MUST pass checks 1 and 2 of [Device checks](#device-checks) with the master key of an account that an accepted revision lists as a member of the space or, for a shared channel, of the other space.
@@ -510,7 +510,7 @@ history-body = {
 
 A reader MUST drop an entry unless:
 1. it decrypts with the epoch's key;
-2. `channel` matches the entry's, and `signature` verifies with the certificate of `sender`, a device of an account that an accepted revision lists among the channel's members, or one of its `services`;
+2. `channel` matches the entry's, and `signature` verifies with the certificate of `sender`, revoked or not: a device of an account that an accepted revision lists among the channel's members, or one of its `services`, whose certificate passes checks 1 and 2 of [Device checks](#device-checks) with the `master` that revision gives for its account;
 3. its content passes checks 2 and 4 of [Envelope](README.md#envelope), with `sender` as the sending device.
 
 ### Access

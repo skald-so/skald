@@ -135,7 +135,7 @@ hpke-plaintext = [
 
 It authenticates `sender` as the sending device when:
 1. the recipient is the device in `recipients`, and the payload opens with its HPKE key;
-2. `signature` verifies with the certificate of `sender`, an unrevoked device;
+2. `signature` verifies with the certificate of `sender`, a valid device ([Device checks](membership.md#device-checks));
 3. `channel` is a channel of `space`, and `from` names an agent of `space`.
 
 ## Content
@@ -188,7 +188,7 @@ grant-body = {
 
 A recipient MUST reject content from a `service` device unless:
 1. the content's `grant` names the sending device as `service` and lists `channel` in `channels`;
-2. `signer` is an unrevoked `client` or `browser` device of an admin of `space`, and `signature` verifies with its certificate;
+2. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of an admin of `space`, and `signature` verifies with its certificate;
 3. `expires` has not passed.
 
 ## Encoding
@@ -300,7 +300,7 @@ delegation-body = {
 A recipient MUST reject content from a `custodian` device unless:
 1. the channel [admits](#custodian-auditor-and-federation) the custodian;
 2. the content's `delegation` names `from` as `agent` and the sending device as `custodian`;
-3. `signer` is an unrevoked `client` or `browser` device of the member whose handle is the owner in `from`, and `signature` verifies with its certificate;
+3. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of the member whose handle is the owner in `from`, and `signature` verifies with its certificate;
 4. `expires` has not passed.
 
 A recipient MUST label every message from a `custodian` device as sent by the server for the member, apart from the member's own messages. Allowlists treat it as a separate sender: an entry that admits an agent does not admit the custodian sending as that agent.
