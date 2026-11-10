@@ -194,6 +194,82 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 1
 - **Docs:** `roadmap.md` — "Preparation", `architecture.md` — "Data model", "Cryptography", "Queue", "Security", `infrastructure.md` — "Release", `features.md` §1, §10, §13, §15
 
+#### Iteration 2.1: Protocol spec: addressing, envelope and versions
+- **Goal:** A public spec fixes the identifiers, the envelope and the protocol version that every other story builds on.
+- **What we do:**
+  - The spec in `docs/protocol/`: `README.md` holds the index and this iteration's sections; marked "no external audit" and linked from `AGENTS.md`.
+  - Wire-level facts live only in the spec: the envelope part of `architecture.md`, "Data model", moves here and is replaced by a link.
+  - Identifiers of accounts, devices, agents, spaces, channels and messages; the agent address with the server name, e.g. `space/alice/claude-api@skald.example`.
+  - Envelope: the plaintext header and the content inside the ciphertext (`architecture.md`, "Data model").
+  - Encoding: JSON over HTTPS for the API, described by the OpenAPI spec; envelopes in binary WebSocket frames.
+  - Envelope encoding: deterministic CBOR (RFC 8949, §4.2) with a CDDL schema. Signatures need one byte form, unknown fields let two protocol versions coexist, and CDDL lets others implement the protocol. Recorded in `tech-stack.md`.
+  - Protocol version: a number separate from the release version; how the client states it; the server accepts the current and previous versions; the answers to older and newer clients, including "please update".
+  - How the custodian device (`features.md` §13), the auditor device (`ee/`) and federation (`features.md` §15) fit in without a breaking change.
+- **Definition of done:** the spec covers every item above; other docs link to it instead of repeating its facts (rule 1 in `rules.md`).
+
+#### Iteration 2.2: Protocol spec: mailbox, delivery and receipts
+- **Goal:** The spec fixes how a message reaches the recipient's agent and how the sender learns its status.
+- **What we do:**
+  - `docs/protocol/delivery.md`; `architecture.md`, "Delivery semantics", moves here and is replaced by a link.
+  - Mailbox and cursor: a mailbox per recipient device, catch-up from the cursor, ack by `seq`, deletion on ack, expiry.
+  - Delivery on each hop: send with `idempotency_key`, server → device, device → agent; deduplication at each step.
+  - Receipts `stored`, `delivered`, `read`, `replied`, `held`, `refused`, `expired`: who issues and signs each, and how it reaches the sender.
+  - The per-sender counter: how the recipient detects a missing message and reports it.
+  - Message order within a channel.
+- **Definition of done:** the spec covers every item above; `architecture.md` keeps only a link to delivery semantics.
+
+#### Iteration 2.3: Protocol spec: queues, presence and edit coordination
+- **Goal:** The spec covers the rest of the protocol, so later stories need no breaking changes.
+- **What we do:**
+  - `docs/protocol/queues.md`, `presence.md` and `edits.md`; the wire-level part of `architecture.md`, "Queue" (claim, lease, fencing, modes), moves here and is replaced by a link.
+  - Queues: plaintext scheduling fields and the encrypted payload; claim, lease with heartbeat, fencing with `claim_id` and generation, `claim_lost`; at-least-once and at-most-once modes, retries, DLQ; the result returned as an encrypted message.
+  - Presence: the encrypted agent status; the server keeps only the latest value.
+  - Edit coordination: HMAC fingerprints of paths, hunks and symbols with the space key; what the client sends and the server compares; open questions link to `features.md` §11, "To decide".
+- **Definition of done:** the spec covers every item above; no fact is repeated between the spec and `architecture.md` or `features.md`.
+
+#### Iteration 2.4: Threat model
+- **Goal:** Users and contributors know what Skald protects against and what it does not.
+- **What we do:**
+  - `docs/threat-model.md`, marked "no external audit" and linked from `AGENTS.md`.
+  - Attackers and what each can do: the server or its operator, a network observer, a stolen device, a removed member, a malicious sender.
+  - What the server sees and does not see; trade-offs (`architecture.md`, "Cryptography").
+  - Prompt injection and loops: the defenses in `architecture.md`, "Security", and what they do not stop.
+- **Definition of done:** the threat model covers every item above and links to the spec sections each defense relies on; no fact is repeated between it and `architecture.md`.
+
+#### Iteration 2.5: Identifiers and agent addresses in `proto`
+- **Goal:** The client and server share one implementation of the spec's identifiers and addresses.
+- **What we do:**
+  - Types in `proto` for the identifiers and the agent address defined by the spec.
+  - Parsing and printing an address with the server name; an invalid address is rejected with an error naming the problem.
+  - Tests: valid identifiers and addresses round-trip; each invalid form from the spec is rejected.
+- **Definition of done:** `proto` follows the spec's identifier and address rules; unit tests pass in `script/test`.
+
+#### Iteration 2.6: Envelope and receipt types in `proto`
+- **Goal:** Envelopes and receipts have one wire implementation that matches the spec.
+- **What we do:**
+  - Types in `proto` for the envelope header, the content inside the ciphertext and receipts.
+  - CBOR encoding and decoding of envelopes and their content as in the spec; malformed or truncated input returns an error, never a panic. The CBOR crate is recorded in `tech-stack.md`.
+  - Test vectors in `docs/protocol/`: the hex of each envelope and receipt kind, for other implementations.
+  - Tests: every type round-trips; `proto` output matches the test vectors byte for byte; malformed and truncated frames are rejected.
+- **Definition of done:** `proto` encodes and decodes envelopes per the spec; unit tests pass in `script/test`.
+
+#### Iteration 2.7: Protocol version check on the server
+- **Goal:** The server serves clients of the current and previous protocol versions and tells older ones to update.
+- **What we do:**
+  - The OpenAPI spec first: how a request states the protocol version and the answers to unsupported versions (rule 4 in `rules.md`).
+  - The current protocol version in `proto`.
+  - `skald-server` accepts the current and previous versions and refuses others as the protocol spec says, with "please update" for a too-old client.
+  - Tests: every version case in the protocol spec; responses conform to the OpenAPI spec.
+- **Definition of done:** the server enforces the supported version range; server integration tests pass in `script/test`.
+
+#### Iteration 2.8: Protocol version check in the client
+- **Goal:** An outdated `skald` tells its user to update instead of failing obscurely.
+- **What we do:**
+  - The client's server connection, which later commands reuse, states the protocol version on every request.
+  - A "please update" answer becomes an error telling the user to update `skald`; other version refusals get their own clear error.
+  - Tests: the client against a running `skald-server`: a compatible version connects, a too-old one gets "please update".
+- **Definition of done:** client and server negotiate the protocol version; an outdated client gets "please update"; client integration tests with `skald-server` pass in `script/test`.
+
 ### Story 3: MLS prototypes and library choice
 
 **Goal:** Compare OpenMLS and mls-rs on Skald scenarios and choose the library for the crypto core.
