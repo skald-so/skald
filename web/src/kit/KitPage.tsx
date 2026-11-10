@@ -3,6 +3,7 @@ import { KitBanners } from "./KitBanners.tsx";
 import { KitButtons } from "./KitButtons.tsx";
 import styles from "./KitPage.module.css";
 import { KitStatuses } from "./KitStatuses.tsx";
+import { KitTables } from "./KitTables.tsx";
 
 export type Theme = "light" | "dark";
 
@@ -119,6 +120,7 @@ export function KitPage({ theme }: { theme?: Theme }) {
       <KitButtons />
       <KitStatuses />
       <KitBanners />
+      <KitTables />
     </main>
   );
 }

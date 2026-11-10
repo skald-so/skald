@@ -212,6 +212,295 @@ test.each(themes)(
 );
 
 test.each(themes)(
+  "tables and their states have the design looks in the %s theme",
+  async (theme) => {
+    const c = (label: string) => color(label, theme);
+    const view = await kit.open({ width: 1440, system: theme });
+    const looks = await view.page.evaluate(() => {
+      const table = (name: string) =>
+        document.querySelector(`table[aria-label="${name}"]`)!;
+      const style = (element: Element) => getComputedStyle(element);
+      const body = (name: string) => [
+        ...table(name).querySelectorAll("tbody tr"),
+      ];
+      const cell = (name: string, row: number, column: number) =>
+        body(name)[row]!.children[column]!;
+      const text = (element: Element) => ({
+        color: style(element).color,
+        weight: style(element).fontWeight,
+      });
+      const [device, , seen, key] = [
+        ...table("Devices").querySelectorAll("th"),
+      ];
+      const lines = (element: Element) =>
+        [...element.querySelectorAll("span span")].map((line) => ({
+          font: style(line).fontFamily.split(",")[0]!.replaceAll('"', ""),
+          size: style(line).fontSize,
+          ...text(line),
+        }));
+      const bars = [...document.querySelectorAll("#kit-tables ~ ul > li")]
+        .filter((card) => card.querySelector("[aria-busy]"))
+        .map((card) => ({
+          card: style(card).backgroundColor,
+          bars: [...card.querySelectorAll("[aria-busy] > [aria-hidden]")].map(
+            (bar) => style(bar).backgroundColor,
+          ),
+        }));
+      return {
+        headers: {
+          active: [
+            text(seen!.querySelector("button")!).color,
+            style(seen!.querySelector("button span")!).opacity,
+          ],
+          idle: [
+            text(device!.querySelector("button")!).color,
+            style(device!.querySelector("button span")!).opacity,
+          ],
+          plain: text(key!).color,
+        },
+        device: lines(cell("Devices", 1, 0)),
+        kind: text(cell("Devices", 0, 1)),
+        keys: [lines(cell("Devices", 0, 3)), lines(cell("Devices", 3, 3))],
+        queue: style(
+          cell("All queues", 0, 0).firstElementChild!,
+        ).fontFamily.split(",")[0],
+        rows: body("All queues").map((row) => style(row).backgroundColor),
+        dead: [text(cell("All queues", 0, 3)), text(cell("All queues", 1, 3))],
+        messages: [text(cell("Accounts", 0, 4)), text(cell("Accounts", 1, 4))],
+        actions: [
+          cell("Devices", 0, 4).querySelector("button")!.getBoundingClientRect()
+            .width,
+          cell("Accounts", 0, 7)
+            .querySelector("button")!
+            .getBoundingClientRect().width,
+        ],
+        // Every row of a table, the header included, puts its columns at the same places.
+        aligned: ["Devices", "Accounts", "All queues"].map((name) => {
+          const lefts = [...table(name).querySelectorAll("tr")].map((row) =>
+            [...row.children].map((child) =>
+              Math.round(child.getBoundingClientRect().left),
+            ),
+          );
+          return lefts.every((row) => row.join() === lefts[0]!.join());
+        }),
+        bars,
+      };
+    });
+
+    expect(looks.headers).toEqual({
+      active: [c("Accent"), "1"],
+      idle: [c("Muted text"), "0.5"],
+      plain: c("Muted text"),
+    });
+    const mono = "JetBrains Mono Variable";
+    const inter = "Inter Variable";
+    expect(looks.device).toEqual([
+      { font: inter, size: "14px", color: c("Text"), weight: "600" },
+      { font: inter, size: "12px", color: c("Muted text"), weight: "400" },
+    ]);
+    expect(looks.kind).toEqual({ color: c("Muted text"), weight: "400" });
+    expect(looks.keys).toEqual(
+      ["Muted text", "Warning"].map((detail) => [
+        { font: mono, size: "13px", color: c("Text"), weight: "400" },
+        { font: inter, size: "12px", color: c(detail), weight: "400" },
+      ]),
+    );
+    expect(looks.queue).toBe(`"${mono}"`);
+    // As 07-queues.png: the queue with dead letters is highlighted.
+    expect(looks.rows).toEqual([c("Danger soft"), transparent, transparent]);
+    expect(looks.dead).toEqual([
+      { color: c("Danger"), weight: "600" },
+      { color: c("Text"), weight: "400" },
+    ]);
+    expect(looks.messages).toEqual([
+      { color: c("Text"), weight: "400" },
+      { color: c("Warning"), weight: "600" },
+    ]);
+    // The buttons fill the actions column: 96 px in Machines, 120 px in operator accounts.
+    expect(looks.actions).toEqual([96, 120]);
+    expect(looks.aligned).toEqual([true, true, true]);
+    // Loading lines: the muted color, see-through, so they show on white and tinted cards alike.
+    const muted = c("Muted text").match(/\d+/g)!.map(Number);
+    expect(looks.bars.map(({ card }) => card)).toEqual([
+      transparent,
+      c("Accent soft"),
+    ]);
+    for (const { bars } of looks.bars) {
+      expect(bars).toHaveLength(2);
+      for (const bar of bars) {
+        const [r, g, b, alpha] =
+          /color\(srgb ([\d.]+) ([\d.]+) ([\d.]+) \/ ([\d.]+)\)/
+            .exec(bar)!
+            .slice(1)
+            .map(Number);
+        expect([r, g, b].map((channel) => Math.round(channel! * 255))).toEqual(
+          muted,
+        );
+        expect(alpha).toBe(0.18);
+      }
+    }
+    await view.page.close();
+  },
+);
+
+const tableNames = [
+  "Devices",
+  "Accounts",
+  "All queues",
+  "Devices, empty",
+  "Devices, loading",
+];
+
+/** Each table frame in the tables section: whether it scrolls and how it takes the focus. */
+function tableFrames(page: Page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll("#kit-tables ~ div table")].map((table) => {
+      const frame = table.parentElement!;
+      return {
+        name: table.getAttribute("aria-label"),
+        scrolls: frame.scrollWidth > frame.clientWidth,
+        tabIndex: frame.tabIndex,
+        role: frame.getAttribute("role"),
+        label: frame.getAttribute("aria-label"),
+      };
+    }),
+  );
+}
+
+/** The table frames as they should be at `width`: on a phone they scroll and take the focus. */
+function expectedFrames(width: number) {
+  const phone = width < 760;
+  return tableNames.map((name) => ({
+    name,
+    scrolls: phone,
+    tabIndex: phone ? 0 : -1,
+    role: phone ? "region" : null,
+    label: phone ? name : null,
+  }));
+}
+
+/**
+ * Whether the empty and loading states are inside the visible part of their frames and centered
+ * in it, with the empty frame scrolled sideways.
+ */
+async function stateBoxes(page: Page) {
+  const frame = page
+    .getByRole("table", { name: "Devices, empty" })
+    .locator("..");
+  await frame.evaluate((element) => element.scrollTo({ left: 200 }));
+  return page.evaluate(() =>
+    ["Devices, empty", "Devices, loading"].map((name) => {
+      const table = document.querySelector(`table[aria-label="${name}"]`)!;
+      const frame = table.parentElement!.getBoundingClientRect();
+      const state = table
+        .querySelector("tbody td > *")!
+        .getBoundingClientRect();
+      return {
+        inside: state.left >= frame.left && state.right <= frame.right,
+        centered:
+          Math.abs(state.left - frame.left - (frame.right - state.right)) <= 2,
+      };
+    }),
+  );
+}
+
+const statesInView = [
+  { inside: true, centered: true },
+  { inside: true, centered: true },
+];
+
+describe.each(widths)("tables at %i px", (width) => {
+  let view: KitView;
+  beforeAll(async () => {
+    view = await kit.open({ width, system: "light" });
+  }, 30_000);
+  afterAll(() => view?.page.close());
+
+  test(
+    width < 760
+      ? "scroll inside their frames, which take the focus"
+      : "fit their frames and take no focus",
+    async () => {
+      expect(await tableFrames(view.page)).toEqual(expectedFrames(width));
+    },
+  );
+
+  test("keep the empty and loading states in the visible part of the frame", async () => {
+    expect(await stateBoxes(view.page)).toEqual(statesInView);
+  });
+});
+
+describe.each(widths.map((from, i) => [from, widths[1 - i]!]))(
+  "tables opened at %i px and resized to %i px",
+  (from, to) => {
+    let view: KitView;
+    beforeAll(async () => {
+      view = await kit.open({ width: from, system: "light" });
+      await view.page.setViewportSize({ width: to, height: 900 });
+    }, 30_000);
+    afterAll(() => view?.page.close());
+
+    test(
+      to < 760
+        ? "start to scroll inside their frames, which take the focus"
+        : "stop scrolling and their frames give up the focus",
+      async () => {
+        await expect
+          .poll(() => tableFrames(view.page))
+          .toEqual(expectedFrames(to));
+      },
+    );
+
+    test("keep the empty and loading states in the visible part of the frame", async () => {
+      await expect.poll(() => stateBoxes(view.page)).toEqual(statesInView);
+    });
+  },
+);
+
+test("Chrome exposes the tables with their column headers and cells", async () => {
+  const view = await kit.open({ width: 1440, system: "light" });
+  const cdp = await view.page.context().newCDPSession(view.page);
+  const { nodes } = await cdp.send("Accessibility.getFullAXTree");
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  /** The roles and names under `node`, skipping ignored nodes, down to cells. */
+  const tree = (node: (typeof nodes)[number]): unknown[] =>
+    (node.childIds ?? []).flatMap((id) => {
+      const child = byId.get(id)!;
+      if (child.ignored) return tree(child);
+      const role = child.role?.value as string;
+      if (role === "columnheader" || role === "cell")
+        return [`${role} ${child.name?.value}`];
+      if (role === "row" || role === "rowgroup")
+        return [{ [role]: tree(child) }];
+      return [];
+    });
+  const table = nodes.find(
+    (node) => node.role?.value === "table" && node.name?.value === "All queues",
+  )!;
+  expect(tree(table)).toEqual([
+    {
+      rowgroup: [
+        {
+          row: [
+            "Queue",
+            "Waiting",
+            "Running",
+            "Dead letters",
+            "Oldest waiting",
+          ].map((name) => `columnheader ${name}`),
+        },
+      ],
+    },
+    ...[
+      ["deploy", "0", "0", "2", "—"],
+      ["research", "1", "2", "0", "40 s"],
+      ["review", "3", "1", "0", "2 min"],
+    ].map((row) => ({ row: row.map((name) => `cell ${name}`) })),
+  ]);
+  await view.page.close();
+});
+
+test.each(themes)(
   "without the URL parameter the kit page follows the %s system theme",
   async (theme) => {
     const view = await kit.open({ width: 1440, system: theme });
