@@ -34,6 +34,7 @@ Also whoever takes over the server or its database.
 - Report `stored`, `delivered` and `expired` falsely: they are its word ([Receipts](protocol/delivery.md#receipts)).
 - Withhold certificates, revocations and roster revisions: a hidden revocation keeps a device trusted for those who do not see it, a hidden revision keeps clients on an older roster, and withholding a revocation from every member device delays the revoked device's Remove ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold anchors objects, so a device linked with the recovery key starts from older revisions or joins no space ([membership.md](protocol/membership.md#security-considerations)).
+- Withhold the master backup, so no device links with the recovery key ([membership.md](protocol/membership.md#security-considerations)).
 - Give a channel member whose `history` is false the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
 - Join a channel's group by an external Commit from a device of its own, since it holds GroupInfo ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them, hand one task to two devices at once, an `at-most-once` one included, and hand an old task out again until its `deadline` ([queues.md](protocol/queues.md#security-considerations)).
