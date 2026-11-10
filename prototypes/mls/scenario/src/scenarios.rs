@@ -1,8 +1,11 @@
 //! The scenarios each prototype runs, as `docs/dev/mls-prototypes.md`, "Scenarios", lists them.
 //! Each one panics on a failed check; [`crate::scenario_tests!`] makes them tests.
 
+use std::collections::BTreeMap;
+
 use crate::{
-    Commit, Device, DeviceId, Fleet, Identity, Leaf, Received, Result, Staged,
+    Commit, DeliveryService, Device, DeviceId, Fleet, Identity, Leaf, Received, Refusal, Result,
+    Staged,
     certificate::Kind,
     identity::device_id,
     key_packages,
@@ -1130,4 +1133,579 @@ pub fn device_added_without_admission_is_removed<D: Device>() {
             .is_err(),
         "{lib}: the removed outsider reads a later message"
     );
+}
+
+/// A fleet whose devices send their Commits and GroupInfo through a [`DeliveryService`] and
+/// process the channel's Commits in the order it accepted them ("Commit ordering").
+pub struct Network<D: Device> {
+    pub fleet: Fleet<D>,
+    pub service: DeliveryService<D::Observer>,
+    /// For each device in the channel, how many of the accepted Commits it has merged or processed.
+    processed: BTreeMap<usize, usize>,
+}
+
+impl<D: Device> Network<D> {
+    /// `count` new devices and a service that knows no channel.
+    pub fn new(count: usize) -> Self {
+        Self {
+            fleet: Fleet::new(count).unwrap(),
+            service: DeliveryService::default(),
+            processed: BTreeMap::new(),
+        }
+    }
+
+    /// A new channel of `count` devices on a new fleet, its first Commit through the service.
+    pub fn channel(count: usize) -> Self {
+        let mut network = Self::new(count);
+        network.create(count);
+        network
+    }
+
+    /// Device 0 creates the channel with devices 1 to `count - 1`, as [`create_channel`] does,
+    /// and sends its Commit; the other devices join from its Welcome. Returns the Commit.
+    pub fn create(&mut self, count: usize) -> Commit {
+        let key_packages = (1..count)
+            .map(|device| self.fleet.step(device, |d| d.key_package()).unwrap())
+            .collect::<Vec<_>>();
+        let admitted = self.fleet.admitted();
+        let commit = self
+            .fleet
+            .step(0, |d| {
+                d.create_group(CHANNEL)?;
+                d.add(CHANNEL, &key_packages, &admitted)
+            })
+            .unwrap();
+        self.send(0, &commit).unwrap();
+        let welcome = commit
+            .welcome
+            .clone()
+            .expect("the Add Commit has a Welcome");
+        for device in 1..count {
+            self.join(device, &welcome);
+        }
+        commit
+    }
+
+    pub fn id(&self, device: usize) -> DeviceId {
+        self.fleet.identity(device).device_id()
+    }
+
+    /// Device `device` sends `commit`, its pending Commit. If the service accepts it, the device
+    /// merges it and uploads its GroupInfo; if the service refuses it, the device drops it.
+    pub fn send(&mut self, device: usize, commit: &Commit) -> Result<(), Refusal> {
+        let id = self.id(device);
+        let sent = self.service.send(&id, &commit.commit);
+        if sent.is_ok() {
+            self.fleet
+                .step(device, |d| d.merge_pending_commit(CHANNEL))
+                .unwrap();
+            self.service
+                .upload_group_info(&id, &commit.group_info)
+                .unwrap();
+            self.processed
+                .insert(device, self.service.commits(CHANNEL).len());
+        } else {
+            self.fleet
+                .step(device, |d| d.clear_pending_commit(CHANNEL))
+                .unwrap();
+        }
+        sent
+    }
+
+    /// Device `device` joins from `welcome`, the Welcome of the last Commit the service accepted.
+    pub fn join(&mut self, device: usize, welcome: &[u8]) {
+        let group_id = self.fleet.step(device, |d| d.join(welcome)).unwrap();
+        assert_eq!(group_id, CHANNEL, "{}: device {device} joined", D::LIBRARY);
+        self.processed
+            .insert(device, self.service.commits(CHANNEL).len());
+    }
+
+    /// Device `device` processes, in their order, the accepted Commits it has not processed, each
+    /// as [`process_commit`] does. Returns what it read of each.
+    pub fn sync(&mut self, device: usize) -> Vec<Read> {
+        let done = self.processed[&device];
+        let commits = self.service.commits(CHANNEL)[done..].to_vec();
+        commits
+            .iter()
+            .map(|commit| {
+                let read = process_commit(&mut self.fleet, device, commit).unwrap();
+                *self.processed.get_mut(&device).unwrap() += 1;
+                read
+            })
+            .collect()
+    }
+
+    /// The service and every device in `devices` are at the service's epoch with the leaves of
+    /// the devices `members`; the service's GroupInfo is of that epoch; the devices derive one
+    /// history key.
+    #[track_caller]
+    pub fn assert_converged(&mut self, devices: &[usize], members: &[usize]) {
+        let lib = D::LIBRARY;
+        let epoch = self.service.epoch(CHANNEL).unwrap();
+        assert_eq!(
+            self.service.members(CHANNEL).unwrap(),
+            Some(leaves(&self.fleet, members.iter().copied())),
+            "{lib}: the service's members"
+        );
+        let group_info = wire::group_info(self.service.group_info(CHANNEL).unwrap()).unwrap();
+        assert_eq!(
+            group_info.epoch, epoch,
+            "{lib}: the service's GroupInfo is of its epoch"
+        );
+        assert_group(
+            &mut self.fleet,
+            devices.iter().copied(),
+            epoch,
+            members.iter().copied(),
+        );
+        let key = history_key(&mut self.fleet, devices[0]);
+        for &device in devices {
+            assert_eq!(
+                history_key(&mut self.fleet, device),
+                key,
+                "{lib}: device {device}'s history key"
+            );
+        }
+    }
+}
+
+/// The fields of `group_info`, changed by `change` and signed again by `signer`.
+pub fn resigned_group_info(
+    group_info: &[u8],
+    signer: &Identity,
+    change: impl FnOnce(&mut wire::GroupInfo),
+) -> Vec<u8> {
+    let mut fields = wire::group_info(group_info).unwrap();
+    change(&mut fields);
+    fields.sign(signer);
+    fields.encode()
+}
+
+/// Each Commit comes with the GroupInfo of its new epoch, signed by its sender, with the
+/// `ratchet_tree` and `external_pub` extensions; the service keeps the latest. It refuses a
+/// GroupInfo of an earlier epoch, from a device that is not a member, or without either extension,
+/// and takes one from any member.
+pub fn commits_carry_the_new_epochs_group_info<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::new(3);
+    let check = |network: &Network<D>, commit: &Commit, epoch: u64, signer: u32, why: &str| {
+        let fields = wire::group_info(&commit.group_info).unwrap();
+        assert_eq!(
+            (
+                fields.cipher_suite,
+                &fields.group_id[..],
+                fields.epoch,
+                fields.signer
+            ),
+            (wire::CIPHER_SUITE, CHANNEL, epoch, signer),
+            "{lib}: {why}'s GroupInfo"
+        );
+        assert!(
+            fields.has(wire::RATCHET_TREE) && fields.has(wire::EXTERNAL_PUB),
+            "{lib}: {why}'s GroupInfo has ratchet_tree and external_pub"
+        );
+        assert_eq!(
+            network.service.group_info(CHANNEL),
+            Some(&commit.group_info[..]),
+            "{lib}: the service keeps {why}'s GroupInfo"
+        );
+    };
+
+    let create = network.create(3);
+    check(&network, &create, 1, 0, "the channel's first Commit");
+    network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
+
+    // A member other than the creator adds a device; the new device commits; a member removes one.
+    let new = network.fleet.add_device().unwrap();
+    let key_package = network.fleet.step(new, |d| d.key_package()).unwrap();
+    let admitted = network.fleet.admitted();
+    let add = network
+        .fleet
+        .step(1, |d| d.add(CHANNEL, &[key_package], &admitted))
+        .unwrap();
+    network.send(1, &add).unwrap();
+    check(&network, &add, 2, 1, "an Add");
+    network.join(new, &add.welcome.clone().expect("a Welcome"));
+    let empty = network
+        .fleet
+        .step(new, |d| d.empty_commit(CHANNEL, &[]))
+        .unwrap();
+    network.send(new, &empty).unwrap();
+    check(&network, &empty, 3, 3, "the new device's empty Commit");
+    network.sync(2);
+    let removed = network.id(1).to_vec();
+    let remove = network
+        .fleet
+        .step(2, |d| d.remove(CHANNEL, &[removed], &[]))
+        .unwrap();
+    network.send(2, &remove).unwrap();
+    check(&network, &remove, 4, 2, "a Remove");
+    for device in [0, new] {
+        network.sync(device);
+    }
+    network.assert_converged(&[0, 2, new], &[0, 2, new]);
+
+    let latest = remove.group_info.clone();
+    let signer = network.fleet.identity(2).clone();
+    let without = |extension_type: u16| {
+        resigned_group_info(&latest, &signer, |fields| {
+            fields
+                .extensions
+                .retain(|extension| extension.extension_type != extension_type)
+        })
+    };
+    for (device, group_info, why) in [
+        (0, create.group_info.clone(), "a GroupInfo of epoch 1"),
+        (
+            0,
+            empty.group_info.clone(),
+            "the GroupInfo of the last epoch",
+        ),
+        (1, latest.clone(), "a GroupInfo from the removed device"),
+        (
+            0,
+            without(wire::EXTERNAL_PUB),
+            "a GroupInfo without external_pub",
+        ),
+        (
+            0,
+            without(wire::RATCHET_TREE),
+            "a GroupInfo without ratchet_tree",
+        ),
+    ] {
+        let id = network.id(device);
+        assert!(
+            network.service.upload_group_info(&id, &group_info).is_err(),
+            "{lib}: {why} is refused"
+        );
+        assert_eq!(
+            network.service.group_info(CHANNEL),
+            Some(&latest[..]),
+            "{lib}: {why} leaves the latest GroupInfo"
+        );
+    }
+    assert_eq!(
+        resigned_group_info(&latest, &signer, |_| {}),
+        latest,
+        "{lib}: the GroupInfo signed again"
+    );
+    let id = network.id(0);
+    network.service.upload_group_info(&id, &latest).unwrap();
+    assert_eq!(network.service.group_info(CHANNEL), Some(&latest[..]));
+}
+
+/// Devices 0 and 1 commit in one epoch: device 0 an Add, device 1 the Remove of device 3. The
+/// service accepts device 0's and refuses device 1's with `epoch-mismatch`; device 1 drops it,
+/// processes the Add and commits the Remove again. Everyone converges.
+pub fn two_commits_in_one_epoch_converge<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(4);
+    let new = network.fleet.add_device().unwrap();
+    let key_package = network.fleet.step(new, |d| d.key_package()).unwrap();
+    let admitted = network.fleet.admitted();
+    let removed = network.id(3).to_vec();
+    let add = network
+        .fleet
+        .step(0, |d| d.add(CHANNEL, &[key_package], &admitted))
+        .unwrap();
+    let remove = |network: &mut Network<D>| {
+        network
+            .fleet
+            .step(1, |d| {
+                d.remove(CHANNEL, std::slice::from_ref(&removed), &[])
+            })
+            .unwrap()
+    };
+    let refused = remove(&mut network);
+
+    assert_eq!(network.send(0, &add), Ok(()), "{lib}: the first Commit");
+    assert_eq!(
+        network.send(1, &refused),
+        Err(Refusal::EpochMismatch),
+        "{lib}: the second Commit of epoch 1"
+    );
+    assert!(
+        network
+            .fleet
+            .step(1, |d| d.merge_pending_commit(CHANNEL))
+            .is_err(),
+        "{lib}: device 1 dropped its refused Commit"
+    );
+    assert_group(&mut network.fleet, [1], 1, 0..4);
+    network.join(new, &add.welcome.clone().expect("a Welcome"));
+
+    let read = network.sync(1);
+    assert_eq!(
+        read.iter()
+            .map(|read| read.staged.added.clone())
+            .collect::<Vec<_>>(),
+        [vec![leaf(network.fleet.identity(new))]],
+        "{lib}: device 1 processed the accepted Add"
+    );
+    let members = network.fleet.step(1, |d| d.members(CHANNEL)).unwrap();
+    assert!(
+        members.contains(&leaf(network.fleet.identity(3))),
+        "{lib}: device 3 is still a member"
+    );
+    let again = remove(&mut network);
+    assert_eq!(network.send(1, &again), Ok(()), "{lib}: the Remove again");
+    for device in [0, 2, 3, new] {
+        network.sync(device);
+    }
+    assert_eq!(
+        network.service.commits(CHANNEL)[1..],
+        [add.commit, again.commit],
+        "{lib}: the accepted Commits"
+    );
+    network.assert_converged(&[0, 1, 2, new], &[0, 1, 2, new]);
+}
+
+/// Devices 0, 1 and 2 commit in one epoch: device 0 an Add, devices 1 and 2 the Remove of device
+/// 3. The service accepts device 1's and refuses the others with `epoch-mismatch`. After
+/// processing it, device 2's change is no longer needed and device 0 commits its Add again.
+pub fn three_commits_in_one_epoch_converge<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(4);
+    let new = network.fleet.add_device().unwrap();
+    let new_leaf = leaf(network.fleet.identity(new));
+    let key_package = network.fleet.step(new, |d| d.key_package()).unwrap();
+    let admitted = network.fleet.admitted();
+    let removed = network.id(3).to_vec();
+    let add = |network: &mut Network<D>| {
+        network
+            .fleet
+            .step(0, |d| {
+                d.add(CHANNEL, std::slice::from_ref(&key_package), &admitted)
+            })
+            .unwrap()
+    };
+    let refused_add = add(&mut network);
+    let [accepted, refused_remove] = [1, 2].map(|device| {
+        network
+            .fleet
+            .step(device, |d| {
+                d.remove(CHANNEL, std::slice::from_ref(&removed), &[])
+            })
+            .unwrap()
+    });
+
+    assert_eq!(
+        network.send(1, &accepted),
+        Ok(()),
+        "{lib}: the first Commit"
+    );
+    for (device, commit) in [(0, &refused_add), (2, &refused_remove)] {
+        assert_eq!(
+            network.send(device, commit),
+            Err(Refusal::EpochMismatch),
+            "{lib}: device {device}'s Commit of epoch 1"
+        );
+        assert_group(&mut network.fleet, [device], 1, 0..4);
+    }
+    for device in [0, 2, 3] {
+        network.sync(device);
+    }
+    let removed_leaf = leaf(network.fleet.identity(3));
+    for (device, missing) in [(2, &removed_leaf), (0, &new_leaf)] {
+        let members = network.fleet.step(device, |d| d.members(CHANNEL)).unwrap();
+        assert!(
+            !members.contains(missing),
+            "{lib}: device {device}'s change"
+        );
+    }
+    let again = add(&mut network);
+    assert_eq!(network.send(0, &again), Ok(()), "{lib}: the Add again");
+    network.join(new, &again.welcome.clone().expect("a Welcome"));
+    for device in [1, 2] {
+        network.sync(device);
+    }
+    assert_eq!(
+        network.service.commits(CHANNEL)[1..],
+        [accepted.commit, again.commit],
+        "{lib}: the accepted Commits"
+    );
+    network.assert_converged(&[0, 1, 2, new], &[0, 1, 2, new]);
+}
+
+/// A Commit for an epoch before the channel's current one gets `epoch-mismatch` and changes
+/// nothing at the service: one made before the last accepted Commit, that Commit again, and the
+/// channel's first Commit again. The refused device then catches up and commits.
+pub fn commit_for_an_old_epoch_is_refused<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    let first = network.service.commits(CHANNEL)[0].clone();
+    let [stale, accepted] = [1, 0].map(|device| {
+        network
+            .fleet
+            .step(device, |d| d.empty_commit(CHANNEL, &[]))
+            .unwrap()
+    });
+    assert_eq!(network.send(0, &accepted), Ok(()));
+    let group_info = network.service.group_info(CHANNEL).unwrap().to_vec();
+
+    assert_eq!(
+        network.send(1, &stale),
+        Err(Refusal::EpochMismatch),
+        "{lib}: a Commit made in epoch 1"
+    );
+    for (device, commit, why) in [
+        (0, &accepted.commit, "the accepted Commit again"),
+        (0, &first, "the channel's first Commit again"),
+    ] {
+        let id = network.id(device);
+        assert_eq!(
+            network.service.send(&id, commit),
+            Err(Refusal::EpochMismatch),
+            "{lib}: {why}"
+        );
+    }
+    assert_eq!(network.service.epoch(CHANNEL), Some(2), "{lib}: the epoch");
+    assert_eq!(
+        network.service.commits(CHANNEL),
+        [first, accepted.commit.clone()],
+        "{lib}: the accepted Commits"
+    );
+    assert_eq!(
+        network.service.group_info(CHANNEL),
+        Some(&group_info[..]),
+        "{lib}: the latest GroupInfo"
+    );
+
+    network.sync(1);
+    let again = network
+        .fleet
+        .step(1, |d| d.empty_commit(CHANNEL, &[]))
+        .unwrap();
+    assert_eq!(network.send(1, &again), Ok(()), "{lib}: the Commit again");
+    for device in [0, 2] {
+        network.sync(device);
+    }
+    network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
+}
+
+/// A Commit for the channel's current epoch gets `not-a-member` unless its sender is a member of
+/// that epoch and the device sending it: a device outside the group forks the channel and commits
+/// in its own group, in its own name and in device 0's; a member's Commit comes from another
+/// device. The service changes nothing, refuses the fork's GroupInfo, and accepts the member's
+/// Commit from the member.
+pub fn commit_from_a_non_member_is_refused<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    let outsider = network.fleet.add_device().unwrap();
+    let (fork, forged) = network
+        .fleet
+        .step(outsider, |d| {
+            d.create_group(CHANNEL)?;
+            let fork = d.empty_commit(CHANNEL, &[])?;
+            d.merge_pending_commit(CHANNEL)?;
+            Ok((fork, d.empty_commit(CHANNEL, &[])?))
+        })
+        .unwrap();
+    assert_eq!(
+        wire::framing(&forged.commit).unwrap().epoch,
+        1,
+        "{lib}: the forged Commit is of the channel's epoch"
+    );
+    let commit = network
+        .fleet
+        .step(1, |d| d.empty_commit(CHANNEL, &[]))
+        .unwrap();
+    let group_info = network.service.group_info(CHANNEL).unwrap().to_vec();
+
+    for (device, message, why) in [
+        (outsider, &forged.commit, "the fork's Commit"),
+        (0, &forged.commit, "the fork's Commit from device 0"),
+        (2, &commit.commit, "device 1's Commit from device 2"),
+        (
+            outsider,
+            &commit.commit,
+            "device 1's Commit from the outsider",
+        ),
+    ] {
+        let id = network.id(device);
+        assert_eq!(
+            network.service.send(&id, message),
+            Err(Refusal::NotAMember),
+            "{lib}: {why}"
+        );
+    }
+    let id = network.id(outsider);
+    assert!(
+        network
+            .service
+            .upload_group_info(&id, &fork.group_info)
+            .is_err(),
+        "{lib}: the fork's GroupInfo is refused"
+    );
+    assert_eq!(network.service.epoch(CHANNEL), Some(1), "{lib}: the epoch");
+    assert_eq!(network.service.commits(CHANNEL).len(), 1);
+    assert_eq!(
+        network.service.group_info(CHANNEL),
+        Some(&group_info[..]),
+        "{lib}: the latest GroupInfo"
+    );
+
+    assert_eq!(network.send(1, &commit), Ok(()), "{lib}: device 1's Commit");
+    for device in [0, 2] {
+        network.sync(device);
+    }
+    network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
+}
+
+/// Devices 0 and 1 both create the channel and commit its epoch 0. The service keeps device 0's
+/// Commit, refuses device 1's with `epoch-mismatch`, and takes the epoch's GroupInfo only from
+/// device 0. Device 1 drops its group and joins the kept one; everyone is in it.
+pub fn two_creators_end_in_the_kept_group<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::new(3);
+    let [kp0, kp1, kp2, other_kp2] =
+        [0, 1, 2, 2].map(|device| network.fleet.step(device, |d| d.key_package()).unwrap());
+    let admitted = network.fleet.admitted();
+    let [kept, refused] = [(0, [kp1, kp2]), (1, [kp0, other_kp2])].map(|(device, key_packages)| {
+        network
+            .fleet
+            .step(device, |d| {
+                d.create_group(CHANNEL)?;
+                d.add(CHANNEL, &key_packages, &admitted)
+            })
+            .unwrap()
+    });
+    let [id0, id1] = [0, 1].map(|device| network.id(device));
+
+    assert_eq!(network.service.send(&id0, &kept.commit), Ok(()));
+    assert_eq!(
+        network.service.send(&id1, &refused.commit),
+        Err(Refusal::EpochMismatch),
+        "{lib}: the second Commit of epoch 0"
+    );
+    assert!(
+        network
+            .service
+            .upload_group_info(&id1, &refused.group_info)
+            .is_err(),
+        "{lib}: the refused group's GroupInfo"
+    );
+    assert_eq!(network.service.group_info(CHANNEL), None);
+    network
+        .service
+        .upload_group_info(&id0, &kept.group_info)
+        .unwrap();
+    network
+        .fleet
+        .step(0, |d| d.merge_pending_commit(CHANNEL))
+        .unwrap();
+    network.processed.insert(0, 1);
+
+    network.fleet.step(1, |d| d.delete_group(CHANNEL)).unwrap();
+    assert!(
+        network.fleet.step(1, |d| d.epoch(CHANNEL)).is_err(),
+        "{lib}: device 1 dropped its group"
+    );
+    let welcome = kept.welcome.expect("a Welcome");
+    for device in [1, 2] {
+        network.join(device, &welcome);
+    }
+    network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
+    assert_reads(&mut network.fleet, CHANNEL, 1, 0);
+    assert_reads(&mut network.fleet, CHANNEL, 0, 2);
 }

@@ -8,8 +8,8 @@ publish.workspace = true
 
 [dependencies]
 mls-scenario = { path = "../scenario" }
-# The `last_resort` KeyPackage extension, off by default.
-mls-rs = { version = "0.57", features = ["last_resort_key_package_ext"] }
+# The `last_resort` KeyPackage extension and the party outside a group, both off by default.
+mls-rs = { version = "0.57", features = ["external_client", "last_resort_key_package_ext"] }
 # GroupState and EpochRecord, which mls-rs does not re-export.
 mls-rs-core = "0.27"
 mls-rs-crypto-rustcrypto = "0.23"
