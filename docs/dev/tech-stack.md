@@ -23,7 +23,7 @@ Versions as of 2026-11-09.
 | MCP | rmcp 3.9, stdio |
 | Authentication | openidconnect 4, GitHub OAuth, device flow (RFC 8628) |
 | API | HTTPS + JSON, OpenAPI spec; envelopes in binary WebSocket frames |
-| Frontend | TypeScript, Vite 8, React 19, static SPA, API client generated from OpenAPI |
+| Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |
 | In-browser decryption | WASM build of the Rust core |
 | SDK | Rust; later Python (PyO3) and TypeScript (WASM or napi) |
 | Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package with prebuilt binaries (`npx skald-so`); Claude Code plugin; server Docker image. Later: Homebrew, winget, cargo-binstall, Helm |

@@ -1,2 +1,5 @@
 # Migration checksums cover the exact bytes: keep line endings the same on every platform.
 *.sql text eol=lf
+
+# Prettier and the generated API client check compare bytes: keep the web UI in LF on every platform.
+web/** text=auto eol=lf
