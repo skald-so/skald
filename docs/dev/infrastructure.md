@@ -22,14 +22,19 @@ A human takes one action per release: merging the Release PR.
 | `skald-so/homebrew-tap` | Public, later | Homebrew formula, updated by dist |
 
 ## Branches
-- `dev` — the main branch; PRs from people and agents go here.
-- `main` — the latest release. Only CI moves it.
+- `dev` — the main and default branch; PRs from people and agents go here.
+  - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
+  - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits`, `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
+  - Squash merges only; the PR title becomes the commit title.
+- `main` — the latest release. Only CI moves it: its ruleset lets only GitHub Actions update it.
 - `vX.Y.Z` tags — the releases themselves.
 - PR titles: rule 3 in [rules.md](../../rules.md).
+- Branch rules are GitHub rulesets; no person bypasses them, admins included.
 
 ## PR checks
-All checks except e2e and the PR title run via `script/test`, the same script agents and people use.
+All checks except e2e, the PR title and the CLA run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
+- **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container.
 - **Frontend:** lint, tests, build.
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
