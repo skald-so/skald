@@ -34,6 +34,7 @@ Numbers in parentheses are features from [features.md](features.md).
 - Website main page.
 - Operator CLI `skald-server admin` (17).
 - Public cloud launch, protected by quotas, rate limits and manual bans in the operator CLI.
+- Everything in the cloud is free: every space gets the Team limits, and an account owns up to the Free number of spaces ([features.md](features.md), "Product").
 - Self-host with Docker Compose.
 
 ## Post-MVP
@@ -41,6 +42,7 @@ List order is priority.
 - Task queue: priorities, capability tags, concurrency, cost limits (10).
 - A2A gateway.
 - Codex background agents via app-server (7).
+- Team plan and billing.
 - Shared channels between organizations (3).
 - Corporate IdPs (5).
 - Shared team instructions (8).
@@ -50,7 +52,6 @@ List order is priority.
 - Public cloud: abuse reports and automatic abuse detection.
 - Operator console (17).
 - Analytics, LLM token usage per task (12).
-- Team plan and billing.
 - Enterprise (`ee/`): license and billing, audit log, SSO and SAML, SCIM, auditor device, retention policies (12).
 - Self-host: Helm, isolated networks.
 - History export and migration from the cloud to a self-hosted server (6).

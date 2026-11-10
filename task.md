@@ -566,7 +566,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Binding a session to a space by folder (`features.md` §3).
 - Isolation: an agent of one space cannot see other spaces.
 - A personal space for each account at sign-up; its machines join it by default.
-- An account owns up to the Free number of spaces (`features.md`, "Product").
+- In the cloud, an account owns up to the Free number of spaces (`features.md`, "Product"); a self-hosted server applies no plan limits.
 - **Done when:** a new account has a personal space with its machines; its third own space is refused; a device is in three spaces; an agent in `~/work/clientA` sees only clientA; a roster change without an admin's signature is rejected.
 
 - **Release:** MVP
@@ -586,7 +586,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Cloud limits (`features.md`, "Product") as settings per space and per member, at the Team values until billing (Story 68): devices, messages per month, message text, undelivered message retention.
 - A self-hosted server applies no plan limits.
 - CLI: send and receive a message.
-- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `msg_id` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message; a message not delivered in time ends in `expired`; a message over a limit gets `quota-exceeded`; a self-hosted server applies no plan limits.
+- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `msg_id` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message; a message not delivered in time ends in `expired`; a message over the monthly message limit gets `quota-exceeded` and one over the message text limit `too-large`; a self-hosted server applies no plan limits.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -1091,13 +1091,15 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Moving a space to Team and back; payment per member per month through a payment provider; invoices in the web UI.
-- The Free limits (`features.md`, "Product") start to apply: the server refuses a roster change that takes a Free space over its member limit, and a shared channel with a Free space (Story 39).
-- The server sees the plan, the member count and the billing contact of a space; card data stays with the payment provider.
-- **Done when:** the 4th member of a Free space is refused until the space moves to Team; after payment the space gets the Team limits; an unpaid Team space returns to the Free limits after a notice.
+- The Free limits of the table in `features.md`, "Product", start to apply in the cloud; the server refuses a roster change that takes a Free space over its member limit.
+- Team and Enterprise spaces stop counting toward the spaces an account owns; a space can return to Free only while its owner is under the Free number of spaces.
+- A space already over a Free limit when the limits start, or a Team space left unpaid, keeps its members, devices, service agents and history but cannot add more until it is within the limits; history beyond the Free retention is deleted 30 days after a notice to the space's admins.
+- What the server sees for billing: `architecture.md`, "Security".
+- **Done when:** the 4th member of a Free space is refused until the space moves to Team; after payment the space gets the Team limits; an account with two Free spaces cannot move a third space back to Free; an unpaid Team space keeps its data, cannot grow, and loses history beyond the Free retention 30 days after the notice.
 
 - **Release:** Post-MVP
 - **Depends on:** Story 22, Story 25
-- **Docs:** `features.md` — "Product", §12
+- **Docs:** `features.md` — "Product", §12, `architecture.md` — "Security"
 
 ### Story 39: Shared channels between organizations
 

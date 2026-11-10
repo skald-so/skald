@@ -18,7 +18,6 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
   - The spaces an account owns are the ones it created, its personal space included; Team and Enterprise spaces do not count.
   - Shared channels: [§3](#3-spaces-and-shared-channels).
   - A self-hosted server applies no plan limits; only `ee/` needs a license.
-  - Until billing ships (Story 68), every cloud space gets the Team limits for free, and an account owns up to the Free number of spaces.
 
 **Cloud limits** by plan:
 
