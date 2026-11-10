@@ -1,4 +1,8 @@
 // Opens the kit page from a Vite dev server in headless Chrome: for the kit tests and screenshots.
+import { execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { dirname } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { createServer, type ViteDevServer } from "vite";
 
@@ -26,8 +30,18 @@ export interface Kit {
   close(): Promise<void>;
 }
 
-/** Starts the dev server and headless Chrome; `SKALD_CHROME` overrides the Chrome binary. */
-export async function startKit(): Promise<Kit> {
+/**
+ * The Chrome of the screenshots: Chromium of the Playwright image, the same on every machine, so the
+ * references hold on macOS and in CI. Its version is the playwright-core version in package.json.
+ */
+export const pinnedChrome =
+  "mcr.microsoft.com/playwright:v1.65.0-noble@sha256:bc4fbb329a25287ed23e9216c97063646abdd1bf2da669a9895fa3e2078b2302";
+
+/**
+ * Starts the dev server and headless Chrome. `pinned` takes the Chrome of `pinnedChrome` in Docker;
+ * otherwise the local Google Chrome, or the binary in `SKALD_CHROME`.
+ */
+export async function startKit({ pinned = false } = {}): Promise<Kit> {
   const server: ViteDevServer = await createServer({
     root: import.meta.dirname,
     logLevel: "warn",
@@ -36,7 +50,7 @@ export async function startKit(): Promise<Kit> {
   let browser: Browser;
   try {
     await server.listen();
-    browser = await launchChrome();
+    browser = await (pinned ? connectPinnedChrome() : launchChrome());
   } catch (error) {
     await server.close();
     throw error;
@@ -67,6 +81,15 @@ export async function startKit(): Promise<Kit> {
   };
 }
 
+/** A full-page screenshot with animations stopped and the text caret hidden, as a PNG. */
+export function screenshot(page: Page): Promise<Buffer> {
+  return page.screenshot({
+    fullPage: true,
+    animations: "disabled",
+    caret: "hide",
+  });
+}
+
 async function launchChrome(): Promise<Browser> {
   const executablePath = process.env.SKALD_CHROME;
   try {
@@ -78,5 +101,86 @@ async function launchChrome(): Promise<Browser> {
       "Headless Chrome did not start: install Google Chrome or set SKALD_CHROME to a Chrome or Chromium binary.",
       { cause: error },
     );
+  }
+}
+
+/**
+ * Runs the Playwright browser server of `pinnedChrome` in Docker and connects to it. The server runs
+ * the local playwright-core, mounted read-only; the browser reaches the dev server on this machine
+ * through the connection. The container is removed when the browser closes.
+ */
+async function connectPinnedChrome(): Promise<Browser> {
+  const require = createRequire(import.meta.url);
+  const playwright = dirname(require.resolve("playwright-core/package.json"));
+  const version = (
+    require("playwright-core/package.json") as { version: string }
+  ).version;
+  if (!pinnedChrome.includes(`:v${version}-`)) {
+    throw new Error(
+      `The pinned Chrome image ${pinnedChrome} is not for playwright-core ${version}: update pinnedChrome in kit-browser.ts and the references.`,
+    );
+  }
+  const name = `skald-kit-chrome-${randomUUID()}`;
+  const docker = spawn(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--init",
+      "--ipc=host",
+      "--platform=linux/amd64",
+      `--name=${name}`,
+      "--user=pwuser",
+      "--publish=127.0.0.1::3000",
+      `--volume=${playwright}:/playwright-core:ro`,
+      pinnedChrome,
+      "node",
+      "/playwright-core/cli.js",
+      "run-server",
+      "--host=0.0.0.0",
+      "--port=3000",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const remove = () => {
+    process.off("exit", remove);
+    try {
+      execFileSync("docker", ["rm", "--force", name], { stdio: "ignore" });
+    } catch {
+      // Already removed.
+    }
+  };
+  process.on("exit", remove);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let output = "";
+      const fail = (reason: string) =>
+        reject(
+          new Error(
+            `The pinned Chrome did not start in Docker (${reason}); Docker must be running.\n${output}`,
+          ),
+        );
+      docker.on("error", (error) => fail(error.message));
+      docker.on("exit", (code) => fail(`docker exited with ${code}`));
+      docker.stderr.on("data", (data: Buffer) => (output += data));
+      docker.stdout.on("data", (data: Buffer) => {
+        output += data;
+        if (output.includes("Listening on")) resolve();
+      });
+    });
+    const address = execFileSync("docker", ["port", name, "3000/tcp"], {
+      encoding: "utf8",
+    })
+      .split("\n")[0]!
+      .trim();
+    const browser = await chromium.connect(`ws://${address}/`, {
+      exposeNetwork: "<loopback>",
+      timeout: 60_000,
+    });
+    browser.on("disconnected", remove);
+    return browser;
+  } catch (error) {
+    remove();
+    throw error;
   }
 }

@@ -11,7 +11,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
-- Docker.
+- Docker: PostgreSQL for the integration tests, Chrome for the kit page screenshots.
 - Node.js 26 with npm.
 - Google Chrome: the web tests run it headless ([web/README.md](web/README.md)).
 

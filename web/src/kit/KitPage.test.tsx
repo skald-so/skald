@@ -478,3 +478,109 @@ test("shows the joined view switch and a search with a query", async () => {
   expect(members).toHaveProperty("value", "");
   expect(query!.textContent).toContain("No query");
 });
+
+/** The kit's filtered messages: the time of each row, or the empty state. */
+function filteredMessages(): string[] {
+  const table = screen.getByRole("table", { name: "Filtered messages" });
+  return cells(table).map((row) => row.at(-1)!);
+}
+
+test("the dropdown filters narrow and order the fixture messages", async () => {
+  const user = userEvent.setup();
+  render(<KitPage />);
+  const section = within(
+    screen.getByRole("region", { name: "Dropdown filters" }),
+  );
+  const group = section.getByRole("group", { name: "Filter messages" });
+  const filters = within(group);
+  // The filters and the sort order; the open sample has a Type filter too.
+  const bar = within(group.parentElement!);
+  const shownFilters = () =>
+    filters
+      .getAllByRole("button")
+      .map((button) => [button.textContent, button.hasAttribute("data-set")]);
+  const choose = async (name: string, option: string) => {
+    await user.click(
+      bar.getByRole("button", { name: new RegExp(`^${name} `) }),
+    );
+    await user.click(bar.getByRole("option", { name: option }));
+  };
+  const today = ["Today 10:42", "Today 10:44", "Today 10:46", "Today 10:58"];
+  const all = ["Yesterday 16:20", "Yesterday 17:05", ...today];
+
+  // As 04-messages.png: today's messages, oldest first.
+  expect(shownFilters()).toEqual([
+    ["From anyone", false],
+    ["Status any", false],
+    ["Type messages and tasks", false],
+    ["Time today", true],
+    ["Clear", false],
+  ]);
+  expect(
+    section.getByRole("button", { name: "Sort Oldest first" }),
+  ).toBeTruthy();
+  expect(filteredMessages()).toEqual(today);
+
+  await choose("Sort", "Newest first");
+  expect(filteredMessages()).toEqual([...today].reverse());
+  await choose("Sort", "Oldest first");
+
+  await choose("From", "codex");
+  expect(filteredMessages()).toEqual(["Today 10:44", "Today 10:58"]);
+  await choose("Status", "stored");
+  expect(filteredMessages()).toEqual(["Today 10:58"]);
+  await choose("Time", "any time");
+  await choose("Status", "read");
+  expect(filteredMessages()).toEqual(["Yesterday 16:20", "Today 10:44"]);
+  await choose("From", "anyone");
+  await choose("Status", "any");
+  await choose("Type", "tasks");
+  expect(filteredMessages()).toEqual(["Yesterday 17:05", "Today 10:42"]);
+  await choose("Type", "messages");
+  await choose("Time", "yesterday");
+  expect(filteredMessages()).toEqual(["Yesterday 16:20"]);
+
+  // Clear restores every default and goes away; the sort order stays.
+  await choose("Sort", "Newest first");
+  await user.click(filters.getByRole("button", { name: "Clear" }));
+  expect(shownFilters()).toEqual([
+    ["From anyone", false],
+    ["Status any", false],
+    ["Type messages and tasks", false],
+    ["Time any time", false],
+  ]);
+  expect(filteredMessages()).toEqual([...all].reverse());
+
+  // Nothing found shows the empty state, whose action clears the filters.
+  await choose("Status", "stored");
+  await choose("Type", "tasks");
+  expect(filteredMessages()).toEqual(["No messages match.Clear filters"]);
+  await user.click(section.getByRole("button", { name: "Clear filters" }));
+  expect(filteredMessages()).toEqual([...all].reverse());
+  expect(filters.queryByRole("button", { name: "Clear" })).toBeNull();
+});
+
+test("shows a set dropdown filter with its list open", () => {
+  render(<KitPage />);
+  const section = within(
+    screen.getByRole("region", { name: "Dropdown filters" }),
+  );
+  const [open] = section.getAllByRole("listitem");
+  expect(open!.firstChild?.textContent).toBe("Open · a set filter");
+
+  const button = within(open!).getByRole("button", { name: "Type tasks" });
+  expect(button.getAttribute("aria-expanded")).toBe("true");
+  expect(button.hasAttribute("data-set")).toBe(true);
+  expect(
+    within(open!)
+      .getAllByRole("option")
+      .map((option) => [
+        option.textContent,
+        option.getAttribute("aria-selected"),
+      ]),
+  ).toEqual([
+    ["messages and tasks", "false"],
+    ["messages", "false"],
+    ["tasks", "true"],
+  ]);
+});

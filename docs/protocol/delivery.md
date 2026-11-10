@@ -84,7 +84,7 @@ timestamp = uint       ; seconds since the Unix epoch
 | `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
 | `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel` |
 | `too-large` | Has a payload over the server's limit (cloud: [features.md, "Product"](../dev/features.md#product)) |
-| `quota-exceeded` | Is over the sending account's quota |
+| `quota-exceeded` | Is over a limit of its space's plan (cloud: [features.md](../dev/features.md#product), "Product") |
 
 - A refused envelope is not stored. The client does not retry it and tells its user.
 

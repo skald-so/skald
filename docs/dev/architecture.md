@@ -95,7 +95,8 @@
   - which envelopes ask for delivery statuses, so which are likely receipts, and which hold MLS handshake messages;
   - attachment sizes, uploads and downloads;
   - task scheduling fields;
-  - quota counters.
+  - quota counters;
+  - each space's plan, member count and billing contact; card data stays with the payment provider.
 - **The server does not see:** message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads, edited paths and code.
 - **Trade-offs:**
   - HPKE messages (ephemeral agents, browser actions) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;

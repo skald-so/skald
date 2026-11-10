@@ -214,6 +214,11 @@
   gap: 10px;
 }
 
+/* Room under a dropdown for its open list. */
+.open {
+  padding-bottom: 140px;
+}
+
 /* The page area of a cabinet screen at 1440 px, as the tables of the design. */
 .wide {
   max-width: 1104px;

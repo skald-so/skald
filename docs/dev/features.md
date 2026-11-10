@@ -12,21 +12,26 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
   - CLA with contributors, via CLA Assistant: [CONTRIBUTING.md](../../CONTRIBUTING.md).
   - The Skald name and logo are covered by a trademark policy: [TRADEMARKS.md](../../TRADEMARKS.md).
   - The license is chosen up front and never changed.
-- **Everything is free except Enterprise.** Only `ee/` features are paid: by a license key on a self-hosted server or by the Enterprise plan in the cloud.
-- **Enterprise (ee):** SSO and SAML, SCIM, audit log, retention policies, admin access revocation, auditor device, SLA, deployment in an isolated network.
+- **Plans** apply to a space, not to an account. An account is always free and joins any number of spaces. Limits: the table below.
+  - **Team** is paid per member of the space per month, at any size, and is required above the Free member limit.
+  - **Enterprise (`ee/`):** SSO and SAML, SCIM, audit log, retention policies, admin access revocation, auditor device, SLA, deployment in an isolated network. By a license key on a self-hosted server or by the Enterprise plan in the cloud, with limits by contract.
+  - The spaces an account owns are the ones it created, its personal space included; Team and Enterprise spaces do not count.
+  - Shared channels: [§3](#3-spaces-and-shared-channels).
+  - A self-hosted server applies no plan limits; only `ee/` needs a license.
 
-**Cloud limits**, per-account settings:
+**Cloud limits** by plan:
 
-| Limit | Cloud |
-|---|---|
-| Spaces | 3 |
-| Devices | 10 |
-| Service agents | 3 |
-| Messages | About 1M per month |
-| Message text | 64 KB |
-| Attachment | 10 MB |
-| Undelivered messages kept | 7 days |
-| History kept | 30 days |
+| Limit | Free | Team |
+|---|---|---|
+| Spaces an account owns | 2 | not counted |
+| Members per space | 3 | no limit |
+| Devices per member | 10 | 50 |
+| Service agents per space | 3 | 10 |
+| Messages per space | About 1M per month | About 10M per month |
+| Message text | 64 KB | 64 KB |
+| Attachment | 10 MB | 10 MB |
+| Undelivered messages kept | 7 days | 7 days |
+| History kept | 30 days | 90 days |
 
 ## 1. Encrypted mailbox
 - The server stores ciphertext for each recipient device. If the recipient is online, the message arrives immediately; otherwise it waits in the mailbox. After reconnecting, the client catches up on missed messages from its cursor.
@@ -43,7 +48,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - A device belongs to N spaces. A session is bound to a space by its folder: `.skald.toml` or a rule `~/work/clientA/** → clientA`.
 - Each account has a personal space; its machines join it by default, so one person can start alone.
 - An agent of one client cannot see another client.
-- A **shared channel** between two spaces is created only with the consent of admins on both sides; either side can disable it.
+- A **shared channel** connects two spaces on Team or Enterprise. It is created only with the consent of admins on both sides; either side can disable it.
 - **Done when:** a freelancer is in three spaces: personal, clientA and clientB; an agent in `~/work/clientA` sees only clientA; there is a clientA↔clientB shared channel.
 
 ## 4. MLS group encryption
@@ -130,7 +135,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 ## 12. Web UI
 There is one interface: `app.skald.so`. Content is decrypted in the browser.
 - **Non-secret sections** are available right after sign-in:
-  - quotas; Enterprise license and invoices;
+  - each space's plan and limits, and the spaces an account owns; plans, licenses and invoices;
   - devices and service agents;
   - sessions and tokens: web and CLI sign-ins, invite links, service agent tokens. Metadata only (where, when, permissions, expiry, last use), one-click revocation;
   - members, roles, invites, shared channel approval: shown, and invites revoked; who makes changes: [architecture.md](architecture.md), "Membership";
@@ -187,8 +192,8 @@ There is one interface: `app.skald.so`. Content is decrypted in the browser.
 
 ## 17. Operator tools
 - For instance operators: the cloud owner and self-hosted server admins.
-- **CLI** `skald-server admin`: accounts, quota usage, disabling and deleting an account.
-- **Console** in the web UI: accounts and organizations, quota usage and licenses, abuse reports and bans, deletion and export requests, system health.
+- **CLI** `skald-server admin`: accounts, plan and limit usage per space, disabling and deleting an account.
+- **Console** in the web UI: accounts and spaces, plan and limit usage per space, licenses, abuse reports and bans, deletion and export requests, system health.
 - Metadata only: content stays encrypted from the operator too.
 - **Done when:** an operator bans an account and handles a deletion request from the console, without SQL.
 
