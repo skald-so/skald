@@ -58,8 +58,8 @@ master-backup = [
 ```
 
 - The server stores the account record and the master backup.
-- **Master backup:** the master private key sealed with HPKE in base mode to the recovery HPKE key, `info` `skald master backup`, `aad` the account ID. The recovery key unlocks it; the client checks that the opened key matches `master`.
-- A new recovery key: a device unlocks the master key with the old one, stores a new backup and signs an account record with the next `revision`. A client uses the valid record with the highest `revision`. The old recovery key still opens the master key: [Security considerations](#security-considerations).
+- **Master backup:** the master private key sealed with HPKE in PSK mode [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180), §5.1.2] to the recovery HPKE key, `psk` `HKDF-SHA256(salt = "", IKM = recovery key, info = "skald master backup psk", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)], `psk_id` `skald master backup`, `info` `skald master backup`, `aad` the account ID. The recovery key unlocks it; the client checks that the opened key matches `master`.
+- A new recovery key: a device unlocks the master key with the old one, stores a new backup for the new one and signs an account record with the next `revision`. A client uses the valid record with the highest `revision`. The old recovery key still opens the master key: [Security considerations](#security-considerations).
 - A client MUST reject an account record whose signature does not verify with `master`, or whose `master` is not the one it pinned: its own account's, or the one the [roster](#roster) gives for a member.
 
 ## Device certificate
@@ -107,7 +107,7 @@ A new device generates its keys, derives its ID from its signing key and registe
   - The issuing device stores the certificate's `body` and `signature`; the new device checks that `body` holds its account, ID, keys and `name`, signs `proof` and stores the complete certificate.
   - A `browser` is linked only this way.
   - With the certificate, the issuing device stores a link object for the new device: the [roster](#roster) revisions it starts from.
-- **With the recovery key**, entered only in the CLI or `skald ui`: the new device unlocks the master key and issues its own certificate with it. It shows its user the account's devices, revoked or not, and in this order:
+- **With the recovery key**, entered only in the CLI or `skald ui`: the new device unlocks the master key and issues its own certificate with it. It MUST reject a [master backup](#account) that does not open in PSK mode with that recovery key, and pins `master` only from one that does. It shows its user the account's devices, revoked or not, and in this order:
   1. revokes with the master key each device its user names as stolen ([Revocation](#revocation));
   2. takes its [anchors](#anchors);
   3. revokes with its own key each device its user names as lost or wiped;
@@ -523,6 +523,7 @@ A reader MUST drop an entry unless:
 - The server gives the certificates, revocations and revisions. It cannot forge them, but it can withhold them: a hidden revocation keeps a device trusted for those who do not see it, and a hidden revision keeps clients on an older roster.
 - A stolen device can revoke the account's other devices and certify new ones, but not under an existing device's ID, and its revocations count even after another device revokes it. The recovery key restores the account: a device linked with it revokes the stolen one with the master key. That one object voids every revocation the stolen device and the devices it certified signed, and lists in `also` the devices that stay revoked, so the server cannot restore them by withholding a second object.
 - The master key cannot be rotated. A leaked recovery key, current or old, with any copy of a master backup it opens, gives away the master key for good: its holder can certify and revoke devices and sign an account record with its own `recovery`, so member devices wrap history keys to it. A new recovery key does not lock it out: the holder signs a record with a higher `revision` again. Clients warn when `recovery` changes.
+- Only a holder of the recovery key seals a master backup that opens in PSK mode, so the server cannot give a device linked with the recovery key another master key. It can withhold the backup: the device then cannot link with the recovery key.
 - A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
 - A channel member whose `history` is false holds its join epoch's key, which opens the links to the epochs before it: only the server withholding those links keeps it from earlier history.
