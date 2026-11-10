@@ -218,6 +218,16 @@ fn nesting_is_limited() {
         receipt(&maps),
         encoding(23 + 2 * (MAX_DEPTH - 1), EncodingProblem::TooDeep)
     );
+    // Maps nested as keys count too: {{{...: 0}: 0}: 0}.
+    let keys = format!(
+        "{}{}",
+        "a1".repeat(MAX_DEPTH + 1),
+        "00".repeat(MAX_DEPTH + 2)
+    );
+    assert_eq!(
+        receipt(&keys),
+        encoding(MAX_DEPTH, EncodingProblem::TooDeep)
+    );
     // Far deeper than any stack allows for recursion without a limit.
     let bytes = vec![0x81; 1_000_000];
     assert_eq!(
@@ -245,4 +255,86 @@ fn changed_vectors_are_rejected_or_round_trip() {
             }
         }
     }
+}
+
+#[test]
+fn errors_explain_themselves() {
+    use skald_proto::{AddressError, FieldProblem};
+
+    let encoding = |problem| DecodeError::Encoding { at: 3, problem }.to_string();
+    let cases = [
+        (EncodingProblem::Malformed, "malformed CBOR"),
+        (
+            EncodingProblem::NotShortest,
+            "a head not in its shortest form",
+        ),
+        (EncodingProblem::IndefiniteLength, "an indefinite length"),
+        (
+            EncodingProblem::UnsortedKeys,
+            "a map key out of bytewise order",
+        ),
+        (EncodingProblem::DuplicateKey, "a repeated map key"),
+        (EncodingProblem::Tag, "a tag"),
+        (EncodingProblem::Float, "a floating-point value"),
+        (
+            EncodingProblem::SimpleValue,
+            "a simple value other than false, true and null",
+        ),
+        (
+            EncodingProblem::InvalidUtf8,
+            "a text string that is not UTF-8",
+        ),
+        (EncodingProblem::TooDeep, "arrays and maps nested too deep"),
+    ];
+    for (problem, text) in cases {
+        assert_eq!(encoding(problem), format!("at byte 3: {text}"));
+    }
+
+    let field = |problem| {
+        DecodeError::Field {
+            field: "header.v",
+            problem,
+        }
+        .to_string()
+    };
+    let cases = [
+        (FieldProblem::Missing, "missing"),
+        (FieldProblem::Type("a map"), "not a map"),
+        (
+            FieldProblem::Length {
+                expected: 16,
+                actual: 15,
+            },
+            "15 bytes, not 16",
+        ),
+        (
+            FieldProblem::Items {
+                expected: 2,
+                actual: 3,
+            },
+            "3 items, not 2",
+        ),
+        (FieldProblem::Empty, "empty; at least one item is needed"),
+        (FieldProblem::Zero, "0; at least 1 is needed"),
+        (FieldProblem::Value(7), "7 is not a defined value"),
+        (FieldProblem::KeyType, "a map key that is not an integer"),
+        (FieldProblem::NoBody, "no body"),
+        (FieldProblem::TwoBodies, "more than one body"),
+        (
+            FieldProblem::Address(AddressError::ExtraAt),
+            "invalid agent address: more than one '@'",
+        ),
+        (
+            FieldProblem::Embedded(Box::new(DecodeError::TrailingBytes(2))),
+            "2 bytes follow the CBOR item",
+        ),
+    ];
+    for (problem, text) in cases {
+        assert_eq!(field(problem), format!("header.v: {text}"));
+    }
+
+    assert_eq!(
+        DecodeError::Truncated.to_string(),
+        "the CBOR item is truncated"
+    );
 }

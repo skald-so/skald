@@ -25,6 +25,25 @@ fn round_trip<T: Cbor + PartialEq + Debug>(value: &T) {
     assert_eq!(T::from_cbor(&bytes).as_ref(), Ok(value));
 }
 
+#[test]
+fn values_without_unknown_fields_have_none() {
+    let bytes = header(msg(1), Scheme::Mls).to_cbor();
+    let header = Header::from_cbor(&bytes).unwrap();
+    assert!(header.unknown.is_empty());
+    assert_eq!(header.unknown.keys().count(), 0);
+}
+
+#[test]
+fn non_empty_lists_hold_at_least_one_item() {
+    assert_eq!(NonEmpty::<u8>::from_vec(Vec::new()), None);
+    let mut list = NonEmpty::new(1);
+    list.push(2);
+    assert_eq!(&*list, &[1, 2]);
+    assert_eq!(list.len(), 2);
+    assert_eq!(NonEmpty::from_vec(vec![1, 2]), Some(list.clone()));
+    assert_eq!(list.into_vec(), vec![1, 2]);
+}
+
 fn field(field: &'static str, problem: FieldProblem) -> Result<(), DecodeError> {
     Err(DecodeError::Field { field, problem })
 }
@@ -134,6 +153,7 @@ fn unknown_fields_are_kept_in_key_order() {
     ));
     let receipt = Receipt::from_cbor(&bytes).unwrap();
     assert_eq!(receipt.status, ReceiptStatus::Read);
+    assert!(!receipt.unknown.is_empty());
     assert_eq!(
         receipt.unknown.keys().collect::<Vec<_>>(),
         [0, 24, -1, -18_446_744_073_709_551_616]
