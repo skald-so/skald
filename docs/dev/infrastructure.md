@@ -68,7 +68,7 @@ All checks except e2e and the PR title run via `script/test`, the same script ag
 - **The same image that is published for self-hosting.** `ee/` features are enabled by a license key.
 - **Staging:** an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
-  - PostgreSQL 19 with streaming replication.
+  - PostgreSQL 19 with synchronous streaming replication: `stored` is sent after the replica has the write. If the replica is down, replication switches to asynchronous and an alert fires.
   - WAL-G backups to object storage.
 - **Deployment:**
   - Docker Compose + Caddy; Caddy obtains TLS automatically;

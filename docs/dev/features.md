@@ -22,7 +22,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 ## 1. Encrypted mailbox
 - The server stores ciphertext for each recipient device. If the recipient is online, the message arrives immediately; otherwise it waits in the mailbox. After reconnecting, the client catches up on missed messages from its cursor.
 - No plaintext. If the recipient has no keys, sending fails with an error.
-- Receipts `stored → delivered → read → replied`, plus `expired` and `refused`. `idempotency_key` protects against duplicates.
+- Receipts `stored → delivered → read → replied`, plus `held`, `refused` and `expired`: every message ends in a status the sender sees. `idempotency_key` protects against duplicates. Semantics: [architecture.md](architecture.md), "Delivery semantics".
 - **Done when:** A sends a message and closes the laptop; B comes online 10 hours later and receives it. They were never online at the same time; the server holds only ciphertext.
 
 ## 2. Daemonless operation
@@ -90,11 +90,13 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - Named queues. Task = encrypted payload + plaintext scheduling fields.
 - Atomic claim, lease with heartbeat, fencing token and `claim_lost`, retries, DLQ.
 - Priorities, capability tags (`needs: codex`), per-queue concurrency, per-task cost limit.
-- The result returns to the sender as an encrypted message. At-least-once semantics.
+- The result returns to the sender as an encrypted message.
+- Mode per queue: at-least-once (default) or at-most-once for non-idempotent work.
 - **Done when:**
   - Claude Code, Codex and CI process 100 tasks, duplicates are rejected, failed tasks go to the DLQ;
   - a stopped agent gets `claim_lost`;
-  - a live but slow agent does not lose its task.
+  - a live but slow agent does not lose its task;
+  - an at-most-once task never runs twice.
 
 ## 11. Cross-machine edit coordination
 - Warns before merge that agents of different people and machines are editing the same thing.
