@@ -2179,8 +2179,7 @@ pub fn device_that_missed_a_commit_rejoins<D: Device>() {
             .unwrap();
         network.send(committer, &commit).unwrap();
     }
-    // Device 2 missed device 0's Commit.
-    *network.processed.get_mut(&2).unwrap() += 1;
+    // Device 2 missed device 0's Commit and gets device 1's.
     let next = network.service.commits(CHANNEL)[2].clone();
     assert!(
         process_commit(&mut network.fleet, 2, &next).is_err(),
