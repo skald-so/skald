@@ -28,7 +28,7 @@
 - [x] **3.2:** Removing a device with a new epoch
 - [x] **3.3:** KeyPackages and admission checks
 - [x] **3.4:** Commit ordering through a minimal Delivery Service
-- [ ] **3.5:** Joining by itself and rejoining
+- [x] **3.5:** Joining by itself and rejoining
 - [ ] **3.6:** WASM build and size
 - [ ] **3.7:** Interoperability between the libraries
 - [ ] **3.8:** Benchmarks

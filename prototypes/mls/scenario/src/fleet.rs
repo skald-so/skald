@@ -103,7 +103,7 @@ impl<D: Device> Fleet<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Commit, HistoryKey, Leaf, Received, Staged, scenarios::leaf};
+    use crate::{Commit, HistoryKey, Joining, Leaf, Received, Staged, scenarios::leaf};
 
     const OTHER: AccountId = [0xa2; 16];
 
@@ -152,7 +152,18 @@ mod tests {
         fn delete_group(&mut self, _: &[u8]) -> Result<()> {
             unimplemented!()
         }
-        fn join(&mut self, _: &[u8]) -> Result<Vec<u8>> {
+        fn join_with(
+            &mut self,
+            _: &[u8],
+            _: impl FnOnce(&Joining) -> Result<()>,
+        ) -> Result<Vec<u8>> {
+            unimplemented!()
+        }
+        fn join_external(
+            &mut self,
+            _: &[u8],
+            _: impl FnOnce(&Joining) -> Result<()>,
+        ) -> Result<Commit> {
             unimplemented!()
         }
         fn encrypt(&mut self, _: &[u8], _: &[u8]) -> Result<Vec<u8>> {

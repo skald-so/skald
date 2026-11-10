@@ -54,13 +54,25 @@ pub type HistoryKey = [u8; 16];
 /// A Commit by another member that the device has processed but not merged yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Staged {
-    /// The leaf of its sender.
+    /// The leaf of its sender: for an external Commit, the joiner's new leaf.
     pub sender: Leaf,
     /// The leaves it removes, as they are in the current epoch.
     pub removed: Vec<Leaf>,
-    /// The leaves of the devices it adds, from their KeyPackages.
+    /// The leaves of the devices it adds, from their KeyPackages; for an external Commit, the
+    /// joiner's new leaf, which members check as an Add (`docs/protocol/membership.md`, "Group
+    /// changes").
     pub added: Vec<Leaf>,
     pub authenticated_data: Vec<u8>,
+}
+
+/// What a device reads of a group before it joins it, from the GroupInfo it joins by external
+/// Commit or the one in its Welcome: the GroupInfo's signer and the members its tree lists. The
+/// library has verified the GroupInfo's signature with the signer's leaf in that tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Joining {
+    pub signer: Leaf,
+    /// The leaves of the group's members, in leaf order.
+    pub members: Vec<Leaf>,
 }
 
 /// What a device got from processing a group's message.
@@ -127,8 +139,29 @@ pub trait Device: Sized {
     fn clear_pending_commit(&mut self, group_id: &[u8]) -> Result<()>;
     /// Drops the group and everything the device keeps for it.
     fn delete_group(&mut self, group_id: &[u8]) -> Result<()>;
-    /// Joins a group from a Welcome; returns its `group_id`.
-    fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>>;
+    /// Joins a group from a Welcome once `check` passes on its GroupInfo; returns its
+    /// `group_id`. Fails, and joins nothing, if the check fails.
+    fn join_with(
+        &mut self,
+        welcome: &[u8],
+        check: impl FnOnce(&Joining) -> Result<()>,
+    ) -> Result<Vec<u8>>;
+    /// Joins a group from a Welcome without a check of its GroupInfo; returns its `group_id`.
+    fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>> {
+        self.join_with(welcome, |_| Ok(()))
+    }
+    /// Joins the group of `group_info`, an encoded `MLSMessage` with a GroupInfo with the
+    /// `ratchet_tree` and `external_pub` extensions, by an external Commit [RFC 9420, §12.4.3.2]
+    /// once `check` passes on it. Fails, and joins nothing, if the check fails. If the tree has a
+    /// leaf with the device's signature key, the Commit also removes it ("Rejoining"); the new group
+    /// replaces the state the device had of it. The device is in the Commit's new epoch at once:
+    /// if the Delivery Service refuses the Commit, the device drops the group with
+    /// [`Device::delete_group`].
+    fn join_external(
+        &mut self,
+        group_info: &[u8],
+        check: impl FnOnce(&Joining) -> Result<()>,
+    ) -> Result<Commit>;
     /// Encrypts an application message as an encoded `MLSMessage`.
     fn encrypt(&mut self, group_id: &[u8], data: &[u8]) -> Result<Vec<u8>>;
     /// Processes a group's message from another member. A Commit is merged only if `check`
@@ -161,9 +194,10 @@ pub trait Observer: Sized {
     /// gives it. Fails unless the GroupInfo's signature verifies with its signer's leaf in that
     /// tree and the tree is valid.
     fn observe(group_info: &[u8]) -> Result<Self>;
-    /// Processes a member's Commit, an encoded `MLSMessage` with a PublicMessage, of the current
-    /// epoch: the library verifies it, then `check` gets the leaf of its sender. Only if both pass
-    /// does the observer move to the Commit's new epoch.
+    /// Processes a Commit, an encoded `MLSMessage` with a PublicMessage, of the current epoch:
+    /// the library verifies it, then `check` gets the leaf of its sender, a member, or for an
+    /// external Commit the joiner's new leaf. Only if both pass does the observer move to the
+    /// Commit's new epoch.
     fn process_commit(
         &mut self,
         commit: &[u8],
@@ -274,6 +308,36 @@ macro_rules! scenario_tests {
         #[test]
         fn two_creators_end_in_the_kept_group() {
             $crate::scenarios::two_creators_end_in_the_kept_group::<$device>();
+        }
+
+        #[test]
+        fn device_joins_by_itself() {
+            $crate::scenarios::device_joins_by_itself::<$device>();
+        }
+
+        #[test]
+        fn joiner_that_is_not_admitted_is_removed() {
+            $crate::scenarios::joiner_that_is_not_admitted_is_removed::<$device>();
+        }
+
+        #[test]
+        fn group_info_that_fails_a_check_is_refused() {
+            $crate::scenarios::group_info_that_fails_a_check_is_refused::<$device>();
+        }
+
+        #[test]
+        fn welcome_that_fails_a_check_is_refused() {
+            $crate::scenarios::welcome_that_fails_a_check_is_refused::<$device>();
+        }
+
+        #[test]
+        fn device_that_missed_a_commit_rejoins() {
+            $crate::scenarios::device_that_missed_a_commit_rejoins::<$device>();
+        }
+
+        #[test]
+        fn offline_device_catches_up() {
+            $crate::scenarios::offline_device_catches_up::<$device>();
         }
     };
 }

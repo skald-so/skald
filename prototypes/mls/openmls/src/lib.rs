@@ -3,9 +3,10 @@
 use std::{collections::HashMap, sync::RwLock};
 
 use mls_scenario::{
-    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Observer, Received,
-    Result, Staged, key_packages,
+    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Joining, Leaf, Observer,
+    Received, Result, Staged, key_packages,
     state::{Reader, Writer},
+    wire,
 };
 use openmls::{
     group::ProposalStore,
@@ -158,6 +159,14 @@ fn commit(
 
 fn message(bytes: &[u8]) -> Result<MlsMessageBodyIn> {
     Ok(MlsMessageIn::tls_deserialize_exact(bytes)?.extract())
+}
+
+/// The config of a group the device joins, from a Welcome or by external Commit.
+fn join_config() -> MlsGroupJoinConfig {
+    MlsGroupJoinConfig::builder()
+        .wire_format_policy(WIRE_FORMAT_POLICY)
+        .use_ratchet_tree_extension(true)
+        .build()
 }
 
 impl Device for OpenMlsDevice {
@@ -322,17 +331,58 @@ impl Device for OpenMlsDevice {
         Ok(())
     }
 
-    fn join(&mut self, welcome: &[u8]) -> Result<Vec<u8>> {
+    fn join_with(
+        &mut self,
+        welcome: &[u8],
+        check: impl FnOnce(&Joining) -> Result<()>,
+    ) -> Result<Vec<u8>> {
         let MlsMessageBodyIn::Welcome(welcome) = message(welcome)? else {
             return Err("not a Welcome".into());
         };
-        let config = MlsGroupJoinConfig::builder()
-            .wire_format_policy(WIRE_FORMAT_POLICY)
-            .use_ratchet_tree_extension(true)
-            .build();
-        let group = StagedWelcome::new_from_welcome(&self.provider, &config, welcome, None)?
-            .into_group(&self.provider)?;
+        // A staged Welcome gives its signer's leaf and the members before the device joins.
+        let staged =
+            StagedWelcome::new_from_welcome(&self.provider, &join_config(), welcome, None)?;
+        check(&Joining {
+            signer: node_leaf(staged.welcome_sender()?)?,
+            members: staged.members().map(leaf).collect::<Result<_>>()?,
+        })?;
+        let group = staged.into_group(&self.provider)?;
         Ok(group.group_id().as_slice().to_vec())
+    }
+
+    fn join_external(
+        &mut self,
+        group_info: &[u8],
+        check: impl FnOnce(&Joining) -> Result<()>,
+    ) -> Result<Commit> {
+        // `PublicGroup` verifies the GroupInfo and gives its members; OpenMLS exposes no
+        // GroupInfo's signer, so its leaf index comes from the encoding.
+        let observed = OpenMlsObserver::observe(group_info)?;
+        let signer = LeafNodeIndex::new(wire::group_info(group_info)?.signer);
+        check(&Joining {
+            signer: node_leaf(observed.group.leaf(signer).ok_or("no member at the leaf")?)?,
+            members: observed.members()?,
+        })?;
+        let MlsMessageBodyIn::GroupInfo(group_info) = message(group_info)? else {
+            return Err("not a GroupInfo".into());
+        };
+        // The builder itself removes a leaf with the device's signature key. The new group
+        // replaces the device's old state of it in the storage.
+        let (mut group, bundle) = MlsGroup::external_commit_builder()
+            .with_config(join_config())
+            .build_group(&self.provider, group_info, self.credential())?
+            .load_psks(self.provider.storage())?
+            .build(
+                self.provider.rand(),
+                self.provider.crypto(),
+                &self.signer(),
+                |_| true,
+            )?
+            .finalize(&self.provider)?;
+        // OpenMLS cannot drop a pending external Commit; the device merges it at once.
+        group.merge_pending_commit(&self.provider)?;
+        let (external, _, group_info) = bundle.into_contents();
+        commit(external, None, group_info)
     }
 
     fn encrypt(&mut self, group_id: &[u8], data: &[u8]) -> Result<Vec<u8>> {
@@ -350,14 +400,15 @@ impl Device for OpenMlsDevice {
         let message = MlsMessageIn::tls_deserialize_exact(bytes)?.try_into_protocol_message()?;
         let mut group = self.group(group_id)?;
         let processed = group.process_message(&self.provider, message)?;
-        let Sender::Member(index) = *processed.sender() else {
-            return Err("a message from a non-member".into());
+        let member = match *processed.sender() {
+            Sender::Member(index) => Some(Self::leaf(&group, index)?),
+            Sender::NewMemberCommit => None,
+            _ => return Err("a message from a non-member".into()),
         };
-        let sender = Self::leaf(&group, index)?;
         let authenticated_data = processed.aad().to_vec();
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(message) => Ok(Received::Application {
-                sender,
+                sender: member.ok_or("an application message from a new member")?,
                 data: message.into_bytes(),
             }),
             ProcessedMessageContent::StagedCommitMessage(commit) => {
@@ -366,10 +417,23 @@ impl Device for OpenMlsDevice {
                     .remove_proposals()
                     .map(|remove| Self::leaf(&group, remove.remove_proposal().removed()))
                     .collect::<Result<_>>()?;
-                let added = commit
+                let mut added = commit
                     .add_proposals()
                     .map(|add| key_package_leaf(add.add_proposal().key_package()))
-                    .collect::<Result<_>>()?;
+                    .collect::<Result<Vec<_>>>()?;
+                let sender = match member {
+                    Some(sender) => sender,
+                    // An external Commit: the joiner's new leaf is its UpdatePath's.
+                    None => {
+                        let joiner = node_leaf(
+                            commit
+                                .update_path_leaf_node()
+                                .ok_or("an external Commit without a path")?,
+                        )?;
+                        added.push(joiner.clone());
+                        joiner
+                    }
+                };
                 check(&Staged {
                     sender: sender.clone(),
                     removed,
@@ -437,15 +501,19 @@ impl Observer for OpenMlsObserver {
     ) -> Result<()> {
         let message = MlsMessageIn::tls_deserialize_exact(commit)?.try_into_protocol_message()?;
         let processed = self.group.process_message(&self.crypto, message)?;
-        let Sender::Member(index) = *processed.sender() else {
-            return Err("a Commit from a non-member".into());
-        };
-        check(&node_leaf(
-            self.group.leaf(index).ok_or("no member at the leaf")?,
-        )?)?;
+        let sender = processed.sender().clone();
         let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() else {
             return Err("not a Commit".into());
         };
+        let leaf = match sender {
+            Sender::Member(index) => self.group.leaf(index).ok_or("no member at the leaf")?,
+            // An external Commit: the joiner's new leaf is its UpdatePath's.
+            Sender::NewMemberCommit => staged
+                .update_path_leaf_node()
+                .ok_or("an external Commit without a path")?,
+            _ => return Err("a Commit from a non-member".into()),
+        };
+        check(&node_leaf(leaf)?)?;
         self.group.merge_commit(&self.storage, *staged)?;
         Ok(())
     }
