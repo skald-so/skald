@@ -34,14 +34,6 @@ impl<D: Device> Fleet<D> {
         Ok(self.devices.len() - 1)
     }
 
-    pub fn len(&self) -> usize {
-        self.devices.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.devices.is_empty()
-    }
-
     pub fn identity(&self, device: usize) -> &Identity {
         &self.devices[device].identity
     }
@@ -116,7 +108,6 @@ mod tests {
     #[test]
     fn a_step_saves_the_state_only_on_success() {
         let mut fleet = Fleet::<Counter>::new(2).unwrap();
-        assert_eq!(fleet.len(), 2);
         assert_eq!(fleet.step(0, |d| d.key_package()).unwrap(), [1]);
         assert_eq!(fleet.step(0, |d| d.key_package()).unwrap(), [2]);
         assert_eq!(fleet.state(0), [2]);

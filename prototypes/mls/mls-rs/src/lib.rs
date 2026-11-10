@@ -326,3 +326,63 @@ impl Device for MlsRsDevice {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use mls_scenario::{
+        Fleet,
+        scenarios::{CHANNEL, create_channel},
+    };
+
+    use super::*;
+
+    /// The store as the device's next step loads it.
+    fn reloaded(store: &Store) -> Store {
+        Store::load(&store.save().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn keeps_the_last_prior_epochs_across_reloads() {
+        let mut store = Store::default();
+        for id in 0..5u8 {
+            let state = GroupState {
+                id: b"g".to_vec(),
+                data: vec![id].into(),
+            };
+            let record = EpochRecord::new(id.into(), vec![id].into());
+            store.write(state, vec![record], Vec::new()).unwrap();
+            store = reloaded(&store);
+        }
+
+        assert_eq!(store.state(b"g").unwrap().as_deref(), Some(&vec![4]));
+        assert_eq!(store.max_epoch_id(b"g").unwrap(), Some(4));
+        assert_eq!(store.epoch(b"g", 1).unwrap(), None);
+        for id in 2..5u8 {
+            assert_eq!(
+                store.epoch(b"g", id.into()).unwrap().as_deref(),
+                Some(&vec![id]),
+                "prior epoch {id}"
+            );
+        }
+        assert_eq!(store.max_epoch_id(b"other").unwrap(), None);
+        assert_eq!(store.epoch(b"other", 4).unwrap(), None);
+    }
+
+    #[test]
+    fn joining_deletes_the_used_key_package() {
+        let mut fleet = Fleet::<MlsRsDevice>::new(2).unwrap();
+        // A KeyPackage the channel does not use, then the one its Welcome uses.
+        fleet.step(1, |d| d.key_package()).unwrap();
+        create_channel(&mut fleet, 2).unwrap();
+        let store = Store::load(fleet.state(1)).unwrap();
+        assert_eq!(store.lock().key_packages.len(), 1);
+    }
+
+    #[test]
+    fn a_commit_without_adds_has_no_welcome() {
+        let mut fleet = Fleet::<MlsRsDevice>::new(1).unwrap();
+        fleet.step(0, |d| d.create_group(CHANNEL)).unwrap();
+        let commit = fleet.step(0, |d| d.add(CHANNEL, &[])).unwrap();
+        assert!(commit.welcome.is_none());
+    }
+}

@@ -14,12 +14,10 @@ pub const BASIC: u16 = 1;
 pub const PUBLIC_MESSAGE: u16 = 1;
 pub const PRIVATE_MESSAGE: u16 = 2;
 pub const WELCOME: u16 = 3;
-pub const GROUP_INFO: u16 = 4;
 pub const KEY_PACKAGE: u16 = 5;
 
 /// `ContentType` values.
 pub const APPLICATION: u8 = 1;
-pub const PROPOSAL: u8 = 2;
 pub const COMMIT: u8 = 3;
 
 /// The fields of a KeyPackage's leaf that the Skald profile fixes.
@@ -38,12 +36,6 @@ pub struct Framing {
     pub group_id: Vec<u8>,
     pub epoch: u64,
     pub content_type: u8,
-}
-
-/// The message's `wire_format`.
-pub fn wire_format(message: &[u8]) -> Result<u16> {
-    let mut input = Input(message);
-    header(&mut input)
 }
 
 /// The profile's fields of a KeyPackage message.
@@ -182,6 +174,10 @@ mod tests {
         assert_eq!(Input(&long).vector().unwrap(), &[9; 256][..]);
         let longer = [vec![0x80, 0x01, 0x00, 0x00], vec![8; 65536]].concat();
         assert_eq!(Input(&longer).vector().unwrap().len(), 65536);
+        // Each byte of a 4-byte length counts: 0x01010101.
+        let len = 0x0101_0101;
+        let longest = [vec![0x81, 0x01, 0x01, 0x01], vec![7; len]].concat();
+        assert_eq!(Input(&longest).vector().unwrap().len(), len);
         assert!(Input(b"\xc0").vector().is_err());
         assert!(Input(b"\x03ab").vector().is_err());
     }
@@ -201,6 +197,12 @@ mod tests {
         );
         message[3] = 3;
         assert!(key_package(&message).is_err());
+    }
+
+    #[test]
+    fn reads_a_welcomes_cipher_suite() {
+        assert_eq!(welcome_cipher_suite(&[0, 1, 0, 3, 0, 3]).unwrap(), 3);
+        assert!(welcome_cipher_suite(&[0, 1, 0, 5, 0, 3]).is_err());
     }
 
     #[test]
@@ -224,6 +226,6 @@ mod tests {
         assert_eq!(framing(&private).unwrap().content_type, APPLICATION);
 
         assert!(framing(&[0, 1, 0, 3]).is_err());
-        assert!(wire_format(&[0, 2, 0, 1]).is_err());
+        assert!(framing(&[0, 2, 0, 1]).is_err());
     }
 }
