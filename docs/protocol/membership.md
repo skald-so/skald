@@ -482,7 +482,7 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 - The server keeps the first link per channel, epoch and `prev` and the first wrap per recipient, and takes uploads only from member devices of the epoch.
 
 ### History entry
-The sending device writes a copy of each message with an `a2a` body it sends in the channel, under the key of its current epoch; a browser as [Wraps](#wraps) says. A device without a history key, such as a stateless `service` device, writes none.
+The sending device writes a copy of each message with an `a2a` or [`task-result`](queues.md#results) body it sends in the channel, under the key of its current epoch; a browser as [Wraps](#wraps) says. A device without a history key, such as a stateless `service` device, writes none.
 
 ```cddl
 history-entry = {

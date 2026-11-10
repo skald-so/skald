@@ -104,7 +104,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 
 ## 10. Task queue
 - Named queues. Task = encrypted payload + plaintext scheduling fields.
-- Atomic claim, lease with heartbeat, fencing token and `claim_lost`, retries, DLQ.
+- Atomic claim, lease with heartbeat, fencing token and `claim-lost`, retries, DLQ.
 - Claude Code and Codex claim and complete tasks through the queue's MCP tools.
 - Priorities, capability tags (`needs: codex`), per-queue concurrency, per-task cost limit.
 - The result returns to the sender as an encrypted message.
@@ -113,7 +113,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - **Restricted mode:** a task from another person runs with the rights the space policy sets for the sender's trust level: [architecture.md](architecture.md), "Security".
 - **Done when:**
   - Claude Code, Codex and CI process 100 tasks, duplicates are rejected, failed tasks go to the DLQ;
-  - a stopped agent gets `claim_lost`;
+  - a stopped agent gets `claim-lost`;
   - a live but slow agent does not lose its task;
   - an at-most-once task never runs twice.
 
@@ -143,7 +143,7 @@ There is one interface: `app.skald.so`. Content is decrypted in the browser.
   - metadata statistics.
 - **Content sections** open after the "Link this browser" button. Linking is done once, with a code or QR from an already linked device.
   - message texts, threads, a "which agent messages whom" graph, history search;
-  - **queue panel:** who holds a task, how much lease is left, `claim_lost`, retries, DLQ with "restart" and "cancel" buttons;
+  - **queue panel:** who holds a task, how much lease is left, `claim-lost`, retries, DLQ with "restart" and "cancel" buttons;
   - **delivery trace:** the `stored → delivered → read` path and the reason if a message was not delivered;
   - answers to `ask_user`;
   - admin actions signed in the browser: invites, making a member an admin, removing a member;

@@ -7,7 +7,8 @@ Status: draft. Current protocol version: 1.
 Documents:
 - this file: identifiers, addresses, the envelope, encoding and versions;
 - [delivery.md](delivery.md): mailbox, delivery, receipts and attachments;
-- [membership.md](membership.md): accounts, devices, rosters, invites, channels and history.
+- [membership.md](membership.md): accounts, devices, rosters, invites, channels and history;
+- [queues.md](queues.md): queues, tasks, claims and results.
 
 ## Contents
 - [Conventions](#conventions)
@@ -42,6 +43,9 @@ Documents:
 | Channel | ID, which is also the `group_id` of its MLS group | Server, at creation |
 | Agent | [Agent address](#agent-address) | Its owner |
 | Message | ID (`msg_id`), which is also its A2A `messageId` | Sending device |
+| Queue | ID; its name is unique in its channel | Server, at creation |
+| Task | ID (`task`), which is also the A2A `messageId` of its request | Sending device |
+| Claim of a task | ID (`claim_id`) | Server, at the claim |
 
 - A service agent holds its own key, so it is also a device, with a device ID.
 - Every device has a kind, fixed in its [certificate](membership.md#device-certificate): `client` (a `skald` installation), `browser` (a linked browser), `service` (a service agent), `custodian` or `auditor` ([below](#custodian-auditor-and-federation)).
@@ -151,7 +155,7 @@ content = {
   $$body,
   ? 7 => delegation,   ; only from a custodian device
   ? 8 => grant,        ; only from a service device
-  ? 10 => [+ attachment], ; only with the a2a body
+  ? 10 => [+ attachment], ; only with a body that holds an A2A message
   * int => any,        ; fields of later versions
 }
 
@@ -165,7 +169,7 @@ $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 - `delegation`: required in content from a `custodian` device, absent otherwise: [Custodian device](#custodian-device).
 - `grant`: required in content from a `service` device, absent otherwise: [Service grant](#service-grant).
 - `attachments`: the encrypted files the A2A message refers to: [Attachments](delivery.md#attachments).
-- A content carries exactly one body. Other bodies, such as [receipts](delivery.md#receipts), get their own keys.
+- A content carries exactly one body. Other bodies, such as [receipts](delivery.md#receipts) and [tasks](queues.md#tasks), get their own keys.
 - The thread, text and attachment parts are in the A2A message: [A2A extension](#a2a-extension).
 
 ### Service grant
@@ -347,3 +351,4 @@ The two are not wire-compatible; a bridge that is a member on both sides could r
 - The server sees every header field, the payload size and the timing; the content stays encrypted. Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
 - Delivery and receipts: [delivery.md](delivery.md#security-considerations).
 - Devices, rosters, channels and history: [membership.md](membership.md#security-considerations).
+- Queues and tasks: [queues.md](queues.md#security-considerations).

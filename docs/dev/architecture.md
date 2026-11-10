@@ -27,7 +27,8 @@
 - The recovery key is entered only in the CLI and `skald ui`, never in a web page.
 - **A browser is also a linked device**, linked only with a code or QR from an already linked device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
   - it reads through history keys wrapped to its key;
-  - it sends actions (approve, answer `ask_user`, restart a task) as signed messages via HPKE.
+  - it sends actions (approve, answer `ask_user`) as signed messages via HPKE;
+  - it enqueues, restarts and cancels tasks through the API: [protocol spec](../protocol/queues.md).
 
 ## Membership
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
@@ -56,7 +57,7 @@
 | Envelope | [Protocol spec](../protocol/README.md#envelope) |
 | Mailbox | [Protocol spec](../protocol/delivery.md#mailbox) |
 | History | Copies of channel messages under the channel's history key |
-| Queue / Job | A named queue of a channel. A job is an encrypted payload + plaintext scheduling fields: state, priority, attempts, `lease_until`, tags, template, `idempotency_key`, deadline |
+| Queue / Task | A named queue of a channel and its tasks: [protocol spec](../protocol/queues.md) |
 | Presence | Encrypted agent status; the server stores the latest value |
 
 ## Cryptography
@@ -84,7 +85,7 @@
   - service agent names and token permissions;
   - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
   - IP addresses and times of connections;
-  - queue names, task tags and templates;
+  - queue names and settings, task tags and templates;
   - when presence changes, not its value;
   - notifications: the address, and the class of each event a device triggers;
   - HMAC fingerprints of edits;
@@ -94,7 +95,7 @@
   - when each device takes its messages;
   - which envelopes ask for delivery statuses, so which are likely receipts, and which hold MLS handshake messages;
   - attachment sizes, uploads and downloads;
-  - task scheduling fields;
+  - task scheduling fields and states, and which device enqueues, claims and completes each task;
   - quota counters;
   - each space's plan, member count and billing contact; card data stays with the payment provider.
 - **The server does not see:** message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads, edited paths and code.
@@ -112,17 +113,8 @@
 [Protocol spec](../protocol/delivery.md).
 
 ## Queue
-- A queue belongs to a channel. A task payload is encrypted with the channel's MLS group, so any device of the channel can claim the task.
+- Queues, tasks, claims, leases, fencing and modes: [protocol spec](../protocol/queues.md).
 - Claim: `SELECT … FOR UPDATE SKIP LOCKED`.
-- A heartbeat extends the lease. In one-shot mode without the helper, the process running the task sends the heartbeats.
-- Fencing:
-  - `claim_id` + an increasing generation;
-  - extension and completion via compare-and-swap;
-  - whoever lost the lease gets `claim_lost`.
-- Mode per queue:
-  - **at-least-once** (default): an expired lease or a failure returns the task to the queue; retries with exponential backoff, then DLQ; the handler must be idempotent;
-  - **at-most-once**, for non-idempotent work (deploy, sending mail): an expired lease or a failure sends the task to the DLQ without a retry; a human decides.
-- `idempotency_key` on enqueue; the agent can use `task_id` to make its own side effects idempotent.
 
 ## Delivery to agents
 | Agent | Primary path | Fallback |
