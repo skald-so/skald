@@ -38,7 +38,7 @@
 - [x] **62.2:** Buttons, status labels and the warning banner
 - [x] **62.3:** Sortable table, empty and loading states
 - [x] **62.4:** Filter buttons and search
-- [ ] **62.5:** Dropdown filter
+- [x] **62.5:** Dropdown filter
 - [ ] **62.6:** Reference screenshots of the kit page
 - [ ] **62.7:** Cabinet shell
 

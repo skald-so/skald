@@ -8,7 +8,15 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Page } from "playwright-core";
 import { build, type Rolldown } from "vite";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "vitest";
 import {
   startKit,
   themes,
@@ -887,6 +895,579 @@ describe.each(widths.map((from, i) => [from, widths[1 - i]!]))(
         await view.page.close();
       },
     );
+  },
+);
+
+/** The dropdown filters section of the kit page. */
+const dropdowns = "section[aria-labelledby=kit-dropdowns]";
+
+test.each(themes)(
+  "dropdown filters and their list have the design looks in the %s theme",
+  async (theme) => {
+    const c = (label: string) => color(label, theme);
+    const view = await kit.open({ width: 1440, system: theme });
+    const looks = await view.page.evaluate((dropdowns) => {
+      const section = document.querySelector(dropdowns)!;
+      const look = (element: Element) => {
+        const style = getComputedStyle(element);
+        return {
+          background: style.backgroundColor,
+          color: style.color,
+          border: `${style.borderTopWidth} ${style.borderTopColor}`,
+          font: `${style.fontFamily.split(",")[0]!.replaceAll('"', "")} ${style.fontSize} ${style.fontWeight}`,
+          height: element.getBoundingClientRect().height,
+        };
+      };
+      const dropdown = (button: Element) => ({
+        ...look(button),
+        label: getComputedStyle(button.firstElementChild!).color,
+      });
+      const group = section.querySelector("[role=group]")!;
+      const buttons = [...group.querySelectorAll("button")];
+      const boxes = [...group.children].map((child) =>
+        child.getBoundingClientRect(),
+      );
+      const list = section.querySelector("[role=listbox]")!;
+      return {
+        filters: buttons.slice(0, 4).map(dropdown),
+        clear: look(buttons[4]!),
+        sort: dropdown(group.nextElementSibling!.querySelector("button")!),
+        gaps: boxes.slice(1).map((box, i) => box.left - boxes[i]!.right),
+        list: {
+          ...look(list),
+          radius: getComputedStyle(list).borderTopLeftRadius,
+        },
+        options: [...list.children].map((option) => ({
+          ...look(option),
+          check: getComputedStyle(option.querySelector("svg")!).visibility,
+        })),
+      };
+    }, dropdowns);
+
+    const inter = "Inter Variable";
+    const idle = {
+      background: transparent,
+      color: c("Text"),
+      border: `1px ${c("Line")}`,
+      font: `${inter} 13px 500`,
+      height: 36,
+      label: c("Muted text"),
+    };
+    // As 04-messages.png: "Time today" is set and highlighted, the others keep their defaults.
+    expect(looks.filters).toEqual([
+      idle,
+      idle,
+      idle,
+      {
+        ...idle,
+        background: c("Accent soft"),
+        color: c("Accent"),
+        border: `1px ${c("Accent")}`,
+      },
+    ]);
+    expect(looks.clear).toEqual({
+      background: transparent,
+      color: c("Accent"),
+      border: `0px ${c("Accent")}`,
+      font: `${inter} 13px 500`,
+      height: 36,
+    });
+    expect(looks.sort).toEqual(idle);
+    expect(looks.gaps).toEqual([8, 8, 8, 8]);
+    expect(looks.list).toMatchObject({
+      background: c("Background"),
+      border: `1px ${c("Line")}`,
+      radius: "8px",
+    });
+    const option = {
+      background: transparent,
+      color: c("Text"),
+      border: `0px ${c("Text")}`,
+      font: `${inter} 13px 500`,
+      height: 36,
+      check: "hidden",
+    };
+    // The chosen option is checked; the arrows start on it.
+    expect(looks.options).toEqual([
+      option,
+      option,
+      {
+        background: c("Hover"),
+        color: c("Accent"),
+        border: `0px ${c("Accent")}`,
+        font: `${inter} 13px 600`,
+        height: 36,
+        check: "visible",
+      },
+    ]);
+    await view.page.close();
+  },
+);
+
+describe("dropdown filters in Chrome", () => {
+  let view: KitView;
+  beforeEach(async () => {
+    view = await kit.open({ width: 1440, system: "light" });
+  }, 30_000);
+  afterEach(() => view?.page.close());
+
+  const bar = () =>
+    view.page
+      .locator(dropdowns)
+      .getByRole("group", { name: "Filter messages" })
+      .locator("xpath=..");
+  const dropdown = (name: string) =>
+    bar().getByRole("button", { name: new RegExp(`^${name} `) });
+  /** The text of every button of the bar, with the open one marked. */
+  const buttons = () =>
+    bar()
+      .getByRole("button")
+      .evaluateAll((buttons) =>
+        buttons.map(
+          (button) =>
+            `${button.textContent}${button.getAttribute("aria-expanded") === "true" ? " (open)" : ""}`,
+        ),
+      );
+  /** The focused element: a button by its text, the list by its name with the active option. */
+  const focused = () =>
+    view.page.evaluate(() => {
+      const element = document.activeElement!;
+      if (element.getAttribute("role") !== "listbox")
+        return element.textContent;
+      const active = document.getElementById(
+        element.getAttribute("aria-activedescendant")!,
+      );
+      return `${element.getAttribute("aria-label")} list on ${active?.textContent}`;
+    });
+  /** The time of each row of the filtered messages, or the empty state. */
+  const rows = () =>
+    view.page
+      .getByRole("table", { name: "Filtered messages" })
+      .locator("tbody tr")
+      .evaluateAll((rows) =>
+        rows.map((row) => row.lastElementChild!.textContent ?? ""),
+      );
+  const today = ["Today 10:42", "Today 10:44", "Today 10:46", "Today 10:58"];
+  const defaults = [
+    "From anyone",
+    "Status any",
+    "Type messages and tasks",
+    "Time today",
+    "Clear",
+    "Sort Oldest first",
+  ];
+
+  test("Enter opens the list, arrows move, Enter chooses and the focus returns to the button", async () => {
+    await dropdown("From").focus();
+    await view.page.keyboard.press("Enter");
+    expect(await buttons()).toEqual([
+      "From anyone (open)",
+      ...defaults.slice(1),
+    ]);
+    expect(await focused()).toBe("From list on anyone");
+    for (const [key, active] of [
+      ["ArrowDown", "claude-code"],
+      ["ArrowDown", "codex"],
+      ["ArrowDown", "codex"],
+      ["Home", "anyone"],
+      ["ArrowUp", "anyone"],
+      ["End", "codex"],
+    ]) {
+      await view.page.keyboard.press(key!);
+      expect(await focused(), key).toBe(`From list on ${active}`);
+    }
+    expect(await rows()).toEqual(today);
+
+    await view.page.keyboard.press("Enter");
+    expect(await buttons()).toEqual(["From codex", ...defaults.slice(1)]);
+    expect(await focused()).toBe("From codex");
+    expect(await rows()).toEqual(["Today 10:44", "Today 10:58"]);
+  });
+
+  test("Space opens the list and chooses without opening it again", async () => {
+    await dropdown("Status").focus();
+    await view.page.keyboard.press("Space");
+    expect(await focused()).toBe("Status list on any");
+    await view.page.keyboard.press("ArrowDown");
+    await view.page.keyboard.press("Space");
+    // The Space that chose is released on the button: it must not press it.
+    await view.page.waitForTimeout(100);
+    expect(await buttons()).toEqual([
+      "From anyone",
+      "Status read",
+      ...defaults.slice(2),
+    ]);
+    expect(await focused()).toBe("Status read");
+    expect(await rows()).toEqual(["Today 10:42", "Today 10:44"]);
+  });
+
+  test("an arrow key opens the list on the current value and Escape closes it without a change", async () => {
+    for (const key of ["ArrowDown", "ArrowUp"]) {
+      await dropdown("Time").focus();
+      await view.page.keyboard.press(key);
+      expect(await focused(), key).toBe("Time list on today");
+      await view.page.keyboard.press("ArrowDown");
+      expect(await focused(), key).toBe("Time list on yesterday");
+      await view.page.keyboard.press("Escape");
+      expect(await buttons(), key).toEqual(defaults);
+      expect(await focused(), key).toBe("Time today");
+      expect(await rows(), key).toEqual(today);
+    }
+  });
+
+  test("a click on an option chooses it; a click outside closes the list without a change", async () => {
+    await dropdown("Type").click();
+    await bar().getByRole("option", { name: "tasks", exact: true }).click();
+    const chosen = [...defaults];
+    chosen[2] = "Type tasks";
+    expect(await buttons()).toEqual(chosen);
+    expect(await focused()).toBe("Type tasks");
+    expect(await rows()).toEqual(["Today 10:42"]);
+
+    await dropdown("Type").click();
+    await bar().getByRole("option", { name: "messages", exact: true }).hover();
+    expect(await focused()).toBe("Type list on messages");
+    await view.page.getByRole("heading", { name: "Dropdown filters" }).click();
+    expect(await buttons()).toEqual(chosen);
+    expect(await rows()).toEqual(["Today 10:42"]);
+
+    // A second click on the button closes the list too.
+    await dropdown("Type").click();
+    await dropdown("Type").click();
+    expect(await buttons()).toEqual(chosen);
+    expect(await focused()).toBe("Type tasks");
+  });
+
+  test("Tab closes the list without a change and goes on to the next filter", async () => {
+    await dropdown("From").focus();
+    await view.page.keyboard.press("Enter");
+    await view.page.keyboard.press("ArrowDown");
+    await view.page.keyboard.press("Tab");
+    expect(await buttons()).toEqual(defaults);
+    expect(await focused()).toBe("Status any");
+
+    // Shift+Tab goes back from the button, past it.
+    await view.page.keyboard.press("Enter");
+    await view.page.keyboard.press("Shift+Tab");
+    expect(await buttons()).toEqual(defaults);
+    expect(await focused()).toBe("From anyone");
+  });
+
+  test("Clear from the keyboard restores the defaults and moves the focus to the first filter", async () => {
+    await dropdown("Time").focus();
+    await view.page.keyboard.press("Tab");
+    expect(await focused()).toBe("Clear");
+    await view.page.keyboard.press("Enter");
+    expect(await buttons()).toEqual([
+      "From anyone",
+      "Status any",
+      "Type messages and tasks",
+      "Time any time",
+      "Sort Oldest first",
+    ]);
+    expect(await focused()).toBe("From anyone");
+    expect(await rows()).toEqual([
+      "Yesterday 16:20",
+      "Yesterday 17:05",
+      ...today,
+    ]);
+  });
+
+  test("Chrome exposes the name, the value, whether the list is open and the chosen option", async () => {
+    const cdp = await view.page.context().newCDPSession(view.page);
+    const tree = async () => {
+      const { nodes } = await cdp.send("Accessibility.getFullAXTree");
+      const property = (node: (typeof nodes)[number], name: string) =>
+        node.properties?.find((property) => property.name === name)?.value;
+      const from = nodes.find(
+        (node) =>
+          node.role?.value === "button" &&
+          String(node.name?.value).startsWith("From"),
+      )!;
+      const list = nodes.find(
+        (node) => node.role?.value === "listbox" && node.name?.value === "From",
+      );
+      return {
+        button: [
+          from.name?.value,
+          property(from, "hasPopup")?.value,
+          property(from, "expanded")?.value,
+        ],
+        list: list && {
+          focused: property(list, "focused")?.value,
+          active: nodes.find(
+            (node) =>
+              node.backendDOMNodeId ===
+              property(list, "activedescendant")?.relatedNodes?.[0]
+                ?.backendDOMNodeId,
+          )?.name?.value,
+          options: nodes
+            .filter((node) => list.childIds?.includes(node.nodeId))
+            .map((node) => [
+              node.role?.value,
+              node.name?.value,
+              property(node, "selected")?.value,
+            ]),
+        },
+      };
+    };
+
+    expect(await tree()).toEqual({
+      button: ["From anyone", "listbox", false],
+      list: undefined,
+    });
+    await dropdown("From").focus();
+    await view.page.keyboard.press("Enter");
+    await view.page.keyboard.press("ArrowDown");
+    expect(await tree()).toEqual({
+      button: ["From anyone", "listbox", true],
+      list: {
+        focused: true,
+        active: "claude-code",
+        options: [
+          ["option", "anyone", true],
+          ["option", "claude-code", false],
+          ["option", "codex", false],
+        ],
+      },
+    });
+    await view.page.keyboard.press("Enter");
+    expect((await tree()).button).toEqual([
+      "From claude-code",
+      "listbox",
+      false,
+    ]);
+  });
+});
+
+/** Where the filter bar sits: its lines, and whether every button is inside the page. */
+function filterBarLayout(page: Page) {
+  return page.evaluate((dropdowns) => {
+    const group = document.querySelector(`${dropdowns} [role=group]`)!;
+    const bar = group.parentElement!;
+    const buttons = [...bar.querySelectorAll("button")].map((button) =>
+      button.getBoundingClientRect(),
+    );
+    const page = document.querySelector("main")!.getBoundingClientRect();
+    return {
+      lines: new Set(buttons.map((button) => button.top)).size,
+      inside: buttons.every(
+        (box) => box.left >= page.left + 16 && box.right <= page.right - 16,
+      ),
+      // The sort order ends the bar on the right.
+      sortAtEnd: buttons.at(-1)!.right === bar.getBoundingClientRect().right,
+    };
+  }, dropdowns);
+}
+
+const filterBar = (width: number) =>
+  width < 760
+    ? { lines: 4, inside: true, sortAtEnd: false }
+    : { lines: 1, inside: true, sortAtEnd: true };
+
+describe.each(widths)("the filter bar at %i px", (width) => {
+  test(width < 760 ? "wraps inside the page" : "sits on one line", async () => {
+    const view = await kit.open({ width, system: "light" });
+    expect(await filterBarLayout(view.page)).toEqual(filterBar(width));
+    await view.page.close();
+  });
+});
+
+describe.each(widths.map((from, i) => [from, widths[1 - i]!]))(
+  "the filter bar opened at %i px and resized to %i px",
+  (from, to) => {
+    test(to < 760 ? "wraps inside the page" : "joins one line", async () => {
+      const view = await kit.open({ width: from, system: "light" });
+      await view.page.setViewportSize({ width: to, height: 900 });
+      await expect
+        .poll(() => filterBarLayout(view.page))
+        .toEqual(filterBar(to));
+      await view.page.close();
+    });
+  },
+);
+
+/** The box of the open list of the open sample and of its button, in the window. */
+function sampleList(page: Page) {
+  return page.evaluate((dropdowns) => {
+    const card = document.querySelector(`${dropdowns} ul > li`)!;
+    const box = (element: Element) => {
+      const { left, right, top, bottom } = element.getBoundingClientRect();
+      return { left, right, top, bottom };
+    };
+    return {
+      window: {
+        width: document.documentElement.clientWidth,
+        height: document.documentElement.clientHeight,
+      },
+      button: box(card.querySelector("button")!),
+      list: box(card.querySelector("[role=listbox]")!),
+    };
+  }, dropdowns);
+}
+
+/** Whether the list lies inside the window with an 8 px margin. */
+function onScreen({ window, list }: Awaited<ReturnType<typeof sampleList>>) {
+  return (
+    list.left >= 8 &&
+    list.right <= window.width - 8 &&
+    list.top >= 0 &&
+    list.bottom <= window.height
+  );
+}
+
+/**
+ * Puts the open sample's button at the right end of its card, scrolls the page to put it at `at`:
+ * near the top of the window, near its bottom or in its middle, and opens its list again. Returns
+ * how far opening the list scrolled the page.
+ */
+async function sampleAtRight(
+  page: Page,
+  at: "top" | "bottom" | "middle",
+): Promise<number> {
+  await page.evaluate(
+    ({ dropdowns, at }) => {
+      // Room under the last section, to scroll it anywhere.
+      document.querySelector("main")!.style.paddingBottom = "2000px";
+      const card = document.querySelector(`${dropdowns} ul > li`)!;
+      const holder = card.querySelector("button")!.parentElement!
+        .parentElement! as HTMLElement;
+      holder.style.display = "flex";
+      holder.style.justifyContent = "flex-end";
+      const button = card.querySelector("button")!.getBoundingClientRect();
+      const top = {
+        top: 60,
+        bottom: window.innerHeight - 40 - button.height,
+        middle: (window.innerHeight - button.height) / 2,
+      }[at];
+      window.scrollBy(0, button.top - top);
+    },
+    { dropdowns, at },
+  );
+  const button = page
+    .locator(dropdowns)
+    .getByRole("listitem")
+    .getByRole("button", { name: "Type tasks" });
+  await button.click();
+  const scrolled = () => page.evaluate(() => window.scrollY);
+  const before = await scrolled();
+  await button.click();
+  return (await scrolled()) - before;
+}
+
+describe.each(widths)("a dropdown list at %i px", (width) => {
+  test("of a button at the right end stays inside the window, under the button", async () => {
+    const view = await kit.open({ width, system: "light" });
+    expect(await sampleAtRight(view.page, "top")).toBe(0);
+    const placed = await sampleList(view.page);
+    expect(onScreen(placed), JSON.stringify(placed)).toBe(true);
+    // Under the button, one edge aligned with it.
+    expect(placed.list.top).toBe(placed.button.bottom + 4);
+    if (width < 760) expect(placed.list.right).toBe(width - 8);
+    else expect(placed.list.left).toBe(placed.button.left);
+    await view.page.close();
+  });
+
+  test("near the bottom of the window opens above the button", async () => {
+    const view = await kit.open({ width, system: "light" });
+    // Opening the list does not scroll the page to show it.
+    expect(await sampleAtRight(view.page, "bottom")).toBe(0);
+    const placed = await sampleList(view.page);
+    expect(onScreen(placed), JSON.stringify(placed)).toBe(true);
+    expect(placed.list.bottom).toBe(placed.button.top - 4);
+    await view.page.close();
+  });
+});
+
+test("a list open from the first render sits under its button and closes on a click outside", async () => {
+  const view = await kit.open({ width: 1440, system: "light" });
+  // The button is below the window when the page opens: the list stays under it.
+  const { button, list } = await sampleList(view.page);
+  expect(button.top).toBeGreaterThan(900);
+  expect(list.top).toBe(button.bottom + 4);
+  // It does not take the focus from the page.
+  expect(
+    await view.page.evaluate(() => document.activeElement === document.body),
+  ).toBe(true);
+
+  await view.page.getByRole("heading", { name: "Dropdown filters" }).click();
+  expect(await view.page.locator(`${dropdowns} [role=listbox]`).count()).toBe(
+    0,
+  );
+  expect(
+    await view.page
+      .locator(dropdowns)
+      .getByRole("listitem")
+      .getByRole("button")
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+  await view.page.close();
+});
+
+test("a list taller than its room scrolls to the active option", async () => {
+  const view = await kit.open({ width: 360, system: "light" });
+  // Too little room under the button and over it.
+  await view.page.setViewportSize({ width: 360, height: 200 });
+  expect(await sampleAtRight(view.page, "middle")).toBe(0);
+  /** Whether the list is cut and which option the arrows are on, if it shows in full. */
+  const shown = () =>
+    view.page.locator(`${dropdowns} [role=listbox]`).evaluate((list) => {
+      const active = document.getElementById(
+        list.getAttribute("aria-activedescendant")!,
+      )!;
+      const box = list.getBoundingClientRect();
+      const option = active.getBoundingClientRect();
+      return {
+        cut: list.scrollHeight > list.clientHeight,
+        active: active.textContent,
+        visible: option.top >= box.top && option.bottom <= box.bottom,
+      };
+    });
+  // Opened on "tasks", the last option.
+  expect(onScreen(await sampleList(view.page))).toBe(true);
+  expect(await shown()).toEqual({ cut: true, active: "tasks", visible: true });
+  await view.page.keyboard.press("Home");
+  expect(await shown()).toEqual({
+    cut: true,
+    active: "messages and tasks",
+    visible: true,
+  });
+  await view.page.keyboard.press("End");
+  expect(await shown()).toEqual({ cut: true, active: "tasks", visible: true });
+  await view.page.close();
+});
+
+test("a list wider than the window narrows to fit it", async () => {
+  const view = await kit.open({ width: 360, system: "light" });
+  await sampleAtRight(view.page, "top");
+  await view.page.setViewportSize({ width: 160, height: 900 });
+  await expect
+    .poll(async () => {
+      const { window, list } = await sampleList(view.page);
+      return [list.left, list.right, window.width];
+    })
+    .toEqual([8, 152, 160]);
+  await view.page.close();
+});
+
+describe.each(widths.map((from, i) => [from, widths[1 - i]!]))(
+  "a dropdown list open at %i px with the window resized to %i px",
+  (from, to) => {
+    test("stays inside the window sideways, under the button", async () => {
+      const view = await kit.open({ width: from, system: "light" });
+      await sampleAtRight(view.page, "top");
+      await view.page.setViewportSize({ width: to, height: 900 });
+      // The page reflows, so the button may leave the window up or down; the list follows it.
+      const placed = async () => {
+        const { window, button, list } = await sampleList(view.page);
+        return {
+          inside: list.left >= 8 && list.right <= window.width - 8,
+          under: list.top === button.bottom + 4,
+        };
+      };
+      await expect.poll(placed).toEqual({ inside: true, under: true });
+      await view.page.close();
+    });
   },
 );
 
