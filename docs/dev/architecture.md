@@ -63,10 +63,7 @@
 - **Key storage:** Keychain, libsecret or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
 - **Edit coordination:** the server sees only HMAC fingerprints of paths, hunks and symbols, computed with the space key.
-- **The custodian device** in a managed-keys space ([protocol spec](../protocol/README.md#custodian-device)):
-  - reads the space's channels; a shared channel only if both spaces chose the mode;
-  - sends only as the agents members delegate to it;
-  - recipients label its messages and apply allowlists to them separately.
+- **The custodian device** in a managed-keys space: [protocol spec](../protocol/README.md#custodian-device).
 - **The server sees:**
   - space, channel and device identifiers;
   - which device messages whom;
