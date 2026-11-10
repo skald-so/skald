@@ -32,6 +32,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 
 ## 3. Spaces and shared channels
 - A device belongs to N spaces. A session is bound to a space by its folder: `.skald.toml` or a rule `~/work/clientA/** → clientA`.
+- Each account has a personal space; its machines join it by default, so one person can start alone.
 - An agent of one client cannot see another client.
 - A **shared channel** between two spaces is created only with the consent of admins on both sides; either side can disable it.
 - **Done when:** a freelancer is in three spaces; an agent in `~/work/clientA` sees only clientA; there is a clientA↔clientB shared channel.
@@ -77,12 +78,13 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - Loop protection.
 - Inbound modes `accept / hold / refuse`.
 - `ask_user`: confirmation from a human.
-- Small text attachments.
+- Encrypted attachments up to 10 MB, such as diffs and logs.
 - Shared team instructions: versions, distribution to machines, injection into `AGENTS.md` or `CLAUDE.md`, all encrypted.
 
 ## 9. End-to-end encrypted service and CI agents
 - An agent has its own key (in an environment secret) and a scoped token: send-only, queue-only, specific channels, expiry, rotation.
 - Stateless HPKE encryption.
+- GitHub bridge: a `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment.
 - ChatGPT and Claude.ai cannot work through remote MCP with end-to-end encryption. They need managed-keys mode (feature 13).
 - **Done when:** messages are exchanged with a CI agent that has no persistent disk; the server holds only ciphertext.
 
@@ -92,6 +94,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - Priorities, capability tags (`needs: codex`), per-queue concurrency, per-task cost limit.
 - The result returns to the sender as an encrypted message.
 - Mode per queue: at-least-once (default) or at-most-once for non-idempotent work.
+- Templates: review, test, ask. A template sets the task's input and result and the agent's instructions; a team adds its own.
 - **Done when:**
   - Claude Code, Codex and CI process 100 tasks, duplicates are rejected, failed tasks go to the DLQ;
   - a stopped agent gets `claim_lost`;
@@ -131,7 +134,7 @@ There is one interface: `app.skald.so`. Decryption happens in the browser, as in
   - **loop analysis:** agent↔agent threads without a human, a "pause" button;
   - **analytics:** computed by the client, stored encrypted;
   - **edit map.**
-- **Alerts** to Telegram, Slack or a webhook: DLQ is growing, an agent is gone, a key changed, a token is expiring.
+- **Notifications** to Telegram, Slack or a webhook: a task, `hold` or `ask_user` waiting for a person, DLQ is growing, an agent is gone, a key changed, a token is expiring. The server sends only metadata; a content preview comes only from the person's own device.
 - **Auditor device (ee):** the organization admin sees all conversations; members know about it.
 - LLM token usage is shown only from what the CLI itself shows the user. Low priority.
 - **`skald ui`** (on demand) — the same page served from localhost by a signed binary. It is for those who do not trust code delivered from the server. It does not create a second interface.

@@ -12,6 +12,7 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 6 | Staging environment | MVP | 1 |
 | 7 | Release pipeline | MVP | 1 |
 | 62 | Web UI kit: theme, shells and components | MVP | 1 |
+| 64 | Self-host: Docker Compose | MVP | 6, 7, 9 |
 | 8 | GitHub sign-in and device certificate | MVP | 1, 2 |
 | 9 | Google sign-in and linked sign-in methods | MVP | 8 |
 | 10 | Crypto core | MVP | 2, 3 |
@@ -33,19 +34,23 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 26 | Task queue: claim, lease and DLQ | MVP | 13, 15 |
 | 27 | Browser linking and history on the web | MVP | 10, 17, 22 |
 | 28 | Web: queues, delivery trace, loops | MVP | 21, 26, 27 |
-| 29 | End-to-end MVP scenario | MVP | 9, 18, 21, 23, 24, 26, 27, 28 |
+| 35 | Service agents: HPKE and scoped tokens | MVP | 13, 22 |
+| 41 | ask_user and attachments | MVP | 21 |
+| 65 | Queue templates: review, test, ask | MVP | 19, 20, 26 |
+| 63 | Notifications to people | MVP | 21, 22, 26, 41 |
+| 66 | Restricted mode for tasks from other people | MVP | 19, 20, 21 |
+| 36 | GitHub Action | MVP | 14, 35, 65 |
+| 29 | End-to-end MVP scenario | MVP | 9, 18, 21, 23, 24, 26, 27, 28, 36, 41, 63, 65, 66 |
 | 30 | Admin rights transfer and account deletion | MVP | 13, 16, 22 |
 | 31 | Load testing | MVP | 21, 25 |
 | 32 | Documentation: quick start and CLI reference | MVP | 24, 25 |
 | 33 | Website: main page | MVP | 25, 62 |
 | 34 | Operator CLI | MVP | 12, 30 |
-| 35 | Service agents: HPKE and scoped tokens | Post-MVP | 13, 22 |
-| 36 | GitHub Action | Post-MVP | 14, 35 |
 | 37 | Task queue: scheduling and agents | Post-MVP | 19, 20, 26, 36 |
 | 38 | Codex background agents via app-server | Post-MVP | 20 |
+| 67 | A2A gateway | Post-MVP | 2, 26, 35 |
 | 39 | Shared channels between organizations | Post-MVP | 13, 22 |
 | 40 | Corporate IdP sign-in | Post-MVP | 9 |
-| 41 | ask_user and attachments | Post-MVP | 21 |
 | 42 | Shared team instructions | Post-MVP | 19, 20 |
 | 43 | Gemini, Cursor, OpenCode and Copilot adapters | Post-MVP | 15, 24 |
 | 44 | Edit coordination: file level | Post-MVP | 5, 19, 20, 26 |
@@ -53,10 +58,10 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 46 | Web: security center, human inbox, edit map | Post-MVP | 18, 27, 41, 44 |
 | 47 | Public cloud: anti-abuse | Post-MVP | 22, 25 |
 | 48 | Operator console | Post-MVP | 30, 47 |
-| 49 | Alerts, analytics and token usage | Post-MVP | 26, 27, 35 |
+| 49 | Analytics and token usage | Post-MVP | 26, 27, 35 |
 | 50 | Enterprise: SSO, SAML, SCIM and license | Post-MVP | 40 |
 | 51 | Enterprise: audit and retention policies | Post-MVP | 16, 50 |
-| 52 | Self-host: Docker Compose, Helm, documentation | Post-MVP | 7, 40, 50 |
+| 52 | Self-host: Helm and isolated networks | Post-MVP | 40, 50, 64 |
 | 53 | History export and migration to a self-hosted server | Post-MVP | 16, 17, 52 |
 | 54 | Python and TypeScript SDKs | Post-MVP | 14, 26 |
 | 55 | Homebrew, winget and cargo-binstall | Post-MVP | 7 |
@@ -75,15 +80,15 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Wave 2: 2, 3, 4, 5, 6, 7, 62.
 - Wave 3: 8, 10, 25 (25 can be postponed until launch).
 - Wave 4: 9, 11, 33.
-- Wave 5: 12.
+- Wave 5: 12, 64.
 - Wave 6: 13, 14, 15, 22.
-- Wave 7: 16, 19, 20, 21, 23, 26.
-- Wave 8: 17, 30, 31.
-- Wave 9: 18, 24, 27, 34.
+- Wave 7: 16, 19, 20, 21, 23, 26, 35.
+- Wave 8: 17, 30, 31, 41, 65, 66.
+- Wave 9: 18, 24, 27, 34, 36, 63.
 - Wave 10: 28, 32.
 - Wave 11: 29 — end of MVP.
-- Wave 12: 35, 38, 39, 40, 41, 42, 43, 44, 47, 54, 55, 56, 58, 59.
-- Wave 13: 36, 45, 46, 48, 49, 50, 57, 60.
+- Wave 12: 38, 39, 40, 42, 43, 44, 47, 54, 55, 56, 58, 59, 67.
+- Wave 13: 45, 46, 48, 49, 50, 57, 60.
 - Wave 14: 37, 51, 52.
 - Wave 15: 53, 61.
 
@@ -228,6 +233,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Receipts `stored`, `delivered`, `read`, `replied`, `held`, `refused`, `expired`: who issues and signs each, and how it reaches the sender.
   - The per-sender counter: how the recipient detects a missing message and reports it.
   - Message order within a channel.
+  - Attachments: encrypted blobs uploaded separately and referenced from the content; size limit and expiry.
 - **Definition of done:** the spec covers every item above; `architecture.md` keeps only a link to delivery semantics.
 
 #### Iteration 2.3: Protocol spec: queues, presence and edit coordination
@@ -235,6 +241,9 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **What we do:**
   - `docs/protocol/queues.md`, `presence.md` and `edits.md`; the wire-level part of `architecture.md`, "Queue" (claim, lease, fencing, modes), moves here and is replaced by a link.
   - Queues: plaintext scheduling fields and the encrypted payload; claim, lease with heartbeat, fencing with `claim_id` and generation, `claim_lost`; at-least-once and at-most-once modes, retries, DLQ; the result returned as an encrypted message.
+  - Task templates: how a task names its template and carries the template's input and result.
+  - Sender trust: how the recipient learns from the signed envelope whether a task comes from an own device, a space member or a service agent.
+  - `ask_user`: a question from an agent to a person and the answer.
   - Presence: the encrypted agent status; the server keeps only the latest value.
   - Edit coordination: HMAC fingerprints of paths, hunks and symbols with the space key; what the client sends and the server compares; open questions link to `features.md` §11, "To decide".
 - **Definition of done:** the spec covers every item above; no fact is repeated between the spec and `architecture.md` or `features.md`.
@@ -456,6 +465,21 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Tests: the current tab is marked; a tab's count is part of its accessible name.
 - **Definition of done:** the kit page shows the operator console as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
 
+### Story 64: Self-host: Docker Compose
+
+**Goal:** A self-hosted server comes up with one command, following the docs.
+
+**Scope:**
+- `docker compose up` brings up `skald-server`, PostgreSQL and Caddy; the domain is set with a single variable, and HTTPS works right away.
+- Sign-in on a self-hosted server: GitHub or Google with the admin's own OAuth apps; corporate IdPs come with Story 40.
+- Backups and upgrades with documented commands.
+- Self-host documentation.
+- **Done when:** following the docs, a working Skald with its own domain comes up on a clean server; an upgrade keeps the data.
+
+- **Release:** MVP
+- **Depends on:** Story 6, Story 7, Story 9
+- **Docs:** `infrastructure.md` — "Self-host", "Repositories", `features.md` — "Product"
+
 ### Story 8: GitHub sign-in and device certificate
 
 **Goal:** The user signs in with GitHub, and the machine gets its own keys and a device certificate.
@@ -514,7 +538,8 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - An agent is a named endpoint on a device; an address like `space/alice/claude-api@skald.example` with the server name.
 - Binding a session to a space by folder: `.skald.toml` or a rule like `~/work/clientA/** → clientA`.
 - Isolation: an agent of one space cannot see other spaces.
-- **Done when:** a device is in three spaces; an agent in `~/work/clientA` sees only clientA.
+- Each account gets a personal space at sign-up; its machines join it by default, so one person can start alone.
+- **Done when:** a new account has a personal space with its machines; a device is in three spaces; an agent in `~/work/clientA` sees only clientA.
 
 - **Release:** MVP
 - **Depends on:** Story 8
@@ -792,6 +817,98 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 21, Story 26, Story 27
 - **Docs:** `features.md` §12
 
+### Story 35: Service agents: HPKE and scoped tokens
+
+**Goal:** A service agent (`ci/deploy-bot`) without a persistent disk exchanges end-to-end encrypted messages using a scoped token.
+
+**Scope:**
+- A service agent with its own key, stored in an environment secret.
+- A scoped token: send-only, queue-only, specific channels, expiry; token and key rotation.
+- Stateless HPKE encryption for ephemeral agents.
+- The "Service agents and tokens" web UI section: permissions, expiry, last use, rotation and revocation; the token value is shown once, at creation. The number of service agents is capped by the account limit.
+- **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected.
+
+- **Release:** MVP
+- **Acceptance tests:** first
+- **Depends on:** Story 13, Story 22
+- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography"
+
+### Story 41: ask_user and attachments
+
+**Goal:** An agent asks a human and sends small files.
+
+**Scope:**
+- `ask_user`: the agent requests confirmation from a human and waits for the answer.
+- Encrypted attachments up to 10 MB, such as diffs and logs.
+- **Done when:** the agent gets a human's answer to `ask_user`; an attachment reaches the recipient, and the server sees only ciphertext.
+
+- **Release:** MVP
+- **Acceptance tests:** first
+- **Depends on:** Story 21
+- **Docs:** `features.md` §8, `architecture.md` — "Security"
+
+### Story 65: Queue templates: review, test, ask
+
+**Goal:** A team uses the queue without inventing its own task format.
+
+**Scope:**
+- Templates: review (a PR or diff → findings), test (a command → result and logs), ask (a question about a repository → answer).
+- A template sets the task's input and result and the instructions the agent gets.
+- `skald queue create --template <name>`; the Claude Code and Codex adapters run template tasks with the template's instructions.
+- A team adds its own templates to the space.
+- **Done when:** a review task from the template, sent by Claude Code, is done by Codex and returns findings in the template's format.
+
+- **Release:** MVP
+- **Depends on:** Story 19, Story 20, Story 26
+- **Docs:** `features.md` §10
+
+### Story 63: Notifications to people
+
+**Goal:** A person learns at once that an agent waits for them, without watching the web UI.
+
+**Scope:**
+- Channels: Telegram, Slack, a webhook; set per person in the web UI.
+- Events: a task or message addressed to the person, a `hold` or `ask_user` waiting, DLQ growing, an agent gone, a key changed, a token expiring.
+- The server sends only metadata: who, which channel or queue, the event. A content preview comes only from the person's own device, if they turn it on.
+- Rate limits, quiet hours, unsubscribe in one click.
+- **Done when:** an `ask_user` and a DLQ entry arrive in Telegram within seconds; a notification sent by the server carries no message text.
+
+- **Release:** MVP
+- **Acceptance tests:** first
+- **Depends on:** Story 21, Story 22, Story 26, Story 41
+- **Docs:** `features.md` §12, `architecture.md` — "Security"
+
+### Story 66: Restricted mode for tasks from other people
+
+**Goal:** An agent works on a task from another person only with the rights the space allows, so injected instructions cannot run commands on the machine.
+
+**Scope:**
+- Trust levels: own devices, space members, service agents. The sender comes from the signed envelope, not from the text.
+- The space policy sets what each level may do: read only, no shell, no network, or everything.
+- The Claude Code and Codex adapters start such a task in the matching mode: Claude Code permission settings, the Codex sandbox. A mode the agent cannot enforce is refused, not weakened.
+- The threat model states what this does not stop.
+- **Done when:** a task from another member that asks to run a shell command is refused by the agent in read-only mode; the same task from an own device runs.
+
+- **Release:** MVP
+- **Acceptance tests:** first
+- **Depends on:** Story 19, Story 20, Story 21
+- **Docs:** `architecture.md` — "Security", `features.md` §8
+
+### Story 36: GitHub Action
+
+**Goal:** A GitHub Actions workflow with a single secret sends and receives encrypted messages, and a PR comment can hand a task to an agent.
+
+**Scope:**
+- A GitHub Action built on the client's one-shot mode and a service agent key.
+- The Action is published together with the release.
+- GitHub bridge: a comment `/skald <template> …` on an issue or PR from a user with write access becomes a task in the space's queue; the result returns as a comment on the PR.
+- **Done when:** a GitHub Action with a single secret sends and receives an encrypted message, including behind a proxy; a `/skald review` comment on a PR returns the review as a PR comment; a comment from a user without write access is ignored.
+
+- **Release:** MVP
+- **Acceptance tests:** first
+- **Depends on:** Story 14, Story 35, Story 65
+- **Docs:** `features.md` §2, §9, §16, `architecture.md` — "Components"
+
 ### Story 29: End-to-end MVP scenario
 
 **Goal:** The MVP demo passes in full, automatically, on real agents.
@@ -801,12 +918,13 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - The review request goes through the task queue; the user follows the thread and the task in a linked browser.
 - The scenario starts with the new-user path: sign-up (account A with GitHub, account C with Google), one-command machine connect, invite by link.
 - The clients verify each other's device keys without trusting the server.
+- It also covers: a review from a `/skald review` PR comment, an `ask_user` answered after a Telegram notification, and a task from another member run in restricted mode.
 - Daily run on staging with real Claude Code and Codex in CI.
 - It checks the "Done when" criteria of features 1, 4, 5, 6, 10 and 16.
 - **Done when:** the demo passes automatically; the run report is available in CI.
 
 - **Release:** MVP
-- **Depends on:** Story 9, Story 18, Story 21, Story 23, Story 24, Story 26, Story 27, Story 28
+- **Depends on:** Story 9, Story 18, Story 21, Story 23, Story 24, Story 26, Story 27, Story 28, Story 36, Story 41, Story 63, Story 65, Story 66
 - **Docs:** `roadmap.md` — "MVP", `features.md` §1, §4, §5, §6, §10, §16, `infrastructure.md` — "PR checks"
 
 ### Story 30: Admin rights transfer and account deletion
@@ -847,7 +965,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** A new user connects and starts working from the docs, without help from the author.
 
 **Scope:**
-- Quick start: sign-up, connecting a machine, the first message between agents, inviting the team, the recovery key.
+- Quick start, one person first: sign-up, connecting two own machines, the first task between their agents; then inviting the team and the recovery key.
 - The CLI and MCP tool reference is generated from the code and never diverges from it.
 - In plain language: what the server sees, that there has been no external audit, what to do after losing a device and after losing the admin.
 - Published on `docs.skald.so` together with the release.
@@ -884,35 +1002,6 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 12, Story 30
 - **Docs:** `features.md` §17
 
-### Story 35: Service agents: HPKE and scoped tokens
-
-**Goal:** A service agent (`ci/deploy-bot`) without a persistent disk exchanges end-to-end encrypted messages using a scoped token.
-
-**Scope:**
-- A service agent with its own key, stored in an environment secret.
-- A scoped token: send-only, queue-only, specific channels, expiry; token and key rotation.
-- Stateless HPKE encryption for ephemeral agents.
-- The "Service agents and tokens" web UI section: permissions, expiry, last use, rotation and revocation; the token value is shown once, at creation. The number of service agents is capped by the account limit.
-- **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected.
-
-- **Release:** Post-MVP
-- **Acceptance tests:** first
-- **Depends on:** Story 13, Story 22
-- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography"
-
-### Story 36: GitHub Action
-
-**Goal:** A GitHub Actions workflow with a single secret sends and receives encrypted messages.
-
-**Scope:**
-- A GitHub Action built on the client's one-shot mode and a service agent key.
-- The Action is published together with the release.
-- **Done when:** a GitHub Action with a single secret sends and receives an encrypted message, including behind a proxy.
-
-- **Release:** Post-MVP
-- **Depends on:** Story 14, Story 35
-- **Docs:** `features.md` §2, §9, §16, `architecture.md` — "Components"
-
 ### Story 37: Task queue: scheduling and agents
 
 **Goal:** Claude Code, Codex and CI work through a shared queue according to priorities and capabilities.
@@ -939,6 +1028,20 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** Post-MVP
 - **Depends on:** Story 20
 - **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents"
+
+### Story 67: A2A gateway
+
+**Goal:** An A2A agent exchanges tasks and messages with Skald agents.
+
+**Scope:**
+- A gateway translates between A2A over HTTPS and the Skald A2A extension: tasks, messages, results.
+- The gateway holds a service agent key; end-to-end encryption ends at the gateway, and the docs say so.
+- **Done when:** an A2A client sends a task to a Skald queue through the gateway and gets the result.
+
+- **Release:** Post-MVP
+- **Acceptance tests:** first
+- **Depends on:** Story 2, Story 26, Story 35
+- **Docs:** `architecture.md` — "Components"
 
 ### Story 39: Shared channels between organizations
 
@@ -967,20 +1070,6 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Acceptance tests:** first
 - **Depends on:** Story 9
 - **Docs:** `features.md` §5
-
-### Story 41: ask_user and attachments
-
-**Goal:** An agent asks a human and sends small files.
-
-**Scope:**
-- `ask_user`: the agent requests confirmation from a human and waits for the answer.
-- Small encrypted text attachments up to 256 KB.
-- **Done when:** the agent gets a human's answer to `ask_user`; an attachment reaches the recipient, and the server sees only ciphertext.
-
-- **Release:** Post-MVP
-- **Acceptance tests:** first
-- **Depends on:** Story 21
-- **Docs:** `features.md` §8, `architecture.md` — "Security"
 
 ### Story 42: Shared team instructions
 
@@ -1082,16 +1171,15 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 30, Story 47
 - **Docs:** `features.md` §17, §12, `architecture.md` — "Security"
 
-### Story 49: Alerts, analytics and token usage
+### Story 49: Analytics and token usage
 
-**Goal:** The team learns about problems immediately and sees statistics on agent work.
+**Goal:** The team sees statistics on agent work.
 
 **Scope:**
-- Alerts to Telegram, Slack or a webhook: DLQ is growing, an agent is gone, a key changed, a token is expiring.
 - Metadata statistics in the non-secret sections.
 - Analytics: computed by the client, stored encrypted, shown in a linked browser.
 - LLM token usage per task, only from what the CLI itself shows the user; low priority.
-- **Done when:** DLQ growth and an expiring token arrive as Telegram alerts; analytics is visible only in a linked browser.
+- **Done when:** metadata statistics are in the non-secret sections; analytics is visible only in a linked browser.
 
 - **Release:** Post-MVP
 - **Depends on:** Story 26, Story 27, Story 35
@@ -1129,19 +1217,18 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 16, Story 50
 - **Docs:** `features.md` — "Product", §12
 
-### Story 52: Self-host: Docker Compose, Helm, documentation
+### Story 52: Self-host: Helm and isolated networks
 
-**Goal:** A self-hosted server comes up with one command, following the docs.
+**Goal:** A self-hosted Skald runs in Kubernetes and in an isolated network.
 
 **Scope:**
-- `docker compose up` brings up `skald-server`, PostgreSQL and Caddy; the domain is set with a single variable, and HTTPS works right away.
 - Helm chart.
-- Self-host documentation.
 - Deployment in an isolated network (ee).
-- **Done when:** following the docs, a working Skald with its own domain comes up on a clean server.
+- Documentation for both.
+- **Done when:** following the docs, Skald comes up from the Helm chart in Kubernetes and in a network without internet access.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 7, Story 40, Story 50
+- **Depends on:** Story 40, Story 50, Story 64
 - **Docs:** `infrastructure.md` — "Self-host", "Repositories", `features.md` — "Product"
 
 ### Story 53: History export and migration to a self-hosted server

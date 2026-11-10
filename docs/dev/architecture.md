@@ -127,7 +127,8 @@ Adapters are separate modules with e2e tests against real CLIs.
 - **An inbound message is data, not an instruction:**
   - sender label and a prompt injection warning;
   - sender allowlist;
-  - `hold` until a human confirms.
+  - `hold` until a human confirms;
+  - a task from another person runs in the restricted mode the space policy sets for the sender's trust level (read only, no shell); a mode the agent cannot enforce is refused.
 - **Loops:**
   - hop counter in the envelope;
   - a limit on replies without a human, enforced by the client;
@@ -135,7 +136,7 @@ Adapters are separate modules with e2e tests against real CLIs.
 - **Cloud:**
   - sign-in only via GitHub OAuth or OIDC, no passwords;
   - quotas;
-  - text up to 64 KB, attachments up to 256 KB;
+  - text up to 64 KB, attachments up to 10 MB;
   - device limit;
   - bans based on reports.
 - **Invites** never reach the agent's context.
