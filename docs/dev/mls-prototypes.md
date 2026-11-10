@@ -41,7 +41,7 @@ Certificates and revocations are encoded as [Device certificate](../protocol/mem
 
 A minimal in-process Delivery Service, `DeliveryService`, stands in for `skald-server`. It knows a channel only from its PublicMessage Commits and GroupInfo, through each library's party outside the group, its `Observer`:
 - it keeps a channel's first Commit of epoch 0 without checking it, and refuses later ones with `epoch-mismatch` ([Creating a channel](../protocol/membership.md#creating-a-channel));
-- it accepts a later Commit as [Commit ordering](../protocol/membership.md#commit-ordering) says: of the current epoch, else `epoch-mismatch`; verified by its `Observer`, with the sender leaf's `identity` the sending device's, else `not-a-member`; the `Observer` then moves to the new epoch;
+- it accepts a later Commit as [Commit ordering](../protocol/membership.md#commit-ordering) says: of the current epoch, else `epoch-mismatch`; verified by its `Observer`, with the sender leaf's `identity` the sending device's, else `not-a-member`, as is one sent before the first GroupInfo; the `Observer` then moves to the new epoch;
 - it keeps an uploaded GroupInfo if it is of the current epoch, has `ratchet_tree` and `external_pub`, verifies, lists its uploader, and has the `Observer`'s GroupContext. The first one, of epoch 1, it takes only from the sender of the kept Commit and starts its `Observer` from it;
 - members process its accepted Commits in its order; a device merges its Commit only after the service accepts it and drops it if refused.
 
@@ -98,7 +98,7 @@ A minimal in-process Delivery Service, `DeliveryService`, stands in for `skald-s
 - **Dropping a group:** `GroupStateStorage` has no delete; the prototype's store drops the group. A Welcome for a group whose ID the device has replaces that group without an error.
 
 ### Spec
-- The server cannot check a channel's first Commit: it has no state of epoch 0. Nor can it tie the GroupInfo of epoch 1 to that Commit, so [Creating a channel](../protocol/membership.md#creating-a-channel) leaves open whose GroupInfo it takes; the prototype takes it only from the Commit's sender.
-- Until it has a GroupInfo of the current epoch, the server cannot tell a member's Commit; the prototype refuses one with `not-a-member`.
-- [Send](../protocol/delivery.md#send) names no problem for a Commit the server cannot process, such as one whose signature does not verify; the prototype refuses it with `not-a-member`.
-- "MLS profile" says only that the server keeps the latest GroupInfo. Without a check, one member could give joiners and browsers a GroupInfo of another group; the prototype keeps one only with the GroupContext of the epoch it follows.
+- The server cannot check a channel's first Commit: it has no state of epoch 0. Nor can it tie the GroupInfo of epoch 1 to that Commit, so [Creating a channel](../protocol/membership.md#creating-a-channel) leaves open whose GroupInfo it takes.
+- Before the first GroupInfo, the server cannot tell a member's Commit.
+- [Send](../protocol/delivery.md#send) names no problem for a Commit the server cannot process, such as one whose signature does not verify.
+- "MLS profile" says only that the server keeps the latest GroupInfo. Without a check, one member could give joiners and browsers a GroupInfo of another group.
