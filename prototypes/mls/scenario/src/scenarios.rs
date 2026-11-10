@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     Admitted, Commit, DeliveryService, Device, DeviceId, Fleet, Identity, Joining, Leaf, Received,
-    Refusal, Result, Staged,
+    Refusal, Result, Staged, browser,
     certificate::Kind,
     identity::device_id,
     key_packages,
@@ -2292,4 +2292,245 @@ pub fn offline_device_catches_up<D: Device>() {
     network.assert_converged(&[0, 1, 2], &[0, 1, 2]);
     assert_reads(&mut network.fleet, CHANNEL, 0, 2);
     assert_reads(&mut network.fleet, CHANNEL, 2, 1);
+}
+
+/// The ID and the signing key of each of the fleet's devices `devices`, one after another: the
+/// admitted devices as [`browser::member_ids`] takes them.
+fn encoded_admitted<D: Device>(
+    fleet: &Fleet<D>,
+    devices: impl IntoIterator<Item = usize>,
+) -> Vec<u8> {
+    devices
+        .into_iter()
+        .flat_map(|device| {
+            let identity = fleet.identity(device);
+            [
+                identity.device_id().to_vec(),
+                identity.public_key().to_vec(),
+            ]
+            .concat()
+        })
+        .collect()
+}
+
+/// A linked browser takes the channel's member devices from its latest GroupInfo with the ratchet
+/// tree, signed by a member leaf ("Envelope"), and checks them before it writes under a wrap's key
+/// ("Wraps"): after the channel's first Commit, and after a Remove, for a wrap by any member.
+pub fn browser_reads_the_members_from_the_group_info<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    let admitted = network.fleet.admitted();
+    let first = network.service.group_info(CHANNEL).unwrap().to_vec();
+    for signer in 0..3 {
+        assert_eq!(
+            browser::members::<D::Observer>(&first, CHANNEL, 1, &network.id(signer), &admitted)
+                .unwrap(),
+            leaves(&network.fleet, 0..3),
+            "{lib}: the members of epoch 1 for a wrap by device {signer}"
+        );
+    }
+
+    let id = network.id(1).to_vec();
+    let remove = network
+        .fleet
+        .step(2, |d| d.remove(CHANNEL, &[id], &[]))
+        .unwrap();
+    network.send(2, &remove).unwrap();
+    let latest = network.service.group_info(CHANNEL).unwrap().to_vec();
+    assert_eq!(
+        wire::group_info(&latest).unwrap().signer,
+        2,
+        "{lib}: device 2's leaf signed the latest GroupInfo"
+    );
+    for signer in [0, 2] {
+        assert_eq!(
+            browser::members::<D::Observer>(&latest, CHANNEL, 2, &network.id(signer), &admitted)
+                .unwrap(),
+            leaves(&network.fleet, [0, 2]),
+            "{lib}: the members of epoch 2 for a wrap by device {signer}"
+        );
+    }
+
+    // The same check with its arguments and result as bytes, as a WASM module exports it.
+    assert_eq!(
+        browser::member_ids::<D::Observer>(
+            &latest,
+            CHANNEL,
+            2,
+            &network.id(0),
+            &encoded_admitted(&network.fleet, 0..3),
+        )
+        .unwrap(),
+        [network.id(0), network.id(2)].concat(),
+        "{lib}: the member IDs of epoch 2"
+    );
+}
+
+/// `bytes` with its one occurrence of `from` replaced by `to`, of the same length.
+#[track_caller]
+fn replace_once(bytes: &mut [u8], from: &[u8], to: &[u8]) {
+    let at: Vec<_> = bytes
+        .windows(from.len())
+        .enumerate()
+        .filter(|(_, window)| *window == from)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(at.len(), 1, "one occurrence");
+    bytes[at[0]..at[0] + to.len()].copy_from_slice(to);
+}
+
+/// The data of the GroupInfo's `ratchet_tree` extension.
+fn ratchet_tree(fields: &mut wire::GroupInfo) -> &mut Vec<u8> {
+    &mut fields
+        .extensions
+        .iter_mut()
+        .find(|extension| extension.extension_type == wire::RATCHET_TREE)
+        .expect("a ratchet_tree extension")
+        .data
+}
+
+/// A browser rejects a GroupInfo signed by a key that is not a member leaf's: a removed device's
+/// at its old leaf, another key at the signer's leaf, or for a leaf that does not exist. It rejects
+/// one whose tree was altered to list a removed device in a member's leaf, signed again by its
+/// signer or not, and one with the tree of an earlier epoch; one of another channel or epoch than the wrap's; one that does not list the
+/// wrap's signer; and one that lists a member that is not admitted ("Wraps").
+pub fn group_info_that_fails_the_browser_check_is_rejected<D: Device>() {
+    let lib = D::LIBRARY;
+    let mut network = Network::<D>::channel(3);
+    let first = network.service.group_info(CHANNEL).unwrap().to_vec();
+    let id = network.id(1).to_vec();
+    let remove = network
+        .fleet
+        .step(2, |d| d.remove(CHANNEL, &[id], &[]))
+        .unwrap();
+    network.send(2, &remove).unwrap();
+    let latest = network.service.group_info(CHANNEL).unwrap().to_vec();
+
+    let (member, removed, signer) = (
+        network.fleet.identity(0).clone(),
+        network.fleet.identity(1).clone(),
+        network.fleet.identity(2).clone(),
+    );
+    let outsider = Identity::generate();
+    let admitted = network.fleet.admitted();
+    // Device 1 in place of device 0 in leaf 0: every device the tree lists is admitted.
+    let altered = |fields: &mut wire::GroupInfo| {
+        let tree = ratchet_tree(fields);
+        replace_once(tree, &member.device_id(), &removed.device_id());
+        replace_once(tree, &member.public_key(), &removed.public_key());
+    };
+    let mut unsigned = wire::group_info(&latest).unwrap();
+    altered(&mut unsigned);
+    // The tree of epoch 1, which lists device 1 in its leaf; each leaf's signature verifies.
+    let first_tree = ratchet_tree(&mut wire::group_info(&first).unwrap()).clone();
+    let stale = |fields: &mut wire::GroupInfo| *ratchet_tree(fields) = first_tree.clone();
+    let mut excluding = network.fleet.roster().clone();
+    excluding.exclude(ACCOUNT, member.device_id());
+    let check = |group_info: &[u8], channel: &[u8], epoch: u64, wrap_signer: &Identity| {
+        browser::members::<D::Observer>(
+            group_info,
+            channel,
+            epoch,
+            &wrap_signer.device_id(),
+            &admitted,
+        )
+    };
+
+    assert!(
+        check(&latest, CHANNEL, 2, &member).is_ok(),
+        "{lib}: the latest GroupInfo passes"
+    );
+    for (rejected, why) in [
+        (
+            check(
+                &resigned_group_info(&latest, &removed, |fields| fields.signer = 1),
+                CHANNEL,
+                2,
+                &member,
+            ),
+            "a GroupInfo signed by a removed device at its old leaf",
+        ),
+        (
+            check(
+                &resigned_group_info(&latest, &outsider, |_| {}),
+                CHANNEL,
+                2,
+                &member,
+            ),
+            "a GroupInfo signed by another key than its signer leaf's",
+        ),
+        (
+            check(
+                &resigned_group_info(&latest, &outsider, |fields| fields.signer = 9),
+                CHANNEL,
+                2,
+                &member,
+            ),
+            "a GroupInfo signed for a leaf that does not exist",
+        ),
+        (
+            check(&unsigned.encode(), CHANNEL, 2, &signer),
+            "a GroupInfo with an altered tree",
+        ),
+        (
+            check(
+                &resigned_group_info(&latest, &signer, altered),
+                CHANNEL,
+                2,
+                &signer,
+            ),
+            "a GroupInfo with an altered tree, signed again by its signer",
+        ),
+        (
+            check(
+                &resigned_group_info(&latest, &signer, stale),
+                CHANNEL,
+                2,
+                &signer,
+            ),
+            "a GroupInfo with the tree of an earlier epoch, signed again by its signer",
+        ),
+        (
+            check(&latest, OTHER_CHANNEL, 2, &member),
+            "a GroupInfo of another channel",
+        ),
+        (
+            check(&latest, CHANNEL, 1, &member),
+            "a GroupInfo of a later epoch than the wrap's",
+        ),
+        (
+            check(&first, CHANNEL, 2, &member),
+            "a GroupInfo of an earlier epoch than the wrap's",
+        ),
+        (
+            check(&latest, CHANNEL, 2, &removed),
+            "a GroupInfo that does not list the wrap's signer",
+        ),
+        (
+            browser::members::<D::Observer>(
+                &latest,
+                CHANNEL,
+                2,
+                &signer.device_id(),
+                &excluding.admitted(),
+            ),
+            "a GroupInfo that lists a member that is not admitted",
+        ),
+    ] {
+        assert!(rejected.is_err(), "{lib}: {why} is rejected");
+    }
+
+    let admitted = encoded_admitted(&network.fleet, 0..3);
+    let member_ids = |signer: &[u8], admitted: &[u8]| {
+        browser::member_ids::<D::Observer>(&latest, CHANNEL, 2, signer, admitted)
+    };
+    assert!(member_ids(&member.device_id(), &admitted).is_ok());
+    assert!(
+        member_ids(&member.device_id(), &[&admitted[..], &[0]].concat()).is_err(),
+        "{lib}: admitted devices with a trailing byte are rejected"
+    );
+    assert!(
+        member_ids(&member.device_id()[..15], &admitted).is_err(),
+        "{lib}: a signer ID of 15 bytes is rejected"
+    );
 }

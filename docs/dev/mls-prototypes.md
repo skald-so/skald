@@ -2,11 +2,11 @@
 
 Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Story 3 in [task.md](../../task.md)).
 
-- Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library.
-- Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0; mls-rs 0.57.0 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0.
+- Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives.
+- Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0, and the `js` feature in WASM; mls-rs 0.57.0 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0, with the `browser` feature in WASM.
 - Profile: [membership.md](../protocol/membership.md#mls-profile), "MLS profile". The device's Ed25519 signing key is generated outside the library.
 - Every step of a device loads its saved state and saves it after the step, as one-shot mode does ([architecture.md](architecture.md#components)). A failed step leaves the saved state as it was.
-- Run: `cargo test --manifest-path prototypes/mls/Cargo.toml`; `script/test` runs it too.
+- Run: `cargo test --manifest-path prototypes/mls/Cargo.toml`. In WASM, in Node.js, from `prototypes/mls`: `cargo test --target wasm32-unknown-unknown -p mls-proto-openmls -p mls-proto-mls-rs --test scenarios`; tools: [CONTRIBUTING.md](../../CONTRIBUTING.md#requirements). `script/test` runs both.
 
 ## Scenarios
 | Scenario | Checks |
@@ -36,6 +36,8 @@ Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Sto
 | `welcome_that_fails_a_check_is_refused` | A new device refuses a Welcome to a group with a member that is not admitted and one from a device that is not admitted, in a group of its own with the channel's ID; it reads each Welcome's signer and members and is left without the group. It joins from a Welcome that passes and reads the channel |
 | `device_that_missed_a_commit_rejoins` | [Rejoining](../protocol/membership.md#rejoining): a device that missed a Commit fails on the next one and stays in its epoch. It rejoins from the latest GroupInfo with an external Commit that removes its old leaf; members read it as the Remove of its old leaf and its Add. All converge, the device with one leaf, and read each other |
 | `offline_device_catches_up` | A device offline for 100 Commits, empty ones, an Add and a Remove among them, processes each in order with its sender and changes, then reads and sends new messages |
+| `browser_reads_the_members_from_the_group_info` | A linked browser, outside the group, takes the member devices from the service's latest GroupInfo ([Envelope](../protocol/README.md#envelope)) once it passes the checks of [Wraps](../protocol/membership.md#wraps): of the channel and the wrap's epoch, signed by a member leaf, listing the wrap's signer, every member admitted. It reads epoch 1's members for a wrap by each member, and epoch 2's after a Remove |
+| `group_info_that_fails_the_browser_check_is_rejected` | The browser rejects the latest GroupInfo signed again by a removed device at its old, blank leaf, by another key at the signer's leaf, or for a leaf that does not exist; with its tree altered to list the removed device in a member's leaf, signed again by its signer or not; with the tree of epoch 1, signed again by its signer; for another channel, or a wrap of an earlier or a later epoch; for a wrap by a device it does not list; and with a member the browser does not admit |
 
 The failing KeyPackages are the device's own, changed one field at a time and signed again with its key by `mls-scenario`; signed again unchanged, a KeyPackage is byte for byte the library's.
 
@@ -52,6 +54,19 @@ A minimal in-process Delivery Service, `DeliveryService`, stands in for `skald-s
 - members process its accepted Commits in its order; a device merges its Commit only after the service accepts it and drops it if refused. A device's external Commit is applied at once; the device drops the group if the service refuses it.
 
 A device joining by external Commit or from a Welcome checks the GroupInfo's signer and every member it lists against the fixture's admitted devices; a member processing an external Commit checks the joiner as an Add.
+
+## WASM
+- Both prototypes build for `wasm32-unknown-unknown`. The whole suite, the browser check among it, passes in Node.js as natively, with the same scenarios.
+- The browser check, `mls_scenario::browser`, is library-neutral: the library's `Observer` verifies the GroupInfo and its tree; the check makes the other checks of [Wraps](../protocol/membership.md#wraps).
+- Sizes of each library's module: `<library>-browser-check` exports only the browser check; `<library>-suite` runs the whole suite. [`prototypes/mls/wasm-size`](../../prototypes/mls/wasm-size) builds them and prints the table; besides the WASM test tools, it needs `wasm-opt` (Binaryen) and `brotli`.
+- Build: the `wasm` profile, `release` with `opt-level = "s"`, fat LTO and one codegen unit; `wasm-bindgen --target web` without the name and producers sections; `wasm-opt -Oz`. Measured with Rust 1.99.1, wasm-bindgen 0.2.130 and wasm-opt 133.
+
+| Module | Raw, KiB | gzip -9, KiB | Brotli -q 11, KiB |
+|---|---|---|---|
+| `openmls-browser-check` | 391.1 | 145.9 | 115.4 |
+| `openmls-suite` | 1472.1 | 590.8 | 434.8 |
+| `mls-rs-browser-check` | 269.9 | 114.9 | 94.9 |
+| `mls-rs-suite` | 1014.0 | 425.6 | 336.2 |
 
 ## Findings
 
@@ -84,6 +99,8 @@ A device joining by external Commit or from a Welcome checks the GroupInfo's sig
 - **Processing an external Commit:** its sender is `Sender::NewMemberCommit`; the joiner's new leaf is the staged Commit's `update_path_leaf_node`, and `remove_proposals` give the leaves it removes. `PublicGroup` processes it the same way.
 - **Removes in an external Commit:** nothing checks that an external Commit removes at most one leaf, the joiner's old one (RFC 9420, §12.2): `validate_external_commit` leaves it to the application. Unchecked, any holder of the latest GroupInfo can remove any member. The prototype's members and `Observer` refuse an external Commit with more than one Remove or with a Remove of a leaf whose `identity` is not the joiner's. Its test, `external_commit_that_removes_another_device_is_refused`, has a joiner with a member's signing key and another device ID: the builder removes only a leaf with the joiner's signature key.
 - **Missed Commits:** the Commit after a missed one fails with `ValidationError(WrongEpoch)`; the group stays in its epoch. Processing 100 missed Commits in order needs no configuration.
+- **WASM build:** needs the `js` feature, for the browser's clock and random number generator; without it, a `compile_error!` names the feature. `openmls_rust_crypto` also takes getrandom 0.2 through `rand_core` 0.6, which `js` does not reach: the prototype turns on getrandom 0.2's `js` feature itself. The module holds getrandom 0.2 and 0.4.
+- **Browser check:** `PublicGroup::from_external` checks the tree first: each leaf's signature (`InvalidNodeSignature`), then the tree hash against the GroupInfo's (`TreeHashMismatch`). Then the signer's leaf (`UnknownSender` for a blank or missing one) and the GroupInfo's signature (`InvalidGroupInfoSignature`).
 
 ### mls-rs
 - **Saving state:** the in-memory storages have no save or load. `InMemoryKeyPackageStorage` exports through `key_packages()` and imports through `insert()`. `InMemoryGroupStateStorage` exports through `stored_groups()` and its `GroupStateStorage` methods, but lists no prior epoch IDs: an export walks back from `max_epoch_id`. Workaround: one store implementing `GroupStateStorage` and `KeyPackageStorage` that saves its maps directly, about 100 lines, instead of export and import code over two storages; its `GroupState` and `EpochRecord` need a direct dependency on `mls-rs-core`.
@@ -116,10 +133,13 @@ A device joining by external Commit or from a Welcome checks the GroupInfo's sig
 - **Processing an external Commit:** `CommitMessageDescription::is_external`; its `committer` is the joiner's index in the new epoch, so the joiner's leaf comes from the new roster. Its Remove of the old leaf is in `applied_proposals`.
 - **Removes in an external Commit:** members and `ExternalGroup` enforce RFC 9420, §12.2: an external Commit with more than one Remove fails with `ExternalCommitWithMoreThanOneRemove`, one with a Remove of a leaf that the identity provider's `valid_successor` does not accept as the joiner's predecessor with `ExternalCommitRemovesOtherIdentity`.
 - **Missed Commits:** the Commit after a missed one fails with `InvalidEpoch`; the group stays in its epoch. Processing 100 missed Commits in order needs no configuration.
+- **WASM build:** on `wasm32`, mls-rs itself takes getrandom's `wasm_js` and reads the clock with `Date.now` through wasm-bindgen; the RustCrypto provider's `browser` feature turns on `wasm_js` for its own getrandom. Nothing else changes.
+- **Browser check:** `ExternalClient::observe_group` checks the tree hash first: an altered tree fails with `TreeHashMismatch`, signed again or not. Then the signer's leaf (`ExpectedNode` for a blank one, `InvalidNodeIndex` past the tree) and the GroupInfo's signature (`InvalidSignature`).
 
 ### Spec
 - The server cannot check a channel's first Commit: it has no state of epoch 0. Nor can it tie the GroupInfo of epoch 1 to that Commit, so [Creating a channel](../protocol/membership.md#creating-a-channel) leaves open whose GroupInfo it takes.
 - Before the first GroupInfo, the server cannot tell a member's Commit.
 - [Send](../protocol/delivery.md#send) names no problem for a Commit the server cannot process, such as one whose signature does not verify.
 - "MLS profile" says only that the server keeps the latest GroupInfo. Without a check, one member could give joiners and browsers a GroupInfo of another group.
+- [Envelope](../protocol/README.md#envelope) has a browser take the members from the latest GroupInfo, but names its checks of that GroupInfo's channel, epoch and members only in [Wraps](../protocol/membership.md#wraps), before the browser writes entries.
 - [Group changes](../protocol/membership.md#group-changes) says a joining device checks a GroupInfo's or a Welcome's members, but not what it does when one is not admitted. In the prototypes it refuses and joins by itself once a member has removed that device.

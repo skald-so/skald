@@ -4,6 +4,7 @@
 //! Every step loads the device from its saved state and saves it afterwards, as one-shot mode does:
 //! [`Fleet::step`]. Scenarios and findings: `docs/dev/mls-prototypes.md`.
 
+pub mod browser;
 pub mod cbor;
 pub mod certificate;
 pub mod delivery;
@@ -211,133 +212,71 @@ pub trait Observer: Sized {
     fn members(&self) -> Result<Vec<Leaf>>;
 }
 
-/// Defines one `#[test]` per scenario of [`scenarios`] for the [`Device`] type `$device`.
+/// Defines one test per scenario of [`scenarios`] for the [`Device`] type `$device`: a `#[test]`
+/// on native targets, a `#[wasm_bindgen_test]` on WASM, where the test crate depends on
+/// `wasm-bindgen-test`.
 #[macro_export]
 macro_rules! scenario_tests {
     ($device:ty) => {
-        #[test]
-        fn creating_a_channel() {
-            $crate::scenarios::creating_a_channel::<$device>();
-        }
+        $crate::each_scenario!(@tests $device);
+    };
+}
 
-        #[test]
-        fn member_adds_a_device() {
-            $crate::scenarios::member_adds_a_device::<$device>();
-        }
+/// Runs every scenario of [`scenarios`] for the [`Device`] type `$device`, in order; panics on the
+/// first that fails.
+#[macro_export]
+macro_rules! run_scenarios {
+    ($device:ty) => {
+        $crate::each_scenario!(@run $device);
+    };
+}
 
-        #[test]
-        fn members_exchange_messages() {
-            $crate::scenarios::members_exchange_messages::<$device>();
-        }
-
-        #[test]
-        fn replayed_message_is_rejected() {
-            $crate::scenarios::replayed_message_is_rejected::<$device>();
-        }
-
-        #[test]
-        fn removed_device_reads_nothing_later() {
-            $crate::scenarios::removed_device_reads_nothing_later::<$device>();
-        }
-
-        #[test]
-        fn revocations_are_read_before_merging() {
-            $crate::scenarios::revocations_are_read_before_merging::<$device>();
-        }
-
-        #[test]
-        fn empty_commit_starts_a_new_epoch() {
-            $crate::scenarios::empty_commit_starts_a_new_epoch::<$device>();
-        }
-
-        #[test]
-        fn history_key_rotates_with_each_epoch() {
-            $crate::scenarios::history_key_rotates_with_each_epoch::<$device>();
-        }
-
-        #[test]
-        fn device_keeps_key_packages() {
-            $crate::scenarios::device_keeps_key_packages::<$device>();
-        }
-
-        #[test]
-        fn key_packages_that_fail_a_check_are_refused() {
-            $crate::scenarios::key_packages_that_fail_a_check_are_refused::<$device>();
-        }
-
-        #[test]
-        fn devices_that_are_not_admitted_are_refused() {
-            $crate::scenarios::devices_that_are_not_admitted_are_refused::<$device>();
-        }
-
-        #[test]
-        fn last_resort_key_package_adds_to_two_groups() {
-            $crate::scenarios::last_resort_key_package_adds_to_two_groups::<$device>();
-        }
-
-        #[test]
-        fn device_added_without_admission_is_removed() {
-            $crate::scenarios::device_added_without_admission_is_removed::<$device>();
-        }
-
-        #[test]
-        fn commits_carry_the_new_epochs_group_info() {
-            $crate::scenarios::commits_carry_the_new_epochs_group_info::<$device>();
-        }
-
-        #[test]
-        fn two_commits_in_one_epoch_converge() {
-            $crate::scenarios::two_commits_in_one_epoch_converge::<$device>();
-        }
-
-        #[test]
-        fn three_commits_in_one_epoch_converge() {
-            $crate::scenarios::three_commits_in_one_epoch_converge::<$device>();
-        }
-
-        #[test]
-        fn commit_for_an_old_epoch_is_refused() {
-            $crate::scenarios::commit_for_an_old_epoch_is_refused::<$device>();
-        }
-
-        #[test]
-        fn commit_from_a_non_member_is_refused() {
-            $crate::scenarios::commit_from_a_non_member_is_refused::<$device>();
-        }
-
-        #[test]
-        fn two_creators_end_in_the_kept_group() {
-            $crate::scenarios::two_creators_end_in_the_kept_group::<$device>();
-        }
-
-        #[test]
-        fn device_joins_by_itself() {
-            $crate::scenarios::device_joins_by_itself::<$device>();
-        }
-
-        #[test]
-        fn joiner_that_is_not_admitted_is_removed() {
-            $crate::scenarios::joiner_that_is_not_admitted_is_removed::<$device>();
-        }
-
-        #[test]
-        fn group_info_that_fails_a_check_is_refused() {
-            $crate::scenarios::group_info_that_fails_a_check_is_refused::<$device>();
-        }
-
-        #[test]
-        fn welcome_that_fails_a_check_is_refused() {
-            $crate::scenarios::welcome_that_fails_a_check_is_refused::<$device>();
-        }
-
-        #[test]
-        fn device_that_missed_a_commit_rejoins() {
-            $crate::scenarios::device_that_missed_a_commit_rejoins::<$device>();
-        }
-
-        #[test]
-        fn offline_device_catches_up() {
-            $crate::scenarios::offline_device_catches_up::<$device>();
-        }
+/// Every scenario of [`scenarios`], for [`scenario_tests!`] and [`run_scenarios!`].
+#[doc(hidden)]
+#[macro_export]
+macro_rules! each_scenario {
+    (@tests $device:ty; $($scenario:ident),+) => {
+        $(
+            #[cfg_attr(not(target_arch = "wasm32"), test)]
+            #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+            fn $scenario() {
+                $crate::scenarios::$scenario::<$device>();
+            }
+        )+
+    };
+    (@run $device:ty; $($scenario:ident),+) => {
+        $($crate::scenarios::$scenario::<$device>();)+
+    };
+    (@$arm:ident $device:ty) => {
+        $crate::each_scenario!(
+            @$arm $device;
+            creating_a_channel,
+            member_adds_a_device,
+            members_exchange_messages,
+            replayed_message_is_rejected,
+            removed_device_reads_nothing_later,
+            revocations_are_read_before_merging,
+            empty_commit_starts_a_new_epoch,
+            history_key_rotates_with_each_epoch,
+            device_keeps_key_packages,
+            key_packages_that_fail_a_check_are_refused,
+            devices_that_are_not_admitted_are_refused,
+            last_resort_key_package_adds_to_two_groups,
+            device_added_without_admission_is_removed,
+            commits_carry_the_new_epochs_group_info,
+            two_commits_in_one_epoch_converge,
+            three_commits_in_one_epoch_converge,
+            commit_for_an_old_epoch_is_refused,
+            commit_from_a_non_member_is_refused,
+            two_creators_end_in_the_kept_group,
+            device_joins_by_itself,
+            joiner_that_is_not_admitted_is_removed,
+            group_info_that_fails_a_check_is_refused,
+            welcome_that_fails_a_check_is_refused,
+            device_that_missed_a_commit_rejoins,
+            offline_device_catches_up,
+            browser_reads_the_members_from_the_group_info,
+            group_info_that_fails_the_browser_check_is_rejected
+        );
     };
 }

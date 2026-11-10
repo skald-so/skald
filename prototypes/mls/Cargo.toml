@@ -7,3 +7,10 @@ version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
+
+# The WASM modules whose size `wasm-size` reports: a release build for size.
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1

@@ -12,3 +12,26 @@ openmls = "0.9"
 openmls_memory_storage = "0.6"
 openmls_rust_crypto = "0.6"
 openmls_traits = "0.6"
+
+# The browser's clock and random number generator on WASM: OpenMLS's `js` feature, and the `js`
+# feature of getrandom 0.2, which `openmls_rust_crypto` takes through `rand_core` 0.6.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom-02 = { package = "getrandom", version = "0.2", features = ["js"] }
+openmls = { version = "0.9", features = ["js"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[dev-dependencies]
+wasm-bindgen = "0.2"
+
+# WASM modules for their size, built by `wasm-size`: only the browser check, and the whole suite.
+[[example]]
+name = "openmls-browser-check"
+path = "examples/browser_check.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "openmls-suite"
+path = "examples/suite.rs"
+crate-type = ["cdylib"]

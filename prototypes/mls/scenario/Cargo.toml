@@ -10,3 +10,9 @@ publish.workspace = true
 ed25519-dalek = "3"
 getrandom = "0.4"
 sha2 = "0.11"
+# The clock: `std::time::SystemTime` on native targets, the browser's on WASM.
+web-time = "1"
+
+# The browser's random number generator on WASM.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
