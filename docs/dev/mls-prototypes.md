@@ -55,4 +55,4 @@ Revocations are encoded as [Revocation](../protocol/membership.md#revocation) sa
 - **Empty Commit:** `Group::commit` with no proposals always has an UpdatePath.
 - **History key:** `Group::export_secret`.
 - **Removed device:** processing its own Remove succeeds with `CommitEffect::Removed` but leaves the group in its old epoch with its keys: the device still derives the old history key and encrypts. The device has to act on the effect itself.
-- **Late messages:** a member rejects a message of a prior epoch whose sender's leaf has changed since, with `MemberNotFound`: what the removed device sends from its copy, and also what it sent before its Remove.
+- **Late messages:** a member rejects a message of a prior epoch with `MemberNotFound` when the sender's leaf is now blank or holds another signature key, as after the sender's Remove: what the removed device sends from its copy, and also what it sent before its Remove. An UpdatePath keeps the leaf's signature key, so earlier messages of a committer stay readable.
