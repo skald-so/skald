@@ -1,5 +1,5 @@
 [workspace]
-members = ["scenario", "openmls", "mls-rs"]
+members = ["scenario", "openmls", "mls-rs", "interop"]
 resolver = "3"
 
 [workspace.package]

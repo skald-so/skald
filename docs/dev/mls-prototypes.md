@@ -2,7 +2,7 @@
 
 Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Story 3 in [task.md](../../task.md)).
 
-- Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives.
+- Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives. `mls-interop` runs the [interoperability](#interoperability) scenarios on both.
 - Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0, and the `js` feature in WASM; mls-rs 0.57.0 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0, with the `browser` feature in WASM.
 - Profile: [membership.md](../protocol/membership.md#mls-profile), "MLS profile". The device's Ed25519 signing key is generated outside the library.
 - Every step of a device loads its saved state and saves it after the step, as one-shot mode does ([architecture.md](architecture.md#components)). A failed step leaves the saved state as it was.
@@ -68,6 +68,23 @@ A device joining by external Commit or from a Welcome checks the GroupInfo's sig
 | `mls-rs-browser-check` | 269.9 | 114.9 | 94.9 |
 | `mls-rs-suite` | 1014.0 | 425.6 | 336.2 |
 
+## Interoperability
+One channel with devices on both prototypes: a device on one library takes each step, devices on the other process it and read it as in the [scenarios](#scenarios). Each scenario runs in both directions, OpenMLS to mls-rs and mls-rs to OpenMLS, natively. `mls_scenario::interop` holds them; its `Mixed` device runs each device on its own library, and its saved state names that library.
+
+After each step, every member is at the same epoch with the same members in leaf order and derives the same history key, and each member's message is decrypted by every other one with its sender's leaf.
+
+| Scenario | Checks |
+|---|---|
+| `creates_the_channel` | A device creates the group and commits the Add of devices on both libraries from their KeyPackages; they join from its Welcome |
+| `adds_a_device` | A member adds a device on each library to a channel the other library created; members on the other library read the added leaves before they merge; the new devices join from its Welcome |
+| `removes_a_device` | A member commits the Remove of a device on the other library with its revocation in `authenticated_data`, which members on the other library read before they merge. The removed device processes its Remove and sees itself removed; from its state before and after, it reads no later message |
+| `makes_an_empty_commit` | A member commits an empty Commit with a browser's revocation in `authenticated_data`: an UpdatePath and no proposals; members on the other library read the revocation before they merge |
+| `joins_by_external_commit` | A device joins by external Commit from the GroupInfo of a channel on the other library, whose members check it as an Add. It misses a Commit and rejoins from the next GroupInfo with an external Commit that removes its old leaf; members read the Remove and the Add |
+| `messages_flow_both_ways` | Each of 4 devices, 2 on each library, sends 3 messages; every other device decrypts them, the first two out of order, with the sender's leaf |
+| `devices_run_on_their_library` | The harness: each device keeps its library across steps; the steps no scenario takes run on it |
+
+**Result:** no mismatch: every scenario passes in both directions on OpenMLS 0.9.2 and mls-rs 0.57.0. They exposed a defect of the mls-rs prototype's rejoin, not a mismatch: [mls-rs](#mls-rs), "External Commit".
+
 ## Findings
 
 ### OpenMLS
@@ -129,7 +146,7 @@ A device joining by external Commit or from a Welcome checks the GroupInfo's sig
 - **Dropping a group:** `GroupStateStorage` has no delete; the prototype's store drops the group. A Welcome for a group whose ID the device has replaces that group without an error.
 - **Checking a Welcome:** `join_group` returns the group and the signer's index, `NewMemberInfo::sender`; the device checks the signer and the roster before `write_to_storage`.
 - **GroupInfo signer:** `GroupInfo::sender`; `ExternalClient::observe_group` verifies the GroupInfo and gives the members. A GroupInfo signed by another key fails with `InvalidSignature`, one for a leaf that does not exist with `InvalidNodeIndex`.
-- **External Commit:** `ExternalCommitBuilder::build` verifies the GroupInfo and its tree and applies the Commit at once: there is no pending external Commit to drop. It gives no GroupInfo of the new epoch; the device makes one with `group_info_message_allowing_ext_commit(true)`. It removes the device's old leaf only with `with_removal(index)`, which the identity provider's `valid_successor` must accept: the prototype finds the index by its signature key among the observed members. The new group replaces the device's old state of it without an error.
+- **External Commit:** `ExternalCommitBuilder::build` verifies the GroupInfo and its tree and applies the Commit at once: there is no pending external Commit to drop. It gives no GroupInfo of the new epoch; the device makes one with `group_info_message_allowing_ext_commit(true)`. It removes the device's old leaf only with `with_removal(index)`, which the identity provider's `valid_successor` must accept: the prototype finds the index by its signature key among the observed members. The new group takes the prior epochs the storage keeps of its group ID and fails with `InvalidEpoch` when it adds its own after them, as on a rejoin by a device that has processed a Commit. Workaround: the device drops its old state of the group before the build.
 - **Processing an external Commit:** `CommitMessageDescription::is_external`; its `committer` is the joiner's index in the new epoch, so the joiner's leaf comes from the new roster. Its Remove of the old leaf is in `applied_proposals`.
 - **Removes in an external Commit:** members and `ExternalGroup` enforce RFC 9420, §12.2: an external Commit with more than one Remove fails with `ExternalCommitWithMoreThanOneRemove`, one with a Remove of a leaf that the identity provider's `valid_successor` does not accept as the joiner's predecessor with `ExternalCommitRemovesOtherIdentity`.
 - **Missed Commits:** the Commit after a missed one fails with `InvalidEpoch`; the group stays in its epoch. Processing 100 missed Commits in order needs no configuration.

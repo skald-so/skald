@@ -1,0 +1,12 @@
+[package]
+name = "mls-interop"
+description = "Interoperability tests of Skald's MLS prototypes: one channel with devices on OpenMLS and mls-rs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+mls-proto-mls-rs = { path = "../mls-rs" }
+mls-proto-openmls = { path = "../openmls" }
+mls-scenario = { path = "../scenario" }
