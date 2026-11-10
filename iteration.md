@@ -8,7 +8,7 @@
 - [x] **1.5:** PostgreSQL and migrations
 - [x] **1.6:** SPA skeleton with generated API client
 - [x] **1.7:** CI path filters and Renovate
-- [ ] **1.8:** Branch protection and `CONTRIBUTING.md`
+- [x] **1.8:** Branch protection and `CONTRIBUTING.md`
 - [ ] **1.9:** Mutation check of changed Rust code
 
 ## Story 2: Protocol spec and threat model
