@@ -53,6 +53,25 @@ export const pinnedChrome =
 const pinnedChromeArgs = ["--disable-partial-raster"];
 
 /**
+ * The browser server in the container: `playwright run-server` for one client, which launches the
+ * pinned Chrome with `pinnedChromeArgs` in place of any flags the client asks for. No client picks
+ * the program or its flags. Until the container is removed, any container that reaches the
+ * published port can still connect and drive a Chrome: `GET /json` gives the endpoint path, and on
+ * Docker Desktop every container reaches the port through `host.docker.internal`.
+ *
+ * `chromium.launchServer` takes fixed flags without this override, but its Chrome cannot reach the
+ * dev server on this machine: `exposeNetwork` works only for a browser that `run-server` launches.
+ * The override replaces a private method of this pinned playwright-core version; the flag check in
+ * kit-references.test.ts fails if it stops working.
+ */
+const browserServer = `const { PlaywrightServer } = require("/playwright-core/lib/coreBundle").remote;
+const server = new PlaywrightServer({ mode: "default", path: "/", maxConnections: 1 });
+const launch = server._initLaunchBrowserMode.bind(server);
+server._initLaunchBrowserMode = (browser, proxy, options, id) =>
+  launch(browser, proxy, { ...options, args: ${JSON.stringify(pinnedChromeArgs)} }, id);
+server.listen(3000, "0.0.0.0").then((endpoint) => console.log("Listening on " + endpoint));`;
+
+/**
  * Starts the dev server and headless Chrome. `pinned` takes the Chrome of `pinnedChrome` in Docker;
  * otherwise the local Google Chrome, or the binary in `SKALD_CHROME`.
  */
@@ -169,15 +188,8 @@ async function connectPinnedChrome(): Promise<Browser> {
       `--volume=${playwright}:/playwright-core:ro`,
       pinnedChrome,
       "node",
-      "/playwright-core/cli.js",
-      "run-server",
-      "--host=0.0.0.0",
-      "--port=3000",
-      // --unsafe takes the Chrome flags of the client, and with them any program to run. Other
-      // containers on the Docker network reach the server too: it serves one client, this one,
-      // which connects as soon as it listens.
-      "--unsafe",
-      "--max-clients=1",
+      "--eval",
+      browserServer,
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -214,11 +226,6 @@ async function connectPinnedChrome(): Promise<Browser> {
       .trim();
     const browser = await chromium.connect(`ws://${address}/`, {
       exposeNetwork: "<loopback>",
-      headers: {
-        "x-playwright-launch-options": JSON.stringify({
-          args: pinnedChromeArgs,
-        }),
-      },
       timeout: 60_000,
     });
     browser.on("disconnected", remove);
