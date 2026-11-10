@@ -350,8 +350,9 @@ Differs:
 The two are not wire-compatible; a bridge that is a member on both sides could relay between them.
 
 ## Security considerations
-- The server sees every header field, the payload size and the timing; the content stays encrypted. Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
+- The server sees every header field, the payload size and the timing; the content stays encrypted. Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).
 - Delivery and receipts: [delivery.md](delivery.md#security-considerations).
 - Devices, rosters, channels and history: [membership.md](membership.md#security-considerations).
 - Queues and tasks: [queues.md](queues.md#security-considerations).
 - Presence and `ask_user`: [agents.md](agents.md#security-considerations).
+- Attackers, what each can do and the defenses: [threat model](../threat-model.md).

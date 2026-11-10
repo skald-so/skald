@@ -532,4 +532,4 @@ A reader MUST drop an entry unless:
 - A revoked device reads a channel until a member device that holds its revocation commits its Remove, or the empty Commit for a browser; the server delays this by withholding the revocation from every member device. A member device that did not process that Commit, such as one that joined later, learns the revocation only from the server: if the server withholds it and lets the device rejoin, that member's links open to it keys of epochs after the Remove.
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
 - A member can make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one.
-- Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
+- Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).
