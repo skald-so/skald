@@ -24,9 +24,11 @@ A human takes one action per release: merging the Release PR.
 ## Branches
 - `dev` — the main and default branch; PRs from people and agents go here.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
-  - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits`, `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
+  - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
   - Squash merges only; the PR title becomes the commit title.
-- `main` — the latest release. Only CI moves it: its ruleset lets only GitHub Actions update it.
+- `main` — the latest release; only CI moves it.
+  - Its ruleset blocks updates and deletion; only deploy keys bypass it.
+  - No deploy key exists yet; the release pipeline adds one, kept only in CI secrets.
 - `vX.Y.Z` tags — the releases themselves.
 - PR titles: rule 3 in [rules.md](../../rules.md).
 - Branch rules are GitHub rulesets; no person bypasses them, admins included.
