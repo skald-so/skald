@@ -65,7 +65,7 @@ All checks except e2e run via `script/test`, the same script agents and people u
 
 ## Cloud
 - **The same image that is published for self-hosting.** `ee/` features are enabled by a license key.
-- **Staging:** a small VPS; every merge into `dev` is deployed to it automatically.
+- **Staging:** an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
   - PostgreSQL 19 with streaming replication.
   - WAL-G backups to object storage.
