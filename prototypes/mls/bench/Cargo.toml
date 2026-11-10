@@ -19,12 +19,12 @@ wasm-bindgen = "0.2"
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
-# The benchmarks natively, run by `bench`: `cargo bench` prints their tables.
+# The benchmarks natively, run by `benchmarks`: `cargo bench` prints their tables.
 [[bench]]
 name = "channel"
 harness = false
 
-# The browser's GroupInfo check in WASM, run by `bench` in Node.js.
+# The browser's GroupInfo check in WASM, run by `benchmarks` in Node.js.
 [[example]]
 name = "mls-bench-browser-check"
 path = "examples/browser_check.rs"

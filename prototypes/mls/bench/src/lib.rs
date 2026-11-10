@@ -40,7 +40,7 @@ impl Budget {
         max_runs: 1,
         time: Duration::ZERO,
     };
-    /// The runs of the `bench` command.
+    /// The runs of the `benchmarks` command.
     pub const FULL: Self = Self {
         min_runs: 5,
         max_runs: 100,
