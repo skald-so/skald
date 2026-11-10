@@ -42,7 +42,6 @@ echo "- Versions: OpenMLS $(version openmls), openmls_rust_crypto $(version open
   "$(rustc --version | cut -d' ' -f1-2), Node.js $(node --version)."
 echo "- Load averages before: $(load)."
 
-# Both libraries run parts of their tree operations in parallel with rayon natively.
 echo
 echo '### Native, every core'
 echo
