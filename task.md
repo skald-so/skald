@@ -961,6 +961,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - A service agent as in `features.md` §9: its own key in an environment secret, a scoped token, token and key rotation.
 - An admin creates a service agent and its token in the CLI and signs its grant (`docs/protocol/README.md`, "Service grant"); the token value is shown once.
 - Stateless HPKE for ephemeral agents; a long-lived service agent with persistent state is an MLS member like a device (`architecture.md`, "Cryptography").
+- How a service agent without a persistent disk pins its account's master key and the roster revision it starts from between runs: added to `docs/protocol/membership.md`.
 - The "Service agents and tokens" web UI section: permissions, expiry, last use, revocation.
 - The number of service agents is capped by the space's limit (`features.md`, "Product").
 - **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected; content from a service agent without a valid grant is rejected.
@@ -993,7 +994,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - The Claude Code and Codex adapters claim a task, run it with its template's instructions and complete it.
 - Templates: review (a PR or diff → findings), test (a command → result and logs), ask (a question about a repository → answer). A template sets the task's input and result and the agent's instructions (`features.md` §10).
 - Enqueueing a task from a template in the CLI and MCP (`--template <name>`).
-- A team adds its own templates to the space.
+- A team adds its own templates to the space: the team template object, its format and storage, is added to `docs/protocol/queues.md`, "Templates".
 - **Done when:** a review task from the template, sent by Claude Code, is claimed and completed by Codex and returns findings in the template's format; an agent that lost its claim cannot complete the task.
 
 - **Release:** MVP
