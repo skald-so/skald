@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Tests script/check-pr-title: valid titles pass, invalid ones fail.
+set -euo pipefail
+
+check="$(dirname "$0")/check-pr-title"
+failures=0
+
+expect() {
+  local want=$1 title=$2 got=pass
+  "$check" "$title" 2>/dev/null || got=fail
+  if [[ $got != "$want" ]]; then
+    echo "check-pr-title: expected $want, got $got: '$title'" >&2
+    failures=$((failures + 1))
+  fi
+}
+
+expect pass 'feat: deliver envelopes'
+expect pass 'feat(server): deliver envelopes to offline devices'
+expect pass 'fix(deps): update rust crate clap to v4.7'
+expect pass 'feat!: drop protocol v1'
+expect pass 'refactor(proto)!: rename envelope fields'
+expect pass 'build: add cargo workspace, skald --version and script/test'
+expect pass 'chore(plan): plan story 1'
+for type in build chore ci docs feat fix perf refactor revert style test; do
+  expect pass "$type: summary"
+done
+
+expect fail 'add CI checks'
+expect fail 'Add CI checks'
+expect fail 'feature: add CI checks'
+expect fail 'Feat: add CI checks'
+expect fail 'feat add CI checks'
+expect fail 'feat:add CI checks'
+expect fail 'feat: '
+expect fail 'feat:  add CI checks'
+expect fail 'feat(): add CI checks'
+expect fail 'feat(ci checks): add CI checks'
+expect fail 'feat (ci): add CI checks'
+expect fail 'feat(ci)! : add CI checks'
+expect fail ' feat: add CI checks'
+expect fail ''
+
+if "$check" 2>/dev/null; then
+  echo "check-pr-title: expected a usage error without arguments" >&2
+  failures=$((failures + 1))
+fi
+
+if [[ $failures -ne 0 ]]; then
+  echo "check-pr-title: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "check-pr-title: all cases passed"

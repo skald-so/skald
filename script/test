@@ -8,3 +8,4 @@ cargo build --workspace --all-targets --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+script/check-pr-title-test
