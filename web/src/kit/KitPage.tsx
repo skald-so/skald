@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { KitBanners } from "./KitBanners.tsx";
 import { KitButtons } from "./KitButtons.tsx";
+import { KitFilters } from "./KitFilters.tsx";
 import styles from "./KitPage.module.css";
 import { KitStatuses } from "./KitStatuses.tsx";
 import { KitTables } from "./KitTables.tsx";
@@ -121,6 +122,7 @@ export function KitPage({ theme }: { theme?: Theme }) {
       <KitStatuses />
       <KitBanners />
       <KitTables />
+      <KitFilters />
     </main>
   );
 }

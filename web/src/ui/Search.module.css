@@ -1,0 +1,60 @@
+/* The search field of the design screens, on the side panel color, with a clear button inside. */
+.search {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: var(--search-width);
+  max-width: 100%;
+}
+
+.field {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  margin: 0;
+  padding: 0 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-side);
+  color: var(--color-text);
+  font-family: var(--font-text);
+  font-size: 14px;
+  appearance: none;
+}
+
+.field::placeholder {
+  color: var(--color-muted);
+  opacity: 1;
+}
+
+/* The clear button below replaces the browser's own. */
+.field::-webkit-search-cancel-button {
+  display: none;
+}
+
+.search:has(.clear) .field {
+  padding-right: 40px;
+}
+
+.clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.clear:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}

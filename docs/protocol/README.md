@@ -4,6 +4,10 @@
 
 Status: draft. Current protocol version: 1.
 
+Documents:
+- this file: identifiers, addresses, the envelope, encoding and versions;
+- [delivery.md](delivery.md): mailbox, delivery, receipts and attachments.
+
 ## Contents
 - [Conventions](#conventions)
 - [Identifiers](#identifiers)
@@ -90,7 +94,7 @@ scheme = &(mls: 1, hpke: 2)
 - `recipients`: absent, the envelope goes to every member device of the channel except the sending one. Under `mls`, application messages always go to the whole channel, and `recipients` reaches devices outside the group, such as a joining device receiving an MLS Welcome. Under `hpke`, it holds exactly one device.
 - `ttl`: how long an undelivered message is kept; absent or above the server's retention, the server's retention applies.
 - The message size is the payload length; there is no size field.
-- The server stores and forwards an envelope as the bytes it received. What the server adds, such as the mailbox `seq`, travels beside the envelope.
+- The server stores and forwards an envelope as the bytes it received. What the server adds, such as the mailbox `seq`, travels beside the envelope: [Frames](delivery.md#frames).
 
 A recipient routes by the header but trusts only what the payload authenticates. It MUST reject an application message unless:
 1. the payload authenticates the sending device as its scheme says: [`mls`](#scheme-mls), [`hpke`](#scheme-hpke);
@@ -145,6 +149,7 @@ content = {
   $$body,
   ? 7 => delegation,   ; only from a custodian device
   ? 8 => grant,        ; only from a service device
+  ? 10 => [+ attachment], ; only with the a2a body
   * int => any,        ; fields of later versions
 }
 
@@ -153,12 +158,13 @@ $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 ```
 
 - `to`: absent, the message is for every agent in the channel.
-- `counter`: 1 for the first application message a device sends in a channel, one more for each next one. Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
+- `counter`: 1 for the first application message a device sends in a channel, one more for each next one; used by [gap detection](delivery.md#gap-detection). Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
 - `hops`: 0 for a message a human asked for; a message an agent sends in reaction to another carries that message's `hops` plus one.
 - `delegation`: required in content from a `custodian` device, absent otherwise: [Custodian device](#custodian-device).
 - `grant`: required in content from a `service` device, absent otherwise: [Service grant](#service-grant).
-- A content carries exactly one body. Other bodies, such as receipts, get their own keys.
-- The thread, text and attachments are in the A2A message: [A2A extension](#a2a-extension).
+- `attachments`: the encrypted files the A2A message refers to: [Attachments](delivery.md#attachments).
+- A content carries exactly one body. Other bodies, such as [receipts](delivery.md#receipts), get their own keys.
+- The thread, text and attachment parts are in the A2A message: [A2A extension](#a2a-extension).
 
 ### Service grant
 A space admin lets a `service` device send in channels of the space by signing a grant on one of their `client` or `browser` devices. The service device puts it in every content it sends.
@@ -206,7 +212,7 @@ A recipient MUST reject content from a `service` device unless:
   - downloads: install scripts and binaries.
 - WebSocket: the client offers the subprotocol `skald.<n>` in its opening request; the server selects it.
 - An envelope's `v` is the version of the connection or request it is sent on. The server MUST refuse a sent envelope with another `v`.
-- A stored envelope keeps its `v`. The server delivers it only on a connection or request whose version is `v` or adjacent to it; an envelope that no such connection takes before its retention ends expires.
+- A stored envelope keeps its `v`. The server delivers it only on a connection or request whose version is `v` or adjacent to it; on another, its mailbox entry expires: [Mailbox](delivery.md#mailbox).
 
 ### Server answers
 The server accepts its current version N and the previous version N−1. Every response to a request that states a version carries `Skald-Protocol-Latest: N`.
@@ -255,7 +261,7 @@ Skald is an extension of A2A [[A2A 1.0](https://a2a-protocol.org/v1.0.0/specific
 |---|---|
 | `messageId` | `msg_id` in text form |
 | `contextId` | The thread |
-| `parts` | Text and attachments |
+| `parts` | Text and attachments: [Attachments](delivery.md#attachments) |
 | `role` | `ROLE_USER` from the agent that started the context, `ROLE_AGENT` from the agent answering it |
 | `taskId`, `referenceTaskIds`, `extensions`, `metadata` | Carried unchanged |
 
@@ -339,3 +345,4 @@ The two are not wire-compatible; a bridge that is a member on both sides could r
 
 ## Security considerations
 - The server sees every header field, the payload size and the timing; the content stays encrypted. Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
+- Delivery and receipts: [delivery.md](delivery.md#security-considerations).

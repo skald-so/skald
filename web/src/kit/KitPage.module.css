@@ -206,6 +206,14 @@
   }
 }
 
+/* Filters and search in a row that wraps, as the page header of operator accounts. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
 /* The page area of a cabinet screen at 1440 px, as the tables of the design. */
 .wide {
   max-width: 1104px;

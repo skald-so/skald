@@ -50,7 +50,7 @@
 | Space | A team space and trust boundary. Signed roster and policy: [Membership](#membership); a device can belong to N spaces |
 | Channel | An MLS group. A shared channel joins two spaces |
 | Envelope | [Protocol spec](../protocol/README.md#envelope) |
-| Mailbox | `mailbox(device_id, seq, envelope_id, ciphertext_ref, expires_at)`: undelivered messages only, deleted on ack |
+| Mailbox | [Protocol spec](../protocol/delivery.md#mailbox) |
 | History | Copies of channel messages under the channel's history key |
 | Queue / Job | A named queue. A job is an encrypted payload + plaintext scheduling fields: state, priority, attempts, `lease_until`, tags, template, `idempotency_key`, deadline |
 | Presence | Encrypted agent status; the server stores the latest value |
@@ -86,6 +86,9 @@
   - space, channel and device identifiers;
   - which device messages whom;
   - message size and time;
+  - when each device takes its messages;
+  - which envelopes ask for delivery statuses, so which are likely receipts or handshake messages;
+  - attachment sizes, uploads and downloads;
   - task scheduling fields;
   - quota counters.
 - **The server does not see:** message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads, edited paths and code.
@@ -99,26 +102,7 @@
   - there has been no external crypto audit; the spec and threat model are public.
 
 ## Delivery semantics
-- No end-to-end exactly-once: every hop is at-least-once with deduplication.
-- **Send:** the client keeps the message in a local outbox and retries until the server answers; the server drops duplicates by `idempotency_key` (kept 7 days) and answers `stored` after the commit.
-- **Server → device:** WebSocket push or catch-up from the cursor; the device acks by `seq` after writing the message to its local store; the server then deletes it from the mailbox; a redelivered message is dropped by `envelope_id`.
-- **Device → agent:** the helper hands the message to the agent (Channels, hooks, MCP `inbox`) and marks it handed over; a crash in between may repeat the handover, never lose it.
-- **Receipts:**
-
-| Status | Meaning | Issued by |
-|---|---|---|
-| `stored` | Committed on the server | Server |
-| `delivered` | Written on the recipient device | Server, from the device ack |
-| `read` | Handed to the agent | Recipient device, signed, inside the channel's encryption |
-| `replied` | A reply with `reply_to` arrived | The reply itself |
-| `held`, `refused` | The recipient's inbound mode | Recipient device, signed |
-| `expired` | Not delivered within the retention period (cloud: 7 days) | Server |
-
-- Every message ends in a status the sender sees; nothing is lost silently.
-- **Order:** total within a channel, set by the server; none across channels.
-- **Gap detection:** the per-sender counter inside the ciphertext lets the recipient report a missing message, so the server cannot drop one unnoticed.
-- `read` means handed to the agent, not acted on. Work that must be done goes through the queue.
-- **Durability:** `stored` is sent after the replica has the write ([infrastructure.md](infrastructure.md), "Cloud").
+[Protocol spec](../protocol/delivery.md).
 
 ## Queue
 - Claim: `SELECT … FOR UPDATE SKIP LOCKED`.

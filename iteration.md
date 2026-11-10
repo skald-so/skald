@@ -13,7 +13,7 @@
 
 ## Story 2: Protocol spec and threat model
 - [x] **2.1:** Protocol spec: addressing, envelope and versions
-- [ ] **2.2:** Protocol spec: mailbox, delivery and receipts
+- [x] **2.2:** Protocol spec: mailbox, delivery and receipts
 - [ ] **2.3:** Protocol spec: devices, roster and channels
 - [ ] **2.4:** Protocol spec: queues and tasks
 - [ ] **2.5:** Protocol spec: presence and `ask_user`
@@ -37,9 +37,9 @@
 - [x] **62.1:** Theme, fonts and the kit page
 - [x] **62.2:** Buttons, status labels and the warning banner
 - [x] **62.3:** Sortable table, empty and loading states
-- [ ] **62.4:** Reference screenshots of the kit page
-- [ ] **62.5:** Filter buttons and search
-- [ ] **62.6:** Dropdown filter
+- [x] **62.4:** Filter buttons and search
+- [ ] **62.5:** Dropdown filter
+- [ ] **62.6:** Reference screenshots of the kit page
 - [ ] **62.7:** Cabinet shell
 
 ## Story 64: Self-host: Docker Compose

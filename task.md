@@ -444,26 +444,16 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Tests: sorting by click and keyboard in both directions, with the arrow and the announced direction following; a non-sortable column does not sort; the empty and loading states replace the rows.
 - **Definition of done:** the kit page shows the table and both states as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
 
-#### Iteration 62.4: Reference screenshots of the kit page
-- **Goal:** Every visual change to the kit shows up in its PR as changed reference screenshots, and a change without them fails `script/test`.
-- **What we do:**
-  - Reference screenshots of every kit page view in both themes at both check widths, made by the screenshot command and committed in `web/`.
-  - `script/test` takes the kit page screenshots in headless Chrome and compares them with the references; a difference beyond anti-aliasing fails the run and saves a diff image.
-  - A command updates the references.
-  - `web/README.md`: how to update the references; a reviewer compares changed references with the design in `skald-cloud`.
-  - Tests: an unchanged kit page passes; a changed color or spacing of a component fails with a diff image.
-- **Definition of done:** references of every view from 62.1–62.3 are in the repository; `script/test` fails on a visual change without updated references and passes with them, on a developer machine and in CI.
-
-#### Iteration 62.5: Filter buttons and search
+#### Iteration 62.4: Filter buttons and search
 - **Goal:** Long lists can be narrowed with filter buttons and search.
 - **What we do:**
   - Filter buttons: a group with one active choice, as "All · Flagged · Banned · Enterprise" in `13-operator-accounts.png` and "Thread · Graph" in `04-messages.png`; a screen reader hears which choice is active.
   - Search: a labelled field that reports the query as the user types and can be cleared.
   - Both on the kit page, narrowing a fixture table.
   - Tests: a choice by click or keyboard becomes the only active one and is reported; typing reports the query; clearing reports an empty one.
-- **Definition of done:** the kit page shows filter buttons and search as in the approved design in both themes at desktop and phone width; the PR adds the reference screenshots of these views; component tests and the screenshot comparison pass in `script/test`.
+- **Definition of done:** the kit page shows filter buttons and search as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
 
-#### Iteration 62.6: Dropdown filter
+#### Iteration 62.5: Dropdown filter
 - **Goal:** A screen offers several filters and a sort order in one compact bar.
 - **What we do:**
   - Dropdown filter as in `04-messages.png`: a button with the filter name and the current value ("From anyone", "Sort Oldest first") that opens a list of options; a value other than the default is highlighted.
@@ -472,7 +462,17 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - At phone width the bar wraps and the list stays on screen.
   - On the kit page: a filter bar over a fixture table.
   - Tests: choosing an option by mouse and keyboard reports it and updates the button; Escape and a click outside close the list without a change; "Clear" restores the defaults.
-- **Definition of done:** the kit page shows the filter bar as in the approved design in both themes at desktop and phone width; the PR adds the reference screenshots of these views; component tests and the screenshot comparison pass in `script/test`.
+- **Definition of done:** the kit page shows the filter bar as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+
+#### Iteration 62.6: Reference screenshots of the kit page
+- **Goal:** Every visual change to the kit shows up in its PR as changed reference screenshots, and a change without them fails `script/test`.
+- **What we do:**
+  - Reference screenshots of every kit page view in both themes at both check widths, made by the screenshot command and committed in `web/`.
+  - `script/test` takes the kit page screenshots in headless Chrome and compares them with the references; a difference beyond anti-aliasing fails the run and saves a diff image.
+  - A command updates the references.
+  - `web/README.md`: how to update the references; a reviewer compares changed references with the design in `skald-cloud`.
+  - Tests: an unchanged kit page passes; a changed color or spacing of a component fails with a diff image.
+- **Definition of done:** references of every view from 62.1–62.5 are in the repository; `script/test` fails on a visual change without updated references and passes with them, on a developer machine and in CI.
 
 #### Iteration 62.7: Cabinet shell
 - **Goal:** Every cabinet screen sits in the same frame with the side menu, space switcher and account footer.
