@@ -5,8 +5,12 @@
 //! [`Fleet::step`]. Scenarios and findings: `docs/dev/mls-prototypes.md`.
 
 pub mod cbor;
+pub mod certificate;
 pub mod identity;
+pub mod key_packages;
+pub mod object;
 pub mod revocation;
+pub mod roster;
 pub mod scenarios;
 pub mod state;
 pub mod wire;
@@ -15,6 +19,7 @@ mod fleet;
 
 pub use fleet::Fleet;
 pub use identity::{DeviceId, Identity};
+pub use roster::{Admitted, Roster};
 
 /// An error of a prototype or its library.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -48,6 +53,8 @@ pub struct Staged {
     pub sender: Leaf,
     /// The leaves it removes, as they are in the current epoch.
     pub removed: Vec<Leaf>,
+    /// The leaves of the devices it adds, from their KeyPackages.
+    pub added: Vec<Leaf>,
     pub authenticated_data: Vec<u8>,
 }
 
@@ -76,13 +83,26 @@ pub trait Device: Sized {
     /// The device's whole MLS state: groups, pending Commits and KeyPackage private keys.
     fn save(&self) -> Result<Vec<u8>>;
 
-    /// A new KeyPackage as an encoded `MLSMessage`; the device keeps its private keys.
+    /// A new KeyPackage as an encoded `MLSMessage`, with [`key_packages::lifetime`] from now and
+    /// the `last_resort` extension in its capabilities. The device keeps its private keys until a
+    /// Welcome uses it.
     fn key_package(&mut self) -> Result<Vec<u8>>;
+    /// A new last-resort KeyPackage: as [`Device::key_package`], with the `last_resort`
+    /// extension. The device keeps its private keys after a Welcome uses it.
+    fn last_resort_key_package(&mut self) -> Result<Vec<u8>>;
     /// Creates a group at epoch 0 with the device as its only member.
     fn create_group(&mut self, group_id: &[u8]) -> Result<()>;
-    /// Commits the Add of every KeyPackage. The Commit stays pending until
+    /// Commits the Add of every KeyPackage, each checked first as `docs/protocol/membership.md`,
+    /// "KeyPackages", says: its MLS signature verifies, its `lifetime` holds, its ciphersuite is
+    /// `0x0001`, and its `identity` and `signature_key` are an admitted device's. Fails, and
+    /// commits nothing, if one fails. The Commit stays pending until
     /// [`Device::merge_pending_commit`].
-    fn add(&mut self, group_id: &[u8], key_packages: &[Vec<u8>]) -> Result<Commit>;
+    fn add(
+        &mut self,
+        group_id: &[u8],
+        key_packages: &[Vec<u8>],
+        admitted: &Admitted,
+    ) -> Result<Commit>;
     /// Commits the Remove of the members whose credential's `identity` is in `devices`, with
     /// `authenticated_data`. Pending until [`Device::merge_pending_commit`].
     fn remove(
@@ -164,6 +184,31 @@ macro_rules! scenario_tests {
         #[test]
         fn history_key_rotates_with_each_epoch() {
             $crate::scenarios::history_key_rotates_with_each_epoch::<$device>();
+        }
+
+        #[test]
+        fn device_keeps_key_packages() {
+            $crate::scenarios::device_keeps_key_packages::<$device>();
+        }
+
+        #[test]
+        fn key_packages_that_fail_a_check_are_refused() {
+            $crate::scenarios::key_packages_that_fail_a_check_are_refused::<$device>();
+        }
+
+        #[test]
+        fn devices_that_are_not_admitted_are_refused() {
+            $crate::scenarios::devices_that_are_not_admitted_are_refused::<$device>();
+        }
+
+        #[test]
+        fn last_resort_key_package_adds_to_two_groups() {
+            $crate::scenarios::last_resort_key_package_adds_to_two_groups::<$device>();
+        }
+
+        #[test]
+        fn device_added_without_admission_is_removed() {
+            $crate::scenarios::device_added_without_admission_is_removed::<$device>();
         }
     };
 }

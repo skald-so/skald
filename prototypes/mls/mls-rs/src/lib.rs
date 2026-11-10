@@ -4,24 +4,33 @@ use std::{
     collections::BTreeMap,
     convert::Infallible,
     sync::{Arc, Mutex, MutexGuard},
+    time::Duration,
 };
 
 use mls_rs::{
-    CipherSuite, Client, GroupStateStorage, KeyPackageStorage, MlsMessage,
+    CipherSuite, Client, ExtensionList, GroupStateStorage, IdentityProvider, KeyPackageStorage,
+    MlsMessage,
     client_builder::MlsConfig,
     crypto::{SignaturePublicKey, SignatureSecretKey},
+    error::IntoAnyError,
+    extension::{ExtensionType, MlsExtension, recommended::LastResortKeyPackageExt},
     group::{CommitEffect, CommitOutput, ReceivedMessage, proposal::Proposal},
     identity::{
-        SigningIdentity,
-        basic::{BasicCredential, BasicIdentityProvider},
+        CredentialType, SigningIdentity,
+        basic::{BasicCredential, BasicIdentityProvider, BasicIdentityProviderError},
     },
     mls_rs_codec::{MlsDecode, MlsEncode},
     storage_provider::KeyPackageData,
+    time::MlsTime,
 };
-use mls_rs_core::group::{EpochRecord, GroupState};
+use mls_rs_core::{
+    group::{EpochRecord, GroupState},
+    identity::MemberValidationContext,
+};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use mls_scenario::{
-    Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
+    Admitted, Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
+    key_packages,
     state::{Reader, Writer},
 };
 use zeroize::Zeroizing;
@@ -169,15 +178,92 @@ impl KeyPackageStorage for Store {
     }
 }
 
+/// The `basic` identity provider that, given the admitted devices, also refuses a member that is
+/// not one of them. mls-rs asks it of every leaf it validates: an Add's KeyPackage, a Commit's
+/// path and every leaf of a tree it joins.
+#[derive(Clone, Default)]
+struct Admission(Option<Admitted>);
+
+#[derive(Debug)]
+struct AdmissionError(mls_scenario::Error);
+
+impl IntoAnyError for AdmissionError {
+    fn into_dyn_error(self) -> Result<Box<dyn std::error::Error + Send + Sync>, Self> {
+        Ok(self.0)
+    }
+}
+
+fn basic<T>(result: Result<T, BasicIdentityProviderError>) -> Result<T, AdmissionError> {
+    result.map_err(|error| AdmissionError(error.into()))
+}
+
+impl IdentityProvider for Admission {
+    type Error = AdmissionError;
+
+    fn validate_member(
+        &self,
+        signing_identity: &SigningIdentity,
+        timestamp: Option<MlsTime>,
+        context: MemberValidationContext<'_>,
+    ) -> Result<(), AdmissionError> {
+        basic(BasicIdentityProvider.validate_member(signing_identity, timestamp, context))?;
+        let Some(admitted) = &self.0 else {
+            return Ok(());
+        };
+        MlsRsDevice::leaf(signing_identity)
+            .and_then(|leaf| admitted.check(&leaf))
+            .map_err(AdmissionError)
+    }
+
+    fn validate_external_sender(
+        &self,
+        signing_identity: &SigningIdentity,
+        timestamp: Option<MlsTime>,
+        extensions: Option<&ExtensionList>,
+    ) -> Result<(), AdmissionError> {
+        basic(BasicIdentityProvider.validate_external_sender(
+            signing_identity,
+            timestamp,
+            extensions,
+        ))
+    }
+
+    fn identity(
+        &self,
+        signing_identity: &SigningIdentity,
+        extensions: &ExtensionList,
+    ) -> Result<Vec<u8>, AdmissionError> {
+        basic(BasicIdentityProvider.identity(signing_identity, extensions))
+    }
+
+    fn valid_successor(
+        &self,
+        predecessor: &SigningIdentity,
+        successor: &SigningIdentity,
+        extensions: &ExtensionList,
+    ) -> Result<bool, AdmissionError> {
+        basic(BasicIdentityProvider.valid_successor(predecessor, successor, extensions))
+    }
+
+    fn supported_types(&self) -> Vec<CredentialType> {
+        BasicIdentityProvider.supported_types()
+    }
+}
+
 pub struct MlsRsDevice {
     identity: Identity,
     store: Store,
 }
 
 impl MlsRsDevice {
-    /// A client with the device's `basic` credential and signing key. mls-rs takes the Ed25519 key
-    /// as the 64 bytes of the secret and the public key.
     fn client(&self) -> Client<impl MlsConfig> {
+        self.client_with(Admission(None))
+    }
+
+    /// A client with the device's `basic` credential and signing key, `admission` and KeyPackages
+    /// of the longest lifetime with `last_resort` in their capabilities. mls-rs takes the Ed25519
+    /// key as the 64 bytes of the secret and the public key.
+    fn client_with(&self, admission: Admission) -> Client<impl MlsConfig> {
         let credential = BasicCredential::new(self.identity.device_id().to_vec());
         let public_key = SignaturePublicKey::new(self.identity.public_key().to_vec());
         let secret_key = SignatureSecretKey::new(
@@ -185,7 +271,9 @@ impl MlsRsDevice {
         );
         Client::builder()
             .crypto_provider(RustCryptoProvider::default())
-            .identity_provider(BasicIdentityProvider)
+            .identity_provider(admission)
+            .extension_type(ExtensionType::LAST_RESORT_KEY_PACKAGE)
+            .key_package_lifetime(Duration::from_secs(key_packages::MAX_LIFETIME))
             .group_state_storage(self.store.clone())
             .key_package_repo(self.store.clone())
             .signing_identity(
@@ -194,6 +282,18 @@ impl MlsRsDevice {
                 CIPHER_SUITE,
             )
             .build()
+    }
+
+    /// A KeyPackage with `extensions` and the lifetime from now: mls-rs's lifetime starts at the
+    /// time it is given.
+    fn new_key_package(&mut self, extensions: ExtensionList) -> Result<Vec<u8>> {
+        let lifetime = key_packages::lifetime(key_packages::now());
+        let message = self.client().generate_key_package_message(
+            extensions,
+            ExtensionList::new(),
+            Some(MlsTime::from(lifetime.not_before)),
+        )?;
+        Ok(message.to_bytes()?)
     }
 
     fn leaf(signing_identity: &SigningIdentity) -> Result<Leaf> {
@@ -242,12 +342,13 @@ impl Device for MlsRsDevice {
     }
 
     fn key_package(&mut self) -> Result<Vec<u8>> {
-        let message = self.client().generate_key_package_message(
-            Default::default(),
-            Default::default(),
-            None,
-        )?;
-        Ok(message.to_bytes()?)
+        self.new_key_package(ExtensionList::new())
+    }
+
+    fn last_resort_key_package(&mut self) -> Result<Vec<u8>> {
+        self.new_key_package(ExtensionList::from(vec![
+            LastResortKeyPackageExt.into_extension()?,
+        ]))
     }
 
     fn create_group(&mut self, group_id: &[u8]) -> Result<()> {
@@ -261,8 +362,17 @@ impl Device for MlsRsDevice {
         Ok(())
     }
 
-    fn add(&mut self, group_id: &[u8], key_packages: &[Vec<u8>]) -> Result<Commit> {
-        let mut group = self.client().load_group(group_id)?;
+    fn add(
+        &mut self,
+        group_id: &[u8],
+        key_packages: &[Vec<u8>],
+        admitted: &Admitted,
+    ) -> Result<Commit> {
+        // The commit checks each KeyPackage: its signatures, lifetime and ciphersuite, and with the
+        // identity provider its credential.
+        let mut group = self
+            .client_with(Admission(Some(admitted.clone())))
+            .load_group(group_id)?;
         let mut builder = group.commit_builder();
         for key_package in key_packages {
             builder = builder.add_member(MlsMessage::from_bytes(key_package)?)?;
@@ -344,7 +454,7 @@ impl Device for MlsRsDevice {
             .into_iter()
             .map(|member| Ok((member.index, Self::leaf(&member.signing_identity)?)))
             .collect::<Result<BTreeMap<_, _>>>()?;
-        let leaf = |index| {
+        let leaf = |index| -> Result<Leaf> {
             leaves
                 .get(&index)
                 .cloned()
@@ -363,18 +473,19 @@ impl Device for MlsRsDevice {
                     CommitEffect::Removed { new_epoch, .. } => new_epoch,
                     CommitEffect::ReInit(_) => return Err("a ReInit Commit".into()),
                 };
-                let removed = new_epoch
-                    .applied_proposals()
-                    .iter()
-                    .filter_map(|proposal| match &proposal.proposal {
-                        Proposal::Remove(remove) => Some(leaf(remove.to_remove())),
-                        _ => None,
-                    })
-                    .collect::<Result<_>>()?;
+                let (mut removed, mut added) = (Vec::new(), Vec::new());
+                for proposal in new_epoch.applied_proposals() {
+                    match &proposal.proposal {
+                        Proposal::Remove(remove) => removed.push(leaf(remove.to_remove())?),
+                        Proposal::Add(add) => added.push(Self::leaf(add.signing_identity())?),
+                        _ => {}
+                    }
+                }
                 let sender = leaf(commit.committer)?;
                 check(&Staged {
                     sender: sender.clone(),
                     removed,
+                    added,
                     authenticated_data: commit.authenticated_data,
                 })?;
                 Received::Commit { sender }
@@ -411,6 +522,7 @@ impl Device for MlsRsDevice {
 
 #[cfg(test)]
 mod tests {
+    use mls_rs::identity::{Credential, CustomCredential};
     use mls_scenario::{
         Fleet,
         scenarios::{CHANNEL, create_channel},
@@ -460,11 +572,83 @@ mod tests {
         assert_eq!(store.lock().key_packages.len(), 1);
     }
 
+    /// The signing identity of `identity`'s device.
+    fn signing_identity(identity: &Identity) -> SigningIdentity {
+        MlsRsDevice::new(identity)
+            .unwrap()
+            .client()
+            .signing_identity()
+            .unwrap()
+            .0
+            .clone()
+    }
+
+    #[test]
+    fn the_identity_provider_admits_only_admitted_devices() {
+        let mut fleet = Fleet::<MlsRsDevice>::new(1).unwrap();
+        let outsider = fleet.add_device_without_certificate().unwrap();
+        let (member, outsider) = (
+            signing_identity(fleet.identity(0)),
+            signing_identity(fleet.identity(outsider)),
+        );
+        let custom = SigningIdentity::new(
+            Credential::Custom(CustomCredential::new(CredentialType::new(0xff00), vec![1])),
+            member.signature_key.clone(),
+        );
+        let validate = |admission: &Admission, identity: &SigningIdentity| {
+            admission
+                .validate_member(identity, None, MemberValidationContext::None)
+                .is_ok()
+        };
+
+        let admission = Admission(Some(fleet.admitted()));
+        assert!(validate(&admission, &member));
+        assert!(!validate(&admission, &outsider));
+        assert!(!validate(&admission, &custom));
+        assert!(validate(&Admission(None), &outsider));
+        assert!(!validate(&Admission(None), &custom));
+    }
+
+    #[test]
+    fn the_identity_provider_is_the_basic_one_otherwise() {
+        let fleet = Fleet::<MlsRsDevice>::new(2).unwrap();
+        let (a, b) = (
+            signing_identity(fleet.identity(0)),
+            signing_identity(fleet.identity(1)),
+        );
+        let custom = SigningIdentity::new(
+            Credential::Custom(CustomCredential::new(CredentialType::new(0xff00), vec![1])),
+            a.signature_key.clone(),
+        );
+        let admission = Admission(Some(fleet.admitted()));
+        let extensions = ExtensionList::new();
+
+        assert_eq!(
+            admission.identity(&a, &extensions).unwrap(),
+            fleet.identity(0).device_id()
+        );
+        assert!(admission.identity(&custom, &extensions).is_err());
+        assert!(admission.valid_successor(&a, &a, &extensions).unwrap());
+        assert!(!admission.valid_successor(&a, &b, &extensions).unwrap());
+        assert!(admission.valid_successor(&a, &custom, &extensions).is_err());
+        assert!(admission.validate_external_sender(&a, None, None).is_ok());
+        assert!(
+            admission
+                .validate_external_sender(&custom, None, None)
+                .is_err()
+        );
+        assert_eq!(
+            admission.supported_types(),
+            [BasicCredential::credential_type()]
+        );
+    }
+
     #[test]
     fn a_commit_without_adds_has_no_welcome() {
         let mut fleet = Fleet::<MlsRsDevice>::new(1).unwrap();
         fleet.step(0, |d| d.create_group(CHANNEL)).unwrap();
-        let commit = fleet.step(0, |d| d.add(CHANNEL, &[])).unwrap();
+        let admitted = fleet.admitted();
+        let commit = fleet.step(0, |d| d.add(CHANNEL, &[], &admitted)).unwrap();
         assert!(commit.welcome.is_none());
     }
 }
