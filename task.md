@@ -257,7 +257,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Goal:** The spec fixes the task queue, so Stories 26 and 65 need no breaking change later.
 - **What we do:**
   - `docs/protocol/queues.md`, listed in the index; the wire part of `architecture.md`, "Queue" (claim, lease, fencing, modes), moves there and is replaced by a link.
-  - Queues: plaintext scheduling fields and the encrypted payload; claim, lease with heartbeat, fencing with `claim_id` and generation, `claim_lost`; at-least-once and at-most-once modes, retries, DLQ; the result returned as an encrypted message.
+  - Queues: plaintext scheduling fields and the encrypted payload; claim, lease with heartbeat, fencing with `claim_id` and generation, `claim-lost`; at-least-once and at-most-once modes, retries, DLQ; the result returned as an encrypted message.
   - A queue belongs to a channel; a task payload is encrypted with the channel's MLS group, so any device of the channel can claim the task (`architecture.md`, "Queue").
   - The heartbeat in one-shot mode without the helper: the process running the task sends it.
   - Task templates: how a task names its template and carries the template's input and result.
@@ -908,17 +908,17 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** A queue in which a task is never lost and never runs on two agents at once.
 
 **Scope:**
-- Named queues and tasks as in `features.md` §10 and `architecture.md`, "Queue": an encrypted payload with plaintext scheduling fields, `idempotency_key`, atomic claim, lease with heartbeat, fencing and `claim_lost`, both modes, retries with exponential backoff, DLQ.
+- Named queues and tasks as in `features.md` §10 and `docs/protocol/queues.md`: an encrypted payload with plaintext scheduling fields, `idempotency_key`, atomic claim, lease with heartbeat, fencing and `claim-lost`, both modes, retries with exponential backoff, DLQ.
 - The result returns to the sender as an encrypted message.
-- A queue belongs to a channel; any device of the channel can claim its tasks (`architecture.md`, "Queue").
+- A queue belongs to a channel; any member device of the channel can claim its tasks (`docs/protocol/queues.md`).
 - CLI to enqueue, claim, extend and complete; the helper sends the heartbeat, in one-shot mode the process running the task.
 - Queue load test.
-- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice; a repeated enqueue with the same `idempotency_key` is rejected; a device outside the queue's channel cannot claim or read a task.
+- **Done when:** a stopped agent gets `claim-lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice; a repeated enqueue with the same `idempotency_key` is rejected; a device outside the queue's channel cannot claim or read a task.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 14, Story 15
-- **Docs:** `features.md` §10, `architecture.md` — "Queue", "Data model"
+- **Docs:** `features.md` §10, `architecture.md` — "Queue", `docs/protocol/queues.md`
 
 ### Story 27: Browser linking and history on the web
 
@@ -999,7 +999,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 19, Story 20, Story 26
-- **Docs:** `features.md` §10, `architecture.md` — "Queue", "Delivery to agents"
+- **Docs:** `features.md` §10, `architecture.md` — "Delivery to agents", `docs/protocol/queues.md`
 
 ### Story 63: Notifications to people
 

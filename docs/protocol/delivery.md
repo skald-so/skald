@@ -122,7 +122,7 @@ A recipient device drops, without a receipt:
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
 - Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
 - After marking a message with `to` handed over, the device issues `read`.
-- Only `a2a` bodies are handed over as messages; receipts are not.
+- Only `a2a` and [`task-result`](queues.md#results) bodies are handed over as messages; receipts are not.
 - How each agent takes messages: [architecture.md, "Delivery to agents"](../dev/architecture.md#delivery-to-agents).
 
 ## Receipts
