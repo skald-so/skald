@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Tests script/mutants on a scratch Cargo workspace: it passes when the tests catch every mutant of the
 # code changed since the base, fails naming the survivors otherwise, never mutates unchanged code,
-# runs the tests with PostgreSQL and removes it afterwards, and leaves the working tree clean.
+# runs the tests with PostgreSQL and removes it afterwards, checks the MLS prototypes' workspace with
+# the tests of all its crates, fails when cargo-mutants cannot list the mutants, and leaves the working
+# tree clean.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -127,6 +129,38 @@ run base
   fail "uncovered: names mutants outside the changed lines or caught ones:"$'\n'"$output"
 expect_clean uncovered
 expect_postgres_removed uncovered
+
+# A change only in the MLS prototypes' own workspace: code tested only by another of its crates is
+# covered, and an untested function there is named as a survivor.
+git checkout --quiet -b prototypes base
+mkdir -p prototypes/mls/scenario/src prototypes/mls/proto/src
+printf '[workspace]\nmembers = ["scenario", "proto"]\nresolver = "3"\n' >prototypes/mls/Cargo.toml
+printf '[package]\nname = "scenario"\nversion = "0.1.0"\nedition = "2024"\n' >prototypes/mls/scenario/Cargo.toml
+printf 'pub fn half(x: u32) -> u32 {\n    x / 2\n}\n\npub fn quarter(x: u32) -> u32 {\n    x / 4\n}\n' \
+  >prototypes/mls/scenario/src/lib.rs
+printf '[package]\nname = "proto"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n%s\n' \
+  'scenario = { path = "../scenario" }' >prototypes/mls/proto/Cargo.toml
+printf '#[test]\nfn half() {\n    assert_eq!(scenario::half(6), 3);\n}\n' >prototypes/mls/proto/src/lib.rs
+(cd prototypes/mls && cargo generate-lockfile --quiet --offline)
+git add --all
+git commit --quiet --message prototypes
+run base
+[[ $status -ne 0 ]] || fail "prototypes: exit code 0, want non-zero:"$'\n'"$output"
+[[ $output =~ scenario/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ quarter\ -\>\ u32\ with\ 0 ]] ||
+  fail "prototypes: the survivor is not named:"$'\n'"$output"
+[[ $output != *half* ]] || fail "prototypes: names a caught mutant:"$'\n'"$output"
+expect_clean prototypes
+
+# A cargo-mutants config it rejects: listing the mutants fails, and so does the run, testing nothing.
+git checkout --quiet -b bad-config prototypes
+mkdir prototypes/mls/.cargo
+echo 'exclude_re = ["("]' >prototypes/mls/.cargo/mutants.toml
+git add --all
+git commit --quiet --message 'bad config'
+run base
+[[ $status -ne 0 && $output != *'no mutants'* && $output != *MISSED* ]] ||
+  fail "bad config: exit code $status, want non-zero without testing:"$'\n'"$output"
+expect_clean bad-config
 
 # No Rust changes: nothing to mutate, PostgreSQL is not needed.
 git checkout --quiet -b docs base

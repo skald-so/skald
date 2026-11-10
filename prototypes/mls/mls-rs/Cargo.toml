@@ -1,0 +1,15 @@
+[package]
+name = "mls-proto-mls-rs"
+description = "Skald's MLS prototype on mls-rs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mls-scenario = { path = "../scenario" }
+mls-rs = "0.57"
+# GroupState and EpochRecord, which mls-rs does not re-export.
+mls-rs-core = "0.27"
+mls-rs-crypto-rustcrypto = "0.23"
+zeroize = "1"

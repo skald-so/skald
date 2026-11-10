@@ -1,0 +1,12 @@
+# Mutants that script/mutants skips in the MLS prototypes' workspace; the tests cannot catch them.
+exclude_re = [
+  # The scenarios and their assertion helper are the test suite's code: the tests run them as is.
+  "^scenario/src/scenarios\\.rs:\\d+:\\d+: replace \\w+ with \\(\\)$",
+  # Equivalent: the operands of these `|` share no bits, so `^` gives the same value.
+  "^scenario/src/wire\\.rs:\\d+:\\d+: replace \\| with \\^ in Input<'a>::vector$",
+  "^scenario/src/identity\\.rs:\\d+:\\d+: replace \\| with \\^ in device_id$",
+  # Equivalent: a fresh RustCrypto holds only an RNG seeded from OS entropy, as the provider's is.
+  "^openmls/src/lib\\.rs:\\d+:\\d+: replace <impl OpenMlsProvider for Provider>::(crypto|rand) -> ",
+  # Trimming to fewer epochs than are left never ends: the tests hang and time out, not fail.
+  "^mls-rs/src/lib\\.rs:\\d+:\\d+: replace > with < in <impl GroupStateStorage for Store>::write$",
+]

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests the license and vulnerability policy: workspace crates declare their planned licenses;
 # no other crate has a normal or build dependency on the AGPL skald-server;
+# no workspace crate depends on the MLS prototypes in prototypes/, which never ship;
 # cargo-deny with deny.toml accepts permissive dependencies and rejects disallowed licenses,
 # unlicensed crates and known vulnerabilities.
 set -euo pipefail
@@ -38,6 +39,18 @@ server_dependents() {
 # The deny.toml exception allows skald-server anywhere in the graph; this check keeps it out of other crates.
 dependents=$(server_dependents "$root/Cargo.toml" --locked)
 [[ -z $dependents ]] || fail "AGPL skald-server is a dependency of: $dependents"
+
+# prototype_packages <manifest> <dir> [cargo-metadata flag...]: prints the packages in the graph of
+# <manifest> whose manifest is under <dir>.
+prototype_packages() {
+  local manifest=$1 dir=$2
+  shift 2
+  cargo metadata --manifest-path "$manifest" --format-version 1 "$@" |
+    jq -r --arg dir "$dir/" '[.packages[] | select(.manifest_path | startswith($dir)) | .name] | join(" ")'
+}
+
+prototypes=$(prototype_packages "$root/Cargo.toml" "$root/prototypes" --locked)
+[[ -z $prototypes ]] || fail "workspace crates depend on the MLS prototypes: $prototypes"
 
 # Creates the fixture <case>: an MIT package that depends on <dependency>.
 fixture() {
@@ -129,6 +142,18 @@ expect_server_dependents server-renamed app
 
 server_fixture server-dev dev-dependencies 'skald-server = { path = "server" }'
 expect_server_dependents server-dev ''
+
+# A dependency on a prototype, even a dev-dependency, pulls it into the workspace's graph.
+for table in dependencies dev-dependencies; do
+  case=prototype-$table
+  mkdir -p "$tmp/$case/src" "$tmp/$case/prototypes/proto/src"
+  touch "$tmp/$case/src/lib.rs" "$tmp/$case/prototypes/proto/src/lib.rs"
+  printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2024"\n\n[%s]\nproto = { path = "prototypes/proto" }\n' \
+    "$table" >"$tmp/$case/Cargo.toml"
+  printf '[package]\nname = "proto"\nversion = "0.1.0"\nedition = "2024"\n' >"$tmp/$case/prototypes/proto/Cargo.toml"
+  got=$(prototype_packages "$tmp/$case/Cargo.toml" "$tmp/$case/prototypes")
+  [[ $got == proto ]] || fail "$case: prototype packages '$got', want 'proto'"
+done
 
 if [[ $failures -ne 0 ]]; then
   echo "deny-test: $failures case(s) failed" >&2

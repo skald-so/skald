@@ -57,6 +57,7 @@ cd "$tmp"
 git init --quiet
 for file in api/openapi.json Cargo.toml Cargo.lock deny.toml crates/server/src/lib.rs \
   web/package.json web/src/App.tsx web/README.md docs/dev/roadmap.md task.md \
+  prototypes/mls/Cargo.toml prototypes/mls/openmls/src/lib.rs \
   script/test .github/workflows/ci.yml renovate.json .gitattributes; do
   apply "$file"
 done
@@ -75,6 +76,10 @@ expect rust Cargo.toml
 expect rust Cargo.lock
 expect rust deny.toml
 expect rust crates/server/src/lib.rs docs/dev/roadmap.md
+expect rust prototypes/mls/openmls/src/lib.rs
+expect rust prototypes/mls/Cargo.toml
+expect rust prototypes/mls/mls-rs/src/lib.rs
+expect rust -prototypes/mls/openmls/src/lib.rs
 
 expect 'rust web' crates/server/src/lib.rs web/src/App.tsx
 
