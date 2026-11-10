@@ -145,7 +145,7 @@ queue-key-body = {
 | `queued` | Waits for a claim; after a failed attempt, not before its backoff ends |
 | `claimed` | Held by one device until its lease ends |
 | `done` | Completed by its last claim |
-| `dead` | In the queue's DLQ: failed for good, or past its deadline |
+| `dead` | In the queue's DLQ: failed for good, released 5 times, or past its deadline |
 | `cancelled` | Cancelled by a human |
 
 | From | Event | To |
@@ -155,10 +155,11 @@ queue-key-body = {
 | `queued` | `deadline` passes | `dead` |
 | `claimed` | Extend | `claimed`, with a new lease |
 | `claimed` | Complete | `done` |
-| `claimed` | Release | `queued` at once; attempts minus one |
+| `claimed` | Release, the 1st to 4th since enqueue or the last restart | `queued` at once; attempts minus one; never again handed to the releasing device until a restart |
+| `claimed` | Release, the 5th since enqueue or the last restart | `dead` |
 | `claimed` | Fail with retry, or the lease ends, under `at-least-once` with attempts below `max_attempts` | `queued` after the backoff |
 | `claimed` | Any other fail, or the end of the lease | `dead` |
-| `dead` | Restart | `queued`, attempts 0 |
+| `dead` | Restart | `queued`, attempts and releases 0 |
 | `queued`, `claimed` or `dead` | Cancel | `cancelled` |
 
 - Extend, complete, fail and release pass the [fencing check](#fencing) first.
@@ -168,7 +169,7 @@ queue-key-body = {
 - The server deletes a `done`, `dead` or `cancelled` task once the channel's history retention has passed since it got there, and every task of a deleted queue.
 
 ## Claims and leases
-A device claims a task from a queue, stating its tags and the templates its client has. The server answers with the first task by `priority`, then by storing order, that is `queued`, past its backoff and before its `deadline`, whose `tags` are all among the claimer's and whose `template`, if any, is among the claimer's; or with none.
+A device claims a task from a queue, stating its tags and the templates its client has. The server answers with the first task by `priority`, then by storing order, that is `queued`, past its backoff and before its `deadline`, not released by the claimer since enqueue or the last restart, whose `tags` are all among the claimer's and whose `template`, if any, is among the claimer's; or with none.
 
 ```cddl
 claim = {
@@ -190,7 +191,7 @@ claim = {
   - in one-shot mode without the helper, the process running the task sends it;
   - a holder whose process stops sends none, so the lease ends.
 - Extend, complete, fail and release name the task, `claim_id` and `generation`; fail also states whether to retry.
-- **Release:** the holder hands back a task it did not start, with no result. It MUST NOT release a task it started.
+- **Release:** a `client` or `custodian` holder hands back a task it did not start, with no result. It MUST NOT release a task it started. The server refuses a release from a `service` device with `not-allowed`; such a device fails the task instead ([Claim checks](#claim-checks)).
 
 ### Fencing
 The server takes an extend, complete, fail or release only if, checked and applied in one transaction:
@@ -209,7 +210,7 @@ On `claim-lost` the holder stops the work and sends no result.
 | For | Idempotent work, as the default | Work that must not repeat: a deploy, sending mail |
 | A fail with retry, or the end of the lease | Back to `queued` after the backoff, until `max_attempts`; then `dead` | `dead` |
 | A fail without retry | `dead` | `dead` |
-| A release | Back to `queued` at once, the attempt not counted | The same, so the next claim has `attempt` 1 |
+| A release | Back to `queued` at once, the attempt not counted, never again to that device until a restart; the 5th release since enqueue or the last restart: `dead` | The same, so the next claim has `attempt` 1 |
 | After `dead` | A human restarts it | A human restarts it |
 
 - Under `at-least-once`, a task can run more than once, also at the same time on two devices after a lease ends: its handler must be idempotent.
@@ -231,7 +232,7 @@ The claiming device MUST NOT run a task unless, when it starts it:
 4. the content passes checks 2 and 3 of [Envelope](README.md#envelope) with `sender` as the sending device; it has a `task` body, no `to` and no `counter`; the `request`'s `messageId` is `task` in text form;
 5. `deadline`, if any, has not passed, and under `at-most-once` the claim's `attempt` is 1.
 
-- A task that fails check 1 because the device lacks the epoch's key, or that needs a restricted mode the device cannot enforce: the device releases it.
+- A task that fails check 1 because the device lacks the epoch's key, or that needs a restricted mode the device cannot enforce: a `client` or `custodian` device releases it, a `service` device fails it with retry.
 - A task that fails any other check: the device fails it without retry and tells its user.
 - The device runs the task in the restricted mode the [policy](membership.md#policy) sets for the [trust level](membership.md#trust-levels) of `sender`, and hands the agent the `request` with its `from` and that level. A mode the agent cannot enforce is refused, not weakened.
 
@@ -279,7 +280,7 @@ Queue requests are refused with a problem details object, as in [Server answers]
 | Problem | The request |
 |---|---|
 | `not-a-member` | Comes from a device that may not enqueue or claim in the queue: [Tasks](#tasks), [Claim checks](#claim-checks) |
-| `not-allowed` | Creates, changes or deletes a queue, or restarts or cancels a task, from a device that may not |
+| `not-allowed` | Creates, changes or deletes a queue, restarts or cancels a task, or releases a claim, from a device that may not |
 | `unknown-queue` | Names a queue the channel does not have |
 | `unknown-task` | Names a task the queue does not have |
 | `duplicate` | Uploads a task whose ID another device used, or whose `idempotency_key` another task of the queue has; the extension member `task` names that task |
@@ -292,12 +293,14 @@ Queue requests are refused with a problem details object, as in [Server answers]
 
 ## Security considerations
 - Scheduling is the server's word. It can withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them and hand one task to two devices at once, an `at-most-once` one included. `at-most-once` holds only with an honest server; a claiming device only refuses a claim with `attempt` above 1.
+- Besides the server, `at-most-once` relies on `client` and `custodian` devices: one that releases a task it started, or whoever holds its credentials to the server, gets the task run again, as a restart does. A `service` device releases none.
 - The server cannot read, forge or alter a task: the payload is sealed and signed, `aad` and `task-body` bind it to its channel, queue and ID, and `task-body` repeats `sched`. It can hand an old task out again, as it can hand one out twice, until its `deadline`.
 - A member device cannot replay another device's task as a new one: the claim's `uploader` must be its `sender`.
 - A task runs only while its sender is valid and may send in the channel: the tasks of a revoked device or a removed member stay unrun. A stolen device enqueues tasks at its account's `own` level until it is revoked.
 - A revoked device keeps the queue keys of the epochs it held, as it keeps their history keys ([features.md §4](../dev/features.md#4-mls-group-encryption)): it reads the tasks sealed under them if it gets them. It reads none sealed after the Commit that removes it, except by a device outside the group that the server keeps from that revocation ([membership.md](membership.md#security-considerations)). It claims nothing, and its results are dropped.
 - A queue key comes from the history key, so whoever reads an epoch's history reads its tasks: a member without history access is kept from earlier tasks as from earlier history, by the server.
-- A `service` device that is not a member holds only queue public keys: a leaked service key with its token enqueues tasks at the `service` trust level and reads only what is sent to it under `hpke`. A leaked token alone signs no task, and it creates, changes or deletes no queue and restarts or cancels no task.
+- A `service` device that is not a member holds only queue public keys: a leaked service key with its token enqueues tasks at the `service` trust level and reads only what is sent to it under `hpke`. A leaked token alone signs no task, and it creates, changes or deletes no queue and releases, restarts or cancels no task.
+- A member `service` device's key and token usually sit in one CI secret. A leaked token alone claims tasks it cannot open, and fails them or lets their leases end, the device's live claims included: they go to `dead` or back after the backoff. A leak of the whole secret also opens and runs the tasks it claims, reads what the device's keys reach and enqueues tasks at the `service` trust level. Neither releases, restarts or cancels a task, so neither makes an `at-most-once` task run twice.
 - A member device can upload a wrong queue key object first. Tasks that non-member `service` devices seal to it are then unreadable to the other devices; member devices warn their users. It breaks availability, not secrecy from the server.
 - A claiming device can return any result: it is labelled with that device's agent, and the result is data for the sender's agent, not an instruction.
 - Queue names and settings, `sched` and which device uploads, claims and completes each task, and when, are visible to the server. Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
