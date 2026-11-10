@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Tests the license and vulnerability policy: workspace crates declare their planned licenses;
+# no other crate has a normal or build dependency on the AGPL skald-server;
 # cargo-deny with deny.toml accepts permissive dependencies and rejects disallowed licenses,
 # unlicensed crates and known vulnerabilities.
 set -euo pipefail
@@ -23,6 +24,20 @@ while read -r name license; do
   [[ $name == skald-server ]] && want='AGPL-3.0-only'
   [[ $license == "$want" ]] || fail "$name: license '$license', want '$want'"
 done <<<"$crates"
+
+# server_dependents <manifest> [cargo-metadata flag...]: prints the packages in the graph, other than
+# skald-server itself, with a normal or build dependency on it. Dev-dependencies are not distributed.
+server_dependents() {
+  local manifest=$1
+  shift
+  cargo metadata --manifest-path "$manifest" --format-version 1 "$@" |
+    jq -r '[.packages[] | select(.name != "skald-server")
+      | select(any(.dependencies[]; .name == "skald-server" and .kind != "dev")) | .name] | join(" ")'
+}
+
+# The deny.toml exception allows skald-server anywhere in the graph; this check keeps it out of other crates.
+dependents=$(server_dependents "$root/Cargo.toml" --locked)
+[[ -z $dependents ]] || fail "AGPL skald-server is a dependency of: $dependents"
 
 # Creates the fixture <case>: an MIT package that depends on <dependency>.
 fixture() {
@@ -68,6 +83,25 @@ expect() {
   fi
 }
 
+# Creates the fixture <case>: an MIT package `app` with <entry> in [<table>]
+# and a local AGPL `skald-server` in `server/`.
+server_fixture() {
+  local case=$1 table=$2 entry=$3
+  mkdir -p "$tmp/$case/src" "$tmp/$case/server/src"
+  touch "$tmp/$case/src/lib.rs" "$tmp/$case/server/src/lib.rs"
+  printf '[package]\nname = "app"\nversion = "0.1.0"\nedition = "2024"\nlicense = "MIT"\n\n[%s]\n%s\n' \
+    "$table" "$entry" >"$tmp/$case/Cargo.toml"
+  printf '[package]\nname = "skald-server"\nversion = "0.1.0"\nedition = "2024"\nlicense = "AGPL-3.0-only"\n' \
+    >"$tmp/$case/server/Cargo.toml"
+}
+
+# expect_server_dependents <case> <want>: the dependents of skald-server in the fixture <case> are <want>.
+expect_server_dependents() {
+  local case=$1 want=$2 got
+  got=$(server_dependents "$tmp/$case/Cargo.toml")
+  [[ $got == "$want" ]] || fail "$case: skald-server dependents '$got', want '$want'"
+}
+
 local_fixture permissive 'MIT OR Apache-2.0'
 expect permissive pass advisories licenses
 
@@ -83,6 +117,18 @@ expect unlicensed unlicensed licenses
 # RUSTSEC-2021-0003: buffer overflow in SmallVec::insert_many.
 fixture vulnerable 'smallvec = "=1.6.0"'
 expect vulnerable vulnerability advisories
+
+server_fixture server-normal dependencies 'skald-server = { path = "server" }'
+expect_server_dependents server-normal app
+
+server_fixture server-build build-dependencies 'skald-server = { path = "server" }'
+expect_server_dependents server-build app
+
+server_fixture server-renamed dependencies 'server = { package = "skald-server", path = "server" }'
+expect_server_dependents server-renamed app
+
+server_fixture server-dev dev-dependencies 'skald-server = { path = "server" }'
+expect_server_dependents server-dev ''
 
 if [[ $failures -ne 0 ]]; then
   echo "deny-test: $failures case(s) failed" >&2
