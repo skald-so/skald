@@ -9,7 +9,8 @@ license = "AGPL-3.0-only"
 axum = "0.8.9"
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.54", features = ["macros", "net", "rt-multi-thread"] }
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "migrate", "macros"] }
+tokio = { version = "1.54", features = ["macros", "net", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }
