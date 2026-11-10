@@ -57,7 +57,7 @@ impl<D: Device> Fleet<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Commit, Leaf, Received};
+    use crate::{Commit, HistoryKey, Leaf, Received, Staged};
 
     /// A device whose whole state is a counter of its steps.
     struct Counter(u8);
@@ -85,6 +85,12 @@ mod tests {
         fn add(&mut self, _: &[u8], _: &[Vec<u8>]) -> Result<Commit> {
             unimplemented!()
         }
+        fn remove(&mut self, _: &[u8], _: &[Vec<u8>], _: &[u8]) -> Result<Commit> {
+            unimplemented!()
+        }
+        fn empty_commit(&mut self, _: &[u8], _: &[u8]) -> Result<Commit> {
+            unimplemented!()
+        }
         fn merge_pending_commit(&mut self, _: &[u8]) -> Result<()> {
             unimplemented!()
         }
@@ -94,13 +100,21 @@ mod tests {
         fn encrypt(&mut self, _: &[u8], _: &[u8]) -> Result<Vec<u8>> {
             unimplemented!()
         }
-        fn process(&mut self, _: &[u8], _: &[u8]) -> Result<Received> {
+        fn process_with(
+            &mut self,
+            _: &[u8],
+            _: &[u8],
+            _: impl FnOnce(&Staged) -> Result<()>,
+        ) -> Result<Received> {
             unimplemented!()
         }
         fn epoch(&self, _: &[u8]) -> Result<u64> {
             unimplemented!()
         }
         fn members(&self, _: &[u8]) -> Result<Vec<Leaf>> {
+            unimplemented!()
+        }
+        fn history_key(&self, _: &[u8]) -> Result<HistoryKey> {
             unimplemented!()
         }
     }

@@ -10,7 +10,7 @@ use mls_rs::{
     CipherSuite, Client, GroupStateStorage, KeyPackageStorage, MlsMessage,
     client_builder::MlsConfig,
     crypto::{SignaturePublicKey, SignatureSecretKey},
-    group::ReceivedMessage,
+    group::{CommitEffect, CommitOutput, ReceivedMessage, proposal::Proposal},
     identity::{
         SigningIdentity,
         basic::{BasicCredential, BasicIdentityProvider},
@@ -21,7 +21,7 @@ use mls_rs::{
 use mls_rs_core::group::{EpochRecord, GroupState};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use mls_scenario::{
-    Commit, Device, Identity, Leaf, Received, Result,
+    Commit, Device, HISTORY_LABEL, HistoryKey, Identity, Leaf, Received, Result, Staged,
     state::{Reader, Writer},
 };
 use zeroize::Zeroizing;
@@ -208,6 +208,18 @@ impl MlsRsDevice {
     }
 }
 
+fn commit(output: CommitOutput) -> Result<Commit> {
+    let welcome = match output.welcome_messages.as_slice() {
+        [] => None,
+        [welcome] => Some(welcome.to_bytes()?),
+        _ => return Err("more than one Welcome".into()),
+    };
+    Ok(Commit {
+        commit: output.commit_message.to_bytes()?,
+        welcome,
+    })
+}
+
 impl Device for MlsRsDevice {
     const LIBRARY: &'static str = "mls-rs";
 
@@ -257,15 +269,43 @@ impl Device for MlsRsDevice {
         }
         let output = builder.build()?;
         group.write_to_storage()?;
-        let welcome = match output.welcome_messages.as_slice() {
-            [] => None,
-            [welcome] => Some(welcome.to_bytes()?),
-            _ => return Err("more than one Welcome".into()),
-        };
-        Ok(Commit {
-            commit: output.commit_message.to_bytes()?,
-            welcome,
-        })
+        commit(output)
+    }
+
+    fn remove(
+        &mut self,
+        group_id: &[u8],
+        devices: &[Vec<u8>],
+        authenticated_data: &[u8],
+    ) -> Result<Commit> {
+        let mut group = self.client().load_group(group_id)?;
+        let members = group
+            .roster()
+            .members()
+            .into_iter()
+            .map(|member| Ok((Self::leaf(&member.signing_identity)?.identity, member.index)))
+            .collect::<Result<Vec<_>>>()?;
+        let mut builder = group.commit_builder();
+        for device in devices {
+            let (_, index) = members
+                .iter()
+                .find(|(identity, _)| identity == device)
+                .ok_or("no member with the device ID")?;
+            builder = builder.remove_member(*index)?;
+        }
+        let output = builder
+            .authenticated_data(authenticated_data.to_vec())
+            .build()?;
+        group.write_to_storage()?;
+        commit(output)
+    }
+
+    fn empty_commit(&mut self, group_id: &[u8], authenticated_data: &[u8]) -> Result<Commit> {
+        let mut group = self.client().load_group(group_id)?;
+        // A Commit without proposals always has an UpdatePath.
+        let output = group.commit(authenticated_data.to_vec())?;
+        group.write_to_storage()?;
+        commit(output)
     }
 
     fn merge_pending_commit(&mut self, group_id: &[u8]) -> Result<()> {
@@ -290,26 +330,59 @@ impl Device for MlsRsDevice {
         Ok(message.to_bytes()?)
     }
 
-    fn process(&mut self, group_id: &[u8], message: &[u8]) -> Result<Received> {
+    fn process_with(
+        &mut self,
+        group_id: &[u8],
+        message: &[u8],
+        check: impl FnOnce(&Staged) -> Result<()>,
+    ) -> Result<Received> {
         let mut group = self.client().load_group(group_id)?;
-        let received = group.process_incoming_message(MlsMessage::from_bytes(message)?)?;
-        let sender_index = match &received {
-            ReceivedMessage::ApplicationMessage(message) => message.sender_index,
-            ReceivedMessage::Commit(commit) => commit.committer,
-            _ => return Err("an unexpected message".into()),
+        // The leaves before the message: a Commit's sender and removed members by their index.
+        let leaves = group
+            .roster()
+            .members()
+            .into_iter()
+            .map(|member| Ok((member.index, Self::leaf(&member.signing_identity)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let leaf = |index| {
+            leaves
+                .get(&index)
+                .cloned()
+                .ok_or_else(|| "no member at the leaf".into())
         };
-        let member = group
-            .member_at_index(sender_index)
-            .ok_or("no member at the sender's leaf")?;
-        let sender = Self::leaf(&member.signing_identity)?;
-        group.write_to_storage()?;
-        Ok(match received {
+        // mls-rs merges a Commit as it processes it, so the check comes before the new epoch is
+        // written, not before the merge.
+        let received = match group.process_incoming_message(MlsMessage::from_bytes(message)?)? {
             ReceivedMessage::ApplicationMessage(message) => Received::Application {
-                sender,
+                sender: leaf(message.sender_index)?,
                 data: message.data().to_vec(),
             },
-            _ => Received::Commit { sender },
-        })
+            ReceivedMessage::Commit(commit) => {
+                let new_epoch = match &commit.effect {
+                    CommitEffect::NewEpoch(new_epoch) => new_epoch,
+                    CommitEffect::Removed { new_epoch, .. } => new_epoch,
+                    CommitEffect::ReInit(_) => return Err("a ReInit Commit".into()),
+                };
+                let removed = new_epoch
+                    .applied_proposals()
+                    .iter()
+                    .filter_map(|proposal| match &proposal.proposal {
+                        Proposal::Remove(remove) => Some(leaf(remove.to_remove())),
+                        _ => None,
+                    })
+                    .collect::<Result<_>>()?;
+                let sender = leaf(commit.committer)?;
+                check(&Staged {
+                    sender: sender.clone(),
+                    removed,
+                    authenticated_data: commit.authenticated_data,
+                })?;
+                Received::Commit { sender }
+            }
+            _ => return Err("an unexpected message".into()),
+        };
+        group.write_to_storage()?;
+        Ok(received)
     }
 
     fn epoch(&self, group_id: &[u8]) -> Result<u64> {
@@ -324,6 +397,15 @@ impl Device for MlsRsDevice {
             .iter()
             .map(|member| Self::leaf(&member.signing_identity))
             .collect()
+    }
+
+    fn history_key(&self, group_id: &[u8]) -> Result<HistoryKey> {
+        let key = self.client().load_group(group_id)?.export_secret(
+            HISTORY_LABEL.as_bytes(),
+            &[],
+            size_of::<HistoryKey>(),
+        )?;
+        Ok(key.as_bytes().try_into()?)
     }
 }
 
