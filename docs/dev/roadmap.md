@@ -50,6 +50,7 @@ List order is priority.
 - Public cloud: abuse reports and automatic abuse detection.
 - Operator console (17).
 - Analytics, LLM token usage per task (12).
+- Team plan and billing.
 - Enterprise (`ee/`): license and billing, audit log, SSO and SAML, SCIM, auditor device, retention policies (12).
 - Self-host: Helm, isolated networks.
 - History export and migration from the cloud to a self-hosted server (6).

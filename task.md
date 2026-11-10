@@ -49,7 +49,8 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 | 37 | Task queue: scheduling | Post-MVP | 19, 20, 26, 36, 65 |
 | 67 | A2A gateway | Post-MVP | 2, 26, 35 |
 | 38 | Codex background agents via app-server | Post-MVP | 20 |
-| 39 | Shared channels between organizations | Post-MVP | 13, 22 |
+| 68 | Team plan and billing | Post-MVP | 22, 25 |
+| 39 | Shared channels between organizations | Post-MVP | 13, 22, 68 |
 | 40 | Corporate IdP sign-in | Post-MVP | 9 |
 | 42 | Shared team instructions | Post-MVP | 19, 20 |
 | 43 | Gemini, Cursor, OpenCode and Copilot adapters | Post-MVP | 15, 24 |
@@ -88,9 +89,9 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Wave 10: 24, 27, 31, 34, 41, 65, 66.
 - Wave 11: 28, 32, 36, 63.
 - Wave 12: 29 — end of MVP.
-- Wave 13: 37, 38, 39, 40, 42, 43, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67.
-- Wave 14: 45, 46, 48, 50, 57, 60, 61.
-- Wave 15: 51, 52.
+- Wave 13: 37, 38, 40, 42, 43, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67, 68.
+- Wave 14: 39, 45, 46, 48, 50, 57, 61.
+- Wave 15: 51, 52, 60.
 
 ### Story 1: Monorepo skeleton and CI
 
@@ -565,7 +566,8 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Binding a session to a space by folder (`features.md` §3).
 - Isolation: an agent of one space cannot see other spaces.
 - A personal space for each account at sign-up; its machines join it by default.
-- **Done when:** a new account has a personal space with its machines; a device is in three spaces; an agent in `~/work/clientA` sees only clientA; a roster change without an admin's signature is rejected.
+- An account owns up to the Free number of spaces (`features.md`, "Product").
+- **Done when:** a new account has a personal space with its machines; its third own space is refused; a device is in three spaces; an agent in `~/work/clientA` sees only clientA; a roster change without an admin's signature is rejected.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -581,9 +583,10 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Delivery from the sending device to the recipient device as in `docs/protocol/delivery.md`: send with retries, WebSocket push, catch-up from the cursor, ack after the local write; duplicates dropped by the sending device and `msg_id`.
 - Server instances wake each other (`architecture.md`, "Network").
 - Server statuses `stored`, `delivered` and `expired`. `read` and `replied` come with Story 15, `held` and `refused` with Story 21.
-- Cloud limits of the Free plan (`features.md`, "Product"), stored as settings per space and per member so that a plan can change them: spaces an account owns, members, devices, messages per month, message text, undelivered message retention.
+- Cloud limits (`features.md`, "Product") as settings per space and per member, at the Team values until billing (Story 68): devices, messages per month, message text, undelivered message retention.
+- A self-hosted server applies no plan limits.
 - CLI: send and receive a message.
-- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `msg_id` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message; a message not delivered in time ends in `expired`.
+- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `msg_id` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message; a message not delivered in time ends in `expired`; a message over a limit gets `quota-exceeded`; a self-hosted server applies no plan limits.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -650,7 +653,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Rotation when any device is revoked and on the space policy's schedule; an admin changes the period.
 - A new channel member sees the history only if an admin allowed it.
 - Reading and searching the history happens on the client (CLI).
-- History is kept for the account's limit (`features.md`, "Product"); retention policies are Enterprise (Story 51).
+- History is kept for the limit of the space's plan (`features.md`, "Product"); retention policies are Enterprise (Story 51).
 - **Done when:** a member's new device reads the channel history, including the history from before a rotation; a revoked device with a full copy of its disk reads no history written after its revocation.
 
 - **Release:** MVP
@@ -740,11 +743,11 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Static SPA on `app.skald.so`; one-click sign-up with GitHub or Google.
 - Layout per the approved design in `../skald-cloud/design/`.
-- Sections: quotas, devices, sessions, space members and roles.
+- Sections: each space's plan and limits and the spaces the account owns (`features.md`, "Product"), devices, sessions, space members and roles.
 - Sessions: web UI and CLI sign-ins with metadata (where, when, last use) and revocation.
 - Members and roles are only shown: they change on an admin's device (`features.md` §12).
 - Data comes only from the server API; the page receives neither keys nor content.
-- **Done when:** a new user signs up in one click and sees their quotas, devices and space members; a revoked session loses access at once.
+- **Done when:** a new user signs up in one click and sees each space's plan and limits, their devices and space members; a revoked session loses access at once.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -757,7 +760,6 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - An admin creates an invite link in the CLI; it is signed, and its secret never reaches the server (`architecture.md`, "Membership").
-- An invite beyond the space's member limit (`features.md`, "Product") is refused.
 - The newcomer accepts after sign-in; the admin's device checks the newcomer's devices through their certificate chains and adds them to the roster and the space's channels by itself.
 - Active invite links are shown in the web UI and can be revoked there.
 - Invites never reach the agent's context.
@@ -860,7 +862,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - An admin creates a service agent and its token in the CLI and signs its grant (`docs/protocol/README.md`, "Service grant"); the token value is shown once.
 - Stateless HPKE for ephemeral agents; a long-lived service agent with persistent state is an MLS member like a device (`architecture.md`, "Cryptography").
 - The "Service agents and tokens" web UI section: permissions, expiry, last use, revocation.
-- The number of service agents is capped by the account limit (`features.md`, "Product").
+- The number of service agents is capped by the space's limit (`features.md`, "Product").
 - **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected; content from a service agent without a valid grant is rejected.
 
 - **Release:** MVP
@@ -1021,7 +1023,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Layout per the approved design in `../skald-cloud/design/`.
-- What Skald is and how it works, what the server sees and does not see, plans: Free, Team and Enterprise (`features.md`, "Product"); links to the docs, GitHub and sign-in at `app.skald.so`.
+- What Skald is and how it works, what the server sees and does not see, plans: Free, Team and Enterprise (`features.md`, "Product"), a block beyond the approved design; links to the docs, GitHub and sign-in at `app.skald.so`.
 - Built and published together with the docs from `docs/` on GitHub Pages.
 - **Done when:** `skald.so` shows the main page as in the approved design, at desktop and phone width; all links resolve.
 
@@ -1034,7 +1036,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The operator runs the MVP cloud without SQL.
 
 **Scope:**
-- `skald-server admin`: list accounts with quota usage, disable (a manual ban) and re-enable an account, delete an account, deferred as in `features.md` §5.
+- `skald-server admin`: list accounts and spaces with plan and limit usage per space, disable (a manual ban) and re-enable an account, delete an account, deferred as in `features.md` §5.
 - Metadata only, like the server itself.
 - **Done when:** an operator finds an account and disables it, and the account loses access; deletion removes the data as in Story 30.
 
@@ -1083,6 +1085,20 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 20
 - **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents"
 
+### Story 68: Team plan and billing
+
+**Goal:** A space moves to Team and pays per member; the Free limits apply to spaces that do not.
+
+**Scope:**
+- Moving a space to Team and back; payment per member per month through a payment provider; invoices in the web UI.
+- The Free limits (`features.md`, "Product") start to apply: the server refuses a roster change that takes a Free space over its member limit, and a shared channel with a Free space (Story 39).
+- The server sees the plan, the member count and the billing contact of a space; card data stays with the payment provider.
+- **Done when:** the 4th member of a Free space is refused until the space moves to Team; after payment the space gets the Team limits; an unpaid Team space returns to the Free limits after a notice.
+
+- **Release:** Post-MVP
+- **Depends on:** Story 22, Story 25
+- **Docs:** `features.md` — "Product", §12
+
 ### Story 39: Shared channels between organizations
 
 **Goal:** Two spaces of different organizations communicate through a shared channel with the consent of both sides.
@@ -1091,11 +1107,11 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - A shared channel joins two spaces on Team or Enterprise; it is created only with the consent of admins on both sides, and either side can disable it (`features.md` §3).
 - Each side's consent is signed by its admin's device (`architecture.md`, "Membership").
 - Approval in the CLI and a linked browser.
-- **Done when:** a freelancer is in three spaces, with a clientA↔clientB shared channel; after one side disables it, no messages pass through it.
+- **Done when:** a freelancer is in three spaces, with a clientA↔clientB shared channel; after one side disables it, no messages pass through it; a shared channel with a Free space is refused.
 
 - **Release:** Post-MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 13, Story 22
+- **Depends on:** Story 13, Story 22, Story 68
 - **Docs:** `features.md` §3, §12, `architecture.md` — "Data model", "Membership"
 
 ### Story 40: Corporate IdP sign-in
@@ -1204,7 +1220,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - A web UI section visible only to instance admins.
 - Layout per the approved design in `../skald-cloud/design/`.
 - The operator console shell from the kit components (Story 62): a top bar with the "operator" label, tabs with count badges and the instance name.
-- Accounts and organizations, quota usage and licenses.
+- Accounts and spaces, plan and limit usage per space, licenses.
 - Abuse reports and bans; account deletion and export requests.
 - System health.
 - Metadata only: the operator cannot read content.
