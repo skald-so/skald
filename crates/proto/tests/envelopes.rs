@@ -237,6 +237,26 @@ fn content_needs_exactly_one_body() {
 }
 
 #[test]
+fn content_has_a_delegation_or_a_grant_not_both() {
+    let delegation = to_hex(&delegation().to_cbor());
+    let grant = to_hex(&grant().to_cbor());
+    assert_eq!(
+        decode::<Content>(&format!(
+            "a6 01{ADDRESS} 0301 0400 06{JSON} 07{delegation} 08{grant}"
+        )),
+        field("content.grant", FieldProblem::NotAllowed)
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a5 01{ADDRESS} 0301 0400 06{JSON} 07{delegation}")),
+        Ok(())
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a5 01{ADDRESS} 0301 0400 06{JSON} 08{grant}")),
+        Ok(())
+    );
+}
+
+#[test]
 fn attachments_need_an_a2a_body() {
     let attachment = format!(
         "0a81 a4 01{ID} 0250{} 035820{} 0400",

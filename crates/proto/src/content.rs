@@ -160,6 +160,13 @@ impl Codec for Content {
             .transpose()?;
         let delegation = fields.take(7).map(Delegation::decode).transpose()?;
         let grant = fields.take(8).map(Grant::decode).transpose()?;
+        // A device has one kind, so content comes from a custodian or a service device, not both.
+        if delegation.is_some() && grant.is_some() {
+            return Err(DecodeError::Field {
+                field: "content.grant",
+                problem: FieldProblem::NotAllowed,
+            });
+        }
         let attachments = fields
             .take(10)
             .map(|item| item.non_empty("content.attachments", Attachment::decode))
