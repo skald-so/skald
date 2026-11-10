@@ -76,6 +76,7 @@ cert-body = {
   ? 6 => id,               ; issuer: the device that signed it; absent, the master key
   7 => timestamp,          ; issued
   ? 8 => bstr,             ; ssh: an SSH signature of the device key
+  9 => tstr .size (1..64), ; name: set on the device, e.g. "Phone"
   * int => any,            ; fields of later versions
 }
 
@@ -87,14 +88,14 @@ device-kind = &(client: 1, browser: 2, service: 3, custodian: 4, auditor: 5)
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
   - a `client` device of the same account: any kind.
 - A `service` device is certified on the account of the admin who creates it, a `custodian` device on that of the admin who enables managed-keys mode, an `auditor` device on an organization admin's account.
-- `issued` is for display; nothing depends on it.
+- `name` and `issued` are for display; nothing depends on them. A client shows a device only by its certificate's `name`, `kind` and `issued`, never by a name the server gives.
 - **SSH signature** (`ssh`, optional): an SSH signature [[OpenSSH PROTOCOL.sshsig](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.sshsig)] with namespace `skald.so` over the encoded `["skald ssh", account, device, signing]`, all byte strings. It is made with one of the user's SSH keys on GitHub. A client that checks it fetches the user's keys from GitHub, not from the Skald server; a signature that does not verify is a key change.
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
-A new device registers its public keys with the server, which assigns its ID, then gets a certificate:
+A new device registers its public keys and `name` with the server, which assigns its ID, then gets a certificate:
 - **From a linked device:** the user confirms the link on a `client` device of the account, which issues the certificate.
-  - Both devices show the link fingerprint: the first 10 bytes of SHA-256 over the encoded `["skald fingerprint", master, signing, hpke]`, in base32 as above. The new device computes it with the keys it generated and the master key the server gave it; the issuing device with the keys it received and its own master key. The user confirms they match, by eye or by scanning a QR code that carries it.
+  - Both devices show the link fingerprint: the first 10 bytes of SHA-256 over the encoded `["skald fingerprint", master, signing, hpke, name]`, in base32 as above. The new device computes it with its keys, its `name` and the master key the server gave it; the issuing device with the keys and `name` it received and its own master key, and certifies that `name`. The user confirms they match, by eye or by scanning a QR code that carries it.
   - A `browser` is linked only this way.
   - With the certificate, the issuing device stores a link object for the new device: the [roster](#roster) revisions it starts from.
 - **With the recovery key**, entered only in the CLI or `skald ui`: the new device unlocks the master key and issues its own certificate with it. It shows its user the account's devices, revoked or not, and in this order:
@@ -176,7 +177,8 @@ A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
 - an account record's `recovery` changes;
 - a member's `master` changes in the roster;
-- an `ssh` signature it checks does not verify.
+- an `ssh` signature it checks does not verify;
+- two valid devices of an account have the same `name`.
 
 ## Trust levels
 A recipient device sets the level of each message it accepts from the sending device: the one its scheme authenticates ([Envelope](README.md#envelope)). The level sets the restricted mode of the [policy](#policy) for a task.
@@ -399,6 +401,7 @@ A member device:
 | A device that is not admitted | Any member device: Remove |
 | A rotation of the history key | [History key](#history-key) |
 
+- A Commit with the Remove of a revoked device, or the empty Commit after a browser's revocation ([History key](#history-key)), carries in its `authenticated_data` the encoded `[+ revocation]`: the revocations by which its sender holds each such device revoked. Every member device that processes the Commit MUST check them as [Revocation](#revocation) says and apply those that count before it judges the new epoch ([Clean epochs](#clean-epochs)).
 - **Joining by itself:** an admitted device that is not in the group fetches the latest GroupInfo, checks that its signer is a member and the members it lists, and joins with an external Commit [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §12.4.3.2]. Members check the joiner as an Add.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
 
@@ -421,7 +424,7 @@ The server keeps a copy of each channel message under the channel's history key,
 An epoch is clean when every member device of it is [admitted](#admitted-devices). A member device judges each epoch once, when it enters it, by the latest revision it accepted. A member device MUST NOT upload a link, wrap or entry of an epoch that is not clean.
 
 ### Key chain
-A link of a clean epoch e holds the key of `prev`, the latest epoch before e that its uploader judged clean. A reader follows every link it can open, so a device holding a key reaches every earlier epoch that an uploader of a link judged clean.
+A link of a clean epoch e holds the key of `prev`, the latest epoch before e that its uploader judged clean. A device linked with the recovery key also counts as judged clean each epoch before its first epoch in the channel whose key a [wrap](#wraps) gives it. A reader follows every link it can open, so a device holding a key reaches every earlier epoch that an uploader of a link judged clean.
 
 ```cddl
 history-link = {
@@ -516,7 +519,7 @@ A reader MUST drop an entry unless:
 - The server holds GroupInfo, so it can join a channel by an external Commit from its own device. Members remove the device, and its epoch is not clean: no link opens an earlier key with that epoch's key, and no member writes under it.
 - A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
 - A reader takes a wrap signed by any device of a member account, revoked or not. A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.
-- A device that has not seen a revocation judges the revoked device's epochs clean, so its links open earlier keys to that device. The server can cause this by withholding the revocation from one member device.
+- A revoked device reads a channel until a member device that holds its revocation commits its Remove, or the empty Commit for a browser; the server delays this by withholding the revocation from every member device. A member device that did not process that Commit, such as one that joined later, learns the revocation only from the server: if the server withholds it and lets the device rejoin, that member's links open to it keys of epochs after the Remove.
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
 - A member can make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one.
 - Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
