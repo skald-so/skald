@@ -245,7 +245,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - With a shell, run the `skald` CLI with the device's powers: answer the person's `ask_user` questions, decide `hold`s, send as the person, and sign what the device signs, such as revocations and, on an admin's device, revisions ([agents.md](protocol/agents.md#security-considerations), [Device to agent](protocol/delivery.md#device-to-agent)).
 - Read what the device reads, and enqueue tasks that the account's other devices run at the `own` trust level, with full rights in a new space's policy ([Policy](protocol/membership.md#policy)).
 
-**Known limitation:** an `ask_user` answer proves which device answered, not that a person did ([`ask_user`](protocol/agents.md#ask_user)). The mitigation belongs in the client, as user verification for answers; Story 41 decides it.
+**Out of scope:** as in other end-to-end encrypted messengers, a device acts for its person. An `ask_user` answer proves which device answered, not that a person did, and Skald does not tell an agent's answer or `hold` decision on the device from the person's ([`ask_user`](protocol/agents.md#ask_user)). The defenses against content that steers the agent: [Prompt injection and loops](#prompt-injection-and-loops).
 
 **Defenses:**
 - The asking agent gets the answering device's name and kind ([`ask_user`](protocol/agents.md#ask_user)).
