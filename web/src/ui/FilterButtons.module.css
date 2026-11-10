@@ -1,0 +1,65 @@
+/* Filter buttons of the design screens: separate as on operator accounts, joined as Thread · Graph. */
+.group {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.choice {
+  box-sizing: border-box;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-muted);
+  font-family: var(--font-text);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.choice:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.choice[aria-pressed="true"] {
+  border-color: var(--color-accent-soft);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.separate {
+  gap: 4px;
+}
+
+/* One frame with the choices inside. The frame does not clip, so the focus outline shows. */
+.joined {
+  flex-wrap: nowrap;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+
+  .choice {
+    padding: 0 16px;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .choice:first-child {
+    border-radius: 7px 0 0 7px;
+  }
+
+  .choice:last-child {
+    border-radius: 0 7px 7px 0;
+  }
+
+  .choice:focus-visible {
+    position: relative;
+  }
+
+  .choice[aria-pressed="true"] {
+    font-weight: 600;
+  }
+}

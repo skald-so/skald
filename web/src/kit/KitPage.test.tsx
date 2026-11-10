@@ -342,3 +342,139 @@ test("shows the empty and loading states on a card and on a tinted card", () => 
     "Loading · on a tinted cardLoading tasks",
   ]);
 });
+
+/** The kit's filtered accounts: the first line of each row's account cell. */
+function filteredAccounts(): string[] {
+  const table = screen.getByRole("table", { name: "Filtered accounts" });
+  return cells(table).map((row) =>
+    row.length === 1
+      ? row[0]!
+      : row[0]!.replace(/(SSO|GitHub|Google) · .*/, ""),
+  );
+}
+
+test("the filter buttons and search narrow the fixture accounts", async () => {
+  const user = userEvent.setup();
+  render(<KitPage />);
+  const section = within(
+    screen.getByRole("region", { name: "Filter buttons and search" }),
+  );
+  const filters = within(
+    section.getByRole("group", { name: "Filter accounts" }),
+  );
+  const search = section.getByRole("searchbox", { name: "Search accounts" });
+  const everyone = [
+    "Northwind",
+    "spam-relay",
+    "Acme CI",
+    "Ana Kovac",
+    "Lee Park",
+    "free-tokens",
+  ];
+  expect(
+    filters
+      .getAllByRole("button")
+      .map((button) => [
+        button.textContent,
+        button.getAttribute("aria-pressed"),
+      ]),
+  ).toEqual([
+    ["All", "true"],
+    ["Flagged", "false"],
+    ["Banned", "false"],
+    ["Enterprise", "false"],
+  ]);
+  expect(filteredAccounts()).toEqual(everyone);
+
+  for (const [choice, shown] of [
+    ["Flagged", ["spam-relay"]],
+    ["Banned", ["free-tokens"]],
+    ["Enterprise", ["Northwind"]],
+    ["All", everyone],
+  ] as const) {
+    await user.click(filters.getByRole("button", { name: choice }));
+    expect(filteredAccounts(), choice).toEqual(shown);
+  }
+
+  // Search by name, login or email, in any case.
+  await user.type(search, "LEE");
+  expect(filteredAccounts()).toEqual(["Lee Park"]);
+  await user.clear(search);
+  await user.type(search, "acme.dev");
+  expect(filteredAccounts()).toEqual(["Acme CI"]);
+  await user.clear(search);
+  await user.type(search, "  spam ");
+  expect(filteredAccounts()).toEqual(["spam-relay"]);
+
+  // Filter and search together; nothing found shows the empty state, whose action resets both.
+  await user.click(filters.getByRole("button", { name: "Banned" }));
+  expect(filteredAccounts()).toEqual(["No accounts match.Show all accounts"]);
+  await user.click(section.getByRole("button", { name: "Show all accounts" }));
+  expect(filteredAccounts()).toEqual(everyone);
+  expect(search).toHaveProperty("value", "");
+  expect(
+    filters.getByRole("button", { name: "All" }).getAttribute("aria-pressed"),
+  ).toBe("true");
+
+  await user.type(search, "ana");
+  expect(filteredAccounts()).toEqual(["Ana Kovac"]);
+  await user.click(
+    section.getAllByRole("button", { name: "Clear search" })[0]!,
+  );
+  expect(filteredAccounts()).toEqual(everyone);
+});
+
+test("shows the joined view switch and a search with a query", async () => {
+  const user = userEvent.setup();
+  render(<KitPage />);
+  const section = within(
+    screen.getByRole("region", { name: "Filter buttons and search" }),
+  );
+  const [joined, query] = section.getAllByRole("listitem");
+  expect(joined!.firstChild?.textContent).toBe(
+    "Joined · as the view of Messages",
+  );
+  expect(query!.firstChild?.textContent).toBe(
+    "With a query · a button clears it",
+  );
+
+  const view = within(within(joined!).getByRole("group", { name: "View" }));
+  expect(
+    view
+      .getAllByRole("button")
+      .map((button) => [
+        button.textContent,
+        button.getAttribute("aria-pressed"),
+      ]),
+  ).toEqual([
+    ["Thread", "true"],
+    ["Graph", "false"],
+  ]);
+  expect(joined!.textContent).toContain("Showing the thread");
+  await user.click(view.getByRole("button", { name: "Graph" }));
+  expect(
+    view.getByRole("button", { name: "Graph" }).getAttribute("aria-pressed"),
+  ).toBe("true");
+  expect(
+    view.getByRole("button", { name: "Thread" }).getAttribute("aria-pressed"),
+  ).toBe("false");
+  expect(joined!.textContent).toContain("Showing the graph");
+  await user.type(
+    within(joined!).getByRole("searchbox", { name: "Search messages" }),
+    "lease",
+  );
+  expect(joined!.textContent).toContain(
+    "Showing the graph · searching for “lease”",
+  );
+
+  const members = within(query!).getByRole("searchbox", {
+    name: "Search members",
+  });
+  expect(members).toHaveProperty("value", "ana");
+  expect(query!.textContent).toContain("Query “ana”");
+  await user.click(
+    within(query!).getByRole("button", { name: "Clear search" }),
+  );
+  expect(members).toHaveProperty("value", "");
+  expect(query!.textContent).toContain("No query");
+});
