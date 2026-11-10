@@ -184,6 +184,27 @@ describe.each(
   });
 });
 
+/** The top left pixel of a PNG image, as Chrome draws it: `rgb(15, 16, 19)`. */
+async function topLeftPixel(png: Buffer): Promise<string> {
+  const page = await kit.browser.newPage();
+  try {
+    return await page.evaluate(
+      async (src) => {
+        const image = new Image();
+        image.src = src;
+        await image.decode();
+        const context = document.createElement("canvas").getContext("2d")!;
+        context.drawImage(image, 0, 0);
+        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+        return `rgb(${r}, ${g}, ${b})`;
+      },
+      `data:image/png;base64,${png.toString("base64")}`,
+    );
+  } finally {
+    await page.close();
+  }
+}
+
 test("the screenshot command saves the kit page in both themes at both widths", async () => {
   const dir = mkdtempSync(join(tmpdir(), "skald-kit-"));
   try {
@@ -191,16 +212,22 @@ test("the screenshot command saves the kit page in both themes at both widths", 
       cwd: import.meta.dirname,
     });
     const expected = themes.flatMap((theme) =>
-      widths.map((width) => ({ file: `kit-${theme}-${width}.png`, width })),
+      widths.map((width) => ({
+        file: `kit-${theme}-${width}.png`,
+        theme,
+        width,
+      })),
     );
     expect(readdirSync(dir).sort()).toEqual(
       expected.map(({ file }) => file).sort(),
     );
-    for (const { file, width } of expected) {
+    for (const { file, theme, width } of expected) {
       // A PNG starts with an 8-byte signature and the IHDR chunk: width at bytes 16–19.
       const png = readFileSync(join(dir, file));
       expect(png.subarray(1, 4).toString()).toBe("PNG");
       expect(png.readUInt32BE(16), file).toBe(width);
+      // The top left corner is the page background.
+      expect(await topLeftPixel(png), file).toBe(color("Background", theme));
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
