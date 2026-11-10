@@ -576,9 +576,21 @@ mod tests {
         let other = leaf(&Identity::generate());
         assert!(check_external_removes(&joiner, &[]).is_ok());
         assert!(check_external_removes(&joiner, std::slice::from_ref(&joiner)).is_ok());
-        assert!(check_external_removes(&joiner, std::slice::from_ref(&other)).is_err());
-        assert!(check_external_removes(&joiner, &[joiner.clone(), joiner.clone()]).is_err());
-        assert!(check_external_removes(&joiner, &[joiner.clone(), other]).is_err());
+        let refusal = |removed: &[Leaf]| {
+            check_external_removes(&joiner, removed)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            refusal(std::slice::from_ref(&other)),
+            "an external Commit that removes another device"
+        );
+        for removed in [[joiner.clone(), joiner.clone()], [joiner.clone(), other]] {
+            assert_eq!(
+                refusal(&removed),
+                "an external Commit with more than one Remove"
+            );
+        }
     }
 
     /// OpenMLS itself accepts an external Commit that removes another device; the Delivery
