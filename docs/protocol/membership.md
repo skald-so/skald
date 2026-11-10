@@ -97,7 +97,11 @@ A new device registers its public keys with the server, which assigns its ID, th
   - Both devices show the link fingerprint: the first 10 bytes of SHA-256 over the encoded `["skald fingerprint", master, signing, hpke]`, in base32 as above. The new device computes it with the keys it generated and the master key the server gave it; the issuing device with the keys it received and its own master key. The user confirms they match, by eye or by scanning a QR code that carries it.
   - A `browser` is linked only this way.
   - With the certificate, the issuing device stores a link object for the new device: the [roster](#roster) revisions it starts from.
-- **With the recovery key**, entered only in the CLI or `skald ui`: the new device unlocks the master key, issues its own certificate with it, takes its [anchors](#anchors), signs the [revocations](#revocation) its user asks for and deletes the master private key.
+- **With the recovery key**, entered only in the CLI or `skald ui`: the new device unlocks the master key and issues its own certificate with it. It shows its user the account's devices, revoked or not, and in this order:
+  1. revokes with the master key each device its user names as stolen ([Revocation](#revocation));
+  2. takes its [anchors](#anchors);
+  3. revokes with its own key each device its user names as lost or wiped;
+  4. deletes the master private key.
 - The first device creates the master key, the recovery key, the account record and the master backup, issues its own certificate with the master key, then deletes the master private key.
 
 ```cddl
@@ -129,8 +133,8 @@ anchors-body = {
 ```
 
 - A `client` device signs a new anchors object when it accepts a revision; the server keeps the latest per device.
-- A device linked with the recovery key takes the anchors objects before it signs revocations. It MUST reject one unless `account` is its own and the signature verifies with the certificate of `device`, an unrevoked `client` device whose chain ends at the master key it unlocked.
-- For each space, it starts from the anchor with the highest revision number. Two anchors of one space that do not lie on one `prev` chain mean a fork: it warns its user and does not join the space. It does not join a space no valid anchors object names.
+- A device linked with the recovery key takes the anchors objects after it revokes the stolen devices. It MUST reject one unless `account` is its own and the signature verifies with the certificate of `device`, a `client` device whose certificate passes checks 1 and 2 of [Device checks](#device-checks) and that no master-key revocation marks as stolen. Other revocations do not matter here, so anchors of lost or wiped devices count.
+- For each space, it starts from the anchor with the lowest revision number and accepts later revisions as [Roster](#roster) says. Every other anchor of the space MUST be a revision it so accepts; otherwise it warns its user and does not join the space. It does not join a space no valid anchors object names.
 
 ## Revocation
 A revocation removes a device from its account.
@@ -141,18 +145,19 @@ revocation = signed<revocation-body>   ; label "skald revocation", by `signer`
 revocation-body = {
   1 => id,                 ; account
   2 => id,                 ; device: the revoked device
-  ? 3 => [+ id],           ; keep: devices it certified that stay valid
+  ? 3 => [+ id],           ; keep: certified devices that stay valid
   ? 4 => id,               ; signer: absent, the master key
   5 => timestamp,          ; for display
+  ? 6 => [+ id],           ; also: devices that stay revoked; only with the master key
   * int => any,            ; fields of later versions
 }
 ```
 
 - The signer is a `client` or `browser` device of the account, or its master key.
-- A revocation also revokes every device the revoked one certified, except those in `keep`. The revoking device shows its user those devices to choose from.
+- A revocation revokes `device`, each device in `also`, and every device one of them certified, except those in `keep`. The revoking device shows its user the certified devices to choose from.
 - Of several counting revocations of one device, a device it certified stays valid only if every one lists it in `keep`.
-- A client MUST ignore a revocation unless its signature verifies with the master key or with the certificate of `signer`, a `client` or `browser` device of `account` whose chain ends at the master key. Otherwise it counts, whether or not its signer is revoked itself, until a master-key revocation voids it.
-- A master-key revocation voids every revocation signed by a device it revokes: the device it names and every device whose chain passes through that one other than through a device in its `keep`. The device that signs it shows its user the devices the voided revocations named, and revokes with the master key those the user keeps revoked.
+- A client MUST ignore a revocation unless its signature verifies with the master key, or it has no `also` and its signature verifies with the certificate of `signer`, a `client` or `browser` device of `account` whose chain ends at the master key. Otherwise it counts, whether or not its signer is revoked itself, until a master-key revocation voids it.
+- A master-key revocation marks as stolen `device` and every device whose chain passes through it other than through a device in `keep`, and voids every revocation they signed. The device that signs it shows its user the devices the voided revocations named; it lists in `also` those the user keeps revoked, so one object voids and re-revokes.
 - Only voiding undoes a revocation; a master-key revocation is never undone.
 - The server stores revocations and gives them with the certificates.
 
@@ -162,7 +167,7 @@ A server signature alone never admits a device: a client trusts a device only th
 A certificate is valid when:
 1. its signature verifies: with the master key when `issuer` is absent; otherwise with the signing key of the issuer's certificate;
 2. its chain, the certificate and those of its issuers in turn, ends at the master key without repeating a device; every issuer is a `client` device of the same account;
-3. no counting revocation names the device;
+3. no counting revocation names the device in `device` or `also`;
 4. for each revoked issuer in the chain, every counting revocation of it lists in `keep` the next device down the chain.
 
 The master key is the one the client pinned: its own account's on linking, or the `master` of the member in the [roster](#roster). A device is trusted only with a valid certificate; a client MUST NOT send to, accept content from or admit to a channel any other device.
@@ -361,6 +366,7 @@ For a shared channel, both spaces' entries count.
 
 A member device:
 - MUST NOT commit the Add of a device that is not admitted;
+- before it treats a device a Commit adds as not admitted, MUST fetch the space's latest revisions and accept them as [Roster](#roster) says;
 - after it processes a Commit or accepts a revision, MUST commit the Remove of each member that is not admitted, and MUST NOT send application messages in the channel until no such member is left;
 - MUST warn its user when a Commit by another device added a device that is not admitted, and when a `custodian` or `auditor` device in the channel stops being admitted.
 
@@ -415,13 +421,13 @@ The server keeps a copy of each channel message under the channel's history key,
 An epoch is clean when every member device of it is [admitted](#admitted-devices). A member device judges each epoch once, when it enters it, by the latest revision it accepted. A member device MUST NOT upload a link, wrap or entry of an epoch that is not clean.
 
 ### Key chain
-Each clean epoch's key encrypts the previous clean one's, so a device holding a key reads all earlier history.
+A link of a clean epoch e holds the key of `prev`, the latest epoch before e that its uploader judged clean. A reader follows every link it can open, so a device holding a key reaches every earlier epoch that an uploader of a link judged clean.
 
 ```cddl
 history-link = {
   1 => id,                 ; channel
   2 => uint .ge 2,         ; epoch e
-  3 => uint .ge 1,         ; prev: the latest clean epoch before e
+  3 => uint .ge 1,         ; prev: the latest epoch before e its uploader judged clean
   4 => bstr .size 12,      ; nonce
   5 => bstr,               ; the key of epoch `prev`, encrypted
   * int => any,
@@ -454,13 +460,14 @@ wrap-recipient = [1, device: id] / [2, account: id]  ; a browser, or an account'
 - Each clean epoch's key is wrapped to every unrevoked browser and the recovery key of each account among the channel's members. `client` devices take keys from MLS and the key chain and need no wrap.
 - A browser linked later gets wraps of the current epochs from member devices that find them missing.
 
-A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, an admitted device of the channel.
+A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, revoked or not. That certificate MUST pass checks 1 and 2 of [Device checks](#device-checks) with the master key of an account that an accepted revision lists as a member of the space or, for a shared channel, of the other space.
 
 A browser writes entries only in the epoch of the channel's latest GroupInfo, under the key of a wrap of that epoch. It MUST NOT write any unless that GroupInfo is of the channel and the wrap's epoch, its signature verifies with the `signature_key` of a member leaf, it lists `signer` as a member, and every member it lists is admitted.
 
 ### Uploads
 - The sender of each Commit uploads the new epoch's link and wraps. Any member device of an epoch uploads those it finds missing and can make.
-- The server keeps the first link per channel and epoch and the first wrap per recipient, and takes uploads only from member devices of the epoch.
+- Devices can judge an epoch differently, for example when only one has seen a revocation, so each uploads the link its own judgment gives.
+- The server keeps the first link per channel, epoch and `prev` and the first wrap per recipient, and takes uploads only from member devices of the epoch.
 
 ### History entry
 The sending device writes a copy of each message with an `a2a` body it sends in the channel, under the key of its current epoch; a browser as [Wraps](#wraps) says. A device without a history key, such as a stateless `service` device, writes none.
@@ -496,19 +503,20 @@ A reader MUST drop an entry unless:
 
 ### Access
 - A member's device reads the history through its keys: from its first epoch back along the key chain.
-- A channel member whose `history` is false reads only epochs from the one whose Commit added its account. The server gives its devices neither the link of that epoch nor any link, wrap or entry of an earlier one.
+- A channel member whose `history` is false reads only epochs from the one whose Commit added its account. The server gives its devices neither the links of that epoch nor any link, wrap or entry of an earlier one.
 - The recovery key reads every epoch wrapped to it: a device linked with it reads the account's history before it rejoins the channels.
 
 ## Security considerations
 - The server gives the certificates, revocations and revisions. It cannot forge them, but it can withhold them: a hidden revocation keeps a device trusted for those who do not see it, and a hidden revision keeps clients on an older roster.
-- A stolen device can revoke the account's other devices and certify new ones, and its revocations count even after another device revokes it. The recovery key restores the account: a device linked with it revokes the stolen one with the master key, which voids every revocation the stolen device and the devices it certified signed.
+- A stolen device can revoke the account's other devices and certify new ones, and its revocations count even after another device revokes it. The recovery key restores the account: a device linked with it revokes the stolen one with the master key. That one object voids every revocation the stolen device and the devices it certified signed, and lists in `also` the devices that stay revoked, so the server cannot restore them by withholding a second object.
 - The master key cannot be rotated. A leaked recovery key, current or old, with any copy of a master backup it opens, gives away the master key for good: its holder can certify and revoke devices and sign an account record with its own `recovery`, so member devices wrap history keys to it. A new recovery key does not lock it out: the holder signs a record with a higher `revision` again. Clients warn when `recovery` changes.
-- A device linked with the recovery key trusts the revisions its account's `client` devices anchored. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
+- A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
-- A channel member whose `history` is false holds its join epoch's key, which opens the link to the epochs before it: only the server withholding those links keeps it from earlier history.
+- A channel member whose `history` is false holds its join epoch's key, which opens the links to the epochs before it: only the server withholding those links keeps it from earlier history.
 - The server holds GroupInfo, so it can join a channel by an external Commit from its own device. Members remove the device, and its epoch is not clean: no link opens an earlier key with that epoch's key, and no member writes under it.
-- A wrap is signed by a member device of its epoch, and a browser writes only under a key from such a wrap, so the server cannot choose the key a browser writes under.
-- A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.
+- A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
+- A reader takes a wrap signed by any device of a member account, revoked or not. A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.
+- A device that has not seen a revocation judges the revoked device's epochs clean, so its links open earlier keys to that device. The server can cause this by withholding the revocation from one member device.
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
 - A member can make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one.
 - Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
