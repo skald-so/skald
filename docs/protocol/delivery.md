@@ -91,6 +91,9 @@ timestamp = uint       ; seconds since the Unix epoch
 - `seq` numbers a mailbox's entries: 1 for the first, one more for each next one. A `seq` is never reused.
 - **Cursor:** the highest `seq` the device has written to its local store. The device updates it in the same transaction as the entries it covers.
 - **Ack:** the device acks by stating its cursor: on connecting, and in `ack` after writing entries. The server deletes every entry up to it.
+- **Stating the cursor on connecting:** on WebSocket, in `sync`; on HTTPS, in each long-poll request; on SSE, in `Last-Event-ID`.
+  - On WebSocket, the server sends no `message` or `status` on a connection before its first `sync`.
+  - Every `sync` acks like `ack`. Only the first `sync` of a connection starts catch-up; a later one only acks.
 - **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
 - A device MAY hold several connections. The server sends each of them the entries in `seq` order.
 - **Expiry:** an entry expires when it is not acked in time:
@@ -137,7 +140,7 @@ A recipient device drops, without a receipt:
   - It goes in the scheme its messages came in: under `mls` to the channel, under `hpke` to their sending device.
   - A device issues them only for messages with `to`.
 - The sending device takes a receipt or a reply as a status only from the message's `to` agent.
-- Per recipient device a message goes `stored` → `delivered` or `expired`. For the `to` agent it goes `read`, or `held` → `read` or `refused`; `replied` follows `read`.
+- Per recipient device a message goes `stored` → `delivered` or `expired`. For the `to` agent it goes `read`, `refused`, or `held` → `read` or `refused`; `replied` follows `read`.
 - Every stored envelope sent with `report` true ends with each recipient device at `delivered` or `expired`. A refused send ends in its problem.
 
 ```cddl
@@ -180,7 +183,7 @@ A file, such as a diff or a log, travels as an encrypted blob uploaded apart fro
 
 ```cddl
 attachment = {
-  1 => tstr,           ; url: where the server keeps the blob
+  1 => id,             ; blob: the blob's ID, assigned by the server
   2 => bstr .size 16,  ; key: the blob's AES-128-GCM key
   3 => bstr .size 32,  ; digest: SHA-256 of the blob
   4 => uint,           ; size: the file's length in bytes
@@ -189,9 +192,10 @@ attachment = {
 ```
 
 - The sending device encrypts each file with a fresh random key: AES-128-GCM [[RFC 5116](https://www.rfc-editor.org/rfc/rfc5116)], a nonce of 12 zero bytes, since each key encrypts one file, and no associated data. The blob is the ciphertext with its tag.
-- It uploads each blob over HTTPS for the channel and gets its `url` and expiry; then it sends the message.
-- The content lists the attachments under `attachments`. Each is also one part of the A2A message, with the attachment's `url` and its own `filename` and `mediaType`.
-- A recipient device downloads the blob and checks `digest`, then decrypts it with `key` and checks `size`. It hands the agent the file in place of the URL. A blob that fails a check is not handed over; the device tells its user.
+- It uploads each blob over HTTPS for the channel and gets its `blob` ID and expiry; then it sends the message.
+- The content lists the attachments under `attachments`. Each is also one file part of the A2A message, with its own `filename` and `mediaType` and the `url` `urn:uuid:<blob>`, the blob ID in text form [[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)].
+- A recipient device downloads a blob by its ID only from the blob endpoint of the server it receives the channel's envelopes from. It MUST NOT fetch any URL the sender wrote. An A2A file part whose `url` is not the `urn:uuid:` of an attachment of the content fails the check.
+- After the download it checks `digest`, then decrypts the blob with `key` and checks `size`. It hands the agent the file in place of the part's `url`. A part or blob that fails a check is not handed over; the device tells its user.
 - `digest` keeps a channel member who knows `key` from having the server swap the blob for another one under the same key.
 - **Size limit:** the server refuses to store a blob over its limit (cloud: [architecture.md, "Security"](../dev/architecture.md#security)).
 - **Expiry:** the server keeps a blob as long as it keeps its channel's messages: its mailbox retention, or the channel's history retention if longer. Then it deletes the blob; the device tells its user the attachment expired.
@@ -203,4 +207,5 @@ attachment = {
   - a sender's latest messages, until it sends another; for a message with `to`, the sender still sees no `read`;
   - under `mls`, the messages a sending device sent after the recipient joined and before the first one the recipient got;
   - content without `counter`.
+- Attachments carry a blob ID, not a URL. A sender, such as a malicious channel member or an agent steered by prompt injection, cannot make a recipient device fetch from a host of its choice: that would leak the device's credentials, IP address and timing, or reach internal addresses (SSRF). `digest` is checked only after the download, so it does not prevent this.
 - Everything the server sees, delivery included: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
