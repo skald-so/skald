@@ -128,7 +128,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - `cargo-deny` in `script/test`: dependency licenses compatible with the crate licenses, known vulnerabilities.
   - `TRADEMARKS.md`: the policy for the Skald name and logo.
   - `SECURITY.md`: vulnerabilities are reported privately; private vulnerability reporting is enabled on GitHub.
-  - CLA via CLA Assistant: the CLA text and a CLA check on PRs; bots are exempt.
+  - CLA: CLA Assistant is linked to the repository, the text is in [this gist](https://gist.github.com/DanilZabolotskiy/fdc5ad4dbb10cf670e8af59e1775b54e), the maintainer and bots are exempt; `CONTRIBUTING.md` links to the gist instead of copying the text.
 - **Definition of done:** each crate declares its license; `script/test` fails on a dependency with a disallowed license or a known vulnerability; the CLA check runs on PRs; private vulnerability reporting is on.
 
 #### Iteration 1.4: Server health check and OpenAPI spec
