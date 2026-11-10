@@ -334,6 +334,106 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 1
 - **Docs:** `roadmap.md` — "Preparation", `architecture.md` — "Cryptography", `tech-stack.md`
 
+#### Iteration 3.1: Prototype harness and a channel group on both libraries
+- **Goal:** OpenMLS and mls-rs run the same Skald channel scenarios, so every later result compares them directly.
+- **What we do:**
+  - A prototype on each library, at the versions in `tech-stack.md`, each on its RustCrypto-based crypto provider, which also builds for WASM. The prototypes live apart from the product crates, which never depend on them; `script/test` builds and tests them, and the CI path filters cover them.
+  - One library-neutral scenario suite drives both prototypes; later scenarios, the WASM build and the benchmarks reuse it.
+  - The profile of `docs/protocol/membership.md`, "MLS profile": the ciphersuite, the `basic` credential with the device ID, and the device's Ed25519 signing key, generated outside the library, as the leaf's signature key.
+  - Scenario: a device creates a channel's group and adds devices from their KeyPackages, as "Creating a channel" says; the added devices join from the Welcome; members exchange application messages as PrivateMessages; proposals and Commits are PublicMessages.
+  - Each device saves its state after every step and loads it before the next, as one-shot mode does (`architecture.md`, "Components").
+  - The report in `docs/dev/` starts with the scenario list. Each iteration of this story adds, per library, what its scenarios needed: missing features, workarounds, awkward API.
+  - Tests: the scenario on both prototypes; every member decrypts each message and gets the sender's device ID from its credential; a replayed application message is rejected.
+- **Definition of done:** the scenario passes on both prototypes with state reloaded between steps; scenario tests run in `script/test`; the report lists the findings so far.
+
+#### Iteration 3.2: Removing a device with a new epoch
+- **Goal:** Both libraries show that a removed device reads nothing sent after its removal, and give the history key of each epoch.
+- **What we do:**
+  - Scenario: a member commits the Remove of a device, and a new epoch begins; the removed device, from a full copy of its saved state, decrypts no later message.
+  - The Remove Commit carries revocations in its `authenticated_data`, as `docs/protocol/membership.md`, "Group changes", says; every member reads them before it merges the Commit.
+  - An empty Commit, with an UpdatePath and no proposals, starts a new epoch ("History key").
+  - Each member derives the epoch's history key from the MLS exporter, as "History key" defines it.
+  - Findings in the report.
+  - Tests: on both prototypes, the removed device's copy fails on every message after the Remove; members read the `authenticated_data` before merging; every member of an epoch derives the same history key; a Remove and an empty Commit each change it, and the removed device cannot derive the new one.
+- **Definition of done:** the scenarios pass on both prototypes; scenario tests run in `script/test`.
+
+#### Iteration 3.3: KeyPackages and admission checks
+- **Goal:** Both libraries let a device keep KeyPackages as the spec says and keep devices that are not admitted out of a channel.
+- **What we do:**
+  - A device makes KeyPackages and its last-resort KeyPackage as `docs/protocol/membership.md`, "KeyPackages", says; the last-resort one adds the device to several groups.
+  - Before an Add, the adding device checks the KeyPackage as "KeyPackages" says and refuses one that fails. A test fixture stands in for certificates and the roster and gives the admitted devices.
+  - A member processing another device's Commit sees each added device's credential before it merges the Commit, and removes a device that is not admitted ("Admitted devices").
+  - Findings in the report.
+  - Tests: on both prototypes, a valid KeyPackage is added; each failing check of "KeyPackages" refuses its Add; the last-resort KeyPackage adds its device to two groups; a device that another member added without being admitted is removed.
+- **Definition of done:** the scenarios pass on both prototypes; scenario tests run in `script/test`.
+
+#### Iteration 3.4: Commit ordering through a minimal Delivery Service
+- **Goal:** Both libraries let the server order Commits without group secrets, and Commits sent at once converge on one epoch.
+- **What we do:**
+  - A minimal in-process Delivery Service stands in for `skald-server`: it follows each channel's epoch and member devices from PublicMessages and GroupInfo only, with each library's support for a party outside the group.
+  - Each Commit's sender makes the new epoch's GroupInfo with the extensions `docs/protocol/membership.md`, "MLS profile", names; the Delivery Service keeps the latest.
+  - The Delivery Service accepts or refuses each Commit as "Commit ordering" says, and keeps the first Commit of epoch 0 as "Creating a channel" says.
+  - The senders of refused Commits drop their pending Commit, process the accepted one and commit again if their change is still needed.
+  - Members process handshake messages in the order the Delivery Service stores them.
+  - Findings in the report.
+  - Tests: on both prototypes, two and three devices commit in one epoch and all converge on the accepted Commit, with the refused changes committed after it; a Commit for an old epoch gets `epoch-mismatch` and one from a non-member `not-a-member`; two devices creating one channel end in the kept group.
+- **Definition of done:** the scenarios pass on both prototypes; scenario tests run in `script/test`.
+
+#### Iteration 3.5: Joining by itself and rejoining
+- **Goal:** Both libraries support the spec's paths for a device to join or rejoin a channel without a member's help.
+- **What we do:**
+  - Joining by itself, as `docs/protocol/membership.md`, "Group changes", says: a device outside the group checks the latest GroupInfo's signer and members, then joins with an external Commit; members check the joiner as an Add.
+  - A device joining from a Welcome checks its signer and members the same way.
+  - Rejoining after missed Commits, as "Rejoining" says: an external Commit that also removes the device's old leaf.
+  - A device that was offline processes every Commit it missed in order, then decrypts new messages.
+  - Findings in the report.
+  - Tests: on both prototypes, an external join that members check; a GroupInfo or Welcome with a non-member signer or a member that is not admitted is refused; a device that missed a Commit fails on the next one, rejoins and holds one leaf; a device that missed 100 Commits catches up.
+- **Definition of done:** the scenarios pass on both prototypes; scenario tests run in `script/test`.
+
+#### Iteration 3.6: WASM build and size
+- **Goal:** Both libraries work in the browser's WASM build, and their size there is known.
+- **What we do:**
+  - Both prototypes build for `wasm32-unknown-unknown`; the scenario suite runs in WASM as natively.
+  - The check a linked browser makes, as `docs/protocol/README.md`, "Envelope", and `docs/protocol/membership.md`, "Wraps", say: a GroupInfo with its ratchet tree, signed by a member leaf, gives the channel's member devices.
+  - The size of each library's release WASM module, raw and compressed, with only the browser check and with the whole suite, in the report.
+  - `CONTRIBUTING.md` lists the tools the WASM tests need.
+  - Tests: the scenario suite and the browser check run in a WASM runtime; a GroupInfo with a non-member signer or an altered tree is rejected.
+- **Definition of done:** both prototypes pass in WASM; WASM tests run in `script/test`; the report holds the sizes.
+
+#### Iteration 3.7: Interoperability between the libraries
+- **Goal:** The prototypes show whether OpenMLS and mls-rs interoperate, as a check of their RFC 9420 compliance.
+- **What we do:**
+  - One channel with devices on both prototypes: in turn, a device on each library creates the group, adds, removes, makes an empty Commit and joins by external Commit; devices on the other library process each step.
+  - Messages both ways; members on both libraries derive the same history key.
+  - A mismatch goes into the report with its RFC 9420 section and an issue to the library; its test asserts the observed failure, so a library fix shows up.
+  - Tests: every step above in both directions.
+- **Definition of done:** interop tests run in `script/test`; the report lists each mismatch or states there is none.
+
+#### Iteration 3.8: Benchmarks
+- **Goal:** The cost of each channel operation on both libraries is known at the group sizes Skald expects.
+- **What we do:**
+  - Benchmarks on the scenario suite, the same steps on both libraries: create a group; commit an Add, a Remove and an empty Commit, and process each; join from a Welcome and by external Commit; make KeyPackages; encrypt and decrypt a message; catch up on missed Commits; the Delivery Service's Commit check; the browser's GroupInfo check in WASM.
+  - Groups of 2, 10, 100 and 1000 devices.
+  - The sizes of a Commit, a Welcome, a GroupInfo, a KeyPackage and a device's saved state at each group size.
+  - One command runs them; the report holds the results with the machine and the versions.
+  - Tests: each benchmark runs once on the smallest group.
+- **Definition of done:** the command gives results for both libraries at every size; the report holds them; the benchmark smoke run passes in `script/test`.
+
+#### Iteration 3.9: Comparison report and the library choice
+- **Goal:** One MLS library is chosen on the prototypes' evidence, and Story 10 knows what to take from them.
+- **What we do:**
+  - The report compares both libraries by:
+    - RFC 9420 compliance: the test vectors each passes, the interop results;
+    - audit: published audits, their scope and date;
+    - API ergonomics: the findings of the earlier iterations;
+    - performance: the benchmark results;
+    - WASM size;
+    - maintenance: release cadence, maintainers, security advisories, minimum Rust version, licenses, dependencies;
+    - spec fit: how each library meets each requirement of `docs/protocol/membership.md` the prototypes exercised.
+  - The choice with its reasons; `tech-stack.md`, "MLS", names the chosen library and its version and links to the report.
+  - For Story 10: the chosen library's workarounds from the findings, and the spec requirements it does not meet with their sections, each left for its own spec change.
+- **Definition of done:** the report covers every criterion for both libraries; `tech-stack.md` names one MLS library; no other doc repeats the comparison.
+
 ### Story 4: Verifying delivery to Claude Code and Codex
 
 **Goal:** On current versions of Claude Code and Codex, confirm the paths for delivering messages into a live session and find out what subscription limit data they expose.
