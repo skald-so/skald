@@ -6,7 +6,8 @@ Status: draft. Current protocol version: 1.
 
 Documents:
 - this file: identifiers, addresses, the envelope, encoding and versions;
-- [delivery.md](delivery.md): mailbox, delivery, receipts and attachments.
+- [delivery.md](delivery.md): mailbox, delivery, receipts and attachments;
+- [membership.md](membership.md): accounts, devices, rosters, invites, channels and history.
 
 ## Contents
 - [Conventions](#conventions)
@@ -25,24 +26,25 @@ Documents:
 - The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted as described in BCP 14 [[RFC 2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals.
 - Binary structures are in CDDL [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610)]; text forms are in ABNF [[RFC 5234](https://www.rfc-editor.org/rfc/rfc5234)].
 - Account, device, agent, space and channel: [architecture.md, "Data model"](../dev/architecture.md#data-model).
-- A signature is Ed25519 [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)] with the signing key of the signer's device certificate. It covers the encoded CBOR array of a label and byte strings, such as `["skald hpke", header, content]`; the label keeps a signature made for one use from passing for another.
+- A signature is Ed25519 [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)] with the signing key of the signer's [device certificate](membership.md#device-certificate), or with the account's master key where the spec says so. It covers the encoded CBOR array of a label and byte strings, such as `["skald hpke", header, content]`; the label keeps a signature made for one use from passing for another.
 
 ## Identifiers
 - An ID is a UUID [[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)]: 16 bytes on the wire, the lowercase hyphenated form in text, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10`. Any other text form is invalid.
-- The issuer generates a UUIDv7 with random bits from a cryptographically secure generator, so IDs of different servers do not collide in practice.
-- Receivers treat IDs as opaque. An ID is not a secret and grants no access.
+- Except for device IDs, the issuer generates a UUIDv7 with random bits from a cryptographically secure generator, so IDs of different servers do not collide in practice.
+- A device ID is derived from the device's Ed25519 public signing key: a UUIDv8 [[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562), §5.8] of the first 16 bytes of SHA-256 over the encoded `["skald device", signing]`, the key as a byte string, with the version field (the high 4 bits of byte 6, counting from 0) set to 8 and the variant field (the high 2 bits of byte 8) to `0b10`. Why and how it is checked: [Device certificate](membership.md#device-certificate).
+- Receivers treat IDs as opaque, except that a device ID is checked against its certificate's signing key. An ID is not a secret and grants no access.
 
 | Entity | Identified by | Issued by |
 |---|---|---|
 | Account | ID | Server, at sign-up |
-| Device | ID | Server, at registration |
+| Device | ID, derived from its signing key | The device, when it generates its keys |
 | Space | ID; its name appears in addresses | Server, at creation |
 | Channel | ID, which is also the `group_id` of its MLS group | Server, at creation |
 | Agent | [Agent address](#agent-address) | Its owner |
 | Message | ID (`msg_id`), which is also its A2A `messageId` | Sending device |
 
 - A service agent holds its own key, so it is also a device, with a device ID.
-- Every device has a kind, fixed in its certificate: `client` (a `skald` installation), `browser` (a linked browser), `service` (a service agent), `custodian` or `auditor` ([below](#custodian-auditor-and-federation)).
+- Every device has a kind, fixed in its [certificate](membership.md#device-certificate): `client` (a `skald` installation), `browser` (a linked browser), `service` (a service agent), `custodian` or `auditor` ([below](#custodian-auditor-and-federation)).
 
 ## Agent address
 An address names an agent on any server: `acme/alice/claude-api@skald.example`.
@@ -98,7 +100,7 @@ scheme = &(mls: 1, hpke: 2)
 
 A recipient routes by the header but trusts only what the payload authenticates. It MUST reject an application message unless:
 1. the payload authenticates the sending device as its scheme says: [`mls`](#scheme-mls), [`hpke`](#scheme-hpke);
-2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself, a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device));
+2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device));
 3. the sender may send in `channel`:
    - a `service` device: its content carries a [grant](#service-grant) for `channel`;
    - any other device: the account that owns `from` is a member of `channel`, that is, one of its devices is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
@@ -133,7 +135,7 @@ hpke-plaintext = [
 
 It authenticates `sender` as the sending device when:
 1. the recipient is the device in `recipients`, and the payload opens with its HPKE key;
-2. `signature` verifies with the certificate of `sender`, an unrevoked device;
+2. `signature` verifies with the certificate of `sender`, a valid device ([Device checks](membership.md#device-checks));
 3. `channel` is a channel of `space`, and `from` names an agent of `space`.
 
 ## Content
@@ -186,7 +188,7 @@ grant-body = {
 
 A recipient MUST reject content from a `service` device unless:
 1. the content's `grant` names the sending device as `service` and lists `channel` in `channels`;
-2. `signer` is an unrevoked `client` or `browser` device of an admin of `space`, and `signature` verifies with its certificate;
+2. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of an admin of `space`, and `signature` verifies with its certificate;
 3. `expires` has not passed.
 
 ## Encoding
@@ -269,10 +271,8 @@ Skald is an extension of A2A [[A2A 1.0](https://a2a-protocol.org/v1.0.0/specific
 Version 1 already has what these need: enabling them changes neither the envelope nor the content and needs no new version.
 
 - **Device kinds.** Clients of version 1 know all five kinds and MUST show their users every `custodian` and `auditor` device in their channels.
-- **Space mode.** A space admin signs the space's mode: whether it is in managed-keys mode, and which `auditor` device, if any, reads it. Members see it.
-- **Admission.** A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when the signed mode of every space of the channel names it: of both spaces, for a shared channel.
-  - A client MUST NOT commit the Add of a `custodian` or `auditor` device the channel does not admit. It MUST reject a Commit that adds one and warn its user.
-  - When a channel stops admitting a device already in it, a client MUST warn its user and MUST NOT send in the channel until the device is removed.
+- **Space mode.** A space admin signs the space's mode: whether it is in managed-keys mode, and which `auditor` device, if any, reads it. Members see it. Format: [Policy](membership.md#policy).
+- **Admission.** A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when the signed mode of every space of the channel names it: of both spaces, for a shared channel. A device the channel does not admit is handled as in [Admitted devices](membership.md#admitted-devices).
 - **Custodian device:** [below](#custodian-device).
 - **Auditor device** (`ee/`): a device of kind `auditor` on an organization admin's account, a member of every channel of the organization's spaces that admits it. It decrypts like any member device.
 - **Federation** ([features.md §15](../dev/features.md#15-server-federation)): addresses carry the server name; IDs do not collide across servers; servers forward envelopes as received bytes. Federation adds an API between servers, not a change for clients. A server MUST refuse an ID from another server that collides with one it knows.
@@ -300,7 +300,7 @@ delegation-body = {
 A recipient MUST reject content from a `custodian` device unless:
 1. the channel [admits](#custodian-auditor-and-federation) the custodian;
 2. the content's `delegation` names `from` as `agent` and the sending device as `custodian`;
-3. `signer` is an unrevoked `client` or `browser` device of the member whose handle is the owner in `from`, and `signature` verifies with its certificate;
+3. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of the member whose handle is the owner in `from`, and `signature` verifies with its certificate;
 4. `expires` has not passed.
 
 A recipient MUST label every message from a `custodian` device as sent by the server for the member, apart from the member's own messages. Allowlists treat it as a separate sender: an entry that admits an agent does not admit the custodian sending as that agent.
@@ -346,3 +346,4 @@ The two are not wire-compatible; a bridge that is a member on both sides could r
 ## Security considerations
 - The server sees every header field, the payload size and the timing; the content stays encrypted. Everything the server sees: [architecture.md, "Cryptography"](../dev/architecture.md#cryptography).
 - Delivery and receipts: [delivery.md](delivery.md#security-considerations).
+- Devices, rosters, channels and history: [membership.md](membership.md#security-considerations).

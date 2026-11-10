@@ -22,6 +22,7 @@
 - Keys are generated on the machine.
 - **Account master key:** the first device creates it. It is the account's root of trust and is stored on the server encrypted under the recovery key.
 - Every device certificate chains to the master key: a new device is signed by an already linked device or by the recovery key. A server signature alone never admits a device.
+- Formats and checks: [protocol spec](../protocol/membership.md#account).
 - The device key can also be signed with the user's SSH key from GitHub ([features.md §5](features.md#5-identity)).
 - The recovery key is entered only in the CLI and `skald ui`, never in a web page.
 - **A browser is also a linked device**, linked only with a code or QR from an already linked device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
@@ -29,12 +30,13 @@
   - it sends actions (approve, answer `ask_user`, restart a task) as signed messages via HPKE.
 
 ## Membership
-- **Roster:** a space's members, their roles and devices, and its service agents. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
+- **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
 - **Space policy:** restricted mode per trust level, the history key rotation period, the space mode ([protocol spec](../protocol/README.md#custodian-auditor-and-federation)), the edit-coordination action ([features.md §11](features.md#11-cross-machine-edit-coordination)). An admin's device signs it; clients reject a policy without a valid signature.
 - **Invite:**
   - an admin's device signs it;
   - its secret travels only in the link's fragment and never reaches the server;
-  - the admin's device admits the newcomer only with the secret, checks each of the newcomer's devices through its certificate chain to the newcomer's master key, then adds them to the roster and the channels.
+  - the admin's device admits the newcomer by itself, after checking the newcomer's devices.
+- Formats, checks, and how changes reach the MLS groups: [protocol spec](../protocol/membership.md#roster).
 - Without a linked browser, the web UI only shows the roster, the policy and invites, and revokes invites.
 
 ## Network
@@ -61,14 +63,15 @@
 - **MLS** (RFC 9420, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`) for devices and long-lived service agents.
   - Channel = MLS group; an MLS member is a device, not a session. Addressing to the right session happens inside the ciphertext. "Member" alone means a person in a space.
   - Removing a device is Remove + Commit; a new epoch begins.
-  - The server orders Commits and stores KeyPackages.
+  - The server orders Commits and stores KeyPackages: [protocol spec](../protocol/membership.md#channels).
 - **Stateless HPKE** (RFC 9180) for devices outside a channel's MLS group: ephemeral agents (CI) and a linked browser's actions. There is no forward secrecy, so keys are rotated. Format: [protocol spec](../protocol/README.md#scheme-hpke).
 - **History:**
-  - a channel has a symmetric history key, distributed inside MLS;
+  - a channel's history key comes from its MLS group, a new one in each epoch;
   - the sender puts a copy of the message encrypted with this key on the server;
-  - history keys are wrapped to the account's devices, its linked browsers and the recovery key;
-  - the history key rotates when any device or linked browser is revoked, and on the space policy's schedule: every 30 days by default, an admin changes it;
-  - each new history key encrypts the previous one, so members read older history through this key chain.
+  - history keys are wrapped to linked browsers and the recovery key; devices take them from MLS;
+  - the history key rotates when any device or linked browser is revoked, and on the space policy's schedule;
+  - each new history key encrypts the previous one, so members read older history through this key chain;
+  - formats: [protocol spec](../protocol/membership.md#history).
 - **Signatures:** Ed25519.
 - **Key storage:** Keychain, libsecret or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
@@ -102,7 +105,8 @@
   - the history is outside MLS forward secrecy: [features.md §4](features.md#4-mls-group-encryption);
   - metadata is visible; sealed sender and padding come later;
   - on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](infrastructure.md), "Trust in builds"), and `skald ui` serves it from a signed binary;
-  - there has been no external crypto audit; the spec and threat model are public.
+  - there has been no external crypto audit; the spec and threat model are public;
+  - the limits of trust in devices, rosters and history: [protocol spec](../protocol/membership.md#security-considerations).
 
 ## Delivery semantics
 [Protocol spec](../protocol/delivery.md).

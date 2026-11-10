@@ -520,7 +520,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 1, Story 2
-- **Docs:** `features.md` §5, `architecture.md` — "Device linking", "Data model", "Cryptography", `docs/protocol/README.md`
+- **Docs:** `features.md` §5, `architecture.md` — "Device linking", "Data model", "Cryptography", `docs/protocol/README.md`, `docs/protocol/membership.md`
 
 ### Story 9: Google sign-in and linked sign-in methods
 
@@ -545,14 +545,14 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - MLS (RFC 9420, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`): groups, KeyPackages, adding and removing a member, Commit, epochs.
-- History keys: encrypting message copies, wrapping a key to device keys and the recovery key, the key chain (`architecture.md`, "Cryptography").
+- History keys: encrypting message copies, wrapping a key to browser keys and the recovery key, the key chain (`docs/protocol/membership.md`, "History").
 - Stateless HPKE (RFC 9180), Ed25519 signatures.
 - **Done when:** tests confirm forward secrecy and that a removed member cannot access new messages; the crate builds for WASM.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 2, Story 3
-- **Docs:** `architecture.md` — "Cryptography", `features.md` §4, §6, `tech-stack.md`
+- **Docs:** `architecture.md` — "Cryptography", `features.md` §4, §6, `tech-stack.md`, `docs/protocol/membership.md`
 
 ### Story 11: Spaces and agent addresses
 
@@ -572,7 +572,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 8
-- **Docs:** `features.md` §3, §15, `architecture.md` — "Membership", "Network", "Data model", `docs/protocol/README.md`
+- **Docs:** `features.md` §3, §15, `architecture.md` — "Membership", "Network", "Data model", `docs/protocol/README.md`, `docs/protocol/membership.md`
 
 ### Story 12: Encrypted mailbox
 
@@ -610,7 +610,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 10, Story 12
-- **Docs:** `features.md` §4, `architecture.md` — "Cryptography", "Data model", "Membership", `docs/protocol/delivery.md`
+- **Docs:** `features.md` §4, `architecture.md` — "Cryptography", "Data model", "Membership", `docs/protocol/delivery.md`, `docs/protocol/membership.md`
 
 ### Story 14: Client: one-shot mode and helper
 
@@ -649,7 +649,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The server stores the full channel history, and only devices with the history key can read it.
 
 **Scope:**
-- History copies under the channel's history key, keys wrapped to the account's devices, the key chain (`architecture.md`, "Cryptography").
+- History copies under the channel's history key, keys wrapped to linked browsers and the recovery key, the key chain (`docs/protocol/membership.md`, "History").
 - Rotation when any device is revoked and on the space policy's schedule; an admin changes the period.
 - A new channel member sees the history only if an admin allowed it.
 - Reading and searching the history happens on the client (CLI).
@@ -659,7 +659,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13
-- **Docs:** `features.md` §4, §6, "Product", `architecture.md` — "Cryptography", "Data model", "Membership"
+- **Docs:** `features.md` §4, §6, "Product", `architecture.md` — "Cryptography", "Data model", "Membership", `docs/protocol/membership.md`
 
 ### Story 17: Recovery key and new device linking
 
@@ -674,7 +674,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 16
-- **Docs:** `features.md` §6, §16, `architecture.md` — "Device linking", "Cryptography"
+- **Docs:** `features.md` §6, §16, `architecture.md` — "Device linking", "Cryptography", `docs/protocol/membership.md`
 
 ### Story 18: Key verification without trusting the server
 
@@ -688,7 +688,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 17
-- **Docs:** `features.md` §5, `architecture.md` — "Device linking"
+- **Docs:** `features.md` §5, `architecture.md` — "Device linking", `docs/protocol/membership.md`
 
 ### Story 19: Claude Code adapter and plugin
 
@@ -760,7 +760,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - An admin creates an invite link in the CLI; it is signed, and its secret never reaches the server (`architecture.md`, "Membership").
-- The newcomer accepts after sign-in; the admin's device checks the newcomer's devices through their certificate chains and adds them to the roster and the space's channels by itself.
+- The newcomer accepts after sign-in; the admin's device checks the newcomer's devices through their certificate chains, adds the newcomer to the roster and its devices to the space's channels by itself.
 - Active invite links are shown in the web UI and can be revoked there.
 - Invites never reach the agent's context.
 - **Done when:** a user from another account joins the space via the link, and their agents exchange messages with the admin's agents; the server never receives the invite secret; a member or device the server adds without an admin's signature or a valid certificate chain is rejected.
@@ -768,7 +768,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 14, Story 17, Story 22
-- **Docs:** `features.md` §16, §12, `architecture.md` — "Membership", "Security"
+- **Docs:** `features.md` §16, §12, `architecture.md` — "Membership", "Security", `docs/protocol/membership.md`
 
 ### Story 24: One-command machine connect
 
@@ -785,7 +785,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 7, Story 14, Story 17, Story 18, Story 19, Story 20, Story 22
-- **Docs:** `features.md` §16, `architecture.md` — "Device linking", `infrastructure.md` — "Channels"
+- **Docs:** `features.md` §16, `architecture.md` — "Device linking", `infrastructure.md` — "Channels", `docs/protocol/membership.md`
 
 ### Story 25: Production cloud, website and monitoring
 
@@ -837,7 +837,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 10, Story 17, Story 22, Story 23
-- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Membership", "Cryptography", `infrastructure.md` — "Trust in builds"
+- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Membership", "Cryptography", `infrastructure.md` — "Trust in builds", `docs/protocol/membership.md`
 
 ### Story 28: Web: queues, delivery trace, loops, ask_user
 
@@ -868,7 +868,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 14, Story 22
-- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography", "Membership", `docs/protocol/README.md`
+- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography", "Membership", `docs/protocol/README.md`, `docs/protocol/membership.md`
 
 ### Story 41: ask_user and attachments
 
@@ -932,7 +932,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 19, Story 20, Story 21, Story 26
-- **Docs:** `architecture.md` — "Security", "Membership", `features.md` §10
+- **Docs:** `architecture.md` — "Security", "Membership", `features.md` §10, `docs/protocol/membership.md`
 
 ### Story 36: GitHub Action
 
@@ -985,7 +985,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 16, Story 17, Story 22
-- **Docs:** `features.md` §4, §5, `architecture.md` — "Data model", "Cryptography", "Membership"
+- **Docs:** `features.md` §4, §5, `architecture.md` — "Data model", "Cryptography", "Membership", `docs/protocol/membership.md`
 
 ### Story 31: Load testing
 
@@ -1114,7 +1114,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** Post-MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 22, Story 68
-- **Docs:** `features.md` §3, §12, `architecture.md` — "Data model", "Membership"
+- **Docs:** `features.md` §3, §12, `architecture.md` — "Data model", "Membership", `docs/protocol/membership.md`
 
 ### Story 40: Corporate IdP sign-in
 

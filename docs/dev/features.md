@@ -76,7 +76,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 
 ## 6. Encrypted history
 - We store the full channel history, not just undelivered messages.
-- History keys, their rotation and the key chain: [architecture.md](architecture.md), "Cryptography".
+- History keys, their rotation and the key chain: [protocol spec](../protocol/membership.md#history).
 - A **new device** gets the history if it was linked from an existing device or the recovery key was entered.
 - A **new channel member** sees the history only if an admin allowed it.
 - Search runs on the client.
