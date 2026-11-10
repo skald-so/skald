@@ -22,6 +22,7 @@ pub const APPLICATION: u8 = 1;
 pub const COMMIT: u8 = 3;
 
 /// `ProposalType` values.
+pub const ADD: u16 = 1;
 pub const REMOVE: u16 = 3;
 pub const EXTERNAL_INIT: u16 = 6;
 
@@ -137,6 +138,15 @@ impl KeyPackage {
 pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
     let mut input = Input(message);
     expect_wire_format(&mut input, KEY_PACKAGE)?;
+    let key_package = read_key_package(&mut input)?;
+    if !input.0.is_empty() {
+        return Err("KeyPackage: trailing bytes".into());
+    }
+    Ok(key_package)
+}
+
+/// The KeyPackage at the start of `input`.
+fn read_key_package(input: &mut Input) -> Result<KeyPackage> {
     if input.u16()? != PROTOCOL_VERSION {
         return Err("KeyPackage: not mls10".into());
     }
@@ -162,9 +172,6 @@ pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
     let leaf_signature = input.vector()?.to_vec();
     let extensions = extensions(input.vector()?)?;
     let signature = input.vector()?.to_vec();
-    if !input.0.is_empty() {
-        return Err("KeyPackage: trailing bytes".into());
-    }
     Ok(KeyPackage {
         cipher_suite,
         init_key,
@@ -338,7 +345,7 @@ pub struct PublicCommit {
     pub removed: Vec<u32>,
     /// Whether it has an ExternalInit proposal by value, as an external Commit does.
     pub external_init: bool,
-    /// The number of its other proposals, by value or by reference.
+    /// The number of its other proposals: Adds by value and any by reference.
     pub other_proposals: usize,
     /// Whether it has an UpdatePath.
     pub path: bool,
@@ -430,6 +437,10 @@ pub fn public_commit(message: &[u8]) -> Result<PublicCommit> {
     while !proposals.0.is_empty() {
         match proposals.u8()? {
             1 => match proposals.u16()? {
+                ADD => {
+                    read_key_package(&mut proposals)?;
+                    other_proposals += 1;
+                }
                 REMOVE => removed.push(proposals.u32()?),
                 EXTERNAL_INIT if !external_init => {
                     proposals.vector()?; // kem_output
@@ -860,6 +871,26 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_commit_of_adds_by_value() {
+        let (key_package, _) = a_key_package();
+        let add = [&[1, 0, 1][..], &key_package[4..]].concat();
+        let mut content = vec![COMMIT];
+        put_vector(&mut content, &[add.clone(), add].concat());
+        content.push(0);
+        let commit = public_commit(&public_message(b"", &content)).unwrap();
+        assert_eq!(
+            (commit.removed, commit.other_proposals, commit.path),
+            (vec![], 2, false)
+        );
+
+        // The second Add's KeyPackage lacks its last byte.
+        let last = content.len() - 2;
+        content.remove(last);
+        content[2] -= 1;
+        assert!(public_commit(&public_message(b"", &content)).is_err());
+    }
+
+    #[test]
     fn rejects_what_is_not_a_members_public_commit() {
         let mut private = vec![0, 1, 0, 2, 1, b'g'];
         private.extend_from_slice(&[0; 8]);
@@ -871,7 +902,11 @@ mod tests {
             ),
             (
                 public_message(b"", &[COMMIT, 3, 1, 0, 1]),
-                "an Add by value",
+                "an Add without a KeyPackage",
+            ),
+            (
+                public_message(b"", &[COMMIT, 3, 1, 0, 2]),
+                "an Update by value",
             ),
             (
                 public_message(b"", &[COMMIT, 1, 3]),

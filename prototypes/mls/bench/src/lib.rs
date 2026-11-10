@@ -1023,6 +1023,14 @@ mod tests {
             "{lib}: the Add of the joiner"
         );
         let commit = |object| wire::public_commit(group.object(object)).unwrap();
+        for (object, adds) in [(Object::CreateCommit, 2), (Object::AddCommit, 1)] {
+            let adding = commit(object);
+            assert_eq!(
+                (adding.sender, adding.other_proposals, adding.path),
+                (wire::CommitSender::Member(0), adds, false),
+                "{lib}: {object:?}: device 0's {adds} Adds without an UpdatePath"
+            );
+        }
         let (sender, none) = (wire::CommitSender::Member(0), Vec::<u32>::new());
         let remove = commit(Object::RemoveCommit);
         assert_eq!(
