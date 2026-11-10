@@ -14,4 +14,12 @@ Static SPA: TypeScript, Vite, React. Calls the API only through the client gener
 - The kit page shows every part of the UI with fixture data: `/kit.html` on the dev server, e.g. `http://localhost:5173/kit.html`. It is not in the production build.
 - The theme follows the system setting; `?theme=light` or `?theme=dark` forces one.
 - `npm run kit:screenshots [-- <dir>]` saves the kit page in both themes at 1440 and 360 px, default `kit-screenshots/`; reviews compare them with the approved design screenshots, `design/png/` in `skald-cloud`.
-- The kit tests and screenshots run Google Chrome headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
+- The kit tests run Google Chrome headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
+
+## Reference screenshots
+
+- `kit-references/` holds the kit page in both themes at 1440 and 360 px. `npm test` takes the same screenshots and compares them pixel by pixel; any difference beyond anti-aliasing fails.
+- A failed view saves its screenshot and a diff image, differing pixels in red, to `kit-diff/`; CI uploads them as the `kit-diff` artifact.
+- Screenshots come from the Chromium of the Playwright Docker image pinned in `kit-browser.ts`, so macOS and CI render the same pixels; Docker must be running. The image runs as linux/amd64, emulated on Apple silicon.
+- After an intended visual change, `npm run kit:references` updates the references; commit them in the same PR. A reviewer compares the changed references with the design in `skald-cloud`.
+- A playwright-core update needs the image of the same version in `kit-browser.ts` and new references.

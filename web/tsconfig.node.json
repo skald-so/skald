@@ -25,6 +25,8 @@
     "orval.config.ts",
     "api.test.ts",
     "kit-browser.ts",
+    "kit-references.ts",
+    "kit-references.test.ts",
     "kit-screenshots.ts",
     "kit.test.ts"
   ]
