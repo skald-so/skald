@@ -90,7 +90,7 @@ device-kind = &(client: 1, browser: 2, service: 3, custodian: 4, auditor: 5)
 
 - Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it.
 - **Proof check:** a client MUST discard a certificate unless `device` is the ID derived from `signing` ([Identifiers](README.md#identifiers)) and `proof` verifies with `signing`. A discarded certificate counts nowhere and is not shown: the certificate of a device ID, a device's chain and issuers, the signer of an object and the devices a device certified come only from certificates that pass this check, here and in [README.md](README.md). So only the holder of a device's signing key makes a certificate for its ID: no other device can certify an existing device's ID, with other keys or with its own.
-- A device signs `proof` for one certificate only, the one issued for it when it joins the account. A client that sees two different certificates of one `device` that pass the proof check treats neither as valid and warns its user.
+- A device signs `proof` for one certificate only, the one issued for it when it joins the account. Certificates of one `device` with the same `body` are one certificate: a client uses a copy whose `signature` passes check 1 of [Device checks](#device-checks). A client that sees two certificates of one `device` with different bodies that pass the proof check treats neither as valid and warns its user.
 - A device ID thus names one device everywhere it appears, such as a revocation's `device`, `keep` and `also`, a member's `excluded` and an MLS credential.
 - Issuers:
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
@@ -340,11 +340,11 @@ acceptance-body = {
 
 The newcomer's device MUST, from the link:
 1. take the roster revision with the hash in the fragment, check its hash and accept it as its anchor, then accept later revisions as [Roster](#roster) says;
-2. check the invite's signature with `signer`, a valid admin's device per those revisions, and that `key` is the one derived from the secret;
+2. check the invite's signature with `signer`, a valid `client` or `browser` device of an admin per those revisions, and that `key` is the one derived from the secret;
 3. only then prove it holds the secret: sign an acceptance with the invite key, for its own account, master key and handle.
 
 An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
-1. checks the invite: its signature with the certificate of `signer`, a valid device of an admin in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;
+1. checks the invite: its signature with the certificate of `signer`, a valid `client` or `browser` device of an admin in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;
 2. checks the acceptance's signature with the invite's `key`;
 3. checks that the account is not a member and the handle is free;
 4. checks each of the newcomer's devices: a valid certificate chained to `master` from the acceptance, not to one the server gives.
