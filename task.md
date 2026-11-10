@@ -1,6 +1,6 @@
 ## Stories
 
-Documents listed in the "Docs" fields are in `docs/dev/`.
+Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `docs/`.
 
 | # | Story | Release | Depends on |
 |---|---------|-------|------------|
@@ -11,7 +11,7 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 5 | Edit comparison prototype with HMAC fingerprints | MVP | 1 |
 | 6 | Staging environment | MVP | 1 |
 | 7 | Release pipeline | MVP | 1 |
-| 62 | Web UI kit: theme, shells and components | MVP | 1 |
+| 62 | Web UI kit: theme, cabinet shell and components | MVP | 1 |
 | 64 | Self-host: Docker Compose | MVP | 6, 7, 9 |
 | 8 | GitHub sign-in and device certificate | MVP | 1, 2 |
 | 9 | Google sign-in and linked sign-in methods | MVP | 8 |
@@ -19,50 +19,50 @@ Documents listed in the "Docs" fields are in `docs/dev/`.
 | 11 | Spaces and agent addresses | MVP | 8 |
 | 12 | Encrypted mailbox | MVP | 11 |
 | 13 | MLS channels, roles and device revocation | MVP | 10, 12 |
-| 14 | Client: one-shot mode and helper | MVP | 12 |
-| 15 | MCP server and agent commands | MVP | 12 |
+| 14 | Client: one-shot mode and helper | MVP | 12, 13 |
+| 15 | MCP server and agent commands | MVP | 12, 13, 14 |
 | 16 | Encrypted channel history | MVP | 13 |
 | 17 | Recovery key and new device linking | MVP | 16 |
 | 18 | Key verification without trusting the server | MVP | 17 |
 | 19 | Claude Code adapter and plugin | MVP | 4, 14, 15 |
 | 20 | Codex adapter | MVP | 4, 14, 15 |
 | 21 | Presence, statuses and loop protection | MVP | 13, 15 |
-| 22 | Web UI: non-secret sections | MVP | 8, 9, 11, 12, 62 |
-| 23 | Space invite by link | MVP | 13, 14, 22 |
-| 24 | One-command machine connect | MVP | 7, 14, 17, 19, 20, 22 |
-| 25 | Production cloud, website and monitoring | MVP | 6, 7 |
-| 26 | Task queue: claim, lease and DLQ | MVP | 13, 15 |
+| 22 | Web UI: non-secret sections | MVP | 8, 9, 11, 12, 13, 62 |
+| 23 | Space invite by link | MVP | 13, 14, 17, 22 |
+| 24 | One-command machine connect | MVP | 7, 14, 17, 18, 19, 20, 22 |
+| 25 | Production cloud, website and monitoring | MVP | 6, 7, 12 |
+| 26 | Task queue: claim, lease and DLQ | MVP | 13, 14, 15 |
 | 27 | Browser linking and history on the web | MVP | 10, 17, 22 |
-| 28 | Web: queues, delivery trace, loops | MVP | 21, 26, 27 |
-| 35 | Service agents: HPKE and scoped tokens | MVP | 13, 22 |
+| 28 | Web: queues, delivery trace, loops, ask_user | MVP | 21, 26, 27, 41 |
+| 35 | Service agents: HPKE and scoped tokens | MVP | 13, 14, 22 |
 | 41 | ask_user and attachments | MVP | 21 |
-| 65 | Queue templates: review, test, ask | MVP | 19, 20, 26 |
-| 63 | Notifications to people | MVP | 21, 22, 26, 41 |
-| 66 | Restricted mode for tasks from other people | MVP | 19, 20, 21 |
-| 36 | GitHub Action | MVP | 14, 35, 65 |
+| 65 | Queue for agents: MCP tools and templates | MVP | 19, 20, 26 |
+| 63 | Notifications to people | MVP | 18, 21, 22, 26, 35, 41 |
+| 66 | Restricted mode for tasks from other people | MVP | 19, 20, 21, 26 |
+| 36 | GitHub Action | MVP | 14, 35, 65, 66 |
 | 29 | End-to-end MVP scenario | MVP | 9, 18, 21, 23, 24, 26, 27, 28, 36, 41, 63, 65, 66 |
-| 30 | Admin rights transfer and account deletion | MVP | 13, 16, 22 |
+| 30 | Admin rights transfer and account deletion | MVP | 13, 16, 17, 22 |
 | 31 | Load testing | MVP | 21, 25 |
 | 32 | Documentation: quick start and CLI reference | MVP | 24, 25 |
 | 33 | Website: main page | MVP | 25, 62 |
 | 34 | Operator CLI | MVP | 12, 30 |
-| 37 | Task queue: scheduling and agents | Post-MVP | 19, 20, 26, 36 |
-| 38 | Codex background agents via app-server | Post-MVP | 20 |
+| 37 | Task queue: scheduling | Post-MVP | 19, 20, 26, 36, 65 |
 | 67 | A2A gateway | Post-MVP | 2, 26, 35 |
+| 38 | Codex background agents via app-server | Post-MVP | 20 |
 | 39 | Shared channels between organizations | Post-MVP | 13, 22 |
 | 40 | Corporate IdP sign-in | Post-MVP | 9 |
 | 42 | Shared team instructions | Post-MVP | 19, 20 |
 | 43 | Gemini, Cursor, OpenCode and Copilot adapters | Post-MVP | 15, 24 |
-| 44 | Edit coordination: file level | Post-MVP | 5, 19, 20, 26 |
+| 44 | Edit coordination: file level | Post-MVP | 5, 19, 20, 26, 65 |
 | 45 | Edit coordination: hunk and symbol | Post-MVP | 44 |
 | 46 | Web: security center, human inbox, edit map | Post-MVP | 18, 27, 41, 44 |
 | 47 | Public cloud: anti-abuse | Post-MVP | 22, 25 |
-| 48 | Operator console | Post-MVP | 30, 47 |
+| 48 | Operator console | Post-MVP | 30, 47, 62 |
 | 49 | Analytics and token usage | Post-MVP | 26, 27, 35 |
 | 50 | Enterprise: SSO, SAML, SCIM and license | Post-MVP | 40 |
 | 51 | Enterprise: audit and retention policies | Post-MVP | 16, 50 |
 | 52 | Self-host: Helm and isolated networks | Post-MVP | 40, 50, 64 |
-| 53 | History export and migration to a self-hosted server | Post-MVP | 16, 17, 52 |
+| 53 | History export and migration to a self-hosted server | Post-MVP | 16, 17, 64 |
 | 54 | Python and TypeScript SDKs | Post-MVP | 14, 26 |
 | 55 | Homebrew, winget and cargo-binstall | Post-MVP | 7 |
 | 56 | Managed keys: custodian device | Post-MVP | 16, 27 |
@@ -78,19 +78,19 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - Wave 1: 1.
 - Wave 2: 2, 3, 4, 5, 6, 7, 62.
-- Wave 3: 8, 10, 25 (25 can be postponed until launch).
-- Wave 4: 9, 11, 33.
+- Wave 3: 8, 10.
+- Wave 4: 9, 11.
 - Wave 5: 12, 64.
-- Wave 6: 13, 14, 15, 22.
-- Wave 7: 16, 19, 20, 21, 23, 26, 35.
-- Wave 8: 17, 30, 31, 41, 65, 66.
-- Wave 9: 18, 24, 27, 34, 36, 63.
-- Wave 10: 28, 32.
-- Wave 11: 29 — end of MVP.
-- Wave 12: 38, 39, 40, 42, 43, 44, 47, 54, 55, 56, 58, 59, 67.
-- Wave 13: 45, 46, 48, 49, 50, 57, 60.
-- Wave 14: 37, 51, 52.
-- Wave 15: 53, 61.
+- Wave 6: 13, 25 (25 can be postponed until launch).
+- Wave 7: 14, 16, 22, 33.
+- Wave 8: 15, 17, 35.
+- Wave 9: 18, 19, 20, 21, 23, 26, 27, 30.
+- Wave 10: 24, 31, 34, 41, 65, 66.
+- Wave 11: 28, 32, 36, 63.
+- Wave 12: 29 — end of MVP.
+- Wave 13: 37, 38, 39, 40, 42, 43, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67.
+- Wave 14: 45, 46, 48, 50, 57, 60, 61.
+- Wave 15: 51, 52.
 
 ### Story 1: Monorepo skeleton and CI
 
@@ -195,18 +195,20 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** Pin down the protocol and the threat model that all other stories rely on.
 
 **Scope:**
-- Spec: envelope (plaintext header + ciphertext), agent address with the server name, delivery semantics and receipts (who issues each), a per-sender counter for gap detection, mailbox and cursor, queues and fencing, presence, edit coordination via HMAC fingerprints.
-- The protocol accounts from the start for the custodian device (feature 13), the auditor device (`ee/`) and federation (feature 15).
-- Threat model: what the server sees and does not see, trade-offs, prompt injection, loops.
-- The protocol version is a separate number; the server accepts the current and previous ones and tells a too-old client "please update".
-- Protocol types in the `proto` crate.
-- Encoding: JSON over HTTPS for the API (OpenAPI); envelopes in binary WebSocket frames.
+- Spec in `docs/protocol/`: identifiers and the agent address with the server name; the envelope in deterministic CBOR with the `mls` and `hpke` schemes; Skald as an A2A extension; protocol versions.
+- Mailbox, delivery and receipts, with the per-sender counter for gap detection.
+- Devices, roster and channels: the device certificate chain, the signed roster, invites and space policy, KeyPackages and Commit ordering, history keys.
+- Queues and tasks, presence, `ask_user`.
+- The edit-coordination wire format comes with Story 44, after Story 5's findings.
+- Room for the custodian device (feature 13), the auditor device (`ee/`) and federation (feature 15) without a new protocol version.
+- Threat model: attackers, what the server sees and does not see, trade-offs, prompt injection, loops.
+- The spec's types in `proto`; the server and the client check the protocol version.
 - The spec and threat model are published openly, marked "no external audit".
-- **Done when:** the spec and threat model are in the repository docs; client and server negotiate the protocol version; an outdated client gets "please update".
+- **Done when:** the spec and threat model are in `docs/`; client and server negotiate the protocol version; an outdated client gets "please update".
 
 - **Release:** MVP
 - **Depends on:** Story 1
-- **Docs:** `roadmap.md` — "Preparation", `architecture.md` — "Data model", "Cryptography", "Queue", "Security", `infrastructure.md` — "Release", `features.md` §1, §10, §13, §15
+- **Docs:** `docs/protocol/README.md`, `roadmap.md` — "Preparation", `architecture.md` — "Membership", "Data model", "Cryptography", "Queue", "Security", `infrastructure.md` — "Release", `features.md` §1, §4, §5, §6, §10, §13, §15
 
 #### Iteration 2.1: Protocol spec: addressing, envelope and versions
 - **Goal:** A public spec fixes the identifiers, the envelope and the protocol version that every other story builds on.
@@ -236,28 +238,50 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Attachments: encrypted blobs uploaded separately and referenced from the content; size limit and expiry.
 - **Definition of done:** the spec covers every item above; `architecture.md` keeps only a link to delivery semantics.
 
-#### Iteration 2.3: Protocol spec: queues, presence and edit coordination
-- **Goal:** The spec covers the rest of the protocol, so later stories need no breaking changes.
+#### Iteration 2.3: Protocol spec: devices, roster and channels
+- **Goal:** The spec fixes how devices, members and channel keys are certified, so the identity, space, channel and history stories build on one contract.
 - **What we do:**
-  - `docs/protocol/queues.md`, `presence.md` and `edits.md`; the wire-level part of `architecture.md`, "Queue" (claim, lease, fencing, modes), moves here and is replaced by a link.
-  - Queues: plaintext scheduling fields and the encrypted payload; claim, lease with heartbeat, fencing with `claim_id` and generation, `claim_lost`; at-least-once and at-most-once modes, retries, DLQ; the result returned as an encrypted message.
-  - Task templates: how a task names its template and carries the template's input and result.
-  - Sender trust: how the recipient learns from the signed envelope whether a task comes from an own device, a space member or a service agent.
-  - `ask_user`: a question from an agent to a person and the answer.
-  - Presence: the encrypted agent status; the server keeps only the latest value.
-  - Edit coordination: HMAC fingerprints of paths, hunks and symbols with the space key; what the client sends and the server compares; open questions link to `features.md` §11, "To decide".
-- **Definition of done:** the spec covers every item above; no fact is repeated between the spec and `architecture.md` or `features.md`.
+  - `docs/protocol/membership.md`, listed in the index in `README.md`.
+  - Device certificate: its fields, the device kind among them; who signs it; its chain to the account's root of trust through the server, already linked devices, the recovery key and the user's SSH key from GitHub; the checks a client makes on it.
+  - Sender trust levels: an own device, a space member, a service agent; how a recipient derives them from the certificate chain and the roster.
+  - Space roster and policy (`architecture.md`, "Membership"): their fields, the admin's signature on every change, how a client checks a change and what it does with one that fails.
+  - Invite: the signed invite, the secret in the link fragment, how the newcomer proves it holds the secret, how the admin's device checks the newcomer's devices.
+  - MLS channels: creating a channel's group; KeyPackages: who publishes them, how many and for how long; Commit ordering by the server; who commits the Add of a member's new device; how a device rejoins a channel after missing Commits, after a wipe or offline past the mailbox retention.
+  - History key: distribution inside MLS; wrapping to devices, linked browsers and the recovery key; rotation on revocation and on the policy's schedule; the encrypted key chain; what a new member without history access gets.
+  - `architecture.md` keeps the decisions and links here for the formats; stories' "Docs:" lines that cite a fact this iteration moves link here.
+- **Definition of done:** each item above has its section; every signed structure has a CDDL definition, a signature label and the checks a recipient MUST make; no wire format is repeated in `architecture.md`.
 
-#### Iteration 2.4: Threat model
+#### Iteration 2.4: Protocol spec: queues and tasks
+- **Goal:** The spec fixes the task queue, so Stories 26 and 65 need no breaking change later.
+- **What we do:**
+  - `docs/protocol/queues.md`, listed in the index; the wire part of `architecture.md`, "Queue" (claim, lease, fencing, modes), moves there and is replaced by a link.
+  - Queues: plaintext scheduling fields and the encrypted payload; claim, lease with heartbeat, fencing with `claim_id` and generation, `claim_lost`; at-least-once and at-most-once modes, retries, DLQ; the result returned as an encrypted message.
+  - How a queue relates to a channel, and which key encrypts a task payload.
+  - Who sends the heartbeat for a task claimed in one-shot mode, without the helper.
+  - Task templates: how a task names its template and carries the template's input and result.
+  - Stories' "Docs:" lines that cite "Queue" link to the new place.
+- **Definition of done:** each item above has its section; the task states and transitions, the fencing checks and the CDDL of the payload and the result are defined; `architecture.md`, "Queue", keeps only server-side decisions and a link.
+
+#### Iteration 2.5: Protocol spec: presence and `ask_user`
+- **Goal:** The spec fixes the agent status and the questions agents ask people.
+- **What we do:**
+  - `docs/protocol/agents.md`, listed in the index.
+  - Presence: the encrypted agent status and who can read it; the server keeps only the latest value.
+  - `ask_user`: the question and the answer as content bodies; the answer comes from the person's device, in the CLI or a linked browser, signed by it.
+  - Stories' "Docs:" lines that cite presence or `ask_user` link to the new sections.
+- **Definition of done:** presence and both `ask_user` bodies have CDDL definitions and the checks a recipient MUST make; `architecture.md`, "Data model", links to them.
+
+#### Iteration 2.6: Threat model
 - **Goal:** Users and contributors know what Skald protects against and what it does not.
 - **What we do:**
   - `docs/threat-model.md`, marked "no external audit" and linked from `AGENTS.md`.
-  - Attackers and what each can do: the server or its operator, a network observer, a stolen device, a removed member, a malicious sender.
-  - What the server sees and does not see; trade-offs (`architecture.md`, "Cryptography").
+  - Attackers and what each can do: the server or its operator, a network observer, the IdP or GitHub, a stolen device, a removed member, a member or an admin acting against others, a malicious sender, a leaked CI secret.
+  - "The server sees", "The server does not see" and "Trade-offs" move from `architecture.md`, "Cryptography", to the threat model; links to them in `architecture.md`, `features.md` and the spec point there.
   - Prompt injection and loops: the defenses in `architecture.md`, "Security", and what they do not stop.
-- **Definition of done:** the threat model covers every item above and links to the spec sections each defense relies on; no fact is repeated between it and `architecture.md`.
+  - Stories' "Docs:" lines that cite the moved lists link to the threat model.
+- **Definition of done:** each attacker has a section with what it can do and the defenses, each defense linking to the spec section it relies on; `architecture.md` keeps only links to the moved lists.
 
-#### Iteration 2.5: Identifiers and agent addresses in `proto`
+#### Iteration 2.7: Identifiers and agent addresses in `proto`
 - **Goal:** The client and server share one implementation of the spec's identifiers and addresses.
 - **What we do:**
   - Types in `proto` for the identifiers and the agent address defined by the spec.
@@ -265,7 +289,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Tests: valid identifiers and addresses round-trip; each invalid form from the spec is rejected.
 - **Definition of done:** `proto` follows the spec's identifier and address rules; unit tests pass in `script/test`.
 
-#### Iteration 2.6: Envelope and receipt types in `proto`
+#### Iteration 2.8: Envelope and receipt types in `proto`
 - **Goal:** Envelopes and receipts have one wire implementation that matches the spec.
 - **What we do:**
   - Types in `proto` for the envelope header, the content inside the ciphertext with its A2A message, and receipts.
@@ -274,22 +298,25 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Tests: every type round-trips; `proto` output matches the test vectors byte for byte; malformed and truncated frames are rejected.
 - **Definition of done:** `proto` encodes and decodes envelopes per the spec; unit tests pass in `script/test`.
 
-#### Iteration 2.7: Protocol version check on the server
+#### Iteration 2.9: Protocol version check on the server
 - **Goal:** The server serves clients of the current and previous protocol versions and tells older ones to update.
 - **What we do:**
   - The OpenAPI spec first: how a request states the protocol version and the answers to unsupported versions (rule 4 in `rules.md`).
   - The current protocol version in `proto`.
-  - `skald-server` accepts the current and previous versions and refuses others as the protocol spec says, with "please update" for a too-old client.
-  - Tests: every version case in the protocol spec; responses conform to the OpenAPI spec.
-- **Definition of done:** the server enforces the supported version range; server integration tests pass in `script/test`.
+  - `skald-server` accepts the current and previous versions and refuses others as the protocol spec says, with "please update" for a too-old client, on HTTPS requests and WebSocket opening requests.
+  - The supported range is a server setting, by default the current and the previous version, so tests reproduce every case while only version 1 exists.
+  - Tests: every row of the spec's "Server answers" table with the range set to versions 2–3, over HTTPS and WebSocket; requests that state no version by the spec; responses conform to the OpenAPI spec.
+- **Definition of done:** the server enforces its supported range, by default the current and previous versions; each row of the "Server answers" table has a server integration test in `script/test`.
 
-#### Iteration 2.8: Protocol version check in the client
+#### Iteration 2.10: Protocol version check in the client
 - **Goal:** An outdated `skald` tells its user to update instead of failing obscurely.
 - **What we do:**
-  - The client's server connection, which later commands reuse, states the protocol version on every request.
-  - A "please update" answer becomes an error telling the user to update `skald`; other version refusals get their own clear error.
-  - Tests: the client against a running `skald-server`: a compatible version connects, a too-old one gets "please update".
-- **Definition of done:** client and server negotiate the protocol version; an outdated client gets "please update"; client integration tests with `skald-server` pass in `script/test`.
+  - `skald status --server <url>`: connects to the server and prints whether it is reachable and whether its protocol version is compatible; later stories add the account and devices.
+  - The client's server connection, which `skald status` and later commands reuse, states the protocol version on every request and WebSocket opening request.
+  - The client acts on each answer as the spec's "Server answers" table says: an update notice for N−1, an error telling the user to update `skald` for "please update", a retry with a supported version for "too new" if it speaks one, otherwise an error saying the server is older.
+  - The versions the client speaks can be set for tests.
+  - Tests: `skald status` against a running `skald-server` with its supported range set for each row of the table.
+- **Definition of done:** `skald status` handles each row of the spec's "Server answers" table as the spec says; client integration tests with `skald-server` pass in `script/test`.
 
 ### Story 3: MLS prototypes and library choice
 
@@ -298,7 +325,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - A prototype on each library: device group, adding, removing with a new epoch, KeyPackages, Commit ordering, WASM build.
 - Comparison: RFC 9420 compliance, audit, API ergonomics, performance, WASM size, maintenance.
-- The decision and its rationale are recorded in the docs and in `tech-stack.md`.
+- The comparison goes into a report in the docs; the choice into `tech-stack.md`.
 - **Done when:** one library is chosen; prototypes and benchmarks are in the repository.
 
 - **Release:** MVP
@@ -310,9 +337,8 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** On current versions of Claude Code and Codex, confirm the paths for delivering messages into a live session and find out what subscription limit data they expose.
 
 **Scope:**
-- Claude Code: Channels, `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox`.
-- Codex: `PostToolUse`, `Stop`, `UserPromptSubmit` hooks, `codex queue`, app-server (`turn/start`, `turn/steer`).
-- What subscription limit data the CLIs themselves show the user, taking vendor rules into account.
+- Every Claude Code and Codex path in `architecture.md`, "Delivery to agents".
+- What subscription limit data the CLIs themselves show the user, within vendor rules.
 - A minimal prototype for each path.
 - **Done when:** a report is in the docs; the primary and fallback paths are confirmed for each agent; the "Delivery to agents" table in `architecture.md` is up to date.
 
@@ -342,24 +368,21 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - `skald-server` Docker image; on a merge into `dev`, CI builds the `:edge` image and publishes it to GHCR.
 - Private `skald-cloud` repository with configs and deployment.
-- Staging on an existing VPS shared with other projects: Docker Compose, PostgreSQL; the server's shared Caddy with automatic TLS.
-- Migrations are backward compatible only.
+- Staging as in `infrastructure.md`, "Cloud", with an S3-compatible bucket for attachments (`tech-stack.md`, "Files").
 - **Done when:** a merge into `dev` shows up on staging within a few minutes; the health check responds over HTTPS.
 
 - **Release:** MVP
 - **Depends on:** Story 1
-- **Docs:** `infrastructure.md` — "Flow", "Repositories", "Cloud"
+- **Docs:** `infrastructure.md` — "Flow", "Repositories", "Cloud", `tech-stack.md`
 
 ### Story 7: Release pipeline
 
 **Goal:** A release ships with one action, merging the Release PR, and the artifacts are signed and verifiable.
 
 **Scope:**
-- release-plz maintains a Release PR with the version and CHANGELOG from Conventional Commits; one version for the client, server and plugin, `0.x` before 1.0.
-- Merging the Release PR creates the `vX.Y.Z` tag; dist builds `skald` for macOS, Linux, Windows (x86_64, arm64) and publishes it to GitHub Releases with checksums; `main` moves to the tag.
-- npm package with prebuilt binaries (`npx skald-so`), server image in GHCR.
-- GitHub Artifact Attestations, cosign image signing without stored keys, trusted publishing to npm.
-- Betas `vX.Y.Z-beta.N`, on npm with the `next` tag.
+- The release flow of `infrastructure.md`, "Flow" and "Release": release-plz, dist, `vX.Y.Z` tags, betas, `main` moving to the tag.
+- The channels of `infrastructure.md`, "Channels", except those marked "Later".
+- Signed and verifiable artifacts as in `infrastructure.md`, "Trust in builds".
 - The `skald update` command.
 - **Done when:** merging the Release PR publishes the release to all channels; `gh attestation verify` passes; `skald update` installs the new version.
 
@@ -367,18 +390,19 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Depends on:** Story 1
 - **Docs:** `infrastructure.md` — "Flow", "Release", "Channels", "Trust in builds", `tech-stack.md`
 
-### Story 62: Web UI kit: theme, shells and components
+### Story 62: Web UI kit: theme, cabinet shell and components
 
 **Goal:** Web UI screens are assembled from ready parts that match the approved design, so screen stories only connect the API.
 
 **Scope:**
 - Look per the approved design in `../skald-cloud/design/`: tokens, fonts and rules in its `README.md`.
 - Theme: light and dark tokens that follow the system setting; fonts.
-- Shells: the cabinet with the side menu, space switcher and account footer; the operator console with top tabs.
+- The cabinet shell with the side menu, space switcher and account footer. The operator console shell comes with Story 48.
 - Components: a table sorted by a click on a column header, with an arrow on the active column; filter buttons; a dropdown filter; search; a warning banner; buttons; status labels; empty and loading states.
 - A kit page shows every component in every state with fixture data, without API calls.
+- Reference screenshots of the kit page in the repository; `script/test` compares the kit page with them.
 - Desktop and phone width; usable from the keyboard and with a screen reader.
-- **Done when:** the kit page matches the approved design in both themes at desktop and phone width; component tests run in `script/test`.
+- **Done when:** the kit page matches the approved design in both themes at desktop and phone width and matches its reference screenshots; component tests and the screenshot comparison run in `script/test`.
 
 - **Release:** MVP
 - **Depends on:** Story 1
@@ -420,16 +444,26 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Tests: sorting by click and keyboard in both directions, with the arrow and the announced direction following; a non-sortable column does not sort; the empty and loading states replace the rows.
 - **Definition of done:** the kit page shows the table and both states as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
 
-#### Iteration 62.4: Filter buttons and search
+#### Iteration 62.4: Reference screenshots of the kit page
+- **Goal:** Every visual change to the kit shows up in its PR as changed reference screenshots, and a change without them fails `script/test`.
+- **What we do:**
+  - Reference screenshots of every kit page view in both themes at both check widths, made by the screenshot command and committed in `web/`.
+  - `script/test` takes the kit page screenshots in headless Chrome and compares them with the references; a difference beyond anti-aliasing fails the run and saves a diff image.
+  - A command updates the references.
+  - `web/README.md`: how to update the references; a reviewer compares changed references with the design in `skald-cloud`.
+  - Tests: an unchanged kit page passes; a changed color or spacing of a component fails with a diff image.
+- **Definition of done:** references of every view from 62.1–62.3 are in the repository; `script/test` fails on a visual change without updated references and passes with them, on a developer machine and in CI.
+
+#### Iteration 62.5: Filter buttons and search
 - **Goal:** Long lists can be narrowed with filter buttons and search.
 - **What we do:**
   - Filter buttons: a group with one active choice, as "All · Flagged · Banned · Enterprise" in `13-operator-accounts.png` and "Thread · Graph" in `04-messages.png`; a screen reader hears which choice is active.
   - Search: a labelled field that reports the query as the user types and can be cleared.
   - Both on the kit page, narrowing a fixture table.
   - Tests: a choice by click or keyboard becomes the only active one and is reported; typing reports the query; clearing reports an empty one.
-- **Definition of done:** the kit page shows filter buttons and search as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+- **Definition of done:** the kit page shows filter buttons and search as in the approved design in both themes at desktop and phone width; the PR adds the reference screenshots of these views; component tests and the screenshot comparison pass in `script/test`.
 
-#### Iteration 62.5: Dropdown filter
+#### Iteration 62.6: Dropdown filter
 - **Goal:** A screen offers several filters and a sort order in one compact bar.
 - **What we do:**
   - Dropdown filter as in `04-messages.png`: a button with the filter name and the current value ("From anyone", "Sort Oldest first") that opens a list of options; a value other than the default is highlighted.
@@ -438,9 +472,9 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - At phone width the bar wraps and the list stays on screen.
   - On the kit page: a filter bar over a fixture table.
   - Tests: choosing an option by mouse and keyboard reports it and updates the button; Escape and a click outside close the list without a change; "Clear" restores the defaults.
-- **Definition of done:** the kit page shows the filter bar as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+- **Definition of done:** the kit page shows the filter bar as in the approved design in both themes at desktop and phone width; the PR adds the reference screenshots of these views; component tests and the screenshot comparison pass in `script/test`.
 
-#### Iteration 62.6: Cabinet shell
+#### Iteration 62.7: Cabinet shell
 - **Goal:** Every cabinet screen sits in the same frame with the side menu, space switcher and account footer.
 - **What we do:**
   - Side menu as in `08-machines.png`: the logo, the space switcher, sections with optional sub-items and count badges, the current section highlighted; the account footer with initials, name, sign-in method and a menu of account actions.
@@ -451,34 +485,23 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - Landmarks for the menu and the page; a screen reader hears the current section as current.
   - On the kit page: the shell around a page built from the earlier components, as `08-machines.png`.
   - Tests: the current section is marked; choosing a space reports it; the menu button opens and closes the side menu, and Escape returns focus to it; the account menu works from the keyboard.
-- **Definition of done:** the kit page shows the cabinet as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
-
-#### Iteration 62.7: Operator console shell
-- **Goal:** Operator screens sit in their own frame with top tabs.
-- **What we do:**
-  - Top bar as in `13-operator-accounts.png`: the logo with the "operator" label, tabs with optional count badges, the instance name on the right; the current tab highlighted.
-  - The page area as in the cabinet shell.
-  - Tabs and the instance name come from the screen; the kit page passes the tabs of the design, Inbox first.
-  - At phone width the tabs wrap or scroll inside the bar.
-  - A screen reader hears the current tab as current and each tab's count.
-  - On the kit page: the shell around filter buttons, search and a table, as `13-operator-accounts.png`.
-  - Tests: the current tab is marked; a tab's count is part of its accessible name.
-- **Definition of done:** the kit page shows the operator console as in the approved design in both themes at desktop and phone width, judged by the kit page screenshots; component tests pass in `script/test`.
+- **Definition of done:** the kit page shows the cabinet as in the approved design in both themes at desktop and phone width; the PR adds the reference screenshots of these views; component tests and the screenshot comparison pass in `script/test`.
 
 ### Story 64: Self-host: Docker Compose
 
 **Goal:** A self-hosted server comes up with one command, following the docs.
 
 **Scope:**
-- `docker compose up` brings up `skald-server`, PostgreSQL and Caddy; the domain is set with a single variable, and HTTPS works right away.
+- Self-host as in `infrastructure.md`, "Self-host": one `docker compose up`, the domain in a single variable, HTTPS right away.
 - Sign-in on a self-hosted server: GitHub or Google with the admin's own OAuth apps; corporate IdPs come with Story 40.
+- Attachment storage (`tech-stack.md`, "Files"). To decide: an S3-compatible service in the Compose file or an external bucket.
 - Backups and upgrades with documented commands.
 - Self-host documentation.
 - **Done when:** following the docs, a working Skald with its own domain comes up on a clean server; an upgrade keeps the data.
 
 - **Release:** MVP
 - **Depends on:** Story 6, Story 7, Story 9
-- **Docs:** `infrastructure.md` — "Self-host", "Repositories", `features.md` — "Product"
+- **Docs:** `infrastructure.md` — "Self-host", "Repositories", `features.md` — "Product", `tech-stack.md`
 
 ### Story 8: GitHub sign-in and device certificate
 
@@ -486,8 +509,8 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Sign-in via GitHub OAuth; device flow (RFC 8628) for machines without a browser. The account is created on first sign-in.
-- Device keys (signing and HPKE) are generated on the machine and never leave it; they are stored in Keychain, libsecret or Windows Credential Manager, otherwise in a file with 0600 permissions.
-- Device certificate "device key → account", signed by the account and the server.
+- Device keys (signing and HPKE) are generated on the machine and never leave it; key storage as in `architecture.md`, "Cryptography".
+- The device certificate as the spec defines it (iteration 2.3), signed by the server (`architecture.md`, "Device linking"); signatures by other devices and the recovery key come with Story 17.
 - Client local state in SQLite.
 - CLI: sign in, sign out, list your devices.
 - **Done when:** on a machine without a browser, `skald` signs in via device flow and gets a certificate; the server stores only public keys.
@@ -495,7 +518,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 1, Story 2
-- **Docs:** `features.md` §5, `architecture.md` — "Device linking", "Data model", "Cryptography"
+- **Docs:** `features.md` §5, `architecture.md` — "Device linking", "Data model", "Cryptography", `docs/protocol/README.md`
 
 ### Story 9: Google sign-in and linked sign-in methods
 
@@ -520,7 +543,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - MLS (RFC 9420, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`): groups, KeyPackages, adding and removing a member, Commit, epochs.
-- Channel history key: encrypting message copies, wrapping the key to device keys and the recovery key.
+- History keys: encrypting message copies, wrapping a key to device keys and the recovery key, the key chain (`architecture.md`, "Cryptography").
 - Stateless HPKE (RFC 9180), Ed25519 signatures.
 - **Done when:** tests confirm forward secrecy and that a removed member cannot access new messages; the crate builds for WASM.
 
@@ -534,66 +557,72 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** A device belongs to several spaces, and an agent session automatically works in the space of its folder.
 
 **Scope:**
-- Spaces and channels on the server, a signed space roster; a device in N spaces.
-- An agent is a named endpoint on a device; an address like `space/alice/claude-api@skald.example` with the server name.
-- Binding a session to a space by folder: `.skald.toml` or a rule like `~/work/clientA/** → clientA`.
+- Spaces and channels on the server; a device in N spaces.
+- Creating a team space and its channels in the CLI; the creator is the space's first admin.
+- The signed roster and space policy (`architecture.md`, "Membership"): an admin's device signs every change.
+- An agent is a named endpoint on a device, with an address as in the protocol spec.
+- Binding a session to a space by folder (`features.md` §3).
 - Isolation: an agent of one space cannot see other spaces.
-- Each account gets a personal space at sign-up; its machines join it by default, so one person can start alone.
-- **Done when:** a new account has a personal space with its machines; a device is in three spaces; an agent in `~/work/clientA` sees only clientA.
+- A personal space for each account at sign-up; its machines join it by default.
+- **Done when:** a new account has a personal space with its machines; a device is in three spaces; an agent in `~/work/clientA` sees only clientA; a roster change without an admin's signature is rejected.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 8
-- **Docs:** `features.md` §3, §15, `architecture.md` — "Network", "Data model"
+- **Docs:** `features.md` §3, §15, `architecture.md` — "Membership", "Network", "Data model", `docs/protocol/README.md`
 
 ### Story 12: Encrypted mailbox
 
 **Goal:** A message reaches the recipient device even if the sender and recipient were never online at the same time; the server stores only ciphertext.
 
 **Scope:**
-- Envelope: a plaintext header and opaque ciphertext; a separate mailbox for each recipient device.
-- Recipient online: an immediate WebSocket push; offline: the message waits; after reconnecting, the client catches up from the cursor; the device acks after writing the message locally, and the ack removes it from the mailbox; a redelivered message is dropped by `envelope_id`.
-- Server instances wake each other via PostgreSQL `LISTEN/NOTIFY`.
-- Receipts `stored → delivered → read → replied`, plus `held`, `refused` and `expired`, issued as in `architecture.md`, "Delivery semantics"; `idempotency_key` rejects duplicates.
-- Cloud limits as per-account settings: spaces, devices, messages per month, text up to 64 KB, undelivered messages kept for 7 days.
+- Envelopes as in the protocol spec; a mailbox per recipient device.
+- Delivery from the sending device to the recipient device as in `docs/protocol/delivery.md`: send with retries, WebSocket push, catch-up from the cursor, ack after the local write; duplicates dropped by the sending device and `msg_id`.
+- Server instances wake each other (`architecture.md`, "Network").
+- Server statuses `stored`, `delivered` and `expired`. `read` and `replied` come with Story 15, `held` and `refused` with Story 21.
+- Cloud limits as per-account settings (`features.md`, "Product"): spaces, devices, messages per month, message text, undelivered message retention.
 - CLI: send and receive a message.
-- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `idempotency_key` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message.
+- **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `msg_id` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message; a message not delivered in time ends in `expired`.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 11
-- **Docs:** `features.md` §1, "Product", `architecture.md` — "Network", "Data model", "Delivery semantics", "Security"
+- **Docs:** `features.md` §1, "Product", `architecture.md` — "Network", "Data model", "Security", `docs/protocol/delivery.md`
 
 ### Story 13: MLS channels, roles and device revocation
 
 **Goal:** All channel messages are MLS-encrypted between devices, and an admin can revoke a specific device.
 
 **Scope:**
-- The server as the MLS Delivery Service: stores KeyPackages, orders Commits, delivers MLS control messages through mailboxes.
-- Channel = MLS group, member = device; addressing to the right session happens inside the ciphertext.
-- Sending to a recipient without keys fails with an error; there is no plaintext on the server.
-- Roles: admin, member, service agent; only an admin removes members.
+- The server as the MLS Delivery Service: stores KeyPackages, orders Commits, delivers handshake messages through mailboxes.
+- Creating a channel makes its MLS group; a member is a device; addressing to the right session happens inside the ciphertext.
+- No plaintext path: sending to a recipient without keys fails (`features.md` §1).
+- Roles: admin, member, service agent; only an admin removes members; role changes are signed (`architecture.md`, "Membership").
 - Device revocation is Remove + Commit, a new epoch.
-- **Done when:** an automated test shows that a removed device with a full copy of its disk cannot read any message sent after the removal.
+- A member's new device joins its channels, and a device that missed Commits rejoins them, as the spec defines (iteration 2.3).
+- Gap detection with the per-sender counter (`docs/protocol/delivery.md`): the recipient tells its user about a missing message.
+- **Done when:** an automated test shows that a removed device with a full copy of its disk cannot read any message sent after the removal; a message the server drops is reported missing once a later message from the same device arrives; a device offline past the mailbox retention rejoins its channels.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 10, Story 12
-- **Docs:** `features.md` §4, `architecture.md` — "Cryptography", "Data model"
+- **Docs:** `features.md` §4, `architecture.md` — "Cryptography", "Data model", "Membership", `docs/protocol/delivery.md`
 
 ### Story 14: Client: one-shot mode and helper
 
 **Goal:** The client works without a daemon or root: one-shot in CI and sandboxes, and through an automatic helper on a developer machine.
 
 **Scope:**
-- One-shot mode: load state → sync → run the operation → save.
-- `skald helper` is started by the first client; the helper holds the WebSocket, dispatches messages to sessions over a unix socket, holds the local state lock and exits after being idle.
-- Outbound HTTPS on 443 only, `HTTPS_PROXY` support; push fallbacks: SSE and long-poll.
+- One-shot mode and the helper as in `architecture.md`, "Components"; the helper holds the local state lock.
+- Network as in `architecture.md`, "Network": outbound HTTPS on 443 only, `HTTPS_PROXY`, SSE and long-poll fallbacks.
+- The device-to-agent hop of `docs/protocol/delivery.md`: a crash during a handover repeats it and never loses it.
 - `skald recv --wait` for any agent with a shell.
-- **Done when:** two sessions on one machine receive their own messages through a single helper; one-shot mode sends and receives behind a proxy.
+- **Done when:** two sessions on one machine receive their own messages through a single helper; one-shot mode sends and receives behind a proxy; a helper killed during a handover hands the message over again after a restart.
 
 - **Release:** MVP
-- **Depends on:** Story 12
-- **Docs:** `features.md` §2, `architecture.md` — "Components", "Network", "Delivery to agents"
+- **Acceptance tests:** first
+- **Depends on:** Story 12, Story 13
+- **Docs:** `features.md` §2, `architecture.md` — "Components", "Network", "Delivery to agents", `docs/protocol/delivery.md`
 
 ### Story 15: MCP server and agent commands
 
@@ -602,30 +631,31 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - `skald` as an MCP server (stdio): sending and `inbox`; the same operations in the CLI.
 - A session registers as an agent in the space of its folder.
-- Inbound content is data, not an instruction: a sender label and a prompt injection warning.
-- **Done when:** two agents in different folders of one space exchange messages via MCP tools.
+- Receipts `read` and `replied` (`docs/protocol/delivery.md`).
+- Inbound content is data, not an instruction: a sender label and a prompt injection warning (`architecture.md`, "Security").
+- **Done when:** two agents in different folders of one space exchange messages via MCP tools; the sender sees `read` once the recipient agent has the message and `replied` when its answer arrives.
 
 - **Release:** MVP
-- **Depends on:** Story 12
-- **Docs:** `features.md` §7, `architecture.md` — "Components", "Security", `tech-stack.md`
+- **Acceptance tests:** first
+- **Depends on:** Story 12, Story 13, Story 14
+- **Docs:** `features.md` §7, `architecture.md` — "Components", "Security", `docs/protocol/delivery.md`, `tech-stack.md`
 
 ### Story 16: Encrypted channel history
 
 **Goal:** The server stores the full channel history, and only devices with the history key can read it.
 
 **Scope:**
-- The channel history key is distributed inside MLS; the sender puts a copy of the message under this key on the server.
-- History keys are stored on the server, wrapped to the account's devices.
+- History copies under the channel's history key, keys wrapped to the account's devices, the key chain (`architecture.md`, "Cryptography").
+- Rotation when any device is revoked and on the space policy's schedule; an admin changes the period.
 - A new channel member sees the history only if an admin allowed it.
-- When a member is removed, the history key is rotated.
 - Reading and searching the history happens on the client (CLI).
-- History retention is a space setting capped by the account limit; the cloud default is 30 days.
-- **Done when:** a member's new device reads the channel history; a removed member cannot read messages sent after the removal.
+- History is kept for the account's limit (`features.md`, "Product"); retention policies are Enterprise (Story 51).
+- **Done when:** a member's new device reads the channel history, including the history from before a rotation; a revoked device with a full copy of its disk reads no history written after its revocation.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13
-- **Docs:** `features.md` §6, "Product", `architecture.md` — "Cryptography", "Data model"
+- **Docs:** `features.md` §4, §6, "Product", `architecture.md` — "Cryptography", "Data model", "Membership"
 
 ### Story 17: Recovery key and new device linking
 
@@ -633,8 +663,9 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - The recovery key is generated on the machine on first connect and shown to the user; history keys are wrapped to it as well.
-- A new device is confirmed on an already linked device or with the recovery key, and then receives the history keys.
-- **Done when:** all devices are wiped; the recovery key is entered on a new laptop, and the full history is there.
+- The recovery key is entered only in the CLI (`architecture.md`, "Device linking").
+- A new device is confirmed on an already linked device or with the recovery key, which signs its certificate. It then joins the account's channels and gets the history keys as the spec defines (iteration 2.3), also when the recovery key replaced every device.
+- **Done when:** all devices are wiped; the recovery key is entered on a new laptop, and the full history is there; its agents exchange messages in the old channels again.
 
 - **Release:** MVP
 - **Acceptance tests:** first
@@ -646,10 +677,8 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The client detects a key swap even if the server is compromised.
 
 **Scope:**
-- The device key is signed with the user's SSH key from GitHub; the client checks the signature directly against GitHub.
+- Verification without trusting the server, as in `features.md` §5: the device key signed with the user's SSH key from GitHub and checked against GitHub; cross-signing, key change warnings, fingerprints; the optional DNS root of trust.
 - Accounts without a GitHub SSH key rely on cross-signing, key change warnings and fingerprints.
-- Device cross-signing, key change warnings, fingerprints for manual verification.
-- Optional DNS root of trust (TXT record) for organizations with their own domain.
 - **Done when:** the client detects a key swap on the server (automated test).
 
 - **Release:** MVP
@@ -662,9 +691,9 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** A message reaches a live Claude Code session; the adapter installs as a plugin.
 
 **Scope:**
-- Primary path: Channels; fallbacks: `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox` (based on the results of Story 4).
+- The Claude Code paths of `architecture.md`, "Delivery to agents", as Story 4 confirmed them.
 - A skill with rules for working with Skald.
-- A Claude Code plugin with MCP, hooks and the skill in the monorepo marketplace (`/plugin marketplace add skald-so/skald`), auto-update from the marketplace.
+- A Claude Code plugin with MCP, hooks and the skill in the monorepo marketplace (`infrastructure.md`, "Channels"), auto-update from the marketplace.
 - e2e tests against real Claude Code, nightly run in CI.
 - **Done when:** a message sent to an agent appears in the context of a running Claude Code session.
 
@@ -677,7 +706,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** A message reaches a live Codex session without tmux.
 
 **Scope:**
-- `PostToolUse`, `Stop`, `UserPromptSubmit` hooks; fallbacks: MCP `inbox` and `codex queue`, if Story 4 confirmed it.
+- The Codex paths of `architecture.md`, "Delivery to agents", except app-server (Story 38), as Story 4 confirmed them.
 - e2e tests against real Codex, nightly run in CI.
 - **Done when:** a message sent to an agent appears in the context of a running Codex session.
 
@@ -692,61 +721,64 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - Presence directory: the agent status is encrypted; the server stores only the latest value.
 - `message_status` in MCP and the CLI.
-- Loop protection: a hop counter in the envelope, a client-side limit on replies without a human, a server-side rate limit.
-- Inbound modes `accept / hold / refuse`, a sender allowlist; `hold` waits for human confirmation in the CLI, `refuse` produces a `refused` receipt.
-- **Done when:** two agents replying to each other stop at the limit; a message in `hold` mode does not reach the agent's context until confirmed.
+- Loop protection as in `architecture.md`, "Security".
+- Inbound modes `accept / hold / refuse`, a sender allowlist; `hold` waits for human confirmation in the CLI; receipts `held` and `refused` (`docs/protocol/delivery.md`).
+- **Done when:** two agents replying to each other stop at the limit; a message in `hold` mode does not reach the agent's context until confirmed; its sender sees `held`, then `read` or `refused`.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 13, Story 15
-- **Docs:** `features.md` §8, `architecture.md` — "Data model", "Security"
+- **Docs:** `features.md` §8, `architecture.md` — "Data model", "Security", `docs/protocol/delivery.md`
 
 ### Story 22: Web UI: non-secret sections
 
-**Goal:** On `app.skald.so`, the user signs up with GitHub and manages the account without opening any content.
+**Goal:** On `app.skald.so`, the user signs up and manages the account without opening any content.
 
 **Scope:**
-- Static SPA on `app.skald.so`; "Sign in with GitHub" or "Sign in with Google" gives one-click sign-up.
+- Static SPA on `app.skald.so`; one-click sign-up with GitHub or Google.
 - Layout per the approved design in `../skald-cloud/design/`.
 - Sections: quotas, devices, sessions, space members and roles.
-- Sessions are web UI and CLI sign-ins, with revocation; the server shows only metadata: where, when, last use.
+- Sessions: web UI and CLI sign-ins with metadata (where, when, last use) and revocation.
+- Members and roles are only shown: they change on an admin's device (`features.md` §12).
 - Data comes only from the server API; the page receives neither keys nor content.
-- **Done when:** a new user signs up in one click and sees their quotas, devices and space members.
+- **Done when:** a new user signs up in one click and sees their quotas, devices and space members; a revoked session loses access at once.
 
 - **Release:** MVP
-- **Depends on:** Story 8, Story 9, Story 11, Story 12, Story 62
-- **Docs:** `features.md` §12, §16, `architecture.md` — "Components", `tech-stack.md`
+- **Acceptance tests:** first
+- **Depends on:** Story 8, Story 9, Story 11, Story 12, Story 13, Story 62
+- **Docs:** `features.md` §12, §16, `architecture.md` — "Components", "Membership", `tech-stack.md`
 
 ### Story 23: Space invite by link
 
 **Goal:** An admin invites a person by link, and the newcomer's devices join the channels automatically.
 
 **Scope:**
-- An invite link is created in the web UI and CLI and accepted after sign-in.
-- The admin's device adds the newcomer's devices to the space's channels by itself.
-- Active invite links are visible in the web UI and can be revoked.
+- An admin creates an invite link in the CLI; it is signed, and its secret never reaches the server (`architecture.md`, "Membership").
+- The newcomer accepts after sign-in; the admin's device checks the newcomer's devices through their certificate chains and adds them to the roster and the space's channels by itself.
+- Active invite links are shown in the web UI and can be revoked there.
 - Invites never reach the agent's context.
-- **Done when:** a user from another account joins the space via the link, and their agents exchange messages with the admin's agents.
+- **Done when:** a user from another account joins the space via the link, and their agents exchange messages with the admin's agents; the server never receives the invite secret; a member or device the server adds without an admin's signature or a valid certificate chain is rejected.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 13, Story 14, Story 22
-- **Docs:** `features.md` §16, §12, `architecture.md` — "Security"
+- **Depends on:** Story 13, Story 14, Story 17, Story 22
+- **Docs:** `features.md` §16, §12, `architecture.md` — "Membership", "Security"
 
 ### Story 24: One-command machine connect
 
 **Goal:** One command per machine and one confirmation for each additional one; after that, the agents on the machine are ready to work.
 
 **Scope:**
-- The "Connect machines" section: the website detects the OS and shows a single command with a one-time code: `curl … | sh`, `irm … | iex` or `npx skald-so connect <code>`. The code lives for a few minutes, works once and does not transfer keys.
+- The "Connect machines" section with the command and the one-time code of `features.md` §16.
 - `install.sh` and `install.ps1` in GitHub Releases: download the binary, verify the checksum, run `skald connect`.
-- `skald connect`: generates keys, registers the device with the code without a second sign-in, shows the recovery key, finds Claude Code and Codex and, after confirmation, sets up MCP and hooks, starts the helper.
+- `skald connect` does every step of `features.md` §16, including signing the device key with the user's SSH key from GitHub (Story 18).
 - The next machine: the same command, plus confirmation on a linked device or with the recovery key.
-- The status on the website updates by itself: "✓ MacBook connected: Claude Code, Codex".
-- **Done when:** one-click sign-up, one command per machine; after that, Claude Code and Codex on two machines exchange messages.
+- The status on the website updates by itself.
+- **Done when:** one-click sign-up, one command per machine; after that, Claude Code and Codex on two machines exchange messages; for an account with an SSH key on GitHub, the device key is signed with it.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 7, Story 14, Story 17, Story 19, Story 20, Story 22
+- **Depends on:** Story 7, Story 14, Story 17, Story 18, Story 19, Story 20, Story 22
 - **Docs:** `features.md` §16, `architecture.md` — "Device linking", `infrastructure.md` — "Channels"
 
 ### Story 25: Production cloud, website and monitoring
@@ -754,35 +786,29 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The cloud is ready for the public MVP launch.
 
 **Scope:**
-- Production on dedicated Hetzner servers: a primary and a replica, PostgreSQL 19 with synchronous replication that switches to asynchronous with an alert when the replica is down, WAL-G backups to object storage.
-- Docker Compose + Caddy with automatic TLS; the same image that is published for self-hosting.
-- One-click release rollout to production with manual approval in GitHub Environments.
-- Monitoring: Prometheus, Grafana, Sentry, uptime checks, status page.
-- Addresses: `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation; the website and docs are built from `docs/` on GitHub Pages.
+- Production as in `infrastructure.md`, "Cloud": a primary and a replica with synchronous replication, WAL-G backups, the image published for self-hosting, rollout with manual approval, monitoring, the addresses.
+- An S3-compatible bucket for attachments (`tech-stack.md`, "Files").
+- The website and docs built from `docs/` on GitHub Pages (`infrastructure.md`, "Channels").
 - **Done when:** a release is deployed to production with one click; restore from backup has been tested; losing the primary loses no `stored` message; monitoring alerts arrive.
 
 - **Release:** MVP
-- **Depends on:** Story 6, Story 7
-- **Docs:** `infrastructure.md` — "Cloud", "Channels"
+- **Depends on:** Story 6, Story 7, Story 12
+- **Docs:** `infrastructure.md` — "Cloud", "Channels", `tech-stack.md`
 
 ### Story 26: Task queue: claim, lease and DLQ
 
 **Goal:** A queue in which a task is never lost and never runs on two agents at once.
 
 **Scope:**
-- Named queues; a task is an encrypted payload plus plaintext scheduling fields; `idempotency_key`.
-- Atomic claim; a heartbeat extends the lease.
-- Mode per queue: at-least-once (default) returns a task with an expired lease or a failure to the queue; at-most-once sends it to the DLQ without a retry.
-- Fencing: `claim_id` with an increasing generation, extension and completion via compare-and-swap; whoever lost the lease gets `claim_lost`.
-- Retries with exponential backoff, then DLQ.
+- Named queues and tasks as in `features.md` §10 and `architecture.md`, "Queue": an encrypted payload with plaintext scheduling fields, `idempotency_key`, atomic claim, lease with heartbeat, fencing and `claim_lost`, both modes, retries with exponential backoff, DLQ.
 - The result returns to the sender as an encrypted message.
-- CLI to enqueue, claim, extend and complete; the helper sends the heartbeat.
+- CLI to enqueue, claim, extend and complete; the helper sends the heartbeat, and in one-shot mode it goes as the spec defines (iteration 2.4).
 - Queue load test.
-- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice.
+- **Done when:** a stopped agent gets `claim_lost`; a live but slow agent does not lose its task; failed tasks go to the DLQ; an at-most-once task never runs twice; a repeated enqueue with the same `idempotency_key` is rejected.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 13, Story 15
+- **Depends on:** Story 13, Story 14, Story 15
 - **Docs:** `features.md` §10, `architecture.md` — "Queue", "Data model"
 
 ### Story 27: Browser linking and history on the web
@@ -791,76 +817,79 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Layout per the approved design in `../skald-cloud/design/`.
-- The "Link this browser" button: a code or QR from a linked machine, or the recovery key; the browser key is in IndexedDB and can be revoked.
+- The "Link this browser" button: a code or QR from a linked device, never the recovery key (`architecture.md`, "Device linking"); the browser key is in IndexedDB and can be revoked.
 - A WASM build of the Rust core in the SPA; the browser reads through history keys wrapped to its key and sends actions as signed messages via HPKE.
+- Revoking a browser rotates the history key (`architecture.md`, "Cryptography").
 - Sections: message texts and threads, a "which agent messages whom" graph, history search in the browser.
-- SRI and reproducible builds for the JS served by the server.
-- **Done when:** a linked browser shows the channel history, and the server receives only ciphertext; a revoked browser cannot read new messages.
+- A reproducible web build (`infrastructure.md`, "Trust in builds").
+- **Done when:** a linked browser shows the channel history, and the server receives only ciphertext; a revoked browser reads nothing written after its revocation, history included; a rebuild from the release tag matches the files `app.skald.so` serves.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 10, Story 17, Story 22
-- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Cryptography"
+- **Docs:** `features.md` §12, §6, `architecture.md` — "Components", "Device linking", "Cryptography", `infrastructure.md` — "Trust in builds"
 
-### Story 28: Web: queues, delivery trace, loops
+### Story 28: Web: queues, delivery trace, loops, ask_user
 
-**Goal:** The browser shows what happens to tasks and messages and lets you control it.
+**Goal:** The browser shows what happens to tasks and messages, lets you control it and answer agents.
 
 **Scope:**
 - Layout per the approved design in `../skald-cloud/design/`.
-- Queue panel: who holds a task, how much lease is left, `claim_lost`, retries, DLQ with "restart" and "cancel" buttons.
-- Delivery trace: the `stored → delivered → read` path and the reason if a message was not delivered.
-- Loop analysis: agent↔agent threads without a human, a "pause" button.
-- **Done when:** a task from the DLQ is restarted from the browser, and a looping thread is paused.
+- The queue panel, the delivery trace and loop analysis of `features.md` §12.
+- Answering `ask_user` in a linked browser, as a signed action.
+- **Done when:** a task from the DLQ is restarted from the browser; a looping thread is paused; an `ask_user` answered in the browser reaches the agent.
 
 - **Release:** MVP
-- **Depends on:** Story 21, Story 26, Story 27
-- **Docs:** `features.md` §12
+- **Depends on:** Story 21, Story 26, Story 27, Story 41
+- **Docs:** `features.md` §12, `architecture.md` — "Device linking"
 
 ### Story 35: Service agents: HPKE and scoped tokens
 
 **Goal:** A service agent (`ci/deploy-bot`) without a persistent disk exchanges end-to-end encrypted messages using a scoped token.
 
 **Scope:**
-- A service agent with its own key, stored in an environment secret.
-- A scoped token: send-only, queue-only, specific channels, expiry; token and key rotation.
-- Stateless HPKE encryption for ephemeral agents.
-- The "Service agents and tokens" web UI section: permissions, expiry, last use, rotation and revocation; the token value is shown once, at creation. The number of service agents is capped by the account limit.
-- **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected.
+- A service agent as in `features.md` §9: its own key in an environment secret, a scoped token, token and key rotation.
+- An admin creates a service agent and its token in the CLI and signs its grant (`docs/protocol/README.md`, "Service grant"); the token value is shown once.
+- Stateless HPKE for ephemeral agents; a long-lived service agent with persistent state is an MLS member like a device (`architecture.md`, "Cryptography").
+- The "Service agents and tokens" web UI section: permissions, expiry, last use, revocation.
+- The number of service agents is capped by the account limit (`features.md`, "Product").
+- **Done when:** messages are exchanged with an agent in one-shot mode without a persistent disk, with only ciphertext on the server; a token used outside its permissions or after expiry is rejected; content from a service agent without a valid grant is rejected.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 13, Story 22
-- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography"
+- **Depends on:** Story 13, Story 14, Story 22
+- **Docs:** `features.md` §9, "Product", `architecture.md` — "Data model", "Cryptography", "Membership", `docs/protocol/README.md`
 
 ### Story 41: ask_user and attachments
 
 **Goal:** An agent asks a human and sends small files.
 
 **Scope:**
-- `ask_user`: the agent requests confirmation from a human and waits for the answer.
-- Encrypted attachments up to 10 MB, such as diffs and logs.
+- `ask_user`: the agent asks a person and waits for the answer; the person answers in the CLI. Answering in a linked browser comes with Story 28.
+- Encrypted attachments within the cloud limit (`features.md`, "Product"), kept in the attachment storage (`tech-stack.md`, "Files").
 - **Done when:** the agent gets a human's answer to `ask_user`; an attachment reaches the recipient, and the server sees only ciphertext.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 21
-- **Docs:** `features.md` §8, `architecture.md` — "Security"
+- **Docs:** `features.md` §8, "Product", `architecture.md` — "Security", `docs/protocol/delivery.md`, `tech-stack.md`
 
-### Story 65: Queue templates: review, test, ask
+### Story 65: Queue for agents: MCP tools and templates
 
-**Goal:** A team uses the queue without inventing its own task format.
+**Goal:** Claude Code and Codex take tasks from the queue and hand them in, in formats a team does not have to invent.
 
 **Scope:**
-- Templates: review (a PR or diff → findings), test (a command → result and logs), ask (a question about a repository → answer).
-- A template sets the task's input and result and the instructions the agent gets.
-- `skald queue create --template <name>`; the Claude Code and Codex adapters run template tasks with the template's instructions.
+- Queue tools in MCP: enqueue, claim, extend and complete, as in the CLI of Story 26.
+- The Claude Code and Codex adapters claim a task, run it with its template's instructions and complete it.
+- Templates: review (a PR or diff → findings), test (a command → result and logs), ask (a question about a repository → answer). A template sets the task's input and result and the agent's instructions (`features.md` §10).
+- Enqueueing a task from a template in the CLI and MCP (`--template <name>`).
 - A team adds its own templates to the space.
-- **Done when:** a review task from the template, sent by Claude Code, is done by Codex and returns findings in the template's format.
+- **Done when:** a review task from the template, sent by Claude Code, is claimed and completed by Codex and returns findings in the template's format; an agent that lost its claim cannot complete the task.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 19, Story 20, Story 26
-- **Docs:** `features.md` §10
+- **Docs:** `features.md` §10, `architecture.md` — "Queue", "Delivery to agents"
 
 ### Story 63: Notifications to people
 
@@ -868,60 +897,64 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Channels: Telegram, Slack, a webhook; set per person in the web UI.
-- Events: a task or message addressed to the person, a `hold` or `ask_user` waiting, DLQ growing, an agent gone, a key changed, a token expiring.
-- The server sends only metadata: who, which channel or queue, the event. A content preview comes only from the person's own device, if they turn it on.
+- The events of `features.md` §12.
+- The person's device triggers each notification; the server only relays it and sees the event class and the address (`architecture.md`, "Cryptography"). A notification carries no content.
 - Rate limits, quiet hours, unsubscribe in one click.
-- **Done when:** an `ask_user` and a DLQ entry arrive in Telegram within seconds; a notification sent by the server carries no message text.
+- **Done when:** an `ask_user` and a DLQ entry arrive in Telegram and on a webhook within seconds; for each, the server receives only the event class.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 21, Story 22, Story 26, Story 41
-- **Docs:** `features.md` §12, `architecture.md` — "Security"
+- **Depends on:** Story 18, Story 21, Story 22, Story 26, Story 35, Story 41
+- **Docs:** `features.md` §12, `architecture.md` — "Cryptography", "Security"
 
 ### Story 66: Restricted mode for tasks from other people
 
 **Goal:** An agent works on a task from another person only with the rights the space allows, so injected instructions cannot run commands on the machine.
 
 **Scope:**
-- Trust levels: own devices, space members, service agents. The sender comes from the signed envelope, not from the text.
-- The space policy sets what each level may do: read only, no shell, no network, or everything.
+- Trust levels: own devices, space members, service agents. The sender comes from the signed envelope and its certificate chain, not from the text.
+- The signed space policy (`architecture.md`, "Membership") sets what each level may do: read only, no shell, no network, or everything.
 - The Claude Code and Codex adapters start such a task in the matching mode: Claude Code permission settings, the Codex sandbox. A mode the agent cannot enforce is refused, not weakened.
 - The threat model states what this does not stop.
-- **Done when:** a task from another member that asks to run a shell command is refused by the agent in read-only mode; the same task from an own device runs.
+- **Done when:** a task from another member that asks to run a shell command is refused by the agent in read-only mode; the same task from an own device runs; a policy the server changed without an admin's signature has no effect.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 19, Story 20, Story 21
-- **Docs:** `architecture.md` — "Security", `features.md` §8
+- **Depends on:** Story 19, Story 20, Story 21, Story 26
+- **Docs:** `architecture.md` — "Security", "Membership", `features.md` §10
 
 ### Story 36: GitHub Action
 
 **Goal:** A GitHub Actions workflow with a single secret sends and receives encrypted messages, and a PR comment can hand a task to an agent.
 
 **Scope:**
-- A GitHub Action built on the client's one-shot mode and a service agent key.
-- The Action is published together with the release.
-- GitHub bridge: a comment `/skald <template> …` on an issue or PR from a user with write access becomes a task in the space's queue; the result returns as a comment on the PR.
-- **Done when:** a GitHub Action with a single secret sends and receives an encrypted message, including behind a proxy; a `/skald review` comment on a PR returns the review as a PR comment; a comment from a user without write access is ignored.
+- A GitHub Action built on the client's one-shot mode and a service agent key, published together with the release.
+- The GitHub bridge runs inside the Action, not on the server (`features.md` §9): a `/skald <template> …` comment from a user with write access becomes a task in the space's queue; the result returns as a PR comment.
+- Tasks from comments always run in restricted mode at the service-agent trust level (Story 66).
+- **Done when:** a GitHub Action with a single secret sends and receives an encrypted message, including behind a proxy; a `/skald review` comment on a PR returns the review as a PR comment, and the server sees neither in plaintext; a comment from a user without write access is ignored; a task from a comment runs in restricted mode.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 14, Story 35, Story 65
-- **Docs:** `features.md` §2, §9, §16, `architecture.md` — "Components"
+- **Depends on:** Story 14, Story 35, Story 65, Story 66
+- **Docs:** `features.md` §2, §9, §16, `architecture.md` — "Components", "Security"
 
 ### Story 29: End-to-end MVP scenario
 
 **Goal:** The MVP demo passes in full, automatically, on real agents.
 
 **Scope:**
-- Demo: Claude Code on account A asks Codex on machine B under account C for a review; the sender goes offline, and the reply waits in their mailbox.
-- The review request goes through the task queue; the user follows the thread and the task in a linked browser.
-- The scenario starts with the new-user path: sign-up (account A with GitHub, account C with Google), one-command machine connect, invite by link.
-- The clients verify each other's device keys without trusting the server.
-- It also covers: a review from a `/skald review` PR comment, an `ask_user` answered after a Telegram notification, and a task from another member run in restricted mode.
+- The demo of `roadmap.md`, "MVP": Claude Code on account A asks Codex on machine B under account C for a review through the task queue.
+- The scenario starts with the new-user path: sign-up of A and C, one-command machine connect, invite by link.
+- It also covers a review from a `/skald review` PR comment, an `ask_user` answered after a notification, and a task from another member run in restricted mode.
+- The automated run signs in through a test OIDC provider instead of GitHub and Google and sends notifications to a test webhook instead of Telegram; the devices of A and C verify each other by fingerprints the test compares.
 - Daily run on staging with real Claude Code and Codex in CI.
-- It checks the "Done when" criteria of features 1, 4, 5, 6, 10 and 16.
-- **Done when:** the demo passes automatically; the run report is available in CI.
+- **Done when:** the demo passes automatically, the run report is available in CI, and the run checks that:
+  - the reply waits in the mailbox of A, who went offline, and arrives when A is back; the server holds only ciphertext (feature 1);
+  - a device removed during the run reads no message sent after the removal (feature 4);
+  - after all of A's devices are wiped, the recovery key on a new machine restores the full history (feature 6);
+  - the review task is claimed once, and its result returns to A (feature 10);
+  - sign-up takes one click, each machine one command, each additional machine one confirmation (feature 16);
+  - the review from the PR comment arrives as a PR comment, the `ask_user` notification reaches the webhook, and the restricted-mode task is refused a shell command.
 
 - **Release:** MVP
 - **Depends on:** Story 9, Story 18, Story 21, Story 23, Story 24, Story 26, Story 27, Story 28, Story 36, Story 41, Story 63, Story 65, Story 66
@@ -932,18 +965,16 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** A space is never left without an admin, and a user can delete their account.
 
 **Scope:**
-- An admin transfers their rights to another member or appoints a second admin; the change is signed and visible to all members.
-- If there is only one admin, the web UI and CLI warn about it and suggest appointing a second one.
-- Only the recovery key restores admin rights; there is no server-side reset. If an admin loses both their devices and the key, members create a new space and keep the old space's history.
-- Account deletion from the web UI and CLI: the account's devices are removed from all channels and history keys are rotated; the server erases the account, devices, mailboxes and wrapped keys.
-- Messages in channels with other members stay with them; spaces where the account was the only member are deleted.
-- The only admin of a space with other members must transfer their rights first; otherwise deletion fails.
-- **Done when:** a space with a single admin shows a warning; after the transfer, the new admin removes members; after account deletion, the server has none of its data, and its former devices cannot read new messages.
+- Admin rights transfer, a second admin and the "only one admin" warning in the web UI and CLI (`features.md` §4); the change is signed and visible to all members.
+- Only the recovery key restores admin rights; there is no server-side reset.
+- Account deletion from the web UI and CLI, deferred as in `features.md` §5.
+- Spaces where the account was the only member are deleted. The only admin of a space with other members must transfer their rights first; otherwise deletion fails.
+- **Done when:** a space with a single admin shows a warning; after the transfer, the new admin removes members; after account deletion, its former devices cannot read new messages, and once its channels have removed them, the server has none of its data.
 
 - **Release:** MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 13, Story 16, Story 22
-- **Docs:** `features.md` §4, §5, `architecture.md` — "Data model", "Cryptography"
+- **Depends on:** Story 13, Story 16, Story 17, Story 22
+- **Docs:** `features.md` §4, §5, `architecture.md` — "Data model", "Cryptography", "Membership"
 
 ### Story 31: Load testing
 
@@ -951,7 +982,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Scenarios: delivery and WebSocket push, cursor catch-up after a mass reconnect, MLS Commits in large channels, history writes, multiple instances with `LISTEN/NOTIFY`.
-- Target numbers with headroom over the cloud limits (about 1M messages per month) are recorded in the docs.
+- Target numbers with headroom over the cloud limits (`features.md`, "Product") are recorded in the docs.
 - Runs on a production-like configuration; bottlenecks found are fixed or recorded.
 - The run is repeated before releases.
 - **Done when:** there is a report with the maximum load and the bottlenecks; production handles the target load with headroom.
@@ -994,40 +1025,27 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** The operator runs the MVP cloud without SQL.
 
 **Scope:**
-- `skald-server admin`: list accounts with quota usage, disable and re-enable an account, delete an account.
+- `skald-server admin`: list accounts with quota usage, disable and re-enable an account, delete an account, deferred as in `features.md` §5.
 - Metadata only, like the server itself.
 - **Done when:** an operator finds an account and disables it, and the account loses access; deletion removes the data as in Story 30.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 12, Story 30
-- **Docs:** `features.md` §17
+- **Docs:** `features.md` §5, §17
 
-### Story 37: Task queue: scheduling and agents
+### Story 37: Task queue: scheduling
 
-**Goal:** Claude Code, Codex and CI work through a shared queue according to priorities and capabilities.
+**Goal:** Tasks reach agents by priority and capability, within concurrency and cost limits.
 
 **Scope:**
-- Priorities, capability tags (`needs: codex`), per-queue concurrency, per-task cost limit.
-- Queue tools in MCP; the Claude Code and Codex adapters take and hand in tasks, CI does so via the GitHub Action.
+- Priorities, capability tags (`needs: codex`), per-queue concurrency, per-task cost limit (`features.md` §10).
 - Queue limits are per-account settings.
-- **Done when:** Claude Code, Codex and CI process 100 tasks, duplicates are rejected, failed tasks go to the DLQ.
+- **Done when:** Claude Code, Codex and CI process 100 tasks by priority, each on an agent with the tags it needs and never above the queue's concurrency; duplicates are rejected, failed tasks go to the DLQ.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 19, Story 20, Story 26, Story 36
+- **Depends on:** Story 19, Story 20, Story 26, Story 36, Story 65
 - **Docs:** `features.md` §10, "Product"
-
-### Story 38: Codex background agents via app-server
-
-**Goal:** A Codex background agent receives messages without an open interactive session and without tmux.
-
-**Scope:**
-- The adapter drives Codex via app-server: `turn/start` starts a turn, `turn/steer` delivers a message into a running turn.
-- e2e tests against real Codex.
-- **Done when:** a background Codex receives a message and replies without human involvement.
-
-- **Release:** Post-MVP
-- **Depends on:** Story 20
-- **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents"
 
 ### Story 67: A2A gateway
 
@@ -1041,21 +1059,35 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** Post-MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 2, Story 26, Story 35
-- **Docs:** `architecture.md` — "Components"
+- **Docs:** `architecture.md` — "Components", `docs/protocol/README.md`
+
+### Story 38: Codex background agents via app-server
+
+**Goal:** A Codex background agent receives messages without an open interactive session and without tmux.
+
+**Scope:**
+- The Codex app-server path of `architecture.md`, "Delivery to agents".
+- e2e tests against real Codex.
+- **Done when:** a background Codex receives a message and replies without human involvement.
+
+- **Release:** Post-MVP
+- **Depends on:** Story 20
+- **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents"
 
 ### Story 39: Shared channels between organizations
 
 **Goal:** Two spaces of different organizations communicate through a shared channel with the consent of both sides.
 
 **Scope:**
-- A shared channel joins two spaces; it is created only with the consent of admins on both sides, and either side can disable it.
-- Approval in the web UI and CLI.
+- A shared channel joins two spaces; it is created only with the consent of admins on both sides, and either side can disable it (`features.md` §3).
+- Each side's consent is signed by its admin's device (`architecture.md`, "Membership").
+- Approval in the CLI and a linked browser.
 - **Done when:** a freelancer is in three spaces, with a clientA↔clientB shared channel; after one side disables it, no messages pass through it.
 
 - **Release:** Post-MVP
 - **Acceptance tests:** first
 - **Depends on:** Story 13, Story 22
-- **Docs:** `features.md` §3, §12, `architecture.md` — "Data model"
+- **Docs:** `features.md` §3, §12, `architecture.md` — "Data model", "Membership"
 
 ### Story 40: Corporate IdP sign-in
 
@@ -1090,7 +1122,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** Messages reach live Gemini CLI, Cursor, OpenCode and Copilot sessions.
 
 **Scope:**
-- Delivery via hooks and plugins; the fallback is MCP `inbox`.
+- Their paths in `architecture.md`, "Delivery to agents".
 - `skald connect` finds these agents and, after confirmation, connects them.
 - e2e tests against real CLIs.
 - **Done when:** a message reaches a live session of each of the four agents.
@@ -1104,15 +1136,17 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** Agents of different people and machines learn before merge that they are editing the same files.
 
 **Scope:**
+- The edit-coordination wire format in the protocol spec, from Story 5's findings: what the client sends and what the server compares.
 - Clients publish HMAC fingerprints of changed files with the space key; the server sees only fingerprints.
-- The action follows the space policy: notify, warn, ask a human, block pre-push.
+- The action follows the space policy (`features.md` §11).
 - Claiming a task reserves its edit scope; reservations have a TTL.
 - Decisions on the questions in `features.md` §11 "To decide", based on Story 5.
 - **Done when:** two agents on different machines editing the same file get a warning before merge; the server does not know the paths.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 5, Story 19, Story 20, Story 26
-- **Docs:** `features.md` §11, `architecture.md` — "Cryptography"
+- **Acceptance tests:** first
+- **Depends on:** Story 5, Story 19, Story 20, Story 26, Story 65
+- **Docs:** `features.md` §11, `architecture.md` — "Cryptography", `docs/protocol/README.md`
 
 ### Story 45: Edit coordination: hunk and symbol
 
@@ -1133,12 +1167,11 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Layout per the approved design in `../skald-cloud/design/`.
-- Security center: devices and fingerprints, one-click revocation, key rotation, "who can read the channel".
-- Human inbox: all `hold` and `ask_user` items, approval from a phone (the phone's browser is a linked device).
-- Edit map.
+- The security center, the human inbox with approval from a phone and the edit map of `features.md` §12.
 - **Done when:** an `ask_user` is approved from a phone; a device is revoked with one click; the map shows overlapping edits.
 
 - **Release:** Post-MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 18, Story 27, Story 41, Story 44
 - **Docs:** `features.md` §12
 
@@ -1161,6 +1194,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Scope:**
 - A web UI section visible only to instance admins.
 - Layout per the approved design in `../skald-cloud/design/`.
+- The operator console shell from the kit components (Story 62): a top bar with the "operator" label, tabs with count badges and the instance name.
 - Accounts and organizations, quota usage and licenses.
 - Abuse reports and bans; account deletion and export requests.
 - System health.
@@ -1168,7 +1202,8 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** an operator bans an account and handles a deletion request from the console, without SQL; a regular user does not see the section.
 
 - **Release:** Post-MVP
-- **Depends on:** Story 30, Story 47
+- **Acceptance tests:** first
+- **Depends on:** Story 30, Story 47, Story 62
 - **Docs:** `features.md` §17, §12, `architecture.md` — "Security"
 
 ### Story 49: Analytics and token usage
@@ -1243,7 +1278,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - **Release:** Post-MVP
 - **Acceptance tests:** first
-- **Depends on:** Story 16, Story 17, Story 52
+- **Depends on:** Story 16, Story 17, Story 64
 - **Docs:** `features.md` §6, `infrastructure.md` — "Self-host"
 
 ### Story 54: Python and TypeScript SDKs
@@ -1309,11 +1344,12 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - `skald ui` serves the same SPA build from localhost out of a signed binary; there is no second interface.
-- **Done when:** `skald ui` opens the web UI from localhost, and the content sections work without loading JS from the server.
+- Entering the recovery key, which `app.skald.so` never accepts (`architecture.md`, "Device linking").
+- **Done when:** `skald ui` opens the web UI from localhost, and the content sections work without loading JS from the server; the recovery key entered there restores the history.
 
 - **Release:** Post-MVP
 - **Depends on:** Story 7, Story 27
-- **Docs:** `features.md` §12, `architecture.md` — "Components"
+- **Docs:** `features.md` §12, `architecture.md` — "Components", "Device linking"
 
 ### Story 59: Sealed sender and padding
 
@@ -1323,7 +1359,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Sealed sender: the server does not see which device sent a message.
 - Padding: the server does not see the exact message size.
 - The threat model is updated.
-- **Done when:** the envelope's plaintext header has no sender, and ciphertext sizes are evened out.
+- **Done when:** the server cannot tell which device sent a message, and ciphertext sizes are evened out.
 
 - **Release:** Post-MVP
 - **Acceptance tests:** first

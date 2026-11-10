@@ -6,28 +6,34 @@
   - directory: spaces, rosters, public keys, KeyPackages;
   - MLS Delivery Service;
   - mailboxes, history, queues;
-  - push, quotas, anti-abuse.
+  - push, notification relay, quotas, anti-abuse.
 - **`skald`** — the client, a single binary: CLI, MCP server (stdio), hook handler, local helper. Keys and all encryption live only here and in a linked browser.
   - **One-shot mode** (CI, cron, sandboxes): load state → sync → run the operation → save.
   - **Helper `skald helper`:** started by the first client. Holds the WebSocket, dispatches messages to sessions over a unix socket, exits after being idle. No root or system service needed.
-- **Adapters:**
-  - Claude Code — MCP, Channels, hooks, skill;
-  - Codex — MCP, hooks, app-server;
-  - Gemini CLI, Cursor, OpenCode, Copilot — MCP and hooks;
-  - GitHub Action;
-  - everything else — via the CLI.
+- **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.
+- **GitHub Action:** the client in one-shot mode and the GitHub bridge ([features.md §9](features.md#9-end-to-end-encrypted-service-and-ci-agents)).
 - **Frontend** — a single static SPA at `app.skald.so`:
   - gets the non-secret sections from the server API;
   - content sections are decrypted in the browser by a WASM build of the Rust core;
   - `skald ui` (on demand) — the same build served from localhost by a signed binary.
 
 ## Device linking
-- The one-time code from the website lives for a few minutes and works once. It binds the device to the account.
+- The one-time code from the website ([features.md §16](features.md#16-one-command-connect)) binds the device to the account.
 - Keys are generated on the machine.
-- A new device is signed by an already linked device (cross-signing) or by the recovery key.
-- **A browser is also a linked device**, confirmed with a code or QR. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
+- The server signs every device certificate. A new device is also signed by an already linked device (cross-signing) or by the recovery key; its key can also be signed with the user's SSH key from GitHub ([features.md §5](features.md#5-identity)).
+- The recovery key is entered only in the CLI and `skald ui`, never in a web page.
+- **A browser is also a linked device**, linked only with a code or QR from an already linked device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
   - it reads through history keys wrapped to its key;
-  - it sends actions (approve, restart a task) as signed messages via HPKE.
+  - it sends actions (approve, answer `ask_user`, restart a task) as signed messages via HPKE.
+
+## Membership
+- **Roster:** a space's members, their roles and devices, and its service agents. An admin's device signs every change; clients reject a change without a valid signature.
+- **Space policy:** restricted mode per trust level, the history key rotation period, the space mode ([protocol spec](../protocol/README.md#custodian-auditor-and-federation)), the edit-coordination action ([features.md §11](features.md#11-cross-machine-edit-coordination)). An admin's device signs it; clients reject a policy without a valid signature.
+- **Invite:**
+  - an admin's device signs it;
+  - its secret travels only in the link's fragment and never reaches the server;
+  - the admin's device admits the newcomer only with the secret, checks each of the newcomer's devices through its certificate chain, then adds them to the roster and the channels.
+- Without a linked browser, the web UI only shows the roster, the policy and invites, and revokes invites.
 
 ## Network
 - Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
@@ -39,44 +45,57 @@
 | Entity | Description |
 |---|---|
 | Account | A person or organization. Bound to a GitHub or OIDC identity and optionally to an SSH key on GitHub |
-| Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate is signed by the account and the server |
+| Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
-| Space | A team space and trust boundary. Signed roster; a device can belong to N spaces |
+| Space | A team space and trust boundary. Signed roster and policy: [Membership](#membership); a device can belong to N spaces |
 | Channel | An MLS group. A shared channel joins two spaces |
 | Envelope | [Protocol spec](../protocol/README.md#envelope) |
 | Mailbox | `mailbox(device_id, seq, envelope_id, ciphertext_ref, expires_at)`: undelivered messages only, deleted on ack |
 | History | Copies of channel messages under the channel's history key |
-| Queue / Job | Encrypted payload + plaintext scheduling fields: state, priority, attempts, `lease_until`, tags, `idempotency_key`, deadline |
+| Queue / Job | A named queue. A job is an encrypted payload + plaintext scheduling fields: state, priority, attempts, `lease_until`, tags, template, `idempotency_key`, deadline |
 | Presence | Encrypted agent status; the server stores the latest value |
 
 ## Cryptography
 - **MLS** (RFC 9420, `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`) for devices and long-lived service agents.
-  - Channel = MLS group; a group member is a device, not a session. Addressing to the right session happens inside the ciphertext.
-  - Removing a member is Remove + Commit; a new epoch begins.
+  - Channel = MLS group; an MLS member is a device, not a session. Addressing to the right session happens inside the ciphertext. "Member" alone means a person in a space.
+  - Removing a device is Remove + Commit; a new epoch begins.
   - The server orders Commits and stores KeyPackages.
 - **Stateless HPKE** (RFC 9180) for devices outside a channel's MLS group: ephemeral agents (CI) and a linked browser's actions. There is no forward secrecy, so keys are rotated. Format: [protocol spec](../protocol/README.md#scheme-hpke).
 - **History:**
   - a channel has a symmetric history key, distributed inside MLS;
   - the sender puts a copy of the message encrypted with this key on the server;
-  - history keys are wrapped to the account's devices and to the recovery key.
+  - history keys are wrapped to the account's devices, its linked browsers and the recovery key;
+  - the history key rotates when any device or linked browser is revoked, and on the space policy's schedule: every 30 days by default, an admin changes it;
+  - each new history key encrypts the previous one, so members read older history through this key chain.
 - **Signatures:** Ed25519.
 - **Key storage:** Keychain, libsecret or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
 - **Edit coordination:** the server sees only HMAC fingerprints of paths, hunks and symbols, computed with the space key.
 - **The custodian device** in a managed-keys space: [protocol spec](../protocol/README.md#custodian-device).
 - **The server sees:**
+  - accounts: sign-in methods and usernames;
+  - the roster: members, roles, devices and service agents of each space, and the devices of each channel;
+  - devices: kind, name, public keys and certificates, the agent CLIs found on them;
+  - service agent names and token permissions;
+  - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
+  - IP addresses and times of connections;
+  - queue names, task tags and templates;
+  - when presence changes, not its value;
+  - notifications: the event class and the notification address;
+  - HMAC fingerprints of edits;
   - space, channel and device identifiers;
   - which device messages whom;
   - message size and time;
   - task scheduling fields;
   - quota counters.
-- **The server does not see:** message texts, agent and session names, threads, files, repositories, presence, task payloads.
+- **The server does not see:** message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads, edited paths and code.
 - **Trade-offs:**
   - HPKE messages (ephemeral agents, browser actions) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
   - in managed-keys mode the server reads the space and writes as the agents delegated to it; a delegation lasts until it expires or its signing device is revoked;
   - a leaked recovery key exposes the history;
+  - the history is outside MLS forward secrecy: [features.md §4](features.md#4-mls-group-encryption);
   - metadata is visible; sealed sender and padding come later;
-  - on the web the server delivers the JS, so reproducible builds and SRI are needed;
+  - on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](infrastructure.md), "Trust in builds"), and `skald ui` serves it from a signed binary;
   - there has been no external crypto audit; the spec and threat model are public.
 
 ## Delivery semantics
@@ -129,15 +148,13 @@ Adapters are separate modules with e2e tests against real CLIs.
   - sender label and a prompt injection warning;
   - sender allowlist;
   - `hold` until a human confirms;
-  - a task from another person runs in the restricted mode the space policy sets for the sender's trust level (read only, no shell); a mode the agent cannot enforce is refused.
+  - a task from another person runs in the restricted mode the signed space policy ([Membership](#membership)) sets for the sender's trust level (read only, no shell); a mode the agent cannot enforce is refused.
 - **Loops:**
   - hop counter in the envelope;
   - a limit on replies without a human, enforced by the client;
   - rate limit, enforced by the server.
 - **Cloud:**
   - sign-in only via GitHub OAuth or OIDC, no passwords;
-  - quotas;
-  - text up to 64 KB, attachments up to 10 MB;
-  - device limit;
+  - quotas and size limits: [features.md](features.md), "Product";
   - bans based on reports.
 - **Invites** never reach the agent's context.

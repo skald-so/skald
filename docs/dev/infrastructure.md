@@ -27,8 +27,7 @@ A human takes one action per release: merging the Release PR.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest release; only CI moves it.
-  - Its ruleset blocks updates and deletion; only deploy keys bypass it.
-  - No deploy key exists yet; the release pipeline adds one, kept only in CI secrets.
+  - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.
 - `vX.Y.Z` tags — the releases themselves.
 - PR titles: rule 3 in [rules.md](../../rules.md).
 - Branch rules are GitHub rulesets; no person bypasses them, admins included.
@@ -70,7 +69,8 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.
 - The installer verifies the checksum.
 - The repository has `SECURITY.md`; private vulnerability reporting is enabled on GitHub.
-- Later: reproducible builds.
+- The web UI build is reproducible: a rebuild from the release tag matches the files `app.skald.so` serves.
+- Later: reproducible builds of the binaries.
 
 ## Cloud
 - **The same image that is published for self-hosting.** `ee/` features are enabled by a license key.

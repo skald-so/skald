@@ -14,12 +14,14 @@
 ## Story 2: Protocol spec and threat model
 - [x] **2.1:** Protocol spec: addressing, envelope and versions
 - [ ] **2.2:** Protocol spec: mailbox, delivery and receipts
-- [ ] **2.3:** Protocol spec: queues, presence and edit coordination
-- [ ] **2.4:** Threat model
-- [ ] **2.5:** Identifiers and agent addresses in `proto`
-- [ ] **2.6:** Envelope and receipt types in `proto`
-- [ ] **2.7:** Protocol version check on the server
-- [ ] **2.8:** Protocol version check in the client
+- [ ] **2.3:** Protocol spec: devices, roster and channels
+- [ ] **2.4:** Protocol spec: queues and tasks
+- [ ] **2.5:** Protocol spec: presence and `ask_user`
+- [ ] **2.6:** Threat model
+- [ ] **2.7:** Identifiers and agent addresses in `proto`
+- [ ] **2.8:** Envelope and receipt types in `proto`
+- [ ] **2.9:** Protocol version check on the server
+- [ ] **2.10:** Protocol version check in the client
 
 ## Story 3: MLS prototypes and library choice
 
@@ -31,14 +33,14 @@
 
 ## Story 7: Release pipeline
 
-## Story 62: Web UI kit: theme, shells and components
+## Story 62: Web UI kit: theme, cabinet shell and components
 - [x] **62.1:** Theme, fonts and the kit page
 - [x] **62.2:** Buttons, status labels and the warning banner
 - [ ] **62.3:** Sortable table, empty and loading states
-- [ ] **62.4:** Filter buttons and search
-- [ ] **62.5:** Dropdown filter
-- [ ] **62.6:** Cabinet shell
-- [ ] **62.7:** Operator console shell
+- [ ] **62.4:** Reference screenshots of the kit page
+- [ ] **62.5:** Filter buttons and search
+- [ ] **62.6:** Dropdown filter
+- [ ] **62.7:** Cabinet shell
 
 ## Story 64: Self-host: Docker Compose
 
@@ -82,13 +84,13 @@
 
 ## Story 27: Browser linking and history on the web
 
-## Story 28: Web: queues, delivery trace, loops
+## Story 28: Web: queues, delivery trace, loops, ask_user
 
 ## Story 35: Service agents: HPKE and scoped tokens
 
 ## Story 41: ask_user and attachments
 
-## Story 65: Queue templates: review, test, ask
+## Story 65: Queue for agents: MCP tools and templates
 
 ## Story 63: Notifications to people
 
@@ -108,11 +110,11 @@
 
 ## Story 34: Operator CLI
 
-## Story 37: Task queue: scheduling and agents
-
-## Story 38: Codex background agents via app-server
+## Story 37: Task queue: scheduling
 
 ## Story 67: A2A gateway
+
+## Story 38: Codex background agents via app-server
 
 ## Story 39: Shared channels between organizations
 
