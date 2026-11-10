@@ -1,0 +1,5 @@
+[package]
+name = "skald-crypto"
+description = "Skald end-to-end encryption core."
+version.workspace = true
+edition.workspace = true

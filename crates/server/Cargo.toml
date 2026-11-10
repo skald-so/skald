@@ -1,0 +1,5 @@
+[package]
+name = "skald-server"
+description = "Skald server."
+version.workspace = true
+edition.workspace = true

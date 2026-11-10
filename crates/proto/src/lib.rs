@@ -1,0 +1,1 @@
+//! Skald wire protocol types.
