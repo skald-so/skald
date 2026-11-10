@@ -236,3 +236,102 @@
     }
   }
 }
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  a {
+    color: var(--color-accent);
+    font-weight: 500;
+  }
+}
+
+/* A piece of the side menu, as wide as it, with room for its open list or menu. */
+.side {
+  box-sizing: border-box;
+  width: 240px;
+  max-width: 100%;
+  padding: 18px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-side);
+}
+
+.switcher {
+  padding-bottom: 140px;
+}
+
+.accountMenu {
+  padding-top: 100px;
+}
+
+/* The connect card of 08-machines.png. */
+.connect {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-side);
+}
+
+.command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 620px;
+  padding: 6px 6px 6px 16px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  background: var(--color-bg);
+
+  code {
+    min-width: 0;
+    font-size: 15px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.copy {
+  min-height: 40px;
+}
+
+.note {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.key {
+  color: var(--color-text);
+}
+
+/* The join request of 08-machines.png. */
+.request {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-accent);
+  border-radius: 12px;
+  background: var(--color-accent-soft);
+}
+
+.requestText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.requestActions {
+  display: flex;
+  gap: 8px;
+}

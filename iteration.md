@@ -40,7 +40,7 @@
 - [x] **62.4:** Filter buttons and search
 - [x] **62.5:** Dropdown filter
 - [x] **62.6:** Reference screenshots of the kit page
-- [ ] **62.7:** Cabinet shell
+- [x] **62.7:** Cabinet shell
 
 ## Story 64: Self-host: Docker Compose
 

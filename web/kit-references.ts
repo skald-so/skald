@@ -3,18 +3,39 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
-import { themes, widths, type Theme } from "./kit-browser.ts";
+import { themes, widths, type Screen, type Theme } from "./kit-browser.ts";
 
 export interface View {
+  screen: Screen;
+  /** The screenshot shows the window, not the full page. */
+  window: boolean;
   theme: Theme;
   width: number;
-  /** The screenshot file name, e.g. `kit-light-1440.png`. */
+  /** The screenshot file name, e.g. `kit-light-1440.png` or `cabinet-dark-360.png`. */
   file: string;
 }
 
-/** Every kit page view: both themes at both check widths. */
-export const views: View[] = themes.flatMap((theme) =>
-  widths.map((width) => ({ theme, width, file: `kit-${theme}-${width}.png` })),
+/**
+ * The screens with their check widths. The side menu opens only at phone width, over the window:
+ * its view is the window.
+ */
+export const screens: { screen: Screen; widths: number[]; window?: true }[] = [
+  { screen: "kit", widths },
+  { screen: "cabinet", widths },
+  { screen: "cabinet-menu", widths: [360], window: true },
+];
+
+/** Every view of the kit page: each screen in both themes at its check widths. */
+export const views: View[] = screens.flatMap(({ screen, widths, window }) =>
+  themes.flatMap((theme) =>
+    widths.map((width) => ({
+      screen,
+      window: window ?? false,
+      theme,
+      width,
+      file: `${screen}-${theme}-${width}.png`,
+    })),
+  ),
 );
 
 /** The committed references, made by `npm run kit:references`. */

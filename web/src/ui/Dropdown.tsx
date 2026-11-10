@@ -21,12 +21,17 @@ export interface DropdownProps<Value extends string> {
   options: readonly DropdownOption<Value>[];
   /** The current value, set by the screen. */
   value: Value;
-  /** The value of a cleared filter; any other value is highlighted. */
-  defaultValue: Value;
+  /** The value of a cleared filter; any other value is highlighted. Without it nothing is. */
+  defaultValue?: Value;
   /** A choice of another value. Choosing the current one reports nothing. */
   onChange: (value: Value) => void;
   /** Opens the list on the first render without taking the focus, as on the kit page. */
   defaultOpen?: boolean;
+  /**
+   * The name above the value on a button as wide as its place, as the space switcher of the side
+   * menu; otherwise the name and the value in one line, as a filter.
+   */
+  stacked?: boolean;
 }
 
 /** Space kept between the list and the window edges, in pixels. */
@@ -47,6 +52,7 @@ export function Dropdown<Value extends string>({
   defaultValue,
   onChange,
   defaultOpen = false,
+  stacked = false,
 }: DropdownProps<Value>) {
   const id = useId();
   const frame = useRef<HTMLDivElement>(null);
@@ -141,7 +147,9 @@ export function Dropdown<Value extends string>({
   return (
     <div
       ref={frame}
-      className={styles.dropdown}
+      className={[styles.dropdown, stacked && styles.stacked]
+        .filter(Boolean)
+        .join(" ")}
       onBlur={(event) => {
         if (open && !frame.current!.contains(event.relatedTarget)) close(false);
       }}
@@ -153,7 +161,9 @@ export function Dropdown<Value extends string>({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? `${id}-list` : undefined}
-        data-set={value !== defaultValue || undefined}
+        data-set={
+          (defaultValue !== undefined && value !== defaultValue) || undefined
+        }
         onClick={() => (open ? close(false) : show())}
         onKeyDown={(event) => {
           if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
@@ -162,10 +172,10 @@ export function Dropdown<Value extends string>({
           else list.current!.focus();
         }}
       >
-        {/* A screen reader hears "From anyone", as shown. */}
+        {/* A screen reader hears "From anyone" or "Space team-a", as shown. */}
         <span className={styles.label}>{label}</span>{" "}
         <span className={styles.value}>{options[current]?.label}</span>
-        <ChevronIcon />
+        <ChevronIcon size={stacked ? 16 : 14} />
       </button>
       {open && (
         <ul

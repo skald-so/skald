@@ -25,7 +25,7 @@ import {
   type KitView,
   type Theme,
 } from "./kit-browser.ts";
-import { compare, referenceDir } from "./kit-references.ts";
+import { compare, referenceDir, views } from "./kit-references.ts";
 
 /** "Tokens" in the design README, with the CSS custom property of each. */
 const tokens = [
@@ -79,7 +79,8 @@ let kit: Kit;
 beforeAll(async () => {
   kit = await startKit();
 }, 60_000);
-afterAll(() => kit?.close());
+// Under load, as with the pinned Chrome in Docker at the same time, Chrome can take over 10 s to quit.
+afterAll(() => kit?.close(), 60_000);
 
 async function pageColors(page: Page) {
   return page.evaluate(() => {
@@ -1484,96 +1485,98 @@ test.each(themes)(
   },
 );
 
-describe.each(
-  themes.flatMap((theme) => widths.map((width) => ({ theme, width }))),
-)("the kit page forced to $theme at $width px", ({ theme, width }) => {
-  let view: KitView;
-  beforeAll(async () => {
-    // The system has the other theme: the URL parameter overrides it.
-    view = await kit.open({ width, system: other(theme), theme });
-  }, 30_000);
-  afterAll(() => view?.page.close());
+describe.each(views)(
+  "the $screen screen of the kit page forced to $theme at $width px",
+  ({ screen, theme, width }) => {
+    let view: KitView;
+    beforeAll(async () => {
+      // The system has the other theme: the URL parameter overrides it.
+      view = await kit.open({ width, system: other(theme), theme, screen });
+    }, 30_000);
+    afterAll(() => view?.page.close());
 
-  test("has the theme colors", async () => {
-    expect(await pageColors(view.page)).toEqual({
-      background: color("Background", theme),
-      text: color("Text", theme),
-    });
-  });
-
-  test("does not scroll sideways", async () => {
-    const overflow = await view.page.evaluate(
-      () =>
-        document.documentElement.scrollWidth -
-        document.documentElement.clientWidth,
-    );
-    expect(overflow).toBe(0);
-  });
-
-  test("loads the bundled fonts and calls neither the API nor other hosts", async () => {
-    const loaded = await view.page.evaluate(() =>
-      [...document.fonts]
-        .filter((font) => font.status === "loaded")
-        .map((font) => font.family.replaceAll('"', "")),
-    );
-    expect(new Set(loaded)).toEqual(new Set(fonts));
-
-    const urls = view.requests.map((url) => new URL(url));
-    expect(urls.length).toBeGreaterThan(0);
-    expect(urls.filter((url) => url.origin !== kit.origin)).toEqual([]);
-    expect(
-      urls.filter(({ pathname }) =>
-        api.some(
-          (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
-        ),
-      ),
-    ).toEqual([]);
-  });
-
-  test("passes the accessibility check", async () => {
-    await view.page.addScriptTag({
-      path: createRequire(import.meta.url).resolve("axe-core"),
-    });
-    const violations = await view.page.evaluate(async () => {
-      const { axe } = window as unknown as {
-        axe: typeof import("axe-core");
-      };
-      const results = await axe.run(document);
-      return results.violations.map((violation) => ({
-        rule: violation.id,
-        nodes: violation.nodes.map((node) => node.target.join(" ")),
-      }));
-    });
-    expect(violations).toEqual([]);
-  });
-
-  test("outlines every element focused from the keyboard", async () => {
-    const focused: { element: string; outline: string }[] = [];
-    for (let i = 0; i < 500; i++) {
-      await view.page.keyboard.press("Tab");
-      const focus = await view.page.evaluate(() => {
-        const element = document.activeElement;
-        if (!element || element === document.body) return null;
-        if (element.hasAttribute("data-kit-focused")) return null;
-        element.setAttribute("data-kit-focused", "");
-        const style = getComputedStyle(element);
-        return {
-          element: element.outerHTML.slice(0, 100),
-          outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
-        };
+    test("has the theme colors", async () => {
+      expect(await pageColors(view.page)).toEqual({
+        background: color("Background", theme),
+        text: color("Text", theme),
       });
-      if (!focus) break;
-      focused.push(focus);
-    }
-    expect(focused.length).toBeGreaterThan(0);
-    expect(focused).toEqual(
-      focused.map(({ element }) => ({
-        element,
-        outline: `solid 2px ${color("Accent", theme)}`,
-      })),
-    );
-  });
-});
+    });
+
+    test("does not scroll sideways", async () => {
+      const overflow = await view.page.evaluate(
+        () =>
+          document.documentElement.scrollWidth -
+          document.documentElement.clientWidth,
+      );
+      expect(overflow).toBe(0);
+    });
+
+    test("loads the bundled fonts and calls neither the API nor other hosts", async () => {
+      const loaded = await view.page.evaluate(() =>
+        [...document.fonts]
+          .filter((font) => font.status === "loaded")
+          .map((font) => font.family.replaceAll('"', "")),
+      );
+      expect(new Set(loaded)).toEqual(new Set(fonts));
+
+      const urls = view.requests.map((url) => new URL(url));
+      expect(urls.length).toBeGreaterThan(0);
+      expect(urls.filter((url) => url.origin !== kit.origin)).toEqual([]);
+      expect(
+        urls.filter(({ pathname }) =>
+          api.some(
+            (prefix) =>
+              pathname === prefix || pathname.startsWith(`${prefix}/`),
+          ),
+        ),
+      ).toEqual([]);
+    });
+
+    test("passes the accessibility check", async () => {
+      await view.page.addScriptTag({
+        path: createRequire(import.meta.url).resolve("axe-core"),
+      });
+      const violations = await view.page.evaluate(async () => {
+        const { axe } = window as unknown as {
+          axe: typeof import("axe-core");
+        };
+        const results = await axe.run(document);
+        return results.violations.map((violation) => ({
+          rule: violation.id,
+          nodes: violation.nodes.map((node) => node.target.join(" ")),
+        }));
+      });
+      expect(violations).toEqual([]);
+    });
+
+    test("outlines every element focused from the keyboard", async () => {
+      const focused: { element: string; outline: string }[] = [];
+      for (let i = 0; i < 500; i++) {
+        await view.page.keyboard.press("Tab");
+        const focus = await view.page.evaluate(() => {
+          const element = document.activeElement;
+          if (!element || element === document.body) return null;
+          if (element.hasAttribute("data-kit-focused")) return null;
+          element.setAttribute("data-kit-focused", "");
+          const style = getComputedStyle(element);
+          return {
+            element: element.outerHTML.slice(0, 100),
+            outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
+          };
+        });
+        if (!focus) break;
+        focused.push(focus);
+      }
+      expect(focused.length).toBeGreaterThan(0);
+      expect(focused).toEqual(
+        focused.map(({ element }) => ({
+          element,
+          outline: `solid 2px ${color("Accent", theme)}`,
+        })),
+      );
+    });
+  },
+);
 
 /** The top left pixel of a PNG image, as Chrome draws it: `rgb(15, 16, 19)`. */
 async function topLeftPixel(png: Buffer): Promise<string> {
@@ -1596,29 +1599,37 @@ async function topLeftPixel(png: Buffer): Promise<string> {
   }
 }
 
-test("the screenshot command saves the kit page in both themes at both widths, as the references", async () => {
+test("the screenshot command saves every view of the kit page, as the references", async () => {
   const dir = mkdtempSync(join(tmpdir(), "skald-kit-"));
   try {
     await promisify(execFile)(process.execPath, ["kit-screenshots.ts", dir], {
       cwd: import.meta.dirname,
     });
-    const expected = themes.flatMap((theme) =>
-      widths.map((width) => ({
-        file: `kit-${theme}-${width}.png`,
-        theme,
-        width,
-      })),
-    );
+    // The kit page and the cabinet in full, the open side menu at phone width in the window.
+    const expected = [
+      ["kit-light-1440.png", 1440, "Background", "light"],
+      ["kit-light-360.png", 360, "Background", "light"],
+      ["kit-dark-1440.png", 1440, "Background", "dark"],
+      ["kit-dark-360.png", 360, "Background", "dark"],
+      ["cabinet-light-1440.png", 1440, "Side panel", "light", 900],
+      ["cabinet-light-360.png", 360, "Side panel", "light"],
+      ["cabinet-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["cabinet-dark-360.png", 360, "Side panel", "dark"],
+      ["cabinet-menu-light-360.png", 360, "Side panel", "light", 900],
+      ["cabinet-menu-dark-360.png", 360, "Side panel", "dark", 900],
+    ] as const;
     expect(readdirSync(dir).sort()).toEqual(
-      expected.map(({ file }) => file).sort(),
+      expected.map(([file]) => file).sort(),
     );
-    for (const { file, theme, width } of expected) {
-      // A PNG starts with an 8-byte signature and the IHDR chunk: width at bytes 16–19.
+    for (const [file, width, corner, theme, height] of expected) {
+      // A PNG starts with an 8-byte signature and the IHDR chunk: width at bytes 16–19, height 20–23.
       const png = readFileSync(join(dir, file));
       expect(png.subarray(1, 4).toString()).toBe("PNG");
       expect(png.readUInt32BE(16), file).toBe(width);
-      // The top left corner is the page background.
-      expect(await topLeftPixel(png), file).toBe(color("Background", theme));
+      if (height) expect(png.readUInt32BE(20), file).toBe(height);
+      else expect(png.readUInt32BE(20), file).toBeGreaterThan(900);
+      // The top left corner is the page background, or the side menu of the cabinet.
+      expect(await topLeftPixel(png), file).toBe(color(corner, theme));
       // The same pinned Chrome as the comparison: `npm run kit:references` saves passing references.
       expect(
         compare(png, readFileSync(join(referenceDir, file))).same,
@@ -1628,7 +1639,7 @@ test("the screenshot command saves the kit page in both themes at both widths, a
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}, 600_000);
+}, 900_000);
 
 describe("the production build", () => {
   let output: Rolldown.RolldownOutput["output"];

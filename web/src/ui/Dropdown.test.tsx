@@ -350,3 +350,24 @@ test("the button and options submit no form", async () => {
   expect(button().textContent).toBe("From claude-code");
   expect(onSubmit).not.toHaveBeenCalled();
 });
+
+test("without a default value no value is highlighted", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(
+    <Dropdown
+      stacked
+      label="From"
+      options={options}
+      value="codex"
+      onChange={onChange}
+    />,
+  );
+
+  expect(button().textContent).toBe("From codex");
+  expect(button().hasAttribute("data-set")).toBe(false);
+  await user.click(button());
+  await user.click(screen.getByRole("option", { name: "anyone" }));
+  expect(onChange.mock.calls).toEqual([["anyone"]]);
+  expect(button().hasAttribute("data-set")).toBe(false);
+});
