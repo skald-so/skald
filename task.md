@@ -581,7 +581,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - Delivery from the sending device to the recipient device as in `docs/protocol/delivery.md`: send with retries, WebSocket push, catch-up from the cursor, ack after the local write; duplicates dropped by the sending device and `msg_id`.
 - Server instances wake each other (`architecture.md`, "Network").
 - Server statuses `stored`, `delivered` and `expired`. `read` and `replied` come with Story 15, `held` and `refused` with Story 21.
-- Cloud limits as per-account settings (`features.md`, "Product"): spaces, devices, messages per month, message text, undelivered message retention.
+- Cloud limits of the Free plan (`features.md`, "Product"), stored as settings per space and per member so that a plan can change them: spaces an account owns, members, devices, messages per month, message text, undelivered message retention.
 - CLI: send and receive a message.
 - **Done when:** A sends and goes offline, B connects 10 hours later and receives the message; a retry with the same `msg_id` does not create a duplicate; a connection dropped before the ack neither loses nor duplicates the message; a message not delivered in time ends in `expired`.
 
@@ -757,6 +757,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - An admin creates an invite link in the CLI; it is signed, and its secret never reaches the server (`architecture.md`, "Membership").
+- An invite beyond the space's member limit (`features.md`, "Product") is refused.
 - The newcomer accepts after sign-in; the admin's device checks the newcomer's devices through their certificate chains and adds them to the roster and the space's channels by itself.
 - Active invite links are shown in the web UI and can be revoked there.
 - Invites never reach the agent's context.
@@ -1020,7 +1021,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Layout per the approved design in `../skald-cloud/design/`.
-- What Skald is and how it works, what the server sees and does not see, pricing (everything is free except Enterprise); links to the docs, GitHub and sign-in at `app.skald.so`.
+- What Skald is and how it works, what the server sees and does not see, plans: Free, Team and Enterprise (`features.md`, "Product"); links to the docs, GitHub and sign-in at `app.skald.so`.
 - Built and published together with the docs from `docs/` on GitHub Pages.
 - **Done when:** `skald.so` shows the main page as in the approved design, at desktop and phone width; all links resolve.
 
@@ -1048,7 +1049,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 **Scope:**
 - Priorities, capability tags (`needs: codex`), per-queue concurrency, per-task cost limit (`features.md` §10).
-- Queue limits are per-account settings.
+- Queue limits are settings per space, so a plan can change them.
 - **Done when:** Claude Code, Codex and CI process 100 tasks by priority, each on an agent with the tags it needs and never above the queue's concurrency; duplicates are rejected, failed tasks go to the DLQ.
 
 - **Release:** Post-MVP
@@ -1087,7 +1088,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 **Goal:** Two spaces of different organizations communicate through a shared channel with the consent of both sides.
 
 **Scope:**
-- A shared channel joins two spaces; it is created only with the consent of admins on both sides, and either side can disable it (`features.md` §3).
+- A shared channel joins two spaces on Team or Enterprise; it is created only with the consent of admins on both sides, and either side can disable it (`features.md` §3).
 - Each side's consent is signed by its admin's device (`architecture.md`, "Membership").
 - Approval in the CLI and a linked browser.
 - **Done when:** a freelancer is in three spaces, with a clientA↔clientB shared channel; after one side disables it, no messages pass through it.

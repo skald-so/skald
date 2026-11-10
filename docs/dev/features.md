@@ -12,21 +12,27 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
   - CLA with contributors, via CLA Assistant: [CONTRIBUTING.md](../../CONTRIBUTING.md).
   - The Skald name and logo are covered by a trademark policy: [TRADEMARKS.md](../../TRADEMARKS.md).
   - The license is chosen up front and never changed.
-- **Everything is free except Enterprise.** Only `ee/` features are paid: by a license key on a self-hosted server or by the Enterprise plan in the cloud.
+- **Plans** apply to a space, not to an account. An account is always free, and a person joins any number of spaces.
+  - **Free:** an account owns up to 2 spaces; a free space has up to 3 members.
+  - **Team:** paid per member of the space per month, at any size; required from the 4th member.
+  - **Enterprise:** the `ee/` features, by a license key on a self-hosted server or by the Enterprise plan in the cloud.
+  - Shared channels connect only spaces on Team or Enterprise.
+  - A self-hosted server has no plan limits; only `ee/` needs a license.
 - **Enterprise (ee):** SSO and SAML, SCIM, audit log, retention policies, admin access revocation, auditor device, SLA, deployment in an isolated network.
 
-**Cloud limits**, per-account settings:
+**Cloud limits** by plan:
 
-| Limit | Cloud |
-|---|---|
-| Spaces | 3 |
-| Devices | 10 |
-| Service agents | 3 |
-| Messages | About 1M per month |
-| Message text | 64 KB |
-| Attachment | 10 MB |
-| Undelivered messages kept | 7 days |
-| History kept | 30 days |
+| Limit | Free | Team |
+|---|---|---|
+| Spaces an account owns | 2 | each paid space separately |
+| Members per space | 3 | no limit, paid per member |
+| Devices per member | 10 | 50 |
+| Service agents per space | 3 | 10 |
+| Messages per space | About 1M per month | About 10M per month |
+| Message text | 64 KB | 64 KB |
+| Attachment | 10 MB | 10 MB |
+| Undelivered messages kept | 7 days | 7 days |
+| History kept | 30 days | 90 days |
 
 ## 1. Encrypted mailbox
 - The server stores ciphertext for each recipient device. If the recipient is online, the message arrives immediately; otherwise it waits in the mailbox. After reconnecting, the client catches up on missed messages from its cursor.
@@ -43,7 +49,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - A device belongs to N spaces. A session is bound to a space by its folder: `.skald.toml` or a rule `~/work/clientA/** → clientA`.
 - Each account has a personal space; its machines join it by default, so one person can start alone.
 - An agent of one client cannot see another client.
-- A **shared channel** between two spaces is created only with the consent of admins on both sides; either side can disable it.
+- A **shared channel** between two spaces on Team or Enterprise is created only with the consent of admins on both sides; either side can disable it.
 - **Done when:** a freelancer is in three spaces: personal, clientA and clientB; an agent in `~/work/clientA` sees only clientA; there is a clientA↔clientB shared channel.
 
 ## 4. MLS group encryption
