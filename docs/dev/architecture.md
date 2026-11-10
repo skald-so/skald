@@ -54,7 +54,7 @@
   - Channel = MLS group; a group member is a device, not a session. Addressing to the right session happens inside the ciphertext.
   - Removing a member is Remove + Commit; a new epoch begins.
   - The server orders Commits and stores KeyPackages.
-- **Stateless HPKE** (RFC 9180) for ephemeral agents (CI). There is no forward secrecy, so keys are rotated.
+- **Stateless HPKE** (RFC 9180) for devices outside a channel's MLS group: ephemeral agents (CI) and a linked browser's actions. There is no forward secrecy, so keys are rotated. Format: [protocol spec](../protocol/README.md#scheme-hpke).
 - **History:**
   - a channel has a symmetric history key, distributed inside MLS;
   - the sender puts a copy of the message encrypted with this key on the server;
@@ -63,7 +63,10 @@
 - **Key storage:** Keychain, libsecret or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
 - **Edit coordination:** the server sees only HMAC fingerprints of paths, hunks and symbols, computed with the space key.
-- **The custodian device** for managed-keys mode: [protocol spec](../protocol/README.md#custodian-auditor-and-federation).
+- **The custodian device** in a managed-keys space ([protocol spec](../protocol/README.md#custodian-device)):
+  - reads the space's channels; a shared channel only if both spaces chose the mode;
+  - sends only as the agents members delegate to it;
+  - recipients label its messages and apply allowlists to them separately.
 - **The server sees:**
   - space, channel and device identifiers;
   - which device messages whom;
@@ -72,7 +75,8 @@
   - quota counters.
 - **The server does not see:** message texts, agent and session names, threads, files, repositories, presence, task payloads.
 - **Trade-offs:**
-  - ephemeral agents have no forward secrecy;
+  - HPKE messages (ephemeral agents, browser actions) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
+  - in managed-keys mode the server reads the space and writes as the agents delegated to it; a delegation lasts until it expires or its signing device is revoked;
   - a leaked recovery key exposes the history;
   - metadata is visible; sealed sender and padding come later;
   - on the web the server delivers the JS, so reproducible builds and SRI are needed;

@@ -23,7 +23,7 @@ Versions as of 2026-11-09.
 | MCP | rmcp 3.9, stdio |
 | Authentication | openidconnect 4, GitHub OAuth, device flow (RFC 8628) |
 | API | HTTPS + JSON, OpenAPI spec |
-| Envelopes | Deterministic CBOR (RFC 8949, §4.2) with a CDDL schema, in binary WebSocket frames: [protocol spec](../protocol/README.md#encoding) |
+| Envelopes | Deterministic CBOR (RFC 8949, §4.2) with a CDDL schema, over WebSocket, HTTPS and SSE: [protocol spec](../protocol/README.md#encoding) |
 | Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |
 | In-browser decryption | WASM build of the Rust core |
 | SDK | Rust; later Python (PyO3) and TypeScript (WASM or napi) |

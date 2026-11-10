@@ -21,6 +21,7 @@ Status: draft. Current protocol version: 1.
 - The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be interpreted as described in BCP 14 [[RFC 2119](https://www.rfc-editor.org/rfc/rfc2119)] [[RFC 8174](https://www.rfc-editor.org/rfc/rfc8174)] when, and only when, they appear in all capitals.
 - Binary structures are in CDDL [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610)]; text forms are in ABNF [[RFC 5234](https://www.rfc-editor.org/rfc/rfc5234)].
 - Account, device, agent, space and channel: [architecture.md, "Data model"](../dev/architecture.md#data-model).
+- A signature is Ed25519 [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)] with the signing key of the signer's device certificate. It covers the encoded CBOR array of a label and byte strings, such as `["skald hpke", header, content]`; the label keeps a signature made for one use from passing for another.
 
 ## Identifiers
 - An ID is a UUID [[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)]: 16 bytes on the wire, the lowercase hyphenated form in text, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10`. Any other text form is invalid.
@@ -58,7 +59,7 @@ alnum   = %x61-7A / %x30-39    ; a-z, 0-9
 - Envelopes carry agent names only inside the ciphertext.
 
 ## Envelope
-A message travels as an envelope: a plaintext header the server routes by and a payload only channel members decrypt.
+A message travels as an envelope: a plaintext header the server routes by and a payload only its recipient devices decrypt.
 
 ```cddl
 envelope = [
@@ -79,34 +80,65 @@ header = {
 
 version = uint .ge 1
 id = bstr .size 16     ; a UUID
-scheme = &(mls: 1)
+scheme = &(mls: 1, hpke: 2)
 ```
 
 - `v`: the protocol version of the sending device.
 - `space`: the space the sending device sends from; in a shared channel, the sender's side.
-- `msg_id`: unique per sending device; a retried send keeps it.
-- `scheme` `mls`: the payload is an MLSMessage [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §6]. An application message is a PrivateMessage whose application data is the [content](#content); handshake messages travel in envelopes too.
-- `recipients`: absent, the envelope goes to every member device of the channel except the sending one. Application messages always go to the whole channel; `recipients` reaches devices outside the group, such as a joining device receiving an MLS Welcome.
+- `msg_id`: unique per sending device; a retried send keeps it, and the per-device envelopes of one `hpke` message share it.
+- `scheme`: how the payload is encrypted: [`mls`](#scheme-mls) or [`hpke`](#scheme-hpke).
+- `recipients`: absent, the envelope goes to every member device of the channel except the sending one. Under `mls`, application messages always go to the whole channel, and `recipients` reaches devices outside the group, such as a joining device receiving an MLS Welcome. Under `hpke`, it holds exactly one device.
 - `ttl`: how long an undelivered message is kept; absent or above the server's retention, the server's retention applies.
 - The message size is the payload length; there is no size field.
 - The server stores and forwards an envelope as the bytes it received. What the server adds, such as the mailbox `seq`, travels beside the envelope.
 
 A recipient routes by the header but trusts only what the payload authenticates. It MUST reject an application message unless:
-1. the payload decrypts in the MLS group whose `group_id` is `channel`;
-2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself, a `custodian` device as an agent of any member of the space;
+1. the payload authenticates the sending device as its scheme says: [`mls`](#scheme-mls), [`hpke`](#scheme-hpke);
+2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself, a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device));
 3. the A2A `messageId` is `msg_id` in text form.
 
+### Scheme `mls`
+- The payload is an MLSMessage [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §6]. An application message is a PrivateMessage whose application data is the [content](#content); handshake messages travel in envelopes too.
+- It authenticates the sending device when it decrypts in the MLS group whose `group_id` is `channel`; the sending device is the member that sent it.
+
+### Scheme `hpke`
+For messages from or to a device outside the channel's MLS group, such as a linked `browser` or an ephemeral `service` agent. The payload is sealed to one device and signed by the sending device.
+
+```cddl
+hpke-payload = [
+  enc: bstr .size 32,  ; the HPKE encapsulated key
+  ct: bstr,            ; hpke-plaintext, sealed
+]
+
+hpke-plaintext = [
+  sender: id,          ; the sending device
+  content: bstr .cbor content,
+  signature: bstr .size 64,
+]
+```
+
+- A message for several devices travels as one envelope per device.
+- Sealing: HPKE [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)] in base mode, single-shot, with DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM, the primitives of the MLS ciphersuite. The key is the HPKE key in the recipient's device certificate; `info` is the ASCII string `skald hpke`, `aad` the bytes of the encoded header.
+- `signature`: by `sender` over `["skald hpke", header, content]`, with the encoded header and `content` as byte strings.
+- An `hpke` payload always holds content; handshake messages use `mls`.
+
+It authenticates `sender` as the sending device when:
+1. the recipient is the device in `recipients`, and the payload opens with its HPKE key;
+2. `signature` verifies with the certificate of `sender`, an unrevoked device;
+3. `channel` is a channel of `space`, and `from` names an agent of `space`.
+
 ## Content
-The content is what an application message decrypts to.
+The content is what an application message carries inside its payload.
 
 ```cddl
 content = {
   1 => address,        ; from: the sending agent
   ? 2 => address,      ; to: the recipient agent
-  3 => uint .ge 1,     ; counter: per-sender counter, for gap detection
+  ? 3 => uint .ge 1,   ; counter: per-sender counter, for gap detection
   4 => uint,           ; hops: hop counter, for loop protection
   ? 5 => id,           ; reply_to: msg_id of the message this one answers
   $$body,
+  ? 7 => delegation,   ; only from a custodian device
   * int => any,        ; fields of later versions
 }
 
@@ -115,27 +147,36 @@ $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 ```
 
 - `to`: absent, the message is for every agent in the channel.
-- `counter`: 1 for the first application message a device sends in a channel, one more for each next one.
+- `counter`: 1 for the first application message a device sends in a channel, one more for each next one. Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
 - `hops`: 0 for a message a human asked for; a message an agent sends in reaction to another carries that message's `hops` plus one.
+- `delegation`: required in content from a `custodian` device, absent otherwise: [Custodian device](#custodian-device).
 - A content carries exactly one body. Other bodies, such as receipts, get their own keys.
 - The thread, text and attachments are in the A2A message: [A2A extension](#a2a-extension).
 
 ## Encoding
 - API: JSON over HTTPS, described by the OpenAPI spec, [api/openapi.json](../../api/openapi.json).
-- Envelopes: binary WebSocket frames [[RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)]; each binary frame holds one CBOR data item.
+- CBOR data items, such as envelopes, travel as the same bytes on every transport:
+  - WebSocket [[RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)]: one item per binary frame;
+  - HTTPS, for sending without a WebSocket and for long-poll answers: one item per request or response body, of type `application/cbor`;
+  - SSE [[HTML, "Server-sent events"](https://html.spec.whatwg.org/multipage/server-sent-events.html)]: one item per event, its `data` the item in base64url without padding [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §5], because SSE carries only text.
+- Which transport a client uses: [architecture.md, "Network"](../dev/architecture.md#network).
 - CBOR [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)] uses the core deterministic encoding (§4.2.1): shortest forms, definite lengths, map keys in bytewise order of their encodings. Text strings are UTF-8. Tags and floating-point values are not used.
 - A decoder MUST reject an item that breaks these rules or repeats a map key, and MUST ignore map keys it does not know.
 
 ## Protocol version
 - An integer from 1, separate from the release version of `skald` and `skald-server`.
 - It changes only for a change a peer on the previous version cannot handle. Fields peers may ignore do not change it.
-- Adjacent versions interoperate: a client on version N−1 reads every envelope a client on version N sends. Replacing an envelope field takes two versions: the first adds the new field, the next drops the old one.
+- Adjacent versions interoperate: each reads every envelope the other sends. Replacing an envelope field takes two versions: the first adds the new field, the next drops the old one.
 - Each version pins one A2A version ([A2A extension](#a2a-extension)). A new version moves only to an A2A version whose messages the previous one reads.
 
 ### Stating the version
-- HTTPS: every API request carries `Skald-Protocol-Version: <n>`, except `/health` and `/openapi.json`.
+- HTTPS: every request a Skald client (`skald`, the web app, an SDK) makes to the API carries `Skald-Protocol-Version: <n>`. Requests that do not depend on the protocol carry none, and the server does not check it on them:
+  - `/health` and `/openapi.json`;
+  - what a browser opens or is redirected to: web pages and their static files, sign-in, OAuth and OIDC callbacks, the device flow verification page;
+  - downloads: install scripts and binaries.
 - WebSocket: the client offers the subprotocol `skald.<n>` in its opening request; the server selects it.
-- An envelope's `v` is the version of the connection it is sent on. The server MUST refuse an envelope with another `v`.
+- An envelope's `v` is the version of the connection or request it is sent on. The server MUST refuse a sent envelope with another `v`.
+- A stored envelope keeps its `v`. The server delivers it only on a connection or request whose version is `v` or adjacent to it; an envelope that no such connection takes before its retention ends expires.
 
 ### Server answers
 The server accepts its current version N and the previous version N−1. Every response to a request that states a version carries `Skald-Protocol-Latest: N`.
@@ -192,9 +233,41 @@ Skald is an extension of A2A [[A2A 1.0](https://a2a-protocol.org/v1.0.0/specific
 Version 1 already has what these need: enabling them changes neither the envelope nor the content and needs no new version.
 
 - **Device kinds.** Clients of version 1 know all five kinds and MUST show their users every `custodian` and `auditor` device in their channels.
-- **Custodian device** ([features.md §13](../dev/features.md#13-managed-keys-mode)): a device of kind `custodian` that the server runs. After an admin signs the managed-keys mode of a space, it joins the space's channels as a member device: it decrypts like any member and sends as members' agents, which the recipient checks in [Envelope](#envelope) already allow.
-- **Auditor device** (`ee/`): a device of kind `auditor` on an organization admin's account, a member of every channel in the organization's spaces. It decrypts like any member device.
+- **Space mode.** A space admin signs the space's mode: whether it is in managed-keys mode, and which `auditor` device, if any, reads it. Members see it.
+- **Admission.** A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when the signed mode of every space of the channel names it: of both spaces, for a shared channel.
+  - A client MUST NOT commit the Add of a `custodian` or `auditor` device the channel does not admit. It MUST reject a Commit that adds one and warn its user.
+  - When a channel stops admitting a device already in it, a client MUST warn its user and MUST NOT send in the channel until the device is removed.
+- **Custodian device:** [below](#custodian-device).
+- **Auditor device** (`ee/`): a device of kind `auditor` on an organization admin's account, a member of every channel of the organization's spaces that admits it. It decrypts like any member device.
 - **Federation** ([features.md §15](../dev/features.md#15-server-federation)): addresses carry the server name; IDs do not collide across servers; servers forward envelopes as received bytes. Federation adds an API between servers, not a change for clients. A server MUST refuse an ID from another server that collides with one it knows.
+
+### Custodian device
+A device of kind `custodian` that the server runs for spaces in managed-keys mode ([features.md §13](../dev/features.md#13-managed-keys-mode)). It decrypts like any member device and sends only as agents that members delegate to it, such as their hosted MCP agents.
+
+A member delegates an agent by signing a delegation on one of their `client` or `browser` devices. The custodian puts it in every content it sends as that agent.
+
+```cddl
+delegation = [
+  body: bstr .cbor delegation-body,
+  signature: bstr .size 64,  ; by `signer`, over ["skald delegation", body]
+]
+
+delegation-body = {
+  1 => address,        ; agent: the delegated agent
+  2 => id,             ; custodian: the custodian device
+  3 => id,             ; signer: the member's device
+  4 => uint,           ; expires: seconds since the Unix epoch
+  * int => any,        ; fields of later versions
+}
+```
+
+A recipient MUST reject content from a `custodian` device unless:
+1. the channel [admits](#custodian-auditor-and-federation) the custodian;
+2. the content's `delegation` names `from` as `agent` and the sending device as `custodian`;
+3. `signer` is an unrevoked `client` or `browser` device of the member whose handle is the owner in `from`, and `signature` verifies with its certificate;
+4. `expires` has not passed.
+
+A recipient MUST label every message from a `custodian` device as sent by the server for the member, apart from the member's own messages. Allowlists treat it as a separate sender: an entry that admits an agent does not admit the custodian sending as that agent.
 
 ## Related work
 
