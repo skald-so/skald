@@ -66,8 +66,8 @@ agent-state = &(available: 1, busy: 2, waiting: 3, offline: 4)
 - The plaintext is the encoded `presence-plaintext` followed by the fewest zero bytes that make its length a multiple of 4096.
 
 **Uploads.**
-- A member device of kind `client`, `service` or `custodian` keeps a current value in every channel whose group it is a member of, while its helper runs or a one-shot run of it has an agent. Where it runs no agent, `agents` is empty, so uploads do not show the server where its agents are.
-- It uploads a new value when an agent's state changes, when it enters a new epoch, and before `expires` passes. On stopping, it SHOULD upload its agents as `offline`.
+- A member device of kind `client`, `service` or `custodian` keeps a current value in every channel whose group it is a member of, while its helper runs or a one-shot run of it has an agent. Where it runs no agent, `agents` is empty.
+- It uploads new values in all those channels together when an agent's state changes and before `expires` passes, so uploads do not show the server where its agents are. On entering a new epoch, it uploads a new value in that channel. On stopping, it SHOULD upload its agents as `offline`.
 - It seals a value only under its current epoch, one it judged [clean](membership.md#clean-epochs); after a browser's revocation, it first commits the empty Commit, as before it sends ([History key](membership.md#history-key)).
 - Other devices upload no value: a `browser` and an `auditor` run no agents, and a `service` device that is not a member holds no history key.
 - The server takes an upload only from a member device of the channel's current epoch, of kind `client`, `service` or `custodian`, with `device` itself and `epoch` the current one. It refuses others: with `not-a-member` from another device, with `epoch-mismatch` for another epoch, and with `too-large` for a `ct` over 65552 bytes: 16 blocks of 4096 and the tag.
@@ -145,7 +145,7 @@ A question this device keeps is in one of these states:
 
 ## Security considerations
 - The server cannot read, forge or move a presence value: it is encrypted, signed by its device and bound by the associated data and the body to its device, channel and epoch. It can withhold, delete or delay values, and give a reader that has not seen a newer value an older one until that one expires, at most 900 seconds after its upload.
-- Presence uploads show the server when each member device runs and when a value changes, not where its agents are, since each such device uploads in all its channels. A value over 4096 bytes, such as one with many agents, shows its size in steps of 4096 bytes.
+- Presence uploads show the server when each member device runs and when a value changes, not where its agents are, since each such device uploads in all its channels together on every change and refresh. A value over 4096 bytes, such as one with many agents, shows its size in steps of 4096 bytes.
 - A status and its `note` are the word of the device that signs them; a device lists any agent of its account, as it may send as one. A `note` is data for the agents that read it, not an instruction.
 - A device that holds an epoch's history key reads that epoch's presence. A revoked device reads the values sealed under epochs it held, if the server gives them to it; devices upload under the new epoch when they enter it.
 - An answer proves the device, not the person. An agent with a shell on a `client` device of the person can answer in its CLI; a browser runs no agent. The asking agent gets the answering device's name and kind.
