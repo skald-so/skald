@@ -1,6 +1,14 @@
 # Iterations
 
 ## Story 1: Monorepo skeleton and CI
+- [ ] **1.1:** Cargo workspace, `skald --version` and `script/test`
+- [ ] **1.2:** CI checks on pull requests
+- [ ] **1.3:** Licenses, policies and `cargo-deny`
+- [ ] **1.4:** Server health check and OpenAPI spec
+- [ ] **1.5:** PostgreSQL and migrations
+- [ ] **1.6:** SPA skeleton with generated API client
+- [ ] **1.7:** CI path filters and Renovate
+- [ ] **1.8:** Branch protection and `CONTRIBUTING.md`
 
 ## Story 2: Protocol spec and threat model
 
