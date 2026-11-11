@@ -9,8 +9,8 @@ use crate::{Result, git};
 /// The upstream's default branch.
 pub const DEFAULT_BRANCH: &str = "main";
 
-/// The author and committer date of every commit the harness makes, so that a scenario gets the
-/// same commit hashes on every run.
+/// The author and committer date of every commit the harness makes, so that the harness's commits
+/// get the same hashes on every run.
 pub const DATE: &str = "1700000000 +0000";
 
 /// Runs `git` in `dir` as [`git::run`] does, with the date [`DATE`], and returns its standard
