@@ -1,0 +1,547 @@
+//! The exact check scenarios of `docs/dev/edit-prototype.md`, "Scenarios": on an overlap the
+//! server reports, a machine gets the other machine's changes over end-to-end encrypted messages
+//! and merges them into its own with `git merge-tree`.
+#![allow(
+    clippy::single_range_in_vec_init,
+    reason = "a check's ranges of lines are lists of ranges"
+)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
+
+use edit_overlap::harness::{Machine, Upstream};
+use edit_overlap::{Check, Client, Conflict, Edits, Messages, Publication, Server, SpaceKey, git};
+use tempfile::TempDir;
+
+/// The space key, a test fixture.
+fn key() -> SpaceKey {
+    SpaceKey::from_bytes(*b"a fixture space key, 32 bytes!!!")
+}
+
+/// `src/inventory.rs` in the test repository, line by line.
+const INVENTORY: [&str; 12] = [
+    "pub fn count() -> u32 {",
+    "    let items = 0;",
+    "    items",
+    "}",
+    "",
+    "pub fn reserve() -> u32 {",
+    "    let reserved = 1;",
+    "    reserved",
+    "}",
+    "",
+    "pub fn release() -> u32 {",
+    "    let released = 2;",
+];
+
+/// The test repository's files.
+fn files() -> Vec<(&'static str, String)> {
+    vec![
+        (".gitignore", "/target\n".into()),
+        ("src/inventory.rs", inventory(&[])),
+        ("src/warehouse.rs", "pub struct Warehouse;\n".into()),
+        ("docs/guide.md", "# Guide\n\nRead the code.\n".into()),
+    ]
+}
+
+/// `src/inventory.rs` with `lines` on top of it and each `(line, text)` of `edits`, 1-based, in
+/// place of its line.
+fn inventory_with(top: &[&str], edits: &[(usize, &str)]) -> String {
+    let mut lines: Vec<&str> = INVENTORY.to_vec();
+    for &(line, text) in edits {
+        lines[line - 1] = text;
+    }
+    let lines: Vec<&str> = top.iter().copied().chain(lines).collect();
+    lines.join("\n") + "\n"
+}
+
+fn inventory(edits: &[(usize, &str)]) -> String {
+    inventory_with(&[], edits)
+}
+
+struct Repo {
+    upstream: Upstream,
+}
+
+impl Repo {
+    fn create(tmp: &TempDir) -> Self {
+        let files = files();
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(path, text)| (*path, text.as_str()))
+            .collect();
+        Self {
+            upstream: Upstream::create(&tmp.path().join("repo"), &files).unwrap(),
+        }
+    }
+
+    fn machine(&self, name: &str) -> (Machine, Client) {
+        (
+            self.upstream.clone_as(name).unwrap(),
+            Client::new(name, key()),
+        )
+    }
+}
+
+/// A space: the server stand-in, the messages between machines, and its machines.
+struct Space<'a> {
+    server: Server,
+    messages: Messages,
+    machines: Vec<(&'a Machine, &'a Client)>,
+}
+
+impl<'a> Space<'a> {
+    fn new(machines: &[(&'a Machine, &'a Client)]) -> Self {
+        Self {
+            server: Server::default(),
+            messages: Messages::default(),
+            machines: machines.to_vec(),
+        }
+    }
+
+    /// Each machine publishes its edit set; returns the edit sets.
+    fn publish(&mut self) -> Vec<Edits> {
+        let edits: Vec<Edits> = self
+            .machines
+            .iter()
+            .map(|(machine, client)| client.edits(machine.dir()).unwrap())
+            .collect();
+        for edit in &edits {
+            self.server.publish(edit.publication.clone());
+        }
+        edits
+    }
+
+    fn find(&self, name: &str) -> (&'a Machine, &'a Client) {
+        *self
+            .machines
+            .iter()
+            .find(|(_, client)| client.machine == name)
+            .unwrap()
+    }
+
+    /// `name` asks each machine the server says it overlaps for its changes, they answer, and it
+    /// checks them: what it finds, by machine.
+    fn check(&mut self, name: &str) -> BTreeMap<String, Check> {
+        let (machine, client) = self.find(name);
+        for overlap in self.server.overlaps(name) {
+            client
+                .request_changes(machine.dir(), &overlap.machine, &mut self.messages)
+                .unwrap();
+            let (other, other_client) = self.find(&overlap.machine);
+            other_client
+                .answer_requests(other.dir(), &mut self.messages)
+                .unwrap();
+        }
+        let checks = client.check(machine.dir(), &mut self.messages).unwrap();
+        assert!(
+            self.messages.waiting().values().all(Vec::is_empty),
+            "every message is answered"
+        );
+        checks
+    }
+}
+
+/// A check that found the conflicts `conflicts`, each a type and paths, in the files `files`, each
+/// a path and the conflicting ranges of the checking machine's lines.
+fn conflicted(conflicts: &[(&str, &[&str])], files: &[(&str, &[Range<usize>])]) -> Check {
+    Check {
+        clean: false,
+        conflicts: conflicts
+            .iter()
+            .map(|(kind, paths)| Conflict {
+                kind: kind.to_string(),
+                paths: paths.iter().map(|path| path.to_string()).collect(),
+            })
+            .collect(),
+        files: files
+            .iter()
+            .map(|(path, lines)| (path.to_string(), lines.to_vec()))
+            .collect(),
+    }
+}
+
+fn clean() -> Check {
+    Check {
+        clean: true,
+        conflicts: Vec::new(),
+        files: BTreeMap::new(),
+    }
+}
+
+#[test]
+fn snapshot_commits_the_working_tree_and_leaves_the_repository_as_it_is() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (machine, _) = repo.machine("alice-laptop");
+    machine
+        .write("src/inventory.rs", &inventory(&[(2, "    let items = 1;")]))
+        .unwrap();
+    machine.commit("count one").unwrap();
+    machine
+        .write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
+        .unwrap();
+    machine.git(&["add", "src/warehouse.rs"]).unwrap();
+    machine
+        .write("src/warehouse.rs", "pub struct Warehouse(u64);\n")
+        .unwrap();
+    machine.delete("docs/guide.md").unwrap();
+    machine.write("notes/todo-list.md", "- ship\n").unwrap();
+    machine
+        .write("target/build-output.bin", "ignored\n")
+        .unwrap();
+    let state = |machine: &Machine| {
+        let git_dir: BTreeSet<_> = std::fs::read_dir(machine.dir().join(".git"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        (
+            machine
+                .git(&["status", "--porcelain", "--untracked-files=all"])
+                .unwrap(),
+            machine.git(&["diff", "--cached"]).unwrap(),
+            machine.git(&["for-each-ref"]).unwrap(),
+            git_dir,
+        )
+    };
+    let before = state(&machine);
+
+    let snapshot = git::snapshot(machine.dir()).unwrap();
+
+    assert_eq!(state(&machine), before);
+    let parent = machine
+        .git(&["rev-parse", &format!("{snapshot}^")])
+        .unwrap();
+    assert_eq!(parent, machine.git(&["rev-parse", "HEAD"]).unwrap());
+    let paths = machine
+        .git(&["ls-tree", "-r", "--name-only", &snapshot])
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(paths).unwrap(),
+        ".gitignore\nnotes/todo-list.md\nsrc/inventory.rs\nsrc/warehouse.rs\n"
+    );
+    let show = |path: &str| {
+        let text = machine
+            .git(&["show", &format!("{snapshot}:{path}")])
+            .unwrap();
+        String::from_utf8(text).unwrap()
+    };
+    assert_eq!(
+        show("src/inventory.rs"),
+        inventory(&[(2, "    let items = 1;")])
+    );
+    assert_eq!(show("src/warehouse.rs"), "pub struct Warehouse(u64);\n");
+    assert_eq!(show("notes/todo-list.md"), "- ship\n");
+}
+
+#[test]
+fn edits_to_the_same_lines_conflict_with_their_files_and_lines() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    // Committed on one machine; uncommitted and untracked on the other, with a clean change above
+    // the conflict that shifts its lines.
+    a.write(
+        "src/inventory.rs",
+        &inventory(&[(7, "    let reserved = 10;")]),
+    )
+    .unwrap();
+    a.write("notes/plan.md", "- count\n- reserve\n").unwrap();
+    a.commit("reserve ten").unwrap();
+    b.write(
+        "src/inventory.rs",
+        &inventory_with(
+            &["//! Inventory.", "", ""],
+            &[(7, "    let reserved = 20;")],
+        ),
+    )
+    .unwrap();
+    b.write("notes/plan.md", "- count\n- release\n").unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+
+    let conflicts: &[(&str, &[&str])] = &[
+        // A file both sides add: `git merge-tree` types it as a content conflict.
+        ("CONFLICT (contents)", &["notes/plan.md"]),
+        ("CONFLICT (contents)", &["src/inventory.rs"]),
+    ];
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([(
+            "bob-desktop".into(),
+            conflicted(
+                conflicts,
+                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[7..8])]
+            )
+        )])
+    );
+    assert_eq!(
+        space.check("bob-desktop"),
+        BTreeMap::from([(
+            "alice-laptop".into(),
+            conflicted(
+                conflicts,
+                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[10..11])]
+            )
+        )])
+    );
+}
+
+#[test]
+fn edits_to_distant_lines_of_one_file_merge_cleanly() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    a.write("src/inventory.rs", &inventory(&[(2, "    let items = 1;")]))
+        .unwrap();
+    a.commit("count one").unwrap();
+    b.write(
+        "src/inventory.rs",
+        &inventory(&[(12, "    let released = 3;")]),
+    )
+    .unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+
+    // The server reports the overlap; the check clears it.
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([("bob-desktop".into(), clean())])
+    );
+    assert_eq!(
+        space.check("bob-desktop"),
+        BTreeMap::from([("alice-laptop".into(), clean())])
+    );
+}
+
+#[test]
+fn modify_delete_conflict_is_found() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    a.delete("src/warehouse.rs").unwrap();
+    b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
+        .unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+
+    let conflict = conflicted(
+        &[("CONFLICT (modify/delete)", &["src/warehouse.rs"])],
+        &[("src/warehouse.rs", &[])],
+    );
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([("bob-desktop".into(), conflict.clone())])
+    );
+    assert_eq!(
+        space.check("bob-desktop"),
+        BTreeMap::from([("alice-laptop".into(), conflict)])
+    );
+}
+
+#[test]
+fn rename_conflicts_are_found() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (c, c_client) = repo.machine("carol-server");
+    let (d, d_client) = repo.machine("dave-laptop");
+    a.rename("docs/guide.md", "docs/handbook.md").unwrap();
+    a.commit("rename the guide").unwrap();
+    b.rename("docs/guide.md", "docs/manual.md").unwrap();
+    c.delete("docs/guide.md").unwrap();
+    // An edit of the old path follows the rename.
+    d.write("docs/guide.md", "# Guide\n\nRead the docs.\n")
+        .unwrap();
+    let mut space = Space::new(&[
+        (&a, &a_client),
+        (&b, &b_client),
+        (&c, &c_client),
+        (&d, &d_client),
+    ]);
+    space.publish();
+
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([
+            (
+                "bob-desktop".into(),
+                conflicted(
+                    &[(
+                        "CONFLICT (rename/rename)",
+                        &["docs/guide.md", "docs/handbook.md", "docs/manual.md"]
+                    )],
+                    &[
+                        ("docs/guide.md", &[]),
+                        ("docs/handbook.md", &[]),
+                        ("docs/manual.md", &[])
+                    ]
+                )
+            ),
+            (
+                "carol-server".into(),
+                conflicted(
+                    &[(
+                        "CONFLICT (rename/delete)",
+                        &["docs/handbook.md", "docs/guide.md"]
+                    )],
+                    &[("docs/handbook.md", &[])]
+                )
+            ),
+            ("dave-laptop".into(), clean()),
+        ])
+    );
+}
+
+#[test]
+fn machines_on_different_bases_get_the_right_result() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (maintainer, _) = repo.machine("maintainer");
+    // Bob's change to line 2 is merged upstream, after lines added on top; Alice pulls both and
+    // changes line 2 again, Bob does not pull.
+    b.write("src/inventory.rs", &inventory(&[(2, "    let items = 1;")]))
+        .unwrap();
+    b.commit("count one").unwrap();
+    b.push("count-one").unwrap();
+    maintainer
+        .write(
+            "src/inventory.rs",
+            &inventory_with(&["//! Inventory.", "", ""], &[]),
+        )
+        .unwrap();
+    maintainer.commit("document the inventory").unwrap();
+    maintainer
+        .git(&["push", "--quiet", "origin", "HEAD:main"])
+        .unwrap();
+    maintainer.merge("count-one").unwrap();
+    a.pull().unwrap();
+    let merged = ["//! Inventory.", "", ""];
+    a.write(
+        "src/inventory.rs",
+        &inventory_with(
+            &merged,
+            &[(2, "    let items = 2;"), (7, "    let reserved = 10;")],
+        ),
+    )
+    .unwrap();
+    // Both edit line 7; Bob also edits line 12.
+    let b_edits = [
+        (2, "    let items = 1;"),
+        (7, "    let reserved = 20;"),
+        (12, "    let released = 3;"),
+    ];
+    b.write("src/inventory.rs", &inventory(&b_edits)).unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+    assert!(git::has_commit(a.dir(), &git::merge_base(b.dir()).unwrap()).unwrap());
+    assert!(!git::has_commit(b.dir(), &git::merge_base(a.dir()).unwrap()).unwrap());
+
+    let conflicts: &[(&str, &[&str])] = &[("CONFLICT (contents)", &["src/inventory.rs"])];
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([(
+            "bob-desktop".into(),
+            conflicted(conflicts, &[("src/inventory.rs", &[10..11])])
+        )])
+    );
+    assert_eq!(
+        space.check("bob-desktop"),
+        BTreeMap::from([(
+            "alice-laptop".into(),
+            conflicted(conflicts, &[("src/inventory.rs", &[7..8])])
+        )])
+    );
+
+    // Without the edit of line 7, the bases' lines on top and Bob's merged change merge cleanly.
+    b.write("src/inventory.rs", &inventory(&[b_edits[0], b_edits[2]]))
+        .unwrap();
+    space.publish();
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([("bob-desktop".into(), clean())])
+    );
+    assert_eq!(
+        space.check("bob-desktop"),
+        BTreeMap::from([("alice-laptop".into(), clean())])
+    );
+}
+
+#[test]
+fn a_request_with_a_base_that_is_not_an_object_id_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, _) = repo.machine("alice-laptop");
+    let snapshot = git::snapshot(a.dir()).unwrap();
+    let error = git::bundle(a.dir(), &snapshot, "--all").unwrap_err();
+    assert_eq!(error.to_string(), "not an object ID: \"--all\"");
+}
+
+#[test]
+fn server_receives_and_keeps_nothing_of_the_exchanged_changes() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let a_text = inventory(&[(7, "    let reserved = 10;")]);
+    let b_text = inventory(&[(7, "    let reserved = 20;"), (12, "    let released = 3;")]);
+    a.write("src/inventory.rs", &a_text).unwrap();
+    a.commit("reserve ten").unwrap();
+    b.write("src/inventory.rs", &b_text).unwrap();
+    b.write("notes/todo-list.md", "- ship the reservations\n")
+        .unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    let edits = space.publish();
+    let received = space.server.received().to_vec();
+    let kept = space.server.kept().clone();
+
+    let checks = [space.check("alice-laptop"), space.check("bob-desktop")];
+    assert!(
+        checks
+            .iter()
+            .all(|check| check.values().all(|check| !check.clean))
+    );
+
+    assert_eq!(space.server.received(), received);
+    assert_eq!(space.server.kept(), &kept);
+    let sent: Vec<Publication> = edits.iter().map(|edit| edit.publication.clone()).collect();
+    assert_eq!(received, sent);
+    // Every path of the exchanged changes, its file and directory names, and every line of them
+    // long enough not to occur in random bytes by chance.
+    let mut needles: BTreeSet<&str> = edits.iter().flat_map(Edits::paths).collect();
+    assert!(needles.contains("notes/todo-list.md"));
+    needles.extend(needles.clone().iter().flat_map(|path| path.split('/')));
+    for text in [
+        a_text.as_str(),
+        b_text.as_str(),
+        "- ship the reservations\n",
+    ] {
+        needles.extend(text.lines().map(str::trim).filter(|line| line.len() >= 4));
+    }
+    assert!(needles.contains("let reserved = 20;"));
+    let mut bytes = Vec::new();
+    for publication in &received {
+        bytes.extend_from_slice(publication.machine.as_bytes());
+        for fingerprint in &publication.fingerprints {
+            bytes.extend_from_slice(&fingerprint.0);
+        }
+    }
+    for (machine, fingerprints) in &kept {
+        bytes.extend_from_slice(machine.as_bytes());
+        for fingerprint in fingerprints {
+            bytes.extend_from_slice(&fingerprint.0);
+        }
+    }
+    for needle in needles {
+        let found = bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes());
+        assert!(!found, "{needle} in what the server received or keeps");
+    }
+}

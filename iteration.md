@@ -46,7 +46,7 @@
 
 ## Story 5: Edit comparison prototype with HMAC fingerprints
 - [x] **5.1:** Prototype harness and file fingerprints
-- [ ] **5.2:** Exact check with `git merge-tree`
+- [x] **5.2:** Exact check with `git merge-tree`
 - [ ] **5.3:** Hunk fingerprints
 - [ ] **5.4:** Symbol fingerprints
 - [ ] **5.5:** Measurement on real repositories
