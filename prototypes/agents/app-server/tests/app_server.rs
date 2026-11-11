@@ -14,62 +14,13 @@ use std::time::{Duration, Instant};
 
 use agent_source::{Message, Source};
 use agent_testing::{
-    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
-    write_executable,
+    Exchange, assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
 };
 use serde_json::{Value, json};
 
-/// An exchange recorded from the app-server: each line `{"client": <message>}` or
-/// `{"server": <message>}`.
-struct Exchange(Vec<Value>);
-
-impl Exchange {
-    fn load(name: &str) -> Self {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/exchanges/{name}"));
-        let text = fs::read_to_string(path).unwrap();
-        Self(
-            text.lines()
-                .map(|line| serde_json::from_str(line).unwrap())
-                .collect(),
-        )
-    }
-
-    /// The exchange up to the first line for which `last` holds, that line included.
-    fn until(mut self, last: impl Fn(&Value) -> bool) -> Self {
-        let end = self.0.iter().position(last).unwrap();
-        self.0.truncate(end + 1);
-        self
-    }
-
-    /// The client's messages.
-    fn client(&self) -> Vec<&Value> {
-        self.0
-            .iter()
-            .filter_map(|line| line.get("client"))
-            .collect()
-    }
-
-    /// The server's messages after each of the client's, before its next one.
-    fn answers(&self) -> Vec<Vec<&Value>> {
-        let mut answers: Vec<Vec<&Value>> = Vec::new();
-        for line in &self.0 {
-            match (line.get("client"), line.get("server")) {
-                (Some(_), _) => answers.push(Vec::new()),
-                (_, Some(message)) => answers.last_mut().unwrap().push(message),
-                _ => panic!("{line}"),
-            }
-        }
-        answers
-    }
-
-    /// The thread's ID, from the result of `thread/start` or `thread/resume`.
-    fn thread(&self) -> String {
-        self.0
-            .iter()
-            .find_map(|line| line["server"]["result"]["thread"]["id"].as_str())
-            .unwrap()
-            .to_owned()
-    }
+/// The exchange recorded in `tests/exchanges/<name>`.
+fn exchange(name: &str) -> Exchange {
+    Exchange::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/exchanges/{name}")))
 }
 
 /// What the client sent the app-server, and, when each message came, the messages handed over.
@@ -136,34 +87,14 @@ struct StandIn {
 impl StandIn {
     fn new(exchange: &Exchange, source: &Path) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        for sub in ["bin", "received", "answers"] {
-            fs::create_dir(dir.path().join(sub)).unwrap();
-        }
-        for (n, answer) in exchange.answers().iter().enumerate() {
-            let lines: String = answer
-                .iter()
-                .map(|message| format!("{message}\n"))
-                .collect();
-            fs::write(dir.path().join(format!("answers/{n}")), lines).unwrap();
-        }
-        let script = format!(
-            "#!/bin/sh\n\
-             dir='{dir}'\n\
-             printf '%s\\n' \"$@\" >\"$dir/args\"\n\
-             n=0\n\
-             while IFS= read -r line; do\n\
-             printf '%s\\n' \"$line\" >\"$dir/received/$n\"\n\
-             ls '{handed}' >\"$dir/received/$n.handed\"\n\
-             if [ -f \"$dir/answers/$n\" ]; then cat \"$dir/answers/$n\"; fi\n\
-             n=$((n + 1))\n\
-             done\n\
-             exec 2>&-\n\
-             sleep 1\n\
-             touch \"$dir/ended\"\n",
-            dir = dir.path().display(),
-            handed = source.join("handed").display(),
+        exchange.stand_in(
+            dir.path(),
+            &format!(
+                "ls '{}' >\"$dir/received/$n.handed\"",
+                source.join("handed").display()
+            ),
+            "exec 2>&-\nsleep 1\ntouch \"$dir/ended\"",
         );
-        write_executable(&dir.path().join("bin/codex"), &script);
         Self { dir }
     }
 
@@ -372,7 +303,7 @@ impl Replay {
 
 #[test]
 fn starts_a_thread_and_hands_the_waiting_messages_to_it_with_turn_start() {
-    let exchange = Exchange::load("idle.jsonl");
+    let exchange = exchange("idle.jsonl");
     let replay = Replay::new(&exchange);
     let log = replay.dir.path().join("exchange.jsonl");
     let args = ["--log", log.to_str().unwrap(), "--", "-c", "a=1"];
@@ -456,7 +387,7 @@ fn starts_a_thread_and_hands_the_waiting_messages_to_it_with_turn_start() {
 
 #[test]
 fn steers_the_waiting_messages_into_the_running_turn() {
-    let exchange = Exchange::load("busy.jsonl");
+    let exchange = exchange("busy.jsonl");
     let replay = Replay::new(&exchange);
     let prompt = "Run the shell command `sleep 20`. Then reply with only OK.";
     let events = replay
@@ -512,7 +443,7 @@ fn steers_the_waiting_messages_into_the_running_turn() {
 
 #[test]
 fn a_refused_steer_leaves_the_messages_waiting_for_the_next_turn() {
-    let exchange = Exchange::load("refused.jsonl");
+    let exchange = exchange("refused.jsonl");
     let replay = Replay::new(&exchange);
     let events = replay
         .start(&["--prompt", "Reply with only OK."])
@@ -543,8 +474,7 @@ fn a_refused_steer_leaves_the_messages_waiting_for_the_next_turn() {
 
 #[test]
 fn messages_refused_until_the_client_stops_stay_waiting() {
-    let exchange =
-        Exchange::load("refused.jsonl").until(|line| line["server"].get("error").is_some());
+    let exchange = exchange("refused.jsonl").until(|line| line["server"].get("error").is_some());
     let replay = Replay::new(&exchange);
     let mut client = replay.start(&["--prompt", "Reply with only OK."]);
     client.wait_for(event("refused"));
@@ -571,7 +501,7 @@ fn messages_refused_until_the_client_stops_stay_waiting() {
 
 #[test]
 fn fails_when_the_app_server_refuses_the_thread_or_closes() {
-    let idle = || Exchange::load("idle.jsonl");
+    let idle = || exchange("idle.jsonl");
     // thread/start refused.
     let refused = Exchange(
         idle()
@@ -653,7 +583,7 @@ fn socket_stand_in(exchange: Exchange, socket: &Path) -> thread::JoinHandle<Vec<
 
 #[test]
 fn resumes_a_thread_on_an_app_server_on_a_socket_and_hands_the_messages_to_it() {
-    let exchange = Exchange::load("person.jsonl");
+    let exchange = exchange("person.jsonl");
     let thread = exchange.thread();
     let (dir, source, messages) = waiting();
     let socket = dir.path().join("s.sock");

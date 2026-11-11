@@ -1,6 +1,6 @@
 # Delivery to agents: prototypes
 
-Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)).
+Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex, and find the [subscription limits](#subscription-limits) they show the user ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)).
 
 ## Checks
 Each path's section answers, for each agent:
@@ -16,9 +16,9 @@ Each path's section answers, for each agent:
 | Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
 
 ## Prototypes
-- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-testing` the tests' shared assertions; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
+- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex` or `app-server codex`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub).
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex` or `app-server codex`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
 
 ## Model stub
 Both CLIs accept a custom model endpoint, so every check runs on the stub unless `--real` is given. The stub:
@@ -364,6 +364,55 @@ Open questions:
 - Codex 0.162.1 also has a `granular` approval policy, which allows or refuses each kind of approval request; it was not compared with `never`.
 - In D the client resumes a thread with the terminal UI's settings, `approvalPolicy: "on-request"`, and declines every request of the app-server. Whether an approval in a turn the client started goes to the client or to the terminal UI was not checked.
 
+## Subscription limits
+Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. On both agents the limits exist and a local program can read them so; the vendor terms are silent on that ([Open questions](#open-questions)).
+
+| Agent | Source | What it shows | Needs a model turn | Sign-in with limits | Local program reads it | Prototype |
+|---|---|---|---|---|---|---|
+| Claude Code | `/usage` ([docs](https://code.claude.com/docs/en/costs.md#using-the-usage-command)), in the terminal UI and with `-p` | each plan limit: the session, the week for all models and the week of each model with its own limit; the percent used and the reset time | no | a Claude subscription; on an API key, only the session's cost | yes: `-p /usage --output-format stream-json` also gives it structured, as `usage_report` ([docs](https://code.claude.com/docs/en/agent-sdk/typescript.md#sdkusagereport)) | `agent-limits claude` |
+| Claude Code | the input of the status line command, `rate_limits` ([docs](https://code.claude.com/docs/en/statusline.md#available-data)) | `five_hour` and `seven_day`: the percent used and the reset time; no limit of one model | yes: `rate_limits` comes after the session's first model response | Claude Pro, Max and Ultra | yes: Claude Code runs the command of the `statusLine` setting with the data on stdin | `agent-limits status-line` |
+| Codex | `/status` in the terminal UI ([docs](https://developers.openai.com/codex/pricing#where-can-i-see-my-current-usage-limits)); the app-server the terminal UI runs on has `account/rateLimits/read` and `account/rateLimits/updated` ([docs](https://developers.openai.com/codex/app-server)) | each limit bucket's primary and secondary window: the percent used, its length and the reset time | no | ChatGPT; on an API key, `/status` shows "API key configured" and "Limits: data not available yet" (checked by hand, with no prompt), and `account/rateLimits/read` refuses | yes: a program starts `codex app-server` of its own | `agent-limits codex` |
+
+Both CLIs fetch the limits from the vendor's server with their own sign-in. A program that called that server itself would need the token from the CLI's credential store, which it may not read: not prototyped.
+
+Vendor terms on a local program reading what the CLI shows:
+
+| Vendor | Terms | What they say |
+|---|---|---|
+| Anthropic | [Consumer Terms](https://www.anthropic.com/legal/consumer-terms), section 3; [Claude Code legal and compliance](https://code.claude.com/docs/en/legal-and-compliance.md#authentication-and-credential-use) | The Consumer Terms forbid access to the services by a bot or script, except with an API key or where Anthropic explicitly permits it, and harvesting data from the services beyond what they permit. The Claude Code page forbids third parties to collect, store or route subscription credentials and tokens, and allows a user to sign in to the unmodified Claude Code with their own subscription. Neither mentions reading limits. Claude Code's docs give `rate_limits` to the user's status line script and document the `/usage` report of `-p`. |
+| OpenAI | [Terms of Use](https://openai.com/policies/row-terms-of-use/), "What you cannot do"; read in the Internet Archive's copy of 2026-11-06, as the page needs a browser | They forbid extracting data or output automatically or programmatically, and getting around rate limits. They do not mention Codex or its app-server, which OpenAI documents for clients, rate limits included. |
+
+### `agent-limits`
+`agent-limits <claude|codex|status-line> [--log <file>]` prints each limit as a JSON line: `{"limit", "usedPercent", "resetsAt"}`, `resetsAt` in Unix seconds.
+- `claude`: runs `claude -p /usage --output-format stream-json --verbose --setting-sources local --strict-mcp-config --no-session-persistence` and reads the rows of `usage_report.rate_limits.limits`; `--log` keeps the CLI's output.
+- `codex [-- <app-server option>...]`: runs `codex app-server` on stdio, then `initialize`, `account/read` and `account/rateLimits/read`. It prints `{"account"}`, the account's kind, then the windows of `rateLimitsByLimitId`, or of `rateLimits` without it, or `{"refused"}` with the app-server's error; `--log` keeps the exchange.
+- `status-line`: Claude Code's status line command. It prints the windows of its input's `rate_limits` as the status line, such as `five_hour 30% · seven_day 94%`; `--log` appends each input to the file.
+
+### Live checks
+They run off the model stub, which has no subscription, in the environment of [Session config](#session-config) with `--real`:
+- `live-check limits claude`: runs `agent-limits claude` in an empty temporary project. It passes when the prototype read each limit line of the `/usage` text, `<label>: <n>% used · resets <time>`, in its order, with the same percent and a reset time.
+- `live-check status-line claude`: runs Claude Code's terminal UI in a pseudo-terminal, as the [Channels](#channels) check does with `--real`, with the prompt "Reply with only OK.", `agent-limits status-line` as the status line command and a `Stop` hook, then `agent-limits claude`. It passes when the last status line input with `rate_limits` gave limits, and each matches the `/usage` row of its window, `five_hour` the session and `seven_day` the week of all models: the percent within a point, the reset within a minute. Session flags: `<prompt> --setting-sources local --strict-mcp-config --settings <dir>/settings.json --disable-slash-commands --tools "" --effort low`; the settings file holds the status line, the hook and `promptSuggestionEnabled: false`. It prints the tokens the status line input gives.
+- `live-check limits codex`: runs `agent-limits codex` with the [app-server](#codex-app-server) options and `-c mcp_servers.<name>.enabled=false` for each `[mcp_servers.<name>]` table of the user's `config.toml`, whose headers alone it reads. It passes when the app-server gave limits, each with a reset time. It starts no thread.
+
+Results on 2026-11-12, on Claude Code 2.1.322 and Codex 0.162.1, each run as `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check <command>`:
+
+| Command | Sign-in | Result | Limits read | Tokens |
+|---|---|---|---|---|
+| `limits claude` | Claude account | pass | session 30%, week of all models 95%, week of Fable 1%, each with its reset time | none |
+| `status-line claude` | `claude-opus-5-5`, Claude account | pass | `five_hour` 30%, `seven_day` 94%; `/usage` then: 30%, 95% and Fable 1%; the reset times within a minute | input 4,770 (cached 0), output 4 |
+| `limits codex` | OpenAI API key | fail: the app-server refused, "chatgpt authentication required to read rate limits" | none | none |
+
+Findings:
+- Claude Code: `-p /usage` gives every limit the user sees, without a model turn, in about 3 s. Anthropic marks the `usage_report` type experimental; the text shows the reset as a local date without a year.
+- Each `/usage` makes Claude Code ask Anthropic's usage endpoint, which Anthropic rate-limits; then `/usage` shows the data it fetched within the last 60 minutes, or an error ([docs](https://code.claude.com/docs/en/costs.md#using-the-usage-command)).
+- The status line runs only in an interactive session and takes the user's one `statusLine` setting. In the run its `seven_day` was a point below that of `/usage`.
+- After a model response, the Codex app-server also sends `account/rateLimits/updated` with the windows of the response's rate limit headers, even on another model provider: checked by hand on the stub, which sent `x-codex-primary-*` and `x-codex-secondary-*` headers. `/status` still showed "data not available yet", and `account/rateLimits/read` refused, "codex account authentication required".
+
+### Open questions
+- Whether reading the limits by running `claude -p /usage`, a status line command or Codex's app-server counts as the automated access the Anthropic terms forbid, or the programmatic extraction the OpenAI terms forbid: the owner decides, or asks the vendors.
+- How often `/usage` may run before Anthropic's usage endpoint limits it.
+- `live-check limits codex` reads an MCP server's name from a table header and does not quote it: a name with a dot does not turn the server off.
+
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
 - Claude Code, an interactive session with the server in the project's `.mcp.json` and without `permissions.allow`: whether it asks to approve the server and each `inbox` call.
@@ -375,3 +424,4 @@ Steps that need a person, left to the owner's check by hand ([rules.md](../../ru
 - Codex, an interactive session with the hooks in the project's `.codex/hooks.json`, without `--dangerously-bypass-hook-trust`: the review in `/hooks`, and a message reaches the session after a tool call, at the end of a turn and with the next prompt.
 - `codex queue` for a Codex session a person started on the shared app-server, without `--no-daemon`: whether a message reaches it idle and busy.
 - The app-server client on the socket of the shared background app-server, with `--thread` of a session a person started there without `--no-daemon`: whether a message reaches it idle and busy, and its terminal UI shows it.
+- Codex signed in with ChatGPT: whether `live-check limits codex` passes, and its limits are those `/status` shows.

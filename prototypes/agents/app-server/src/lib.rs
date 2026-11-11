@@ -197,6 +197,14 @@ impl<T: Transport> Transport for Logged<T> {
     }
 }
 
+/// `transport`, writing each message it carries to the file `log` if one is given ([`Logged`]).
+pub fn logged(transport: Box<dyn Transport>, log: Option<&str>) -> io::Result<Box<dyn Transport>> {
+    Ok(match log {
+        Some(log) => Box::new(Logged::new(transport, File::create(log)?)),
+        None => transport,
+    })
+}
+
 /// The client of one thread. It writes what happens to `events`, one JSON object a line:
 /// - `{"event": "thread", "threadId"}` once it started or resumed the thread;
 /// - `{"event": "turnStarted", "turnId"}` and `{"event": "turnCompleted", "turnId", "status"}`;
@@ -356,7 +364,7 @@ impl<T: Transport, W: Write> Client<T, W> {
 
     /// Sends a request and waits for its answer: the result, or the app-server's error message.
     /// Handles the other messages that come meanwhile.
-    fn request(&mut self, method: &str, params: Value) -> io::Result<Result<Value, String>> {
+    pub fn request(&mut self, method: &str, params: Value) -> io::Result<Result<Value, String>> {
         let id = self.next_id;
         self.next_id += 1;
         self.send(&json!({ "method": method, "id": id, "params": params }))?;

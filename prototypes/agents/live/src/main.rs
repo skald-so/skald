@@ -1,9 +1,11 @@
-//! Live checks of the delivery paths against the installed CLIs; `usage` lists the commands.
+//! Live checks of the delivery paths and of the subscription limits against the installed CLIs;
+//! `usage` lists the commands.
 //! `script/test` does not run them.
 
 mod app;
 mod pty;
 mod run;
+mod subscription;
 
 use std::io::Read;
 use std::path::Path;
@@ -54,6 +56,24 @@ fn main() -> ExitCode {
             };
             ended(app::app_server(&options))
         }
+        ["limits", agent, options @ ..] => {
+            let (Some(agent), Some(options)) = (Agent::parse(agent), real_only(options)) else {
+                return usage();
+            };
+            if options.model.is_some() {
+                return usage();
+            }
+            ended(match agent {
+                Agent::Claude => subscription::usage(&options),
+                Agent::Codex => subscription::codex(&options),
+            })
+        }
+        ["status-line", "claude", options @ ..] => {
+            let Some(options) = real_only(options) else {
+                return usage();
+            };
+            ended(subscription::status_line(&options))
+        }
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
             command.args(args);
@@ -92,6 +112,11 @@ fn main() -> ExitCode {
     }
 }
 
+/// The options of a check that runs only off the model stub: `[--model <model>] [--keep]`.
+fn real_only<'a>(options: &[&'a str]) -> Option<Options<'a>> {
+    Options::parse(options).filter(|options| !options.all && !options.real)
+}
+
 /// The exit code of a command that ended with `result`: a check's pass or fail, or an error.
 fn ended(result: Result<bool>) -> ExitCode {
     match result {
@@ -112,6 +137,8 @@ fn usage() -> ExitCode {
          live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check app-server codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check limits <claude|codex> [--keep]\n       \
+         live-check status-line claude [--model <model>] [--keep]\n       \
          live-check timed-hook <log> <handler> [<arg>...]"
     );
     ExitCode::from(2)
