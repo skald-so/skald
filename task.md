@@ -445,6 +445,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a report is in the docs; the primary and fallback paths are confirmed for each agent; the "Delivery to agents" table in `architecture.md` is up to date.
 
 - **Release:** MVP
+- **Manual check:** the owner reads the report and confirms the primary and fallback delivery paths.
 - **Depends on:** Story 1
 - **Docs:** `roadmap.md` — "Preparation", `architecture.md` — "Delivery to agents", `features.md` §7, §14
 
@@ -817,6 +818,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - **Release:** MVP
 - **Acceptance tests:** first
+- **Manual check:** Claude Code and Codex on two machines exchange encrypted messages through the CLI and MCP.
 - **Depends on:** Story 4, Story 14, Story 15
 - **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents", `infrastructure.md` — "PR checks"
 
@@ -884,6 +886,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 
 - **Release:** MVP
 - **Acceptance tests:** first
+- **Manual check:** the new-user path on staging: sign-up, one-command connect on macOS, Linux and Windows, invite by link.
 - **Depends on:** Story 7, Story 14, Story 17, Story 18, Story 19, Story 20, Story 22
 - **Docs:** `features.md` §16, `architecture.md` — "Device linking", `infrastructure.md` — "Channels", `docs/protocol/membership.md`
 
@@ -1070,6 +1073,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
   - the review from the PR comment arrives as a PR comment, the `ask_user` notification reaches the webhook, and the restricted-mode task is refused a shell command.
 
 - **Release:** MVP
+- **Manual check:** a week of real work through Skald, the development of Skald included, before the public launch.
 - **Depends on:** Story 9, Story 18, Story 21, Story 23, Story 24, Story 26, Story 27, Story 28, Story 36, Story 41, Story 63, Story 65, Story 66
 - **Docs:** `roadmap.md` — "MVP", `features.md` §1, §4, §5, §6, §10, §16, `infrastructure.md` — "PR checks"
 

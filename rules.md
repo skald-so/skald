@@ -15,3 +15,6 @@
    - A story is critical if a defect in it can leak or lose data or bypass access: cryptography and keys, delivery and receipts, queue claims, sign-in, devices and access rights, data deletion.
    - Its body has the line `- **Acceptance tests:** first`. The planner sets it; the plan's approver confirms it.
    - The acceptance tests check the Definition of done through public interfaces. The author of the code changes one only to fix a defect in the test, with the reason in the PR.
+6. **Some stories need the owner's manual check.**
+   - Its body has the line `- **Manual check:** <what to check>`.
+   - After the story's gate, the owner checks it by hand. A story that depends on it starts only after the check passes.
