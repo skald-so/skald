@@ -28,7 +28,7 @@ Numbers in parentheses are features from [features.md](features.md).
 - Notifications to Telegram, Slack or a webhook (12).
 - Restricted mode for tasks from other people (10).
 - Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis (12, 6).
-- One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code and Codex, new device confirmation, invite by link, Claude Code plugin (16).
+- One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code and Codex, MCP setup of the agents of [agents.md](agents.md#mcp-setup-by-skald-connect), new device confirmation, invite by link, Claude Code plugin (16).
 - Admin rights transfer, "only one admin" warning, account deletion (4, 5).
 - Load testing before launch.
 - Documentation: quick start, CLI reference.
