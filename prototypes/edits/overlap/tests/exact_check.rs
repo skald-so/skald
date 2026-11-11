@@ -355,6 +355,43 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
 }
 
 #[test]
+fn conflicting_lines_are_found_after_an_unstaged_deletion_of_the_attributes() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create_with(
+        &tmp,
+        &[(".gitattributes", "src/*.rs conflict-marker-size=32\n")],
+    );
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    // `git check-attr` still reads the deleted file from the index; `git merge-tree` reads the
+    // working tree only, so it writes markers of 7 characters.
+    a.delete(".gitattributes").unwrap();
+    a.write(
+        "src/inventory.rs",
+        &inventory(&[(7, "    let reserved = 10;")]),
+    )
+    .unwrap();
+    b.write(
+        "src/inventory.rs",
+        &inventory(&[(7, "    let reserved = 20;")]),
+    )
+    .unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([(
+            "bob-desktop".into(),
+            conflicted(
+                &[("CONFLICT (contents)", &["src/inventory.rs"])],
+                &[("src/inventory.rs", &[7..8])]
+            )
+        )])
+    );
+}
+
+#[test]
 fn edits_to_distant_lines_of_one_file_merge_cleanly() {
     let tmp = TempDir::new().unwrap();
     let repo = Repo::create(&tmp);

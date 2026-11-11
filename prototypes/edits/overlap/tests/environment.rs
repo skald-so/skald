@@ -1,7 +1,7 @@
 //! The environment of the `git` commands the prototype runs: nothing of the parent's reaches them
-//! but `PATH`.
+//! but `PATH`, and the settings `git::command` sets do.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::process::Command;
 
 use edit_overlap::git;
@@ -19,15 +19,37 @@ const PARENT: [(&str, &str); 6] = [
     ("GIT_CONFIG_VALUE_0", "fake"),
 ];
 
+/// A directory the test adds to its `PATH`, which must reach git's commands; it does not exist.
+const PATH_ENTRY: &str = "/nonexistent/skald-test-path";
+
+/// What `git::command` sets: the switches that turn off the global and system config and the
+/// system attributes and prompts, and the fixed identity.
+const SETTINGS: [(&str, &str); 8] = [
+    ("GIT_CONFIG_GLOBAL", "/dev/null"),
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    ("GIT_ATTR_NOSYSTEM", "1"),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_AUTHOR_NAME", "skald"),
+    ("GIT_AUTHOR_EMAIL", "skald@example.com"),
+    ("GIT_COMMITTER_NAME", "skald"),
+    ("GIT_COMMITTER_EMAIL", "skald@example.com"),
+];
+
 #[test]
 fn the_parent_environment_does_not_reach_git() {
     const NAME: &str = "the_parent_environment_does_not_reach_git";
     if std::env::var_os(PARENT[0].0).is_none() {
         // The test reruns itself with the variables set: setting them in this process races with
         // the other threads that read the environment.
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let path = std::env::join_paths(
+            std::iter::once(PATH_ENTRY.into()).chain(std::env::split_paths(&path)),
+        )
+        .unwrap();
         let output = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--test-threads=1"])
             .envs(PARENT)
+            .env("PATH", path)
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -39,16 +61,25 @@ fn the_parent_environment_does_not_reach_git() {
         return;
     }
     let tmp = TempDir::new().unwrap();
-    // The names of the variables of the environment git gives the commands it starts.
+    // The environment git gives the commands it starts, by name.
     let environment =
         git::run(tmp.path(), &["-c", "alias.environment=!env", "environment"]).unwrap();
-    let names: BTreeSet<&str> = std::str::from_utf8(&environment)
+    let environment: BTreeMap<&str, &str> = std::str::from_utf8(&environment)
         .unwrap()
         .lines()
-        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
+        .filter_map(|line| line.split_once('='))
         .collect();
     for (name, _) in PARENT {
-        assert!(!names.contains(name), "{name} reaches git");
+        assert!(!environment.contains_key(name), "{name} reaches git");
     }
-    assert!(names.contains("PATH"), "PATH does not reach git");
+    // Git puts its own directories before the `PATH` it was given, and gives a default one when
+    // it was given none.
+    let path = environment.get("PATH").expect("PATH does not reach git");
+    assert!(
+        std::env::split_paths(path).any(|entry| entry.as_os_str() == PATH_ENTRY),
+        "the test's PATH does not reach git: {path}"
+    );
+    for (name, value) in SETTINGS {
+        assert_eq!(environment.get(name), Some(&value), "{name}");
+    }
 }

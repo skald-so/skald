@@ -58,8 +58,7 @@ pub fn merge(dir: &Path, ours: &str, theirs: &str) -> Result<Check> {
                     dir,
                     &["cat-file", "blob", &format!("{}:{path}", merged.tree)],
                 )?;
-                let size = marker_size(dir, path)?;
-                own_lines(dir, own, &file, size, ours, theirs)?
+                own_lines(dir, own, &file, ours, theirs)?
             }
             _ => Vec::new(),
         };
@@ -128,47 +127,16 @@ fn parse(stdout: &[u8]) -> Result<Merged> {
     })
 }
 
-/// The size of the conflict markers `git merge-tree` writes in `path`: its `conflict-marker-size`
-/// attribute.
-fn marker_size(dir: &Path, path: &str) -> Result<usize> {
-    // `<path>\0conflict-marker-size\0<value>\0`
-    let output = git::run(
-        dir,
-        &["check-attr", "-z", "conflict-marker-size", "--", path],
-    )?;
-    let value = String::from_utf8(output)?
-        .split('\0')
-        .nth(2)
-        .ok_or("git check-attr gave no value")?
-        .to_owned();
-    Ok(parse_marker_size(&value))
-}
-
-/// The conflict marker size for the value of the `conflict-marker-size` attribute, as git reads
-/// it: its leading number if it is positive, otherwise 7. `set`, `unset` and `unspecified` give 7.
-fn parse_marker_size(value: &str) -> usize {
-    let digits = value.strip_prefix('+').unwrap_or(value);
-    let end = digits
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(digits.len());
-    match digits[..end].parse() {
-        Ok(size) if size > 0 => size,
-        _ => 7,
-    }
-}
-
 /// The conflicting ranges, in this machine's version `own` of a file, of `file`, the file as
-/// `git merge-tree` writes it with conflict markers of `size` characters labelled `ours` and
-/// `theirs`.
+/// `git merge-tree` writes it with conflict markers labelled `ours` and `theirs`.
 fn own_lines(
     dir: &Path,
     own: &str,
     file: &[u8],
-    size: usize,
     ours: &str,
     theirs: &str,
 ) -> Result<Vec<Range<usize>>> {
-    let (kept, ranges) = keep_ours(file, size, ours, theirs);
+    let (kept, ranges) = keep_ours(file, ours, theirs);
     if ranges.is_empty() {
         return Ok(ranges);
     }
@@ -202,20 +170,19 @@ fn own_lines(
 }
 
 /// `file` with each conflict resolved to this machine's side, and the range of that side in it.
-/// Conflict markers are `size` characters long: with 7, they start with `<<<<<<< <ours>` and end
-/// with `>>>>>>> <theirs>`; the merge base's side, with the `diff3` and `zdiff3` styles, starts
-/// with `|||||||`.
-fn keep_ours(file: &[u8], size: usize, ours: &str, theirs: &str) -> (Vec<u8>, Vec<Range<usize>>) {
+/// A conflict starts with a run of `<` and ` <ours>`, `<<<<<<< <ours>` by default; its other
+/// markers are as long as that run: `=======`, `>>>>>>> <theirs>` and, for the merge base's side
+/// with the `diff3` and `zdiff3` styles, `|||||||`. The run is read from the file, not from the
+/// `conflict-marker-size` attribute: `git check-attr` falls back to the index's `.gitattributes`,
+/// `git merge-tree` does not.
+fn keep_ours(file: &[u8], ours: &str, theirs: &str) -> (Vec<u8>, Vec<Range<usize>>) {
     enum Side {
         Outside,
         Ours,
         Base,
         Theirs,
     }
-    let start = format!("{} {ours}", "<".repeat(size));
-    let base = "|".repeat(size);
-    let middle = "=".repeat(size);
-    let end = format!("{} {theirs}", ">".repeat(size));
+    let (mut base, mut middle, mut end) = (Vec::new(), Vec::new(), Vec::new());
     let mut kept = Vec::new();
     let mut ranges = Vec::new();
     let mut side = Side::Outside;
@@ -226,23 +193,32 @@ fn keep_ours(file: &[u8], size: usize, ours: &str, theirs: &str) -> (Vec<u8>, Ve
         let text = line.strip_suffix(b"\n").unwrap_or(line);
         let text = text.strip_suffix(b"\r").unwrap_or(text);
         match side {
-            Side::Outside if text.starts_with(start.as_bytes()) => {
-                side = Side::Ours;
-                first = next;
-            }
+            Side::Outside => match start_size(text, ours) {
+                Some(size) => {
+                    base = b"|".repeat(size);
+                    middle = b"=".repeat(size);
+                    end = [b">".repeat(size), format!(" {theirs}").into_bytes()].concat();
+                    side = Side::Ours;
+                    first = next;
+                }
+                None => {
+                    kept.extend_from_slice(line);
+                    next += 1;
+                }
+            },
             Side::Ours
                 if text
-                    .strip_prefix(base.as_bytes())
+                    .strip_prefix(&base[..])
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with(b" ")) =>
             {
                 side = Side::Base
             }
-            Side::Ours | Side::Base if text == middle.as_bytes() => {
+            Side::Ours | Side::Base if text == middle => {
                 ranges.push(first..next);
                 side = Side::Theirs;
             }
-            Side::Theirs if text.starts_with(end.as_bytes()) => side = Side::Outside,
-            Side::Outside | Side::Ours => {
+            Side::Theirs if text.starts_with(&end) => side = Side::Outside,
+            Side::Ours => {
                 kept.extend_from_slice(line);
                 next += 1;
             }
@@ -250,6 +226,13 @@ fn keep_ours(file: &[u8], size: usize, ours: &str, theirs: &str) -> (Vec<u8>, Ve
         }
     }
     (kept, ranges)
+}
+
+/// The size of the conflict markers if `text` starts a conflict: a run of `<`, a space and `ours`.
+fn start_size(text: &[u8], ours: &str) -> Option<usize> {
+    let size = text.iter().take_while(|&&byte| byte == b'<').count();
+    let label = text[size..].strip_prefix(b" ")?;
+    (size > 0 && label.starts_with(ours.as_bytes())).then_some(size)
 }
 
 /// A hunk of a `--unified=0` diff: the first line and the number of lines on each side.
@@ -382,7 +365,7 @@ mod tests {
             <<<<<<< ours1\r\n||||||| base1\r\nx\r\n=======\r\nX\r\n>>>>>>> theirs1\r\n\
             <<<<<<< other\n=======\n>>>>>>> other\n\
             e";
-        let (kept, ranges) = keep_ours(file, 7, "ours1", "theirs1");
+        let (kept, ranges) = keep_ours(file, "ours1", "theirs1");
         assert_eq!(
             String::from_utf8(kept).unwrap(),
             "a\nb\nc\nd\n<<<<<<< other\n=======\n>>>>>>> other\ne"
@@ -391,36 +374,19 @@ mod tests {
     }
 
     #[test]
-    fn keep_ours_reads_markers_of_the_given_size_only() {
-        let file = b"a\n\
+    fn keep_ours_reads_each_conflict_at_the_size_of_its_start_marker() {
+        let file = b"a\n ours1\n<<<<<<<ours1\n\
             <<<<<<<<< ours1\n<<<<<<< ours1\n|||||||\n=======\n>>>>>>> theirs1\n\
-            |||||||||x\n|||||||||\nx\n=========\nX\n>>>>>>>>> theirs1\n\
-            <<<<<<<<< ours1\n||||||||| base1\n=========\n>>>>>>>>> theirs1\n\
+            |||||||||x\n|||||||||\nx\n=========\nX\n>>>>>>>> theirs1\n>>>>>>>>> theirs1\n\
+            <<< ours1\n||| base1\n===\n>>> theirs1\n\
             e\n";
-        let (kept, ranges) = keep_ours(file, 9, "ours1", "theirs1");
+        let (kept, ranges) = keep_ours(file, "ours1", "theirs1");
         assert_eq!(
             String::from_utf8(kept).unwrap(),
-            "a\n<<<<<<< ours1\n|||||||\n=======\n>>>>>>> theirs1\n|||||||||x\ne\n"
+            "a\n ours1\n<<<<<<<ours1\n\
+            <<<<<<< ours1\n|||||||\n=======\n>>>>>>> theirs1\n|||||||||x\ne\n"
         );
-        assert_eq!(ranges, [2..7, 7..7]);
-    }
-
-    #[test]
-    fn parse_marker_size_reads_the_attribute_as_git_does() {
-        for (value, size) in [
-            ("9", 9),
-            ("32", 32),
-            ("+12", 12),
-            ("12abc", 12),
-            ("0", 7),
-            ("-3", 7),
-            ("set", 7),
-            ("unset", 7),
-            ("unspecified", 7),
-            ("", 7),
-        ] {
-            assert_eq!(parse_marker_size(value), size, "{value}");
-        }
+        assert_eq!(ranges, [4..9, 9..9]);
     }
 
     #[test]

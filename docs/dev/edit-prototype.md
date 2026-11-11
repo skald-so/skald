@@ -22,6 +22,7 @@ A prototype of edit coordination ([features.md §11](features.md#11-cross-machin
 | `snapshot_commits_the_working_tree_and_leaves_the_repository_as_it_is` | The snapshot holds committed, staged and then changed, and untracked changes and a deletion, not an ignored file; its parent is `HEAD`; the status, index, refs and `.git` entries stay as they were |
 | `edits_to_the_same_lines_conflict_with_their_files_and_lines` | A committed edit and an uncommitted one of the same line, and a file both add, one committed and one untracked: both machines get the two files and their own conflicting lines, shifted on one by a clean change above |
 | `conflicting_lines_are_found_whatever_the_repository_attributes_and_config` | The same-lines scenario in a repository whose `.gitattributes` sizes the conflict markers of Rust files to 32 characters and makes `git diff` show files as binary, with `diff.interHunkContext` set on one machine and the other's clean changes 2 lines above and below the conflict: both machines get their own conflicting lines |
+| `conflicting_lines_are_found_after_an_unstaged_deletion_of_the_attributes` | A `.gitattributes` that sizes the conflict markers of Rust files to 32 characters, deleted on one machine without staging the deletion: that machine gets its conflicting lines from markers of 7 |
 | `edits_to_distant_lines_of_one_file_merge_cleanly` | Edits of the first and last function of one file overlap on the server; the check finds a clean merge |
 | `modify_delete_conflict_is_found` | A deletion and an edit of one file: a modify/delete conflict on both machines |
 | `rename_conflicts_are_found` | A committed rename against another rename of the same file, its deletion and an edit of its old path: rename/rename, rename/delete and a clean merge |
@@ -29,7 +30,7 @@ A prototype of edit coordination ([features.md §11](features.md#11-cross-machin
 | `a_request_with_a_base_that_is_not_an_object_id_is_refused` | A base that is not an object ID never reaches the `git bundle` command line |
 | `a_bundle_with_another_reference_is_refused` | A bundle whose one reference is not the sender's changes reference is refused |
 | `a_bundle_with_two_references_is_refused` | A bundle with the changes reference and another one is refused |
-| `the_parent_environment_does_not_reach_git` | A fake sentinel variable, `HOME`, `XDG_CONFIG_HOME` and config injected through `GIT_CONFIG_COUNT` in the test's environment do not reach git; `PATH` does |
+| `the_parent_environment_does_not_reach_git` | A fake sentinel variable, `HOME`, `XDG_CONFIG_HOME` and config injected through `GIT_CONFIG_COUNT` in the test's environment do not reach git; a directory added to its `PATH`, the fixed identity and the config, attributes and prompt switches do |
 | `server_receives_and_keeps_nothing_of_the_exchanged_changes` | During the check of both machines the server receives nothing and keeps what it kept; nothing it received or keeps holds a path, file or directory name or line of the changes |
 
 ## Questions
@@ -71,7 +72,7 @@ The prototype answers these questions of [features.md §11](features.md#11-cross
 - **Check:** `git merge-tree --write-tree -z --messages` on the asker's snapshot and the other's, from their merge base. Git 2.39 is the first whose `-z` messages give each conflict's type and paths.
   - Result: whether the merge is clean, by the exit status; each `CONFLICT` message's type and paths; each conflicted file with the conflicting ranges of the asker's own lines.
   - Lines: the asker's side of each conflict marker in the merged file. Outside the conflicts the merged file has the other side's clean changes too; a `git diff` from the asker's version to the merged file resolved to the asker's side maps the ranges back.
-  - Markers are as long as the file's `conflict-marker-size` attribute sets, 7 by default; `git check-attr` gives it. The `git diff` options fix what attributes and config could change: `--text`, `--inter-hunk-context=0`, `--indent-heuristic`.
+  - Markers are as long as the file's `conflict-marker-size` attribute sets, 7 by default. Each conflict's size is the run of `<` that starts it in the merged file: `git check-attr` falls back to the index's `.gitattributes` when the working tree has none, `git merge-tree` does not. The `git diff` options fix what attributes and config could change: `--text`, `--inter-hunk-context=0`, `--indent-heuristic`.
   - Types: content conflicts, a file both sides add included, are `CONFLICT (contents)`; also `modify/delete`, `rename/rename` and `rename/delete`. Conflicts without markers have no lines.
   - A rename and an edit of its old path merge cleanly: the file-level overlap is a false alarm the check clears.
 - **Different bases:** the snapshots merge from the latest commit both have.
