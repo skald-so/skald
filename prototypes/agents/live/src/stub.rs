@@ -3,8 +3,10 @@
 //! records the requests. It refuses a request whose credential headers hold anything but
 //! `PLACEHOLDER`, and records the header's name, never its value.
 
+use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -20,6 +22,9 @@ pub const PLACEHOLDER: &str = "skald-live-check-placeholder";
 /// The shell command of the busy session.
 pub const SHELL: &str = "sleep 20";
 
+/// A shell command that ends at once.
+pub const QUICK: &str = "true";
+
 /// The stub's reply once its script ends.
 pub const DONE: &str = "Done.";
 
@@ -33,6 +38,19 @@ pub enum Call {
     Inbox,
     /// Runs `SHELL`.
     Shell,
+    /// Runs `QUICK`.
+    Quick,
+}
+
+impl Call {
+    /// The shell command the call runs, if it runs one.
+    fn command(self) -> Option<&'static str> {
+        match self {
+            Self::Inbox => None,
+            Self::Shell => Some(SHELL),
+            Self::Quick => Some(QUICK),
+        }
+    }
 }
 
 /// What the stub saw of a session.
@@ -58,6 +76,12 @@ impl StubLog {
                 self.credentials.join(", ")
             )
         })
+    }
+
+    /// Writes the requests to `path` as a JSON array: they hold the session's context; the stub
+    /// keeps no credential's value.
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        fs::write(path, serde_json::to_string_pretty(&self.requests)?)
     }
 }
 
@@ -268,9 +292,9 @@ fn messages(script: &[Call], body: &Value) -> Response {
     });
     let (block, delta, stop_reason) = match script.get(step) {
         Some(call) => {
-            let (name, input) = match call {
-                Call::Inbox => (format!("mcp__{SERVER}__{INBOX}"), json!({})),
-                Call::Shell => ("Bash".to_owned(), json!({ "command": SHELL })),
+            let (name, input) = match call.command() {
+                None => (format!("mcp__{SERVER}__{INBOX}"), json!({})),
+                Some(command) => ("Bash".to_owned(), json!({ "command": command })),
             };
             let id = format!("toolu_stub_{step}");
             (
@@ -347,15 +371,15 @@ fn responses(script: &[Call], body: &Value) -> Response {
         Some(call) => {
             let call_id = format!("call_stub_{step}");
             let id = format!("fc_stub_{step}");
-            match call {
-                Call::Inbox => json!({
+            match call.command() {
+                None => json!({
                     "type": "function_call", "id": id, "call_id": call_id,
                     "namespace": format!("mcp__{SERVER}"), "name": INBOX, "arguments": "{}",
                 }),
                 // Codex waits for the command up to `yield_time_ms`, 10 s by default.
-                Call::Shell => json!({
+                Some(command) => json!({
                     "type": "function_call", "id": id, "call_id": call_id, "name": "exec_command",
-                    "arguments": json!({ "cmd": SHELL, "yield_time_ms": 30_000 }).to_string(),
+                    "arguments": json!({ "cmd": command, "yield_time_ms": 30_000 }).to_string(),
                 }),
             }
         }
@@ -388,6 +412,8 @@ fn responses(script: &[Call], body: &Value) -> Response {
 #[cfg(test)]
 mod tests {
     use std::io::Read;
+
+    use crate::tests::read_json;
 
     use super::*;
 
@@ -586,6 +612,34 @@ mod tests {
     }
 
     #[test]
+    fn runs_the_quick_command_on_both_apis() {
+        let mut log = StubLog::default();
+        let (block, stop) = streamed_block(&answer(
+            &[Call::Quick],
+            &messages_request(0, true),
+            &mut log,
+        ));
+        assert_eq!(
+            block,
+            json!({ "type": "tool_use", "id": "toolu_stub_0", "name": "Bash", "input": { "command": "true" } })
+        );
+        assert_eq!(stop, "tool_use");
+        let (block, _) = streamed_block(&answer(
+            &[Call::Quick],
+            &messages_request(1, true),
+            &mut log,
+        ));
+        assert_eq!(block, json!({ "type": "text", "text": "Done." }));
+        assert_eq!(
+            responded_item(&answer(&[Call::Quick], &responses_request(0), &mut log)),
+            json!({
+                "type": "function_call", "id": "fc_stub_0", "call_id": "call_stub_0",
+                "name": "exec_command", "arguments": r#"{"cmd":"true","yield_time_ms":30000}"#,
+            })
+        );
+    }
+
+    #[test]
     fn answers_other_paths() {
         let mut log = StubLog::default();
         let tokens = answer(
@@ -703,6 +757,19 @@ mod tests {
         assert!(log.saw("tok-1"));
         assert!(!log.saw("tok-2"));
         assert!(!StubLog::default().saw("tok-1"));
+    }
+
+    #[test]
+    fn saves_the_requests_as_a_json_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stub.json");
+        let log = StubLog {
+            requests: vec!["{}".to_owned(), "a\"b".to_owned()],
+            credentials: vec!["x-api-key".to_owned()],
+        };
+        log.save(&path).unwrap();
+        assert_eq!(read_json(&path), json!(["{}", "a\"b"]));
+        assert!(log.save(&dir.path().join("missing/stub.json")).is_err());
     }
 
     #[test]
