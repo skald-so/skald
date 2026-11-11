@@ -9,6 +9,7 @@ use std::process::{Command, Output};
 
 use agent_live::Agent;
 use agent_live::channel::stub_environment;
+use agent_live::queue;
 use agent_source::{Source, State};
 
 /// Runs `live-check` with no variable of the test's environment, so none of its credentials
@@ -78,9 +79,16 @@ fn wrong_arguments_print_the_usage() {
         &["channel", "codex"],
         &["channel", "claude", "--verbose"],
         &["stop"],
-        &["stop", "codex"],
+        &["stop", "gemini"],
         &["post-tool-use", "claude", "--verbose"],
         &["pre-tool-use", "claude"],
+        &["user-prompt-submit", "claude"],
+        &["user-prompt-submit", "codex", "--verbose"],
+        &["queue"],
+        &["queue", "claude"],
+        &["queue", "codex", "--verbose"],
+        &["timed-hook"],
+        &["timed-hook", "log"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -103,20 +111,23 @@ fn inbox_fails_without_the_cli() {
 /// A variable of `live-check`'s environment that the CLI on the stub must not get.
 const SENTINEL: &str = "SKALD_LIVE_TEST_CREDENTIAL";
 
-/// Variables, with fake values, that would sign Claude Code in other than with the owner's
-/// subscription: off the stub it must not get them.
-const SIGN_IN: [(&str, &str); 6] = [
+/// Variables, with fake values, that would sign the CLIs in other than with the owner's own sign-in:
+/// off the stub, each CLI must not get its own.
+const SIGN_IN: [(&str, &str); 9] = [
     ("ANTHROPIC_API_KEY", "sk-ant-fake"),
     ("ANTHROPIC_AUTH_TOKEN", "fake-token"),
     ("ANTHROPIC_BASE_URL", "http://127.0.0.1:1"),
     ("CLAUDE_CODE_OAUTH_TOKEN", "fake-oauth-token"),
     ("CLAUDE_CODE_USE_BEDROCK", "1"),
     ("AWS_BEARER_TOKEN_BEDROCK", "fake-bearer"),
+    ("OPENAI_API_KEY", "sk-fake"),
+    ("OPENAI_BASE_URL", "http://127.0.0.1:1"),
+    ("CODEX_API_KEY", "fake-codex-key"),
 ];
 
-/// Asserts that a Claude Code session off the stub got `live-check`'s `PATH` and [`SENTINEL`],
-/// none of [`SIGN_IN`] and no config home of its own.
-fn assert_real_environment(at: &str, session: &Recorded, path: &str) {
+/// Asserts that a session of `agent` off the stub got `live-check`'s `PATH` and [`SENTINEL`],
+/// none of the variables of [`SIGN_IN`] that would sign it in and no config home of its own.
+fn assert_real_environment(agent: Agent, at: &str, session: &Recorded, path: &str) {
     assert!(session.env["PATH"] == path, "{at}: PATH differs");
     assert!(
         session
@@ -126,12 +137,16 @@ fn assert_real_environment(at: &str, session: &Recorded, path: &str) {
         "{at}: {SENTINEL} did not pass on"
     );
     for (name, _) in SIGN_IN {
-        assert!(!session.env.contains_key(name), "{at}: {name} is set");
+        let set = session.env.contains_key(name);
+        if agent.replaces_sign_in(name) {
+            assert!(!set, "{at}: {name} is set");
+        } else {
+            assert!(set, "{at}: {name} did not pass on");
+        }
     }
-    assert!(
-        !session.env.contains_key("CLAUDE_CONFIG_DIR"),
-        "{at}: CLAUDE_CONFIG_DIR is set"
-    );
+    for config in ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] {
+        assert!(!session.env.contains_key(config), "{at}: {config} is set");
+    }
 }
 
 /// Asserts that a session on the stub got only the environment `expected` gives for its `HOME`,
@@ -248,13 +263,15 @@ fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
 }
 
 #[test]
-fn inbox_claude_on_the_real_model_drops_the_variables_that_replace_the_sign_in() {
-    for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
-        let (recorded, path, _dir) = sessions_of(Agent::Claude, &["inbox", "claude"], flags);
-        let at = format!("{flags:?}");
-        assert_eq!(recorded.len(), sessions, "{at}");
-        for session in &recorded {
-            assert_real_environment(&at, session, &path);
+fn inbox_on_the_real_model_drops_the_variables_that_replace_the_sign_in() {
+    for agent in [Agent::Claude, Agent::Codex] {
+        for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
+            let (recorded, path, _dir) = sessions_of(agent, &["inbox", agent.cli()], flags);
+            let at = format!("{} {flags:?}", agent.cli());
+            assert_eq!(recorded.len(), sessions, "{at}");
+            for session in &recorded {
+                assert_real_environment(agent, &at, session, &path);
+            }
         }
     }
 }
@@ -336,7 +353,7 @@ fn channel_on_the_real_model_drops_the_sign_in_variables_and_adds_the_terminal_a
         for session in &recorded {
             // The real model signs in from the user's config home: the rest of the check's
             // environment passes on.
-            assert_real_environment(&at, session, &path);
+            assert_real_environment(Agent::Claude, &at, session, &path);
             assert!(
                 session.env["TERM"] == "xterm-256color",
                 "{at}: TERM differs"
@@ -349,7 +366,8 @@ fn channel_on_the_real_model_drops_the_sign_in_variables_and_adds_the_terminal_a
     }
 }
 
-/// The hook command and source of a hook session, from the settings file in its arguments.
+/// The hook command and source of a Claude Code hook session, from the settings file in its
+/// arguments.
 fn hook_of(session: &Recorded, event: &str) -> (String, String) {
     let at = session
         .args
@@ -371,24 +389,74 @@ fn hook_of(session: &Recorded, event: &str) -> (String, String) {
     )
 }
 
+/// The words of the hook command of a Codex hook session, from the `-c hooks.<event>=` value in its
+/// arguments; the command quotes each word.
+fn codex_hook_of(session: &Recorded, event: &str) -> Vec<String> {
+    let hooks: Vec<&String> = session
+        .args
+        .iter()
+        .filter(|arg| arg.starts_with("hooks."))
+        .collect();
+    assert_eq!(hooks.len(), 1, "only the hook under check: {hooks:?}");
+    let prefix = format!("hooks.{event}=[{{hooks=[{{type=\"command\",command=");
+    let command = hooks[0]
+        .strip_prefix(&prefix)
+        .and_then(|rest| rest.strip_suffix("}]}]"))
+        .expect("one command hook");
+    let command: String = serde_json::from_str(command).unwrap();
+    command
+        .split(' ')
+        .map(|word| word.trim_matches('\'').to_owned())
+        .collect()
+}
+
+/// The checks of each hook on each agent: `live-check`'s arguments, the hook event and how many
+/// sessions run without and with `--all`.
+const HOOKS: [(&str, Agent, &str, usize, usize); 5] = [
+    ("post-tool-use", Agent::Claude, "PostToolUse", 1, 3),
+    ("stop", Agent::Claude, "Stop", 1, 3),
+    ("post-tool-use", Agent::Codex, "PostToolUse", 1, 3),
+    ("stop", Agent::Codex, "Stop", 1, 3),
+    ("user-prompt-submit", Agent::Codex, "UserPromptSubmit", 1, 2),
+];
+
 #[test]
-fn hooks_run_one_session_or_all_three_on_the_stub_with_only_its_environment() {
-    for (hook, event) in [("post-tool-use", "PostToolUse"), ("stop", "Stop")] {
-        for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
-            let (recorded, path, dir) = sessions_of(Agent::Claude, &[hook, "claude"], flags);
-            let at = format!("{hook} {flags:?}");
+fn hooks_run_one_session_or_all_on_the_stub_with_only_its_environment() {
+    let live_check = Path::new(env!("CARGO_BIN_EXE_live-check"));
+    let handler = live_check.with_file_name("agent-hook");
+    for (hook, agent, event, one, all) in HOOKS {
+        for (flags, sessions) in [(&[][..], one), (&["--all"][..], all)] {
+            let (recorded, path, dir) = sessions_of(agent, &[hook, agent.cli()], flags);
+            let at = format!("{hook} {} {flags:?}", agent.cli());
             assert_eq!(recorded.len(), sessions, "{at}");
             let mut sources = Vec::new();
             for session in &recorded {
                 assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
-                    Agent::Claude.environment(home, &stub_url(Agent::Claude, session), &path)
+                    agent.environment(home, &stub_url(agent, session), &path)
                 });
-                let (command, source) = hook_of(session, event);
-                assert_eq!(
-                    Path::new(&command),
-                    Path::new(env!("CARGO_BIN_EXE_live-check")).with_file_name("agent-hook"),
-                    "{at}"
-                );
+                let source = match agent {
+                    Agent::Claude => {
+                        let (command, source) = hook_of(session, event);
+                        assert_eq!(Path::new(&command), handler, "{at}");
+                        source
+                    }
+                    Agent::Codex => {
+                        let words = codex_hook_of(session, event);
+                        assert_eq!(words.len(), 6, "{at}: {words:?}");
+                        assert_eq!(Path::new(&words[0]), live_check, "{at}");
+                        assert_eq!(words[1], "timed-hook", "{at}");
+                        assert!(words[2].ends_with("/hook-runs.jsonl"), "{at}: {words:?}");
+                        assert_eq!(Path::new(&words[3]), handler, "{at}");
+                        assert_eq!(words[4], "--codex", "{at}");
+                        assert!(
+                            session
+                                .args
+                                .contains(&"--dangerously-bypass-hook-trust".to_owned()),
+                            "{at}"
+                        );
+                        words[5].clone()
+                    }
+                };
                 sources.push(source);
             }
             sources.sort();
@@ -400,14 +468,104 @@ fn hooks_run_one_session_or_all_three_on_the_stub_with_only_its_environment() {
 
 #[test]
 fn hooks_on_the_real_model_drop_the_variables_that_replace_the_sign_in() {
-    for hook in ["post-tool-use", "stop"] {
-        for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
-            let (recorded, path, _dir) = sessions_of(Agent::Claude, &[hook, "claude"], flags);
-            let at = format!("{hook} {flags:?}");
+    for (hook, agent, _, one, all) in HOOKS {
+        for (flags, sessions) in [(&["--real"][..], one), (&["--real", "--all"][..], all)] {
+            let (recorded, path, _dir) = sessions_of(agent, &[hook, agent.cli()], flags);
+            let at = format!("{hook} {} {flags:?}", agent.cli());
             assert_eq!(recorded.len(), sessions, "{at}");
             for session in &recorded {
-                assert_real_environment(&at, session, &path);
+                assert_real_environment(agent, &at, session, &path);
             }
+        }
+    }
+}
+
+#[test]
+fn timed_hook_runs_the_handler_and_records_its_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("hook-runs.jsonl");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args([
+            "timed-hook",
+            log.to_str().unwrap(),
+            "/bin/sh",
+            "-c",
+            "cat; exit 3",
+        ])
+        .env_clear()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = r#"{"hook_event_name":"Stop","session_id":"s1"}"#;
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), input.as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    // The handler's exit code and stdout pass on.
+    assert_eq!(output.status.code(), Some(3));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), input);
+    let run: serde_json::Value =
+        serde_json::from_str(fs::read_to_string(&log).unwrap().trim()).unwrap();
+    assert_eq!(run["hook_event_name"], "Stop");
+    assert_eq!(run["outcome"], "error");
+    assert_eq!(run["stdout"], input);
+    assert_eq!(run["input"]["session_id"], "s1");
+
+    // A log it cannot write fails the hook with exit code 1, never 2.
+    let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args(["timed-hook", "/nonexistent/log", "/bin/sh", "-c", "exit 0"])
+        .env_clear()
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_failed(&output);
+}
+
+/// Runs `live-check queue codex <flags>` with stand-in CLIs and returns the sessions the stand-in
+/// `codex` recorded, after asserting that there are `sessions`, each an interactive session that
+/// runs its own app-server and records its hooks.
+fn queue_sessions(flags: &[&str], sessions: usize) -> (Vec<Recorded>, String, tempfile::TempDir) {
+    let (recorded, path, dir) = sessions_of(Agent::Codex, &["queue", "codex"], flags);
+    let at = format!("{flags:?}");
+    assert_eq!(recorded.len(), sessions, "{at}");
+    for session in &recorded {
+        assert_eq!(session.args[0], "--no-daemon", "{at}");
+        for event in ["Stop", "PreToolUse"] {
+            assert!(
+                session
+                    .args
+                    .iter()
+                    .any(|arg| arg.starts_with(&format!("hooks.{event}="))),
+                "{at}: no {event} hook"
+            );
+        }
+    }
+    (recorded, path, dir)
+}
+
+#[test]
+fn queue_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
+    for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
+        let (recorded, path, dir) = queue_sessions(flags, sessions);
+        let at = format!("{flags:?}");
+        for session in &recorded {
+            assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
+                queue::stub_environment(home, &stub_url(Agent::Codex, session), &path)
+            });
+        }
+    }
+}
+
+#[test]
+fn queue_on_the_real_model_drops_the_variables_that_replace_the_sign_in() {
+    for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
+        let (recorded, path, _dir) = queue_sessions(flags, sessions);
+        let at = format!("{flags:?}");
+        for session in &recorded {
+            assert_real_environment(Agent::Codex, &at, session, &path);
+            assert!(
+                session.env["TERM"] == "xterm-256color",
+                "{at}: TERM differs"
+            );
         }
     }
 }

@@ -11,7 +11,7 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 use crate::{
-    Agent, Call, Checks, Options, PLACEHOLDER, SENDER, SERVER, SHELL, StubLog, handed_over,
+    Agent, Call, Checks, Options, PLACEHOLDER, SENDER, SERVER, SHELL, StubLog, Usage, handed_over,
     handover_delay, pretty,
 };
 
@@ -343,9 +343,10 @@ pub fn hook_events(text: &str) -> Vec<HookEvent> {
         .collect()
 }
 
-/// What a session did.
+/// What a session in the pseudo-terminal did: a session of the Channels check or of the
+/// `codex queue` check.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ChannelSession {
+pub struct PtySession {
     /// When the session started, in milliseconds since the Unix epoch.
     pub started_ms: u64,
     pub hooks: Vec<HookEvent>,
@@ -353,14 +354,16 @@ pub struct ChannelSession {
     pub stub: Option<StubLog>,
     /// When each token was first seen to reach the model, in milliseconds since the Unix epoch.
     pub reached_ms: Vec<(String, u64)>,
-    /// Whether the screen showed that the channel loaded.
-    pub channel_listening: bool,
+    /// The tokens the session used, if the CLI says.
+    pub usage: Option<Usage>,
+    /// Whether the screen showed that the channel loaded; `None` for a session of another check.
+    pub channel_listening: Option<bool>,
 }
 
 /// What Claude Code shows below its banner once a development channel loads.
 pub const LISTENING: &str = "inject directly in this session";
 
-impl ChannelSession {
+impl PtySession {
     pub fn new(started_ms: u64) -> Self {
         Self {
             started_ms,
@@ -439,7 +442,7 @@ impl ChannelSession {
     }
 
     /// Whether the stub got no credential but the placeholder.
-    fn clean(&self) -> bool {
+    pub(crate) fn clean(&self) -> bool {
         self.stub
             .as_ref()
             .is_none_or(|stub| stub.failure().is_none())
@@ -450,21 +453,26 @@ impl ChannelSession {
             "replies {:?}",
             self.replies().iter().map(|r| r.trim()).collect::<Vec<_>>()
         );
-        if !self.channel_listening {
+        if self.channel_listening == Some(false) {
             summary.push_str(", the channel did not load");
         }
-        if let Some(stub) = &self.stub {
-            summary.push_str(&format!(", requests to the stub: {}", stub.requests.len()));
-            if let Some(failure) = stub.failure() {
-                summary.push_str(&format!(", {failure}"));
+        match (&self.stub, self.usage) {
+            (Some(stub), _) => {
+                summary.push_str(&format!(", requests to the stub: {}", stub.requests.len()));
+                if let Some(failure) = stub.failure() {
+                    summary.push_str(&format!(", {failure}"));
+                }
             }
+            // On the stub, the CLI's token counts are the stub's.
+            (None, Some(usage)) => summary.push_str(&format!(", {}", usage.summary())),
+            (None, None) => {}
         }
         summary
     }
 }
 
 /// How long after `from_ms` the token reached the model, if it did.
-fn reached_delay(session: &ChannelSession, token: &str, from_ms: u64) -> String {
+pub(crate) fn reached_delay(session: &PtySession, token: &str, from_ms: u64) -> String {
     match session.reached_at(token) {
         Some(at_ms) => format!("{:.1} s", at_ms.saturating_sub(from_ms) as f64 / 1000.0),
         None => "never".to_owned(),
@@ -487,9 +495,9 @@ pub struct ChannelCheck {
 
 impl ChannelCheck {
     /// The idle session, whose message waited before it started.
-    pub fn idle(&mut self, session: &ChannelSession, sent: &Sent) -> String {
+    pub fn idle(&mut self, session: &PtySession, sent: &Sent) -> String {
         let pass = session.clean()
-            && session.channel_listening
+            && session.channel_listening == Some(true)
             && session.got(&sent.token)
             && handed_over(sent.state);
         let details = format!(
@@ -502,7 +510,7 @@ impl ChannelCheck {
     }
 
     /// The messages added in a row to the idle session after its first turn.
-    pub fn in_a_row(&mut self, session: &ChannelSession, sent: &[Sent]) -> String {
+    pub fn in_a_row(&mut self, session: &PtySession, sent: &[Sent]) -> String {
         let reached = sent.iter().filter(|s| session.got(&s.token)).count();
         let pass = session.clean()
             && !sent.is_empty()
@@ -532,9 +540,9 @@ impl ChannelCheck {
     /// and its own does not reach the first session.
     pub fn other(
         &mut self,
-        session: &ChannelSession,
+        session: &PtySession,
         own: &Sent,
-        first: &ChannelSession,
+        first: &PtySession,
         first_token: &str,
     ) -> String {
         let pass = session.clean()
@@ -555,7 +563,7 @@ impl ChannelCheck {
 
     /// The busy session and its message, added when the agent started the shell command, if it
     /// did.
-    pub fn busy(&mut self, session: &ChannelSession, sent: Option<&Sent>) -> String {
+    pub fn busy(&mut self, session: &PtySession, sent: Option<&Sent>) -> String {
         let Some(sent) = sent else {
             let details = format!("{}; the agent ran no shell command", session.summary());
             return self.checks.report("busy session", false, &details);
@@ -578,9 +586,9 @@ impl ChannelCheck {
 
     /// A session without the channel flag: its message is handed over, yet never reaches the
     /// model, and the server cannot tell.
-    pub fn unloaded(&mut self, session: &ChannelSession, sent: &Sent) -> String {
+    pub fn unloaded(&mut self, session: &PtySession, sent: &Sent) -> String {
         let pass = session.clean()
-            && !session.channel_listening
+            && session.channel_listening == Some(false)
             && handed_over(sent.state)
             && !session.got(&sent.token);
         let details = format!(
@@ -852,9 +860,9 @@ mod tests {
         assert_eq!(hook_events(""), []);
     }
 
-    fn real(replies: &[&str]) -> ChannelSession {
-        let mut session = ChannelSession::new(1_000);
-        session.channel_listening = true;
+    fn real(replies: &[&str]) -> PtySession {
+        let mut session = PtySession::new(1_000);
+        session.channel_listening = Some(true);
         for reply in replies {
             session.hooks.push(HookEvent::Stopped((*reply).to_owned()));
         }
@@ -862,7 +870,7 @@ mod tests {
     }
 
     /// A session on the stub whose requests are `bodies`.
-    fn stubbed(bodies: &[Value], credentials: &[&str]) -> ChannelSession {
+    fn stubbed(bodies: &[Value], credentials: &[&str]) -> PtySession {
         let mut session = real(&["Done."]);
         session.stub = Some(StubLog {
             requests: bodies.iter().map(Value::to_string).collect(),
@@ -967,7 +975,7 @@ mod tests {
         assert!(session.shell_started());
         assert_eq!(session.replies(), [" tok-1\n"]);
         assert_eq!(session.summary(), r#"replies ["tok-1"]"#);
-        session.channel_listening = false;
+        session.channel_listening = Some(false);
         assert_eq!(
             session.summary(),
             r#"replies ["tok-1"], the channel did not load"#
@@ -1000,8 +1008,8 @@ mod tests {
                 Some(2_000),
             ),
             (
-                ChannelSession {
-                    channel_listening: false,
+                PtySession {
+                    channel_listening: Some(false),
                     ..stubbed(&[channel_turn("tok-1")], &[])
                 },
                 Some(2_000),
@@ -1138,7 +1146,7 @@ mod tests {
     #[test]
     fn checks_a_session_without_the_channel_flag() {
         let mut session = stubbed(&[], &[]);
-        session.channel_listening = false;
+        session.channel_listening = Some(false);
         session.hooks.clear();
         let mut check = ChannelCheck::default();
         assert_eq!(
@@ -1148,18 +1156,18 @@ mod tests {
              not reach the model"
         );
         assert!(check.pass());
-        let listening = ChannelSession {
-            channel_listening: true,
+        let listening = PtySession {
+            channel_listening: Some(true),
             ..session.clone()
         };
-        let reached = ChannelSession {
+        let reached = PtySession {
             stub: Some(StubLog {
                 requests: vec![channel_turn("tok-1").to_string()],
                 credentials: Vec::new(),
             }),
             ..session.clone()
         };
-        let dirty = ChannelSession {
+        let dirty = PtySession {
             stub: Some(StubLog {
                 requests: Vec::new(),
                 credentials: vec!["x-api-key".to_owned()],

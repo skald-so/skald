@@ -1,5 +1,5 @@
 [workspace]
-members = ["source", "inbox", "channel", "hook", "live"]
+members = ["source", "inbox", "channel", "hook", "queue", "live"]
 resolver = "3"
 
 [workspace.package]

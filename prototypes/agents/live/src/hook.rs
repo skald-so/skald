@@ -1,27 +1,35 @@
-//! The live check of Claude Code's `PostToolUse` and `Stop` hooks: how a session is set up with the
-//! hook handler, what each case prompts, how long each run of the hook takes, and the checks'
-//! verdicts. The sessions run with `-p`, as the `inbox` check's do.
+//! The live check of the `PostToolUse` and `Stop` hooks on Claude Code and Codex, and Codex's
+//! `UserPromptSubmit`: how a session is set up with the hook handler, what each case prompts, how
+//! long each run of the hook takes, and the checks' verdicts. The sessions run with `claude -p` or
+//! `codex exec`, as the `inbox` check's do.
 
-use std::fs;
-use std::io;
-use std::path::Path;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
-use agent_source::State;
-use serde_json::json;
+use agent_source::{State, now_ms};
+use serde_json::{Value, json};
 
 use crate::{
     Agent, Call, Checks, Event, Kind, Options, QUICK, Run, SERVER, SHELL, Session, Stub,
-    busy_details, claude_print, handed_over, other_details, prepare, pretty, waiting_details,
+    busy_details, claude_print, codex_exec, handed_over, other_details, prepare, pretty,
+    waiting_details,
 };
 
 /// The hook handler's binary, next to `live-check`.
 pub const HOOK_BIN: &str = "agent-hook";
+
+/// The file, in a session's directory, where `live-check timed-hook` records each run of the hook.
+pub const HOOK_RUNS: &str = "hook-runs.jsonl";
 
 /// A hook under check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hook {
     PostToolUse,
     Stop,
+    /// Codex's only: the handler does not answer it on Claude Code.
+    UserPromptSubmit,
 }
 
 impl Hook {
@@ -30,24 +38,39 @@ impl Hook {
         match name {
             "post-tool-use" => Some(Self::PostToolUse),
             "stop" => Some(Self::Stop),
+            "user-prompt-submit" => Some(Self::UserPromptSubmit),
             _ => None,
         }
     }
 
-    /// The hook event's name in Claude Code's settings and hook events.
+    /// Whether the check runs on `agent`.
+    pub fn runs_on(self, agent: Agent) -> bool {
+        agent == Agent::Codex || self != Self::UserPromptSubmit
+    }
+
+    /// Whether the check has a busy session: `UserPromptSubmit` runs only when a prompt starts a
+    /// turn, so a message that arrives during the turn waits for the next prompt, the case of a
+    /// message waiting at the start.
+    pub fn checks_busy(self) -> bool {
+        self != Self::UserPromptSubmit
+    }
+
+    /// The hook event's name in the CLI's settings and hook events.
     pub fn event(self) -> &'static str {
         match self {
             Self::PostToolUse => "PostToolUse",
             Self::Stop => "Stop",
+            Self::UserPromptSubmit => "UserPromptSubmit",
         }
     }
 
-    /// The session's prompt: `PostToolUse` needs a tool call, `Stop` only the end of a turn.
+    /// The session's prompt: `PostToolUse` needs a tool call; `Stop` only the end of a turn and
+    /// `UserPromptSubmit` only the prompt.
     pub fn prompt(self, kind: Kind) -> String {
         let token =
             format!("only the check token from the {SERVER} message, or NONE if there is none.");
         match (self, kind) {
-            (Self::Stop, Kind::Idle) => format!("Reply with {token}"),
+            (Self::Stop | Self::UserPromptSubmit, Kind::Idle) => format!("Reply with {token}"),
             (Self::PostToolUse, Kind::Idle) => {
                 format!("Run the shell command `{QUICK}`. Then reply with {token}")
             }
@@ -58,16 +81,16 @@ impl Hook {
     /// The model stub's tool calls, in order, before it replies `DONE`.
     pub fn script(self, kind: Kind) -> &'static [Call] {
         match (self, kind) {
-            (Self::Stop, Kind::Idle) => &[],
+            (Self::Stop | Self::UserPromptSubmit, Kind::Idle) => &[],
             (Self::PostToolUse, Kind::Idle) => &[Call::Quick],
             (_, Kind::Busy) => &[Call::Shell],
         }
     }
 
-    /// The built-in tools of the session.
+    /// The built-in tools of a Claude Code session.
     fn tools(self, kind: Kind) -> &'static str {
         match (self, kind) {
-            (Self::Stop, Kind::Idle) => "",
+            (Self::Stop | Self::UserPromptSubmit, Kind::Idle) => "",
             _ => "Bash",
         }
     }
@@ -110,28 +133,136 @@ pub fn session(
     ))
 }
 
+/// Returns the arguments of a non-interactive Codex `kind` session in `project` that runs
+/// `live-check timed-hook <dir>/hook-runs.jsonl <handler> --codex <source>` as its `hook` hook, on
+/// the model stub at `stub` if given; `live_check` is `live-check`'s binary. Only the arguments
+/// change Codex's config: as for the `inbox` session, and the hook, which runs without the trust
+/// Codex otherwise asks a person for.
+#[allow(clippy::too_many_arguments, reason = "the parts of a session")]
+pub fn codex_session(
+    dir: &Path,
+    project: &Path,
+    live_check: &Path,
+    handler: &Path,
+    source: &Path,
+    hook: Hook,
+    kind: Kind,
+    model: Option<&str>,
+    stub: Option<&str>,
+) -> Vec<String> {
+    // Codex runs a command hook with the shell.
+    let command = [
+        live_check,
+        Path::new("timed-hook"),
+        &dir.join(HOOK_RUNS),
+        handler,
+        Path::new("--codex"),
+        source,
+    ]
+    .map(|arg| shell_quote(&arg.to_string_lossy()))
+    .join(" ");
+    // A `-c` value is TOML; a JSON string is a valid TOML string.
+    let hooks = format!(
+        "hooks.{}=[{{hooks=[{{type=\"command\",command={}}}]}}]",
+        hook.event(),
+        json!(command)
+    );
+    codex_exec(
+        project,
+        &["--dangerously-bypass-hook-trust"],
+        &[hooks],
+        model,
+        stub,
+        &hook.prompt(kind),
+    )
+}
+
+/// `text` as one word of a POSIX shell command.
+pub fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// What every session of the check shares.
 #[derive(Debug, Clone, Copy)]
 pub struct Setup<'a> {
     /// The check's temporary directory.
     pub work: &'a Path,
+    pub agent: Agent,
     pub hook: Hook,
     /// The `agent-hook` binary.
     pub handler: &'a Path,
+    /// `live-check`'s binary, which times each run of the handler on Codex.
+    pub live_check: &'a Path,
     pub model: Option<&'a str>,
     /// `live-check`'s `PATH`, the only variable the CLI on the stub inherits.
     pub path: &'a str,
 }
 
 impl Setup<'_> {
-    /// Prepares the `kind` session `name` in `work/<name>`: an empty project, the hook's settings
+    /// Prepares the `kind` session `name` in `work/<name>`: an empty project, the hook's config
     /// and source and, on `stub`, a home of its own.
     pub fn run(&self, name: &str, kind: Kind, stub: Option<&Stub>) -> io::Result<Run> {
-        let session = |dir: &Path, _: &Path, source: &Path| {
-            session(dir, self.handler, source, self.hook, kind, self.model)
+        let url = stub.map(Stub::url);
+        let session = |dir: &Path, project: &Path, source: &Path| match self.agent {
+            Agent::Claude => session(dir, self.handler, source, self.hook, kind, self.model),
+            Agent::Codex => Ok(codex_session(
+                dir,
+                project,
+                self.live_check,
+                self.handler,
+                source,
+                self.hook,
+                kind,
+                self.model,
+                url.as_deref(),
+            )),
         };
-        prepare(self.work, name, Agent::Claude, self.path, stub, session)
+        prepare(self.work, name, self.agent, self.path, stub, session)
     }
+}
+
+/// Runs `command`, a hook handler, with the hook input `input` on its stdin and writes its stdout
+/// to `out`; appends the run to `log` as a JSON line: the hook event, when the handler started and
+/// ended, in milliseconds since the Unix epoch, its outcome and stdout, and the input. Returns the
+/// handler's exit code, 1 if a signal ended it. `live-check timed-hook` runs it for Codex, whose
+/// `codex exec` shows no hook events.
+pub fn timed(
+    log: &Path,
+    mut command: Command,
+    input: &[u8],
+    out: &mut impl Write,
+) -> io::Result<i32> {
+    let started_ms = now_ms();
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    // A handler that exits without reading its input closes the pipe: its exit code tells.
+    let _ = stdin.write_all(input);
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    let ended_ms = now_ms();
+    let code = output.status.code().unwrap_or(1);
+    let input: Value = serde_json::from_slice(input).unwrap_or(Value::Null);
+    let run = json!({
+        "hook_event_name": input["hook_event_name"],
+        "started_ms": started_ms,
+        "ended_ms": ended_ms,
+        "outcome": if code == 0 { "success" } else { "error" },
+        "stdout": String::from_utf8_lossy(&output.stdout),
+        "input": input,
+    });
+    let mut log = OpenOptions::new().create(true).append(true).open(log)?;
+    log.write_all(format!("{run}\n").as_bytes())?;
+    out.write_all(&output.stdout)?;
+    out.flush()?;
+    Ok(code)
+}
+
+/// Where `run`'s hook handler records its runs on Codex.
+pub fn hook_runs_file(run: &Run) -> PathBuf {
+    run.log.with_file_name(HOOK_RUNS)
 }
 
 /// One run of the hook under check, as Claude Code's hook events show it.
@@ -173,6 +304,25 @@ impl HookRuns {
             event: hook.event(),
             ids: Vec::new(),
             runs: Vec::new(),
+        }
+    }
+
+    /// Records the runs of the hook in `text`, the lines `timed` writes.
+    pub fn read_log(&mut self, text: &str) {
+        for line in text.lines() {
+            let Ok(run) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if run["hook_event_name"] != self.event {
+                continue;
+            }
+            let text = |key: &str| run[key].as_str().unwrap_or_default().to_owned();
+            self.runs.push(HookRun {
+                started_ms: run["started_ms"].as_u64().unwrap_or_default(),
+                ended_ms: run["ended_ms"].as_u64(),
+                outcome: text("outcome"),
+                stdout: text("stdout"),
+            });
         }
     }
 
@@ -248,13 +398,15 @@ impl HookRuns {
 /// The hook's checks: each returns its line in the output.
 #[derive(Debug)]
 pub struct HookCheck {
+    agent: Agent,
     hook: Hook,
     checks: Checks,
 }
 
 impl HookCheck {
-    pub fn new(hook: Hook) -> Self {
+    pub fn new(agent: Agent, hook: Hook) -> Self {
         Self {
+            agent,
             hook,
             checks: Checks::default(),
         }
@@ -338,7 +490,7 @@ impl HookCheck {
     /// The last line of the output.
     pub fn verdict(&self, options: &Options) -> String {
         let path = format!("{} hook", self.hook.event());
-        self.checks.verdict(&path, Agent::Claude, options)
+        self.checks.verdict(&path, self.agent, options)
     }
 }
 
@@ -357,6 +509,266 @@ mod tests {
         assert_eq!(Hook::parse("pre-tool-use"), None);
         assert_eq!(Hook::PostToolUse.event(), "PostToolUse");
         assert_eq!(Hook::Stop.event(), "Stop");
+        assert_eq!(
+            Hook::parse("user-prompt-submit"),
+            Some(Hook::UserPromptSubmit)
+        );
+        assert_eq!(Hook::UserPromptSubmit.event(), "UserPromptSubmit");
+    }
+
+    #[test]
+    fn user_prompt_submit_runs_only_on_codex_and_has_no_busy_session() {
+        for hook in [Hook::PostToolUse, Hook::Stop] {
+            assert!(hook.runs_on(Agent::Claude));
+            assert!(hook.runs_on(Agent::Codex));
+            assert!(hook.checks_busy());
+        }
+        assert!(!Hook::UserPromptSubmit.runs_on(Agent::Claude));
+        assert!(Hook::UserPromptSubmit.runs_on(Agent::Codex));
+        assert!(!Hook::UserPromptSubmit.checks_busy());
+        assert_eq!(
+            Hook::UserPromptSubmit.prompt(Kind::Idle),
+            Hook::Stop.prompt(Kind::Idle)
+        );
+        assert_eq!(Hook::UserPromptSubmit.script(Kind::Idle), []);
+        assert_eq!(Hook::UserPromptSubmit.tools(Kind::Idle), "");
+    }
+
+    #[test]
+    fn quotes_a_shell_word() {
+        assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn a_codex_session_runs_the_timed_handler_as_its_only_hook_and_loads_no_user_config() {
+        let args = codex_session(
+            Path::new("/w/a"),
+            Path::new("/w/a/project"),
+            Path::new("/bin/live-check"),
+            Path::new("/bin/agent-hook"),
+            Path::new("/w/a/my source"),
+            Hook::Stop,
+            Kind::Idle,
+            Some("gpt-5.5"),
+            None,
+        );
+        let hook = r#"hooks.Stop=[{hooks=[{type="command",command="'/bin/live-check' 'timed-hook' '/w/a/hook-runs.jsonl' '/bin/agent-hook' '--codex' '/w/a/my source'"}]}]"#;
+        assert_eq!(
+            args,
+            [
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--disable",
+                "plugins",
+                "--dangerously-bypass-hook-trust",
+                "-C",
+                "/w/a/project",
+                "-c",
+                hook,
+                "-c",
+                "skills.include_instructions=false",
+                "-c",
+                r#"model_reasoning_effort="low""#,
+                "-m",
+                "gpt-5.5",
+                &Hook::Stop.prompt(Kind::Idle),
+            ]
+        );
+
+        let args = codex_session(
+            Path::new("/w/c"),
+            Path::new("/w/c/project"),
+            Path::new("/bin/live-check"),
+            Path::new("/bin/agent-hook"),
+            Path::new("/w/c/source"),
+            Hook::UserPromptSubmit,
+            Kind::Busy,
+            None,
+            Some("http://127.0.0.1:4100"),
+        );
+        assert!(
+            args[12].starts_with("hooks.UserPromptSubmit=[{hooks=[{"),
+            "{args:?}"
+        );
+        assert!(
+            args.contains(
+                &r#"model_providers.stub.base_url="http://127.0.0.1:4100/v1""#.to_owned()
+            ),
+            "{args:?}"
+        );
+        assert_eq!(
+            args.last(),
+            Some(&Hook::UserPromptSubmit.prompt(Kind::Busy))
+        );
+    }
+
+    #[test]
+    fn prepares_a_codex_session_in_its_own_directory() {
+        let work = tempfile::tempdir().unwrap();
+        let setup = Setup {
+            work: work.path(),
+            agent: Agent::Codex,
+            hook: Hook::PostToolUse,
+            handler: Path::new("/bin/agent-hook"),
+            live_check: Path::new("/bin/live-check"),
+            model: None,
+            path: "/bin",
+        };
+        let stub = Stub::start(&[]).unwrap();
+        let dir = work.path().join("a");
+        let run = setup.run("a", Kind::Idle, Some(&stub)).unwrap();
+        assert_eq!(run.agent, Agent::Codex);
+        assert_eq!(
+            run.args,
+            codex_session(
+                &dir,
+                &dir.join("project"),
+                Path::new("/bin/live-check"),
+                Path::new("/bin/agent-hook"),
+                &dir.join("source"),
+                Hook::PostToolUse,
+                Kind::Idle,
+                None,
+                Some(&stub.url()),
+            )
+        );
+        assert_eq!(
+            run.env,
+            Some(
+                Agent::Codex
+                    .environment(&dir.join("home"), &stub.url(), "/bin")
+                    .unwrap()
+            )
+        );
+        assert_eq!(hook_runs_file(&run), dir.join(HOOK_RUNS));
+        assert_eq!(
+            fs::read_dir(&run.project).unwrap().count(),
+            0,
+            "the project is empty"
+        );
+    }
+
+    /// A command that runs `script` with the shell and nothing of the test's environment.
+    fn sh(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]).env_clear();
+        command
+    }
+
+    #[test]
+    fn times_a_handler_and_records_its_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join(HOOK_RUNS);
+        let input = br#"{"hook_event_name":"Stop","session_id":"s1"}"#;
+        let mut out = Vec::new();
+        let before = now_ms();
+        let code = timed(
+            &log,
+            sh("cat >/dev/null; printf '{\"x\":1}'"),
+            input,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(out, br#"{"x":1}"#);
+        // A failing handler that reads nothing; its exit code passes on.
+        let mut out = Vec::new();
+        assert_eq!(timed(&log, sh("exit 3"), b"not JSON", &mut out).unwrap(), 3);
+        assert!(out.is_empty());
+        let killed = timed(&log, sh("kill -9 $$"), input, &mut Vec::new()).unwrap();
+        assert_eq!(killed, 1);
+
+        let text = fs::read_to_string(&log).unwrap();
+        let runs: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(runs.len(), 3);
+        let first = &runs[0];
+        assert_eq!(first["hook_event_name"], "Stop");
+        assert_eq!(first["outcome"], "success");
+        assert_eq!(first["stdout"], r#"{"x":1}"#);
+        assert_eq!(first["input"]["session_id"], "s1");
+        let (started, ended) = (
+            first["started_ms"].as_u64().unwrap(),
+            first["ended_ms"].as_u64().unwrap(),
+        );
+        assert!(before <= started && started <= ended && ended <= now_ms());
+        assert_eq!(runs[1]["outcome"], "error");
+        assert_eq!(runs[1]["input"], Value::Null);
+        assert_eq!(runs[2]["outcome"], "error");
+
+        let mut stop = HookRuns::new(Hook::Stop);
+        stop.read_log(&text);
+        assert_eq!(stop.runs.len(), 2, "the run without an event is not Stop's");
+        assert_eq!(
+            stop.runs[0],
+            HookRun {
+                started_ms: started,
+                ended_ms: Some(ended),
+                outcome: "success".to_owned(),
+                stdout: r#"{"x":1}"#.to_owned(),
+            }
+        );
+        assert!(
+            !timed(
+                &dir.path().join("none/log"),
+                sh("true"),
+                input,
+                &mut Vec::new()
+            )
+            .is_ok()
+        );
+        assert!(timed(&log, Command::new("/nonexistent"), input, &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn reads_the_runs_of_the_hook_under_check_from_the_log() {
+        let text = [
+            r#"{"hook_event_name":"PostToolUse","started_ms":1000,"ended_ms":1004,"outcome":"success","stdout":"tok-1"}"#,
+            r#"{"hook_event_name":"Stop","started_ms":2000,"ended_ms":2003,"outcome":"success","stdout":""}"#,
+            "not JSON",
+            r#"{"hook_event_name":"PostToolUse","started_ms":3000,"outcome":"error"}"#,
+        ]
+        .join("\n");
+        let mut runs = HookRuns::new(Hook::PostToolUse);
+        runs.read_log(&text);
+        assert_eq!(
+            runs.runs,
+            [
+                HookRun {
+                    started_ms: 1_000,
+                    ended_ms: Some(1_004),
+                    outcome: "success".to_owned(),
+                    stdout: "tok-1".to_owned(),
+                },
+                HookRun {
+                    started_ms: 3_000,
+                    ended_ms: None,
+                    outcome: "error".to_owned(),
+                    stdout: String::new(),
+                },
+            ]
+        );
+        assert_eq!(
+            runs.summary(),
+            "PostToolUse ran 2 time(s): 4 ms with messages, unfinished without"
+        );
+    }
+
+    #[test]
+    fn names_the_agent_in_the_verdict() {
+        let check = HookCheck::new(Agent::Codex, Hook::UserPromptSubmit);
+        assert_eq!(
+            check.verdict(&Options::default()),
+            "UserPromptSubmit hook on codex with the model stub: pass"
+        );
     }
 
     #[test]
@@ -460,8 +872,10 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let setup = Setup {
             work: work.path(),
+            agent: Agent::Claude,
             hook: Hook::PostToolUse,
             handler: Path::new("/bin/agent-hook"),
+            live_check: Path::new("/bin/live-check"),
             model: Some("m"),
             path: "/bin",
         };
@@ -589,7 +1003,7 @@ mod tests {
 
     #[test]
     fn checks_the_message_waiting_at_the_start() {
-        let mut check = HookCheck::new(Hook::Stop);
+        let mut check = HookCheck::new(Agent::Claude, Hook::Stop);
         let stop = runs(Hook::Stop, &[("success", "tok-1"), ("success", "")]);
         assert_eq!(
             check.waiting(&stubbed(Some("tok-1"), &[]), &stop, "tok-1", handed()),
@@ -625,7 +1039,7 @@ mod tests {
             // Stop never let the turn end.
             (stubbed(Some("tok-1"), &[]), &given, handed()),
         ] {
-            let mut check = HookCheck::new(Hook::Stop);
+            let mut check = HookCheck::new(Agent::Claude, Hook::Stop);
             let line = check.waiting(&session, runs, "tok-1", state);
             assert!(line.contains(": fail — "), "{line}");
             assert!(!check.pass());
@@ -633,7 +1047,7 @@ mod tests {
 
         // PostToolUse needs no quiet run after the one that gave the message.
         let post = runs(Hook::PostToolUse, &[("success", "tok-1")]);
-        let mut check = HookCheck::new(Hook::PostToolUse);
+        let mut check = HookCheck::new(Agent::Claude, Hook::PostToolUse);
         let line = check.waiting(&stubbed(Some("tok-1"), &[]), &post, "tok-1", handed());
         assert!(line.contains(": pass — "), "{line}");
         let real = Options {
@@ -659,7 +1073,7 @@ mod tests {
     #[test]
     fn checks_the_other_of_two_sessions() {
         let quiet = runs(Hook::PostToolUse, &[("success", "")]);
-        let mut check = HookCheck::new(Hook::PostToolUse);
+        let mut check = HookCheck::new(Agent::Claude, Hook::PostToolUse);
         assert_eq!(
             check.other(&stubbed(None, &[]), &quiet, "tok-1"),
             r#"  the other of two sessions: pass — reply "Done.", PostToolUse ran 1 time(s): 5 ms without, requests to the stub: 2, the token did not reach it; the message is the first session's"#
@@ -679,7 +1093,7 @@ mod tests {
                 runs(Hook::PostToolUse, &[("error", "")]),
             ),
         ] {
-            let mut check = HookCheck::new(Hook::PostToolUse);
+            let mut check = HookCheck::new(Agent::Claude, Hook::PostToolUse);
             let line = check.other(&session, &runs, "tok-1");
             assert!(line.contains(": fail — "), "{line}");
             assert!(!check.pass());
@@ -689,7 +1103,7 @@ mod tests {
     #[test]
     fn checks_the_busy_session() {
         let stop = runs(Hook::Stop, &[("success", "tok-1"), ("success", "")]);
-        let mut check = HookCheck::new(Hook::Stop);
+        let mut check = HookCheck::new(Agent::Claude, Hook::Stop);
         assert_eq!(
             check.busy(&replied("tok-1"), &stop, "tok-1", Some(1_500), handed()),
             r#"  busy session: pass — reply "tok-1", Stop ran 2 time(s): 5 ms with messages, 5 ms without; added while the shell command ran, handed over 0.4 s later"#
@@ -700,7 +1114,7 @@ mod tests {
             r#"  busy session: fail — reply "NONE", Stop ran 2 time(s): 5 ms with messages, 5 ms without; the agent ran no shell command"#
         );
         assert!(!check.pass());
-        let mut check = HookCheck::new(Hook::Stop);
+        let mut check = HookCheck::new(Agent::Claude, Hook::Stop);
         let line = check.busy(&replied("tok-1"), &stop, "tok-1", Some(1_500), None);
         assert!(line.contains(": fail — "), "{line}");
         assert!(!check.pass());

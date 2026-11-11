@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use agent_live::hook::{self, HOOK_BIN, Hook, HookCheck, HookRuns};
+use agent_live::hook::{self, HOOK_BIN, Hook, HookCheck, HookRuns, hook_runs_file};
 use agent_live::{
     Agent, BusyMessage, Event, INBOX_BIN, InboxCheck, Kind, Options, Run, Session, Setup, Stub,
     add_message, binary, channel, session_failure, token,
@@ -117,20 +117,23 @@ pub fn inbox(agent: Agent, options: &Options) -> Result<bool> {
     Ok(finish(work, options, &verdict, check.pass()))
 }
 
-/// A Claude Code hook's live check: a session with a message waiting at its start; with `--all`,
-/// also the other of two sessions and a busy session.
-pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
-    let work = start(Agent::Claude)?;
-    let handler = binary(&std::env::current_exe()?, HOOK_BIN)?;
+/// A hook's live check on `agent`: a session with a message waiting at its start; with `--all`,
+/// also the other of two sessions and, but for `UserPromptSubmit`, a busy session.
+pub fn hook(agent: Agent, hook: Hook, options: &Options) -> Result<bool> {
+    let work = start(agent)?;
+    let live_check = std::env::current_exe()?;
+    let handler = binary(&live_check, HOOK_BIN)?;
     let path = std::env::var("PATH").unwrap_or_default();
     let setup = hook::Setup {
         work: work.path(),
+        agent,
         hook,
         handler: &handler,
+        live_check: &live_check,
         model: options.model,
         path: &path,
     };
-    let mut check = HookCheck::new(hook);
+    let mut check = HookCheck::new(agent, hook);
 
     // A message waits for session a; with --all, session b, with its own empty source, runs at the
     // same time.
@@ -148,6 +151,7 @@ pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
     let timed = |run: &Run, stub: Option<&Stub>| -> Result<(Session, HookRuns)> {
         let mut runs = HookRuns::new(hook);
         let session = run_session(run, stub, |event| runs.on_event(event, now_ms()))?;
+        read_hook_runs(run, &mut runs);
         Ok((session, runs))
     };
     let (session_a, session_b) = side_by_side(
@@ -163,7 +167,7 @@ pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
     }
 
     // Busy: the message arrives while the agent runs a shell command.
-    if options.all {
+    if options.all && hook.checks_busy() {
         let stub = options.stub(hook.script(Kind::Busy))?;
         let c = setup.run("c", Kind::Busy, stub.as_ref())?;
         let source_c = Source::open(&c.source)?;
@@ -174,6 +178,7 @@ pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
             runs.on_event(event, now_ms());
             busy.on_event(event, || channel::add_message(&source_c, &token_c));
         })?;
+        read_hook_runs(&c, &mut runs);
         let (added_at_ms, state) = busy_outcome(busy, &source_c)?;
         println!(
             "{}",
@@ -183,6 +188,14 @@ pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
 
     let verdict = check.verdict(options);
     Ok(finish(work, options, &verdict, check.pass()))
+}
+
+/// Adds to `runs` the runs `live-check timed-hook` recorded in `run`'s session: Codex shows no hook
+/// events. Claude Code's sessions record none.
+fn read_hook_runs(run: &Run, runs: &mut HookRuns) {
+    if let Ok(text) = std::fs::read_to_string(hook_runs_file(run)) {
+        runs.read_log(&text);
+    }
 }
 
 /// Runs `run`'s session to its end, calling `on_event` with each event; `stub` is its model stub.

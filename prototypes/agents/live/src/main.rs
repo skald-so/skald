@@ -4,9 +4,11 @@
 mod pty;
 mod run;
 
+use std::io::Read;
+use std::path::Path;
 use std::process::ExitCode;
 
-use agent_live::hook::Hook;
+use agent_live::hook::{self, Hook};
 use agent_live::{Agent, Options, exit_code};
 use agent_source::Source;
 
@@ -39,12 +41,45 @@ fn main() -> ExitCode {
             };
             ended(pty::channel(&options))
         }
-        // The commands above take their own `claude`.
-        [hook, "claude", options @ ..] => {
-            let (Some(hook), Some(options)) = (Hook::parse(hook), Options::parse(options)) else {
+        ["queue", "codex", options @ ..] => {
+            let Some(options) = Options::parse(options) else {
                 return usage();
             };
-            ended(run::hook(hook, &options))
+            ended(pty::queue(&options))
+        }
+        ["timed-hook", log, handler, args @ ..] => {
+            let mut command = std::process::Command::new(handler);
+            command.args(args);
+            let mut input = Vec::new();
+            let timed = std::io::stdin().read_to_end(&mut input).and_then(|_| {
+                hook::timed(
+                    Path::new(log),
+                    command,
+                    &input,
+                    &mut std::io::stdout().lock(),
+                )
+            });
+            match timed {
+                // A hook's exit code tells the CLI what to do: it passes on as it is.
+                Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+                Err(error) => {
+                    eprintln!("live-check: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        [hook, agent, options @ ..] => {
+            let (Some(hook), Some(agent), Some(options)) = (
+                Hook::parse(hook),
+                Agent::parse(agent),
+                Options::parse(options),
+            ) else {
+                return usage();
+            };
+            if !hook.runs_on(agent) {
+                return usage();
+            }
+            ended(run::hook(agent, hook, &options))
         }
         _ => usage(),
     }
@@ -66,7 +101,10 @@ fn usage() -> ExitCode {
         "usage: live-check add <source-dir> <sender> <text>\n       \
          live-check inbox <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check channel claude [--all] [--real] [--model <model>] [--keep]\n       \
-         live-check <post-tool-use|stop> claude [--all] [--real] [--model <model>] [--keep]"
+         live-check <post-tool-use|stop> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check timed-hook <log> <handler> [<arg>...]"
     );
     ExitCode::from(2)
 }
