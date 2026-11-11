@@ -1238,7 +1238,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - Connecting any agent: the MCP config that runs the `skald` stdio server, a `skald recv --wait` loop for an agent with only a shell, and the instructions that tell the agent to read its messages.
 - In plain language: what the server sees, that there has been no external audit, what to do after losing a device and after losing the admin.
 - Published on `docs.skald.so` together with the release.
-- **Done when:** a person without context connects Claude Code and Codex on two machines using the quick start; an agent that `skald connect` does not set up, connected by the "connecting any agent" page, sends and reads messages; the reference matches `skald --help`.
+- **Done when:** a person without context connects Claude Code and Codex on two machines using the quick start; a person without context, following only the "connecting any agent" page, connects one agent that `skald connect` does not set up over MCP and another with only a shell over the `skald recv --wait` loop; each sends a message and, during a task, reads a message sent to it without being told to check; the reference matches `skald --help`.
 
 - **Release:** MVP
 - **Depends on:** Story 24, Story 25
