@@ -459,8 +459,9 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - it runs without a person where the CLI allows it;
     - signing in, done by the owner beforehand, is the only step a person does in an iteration;
     - a step the CLI needs from a person beyond it goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
-    - it attaches hooks, MCP servers and channels only through project config in a temporary directory and leaves the user's own CLI config untouched; its prompts are short, to save subscription limits;
-    - the developer runs it and the reviewer reruns it; `script/test` does not, since it needs the CLIs and vendor accounts.
+    - it attaches hooks, MCP servers and channels only through project config in a temporary directory and leaves the user's own CLI config untouched;
+    - its prompts are short;
+    - the developer runs it and the reviewer reruns it; `script/test` does not.
   - The report in `docs/dev/` starts with the list of checks it answers for each path: an idle and a busy session; the delay; how the message appears in the agent's context, with its sender label; whether the prototype learns that the handover happened, for `read`; reaching one of two sessions on a device; what the path needs: CLI version, sign-in kinds, settings, flags and prompts to the user.
   - MCP `inbox`: a stdio MCP server whose `inbox` tool returns the waiting messages; its live check on Claude Code and Codex.
   - Findings in the report.
@@ -484,7 +485,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - A live check of each hook, and the answers to the list of checks, with the time the handler adds to a tool call.
   - Whether the plugin can ship the hooks (Story 19).
   - Findings in the report.
-  - Tests: on hook inputs recorded from the real Claude Code, the handler's output carries each waiting message once; with messages waiting, `Stop` keeps the turn going and gives them to the agent; with none waiting it adds nothing, and `Stop` lets the turn end.
+  - Tests: on hook inputs recorded from the real Claude Code, the handler's output carries each waiting message once, with its sender label and `msg_id`; with messages waiting, `Stop` keeps the turn going and gives them to the agent; with none waiting it adds nothing, and `Stop` lets the turn end.
 - **Definition of done:** the live check of each hook, rerun, gives the result and Claude Code version the report records; the report answers every check of the list for each hook; unit tests on the recorded hook inputs run in `script/test`.
 
 #### Iteration 4.4: Codex hooks and `codex queue`
@@ -495,7 +496,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - Whether `codex queue` exists and adds a message to a running session from outside. If it does, a prototype hands the waiting messages to it, with its live check and the answers to the list of checks; if not, the report says so, with the Codex version.
   - Findings in the report.
   - Tests:
-    - on hook inputs recorded from the real Codex, the handler's output carries each waiting message once; with messages waiting, `Stop` keeps the turn going and gives them to the agent; with none waiting it adds nothing, and `Stop` lets the turn end;
+    - on hook inputs recorded from the real Codex, the handler's output carries each waiting message once, with its sender label and `msg_id`; with messages waiting, `Stop` keeps the turn going and gives them to the agent; with none waiting it adds nothing, and `Stop` lets the turn end;
     - if `codex queue` exists, against a stand-in for the command: the prototype passes each waiting message once, with its sender label and `msg_id`; it marks a message handed over only after the command succeeds and leaves it waiting when the command fails.
 - **Definition of done:** the live check of each hook, rerun, gives the result and Codex version the report records, and the report answers every check of the list for each hook; if `codex queue` exists, the same holds for it, otherwise the report says it does not; unit tests on the recorded hook inputs, and on the `codex queue` stand-in if the command exists, run in `script/test`.
 
