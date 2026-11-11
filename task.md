@@ -988,7 +988,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - `skald connect` does every step of `features.md` §16, including signing the device key with the user's SSH key from GitHub (Story 18).
 - The next machine: the same command, plus confirmation on a linked device or with the recovery key.
 - The status on the website updates by itself.
-- **Done when:** one-click sign-up, one command per machine; after that, Claude Code and Codex on two machines exchange messages; for an account with an SSH key on GitHub, the device key is signed with it; each agent of `agents.md`, "Setup by `skald connect`", found on the machine has the Skald MCP server, in its own config or read from another agent's, with its other entries kept.
+- **Done when:** one-click sign-up, one command per machine; after that, Claude Code and Codex on two machines exchange messages; for an account with an SSH key on GitHub, the device key is signed with it; each agent of `agents.md`, "Setup by `skald connect`", found on the machine has the Skald MCP server in every project, in its own user config or read from another agent's user config, with its other entries kept.
 
 - **Release:** MVP
 - **Acceptance tests:** first

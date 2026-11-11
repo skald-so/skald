@@ -6,7 +6,7 @@ Agents beyond the six of [architecture.md](architecture.md#delivery-to-agents), 
 | Agent | How |
 |---|---|
 | [Devin](https://docs.devin.ai/cli/extensibility/mcp/configuration.md), Desktop and CLI | `devin mcp add -s user` |
-| [Cline](https://docs.cline.bot/mcp/adding-and-configuring-servers) | `cline mcp add --yes` |
+| [Cline](https://docs.cline.bot/mcp/adding-and-configuring-servers), CLI | `cline mcp add --yes` |
 | [Junie](https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html) | writes `~/.junie/mcp/mcp.json` |
 | [Kilo Code](https://kilo.ai/docs/automate/mcp/using-in-kilo-code) | adds `mcp.skald` to `~/.config/kilo/kilo.jsonc` |
 | [Factory Droid](https://docs.factory.com/harness/mcp.md) | `droid mcp add` |
@@ -19,17 +19,17 @@ Agents beyond the six of [architecture.md](architecture.md#delivery-to-agents), 
 | [Qwen Code](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/mcp.md) | `qwen mcp add -s user` |
 | [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) | `pi mcp add` |
 | [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | adds `mcp_servers.skald` to `~/.hermes/config.yaml` |
-| [Qoder](https://docs.qoder.com/cli/mcp-servers) | `qoder mcp add -s user` |
-| [CodeBuddy](https://www.codebuddy.ai/docs/cli/mcp) | `codebuddy mcp add --scope user` |
-| [Kimi Code](https://github.com/MoonshotAI/kimi-code/tree/main/docs/en) | writes `~/.kimi-code/mcp.json` |
+| [Qoder](https://docs.qoder.com/cli/mcp-servers), CLI | `qoder mcp add -s user` |
+| [CodeBuddy](https://www.codebuddy.ai/docs/cli/mcp), CodeBuddy Code | `codebuddy mcp add --scope user` |
+| [Kimi Code](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/mcp.md) | writes `~/.kimi-code/mcp.json` |
 | [Mistral Vibe](https://docs.mistral.ai/vibe/code/cli/mcp-servers) | `vibe mcp add --transport stdio` |
 | [Deep Agents Code](https://docs.langchain.com/oss/deepagents/code/mcp-tools) | writes `~/.deepagents/.mcp.json` |
 
 - A file edit keeps the other entries and the comments.
-- An agent that already has a `skald` server, its own or read from another agent's config, stays as it is.
+- An agent that already has a `skald` server in its own user config, or reads one from another agent's user config, stays as it is.
 - Grok Build and Oh My Pi read the server from other agents' config: [Config that other agents run](#config-that-other-agents-run).
 - OpenClaw and Crush: [roadmap.md](roadmap.md), "Post-MVP".
-- Without setup: Trae and OpenHands set MCP servers only in their UI; Letta Code adds them only from inside a session; Aider has no MCP.
+- Without setup: Trae, OpenHands, Qoder IDE, CodeBuddy IDE and Cline's IDE extensions set MCP servers only in their UI; Letta Code adds them only from inside a session; Aider has no MCP.
 
 ## Config that other agents run
 | Config | Agents that also run it |
