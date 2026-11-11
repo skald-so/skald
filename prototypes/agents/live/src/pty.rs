@@ -208,7 +208,7 @@ fn answered(session: &PtySession, token: &str) -> bool {
 }
 
 /// Whether the session's last turn ended: the agent waits for a prompt.
-fn turn_ended(session: &PtySession) -> bool {
+pub(crate) fn turn_ended(session: &PtySession) -> bool {
     matches!(session.hooks.last(), Some(HookEvent::Stopped(_)))
 }
 
@@ -468,7 +468,11 @@ impl Live {
     }
 
     /// Runs the session until `done` holds or `limit` passes; whether `done` held.
-    fn wait(&mut self, limit: Duration, done: impl Fn(&PtySession) -> bool) -> Result<bool> {
+    pub(crate) fn wait(
+        &mut self,
+        limit: Duration,
+        done: impl Fn(&PtySession) -> bool,
+    ) -> Result<bool> {
         let deadline = Instant::now() + limit;
         while Instant::now() < deadline {
             let alive = self.pump()?;
