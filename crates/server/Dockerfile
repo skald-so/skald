@@ -10,9 +10,9 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY api/openapi.json api/
 COPY crates crates
-# The caches keep downloaded crates and built dependencies between local builds.
+# The cache keeps downloaded crates between builds. target/ is not cached: cargo judges freshness by
+# mtimes, which COPY keeps, so a cached target/ could ship a binary built from other sources.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/src/target,sharing=locked \
     cargo build --release --locked --package skald-server && \
     cp target/release/skald-server /usr/local/bin/skald-server
 # After the build, so that a new commit reuses it.

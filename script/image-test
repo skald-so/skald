@@ -16,7 +16,8 @@ containers=()
 failures=0
 
 cleanup() {
-  for container in "${containers[@]}"; do
+  # Bash 3.2, macOS's, treats an empty array as unset.
+  for container in ${containers[@]+"${containers[@]}"}; do
     docker rm --force "$container" >/dev/null
   done
   postgres_stop
