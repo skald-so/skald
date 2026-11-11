@@ -1,10 +1,12 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
-//! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path and
-//! [`hook`] for Claude Code's hooks. The binary only starts the CLIs and reads their output.
+//! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path, [`hook`]
+//! for the hooks and [`queue`] for `codex queue`. The binary only starts the CLIs and reads their
+//! output.
 
 pub mod channel;
 pub mod hook;
+pub mod queue;
 mod stub;
 
 use std::fs;
@@ -52,18 +54,46 @@ impl Agent {
         }
     }
 
-    /// The command that starts the CLI. Claude Code gets none of the variables of `live-check`'s
-    /// environment that [`replaces_sign_in`] names, so off the stub it runs on the owner's sign-in.
+    /// The command that starts the CLI. It gets none of the variables of `live-check`'s
+    /// environment that [`Agent::replaces_sign_in`] names, so off the stub it runs on the owner's
+    /// sign-in.
     pub fn command(self) -> Command {
-        let mut command = Command::new(self.cli());
-        if self == Self::Claude {
-            for (name, _) in std::env::vars_os() {
-                if name.to_str().is_some_and(replaces_sign_in) {
-                    command.env_remove(name);
-                }
+        self.command_for(self.cli())
+    }
+
+    /// A command that runs `program` in the CLI's environment, such as a prototype that runs the
+    /// CLI: without the variables of `live-check`'s environment that [`Agent::replaces_sign_in`]
+    /// names.
+    pub fn command_for(self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = Command::new(program);
+        for (name, _) in std::env::vars_os() {
+            if name
+                .to_str()
+                .is_some_and(|name| self.replaces_sign_in(name))
+            {
+                command.env_remove(name);
             }
         }
         command
+    }
+
+    /// Whether the variable `name` would make the CLI sign in other than with the owner's own
+    /// sign-in in its config home: with an API key, a token, another endpoint or a cloud provider.
+    /// For Claude Code, every `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`,
+    /// and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or
+    /// `PROVIDER`; for Codex, every `OPENAI_*` and `AZURE_OPENAI_*` variable and every `CODEX_*`
+    /// variable whose name holds one of those.
+    pub fn replaces_sign_in(self, name: &str) -> bool {
+        const MARKS: [&str; 5] = ["KEY", "TOKEN", "AUTH", "SECRET", "PROVIDER"];
+        let (prefixes, marked): (&[&str], &str) = match self {
+            Self::Claude => (
+                &["ANTHROPIC_", "AWS_BEARER_TOKEN_", "CLAUDE_CODE_USE_"],
+                "CLAUDE_",
+            ),
+            Self::Codex => (&["OPENAI_", "AZURE_OPENAI_"], "CODEX_"),
+        };
+        prefixes.iter().any(|prefix| name.starts_with(prefix))
+            || (name.starts_with(marked) && MARKS.iter().any(|mark| name.contains(mark)))
     }
 
     /// The CLI's version line from the output of `<cli> --version`.
@@ -86,8 +116,7 @@ impl Agent {
     ) -> io::Result<Vec<String>> {
         let inbox = inbox.to_string_lossy();
         let source = source.to_string_lossy();
-        let mut args = Vec::new();
-        match self {
+        let args = match self {
             Self::Claude => {
                 let servers = project.join(".mcp.json");
                 fs::write(
@@ -104,58 +133,25 @@ impl Agent {
                     project.join(".claude/settings.local.json"),
                     pretty(&settings),
                 )?;
-                args = claude_print(
+                claude_print(
                     &kind.prompt(),
                     &["--mcp-config", &servers.to_string_lossy()],
                     kind.claude_tools(),
                     model,
-                );
+                )
             }
             Self::Codex => {
                 // `-c` values are TOML; a JSON string or array of strings is valid TOML.
                 let server = format!("mcp_servers.{SERVER}");
-                let mut config = vec![
+                let config = [
                     format!("{server}.command={}", json!(inbox)),
                     format!("{server}.args={}", json!([source])),
                     // Without it, `codex exec` refuses the tool call: it cannot ask a person.
                     format!("{server}.default_tools_approval_mode=\"approve\""),
-                    "skills.include_instructions=false".to_owned(),
-                    "model_reasoning_effort=\"low\"".to_owned(),
                 ];
-                if let Some(stub) = stub {
-                    let provider = "model_providers.stub";
-                    config.extend([
-                        "model_provider=\"stub\"".to_owned(),
-                        format!("{provider}.name=\"stub\""),
-                        format!("{provider}.base_url={}", json!(format!("{stub}/v1"))),
-                        format!("{provider}.env_key=\"{STUB_KEY}\""),
-                        format!("{provider}.wire_api=\"responses\""),
-                    ]);
-                }
-                args.extend(
-                    [
-                        "exec",
-                        "--json",
-                        "--skip-git-repo-check",
-                        "--ephemeral",
-                        "--ignore-user-config",
-                        "--ignore-rules",
-                        "--disable",
-                        "plugins",
-                        "-C",
-                    ]
-                    .map(String::from),
-                );
-                args.push(project.to_string_lossy().into_owned());
-                for value in config {
-                    args.extend(["-c".to_owned(), value]);
-                }
-                if let Some(model) = model {
-                    args.extend(["-m".to_owned(), model.to_owned()]);
-                }
-                args.push(kind.prompt());
+                codex_exec(project, &[], &config, model, stub, &kind.prompt())
             }
-        }
+        };
         Ok(args)
     }
 
@@ -322,6 +318,79 @@ fn claude_print(prompt: &str, config: &[&str], tools: &str, model: Option<&str>)
     args
 }
 
+/// The arguments of a non-interactive Codex session in `project` with `prompt` that prints its
+/// events as JSON lines, with `flags` and the config values `config`, on the model stub at `stub` if
+/// given. It loads no user config, rules, plugins or skills' instructions, runs at the lowest effort
+/// and saves no session.
+fn codex_exec(
+    project: &Path,
+    flags: &[&str],
+    config: &[String],
+    model: Option<&str>,
+    stub: Option<&str>,
+    prompt: &str,
+) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--disable",
+        "plugins",
+    ]
+    .iter()
+    .chain(flags)
+    .map(|arg| (*arg).to_owned())
+    .collect();
+    args.extend(["-C".to_owned(), project.to_string_lossy().into_owned()]);
+    let mut config = config.to_vec();
+    config.extend(codex_config(stub));
+    for value in config {
+        args.extend(["-c".to_owned(), value]);
+    }
+    if let Some(model) = model {
+        args.extend(["-m".to_owned(), model.to_owned()]);
+    }
+    args.push(prompt.to_owned());
+    args
+}
+
+/// The config values every Codex session gets: no skills' instructions, the lowest effort, and on
+/// the model stub at `stub` a provider that sends the placeholder key there.
+fn codex_config(stub: Option<&str>) -> Vec<String> {
+    let mut config = vec![
+        "skills.include_instructions=false".to_owned(),
+        "model_reasoning_effort=\"low\"".to_owned(),
+    ];
+    if let Some(stub) = stub {
+        let provider = "model_providers.stub";
+        config.extend([
+            "model_provider=\"stub\"".to_owned(),
+            format!("{provider}.name=\"stub\""),
+            format!("{provider}.base_url={}", json!(format!("{stub}/v1"))),
+            format!("{provider}.env_key=\"{STUB_KEY}\""),
+            format!("{provider}.wire_api=\"responses\""),
+        ]);
+    }
+    config
+}
+
+/// The `-c` value that makes `command` Codex's command hook for `event`. A `-c` value is TOML; a
+/// JSON string is a valid TOML string.
+fn codex_hook(event: &str, command: &str) -> String {
+    format!(
+        "hooks.{event}=[{{hooks=[{{type=\"command\",command={}}}]}}]",
+        json!(command)
+    )
+}
+
+/// `text` as one word of a POSIX shell command.
+pub fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// Claude Code's name of the `inbox` tool.
 fn inbox_tool() -> String {
     format!("mcp__{SERVER}__{INBOX}")
@@ -382,6 +451,15 @@ pub struct Usage {
     pub input: u64,
     pub cached: u64,
     pub output: u64,
+}
+
+impl Usage {
+    pub fn summary(&self) -> String {
+        format!(
+            "tokens: input {} (cached {}), output {}",
+            self.input, self.cached, self.output
+        )
+    }
 }
 
 /// An event of a session that a check acts on.
@@ -462,18 +540,6 @@ impl<'a> Options<'a> {
             "the model stub"
         }
     }
-}
-
-/// Whether the variable `name` would make Claude Code sign in other than with the owner's
-/// subscription: with an API key, a token, another endpoint or a cloud provider. These are every
-/// `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`, and every `CLAUDE_*`
-/// variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`.
-pub fn replaces_sign_in(name: &str) -> bool {
-    const MARKS: [&str; 5] = ["KEY", "TOKEN", "AUTH", "SECRET", "PROVIDER"];
-    ["ANTHROPIC_", "AWS_BEARER_TOKEN_", "CLAUDE_CODE_USE_"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-        || (name.starts_with("CLAUDE_") && MARKS.iter().any(|mark| name.contains(mark)))
 }
 
 /// The `inbox` server's binary, next to `live-check`.
@@ -731,12 +797,9 @@ impl Session {
                 }
                 tail
             }
-            None => self.usage.map_or_else(String::new, |usage| {
-                format!(
-                    ", tokens: input {} (cached {}), output {}",
-                    usage.input, usage.cached, usage.output
-                )
-            }),
+            None => self
+                .usage
+                .map_or_else(String::new, |usage| format!(", {}", usage.summary())),
         }
     }
 }
@@ -1045,7 +1108,22 @@ mod tests {
             "CLAUDE_API_KEY",
             "CLAUDE_SECRET",
         ] {
-            assert!(replaces_sign_in(name), "{name}");
+            assert!(Agent::Claude.replaces_sign_in(name), "{name}");
+            assert!(!Agent::Codex.replaces_sign_in(name), "{name}");
+        }
+        for name in [
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
+            "OPENAI_ORG_ID",
+            "AZURE_OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "CODEX_ACCESS_TOKEN",
+            "CODEX_AUTH_FILE",
+            "CODEX_SECRET",
+            "CODEX_PROVIDER",
+        ] {
+            assert!(Agent::Codex.replaces_sign_in(name), "{name}");
+            assert!(!Agent::Claude.replaces_sign_in(name), "{name}");
         }
         for name in [
             "PATH",
@@ -1055,12 +1133,29 @@ mod tests {
             "TMPDIR",
             "CLAUDE_CONFIG_DIR",
             "CLAUDE_CODE_CHILD_SESSION",
-            "OPENAI_API_KEY",
+            "CODEX_HOME",
             "SKALD_STUB_API_KEY",
             "MY_ANTHROPIC_API_KEY",
+            "MY_OPENAI_API_KEY",
         ] {
-            assert!(!replaces_sign_in(name), "{name}");
+            assert!(!Agent::Claude.replaces_sign_in(name), "{name}");
+            assert!(!Agent::Codex.replaces_sign_in(name), "{name}");
         }
+    }
+
+    #[test]
+    fn quotes_a_shell_word() {
+        assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn makes_a_codex_command_hook() {
+        assert_eq!(
+            codex_hook("Stop", r#"cat >> '/w/a "b"'"#),
+            r#"hooks.Stop=[{hooks=[{type="command",command="cat >> '/w/a \"b\"'"}]}]"#
+        );
     }
 
     #[test]

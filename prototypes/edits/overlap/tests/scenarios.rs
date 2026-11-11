@@ -1,16 +1,14 @@
 //! The scenarios of `docs/dev/edit-prototype.md`, "Scenarios": machines editing clones of a test
 //! repository publish fingerprints of their edit sets to the server stand-in.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use edit_overlap::harness::{Machine, Upstream};
-use edit_overlap::{Client, Edits, Publication, Server, SpaceKey};
+use common::{Repo, Space, assert_holds_none, bytes};
+use edit_overlap::harness::{self, Machine};
+use edit_overlap::{Edits, Publication, SpaceKey};
 use tempfile::TempDir;
-
-/// The space key, a test fixture.
-fn key() -> SpaceKey {
-    SpaceKey::from_bytes(*b"a fixture space key, 32 bytes!!!")
-}
 
 /// The key of another space.
 fn other_key() -> SpaceKey {
@@ -26,50 +24,25 @@ const FILES: &[(&str, &str)] = &[
     ("docs/onboarding-guide.md", "Read the code.\n"),
 ];
 
-/// A test repository; each machine is a clone of it.
-struct Repo {
-    upstream: Upstream,
-}
-
-impl Repo {
-    fn create(tmp: &TempDir, name: &str, files: &[(&str, &str)]) -> Self {
-        let upstream = Upstream::create(&tmp.path().join(name), files).unwrap();
-        Self { upstream }
-    }
-
-    fn machine(&self, name: &str, key: SpaceKey) -> (Machine, Client) {
-        (
-            self.upstream.clone_as(name).unwrap(),
-            Client::new(name, key),
-        )
-    }
-}
-
 /// Each machine's paths that other machines edit too, by those machines: `[(machine, [(other
 /// machine, [path])])]`, machines without overlaps left out.
 type Seen = BTreeMap<String, BTreeMap<String, BTreeSet<String>>>;
 
-/// The machines publish their edit sets in turn; returns what each learns, and their edit sets.
-fn publish(server: &mut Server, machines: &[(&Machine, &Client)]) -> (Seen, Vec<Edits>) {
-    let edits: Vec<Edits> = machines
-        .iter()
-        .map(|(machine, client)| client.edits(machine.dir()).unwrap())
-        .collect();
-    for edit in &edits {
-        server.publish(edit.publication.clone());
-    }
-    let seen = edits
+/// Each machine of `space` publishes its edit set, in turn; returns what each learns.
+fn publish(space: &mut Space) -> Seen {
+    space.publish();
+    space
+        .edits
         .iter()
         .map(|edit| {
-            let overlaps = server.overlaps(&edit.publication.machine);
+            let overlaps = space.server.overlaps(&edit.publication.machine);
             (
                 edit.publication.machine.clone(),
                 edit.overlapping_paths(&overlaps),
             )
         })
         .filter(|(_, overlaps)| !overlaps.is_empty())
-        .collect();
-    (seen, edits)
+        .collect()
 }
 
 /// What machines that overlap in pairs see: in each pair, `(machine, other machine, paths)`, each
@@ -89,10 +62,10 @@ fn pairs(pairs: &[(&str, &str, &[&str])]) -> Seen {
 #[test]
 fn edit_set_holds_committed_uncommitted_and_untracked_changes() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
-    let (machine, client) = repo.machine("alice-laptop", key());
-    let (other, _) = repo.machine("bob-desktop", key());
-    let (maintainer, _) = repo.machine("maintainer", key());
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (machine, client) = repo.machine("alice-laptop");
+    let (other, _) = repo.machine("bob-desktop");
+    let (maintainer, _) = repo.machine("maintainer");
     // Another machine's change merged upstream and fetched, but not merged here, is not an edit.
     other.write("README.md", "# Inventory\n").unwrap();
     other.commit("rename the service").unwrap();
@@ -130,16 +103,18 @@ fn edit_set_holds_committed_uncommitted_and_untracked_changes() {
             "src/warehouse.rs",
         ])
     );
-    assert_eq!(edits.publication.fingerprints.len(), 5);
+    // One per path, and one per boundary each hunk touches: 2 for each one-line change, 2 for the
+    // deleted one-line file, 1 for each added file.
+    assert_eq!(edits.publication.fingerprints.len(), 5 + 2 + 2 + 2 + 1 + 1);
     assert_eq!(edits.publication.machine, "alice-laptop");
 }
 
 #[test]
 fn machines_editing_one_file_overlap() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop", key());
-    let (b, b_client) = repo.machine("bob-desktop", key());
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     a.write("README.md", "# Inventory\n").unwrap();
@@ -149,7 +124,7 @@ fn machines_editing_one_file_overlap() {
     b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
         .unwrap();
 
-    let (seen_now, _) = publish(&mut Server::default(), &[(&a, &a_client), (&b, &b_client)]);
+    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
     assert_eq!(
         seen_now,
         pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])])
@@ -159,9 +134,9 @@ fn machines_editing_one_file_overlap() {
 #[test]
 fn machines_editing_different_files_do_not_overlap() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop", key());
-    let (b, b_client) = repo.machine("bob-desktop", key());
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
@@ -169,27 +144,28 @@ fn machines_editing_different_files_do_not_overlap() {
     b.write("src/shipping.rs", "pub struct Shipment;\n")
         .unwrap();
 
-    let (seen_now, _) = publish(&mut Server::default(), &[(&a, &a_client), (&b, &b_client)]);
+    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
     assert_eq!(seen_now, Seen::new());
 }
 
 #[test]
 fn rename_overlaps_an_edit_of_either_path() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop", key());
-    let (b, b_client) = repo.machine("bob-desktop", key());
-    let (c, c_client) = repo.machine("carol-server", key());
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (c, c_client) = repo.machine("carol-server");
     a.rename("src/warehouse.rs", "src/storage.rs").unwrap();
     a.commit("rename the warehouse").unwrap();
     b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
         .unwrap();
     c.write("src/storage.rs", "pub struct Storage;\n").unwrap();
 
-    let (seen_now, _) = publish(
-        &mut Server::default(),
-        &[(&a, &a_client), (&b, &b_client), (&c, &c_client)],
-    );
+    let seen_now = publish(&mut Space::new(&[
+        (&a, &a_client),
+        (&b, &b_client),
+        (&c, &c_client),
+    ]));
     assert_eq!(
         seen_now,
         pairs(&[
@@ -202,14 +178,14 @@ fn rename_overlaps_an_edit_of_either_path() {
 #[test]
 fn deletion_overlaps_an_edit_of_its_path() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop", key());
-    let (b, b_client) = repo.machine("bob-desktop", key());
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
     a.delete("docs/onboarding-guide.md").unwrap();
     b.write("docs/onboarding-guide.md", "Read the docs.\n")
         .unwrap();
 
-    let (seen_now, _) = publish(&mut Server::default(), &[(&a, &a_client), (&b, &b_client)]);
+    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
     assert_eq!(
         seen_now,
         pairs(&[("alice-laptop", "bob-desktop", &["docs/onboarding-guide.md"])])
@@ -219,11 +195,10 @@ fn deletion_overlaps_an_edit_of_its_path() {
 #[test]
 fn machine_whose_changes_are_merged_leaves_the_overlap_once_it_pulls() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop", key());
-    let (b, b_client) = repo.machine("bob-desktop", key());
-    let (maintainer, _) = repo.machine("maintainer", key());
-    let mut server = Server::default();
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (maintainer, _) = repo.machine("maintainer");
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     a.commit("count one").unwrap();
@@ -231,45 +206,42 @@ fn machine_whose_changes_are_merged_leaves_the_overlap_once_it_pulls() {
     b.write("src/inventory.rs", "pub fn count() -> u32 {\n    2\n}\n")
         .unwrap();
     let overlap = pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])]);
-    let machines = [(&a, &a_client), (&b, &b_client)];
-    assert_eq!(publish(&mut server, &machines).0, overlap);
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    assert_eq!(publish(&mut space), overlap);
 
     // Merged upstream, but the machine does not know it yet.
     maintainer.merge("count-one").unwrap();
-    assert_eq!(publish(&mut server, &machines).0, overlap);
+    assert_eq!(publish(&mut space), overlap);
 
     a.pull().unwrap();
     assert_eq!(a_client.edits(a.dir()).unwrap().paths(), BTreeSet::new());
-    assert_eq!(publish(&mut server, &machines).0, Seen::new());
+    assert_eq!(publish(&mut space), Seen::new());
 }
 
 #[test]
 fn same_path_in_another_repository_or_under_another_key_does_not_overlap() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
+    let repo = Repo::new(&tmp, "repo", FILES);
     // The same paths; another root commit.
     let mut other_files = FILES.to_vec();
     other_files[1] = ("README.md", "# Billing service\n");
-    let other_repo = Repo::create(&tmp, "other-repo", &other_files);
-    let (a, a_client) = repo.machine("alice-laptop", key());
-    let (b, b_client) = repo.machine("bob-desktop", key());
-    let (c, c_client) = other_repo.machine("carol-server", key());
-    let (d, d_client) = repo.machine("dave-laptop", other_key());
+    let other_repo = Repo::new(&tmp, "other-repo", &other_files);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (c, c_client) = other_repo.machine("carol-server");
+    let (d, d_client) = repo.machine_with_key("dave-laptop", other_key());
     for machine in [&a, &b, &c, &d] {
         machine
             .write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
             .unwrap();
     }
 
-    let (seen_now, _) = publish(
-        &mut Server::default(),
-        &[
-            (&a, &a_client),
-            (&b, &b_client),
-            (&c, &c_client),
-            (&d, &d_client),
-        ],
-    );
+    let seen_now = publish(&mut Space::new(&[
+        (&a, &a_client),
+        (&b, &b_client),
+        (&c, &c_client),
+        (&d, &d_client),
+    ]));
     // Only the clones of one repository under one key overlap.
     assert_eq!(
         seen_now,
@@ -278,11 +250,91 @@ fn same_path_in_another_repository_or_under_another_key_does_not_overlap() {
 }
 
 #[test]
+fn machines_on_different_upstream_commits_share_the_scope() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (maintainer, _) = repo.machine("maintainer");
+    // Upstream commits until one sorts before the root commit; Alice pulls them, Bob does not.
+    // The harness's fixed date makes the hashes, and so the commit the loop ends at, the same on
+    // every run.
+    let head = |machine: &Machine| String::from_utf8(machine.git(&["rev-parse", "HEAD"]).unwrap());
+    let root = head(&maintainer).unwrap();
+    let mut tries = 0;
+    while head(&maintainer).unwrap() >= root {
+        tries += 1;
+        assert!(tries <= 64, "no commit sorts before the root commit");
+        maintainer
+            .write("notes/changelog.md", &format!("- release {tries}\n"))
+            .unwrap();
+        maintainer.commit("release").unwrap();
+    }
+    maintainer.push("main").unwrap();
+    a.pull().unwrap();
+    for machine in [&a, &b] {
+        machine
+            .write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
+            .unwrap();
+    }
+
+    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
+    assert_eq!(
+        seen_now,
+        pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])])
+    );
+}
+
+#[test]
+fn edit_set_holds_a_submodule_when_its_commit_moves_not_when_its_files_change() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (machine, client) = repo.machine("alice-laptop");
+    let (maintainer, _) = repo.machine("maintainer");
+    // A repository nested in the maintainer's clone, committed as a submodule.
+    let nested = maintainer.dir().join("vendor/lib");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+    for args in [
+        &["init", "--quiet"][..],
+        &["add", "lib.rs"],
+        &["commit", "--quiet", "--message", "add the library"],
+    ] {
+        harness::run(&nested, args).unwrap();
+    }
+    maintainer.commit("add the library").unwrap();
+    maintainer.push("main").unwrap();
+    machine.pull().unwrap();
+    // Checked out at the same commit, with a tracked file changed.
+    let checkout = machine.dir().join("vendor/lib");
+    let source = nested.to_str().unwrap();
+    machine
+        .git(&["clone", "--quiet", source, "vendor/lib"])
+        .unwrap();
+    std::fs::write(checkout.join("lib.rs"), "pub fn lib() -> u8 {\n    1\n}\n").unwrap();
+    assert_eq!(
+        client.edits(machine.dir()).unwrap().paths(),
+        BTreeSet::new()
+    );
+
+    // Its commit moves.
+    harness::run(
+        &checkout,
+        &["commit", "--quiet", "--all", "--message", "lib"],
+    )
+    .unwrap();
+    assert_eq!(
+        client.edits(machine.dir()).unwrap().paths(),
+        BTreeSet::from(["vendor/lib"])
+    );
+}
+
+#[test]
 fn server_receives_and_keeps_no_path() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop", key());
-    let (b, b_client) = repo.machine("bob-desktop", key());
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     a.rename("src/warehouse.rs", "src/storage.rs").unwrap();
@@ -291,14 +343,16 @@ fn server_receives_and_keeps_no_path() {
     b.write("src/inventory.rs", "pub fn count() -> u32 {\n    2\n}\n")
         .unwrap();
     b.write("notes/todo-list.md", "- ship\n").unwrap();
-    let mut server = Server::default();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
 
-    let (seen_now, edits) = publish(&mut server, &[(&a, &a_client), (&b, &b_client)]);
+    let seen_now = publish(&mut space);
+    let edits = &space.edits;
     assert_eq!(
         seen_now,
         pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])])
     );
-    let kept: Vec<Publication> = server
+    let kept: Vec<Publication> = space
+        .server
         .kept()
         .iter()
         .map(|(machine, fingerprints)| Publication {
@@ -315,15 +369,8 @@ fn server_receives_and_keeps_no_path() {
     assert!(paths.contains("src/storage.rs") && paths.contains("notes/todo-list.md"));
     let names: BTreeSet<&str> = paths.iter().flat_map(|path| path.split('/')).collect();
     for publication in &sent {
-        let mut bytes = publication.machine.as_bytes().to_vec();
-        for fingerprint in &publication.fingerprints {
-            bytes.extend_from_slice(&fingerprint.0);
-        }
-        for path in paths.union(&names) {
-            let found = bytes
-                .windows(path.len())
-                .any(|window| window == path.as_bytes());
-            assert!(!found, "{path} in what {} sent", publication.machine);
-        }
+        let bytes = bytes([(&publication.machine, &publication.fingerprints)]);
+        let what = format!("what {} sent", publication.machine);
+        assert_holds_none(&bytes, paths.union(&names).copied(), &what);
     }
 }

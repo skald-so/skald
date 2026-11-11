@@ -1,6 +1,6 @@
 [package]
 name = "agent-hook"
-description = "A Claude Code hook handler that hands the waiting messages to the agent after a tool call and at the end of a turn."
+description = "A Claude Code and Codex hook handler that hands the waiting messages to the agent after a tool call, at the end of a turn and, on Codex, with the next prompt."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,4 +12,5 @@ agent-source = { path = "../source" }
 serde_json = "1"
 
 [dev-dependencies]
+agent-testing = { path = "../testing" }
 tempfile = "3"

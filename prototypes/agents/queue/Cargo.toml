@@ -1,0 +1,15 @@
+[package]
+name = "agent-queue"
+description = "Hands the waiting messages to a running Codex session with `codex queue`."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-inbox = { path = "../inbox" }
+agent-source = { path = "../source" }
+
+[dev-dependencies]
+agent-testing = { path = "../testing" }
+tempfile = "3"

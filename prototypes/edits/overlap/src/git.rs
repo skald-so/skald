@@ -96,7 +96,17 @@ pub fn snapshot(dir: &Path) -> Result<String> {
     // A copy of the index: `git add` then rehashes only the files whose stat data changed.
     let copy = index.with_file_name(format!("skald-snapshot-index-{}", std::process::id()));
     let result = (|| {
+        // The copy keeps the index's modification time: git rehashes a file whose stat data
+        // matches its entry only when the entry is as new as the index file, and a later copy
+        // would hide an edit of the same size made within the timestamp's resolution. The time
+        // is read before the copy, so an index rewritten in between gives the copy an older time
+        // and git rehashes more, never less.
+        let modified = fs::metadata(&index)?.modified()?;
         fs::copy(&index, &copy)?;
+        fs::File::options()
+            .write(true)
+            .open(&copy)?
+            .set_modified(modified)?;
         let with_copy = |args: &[&str]| {
             let output = command(dir, args).env("GIT_INDEX_FILE", &copy).output()?;
             checked(output, args, dir)
@@ -185,7 +195,9 @@ pub fn is_object_id(text: &str) -> bool {
 
 /// The edit set of the working tree at `dir`, its root: the paths changed since the merge base of
 /// `HEAD` and the upstream's default branch, committed or not, untracked ones included and ignored
-/// ones not. A rename counts both paths: `--no-renames` lists it as a deletion and an addition.
+/// ones not. A rename counts both paths: `--no-renames` lists it as a deletion and an addition. A
+/// submodule counts when its commit changes, whatever the config and `.gitmodules` say, not when its
+/// work tree does: the snapshot records its commit only.
 pub fn edit_set(dir: &Path) -> Result<BTreeSet<String>> {
     let base = merge_base(dir)?;
     let changed = run(
@@ -194,6 +206,7 @@ pub fn edit_set(dir: &Path) -> Result<BTreeSet<String>> {
             "diff",
             "--no-ext-diff",
             "--no-renames",
+            "--ignore-submodules=dirty",
             "--name-only",
             "-z",
             &base,
