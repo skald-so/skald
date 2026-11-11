@@ -2,6 +2,7 @@
 # Mutation check of the Rust code changed since <base-ref>: cargo-mutants mutates only the lines of the
 # diff <base-ref>...HEAD and runs the tests of the mutated crate, with PostgreSQL as in script/test;
 # in the MLS prototypes' workspace, prototypes/mls, the tests of the whole workspace.
+# The edit comparison prototype's workspace, prototypes/edits, is checked like the MLS prototypes'.
 # Exits 0 only if the tests catch every mutant; otherwise lists the mutants they miss.
 # Usage: script/mutants <base-ref>, in the repository to check, with its changes committed.
 # CARGO_MUTANTS_JOBS sets how many mutants are tested in parallel; the default is half the CPUs.
@@ -39,10 +40,12 @@ trap 'rm -rf "$tmp"; postgres_stop' EXIT
 # the user's git config; -M limits a moved file to its changed lines.
 # The product crates count only the mutated crate's tests. The MLS prototypes count the whole
 # workspace's: their scenario code runs only in the prototype crates' tests.
-git diff-tree -p -M "$merge_base" HEAD -- '*.rs' ':(exclude)prototypes/mls' >"$tmp/root.diff"
+git diff-tree -p -M "$merge_base" HEAD -- '*.rs' ':(exclude)prototypes' >"$tmp/root.diff"
 git diff-tree -p -M --relative=prototypes/mls "$merge_base" HEAD -- '*.rs' >"$tmp/prototypes.diff"
 root=(--workspace --in-diff "$tmp/root.diff")
 prototypes=(--dir prototypes/mls --workspace --in-diff "$tmp/prototypes.diff")
+git diff-tree -p -M --relative=prototypes/edits "$merge_base" HEAD -- '*.rs' >"$tmp/edits.diff"
+edits=(--dir prototypes/edits --workspace --in-diff "$tmp/edits.diff")
 
 # list_mutants <diff> <cargo-mutants args...>: lists the mutants of the Rust code the diff changes.
 # Called in plain assignments, so that a failing list stops the script.
@@ -51,7 +54,8 @@ list_mutants() {
 }
 root_mutants=$(list_mutants "$tmp/root.diff" "${root[@]}")
 prototypes_mutants=$(list_mutants "$tmp/prototypes.diff" "${prototypes[@]}")
-if [[ -z $root_mutants && -z $prototypes_mutants ]]; then
+edits_mutants=$(list_mutants "$tmp/edits.diff" "${edits[@]}")
+if [[ -z $root_mutants && -z $prototypes_mutants && -z $edits_mutants ]]; then
   echo "script/mutants: no mutants in the Rust code changed since $base"
   exit 0
 fi
@@ -71,5 +75,10 @@ if [[ -n $prototypes_mutants ]]; then
   mkdir "$tmp/prototypes"
   cargo mutants "${prototypes[@]}" --test-workspace=true "${jobs[@]}" --output "$tmp/prototypes" ||
     status=$?
+fi
+if [[ -n $edits_mutants ]]; then
+  echo "script/mutants: the edit comparison prototype in prototypes/edits"
+  mkdir "$tmp/edits"
+  cargo mutants "${edits[@]}" --test-workspace=true "${jobs[@]}" --output "$tmp/edits" || status=$?
 fi
 exit $status

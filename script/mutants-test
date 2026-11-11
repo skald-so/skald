@@ -151,6 +151,27 @@ run base
 [[ $output != *half* ]] || fail "prototypes: names a caught mutant:"$'\n'"$output"
 expect_clean prototypes
 
+# A change only in the edit comparison prototype's workspace, checked like the MLS prototypes': code
+# tested only by another of its crates is covered, and an untested function there is named.
+git checkout --quiet -b edits base
+mkdir -p prototypes/edits/overlap/src prototypes/edits/harness/src
+printf '[workspace]\nmembers = ["overlap", "harness"]\nresolver = "3"\n' >prototypes/edits/Cargo.toml
+printf '[package]\nname = "overlap"\nversion = "0.1.0"\nedition = "2024"\n' >prototypes/edits/overlap/Cargo.toml
+printf 'pub fn twice(x: u32) -> u32 {\n    x * 2\n}\n\npub fn thrice(x: u32) -> u32 {\n    x * 3\n}\n' \
+  >prototypes/edits/overlap/src/lib.rs
+printf '[package]\nname = "harness"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n%s\n' \
+  'overlap = { path = "../overlap" }' >prototypes/edits/harness/Cargo.toml
+printf '#[test]\nfn twice() {\n    assert_eq!(overlap::twice(3), 6);\n}\n' >prototypes/edits/harness/src/lib.rs
+(cd prototypes/edits && cargo generate-lockfile --quiet --offline)
+git add --all
+git commit --quiet --message edits
+run base
+[[ $status -ne 0 ]] || fail "edits: exit code 0, want non-zero:"$'\n'"$output"
+[[ $output =~ overlap/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ thrice\ -\>\ u32\ with\ 0 ]] ||
+  fail "edits: the survivor is not named:"$'\n'"$output"
+[[ $output != *twice* ]] || fail "edits: names a caught mutant:"$'\n'"$output"
+expect_clean edits
+
 # A cargo-mutants config it rejects: listing the mutants fails, and so does the run, testing nothing.
 git checkout --quiet -b bad-config prototypes
 mkdir prototypes/mls/.cargo
