@@ -2,3 +2,6 @@
 # mutants.
 # The live checks' code that runs the installed agent CLIs, which script/test does not.
 exclude_globs = ["live/src/run.rs", "live/src/pty.rs"]
+# cargo-mutants builds and tests only the mutated packages in its baseline run; live-check's tests
+# also need the server binaries of the other packages.
+additional_cargo_args = ["--workspace"]
