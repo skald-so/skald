@@ -1,0 +1,22 @@
+[
+  {
+    "identifier": {
+      "id": "anthropic.claude-code"
+    },
+    "version": "2.1.322",
+    "relativeLocation": "anthropic.claude-code-2.1.322-darwin-arm64",
+    "metadata": {
+      "targetPlatform": "darwin-arm64"
+    }
+  },
+  {
+    "identifier": {
+      "id": "openai.chatgpt"
+    },
+    "version": "26.1021.22027",
+    "relativeLocation": "openai.chatgpt-26.1021.22027-darwin-arm64",
+    "metadata": {
+      "targetPlatform": "darwin-arm64"
+    }
+  }
+]

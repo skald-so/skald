@@ -2,6 +2,7 @@
 //! `script/test` does not run them.
 
 mod app;
+mod gui_run;
 mod pty;
 mod run;
 
@@ -9,6 +10,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
+use agent_live::gui::{GuiPath, Surface};
 use agent_live::hook::{self, Hook};
 use agent_live::{Agent, Options, exit_code};
 use agent_source::Source;
@@ -54,6 +56,17 @@ fn main() -> ExitCode {
             };
             ended(app::app_server(&options))
         }
+        ["gui", path, surface] => {
+            let (Some(path), Some(surface)) = (GuiPath::parse(path), Surface::parse(surface))
+            else {
+                return usage();
+            };
+            if !path.runs_on(surface) {
+                return usage();
+            }
+            ended(gui_run::prepare(path, surface))
+        }
+        ["gui-result", work, token] => ended(gui_run::result(Path::new(work), token)),
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
             command.args(args);
@@ -112,6 +125,9 @@ fn usage() -> ExitCode {
          live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check app-server codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check gui <inbox|channel|post-tool-use|stop> <claude-desktop|claude-vscode>\n       \
+         live-check gui inbox <codex-desktop|codex-vscode>\n       \
+         live-check gui-result <check-dir> <token>\n       \
          live-check timed-hook <log> <handler> [<arg>...]"
     );
     ExitCode::from(2)

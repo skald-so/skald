@@ -1,11 +1,13 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
 //! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path, [`hook`]
-//! for the hooks, [`queue`] for `codex queue` and [`app_server`] for the Codex app-server. The
-//! binary only starts the CLIs and reads their output.
+//! for the hooks, [`queue`] for `codex queue` and [`app_server`] for the Codex app-server; [`gui`]
+//! prepares and judges the checks on the desktop apps and IDE extensions. The binary only starts
+//! the CLIs and reads their output.
 
 pub mod app_server;
 pub mod channel;
+pub mod gui;
 pub mod hook;
 pub mod queue;
 mod stub;

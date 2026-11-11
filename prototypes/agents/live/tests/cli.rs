@@ -77,6 +77,15 @@ fn wrong_arguments_print_the_usage() {
         &["app-server", "codex", "--verbose"],
         &["timed-hook"],
         &["timed-hook", "log"],
+        &["gui"],
+        &["gui", "inbox"],
+        &["gui", "inbox", "claude"],
+        &["gui", "queue", "codex-vscode"],
+        &["gui", "channel", "codex-desktop"],
+        &["gui", "stop", "codex-vscode"],
+        &["gui", "inbox", "claude-vscode", "--keep"],
+        &["gui-result"],
+        &["gui-result", "dir"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -572,4 +581,103 @@ fn app_server_sessions_get_only_their_environment_and_run_the_client_or_listen()
             .count();
         assert_eq!(listening, sessions / 3, "{at}");
     }
+}
+
+/// Runs `live-check` with only `home` as `HOME` and `tmp` as `TMPDIR`.
+fn live_check_in(home: &Path, tmp: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args(args)
+        .env_clear()
+        .env("HOME", home)
+        .env("TMPDIR", tmp)
+        .output()
+        .expect("live-check runs")
+}
+
+/// A home where VS Code's list of extensions, recorded in `tests/surfaces/`, holds Claude Code's.
+fn home_with_claude_code_for_vs_code() -> tempfile::TempDir {
+    let home = tempfile::tempdir().unwrap();
+    let extensions = home.path().join(".vscode/extensions");
+    fs::create_dir_all(&extensions).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/surfaces/extensions.json"),
+        extensions.join("extensions.json"),
+    )
+    .unwrap();
+    home
+}
+
+#[test]
+fn gui_prepares_a_check_without_showing_its_token_and_passes_only_on_it() {
+    let home = home_with_claude_code_for_vs_code();
+    let tmp = tempfile::tempdir().unwrap();
+    let output = live_check_in(home.path(), tmp.path(), &["gui", "inbox", "claude-vscode"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    let [version, project, prompt, then] = lines.as_slice() else {
+        panic!("{stdout}");
+    };
+    assert_eq!(*version, "claude-vscode: Claude Code for VS Code 2.1.322");
+    assert_eq!(
+        *prompt,
+        format!("prompt: {}", agent_live::Kind::Idle.prompt())
+    );
+    let work = then
+        .strip_prefix("then: live-check gui-result ")
+        .and_then(|rest| rest.strip_suffix(" <the token read from the reply>"))
+        .expect("the command to run");
+    assert!(Path::new(work).starts_with(tmp.path()), "{work}");
+    assert_eq!(*project, format!("project: {work}/project"));
+    assert!(Path::new(work).join("project/.mcp.json").exists());
+
+    let check: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(Path::new(work).join("check.json")).unwrap())
+            .unwrap();
+    let token = check["token"].as_str().unwrap();
+    assert!(!stdout.contains(token), "the token is shown");
+
+    let result = |token: &str| live_check_in(home.path(), tmp.path(), &["gui-result", work, token]);
+    let waiting = result(token);
+    assert_eq!(waiting.status.code(), Some(1), "{}", stderr(&waiting));
+
+    let source = Source::open(Path::new(work).join("source")).unwrap();
+    let ids: Vec<String> = source
+        .take()
+        .unwrap()
+        .into_iter()
+        .map(|m| m.msg_id)
+        .collect();
+    source.handed_over(&ids).unwrap();
+    let wrong = result("NONE");
+    assert_eq!(wrong.status.code(), Some(1), "{}", stderr(&wrong));
+    let read = result(token);
+    assert!(read.status.success(), "{}", stderr(&read));
+    let stdout = String::from_utf8(read.stdout).unwrap();
+    assert_eq!(
+        stdout,
+        "claude-vscode: Claude Code for VS Code 2.1.322\n  the reported token matches; the message \
+         is handed over\ninbox on claude-vscode with the real model: pass\n"
+    );
+}
+
+#[test]
+fn gui_fails_without_the_surface_or_the_check() {
+    let home = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    for args in [
+        &["gui", "inbox", "claude-vscode"][..],
+        &["gui-result", tmp.path().to_str().unwrap(), "tok"],
+    ] {
+        assert_failed(
+            &live_check_in(home.path(), tmp.path(), args),
+            "live-check: ",
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args(["gui", "inbox", "claude-vscode"])
+        .env_clear()
+        .output()
+        .expect("live-check runs");
+    assert_failed(&output, "live-check: HOME is not set");
 }
