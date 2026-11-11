@@ -1,7 +1,12 @@
 //! `live-check`'s commands, without running an agent CLI.
 
+use std::collections::BTreeMap;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::{Command, Output};
 
+use agent_live::Agent;
 use agent_source::{Source, State};
 
 fn live_check(args: &[&str]) -> Output {
@@ -76,4 +81,121 @@ fn inbox_fails_without_the_cli() {
         "{}",
         stderr(&output)
     );
+}
+
+/// A variable of `live-check`'s environment that the CLI on the stub must not get.
+const SENTINEL: &str = "SKALD_LIVE_TEST_CREDENTIAL";
+
+/// Variables the stand-ins' shell sets itself.
+const SHELL_VARS: [&str; 3] = ["PWD", "SHLVL", "_"];
+
+/// What a stand-in CLI recorded in one session: its arguments and environment.
+struct Recorded {
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+}
+
+/// Puts stand-ins for `claude` and `codex` in `bin`: they answer `--version` and otherwise record
+/// their arguments and environment in `record/<cli>-<pid>` and end the session without output.
+fn stand_ins(bin: &Path, record: &Path) {
+    for cli in ["claude", "codex"] {
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = --version ]; then echo 0.0.0; exit 0; fi\n\
+             dir='{}/{cli}-'$$\n\
+             mkdir \"$dir\"\n\
+             printf '%s\\n' \"$@\" >\"$dir/args\"\n\
+             env >\"$dir/env\"\n",
+            record.display()
+        );
+        let path = bin.join(cli);
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// The sessions the stand-in `cli` recorded.
+fn recorded(record: &Path, cli: &str) -> Vec<Recorded> {
+    let mut sessions = Vec::new();
+    for entry in fs::read_dir(record).unwrap() {
+        let dir = entry.unwrap().path();
+        let name = dir.file_name().unwrap().to_str().unwrap().to_owned();
+        if !name.starts_with(&format!("{cli}-")) {
+            continue;
+        }
+        let args = fs::read_to_string(dir.join("args")).unwrap();
+        let env = fs::read_to_string(dir.join("env")).unwrap();
+        sessions.push(Recorded {
+            args: args.lines().map(String::from).collect(),
+            env: env
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .filter(|(name, _)| !SHELL_VARS.contains(name))
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect(),
+        });
+    }
+    sessions
+}
+
+/// The stub's address in a session's arguments or environment.
+fn stub_url(agent: Agent, session: &Recorded) -> String {
+    match agent {
+        Agent::Claude => session.env["ANTHROPIC_BASE_URL"].clone(),
+        Agent::Codex => {
+            let arg = session
+                .args
+                .iter()
+                .find_map(|arg| arg.strip_prefix("model_providers.stub.base_url="))
+                .expect("the stub provider's address");
+            serde_json::from_str::<String>(arg)
+                .unwrap()
+                .strip_suffix("/v1")
+                .unwrap()
+                .to_owned()
+        }
+    }
+}
+
+#[test]
+fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
+    for agent in [Agent::Claude, Agent::Codex] {
+        for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
+            let dir = tempfile::tempdir().unwrap();
+            let (bin, record, tmp) = (
+                dir.path().join("bin"),
+                dir.path().join("record"),
+                dir.path().join("tmp"),
+            );
+            for dir in [&bin, &record, &tmp] {
+                fs::create_dir(dir).unwrap();
+            }
+            stand_ins(&bin, &record);
+            let path = format!("{}:/usr/bin:/bin", bin.display());
+            let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
+                .args(["inbox", agent.cli()])
+                .args(flags)
+                .env("PATH", &path)
+                .env("TMPDIR", &tmp)
+                .env(SENTINEL, "secret")
+                .output()
+                .expect("live-check runs");
+            // The stand-ins never call the inbox, so the check fails.
+            assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+
+            let recorded = recorded(&record, agent.cli());
+            assert_eq!(recorded.len(), sessions, "{} {flags:?}", agent.cli());
+            for session in &recorded {
+                assert!(!session.env.contains_key(SENTINEL), "{:?}", session.env);
+                let home = &session.env["HOME"];
+                assert!(home.starts_with(tmp.to_str().unwrap()), "{home}");
+                let expected: BTreeMap<String, String> = agent
+                    .environment(Path::new(home), &stub_url(agent, session), &path)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+                assert_eq!(session.env, expected, "{} {flags:?}", agent.cli());
+            }
+        }
+    }
 }
