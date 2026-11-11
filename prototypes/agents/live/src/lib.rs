@@ -1,6 +1,8 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
-//! and how to read the session's events; and the checks' options, prompts, messages and verdicts.
-//! The binary only starts the CLIs and reads their output.
+//! the environment it runs in, and how to read the session's events; the model stub; and the checks'
+//! options, prompts, messages and verdicts. The binary only starts the CLIs and reads their output.
+
+mod stub;
 
 use std::fs;
 use std::io;
@@ -12,11 +14,16 @@ use agent_inbox::INBOX;
 use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
+pub use stub::{Call, DONE, PLACEHOLDER, Request, Response, SHELL, Stub, StubLog};
+
 /// The name of the MCP server in each session's config.
 pub const SERVER: &str = "skald";
 
 /// The sender label of the checks' messages.
 pub const SENDER: &str = "live-check of skald";
+
+/// The variable that holds the placeholder key for Codex's stub provider.
+pub const STUB_KEY: &str = "SKALD_STUB_API_KEY";
 
 /// An agent CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,37 +55,60 @@ impl Agent {
     }
 
     /// Attaches the `inbox` MCP server, `inbox <source>`, to sessions in `project` and returns the
-    /// arguments of a non-interactive session there that gets `prompt`. Only files in `project` and
-    /// the arguments change the CLI's config.
+    /// arguments of a non-interactive `kind` session there, on the model stub at `stub` if given.
+    /// Only files in `project` and the arguments change the CLI's config; they load as little of
+    /// the user's config as the CLI allows, at its lowest reasoning effort.
     pub fn session(
         self,
         project: &Path,
         inbox: &Path,
         source: &Path,
-        prompt: &str,
+        kind: Kind,
         model: Option<&str>,
+        stub: Option<&str>,
     ) -> io::Result<Vec<String>> {
         let inbox = inbox.to_string_lossy();
         let source = source.to_string_lossy();
         let mut args = Vec::new();
         match self {
             Self::Claude => {
-                let servers =
-                    json!({ "mcpServers": { SERVER: { "command": inbox, "args": [source] } } });
-                fs::write(project.join(".mcp.json"), pretty(&servers))?;
-                // Without these, Claude Code asks a person to approve the project's MCP server and
-                // each call of its tool.
-                let settings = json!({
-                    "enableAllProjectMcpServers": true,
-                    "permissions": { "allow": [inbox_tool(), "Bash(sleep:*)"] },
-                });
+                let servers = project.join(".mcp.json");
+                fs::write(
+                    &servers,
+                    pretty(
+                        &json!({ "mcpServers": { SERVER: { "command": inbox, "args": [source] } } }),
+                    ),
+                )?;
+                // Without it, Claude Code asks a person to approve each call.
+                let settings =
+                    json!({ "permissions": { "allow": [inbox_tool(), "Bash(sleep:*)"] } });
                 fs::create_dir_all(project.join(".claude"))?;
                 fs::write(
                     project.join(".claude/settings.local.json"),
                     pretty(&settings),
                 )?;
                 args.extend(
-                    ["-p", prompt, "--output-format", "stream-json", "--verbose"].map(String::from),
+                    [
+                        "-p",
+                        &kind.prompt(),
+                        "--output-format",
+                        "stream-json",
+                        "--verbose",
+                        // Only the project's local settings, only its MCP server, no skills.
+                        "--setting-sources",
+                        "local",
+                        "--strict-mcp-config",
+                        "--mcp-config",
+                        &servers.to_string_lossy(),
+                        "--disable-slash-commands",
+                        // Only the built-in tools the session needs; MCP tools load at the start.
+                        "--tools",
+                        kind.claude_tools(),
+                        "--effort",
+                        "low",
+                        "--no-session-persistence",
+                    ]
+                    .map(String::from),
                 );
                 if let Some(model) = model {
                     args.extend(["--model".to_owned(), model.to_owned()]);
@@ -87,18 +117,34 @@ impl Agent {
             Self::Codex => {
                 // `-c` values are TOML; a JSON string or array of strings is valid TOML.
                 let server = format!("mcp_servers.{SERVER}");
-                let config = [
+                let mut config = vec![
                     format!("{server}.command={}", json!(inbox)),
                     format!("{server}.args={}", json!([source])),
                     // Without it, `codex exec` refuses the tool call: it cannot ask a person.
                     format!("{server}.default_tools_approval_mode=\"approve\""),
+                    "skills.include_instructions=false".to_owned(),
+                    "model_reasoning_effort=\"low\"".to_owned(),
                 ];
+                if let Some(stub) = stub {
+                    let provider = "model_providers.stub";
+                    config.extend([
+                        "model_provider=\"stub\"".to_owned(),
+                        format!("{provider}.name=\"stub\""),
+                        format!("{provider}.base_url={}", json!(format!("{stub}/v1"))),
+                        format!("{provider}.env_key=\"{STUB_KEY}\""),
+                        format!("{provider}.wire_api=\"responses\""),
+                    ]);
+                }
                 args.extend(
                     [
                         "exec",
                         "--json",
                         "--skip-git-repo-check",
                         "--ephemeral",
+                        "--ignore-user-config",
+                        "--ignore-rules",
+                        "--disable",
+                        "plugins",
                         "-C",
                     ]
                     .map(String::from),
@@ -110,52 +156,118 @@ impl Agent {
                 if let Some(model) = model {
                     args.extend(["-m".to_owned(), model.to_owned()]);
                 }
-                args.push(prompt.to_owned());
+                args.push(kind.prompt());
             }
         }
         Ok(args)
     }
 
-    /// What one line of the session's JSON output says, if it matters to a check.
-    pub fn event(self, line: &str) -> Option<Event> {
-        let value: Value = serde_json::from_str(line).ok()?;
+    /// The CLI's environment on the model stub at `stub`: only `path` as `PATH`, `home` as `HOME`
+    /// with an empty config home in it, the stub's address and the placeholder key. The CLI finds
+    /// no sign-in there and no credential but the placeholder.
+    pub fn environment(
+        self,
+        home: &Path,
+        stub: &str,
+        path: &str,
+    ) -> io::Result<Vec<(String, String)>> {
+        let (config_var, config_dir) = match self {
+            Self::Claude => ("CLAUDE_CONFIG_DIR", home.join(".claude")),
+            Self::Codex => ("CODEX_HOME", home.join(".codex")),
+        };
+        fs::create_dir_all(&config_dir)?;
+        let mut env = vec![
+            ("PATH", path.to_owned()),
+            ("HOME", home.to_string_lossy().into_owned()),
+            (config_var, config_dir.to_string_lossy().into_owned()),
+        ];
         match self {
-            Self::Claude => match value["type"].as_str()? {
-                "system" if value["subtype"] == "init" => Some(Event::Started {
+            Self::Claude => env.extend([
+                ("ANTHROPIC_BASE_URL", stub.to_owned()),
+                ("ANTHROPIC_API_KEY", PLACEHOLDER.to_owned()),
+            ]),
+            Self::Codex => env.push((STUB_KEY, PLACEHOLDER.to_owned())),
+        }
+        Ok(env
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect())
+    }
+
+    /// What one line of the session's JSON output says that matters to a check.
+    pub fn events(self, line: &str) -> Vec<Event> {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            return Vec::new();
+        };
+        let count = |value: &Value| value.as_u64().unwrap_or(0);
+        match self {
+            Self::Claude => match value["type"].as_str() {
+                Some("system") if value["subtype"] == "init" => vec![Event::Started {
                     sign_in: value["apiKeySource"].as_str().map(String::from),
-                    inbox_connected: value["mcp_servers"]
-                        .as_array()?
-                        .iter()
-                        .any(|server| server["name"] == SERVER && server["status"] == "connected"),
-                }),
-                "assistant" => {
-                    let content = value["message"]["content"].as_array()?;
-                    content.iter().find_map(|block| {
-                        match (block["type"].as_str(), block["name"].as_str()) {
+                    inbox_connected: value["mcp_servers"].as_array().is_some_and(|servers| {
+                        servers.iter().any(|server| {
+                            server["name"] == SERVER && server["status"] == "connected"
+                        })
+                    }),
+                }],
+                Some("assistant") => value["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(
+                        |block| match (block["type"].as_str(), block["name"].as_str()) {
                             (Some("tool_use"), Some("Bash")) => Some(Event::ShellStarted),
                             (Some("tool_use"), Some(name)) if name == inbox_tool() => {
                                 Some(Event::InboxCalled)
                             }
                             _ => None,
-                        }
-                    })
+                        },
+                    )
+                    .collect(),
+                Some("result") => {
+                    let usage = &value["usage"];
+                    let cached = count(&usage["cache_read_input_tokens"]);
+                    let mut events: Vec<_> = value["result"]
+                        .as_str()
+                        .map(|reply| Event::Reply(reply.to_owned()))
+                        .into_iter()
+                        .collect();
+                    if usage.is_object() {
+                        events.push(Event::Used(Usage {
+                            input: count(&usage["input_tokens"])
+                                + count(&usage["cache_creation_input_tokens"])
+                                + cached,
+                            cached,
+                            output: count(&usage["output_tokens"]),
+                        }));
+                    }
+                    events
                 }
-                "result" => Some(Event::Reply(value["result"].as_str()?.to_owned())),
-                _ => None,
+                _ => Vec::new(),
             },
             Self::Codex => {
                 let item = &value["item"];
-                match (value["type"].as_str()?, item["type"].as_str()?) {
-                    ("item.started", "command_execution") => Some(Event::ShellStarted),
-                    ("item.started", "mcp_tool_call")
+                match (value["type"].as_str(), item["type"].as_str()) {
+                    (Some("item.started"), Some("command_execution")) => vec![Event::ShellStarted],
+                    (Some("item.started"), Some("mcp_tool_call"))
                         if item["server"] == SERVER && item["tool"] == INBOX =>
                     {
-                        Some(Event::InboxCalled)
+                        vec![Event::InboxCalled]
                     }
-                    ("item.completed", "agent_message") => {
-                        Some(Event::Reply(item["text"].as_str()?.to_owned()))
+                    (Some("item.completed"), Some("agent_message")) => item["text"]
+                        .as_str()
+                        .map(|text| Event::Reply(text.to_owned()))
+                        .into_iter()
+                        .collect(),
+                    (Some("turn.completed"), _) if value["usage"].is_object() => {
+                        let usage = &value["usage"];
+                        vec![Event::Used(Usage {
+                            input: count(&usage["input_tokens"]),
+                            cached: count(&usage["cached_input_tokens"]),
+                            output: count(&usage["output_tokens"]),
+                        })]
                     }
-                    _ => None,
+                    _ => Vec::new(),
                 }
             }
         }
@@ -169,6 +281,54 @@ fn inbox_tool() -> String {
 
 fn pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).expect("JSON values serialize")
+}
+
+/// A session's case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// The message waits before the session starts.
+    Idle,
+    /// The message comes while the agent runs a shell command.
+    Busy,
+}
+
+impl Kind {
+    /// The session's prompt.
+    pub fn prompt(self) -> String {
+        let ask = format!(
+            "the {INBOX} tool of the {SERVER} MCP server and reply with only the check token from \
+             the message, or NONE if there is none."
+        );
+        match self {
+            Self::Idle => format!("Call {ask}"),
+            Self::Busy => format!("Run the shell command `{SHELL}`. Then call {ask}"),
+        }
+    }
+
+    /// The model stub's tool calls, in order, before it replies `DONE`.
+    pub fn script(self) -> &'static [Call] {
+        match self {
+            Self::Idle => &[Call::Inbox],
+            Self::Busy => &[Call::Shell, Call::Inbox],
+        }
+    }
+
+    /// The built-in tools of a Claude Code session.
+    fn claude_tools(self) -> &'static str {
+        match self {
+            Self::Idle => "",
+            Self::Busy => "Bash",
+        }
+    }
+}
+
+/// The tokens a session used, as the CLI reports them.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    /// Input tokens, cached ones included.
+    pub input: u64,
+    pub cached: u64,
+    pub output: u64,
 }
 
 /// An event of a session that a check acts on.
@@ -186,6 +346,8 @@ pub enum Event {
     InboxCalled,
     /// The agent's reply; the last one ends the turn.
     Reply(String),
+    /// The tokens a turn used.
+    Used(Usage),
 }
 
 /// The options of `live-check inbox`.
@@ -195,10 +357,14 @@ pub struct Options<'a> {
     pub model: Option<&'a str>,
     /// `--keep`: keep the sessions' logs after a pass.
     pub keep: bool,
+    /// `--all`: also the busy session and the one of two idle sessions.
+    pub all: bool,
+    /// `--real`: the real model answers instead of the stub.
+    pub real: bool,
 }
 
 impl<'a> Options<'a> {
-    /// Parses `[--model <model>] [--keep]`, in any order; `None` for anything else.
+    /// Parses `[--model <model>] [--keep] [--all] [--real]`, in any order; `None` for anything else.
     pub fn parse(mut options: &[&'a str]) -> Option<Self> {
         let mut parsed = Self::default();
         loop {
@@ -206,6 +372,8 @@ impl<'a> Options<'a> {
                 [] => return Some(parsed),
                 ["--model", model, rest @ ..] => (parsed.model, options) = (Some(*model), rest),
                 ["--keep", rest @ ..] => (parsed.keep, options) = (true, rest),
+                ["--all", rest @ ..] => (parsed.all, options) = (true, rest),
+                ["--real", rest @ ..] => (parsed.real, options) = (true, rest),
                 _ => return None,
             }
         }
@@ -214,6 +382,24 @@ impl<'a> Options<'a> {
     /// Whether the sessions' logs stay after a check that ended with `pass`: after a fail, always.
     pub fn keeps_logs(&self, pass: bool) -> bool {
         self.keep || !pass
+    }
+
+    /// The model stub of a `kind` session, started; none with `--real`.
+    pub fn stub(&self, kind: Kind) -> io::Result<Option<Stub>> {
+        if self.real {
+            Ok(None)
+        } else {
+            Stub::start(kind.script()).map(Some)
+        }
+    }
+
+    /// What answers the sessions.
+    pub fn model_name(&self) -> &'static str {
+        if self.real {
+            "the real model"
+        } else {
+            "the model stub"
+        }
     }
 }
 
@@ -230,7 +416,54 @@ pub fn inbox_server(exe: &Path) -> Result<PathBuf, String> {
     }
 }
 
-/// A session to run: its project, its inbox's source, its logs and the CLI's arguments.
+/// What every session of a check shares.
+#[derive(Debug, Clone, Copy)]
+pub struct Setup<'a> {
+    /// The check's temporary directory.
+    pub work: &'a Path,
+    pub agent: Agent,
+    /// The `agent-inbox` binary.
+    pub inbox: &'a Path,
+    pub model: Option<&'a str>,
+    /// `live-check`'s `PATH`, the only variable the CLI on the stub inherits.
+    pub path: &'a str,
+}
+
+impl Setup<'_> {
+    /// Prepares the `kind` session `name` in `work/<name>`: a project with the `inbox` server
+    /// attached and, on `stub`, a home of its own.
+    pub fn run(&self, name: &str, kind: Kind, stub: Option<&Stub>) -> io::Result<Run> {
+        let dir = self.work.join(name);
+        let project = dir.join("project");
+        let source = dir.join("source");
+        fs::create_dir_all(&project)?;
+        let url = stub.map(Stub::url);
+        let args = self.agent.session(
+            &project,
+            self.inbox,
+            &source,
+            kind,
+            self.model,
+            url.as_deref(),
+        )?;
+        let env = match &url {
+            Some(url) => Some(self.agent.environment(&dir.join("home"), url, self.path)?),
+            None => None,
+        };
+        Ok(Run {
+            name: name.to_owned(),
+            agent: self.agent,
+            project,
+            source,
+            args,
+            env,
+            log: dir.join("session.jsonl"),
+            stderr: dir.join("session.stderr"),
+        })
+    }
+}
+
+/// A session to run: its project, its inbox's source, its logs, the CLI's arguments and environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Run {
     pub name: String,
@@ -238,37 +471,12 @@ pub struct Run {
     pub project: PathBuf,
     pub source: PathBuf,
     pub args: Vec<String>,
+    /// The CLI's whole environment; `None` inherits `live-check`'s, for the real model's sign-in.
+    pub env: Option<Vec<(String, String)>>,
     /// The session's JSON output.
     pub log: PathBuf,
     /// The CLI's stderr.
     pub stderr: PathBuf,
-}
-
-impl Run {
-    /// Prepares the session `name` in `work/<name>`: a project with the `inbox` server attached.
-    pub fn new(
-        work: &Path,
-        name: &str,
-        agent: Agent,
-        inbox: &Path,
-        prompt: &str,
-        model: Option<&str>,
-    ) -> io::Result<Self> {
-        let dir = work.join(name);
-        let project = dir.join("project");
-        let source = dir.join("source");
-        fs::create_dir_all(&project)?;
-        let args = agent.session(&project, inbox, &source, prompt, model)?;
-        Ok(Self {
-            name: name.to_owned(),
-            agent,
-            project,
-            source,
-            args,
-            log: dir.join("session.jsonl"),
-            stderr: dir.join("session.stderr"),
-        })
-    }
 }
 
 /// Why a session ended badly, if it did: it was stopped after `timeout`, or its CLI failed.
@@ -280,23 +488,6 @@ pub fn session_failure(timed_out: bool, timeout: Duration, status: ExitStatus) -
     } else {
         Some(status.to_string())
     }
-}
-
-/// The idle sessions' prompt.
-pub fn idle_prompt() -> String {
-    format!("Call {}", ask())
-}
-
-/// The busy session's prompt: its message comes while the shell command runs.
-pub fn busy_prompt() -> String {
-    format!("Run the shell command `sleep 20`. Then call {}", ask())
-}
-
-fn ask() -> String {
-    format!(
-        "the {INBOX} tool of the {SERVER} MCP server and reply with only the check token from \
-         the message, or NONE if there is none."
-    )
 }
 
 /// A random check token.
@@ -343,6 +534,10 @@ pub struct Session {
     /// Whether the inbox server connected, if the CLI says.
     pub inbox_connected: Option<bool>,
     pub inbox_called: bool,
+    /// The tokens it used, if the CLI says.
+    pub usage: Option<Usage>,
+    /// What the model stub saw; `None` on the real model.
+    pub stub: Option<StubLog>,
     /// When the session started, in milliseconds since the Unix epoch.
     pub started_ms: u64,
 }
@@ -367,24 +562,46 @@ impl Session {
             }
             Event::InboxCalled => self.inbox_called = true,
             Event::Reply(text) => self.reply = text.clone(),
+            Event::Used(used) => {
+                let usage = self.usage.get_or_insert_default();
+                usage.input += used.input;
+                usage.cached += used.cached;
+                usage.output += used.output;
+            }
             Event::ShellStarted => {}
         }
     }
 
-    /// The idle and busy checks: the session called `inbox` and repeated `token`, and the message
-    /// with it, in `state`, was handed over. A message never added has no state.
+    /// Whether `token` reached the model: in a request to the stub, or in the real model's reply.
+    fn got(&self, token: &str) -> bool {
+        match &self.stub {
+            Some(stub) => stub.saw(token),
+            None => self.reply.contains(token),
+        }
+    }
+
+    /// Whether the stub got no credential but the placeholder.
+    fn clean(&self) -> bool {
+        self.stub
+            .as_ref()
+            .is_none_or(|stub| stub.failure().is_none())
+    }
+
+    /// The idle and busy checks: the session called `inbox`, `token` reached the model and the
+    /// message with it, in `state`, was handed over. A message never added has no state.
     pub fn received(&self, token: &str, state: Option<State>) -> bool {
-        self.inbox_called
-            && self.reply.contains(token)
+        self.clean()
+            && self.inbox_called
+            && self.got(token)
             && matches!(state, Some(State::HandedOver { .. }))
     }
 
-    /// The other idle session's check: it called `inbox` and did not get `token`.
+    /// The other idle session's check: it called `inbox` and `token` did not reach the model.
     pub fn missed(&self, token: &str) -> bool {
-        self.inbox_called && !self.reply.contains(token)
+        self.clean() && self.inbox_called && !self.got(token)
     }
 
-    pub fn summary(&self) -> String {
+    pub fn summary(&self, token: &str) -> String {
         let mut summary = format!("reply {:?}", self.reply.trim());
         if let Some(sign_in) = &self.sign_in {
             summary.push_str(&format!(", apiKeySource {sign_in}"));
@@ -394,6 +611,30 @@ impl Session {
         }
         if !self.inbox_called {
             summary.push_str(", inbox not called");
+        }
+        match &self.stub {
+            Some(stub) => {
+                let reached = if stub.saw(token) {
+                    "reached"
+                } else {
+                    "did not reach"
+                };
+                summary.push_str(&format!(
+                    ", requests to the stub: {}, the token {reached} it",
+                    stub.requests.len()
+                ));
+                if let Some(failure) = stub.failure() {
+                    summary.push_str(&format!(", {failure}"));
+                }
+            }
+            None => {
+                if let Some(usage) = self.usage {
+                    summary.push_str(&format!(
+                        ", tokens: input {} (cached {}), output {}",
+                        usage.input, usage.cached, usage.output
+                    ));
+                }
+            }
         }
         summary
     }
@@ -416,24 +657,27 @@ pub struct InboxCheck {
 }
 
 impl InboxCheck {
-    /// The idle session, one of two, and its message with `token`, now in `state`.
+    /// The idle session and its message with `token`, now in `state`.
     pub fn idle(&mut self, session: &Session, token: &str, state: Option<State>) -> String {
         let details = format!(
             "{}; handed over {} after the session started",
-            session.summary(),
+            session.summary(token),
             handover_delay(state, session.started_ms)
         );
-        self.report(
-            "idle session, one of two",
-            session.received(token, state),
-            &details,
-        )
+        self.report("idle session", session.received(token, state), &details)
     }
 
-    /// The other idle session, which must not get the message with `token`.
+    /// The other of two idle sessions, which must not get the message with `token`.
     pub fn other(&mut self, session: &Session, token: &str) -> String {
-        let details = format!("{}; the message did not reach it", session.summary());
-        self.report("the other idle session", session.missed(token), &details)
+        let details = format!(
+            "{}; the message is the first session's",
+            session.summary(token)
+        );
+        self.report(
+            "the other of two idle sessions",
+            session.missed(token),
+            &details,
+        )
     }
 
     /// The busy session and its message with `token`: added at `added_at_ms`, if the agent ran a
@@ -452,7 +696,7 @@ impl InboxCheck {
             ),
             None => "the agent ran no shell command".to_owned(),
         };
-        let details = format!("{}; {message}", session.summary());
+        let details = format!("{}; {message}", session.summary(token));
         self.report("busy session", session.received(token, state), &details)
     }
 
@@ -462,8 +706,13 @@ impl InboxCheck {
     }
 
     /// The last line of the output.
-    pub fn verdict(&self, agent: Agent) -> String {
-        format!("{INBOX} on {}: {}", agent.cli(), verdict(self.pass()))
+    pub fn verdict(&self, agent: Agent, options: &Options) -> String {
+        format!(
+            "{INBOX} on {} with {}: {}",
+            agent.cli(),
+            options.model_name(),
+            verdict(self.pass())
+        )
     }
 
     fn report(&mut self, check: &str, pass: bool, details: &str) -> String {
@@ -495,78 +744,117 @@ mod tests {
     use super::*;
 
     // Lines recorded from Claude Code 2.1.322 (`--output-format stream-json --verbose`), shortened.
-    const CLAUDE_INIT: &str = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"exa","status":"connected","source":"user"},{"name":"skald","status":"connected","source":"project"}],"apiKeySource":"none","claude_code_version":"2.1.322"}"#;
-    const CLAUDE_INIT_FAILED: &str = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"skald","status":"failed","source":"project"}],"apiKeySource":"ANTHROPIC_API_KEY"}"#;
-    const CLAUDE_INIT_WITHOUT_INBOX: &str = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"exa","status":"connected","source":"user"},{"name":"skald","status":"pending","source":"project"}],"apiKeySource":"none"}"#;
+    const CLAUDE_INIT: &str = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"exa","status":"connected","source":"user"},{"name":"skald","status":"connected","source":"dynamic"}],"apiKeySource":"none","claude_code_version":"2.1.322"}"#;
+    const CLAUDE_INIT_FAILED: &str = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"skald","status":"failed","source":"dynamic"}],"apiKeySource":"ANTHROPIC_API_KEY"}"#;
+    const CLAUDE_INIT_WITHOUT_INBOX: &str = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"exa","status":"connected","source":"user"},{"name":"skald","status":"pending","source":"dynamic"}],"apiKeySource":"none"}"#;
+    const CLAUDE_INIT_NO_SERVERS: &str =
+        r#"{"type":"system","subtype":"init","apiKeySource":"none"}"#;
     const CLAUDE_HOOK: &str = r#"{"type":"system","subtype":"hook_response","mcp_servers":[{"name":"skald","status":"connected"}]}"#;
     const CLAUDE_SEARCH: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"ToolSearch","input":{"query":"select:mcp__skald__inbox","max_results":1}}]}}"#;
     const CLAUDE_INBOX: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_02","name":"mcp__skald__inbox","input":{}}]}}"#;
     const CLAUDE_BASH: &str = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":""},{"type":"tool_use","id":"toolu_03","name":"Bash","input":{"command":"sleep 20"}}]}}"#;
+    const CLAUDE_BOTH: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_03","name":"Bash","input":{"command":"sleep 20"}},{"type":"tool_use","id":"toolu_02","name":"mcp__skald__inbox","input":{}}]}}"#;
     const CLAUDE_TEXT: &str =
         r#"{"type":"assistant","message":{"content":[{"type":"text","text":"tok-7f3a91"}]}}"#;
-    const CLAUDE_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"tok-7f3a91","stop_reason":"end_turn"}"#;
+    const CLAUDE_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"tok-7f3a91","stop_reason":"end_turn","usage":{"input_tokens":6,"cache_creation_input_tokens":3900,"cache_read_input_tokens":15200,"output_tokens":42}}"#;
+    const CLAUDE_RESULT_WITHOUT_USAGE: &str =
+        r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#;
 
     // Lines recorded from Codex 0.162.1 (`codex exec --json`), shortened.
     const CODEX_INBOX: &str = r#"{"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"skald","tool":"inbox","arguments":{},"result":null,"error":null,"status":"in_progress"}}"#;
     const CODEX_INBOX_DONE: &str = r#"{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"skald","tool":"inbox","arguments":{},"result":{"content":[{"type":"text","text":"No messages are waiting."}]},"error":null,"status":"completed"}}"#;
     const CODEX_OTHER_TOOL: &str = r#"{"type":"item.started","item":{"id":"item_4","type":"mcp_tool_call","server":"exa","tool":"inbox","arguments":{},"status":"in_progress"}}"#;
+    const CODEX_OTHER_SERVER_TOOL: &str = r#"{"type":"item.started","item":{"id":"item_4","type":"mcp_tool_call","server":"skald","tool":"outbox","arguments":{},"status":"in_progress"}}"#;
     const CODEX_SHELL: &str = r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'sleep 20'","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#;
+    const CODEX_SHELL_DONE: &str = r#"{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'sleep 20'","exit_code":0,"status":"completed"}}"#;
     const CODEX_REPLY: &str = r#"{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"tok-c0d3x2"}}"#;
     const CODEX_ERROR: &str = r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting."}}"#;
-    const CODEX_DONE: &str = r#"{"type":"turn.completed","usage":{"input_tokens":44124}}"#;
+    const CODEX_DONE: &str = r#"{"type":"turn.completed","usage":{"input_tokens":44124,"cached_input_tokens":3456,"cache_write_input_tokens":0,"output_tokens":118,"reasoning_output_tokens":64}}"#;
+    const CODEX_STARTED: &str = r#"{"type":"turn.started"}"#;
 
     #[test]
     fn reads_claude_code_events() {
         let claude = Agent::Claude;
         assert_eq!(
-            claude.event(CLAUDE_INIT),
-            Some(Event::Started {
+            claude.events(CLAUDE_INIT),
+            [Event::Started {
                 sign_in: Some("none".to_owned()),
                 inbox_connected: true
-            })
+            }]
         );
         assert_eq!(
-            claude.event(CLAUDE_INIT_FAILED),
-            Some(Event::Started {
+            claude.events(CLAUDE_INIT_FAILED),
+            [Event::Started {
                 sign_in: Some("ANTHROPIC_API_KEY".to_owned()),
                 inbox_connected: false
-            })
+            }]
         );
         assert_eq!(
-            claude.event(CLAUDE_INIT_WITHOUT_INBOX),
-            Some(Event::Started {
+            claude.events(CLAUDE_INIT_WITHOUT_INBOX),
+            [Event::Started {
                 sign_in: Some("none".to_owned()),
                 inbox_connected: false
-            })
+            }]
         );
-        assert_eq!(claude.event(CLAUDE_HOOK), None);
-        assert_eq!(claude.event(CLAUDE_SEARCH), None);
-        assert_eq!(claude.event(CLAUDE_INBOX), Some(Event::InboxCalled));
-        assert_eq!(claude.event(CLAUDE_BASH), Some(Event::ShellStarted));
-        assert_eq!(claude.event(CLAUDE_TEXT), None);
         assert_eq!(
-            claude.event(CLAUDE_RESULT),
-            Some(Event::Reply("tok-7f3a91".to_owned()))
+            claude.events(CLAUDE_INIT_NO_SERVERS),
+            [Event::Started {
+                sign_in: Some("none".to_owned()),
+                inbox_connected: false
+            }]
         );
-        assert_eq!(claude.event("not JSON"), None);
+        assert_eq!(claude.events(CLAUDE_HOOK), []);
+        assert_eq!(claude.events(CLAUDE_SEARCH), []);
+        assert_eq!(claude.events(CLAUDE_INBOX), [Event::InboxCalled]);
+        assert_eq!(claude.events(CLAUDE_BASH), [Event::ShellStarted]);
+        assert_eq!(
+            claude.events(CLAUDE_BOTH),
+            [Event::ShellStarted, Event::InboxCalled]
+        );
+        assert_eq!(claude.events(CLAUDE_TEXT), []);
+        assert_eq!(
+            claude.events(CLAUDE_RESULT),
+            [
+                Event::Reply("tok-7f3a91".to_owned()),
+                Event::Used(Usage {
+                    input: 19_106,
+                    cached: 15_200,
+                    output: 42
+                })
+            ]
+        );
+        assert_eq!(claude.events(CLAUDE_RESULT_WITHOUT_USAGE), []);
+        assert_eq!(claude.events("not JSON"), []);
         // Codex's events mean nothing to Claude Code.
-        assert_eq!(claude.event(CODEX_REPLY), None);
+        assert_eq!(claude.events(CODEX_REPLY), []);
+        assert_eq!(claude.events(CODEX_DONE), []);
     }
 
     #[test]
     fn reads_codex_events() {
         let codex = Agent::Codex;
-        assert_eq!(codex.event(CODEX_INBOX), Some(Event::InboxCalled));
-        assert_eq!(codex.event(CODEX_INBOX_DONE), None);
-        assert_eq!(codex.event(CODEX_OTHER_TOOL), None);
-        assert_eq!(codex.event(CODEX_SHELL), Some(Event::ShellStarted));
+        assert_eq!(codex.events(CODEX_INBOX), [Event::InboxCalled]);
+        assert_eq!(codex.events(CODEX_INBOX_DONE), []);
+        assert_eq!(codex.events(CODEX_OTHER_TOOL), []);
+        assert_eq!(codex.events(CODEX_OTHER_SERVER_TOOL), []);
+        assert_eq!(codex.events(CODEX_SHELL), [Event::ShellStarted]);
+        assert_eq!(codex.events(CODEX_SHELL_DONE), []);
         assert_eq!(
-            codex.event(CODEX_REPLY),
-            Some(Event::Reply("tok-c0d3x2".to_owned()))
+            codex.events(CODEX_REPLY),
+            [Event::Reply("tok-c0d3x2".to_owned())]
         );
-        assert_eq!(codex.event(CODEX_ERROR), None);
-        assert_eq!(codex.event(CODEX_DONE), None);
-        assert_eq!(codex.event(CLAUDE_RESULT), None);
+        assert_eq!(codex.events(CODEX_ERROR), []);
+        assert_eq!(
+            codex.events(CODEX_DONE),
+            [Event::Used(Usage {
+                input: 44_124,
+                cached: 3_456,
+                output: 118
+            })]
+        );
+        assert_eq!(codex.events(CODEX_STARTED), []);
+        assert_eq!(codex.events(CLAUDE_RESULT), []);
+        assert_eq!(codex.events("not JSON"), []);
     }
 
     #[test]
@@ -579,55 +867,71 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_session_uses_project_config() {
+    fn claude_code_session_loads_only_the_project_config() {
         let project = tempfile::tempdir().unwrap();
+        let servers = project.path().join(".mcp.json");
+        let servers = servers.to_str().unwrap();
         let args = Agent::Claude
             .session(
                 project.path(),
                 Path::new("/bin/inbox"),
                 Path::new("/tmp/source"),
-                "Call inbox.",
+                Kind::Idle,
                 Some("haiku"),
+                None,
             )
             .unwrap();
         assert_eq!(
             args,
             [
                 "-p",
-                "Call inbox.",
+                &Kind::Idle.prompt(),
                 "--output-format",
                 "stream-json",
                 "--verbose",
+                "--setting-sources",
+                "local",
+                "--strict-mcp-config",
+                "--mcp-config",
+                servers,
+                "--disable-slash-commands",
+                "--tools",
+                "",
+                "--effort",
+                "low",
+                "--no-session-persistence",
                 "--model",
                 "haiku"
             ]
         );
-        let servers: Value =
-            serde_json::from_slice(&fs::read(project.path().join(".mcp.json")).unwrap()).unwrap();
+        let config: Value = serde_json::from_slice(&fs::read(servers).unwrap()).unwrap();
         assert_eq!(
-            servers,
+            config,
             json!({ "mcpServers": { "skald": { "command": "/bin/inbox", "args": ["/tmp/source"] } } })
         );
         let settings: Value = serde_json::from_slice(
             &fs::read(project.path().join(".claude/settings.local.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(settings["enableAllProjectMcpServers"], true);
         assert_eq!(
-            settings["permissions"]["allow"],
-            json!(["mcp__skald__inbox", "Bash(sleep:*)"])
+            settings,
+            json!({ "permissions": { "allow": ["mcp__skald__inbox", "Bash(sleep:*)"] } })
         );
 
-        let args = Agent::Claude
+        // The stub changes nothing in Claude Code's arguments: it is in the environment.
+        let busy = Agent::Claude
             .session(
                 project.path(),
                 Path::new("/bin/inbox"),
                 Path::new("/s"),
-                "p",
+                Kind::Busy,
                 None,
+                Some("http://127.0.0.1:1"),
             )
             .unwrap();
-        assert!(!args.contains(&"--model".to_owned()), "{args:?}");
+        assert_eq!(busy[1], Kind::Busy.prompt());
+        assert_eq!(busy[11..13], ["--tools", "Bash"]);
+        assert_eq!(busy.len(), 16, "{busy:?}");
     }
 
     #[test]
@@ -638,36 +942,118 @@ mod tests {
                 project.path(),
                 Path::new("/bin/my inbox"),
                 Path::new("/tmp/\"source\""),
-                "Call inbox.",
+                Kind::Busy,
                 Some("gpt-5.5"),
+                None,
             )
             .unwrap();
         let project = project.path().to_string_lossy().into_owned();
+        let common = [
+            "exec",
+            "--json",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--disable",
+            "plugins",
+            "-C",
+            &project,
+            "-c",
+            r#"mcp_servers.skald.command="/bin/my inbox""#,
+            "-c",
+            r#"mcp_servers.skald.args=["/tmp/\"source\""]"#,
+            "-c",
+            r#"mcp_servers.skald.default_tools_approval_mode="approve""#,
+            "-c",
+            "skills.include_instructions=false",
+            "-c",
+            r#"model_reasoning_effort="low""#,
+        ];
         assert_eq!(
             args,
-            [
-                "exec",
-                "--json",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "-C",
-                &project,
-                "-c",
-                r#"mcp_servers.skald.command="/bin/my inbox""#,
-                "-c",
-                r#"mcp_servers.skald.args=["/tmp/\"source\""]"#,
-                "-c",
-                r#"mcp_servers.skald.default_tools_approval_mode="approve""#,
-                "-m",
-                "gpt-5.5",
-                "Call inbox.",
-            ]
+            [&common[..], &["-m", "gpt-5.5", &Kind::Busy.prompt()]].concat()
         );
         assert_eq!(
             fs::read_dir(&project).unwrap().count(),
             0,
             "no files in the project"
         );
+
+        let args = Agent::Codex
+            .session(
+                Path::new(&project),
+                Path::new("/bin/my inbox"),
+                Path::new("/tmp/\"source\""),
+                Kind::Idle,
+                None,
+                Some("http://127.0.0.1:4100"),
+            )
+            .unwrap();
+        assert_eq!(
+            args,
+            [
+                &common[..],
+                &[
+                    "-c",
+                    r#"model_provider="stub""#,
+                    "-c",
+                    r#"model_providers.stub.name="stub""#,
+                    "-c",
+                    r#"model_providers.stub.base_url="http://127.0.0.1:4100/v1""#,
+                    "-c",
+                    r#"model_providers.stub.env_key="SKALD_STUB_API_KEY""#,
+                    "-c",
+                    r#"model_providers.stub.wire_api="responses""#,
+                    &Kind::Idle.prompt(),
+                ]
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
+    fn the_cli_on_the_stub_gets_only_the_placeholder_and_an_empty_config_home() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path().join("home");
+        let at = |dir: &str| home.join(dir).to_string_lossy().into_owned();
+        let owned = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect()
+        };
+        let home_str = home.to_string_lossy().into_owned();
+        assert_eq!(
+            Agent::Claude
+                .environment(&home, "http://127.0.0.1:1", "/bin:/usr/bin")
+                .unwrap(),
+            owned(&[
+                ("PATH", "/bin:/usr/bin"),
+                ("HOME", &home_str),
+                ("CLAUDE_CONFIG_DIR", &at(".claude")),
+                ("ANTHROPIC_BASE_URL", "http://127.0.0.1:1"),
+                ("ANTHROPIC_API_KEY", PLACEHOLDER),
+            ])
+        );
+        assert_eq!(
+            Agent::Codex
+                .environment(&home, "http://127.0.0.1:1", "/bin")
+                .unwrap(),
+            owned(&[
+                ("PATH", "/bin"),
+                ("HOME", &home_str),
+                ("CODEX_HOME", &at(".codex")),
+                ("SKALD_STUB_API_KEY", PLACEHOLDER),
+            ])
+        );
+        for config in [".claude", ".codex"] {
+            assert_eq!(
+                fs::read_dir(home.join(config)).unwrap().count(),
+                0,
+                "{config} is an empty directory"
+            );
+        }
     }
 
     #[test]
@@ -676,22 +1062,38 @@ mod tests {
         assert_eq!(
             Options::parse(&["--keep"]),
             Some(Options {
-                model: None,
-                keep: true
+                keep: true,
+                ..Options::default()
             })
         );
         assert_eq!(
             Options::parse(&["--model", "gpt-5.5"]),
             Some(Options {
                 model: Some("gpt-5.5"),
-                keep: false
+                ..Options::default()
             })
         );
         assert_eq!(
-            Options::parse(&["--keep", "--model", "haiku"]),
+            Options::parse(&["--all"]),
+            Some(Options {
+                all: true,
+                ..Options::default()
+            })
+        );
+        assert_eq!(
+            Options::parse(&["--real"]),
+            Some(Options {
+                real: true,
+                ..Options::default()
+            })
+        );
+        assert_eq!(
+            Options::parse(&["--real", "--keep", "--model", "haiku", "--all"]),
             Some(Options {
                 model: Some("haiku"),
-                keep: true
+                keep: true,
+                all: true,
+                real: true,
             })
         );
         assert_eq!(Options::parse(&["--model"]), None);
@@ -699,11 +1101,53 @@ mod tests {
         assert_eq!(Options::parse(&["gpt-5.5"]), None);
     }
 
+    #[test]
+    fn starts_the_stub_unless_the_model_is_real() {
+        let real = Options {
+            real: true,
+            ..Options::default()
+        };
+        assert!(real.stub(Kind::Idle).unwrap().is_none());
+        assert_eq!(real.model_name(), "the real model");
+        let stub = Options::default().stub(Kind::Busy).unwrap().unwrap();
+        assert!(stub.url().starts_with("http://127.0.0.1:"));
+        assert_eq!(Options::default().model_name(), "the model stub");
+    }
+
+    #[test]
+    fn scripts_the_stub_and_the_prompts_per_case() {
+        assert_eq!(Kind::Idle.script(), [Call::Inbox]);
+        assert_eq!(Kind::Busy.script(), [Call::Shell, Call::Inbox]);
+        assert_eq!(
+            Kind::Idle.prompt(),
+            "Call the inbox tool of the skald MCP server and reply with only the check token \
+             from the message, or NONE if there is none."
+        );
+        assert_eq!(
+            Kind::Busy.prompt(),
+            "Run the shell command `sleep 20`. Then call the inbox tool of the skald MCP server \
+             and reply with only the check token from the message, or NONE if there is none."
+        );
+    }
+
     /// A session that called `inbox` and replied `reply`.
     fn replied(reply: &str) -> Session {
         let mut session = Session::new(1_000);
         session.record(&Event::InboxCalled);
         session.record(&Event::Reply(reply.to_owned()));
+        session
+    }
+
+    /// A session on the stub that called `inbox`; `token` reached the stub if given.
+    fn stubbed(token: Option<&str>, credentials: &[&str]) -> Session {
+        let mut session = replied(DONE);
+        session.stub = Some(StubLog {
+            requests: vec![
+                "{}".to_owned(),
+                format!("{{\"text\":\"{}\"}}", token.unwrap_or("none")),
+            ],
+            credentials: credentials.iter().map(|name| (*name).to_owned()).collect(),
+        });
         session
     }
 
@@ -720,6 +1164,16 @@ mod tests {
         session.record(&Event::Reply("working".to_owned()));
         session.record(&Event::InboxCalled);
         session.record(&Event::Reply("tok-1".to_owned()));
+        session.record(&Event::Used(Usage {
+            input: 100,
+            cached: 60,
+            output: 5,
+        }));
+        session.record(&Event::Used(Usage {
+            input: 10,
+            cached: 6,
+            output: 1,
+        }));
         assert_eq!(
             session,
             Session {
@@ -727,13 +1181,19 @@ mod tests {
                 sign_in: Some("none".to_owned()),
                 inbox_connected: Some(false),
                 inbox_called: true,
+                usage: Some(Usage {
+                    input: 110,
+                    cached: 66,
+                    output: 6
+                }),
+                stub: None,
                 started_ms: 1_000,
             }
         );
     }
 
     #[test]
-    fn a_session_receives_a_message_it_repeats_after_the_handover() {
+    fn on_the_real_model_a_session_receives_a_message_it_repeats_after_the_handover() {
         let handed_over = Some(State::HandedOver { at_ms: 2_000 });
         assert!(replied("The token is tok-1.").received("tok-1", handed_over));
         assert!(!replied("NONE").received("tok-1", handed_over));
@@ -747,29 +1207,71 @@ mod tests {
     }
 
     #[test]
+    fn on_the_stub_a_session_receives_a_message_whose_token_reaches_the_stub() {
+        let handed_over = Some(State::HandedOver { at_ms: 2_000 });
+        assert!(stubbed(Some("tok-1"), &[]).received("tok-1", handed_over));
+        assert!(!stubbed(None, &[]).received("tok-1", handed_over));
+        assert!(!stubbed(Some("tok-1"), &[]).received("tok-1", Some(State::Taken)));
+        // The reply does not count on the stub.
+        let mut repeated = stubbed(None, &[]);
+        repeated.reply = "tok-1".to_owned();
+        assert!(!repeated.received("tok-1", handed_over));
+        // A credential other than the placeholder fails the session.
+        assert!(!stubbed(Some("tok-1"), &["x-api-key"]).received("tok-1", handed_over));
+        let mut uncalled = stubbed(Some("tok-1"), &[]);
+        uncalled.inbox_called = false;
+        assert!(!uncalled.received("tok-1", handed_over));
+    }
+
+    #[test]
     fn the_other_session_misses_a_message_after_calling_inbox() {
         assert!(replied("NONE").missed("tok-1"));
         assert!(!replied("tok-1").missed("tok-1"));
         assert!(!Session::new(1_000).missed("tok-1"));
+        assert!(stubbed(None, &[]).missed("tok-1"));
+        assert!(!stubbed(Some("tok-1"), &[]).missed("tok-1"));
+        assert!(!stubbed(None, &["authorization"]).missed("tok-1"));
+        let mut uncalled = stubbed(None, &[]);
+        uncalled.inbox_called = false;
+        assert!(!uncalled.missed("tok-1"));
     }
 
     #[test]
     fn summarizes_a_session() {
-        assert_eq!(replied(" tok-1\n").summary(), r#"reply "tok-1""#);
+        assert_eq!(replied(" tok-1\n").summary("tok-1"), r#"reply "tok-1""#);
         let mut session = Session::new(1_000);
         session.record(&Event::Started {
             sign_in: Some("none".to_owned()),
             inbox_connected: false,
         });
         assert_eq!(
-            session.summary(),
+            session.summary("tok-1"),
             r#"reply "", apiKeySource none, the inbox server did not connect, inbox not called"#
         );
         session.record(&Event::Started {
             sign_in: None,
             inbox_connected: true,
         });
-        assert_eq!(session.summary(), r#"reply "", inbox not called"#);
+        session.record(&Event::Used(Usage {
+            input: 19_106,
+            cached: 15_200,
+            output: 42,
+        }));
+        assert_eq!(
+            session.summary("tok-1"),
+            r#"reply "", inbox not called, tokens: input 19106 (cached 15200), output 42"#
+        );
+        assert_eq!(
+            stubbed(Some("tok-1"), &[]).summary("tok-1"),
+            r#"reply "Done.", requests to the stub: 2, the token reached it"#
+        );
+        // On the stub, the CLI's token counts are the stub's, so they are not shown.
+        let mut session = stubbed(None, &["x-api-key"]);
+        session.record(&Event::Used(Usage::default()));
+        assert_eq!(
+            session.summary("tok-1"),
+            r#"reply "Done.", requests to the stub: 2, the token did not reach it, the stub got a credential other than the placeholder in x-api-key"#
+        );
     }
 
     #[test]
@@ -808,8 +1310,8 @@ mod tests {
     #[test]
     fn keeps_the_logs_when_asked_or_after_a_fail() {
         let keep = Options {
-            model: None,
             keep: true,
+            ..Options::default()
         };
         assert!(!Options::default().keeps_logs(true));
         assert!(Options::default().keeps_logs(false));
@@ -837,7 +1339,14 @@ mod tests {
     fn prepares_a_session_in_its_own_directory() {
         let work = tempfile::tempdir().unwrap();
         let inbox = Path::new("/bin/inbox");
-        let run = Run::new(work.path(), "a", Agent::Codex, inbox, "p", Some("m")).unwrap();
+        let setup = Setup {
+            work: work.path(),
+            agent: Agent::Codex,
+            inbox,
+            model: Some("m"),
+            path: "/bin",
+        };
+        let run = setup.run("a", Kind::Busy, None).unwrap();
         let dir = work.path().join("a");
         let project = dir.join("project");
         let source = dir.join("source");
@@ -848,17 +1357,52 @@ mod tests {
                 name: "a".to_owned(),
                 agent: Agent::Codex,
                 args: Agent::Codex
-                    .session(&project, inbox, &source, "p", Some("m"))
+                    .session(&project, inbox, &source, Kind::Busy, Some("m"), None)
                     .unwrap(),
+                env: None,
                 project,
                 source,
                 log: dir.join("session.jsonl"),
                 stderr: dir.join("session.stderr"),
             }
         );
-        let claude = Run::new(work.path(), "b", Agent::Claude, inbox, "p", None).unwrap();
-        assert_eq!(claude.args[..2], ["-p", "p"]);
-        assert!(claude.project.join(".mcp.json").is_file());
+
+        let stub = Stub::start(Kind::Idle.script()).unwrap();
+        let claude = Setup {
+            agent: Agent::Claude,
+            model: None,
+            ..setup
+        };
+        let run = claude.run("b", Kind::Idle, Some(&stub)).unwrap();
+        let dir = work.path().join("b");
+        assert_eq!(run.args[..2], ["-p", &Kind::Idle.prompt()]);
+        assert!(run.project.join(".mcp.json").is_file());
+        assert_eq!(
+            run.env,
+            Some(
+                Agent::Claude
+                    .environment(&dir.join("home"), &stub.url(), "/bin")
+                    .unwrap()
+            )
+        );
+        let codex = setup.run("c", Kind::Idle, Some(&stub)).unwrap();
+        assert!(
+            codex.args.contains(&format!(
+                r#"model_providers.stub.base_url="{}/v1""#,
+                stub.url()
+            )),
+            "{:?}",
+            codex.args
+        );
+        assert!(
+            codex.env.unwrap().contains(&(
+                "CODEX_HOME".to_owned(),
+                work.path()
+                    .join("c/home/.codex")
+                    .to_string_lossy()
+                    .into_owned()
+            ))
+        );
     }
 
     #[test]
@@ -880,20 +1424,6 @@ mod tests {
         assert_eq!(
             session_failure(true, timeout, ok),
             Some("timed out after 300 s".to_owned())
-        );
-    }
-
-    #[test]
-    fn prompts_name_the_inbox_tool() {
-        assert_eq!(
-            idle_prompt(),
-            "Call the inbox tool of the skald MCP server and reply with only the check token \
-             from the message, or NONE if there is none."
-        );
-        assert_eq!(
-            busy_prompt(),
-            "Run the shell command `sleep 20`. Then call the inbox tool of the skald MCP server \
-             and reply with only the check token from the message, or NONE if there is none."
         );
     }
 
@@ -927,6 +1457,7 @@ mod tests {
             },
             Event::InboxCalled,
             Event::Reply("working".to_owned()),
+            Event::Used(Usage::default()),
         ] {
             busy.on_event(&event, || {
                 calls += 1;
@@ -953,18 +1484,21 @@ mod tests {
         let mut check = InboxCheck::default();
         assert_eq!(
             check.idle(&replied("tok-1"), "tok-1", handed_over),
-            r#"  idle session, one of two: pass — reply "tok-1"; handed over 4.9 s after the session started"#
+            r#"  idle session: pass — reply "tok-1"; handed over 4.9 s after the session started"#
         );
         assert_eq!(
             check.other(&replied("NONE"), "tok-1"),
-            r#"  the other idle session: pass — reply "NONE"; the message did not reach it"#
+            r#"  the other of two idle sessions: pass — reply "NONE"; the message is the first session's"#
         );
         assert_eq!(
             check.busy(&replied("tok-2"), "tok-2", Some(3_000), handed_over),
             r#"  busy session: pass — reply "tok-2"; added while the shell command ran, handed over 2.9 s later"#
         );
         assert!(check.pass());
-        assert_eq!(check.verdict(Agent::Codex), "inbox on codex: pass");
+        assert_eq!(
+            check.verdict(Agent::Codex, &Options::default()),
+            "inbox on codex with the model stub: pass"
+        );
 
         // One failed check fails the path.
         assert_eq!(
@@ -972,7 +1506,14 @@ mod tests {
             r#"  busy session: fail — reply "NONE"; the agent ran no shell command"#
         );
         assert!(!check.pass());
-        assert_eq!(check.verdict(Agent::Claude), "inbox on claude: fail");
+        let real = Options {
+            real: true,
+            ..Options::default()
+        };
+        assert_eq!(
+            check.verdict(Agent::Claude, &real),
+            "inbox on claude with the real model: fail"
+        );
 
         let mut check = InboxCheck::default();
         assert!(

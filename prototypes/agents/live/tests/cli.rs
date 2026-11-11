@@ -54,6 +54,7 @@ fn wrong_arguments_print_the_usage() {
         &["inbox", "gemini"],
         &["inbox", "claude", "--model"],
         &["inbox", "codex", "--verbose"],
+        &["inbox", "codex", "--all", "--real", "--stub"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -65,7 +66,7 @@ fn wrong_arguments_print_the_usage() {
 fn inbox_fails_without_the_cli() {
     let empty = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
-        .args(["inbox", "claude", "--keep"])
+        .args(["inbox", "claude", "--all", "--real", "--keep"])
         .env("PATH", empty.path())
         .output()
         .expect("live-check runs");

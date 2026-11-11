@@ -42,7 +42,7 @@ fn main() -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: live-check add <source-dir> <sender> <text>\n       \
-         live-check inbox <claude|codex> [--model <model>] [--keep]"
+         live-check inbox <claude|codex> [--all] [--real] [--model <model>] [--keep]"
     );
     ExitCode::from(2)
 }
