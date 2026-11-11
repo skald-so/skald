@@ -626,7 +626,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - In 6.3–6.7:
     - the developer works on the VPS through the owner's SSH access;
     - `skald-cloud` changes go through a PR to its `main`, linked from the iteration PR; the iteration's reviewer reviews it too; the orchestrator merges it right after the iteration PR; the next iteration starts only once it is in `skald-cloud`'s `main`;
-    - output taken from the VPS, such as the site check's, goes only to the linked `skald-cloud` PR; the iteration PR and its reviews link to it and name no other project's site.
+    - the iteration PR, its commits and its reviews name nothing taken from the VPS or the inventory: no other project, site, port or tool, and none of the owner's decisions on them. They link to the `skald-cloud` PR; output and findings that would name such things, such as the site check's or a port scan's, go only there. In an iteration without a `skald-cloud` PR, the review states its findings without them.
   - This iteration only reads from the VPS; it changes nothing there.
   - `skald-cloud` gets a `script/test` that runs its tests (`rules.md`, rule 2).
   - An inventory in `skald-cloud` of what the web server that runs on the VPS now (the old web server) does:
@@ -640,7 +640,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - the switch: Caddy holds a valid certificate for every site before the old web server stops; the switch interrupts the sites only for the restart; the old web server is stopped and disabled, its config and certificates kept;
     - the rollback: it renews the kept certificates, then switches back to the old web server.
   - Tests, against local stand-in sites: the site check passes when the responses match the baseline and fails, naming the entry, on a different status or redirect target, a port that does not answer, or a certificate not valid for the site's domains.
-- **Definition of done:** comparing the inventory with the old web server's loaded config and listening sockets, the reviewer finds no entry missing; repeating the search for tools on the VPS, the reviewer finds no tool missing; every entry and tool of the inventory says what happens to it after the move; the site check, rerun by the reviewer, passes against the baseline; Caddy validates the configs; the site check's tests pass in `skald-cloud`'s `script/test`.
+- **Definition of done:** comparing the inventory with the old web server's loaded config and listening sockets, the reviewer finds no entry missing; repeating the search for tools on the VPS, the reviewer finds no tool missing; every entry and tool of the inventory says what happens to it after the move; the site check, rerun by the reviewer, passes against the baseline; Caddy validates the configs; the site check's tests pass in `skald-cloud`'s `script/test`; the iteration PR and its commits name nothing taken from the VPS or the inventory.
 
 #### Iteration 6.4: Switching the staging VPS to Caddy
 - **Goal:** One Caddy serves every site on the staging VPS, and the other projects' sites keep working through and after the move.
@@ -650,12 +650,12 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - allows the switch in chat.
   - The orchestrator puts the owner's decisions and the allowance in the developer's and the reviewer's prompts; the developer records the decisions in the inventory.
   - The owner makes each change in another project, at the time its decision names.
-  - Caddy runs on the VPS with the configs of 6.3, apart from any project's stack, so no project's deploy stops it.
+  - Caddy runs on the VPS with the configs of 6.3, apart from any project's stack, so no project's deploy stops it; its logs rotate with a size cap, so they cannot fill the VPS's disk.
   - Each entry and tool of the inventory moves or stops as it says.
   - The switch follows the runbook of 6.3, with the site check running through it.
   - The developer rehearses the rollback once: to the old web server and back to Caddy, with the site check after each step.
   - Fixes to the inventory, the configs or the runbook found on the way go to `skald-cloud`.
-- **Definition of done:** the inventory records exactly the owner's decisions from the reviewer's prompt; only Caddy serves ports 80 and 443 on the VPS, and every other entry of the inventory is served as it says; the old web server is stopped and disabled, its config and certificates kept; each tool of the inventory works with Caddy or is stopped, as it says; the site check, rerun by the reviewer, passes for every entry; its output in the `skald-cloud` PR, through the switch and after each step of the rehearsed rollback, shows no entry down beyond a restart and the kept certificates renewed before the switch back.
+- **Definition of done:** the inventory records exactly the owner's decisions from the reviewer's prompt; only Caddy serves ports 80 and 443 on the VPS, and every other entry of the inventory is served as it says; the old web server is stopped and disabled, its config and certificates kept; the reviewer finds the size cap on Caddy's logs; each tool of the inventory works with Caddy or is stopped, as it says; the site check, rerun by the reviewer, passes for every entry; its output in the `skald-cloud` PR, through the switch and after each step of the rehearsed rollback, shows no entry down beyond a restart and the kept certificates renewed before the switch back; the iteration PR and its commits name nothing taken from the VPS or the inventory.
 
 #### Iteration 6.5: Staging stack at `dev.skald.so`
 - **Goal:** Staging runs `skald-server` from the `:edge` image behind Caddy, deployed by one command.
@@ -665,35 +665,37 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - A Caddy site for `dev.skald.so`, in its own config, passes HTTPS and WebSocket to the server; adding it interrupts no other site.
   - Only Caddy reaches the server, and only the server reaches PostgreSQL; the server container runs without privileges or host access beyond its volumes.
   - The stack's secrets live only on the VPS; `skald-cloud` names them without values.
-  - A deploy command on the VPS takes an image digest, pulls it and restarts the server with it. It passes only when the running server container has that digest and the health check over `https://dev.skald.so` answers ok.
+  - The stack cannot use up the shared VPS: its containers have memory and CPU limits, their logs rotate with a size cap, and the database and attachment volumes cannot grow past a set size.
+  - A deploy command on the VPS takes an image digest, pulls it and restarts the server with it. It passes only when the running server container has that digest and the health check over `https://dev.skald.so` answers ok. After a successful deploy, it removes the server images it no longer runs.
   - The deploy command prints only its steps, the digest and the health check result, never the stack's settings or container logs.
   - The runbook in `skald-cloud`: bringing the stack up, applying a config change, deploying and rolling back a digest, logs, where the secrets are.
   - `infrastructure.md`, "Repositories": `skald-cloud` also holds the staging configs.
-  - Tests, with stand-ins for Docker and the HTTPS check: the deploy command passes when the requested digest runs and the health check answers ok, and fails on a failed pull, another running digest or a failed health check; the output of a failing deploy contains none of the stack's secret values.
-- **Definition of done:** `https://dev.skald.so/health` answers ok with a valid certificate; the deploy command, rerun by the reviewer with the current `:edge` digest, passes, and the image's labels name a `dev` commit; the database and the attachment volume keep their data across that redeploy; PostgreSQL and the server's port are closed from outside; the site check of 6.3 passes; the deploy command's tests pass in `skald-cloud`'s `script/test`.
+  - Tests, with stand-ins for Docker and the HTTPS check: the deploy command passes when the requested digest runs and the health check answers ok, and fails on a failed pull, another running digest or a failed health check; after a successful deploy, no older server image stays; the output of a failing deploy contains none of the stack's secret values.
+- **Definition of done:** `https://dev.skald.so/health` answers ok with a valid certificate; the deploy command, rerun by the reviewer with the current `:edge` digest, passes, and the image's labels name a `dev` commit; the database and the attachment volume keep their data across that redeploy, and no older server image stays after it; on the running containers and volumes, the reviewer finds the memory and CPU limits, the log size cap and the volume size limits; PostgreSQL and the server's port are closed from outside; the site check of 6.3 passes; the deploy command's tests pass in `skald-cloud`'s `script/test`; the iteration PR and its commits name nothing taken from the VPS or the inventory.
 
 #### Iteration 6.6: Deploy access to the staging VPS
 - **Goal:** CI can deploy staging and nothing else on the shared VPS.
 - **What we do:**
   - A deploy account on the VPS whose SSH key runs only the deploy command of 6.5 with one digest of the `skald-server` image: no shell, port forwarding or other command, and no access to other projects' files.
   - Any other input is refused before anything runs.
-  - The runbook in `skald-cloud`: how the owner creates the key pair and installs the public key with this restriction; rotating and revoking the key; the host key CI pins and the SSH address, port and account CI connects with; what the VPS's firewall must let in from GitHub-hosted runners.
+  - The runbook in `skald-cloud`: how the owner creates the key pair and installs the public key with this restriction; rotating and revoking the key; what the VPS's firewall must let in from GitHub-hosted runners; the GitHub environment of 6.7 and its secrets by name, with the value each holds: the private key, the host key CI pins, and the SSH destination with the account, the address and the port in one value.
+  - No secret of that environment is a value that GitHub's masking could find in the commit, the digest or the health check result of the deploy log: a short value, such as the port or the account, is never a secret on its own.
   - Tests, with a stand-in for the deploy command: one well-formed digest of the `skald-server` image reaches it; other commands, extra arguments, other images and malformed digests are refused without running it.
-- **Definition of done:** run as the deploy account the way SSH runs the key's command, it deploys the current `:edge` digest and refuses every other input, checked by the reviewer through the owner's SSH access; the runbook's install steps give the key exactly this restriction; the tests pass in `skald-cloud`'s `script/test`.
+- **Definition of done:** run as the deploy account the way SSH runs the key's command, it deploys the current `:edge` digest and refuses every other input, checked by the reviewer through the owner's SSH access; the runbook's install steps give the key exactly this restriction, and its secrets follow the masking rule above; the tests pass in `skald-cloud`'s `script/test`; the iteration PR and its commits name nothing taken from the VPS or the inventory.
 
 #### Iteration 6.7: Deploying every merge into `dev`
 - **Goal:** Each `:edge` image CI publishes reaches staging without a person.
 - **What we do:**
   - Before the iteration starts, the owner:
     - creates the deploy key pair and installs the public key on the VPS as the runbook of 6.6 says;
-    - in `skald-so/skald`, creates a GitHub environment for staging that only `dev` may deploy from; its secrets hold the private key, the pinned host key, the SSH port and account, and the SSH address unless it is `dev.skald.so`;
+    - in `skald-so/skald`, creates the GitHub environment and its secrets as the runbook says; only `dev` may deploy from it;
     - opens the VPS's firewall to GitHub-hosted runners, if the runbook says it is needed.
-  - After the workflow of 6.2 publishes `:edge`, a deploy job in that environment connects to the VPS with the deploy key and the connection details from the environment's secrets, checks the pinned host key and deploys the published digest; it fails when the deploy fails.
+  - After the workflow of 6.2 publishes `:edge`, a deploy job in that environment connects to the VPS with the secrets the runbook names, checks the pinned host key and deploys the published digest; it fails when the deploy fails.
   - Deploys run one at a time; when merges overlap, staging never moves back to an older commit.
   - The job's public log shows the commit and digest deployed and the health check result, and none of the environment's secrets.
   - `infrastructure.md`, "Cloud": the staging deploy runs in this repository's CI, in an environment only `dev` deploys from.
   - The first deploy runs on this iteration's merge; 6.8 checks it and its log.
-- **Definition of done:** the installed key carries the restriction of 6.6; the environment admits only `dev`, and no other secret of the repository holds the key; only the deploy job uses the environment, and it pins the host key; the workflow names none of the host key, the SSH port, account or address held in the environment's secrets.
+- **Definition of done:** the installed key carries the restriction of 6.6; the environment admits only `dev`, its secrets are exactly those the runbook names, and no other secret of the repository holds the key; only the deploy job uses the environment; it takes the connection details only from those secrets and pins the host key; the workflow names no connection detail; the iteration PR and its commits name nothing taken from the VPS or the inventory.
 
 #### Iteration 6.8: Staging status check
 - **Goal:** Anyone can tell whether staging runs the latest merge into `dev`, and a merge is shown to reach staging within a few minutes.
@@ -703,7 +705,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - It uses only public data: the CI runs of `skald-so/skald` and the health check.
   - `infrastructure.md`, "Cloud": the staging line names the command.
   - Tests, on recorded GitHub API responses and a local stand-in for the health check: it passes for a succeeded deploy of the latest commit with the health check ok, and fails, naming the cause, in each other case above.
-- **Definition of done:** the command, run by the reviewer, passes for the latest commit on `dev` and shows that it reached staging within a few minutes of its merge; the log of the deploy run it reports shows the commit, the digest and the health check result, and the reviewer finds no secret in it, the connection details of 6.7 included; its unit tests run in `script/test`.
+- **Definition of done:** the command, run by the reviewer, passes for the latest commit on `dev` and shows that it reached staging within a few minutes of its merge; the log of the deploy run it reports shows the commit, the digest and the health check result in full, none of them masked, and the reviewer finds no secret in it, the connection details of 6.7 included; its unit tests run in `script/test`.
 
 ### Story 7: Release pipeline
 
