@@ -143,14 +143,14 @@ Open questions of edit comparison, and how the prototype answers them:
   - Each language needs its grammar, compiled from C at build time, and the list of node kinds that are symbols with the field that names each.
   - Other files, `.tsx` and `.go` among them, get path and hunk fingerprints only.
 - **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit symbol"`, the scope, the path, and the node kind and the name of each symbol from the outermost, each after its length as a big-endian `u64`. No line numbers or content: a symbol moved within its file keeps its fingerprint.
-- **Publication:** in one set with the path and hunk fingerprints. Each changed symbol adds a fingerprint, so the server learns how many symbols a machine changes.
+- **Publication:** in one set with the path and hunk fingerprints. The server cannot tell them apart: each changed symbol adds to the total it sees.
 - **Matches without a conflict:**
   - Edits to distant lines of one function, which `git merge-tree` merges cleanly: what this level is for.
-  - Symbols of one name and kind in one scope, such as a TypeScript getter and setter, share a fingerprint.
+  - Symbols of one name and kind in one file under the same enclosing symbols, such as a TypeScript getter and setter, share a fingerprint.
 - **Misses:**
-  - Doc comments, attributes and decorators are outside the symbol they belong to: their lines count towards the enclosing symbol, or none.
+  - Doc comments, attributes and decorators are outside the symbol they belong to: their lines count towards the enclosing symbol, or none. A TypeScript class's decorators are the exception: they are part of the class.
   - Closures, lambdas and callbacks are not symbols: their lines count towards the symbol around them. A TypeScript test file of `describe` and `it` callbacks has none.
   - Edits outside every symbol, such as imports and module-level constants, match at file and hunk level only.
   - A type's fields and its methods are different symbols; so are a Rust struct and its `impl` block.
 - **Open:** a symbol moved to another file, which gets another fingerprint; files with syntax errors, as during an edit; a line that holds two symbols, which counts towards the last; more languages and extensions, such as `.tsx` and JavaScript.
-- **Cost:** two parses of each changed file in a supported language, of the merge base and of the snapshot. Cost on real repositories: open.
+- **Cost:** at most two parses of each changed file in a supported language, one of each version, the merge base and the snapshot, that holds changed lines. Cost on real repositories: open.

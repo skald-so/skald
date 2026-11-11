@@ -320,6 +320,15 @@ mod tests {
                 ("  get size(): number { return this.items; }", size),
                 ("  set size(n: number) { this.items = n; }", size),
                 ("}", store),
+                // A class decorator is part of its class; a method decorator is not part of its method.
+                ("@sealed", "class_declaration Box"),
+                ("class Box {", "class_declaration Box"),
+                ("  @logged", "class_declaration Box"),
+                (
+                    "  open(): void {}",
+                    "class_declaration Box > method_definition open",
+                ),
+                ("}", "class_declaration Box"),
                 ("abstract class Shelf {", "abstract_class_declaration Shelf"),
                 (
                     "  abstract put(): void;",
