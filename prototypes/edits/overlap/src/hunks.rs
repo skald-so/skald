@@ -23,7 +23,8 @@ pub struct Change {
 /// The changes of `path` from the commit `base` to the commit `commit`, both in the repository at
 /// `dir`, as `git diff` finds them with the diff algorithm of `git merge-tree`, histogram without
 /// the indent heuristic. The options fix what the repository's attributes and config could change:
-/// a binary diff without hunks, a text conversion, an external diff and the diff algorithm.
+/// a binary diff without hunks, a text conversion, an external diff, the diff algorithm and colors.
+/// `--literal-pathspecs` takes `path` as it is, not as a pattern that matches other paths.
 pub fn changes(dir: &Path, base: &str, commit: &str, path: &str) -> Result<Vec<Change>> {
     let diff = git::run(
         dir,
@@ -54,10 +55,15 @@ fn parse(diff: &[u8]) -> Result<Vec<Change>> {
     let mut changes = Vec::new();
     let mut lines = diff.split_inclusive(|&byte| byte == b'\n').peekable();
     while let Some(line) = lines.next() {
-        let Some(header) = line.strip_prefix(b"@@ -") else {
+        let Some(text) = line.strip_prefix(b"@@ -") else {
             continue;
         };
-        let (old_lines, new, new_lines) = header_counts(header)?;
+        let Header {
+            old_lines,
+            new,
+            new_lines,
+            ..
+        } = header(text)?;
         // The hunk's lines: each one's side, ` `, `-` or `+`, and its text with its line ending.
         let mut body: Vec<(u8, Vec<u8>)> = Vec::new();
         let (mut old_left, mut new_left) = (old_lines, new_lines);
@@ -118,9 +124,18 @@ fn parse(diff: &[u8]) -> Result<Vec<Change>> {
     Ok(changes)
 }
 
-/// The number of old lines, the first new line and the number of new lines of a hunk header,
-/// `@@ -<old>[,<lines>] +<new>[,<lines>] @@`, without its `@@ -`.
-fn header_counts(header: &[u8]) -> Result<(usize, usize, usize)> {
+/// A hunk header, `@@ -<old>[,<lines>] +<new>[,<lines>] @@`: the first line and the number of lines
+/// on each side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Header {
+    pub old: usize,
+    pub old_lines: usize,
+    pub new: usize,
+    pub new_lines: usize,
+}
+
+/// The hunk header `header`, without its `@@ -`.
+pub(crate) fn header(header: &[u8]) -> Result<Header> {
     let header = String::from_utf8_lossy(header);
     let side = |range: &str| -> Result<(usize, usize)> {
         Ok(match range.split_once(',') {
@@ -134,8 +149,13 @@ fn header_counts(header: &[u8]) -> Result<(usize, usize, usize)> {
     let (new, _) = rest
         .split_once(" @@")
         .ok_or_else(|| format!("a hunk header without an end: {header}"))?;
-    let ((_, old_lines), (new, new_lines)) = (side(old)?, side(new)?);
-    Ok((old_lines, new, new_lines))
+    let ((old, old_lines), (new, new_lines)) = (side(old)?, side(new)?);
+    Ok(Header {
+        old,
+        old_lines,
+        new,
+        new_lines,
+    })
 }
 
 #[cfg(test)]

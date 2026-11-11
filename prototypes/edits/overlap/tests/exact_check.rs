@@ -6,126 +6,17 @@
     reason = "a check's ranges of lines are lists of ranges"
 )]
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use edit_overlap::harness::{Machine, Upstream};
-use edit_overlap::{Check, Client, Conflict, Edits, Messages, Publication, Server, SpaceKey, git};
+use common::{INVENTORY, Repo, Space, bytes, holds, inventory, inventory_with, lines};
+use edit_overlap::harness::Machine;
+use edit_overlap::{Check, Conflict, Edits, Publication, git};
 use tempfile::TempDir;
 
-/// The space key, a test fixture.
-fn key() -> SpaceKey {
-    SpaceKey::from_bytes(*b"a fixture space key, 32 bytes!!!")
-}
-
-/// `src/inventory.rs` in the test repository, line by line.
-const INVENTORY: [&str; 12] = [
-    "pub fn count() -> u32 {",
-    "    let items = 0;",
-    "    items",
-    "}",
-    "",
-    "pub fn reserve() -> u32 {",
-    "    let reserved = 1;",
-    "    reserved",
-    "}",
-    "",
-    "pub fn release() -> u32 {",
-    "    let released = 2;",
-];
-
-/// The test repository's files.
-fn files() -> Vec<(&'static str, String)> {
-    vec![
-        (".gitignore", "/target\n".into()),
-        ("src/inventory.rs", inventory(&[])),
-        ("src/warehouse.rs", "pub struct Warehouse;\n".into()),
-        ("docs/guide.md", "# Guide\n\nRead the code.\n".into()),
-    ]
-}
-
-/// `src/inventory.rs` with `lines` on top of it and each `(line, text)` of `edits`, 1-based, in
-/// place of its line.
-fn inventory_with(top: &[&str], edits: &[(usize, &str)]) -> String {
-    let mut lines: Vec<&str> = INVENTORY.to_vec();
-    for &(line, text) in edits {
-        lines[line - 1] = text;
-    }
-    let lines: Vec<&str> = top.iter().copied().chain(lines).collect();
-    lines.join("\n") + "\n"
-}
-
-fn inventory(edits: &[(usize, &str)]) -> String {
-    inventory_with(&[], edits)
-}
-
-struct Repo {
-    upstream: Upstream,
-}
-
-impl Repo {
-    fn create(tmp: &TempDir) -> Self {
-        Self::create_with(tmp, &[])
-    }
-
-    /// The test repository with `extra` files, each a path and its contents.
-    fn create_with(tmp: &TempDir, extra: &[(&str, &str)]) -> Self {
-        let files = files();
-        let files: Vec<(&str, &str)> = files
-            .iter()
-            .map(|(path, text)| (*path, text.as_str()))
-            .chain(extra.iter().copied())
-            .collect();
-        Self {
-            upstream: Upstream::create(&tmp.path().join("repo"), &files).unwrap(),
-        }
-    }
-
-    fn machine(&self, name: &str) -> (Machine, Client) {
-        (
-            self.upstream.clone_as(name).unwrap(),
-            Client::new(name, key()),
-        )
-    }
-}
-
-/// A space: the server stand-in, the messages between machines, and its machines.
-struct Space<'a> {
-    server: Server,
-    messages: Messages,
-    machines: Vec<(&'a Machine, &'a Client)>,
-}
-
-impl<'a> Space<'a> {
-    fn new(machines: &[(&'a Machine, &'a Client)]) -> Self {
-        Self {
-            server: Server::default(),
-            messages: Messages::default(),
-            machines: machines.to_vec(),
-        }
-    }
-
-    /// Each machine publishes its edit set; returns the edit sets.
-    fn publish(&mut self) -> Vec<Edits> {
-        let edits: Vec<Edits> = self
-            .machines
-            .iter()
-            .map(|(machine, client)| client.edits(machine.dir()).unwrap())
-            .collect();
-        for edit in &edits {
-            self.server.publish(edit.publication.clone());
-        }
-        edits
-    }
-
-    fn find(&self, name: &str) -> (&'a Machine, &'a Client) {
-        *self
-            .machines
-            .iter()
-            .find(|(_, client)| client.machine == name)
-            .unwrap()
-    }
-
+impl Space<'_> {
     /// `name` asks each machine the server says it overlaps for its changes, they answer, and it
     /// checks them: what it finds, by machine.
     fn check(&mut self, name: &str) -> BTreeMap<String, Check> {
@@ -160,10 +51,7 @@ fn conflicted(conflicts: &[(&str, &[&str])], files: &[(&str, &[Range<usize>])]) 
                 paths: paths.iter().map(|path| path.to_string()).collect(),
             })
             .collect(),
-        files: files
-            .iter()
-            .map(|(path, lines)| (path.to_string(), lines.to_vec()))
-            .collect(),
+        files: lines(files),
     }
 }
 
@@ -308,8 +196,9 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     );
     let (a, a_client) = repo.machine("alice-laptop");
     let (b, b_client) = repo.machine("bob-desktop");
-    // `git diff` joins hunks up to 3 lines apart into one.
+    // `git diff` joins hunks up to 3 lines apart into one, and colors its output.
     a.git(&["config", "diff.interHunkContext", "3"]).unwrap();
+    a.git(&["config", "color.diff", "always"]).unwrap();
     a.write(
         "src/inventory.rs",
         &inventory(&[(7, "    let reserved = 10;")]),
@@ -677,23 +566,14 @@ fn server_receives_and_keeps_nothing_of_the_exchanged_changes() {
         needles.extend(text.lines().map(str::trim).filter(|line| line.len() >= 4));
     }
     assert!(needles.contains("let reserved = 20;"));
-    let mut bytes = Vec::new();
-    for publication in &received {
-        bytes.extend_from_slice(publication.machine.as_bytes());
-        for fingerprint in &publication.fingerprints {
-            bytes.extend_from_slice(&fingerprint.0);
-        }
-    }
-    for (machine, fingerprints) in &kept {
-        bytes.extend_from_slice(machine.as_bytes());
-        for fingerprint in fingerprints {
-            bytes.extend_from_slice(&fingerprint.0);
-        }
-    }
+    let received = received
+        .iter()
+        .map(|publication| (&publication.machine, &publication.fingerprints));
+    let bytes = bytes(received.chain(&kept));
     for needle in needles {
-        let found = bytes
-            .windows(needle.len())
-            .any(|window| window == needle.as_bytes());
-        assert!(!found, "{needle} in what the server received or keeps");
+        assert!(
+            !holds(&bytes, needle),
+            "{needle} in what the server received or keeps"
+        );
     }
 }

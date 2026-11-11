@@ -5,88 +5,13 @@
     reason = "a machine's changed lines are lists of ranges"
 )]
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
 
-use edit_overlap::harness::{Machine, Upstream};
-use edit_overlap::{Check, Client, Edits, Lines, Messages, Server, SpaceKey};
+use common::{Repo, Space, bytes, files, holds, inventory, inventory_with, lines};
+use edit_overlap::{Check, Lines};
 use tempfile::TempDir;
-
-/// The space key, a test fixture.
-fn key() -> SpaceKey {
-    SpaceKey::from_bytes(*b"a fixture space key, 32 bytes!!!")
-}
-
-/// `src/inventory.rs` in the test repository, line by line.
-const INVENTORY: [&str; 14] = [
-    "pub fn count() -> u32 {",
-    "    let items = 0;",
-    "    items",
-    "}",
-    "",
-    "pub fn reserve() -> u32 {",
-    "    let reserved = 1;",
-    "    reserved",
-    "}",
-    "",
-    "pub fn release() -> u32 {",
-    "    let released = 2;",
-    "    released",
-    "}",
-];
-
-/// The test repository's files.
-fn files() -> Vec<(&'static str, String)> {
-    vec![
-        ("src/inventory.rs", inventory(&[])),
-        ("src/warehouse.rs", "pub struct Warehouse;\n".into()),
-    ]
-}
-
-/// `src/inventory.rs` with `top` on top of it and each `(line, text)` of `edits`, 1-based, in
-/// place of its line; a text with line breaks stands for several lines, an empty one for none.
-fn inventory_with(top: &[&str], edits: &[(usize, &str)]) -> String {
-    let mut lines: Vec<String> = INVENTORY.iter().map(|line| format!("{line}\n")).collect();
-    for &(line, text) in edits {
-        lines[line - 1] = text.lines().map(|line| format!("{line}\n")).collect();
-    }
-    let top: String = top.iter().map(|line| format!("{line}\n")).collect();
-    top + &lines.concat()
-}
-
-fn inventory(edits: &[(usize, &str)]) -> String {
-    inventory_with(&[], edits)
-}
-
-struct Repo {
-    upstream: Upstream,
-}
-
-impl Repo {
-    fn create(tmp: &TempDir) -> Self {
-        Self::create_with(tmp, &[])
-    }
-
-    /// The test repository with `extra` files, each a path and its contents.
-    fn create_with(tmp: &TempDir, extra: &[(&str, &str)]) -> Self {
-        let files = files();
-        let files: Vec<(&str, &str)> = files
-            .iter()
-            .map(|(path, text)| (*path, text.as_str()))
-            .chain(extra.iter().copied())
-            .collect();
-        Self {
-            upstream: Upstream::create(&tmp.path().join("repo"), &files).unwrap(),
-        }
-    }
-
-    fn machine(&self, name: &str) -> (Machine, Client) {
-        (
-            self.upstream.clone_as(name).unwrap(),
-            Client::new(name, key()),
-        )
-    }
-}
 
 /// What each machine learns from the server, by the other machine.
 #[derive(Debug, PartialEq, Eq)]
@@ -97,56 +22,15 @@ struct Seen {
     hunks: BTreeMap<String, Lines>,
 }
 
-/// A space: the server stand-in, the messages between machines, and its machines.
-struct Space<'a> {
-    server: Server,
-    messages: Messages,
-    machines: Vec<(&'a Machine, &'a Client)>,
-    edits: Vec<Edits>,
-}
-
-impl<'a> Space<'a> {
-    fn new(machines: &[(&'a Machine, &'a Client)]) -> Self {
-        Self {
-            server: Server::default(),
-            messages: Messages::default(),
-            machines: machines.to_vec(),
-            edits: Vec::new(),
-        }
-    }
-
-    /// Each machine publishes its edit set.
-    fn publish(&mut self) {
-        self.edits = self
-            .machines
-            .iter()
-            .map(|(machine, client)| client.edits(machine.dir()).unwrap())
-            .collect();
-        for edit in &self.edits {
-            self.server.publish(edit.publication.clone());
-        }
-    }
-
+impl Space<'_> {
     /// What the machine `name` learns from the server.
     fn seen(&self, name: &str) -> Seen {
-        let edits = self
-            .edits
-            .iter()
-            .find(|edits| edits.publication.machine == name)
-            .unwrap();
+        let edits = self.edits_of(name);
         let overlaps = self.server.overlaps(name);
         Seen {
             paths: edits.overlapping_paths(&overlaps),
             hunks: edits.overlapping_hunks(&overlaps),
         }
-    }
-
-    fn find(&self, name: &str) -> (&'a Machine, &'a Client) {
-        *self
-            .machines
-            .iter()
-            .find(|(_, client)| client.machine == name)
-            .unwrap()
     }
 
     /// `name` checks its overlap with `other` with `git merge-tree`.
@@ -172,14 +56,6 @@ fn paths(others: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
             let paths = paths.iter().map(|path| path.to_string()).collect();
             (machine.to_string(), paths)
         })
-        .collect()
-}
-
-/// Paths with ranges of lines, `[(path, [lines])]`.
-fn lines(files: &[(&str, &[Range<usize>])]) -> Lines {
-    files
-        .iter()
-        .map(|(path, ranges)| (path.to_string(), ranges.to_vec()))
         .collect()
 }
 
@@ -396,21 +272,25 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
     // files with the command of the config `diff.upper.textconv` first.
     let steps = "build\nbuild\ntest\ntest\ndeploy\ntest\n";
     let braces = "}\n}\n}\n    y();\nfn f() {\n    y();\nfn f() {\n";
+    let ids = "pub fn id() {}\n\n\n\npub fn di() {}\n";
     let repo = Repo::create_with(
         &tmp,
         &[
             (".gitattributes", "* -diff\n*.txt diff=upper\n"),
             ("steps.txt", steps),
             ("src/braces.rs", braces),
+            ("src/[id].rs", ids),
+            ("src/i.rs", "pub fn i() {}\n"),
         ],
     );
     let (a, a_client) = repo.machine("alice-laptop");
     let (b, b_client) = repo.machine("bob-desktop");
-    // A text conversion, an external diff that fails, and no lines of context.
+    // A text conversion, an external diff that fails, no lines of context, and colors.
     a.git(&["config", "diff.upper.textconv", "tr a-z A-Z"])
         .unwrap();
     a.git(&["config", "diff.external", "false"]).unwrap();
     a.git(&["config", "diff.context", "0"]).unwrap();
+    a.git(&["config", "color.diff", "always"]).unwrap();
     // `git diff` writes empty lines of context without their space.
     b.git(&["config", "diff.suppressBlankEmpty", "true"])
         .unwrap();
@@ -428,6 +308,14 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
     a.write("src/braces.rs", &format!("}}\n{braces}")).unwrap();
     b.write("src/braces.rs", &braces.replacen("y()", "z()", 1))
         .unwrap();
+    // As a pattern, the path `src/[id].rs` matches `src/i.rs` too: edits of its distant lines
+    // merge cleanly, edits of `src/i.rs` conflict.
+    a.write("src/[id].rs", &ids.replacen("id()", "id() -> u8", 1))
+        .unwrap();
+    b.write("src/[id].rs", &ids.replacen("di()", "di() -> u8", 1))
+        .unwrap();
+    a.write("src/i.rs", "pub fn i() -> u8 { 1 }\n").unwrap();
+    b.write("src/i.rs", "pub fn i() -> u16 { 2 }\n").unwrap();
     // The changed lines follow an empty line.
     a.write(
         "src/inventory.rs",
@@ -442,7 +330,7 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
     let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
     space.publish();
 
-    let files = BTreeSet::from(["src/braces.rs", "src/inventory.rs", "steps.txt"]);
+    let files = BTreeSet::from(["src/braces.rs", "src/i.rs", "src/inventory.rs", "steps.txt"]);
     for (machine, other) in [
         ("alice-laptop", "bob-desktop"),
         ("bob-desktop", "alice-laptop"),
@@ -496,6 +384,40 @@ fn hunk_fingerprints_match_without_a_conflict_on_common_lines_and_identical_edit
     );
     assert!(space.check("alice-laptop", "bob-desktop").clean);
     assert!(space.check("alice-laptop", "carol-server").clean);
+}
+
+#[test]
+fn rename_matches_an_edit_of_its_old_path_at_hunk_level_and_merges_cleanly() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    // The rename deletes the old path, which touches each of its boundaries; `git merge-tree`
+    // carries the edit into the renamed file.
+    a.rename("docs/guide.md", "docs/handbook.md").unwrap();
+    a.commit("rename the guide").unwrap();
+    b.write("docs/guide.md", "# Guide\n\nRead the docs.\n")
+        .unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+
+    let file = &["docs/guide.md"][..];
+    assert_eq!(
+        space.seen("bob-desktop"),
+        Seen {
+            paths: paths(&[("alice-laptop", file)]),
+            hunks: hunks(&[("alice-laptop", lines(&[("docs/guide.md", &[3..4])]))]),
+        }
+    );
+    assert_eq!(
+        space.seen("alice-laptop"),
+        Seen {
+            paths: paths(&[("bob-desktop", file)]),
+            hunks: hunks(&[("bob-desktop", lines(&[("docs/guide.md", &[1..1])]))]),
+        }
+    );
+    assert!(space.check("bob-desktop", "alice-laptop").clean);
+    assert!(space.check("alice-laptop", "bob-desktop").clean);
 }
 
 #[test]
@@ -573,19 +495,15 @@ fn server_receives_no_line_of_the_test_repository() {
     assert!(
         needles.contains("    let reserved = 20;") && needles.contains("pub struct Warehouse;")
     );
-    let mut bytes = Vec::new();
-    for publication in space.server.received() {
-        bytes.extend_from_slice(publication.machine.as_bytes());
-        for fingerprint in &publication.fingerprints {
-            bytes.extend_from_slice(&fingerprint.0);
-        }
-    }
+    let received = space.server.received().iter();
+    let bytes =
+        bytes(received.map(|publication| (&publication.machine, &publication.fingerprints)));
     for needle in needles {
         for needle in [needle.as_str(), needle.trim()] {
-            let found = bytes
-                .windows(needle.len())
-                .any(|window| window == needle.as_bytes());
-            assert!(!found, "{needle} in what the server received");
+            assert!(
+                !holds(&bytes, needle),
+                "{needle} in what the server received"
+            );
         }
     }
 }
