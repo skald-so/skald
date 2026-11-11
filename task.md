@@ -529,7 +529,12 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - Per agent: where the CLI shows the user its limits, such as a command, the status line or the app-server, and what it shows: each limit, its usage and reset time.
   - Per source: whether a local program reads it without vendor tokens, credential files or switching accounts, as `features.md` §14 says; the vendor terms that allow or forbid it, with links.
-  - For each source that exists and may be read: a prototype reads the limits from it, with a live check under the rules of 4.1, on the owner's signed-in CLI without the stub and with neither flag, that the developer runs once for the report and that prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time. Without such a source for an agent, the report says so and there is no prototype.
+  - For each source that exists and may be read:
+    - a prototype reads the limits from it;
+    - its live check follows the rules of 4.1 on the owner's signed-in CLI, without the stub and with neither flag;
+    - the developer runs the check once for the report;
+    - the check prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time.
+  - Without such a source for an agent, the report says so and there is no prototype.
   - Findings in the report.
   - Tests, for each prototype: on outputs recorded from the real CLI, it gives each limit with its usage and reset time; an output without limits gives none.
 - **Definition of done:** the report answers, per agent, whether the data exists and may be read, with its source and the vendor terms; for each source that may be read, its live check, rerun, gives the result and CLI version the report records, and unit tests on its recorded outputs run in `script/test`.
