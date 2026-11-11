@@ -77,6 +77,15 @@ fn wrong_arguments_print_the_usage() {
         &["app-server", "codex", "--verbose"],
         &["timed-hook"],
         &["timed-hook", "log"],
+        &["limits"],
+        &["limits", "gemini"],
+        &["limits", "claude", "--all"],
+        &["limits", "codex", "--real"],
+        &["limits", "claude", "--model", "m"],
+        &["status-line"],
+        &["status-line", "codex"],
+        &["status-line", "claude", "--all"],
+        &["status-line", "claude", "--real"],
         &["gui"],
         &["gui", "inbox"],
         &["gui", "inbox", "claude"],
@@ -580,6 +589,36 @@ fn app_server_sessions_get_only_their_environment_and_run_the_client_or_listen()
             .filter(|session| session.args[1] == "--listen")
             .count();
         assert_eq!(listening, sessions / 3, "{at}");
+    }
+}
+
+#[test]
+fn limits_checks_run_the_cli_off_the_stub_with_only_the_owners_environment() {
+    for (agent, command, sessions) in [
+        (Agent::Claude, &["limits", "claude"][..], 1),
+        (Agent::Claude, &["status-line", "claude"], 2),
+        (Agent::Codex, &["limits", "codex"], 1),
+    ] {
+        let (recorded, path, _dir) = sessions_of(agent, command, &["--keep"]);
+        let at = format!("{command:?}");
+        assert_eq!(recorded.len(), sessions, "{at}");
+        for session in &recorded {
+            assert_real_environment(agent, &at, session, &path);
+        }
+        let usage = |session: &Recorded| session.args[..2] == ["-p", "/usage"];
+        match (agent, command[0]) {
+            (Agent::Codex, _) => {
+                assert_eq!(recorded[0].args[0], "app-server", "{at}");
+                assert!(recorded[0].args.iter().any(|arg| arg == "plugins"), "{at}");
+            }
+            (Agent::Claude, "limits") => assert!(usage(&recorded[0]), "{at}"),
+            (Agent::Claude, _) => {
+                assert_eq!(recorded.iter().filter(|s| usage(s)).count(), 1, "{at}");
+                let session = recorded.iter().find(|s| !usage(s)).unwrap();
+                assert_eq!(session.args[0], "Reply with only OK.", "{at}");
+                assert!(session.args.iter().any(|arg| arg == "--settings"), "{at}");
+            }
+        }
     }
 }
 
