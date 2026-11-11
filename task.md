@@ -442,7 +442,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - Every Claude Code and Codex path in `architecture.md`, "Delivery to agents".
 - What subscription limit data the CLIs themselves show the user, within vendor rules.
 - A minimal prototype for each path.
-- The same paths in the Claude Code and Codex desktop apps and IDE extensions, checked by an agent that drives the app.
+- The same paths in the Claude Code and Codex desktop apps and IDE extensions, checked by the developer or reviewer driving the app.
 - **Done when:** a report is in the docs; the primary and fallback paths are confirmed for each agent and surface; the "Delivery to agents" table in `architecture.md` is up to date.
 
 - **Release:** MVP
@@ -525,21 +525,22 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Goal:** It is known which paths confirmed on the CLIs reach a live session in the Claude Code and Codex desktop apps and IDE extensions.
 - **What we do:**
   - Surfaces: Claude Code in the Claude desktop app and in its VS Code extension; Codex in its desktop app and in its VS Code extension.
-  - The report records how each surface reads project config; nothing is assumed, since Codex in an app takes no `-c` arguments.
+  - The report records how each surface reads project config. Codex in an app takes no `-c` arguments.
   - The owner prepares for GUI live checks:
     - installs the apps and signs in to them;
-    - grants macOS Accessibility and Screen Recording to the terminal that runs Claude Code;
-    - before the orchestrator starts a developer or reviewer who runs GUI live checks, here or in 4.8, allows GUI runs in chat, since each takes over the mouse and keyboard. The orchestrator states the allowance in the agent's prompt; without it, the agent does not drive the app.
-  - A GUI live check follows the rules of 4.1, except that an agent drives the app:
+    - grants the terminal that runs Claude Code macOS Accessibility, Screen Recording, and Automation of System Events and of each app under test;
+    - allows GUI runs in chat before the orchestrator starts a developer or reviewer who runs GUI live checks, here or in 4.8. The orchestrator states the allowance in the developer's or reviewer's prompt; without it, they do not drive the app.
+  - A GUI live check follows the rules of 4.1, except that the developer or reviewer drives the app:
     - code prepares the temporary project with the surface's config and the message source with a random token, and reads the surface version from the installed app or extension;
-    - the agent opens the directory in the app, types the prompt and reads the token from a screenshot, with `screencapture`, `cliclick` and `osascript` only;
-    - code then takes the token the agent read and prints the surface version and pass or fail: pass when the token matches and the message was handed over;
+    - code does not show the token to the developer or reviewer until they report the token they read;
+    - the developer or reviewer opens the directory in the app, types the prompt and reads the token from a screenshot of the reply of the Claude Code or Codex session under test, not from tool results or hook output; they use only `screencapture`, `cliclick` and `osascript`;
+    - code then takes the token they read and prints the surface version and pass or fail: pass when it matches and the message was handed over;
     - the report holds each surface's steps, so a rerun repeats them;
-    - the agent captures only the app's window and types only after checking that the app is frontmost;
+    - the developer or reviewer captures only the app's window; before each click or keystroke they check that the app is frontmost, and before each click that the point is inside its window;
     - screenshots stay in the temporary directory; they are never committed or attached to a PR.
   - A GUI live check of each path that passed its CLI live check in 4.1–4.5, on each surface, and the answers to the list of checks of 4.1 for it there.
   - Findings in the report: per surface and path, the result with the reason, and what the surface needs beyond the CLI.
-  - Tests: the temporary project holds, for each surface, the config the report records for it; the version reader gives each surface's version from recorded app and extension metadata; the check passes only when the token matches and the message was handed over.
+  - Tests: the temporary project holds, for each surface, the config the report records for it; the version reader gives each surface's version from recorded app and extension metadata; the check shows no token before the reported one and passes only when the reported token matches and the message was handed over.
 - **Definition of done:** on each surface, the GUI live check of every path that passed its CLI live check, rerun by the reviewer, gives the result and surface version the report records; the report answers every check of the list of 4.1 for each such path on each surface; unit tests of the GUI live check's code run in `script/test`.
 
 #### Iteration 4.8: Summary and the "Delivery to agents" table
@@ -1160,11 +1161,11 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 
 ### Story 43: Gemini, Cursor, OpenCode and Copilot adapters
 
-**Goal:** Messages reach live sessions of Google's agent, Cursor, OpenCode and Copilot on every surface the scope lists.
+**Goal:** Messages reach live sessions of Gemini, Cursor, OpenCode and Copilot on every surface the scope lists.
 
 **Scope:**
 - Their paths in `architecture.md`, "Delivery to agents", first checked on current CLI versions with live checks, as Story 4 does for Claude Code and Codex.
-- Surfaces: Cursor in its IDE and CLI, Copilot in VS Code and its CLI, Google's agent in Gemini CLI and Antigravity, OpenCode in its CLI and desktop app; the GUI surfaces are checked by an agent that drives the app, as Story 4 does.
+- Surfaces: Cursor in its IDE and CLI, Copilot in VS Code and its CLI, Gemini in Gemini CLI and Antigravity, OpenCode in its CLI and desktop app; the GUI surfaces are checked by the developer or reviewer driving the app, as Story 4 does.
 - `skald connect` finds these agents and, after confirmation, connects them.
 - e2e tests against real CLIs.
 - **Done when:** a message reaches a live session of each of the four agents on each of its surfaces.
