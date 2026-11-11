@@ -6,11 +6,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use agent_live::hook::{self, Case, Hook, HookCheck, HookRuns, hook_handler};
 use agent_live::{
     Agent, BusyMessage, Event, InboxCheck, Kind, Options, Run, Session, Setup, Stub, add_message,
-    inbox_server, session_failure, token,
+    channel, inbox_server, session_failure, token,
 };
-use agent_source::Source;
+use agent_source::{Source, now_ms};
 
 /// The longest a session may take.
 const TIMEOUT: Duration = Duration::from_secs(300);
@@ -89,6 +90,96 @@ pub fn inbox(agent: Agent, options: &Options) -> Result<bool> {
     Ok(check.pass())
 }
 
+/// A Claude Code hook's live check: a session with a message waiting at its start; with `--all`,
+/// also the other of two sessions and a busy session.
+pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
+    let version = Agent::Claude.command().arg("--version").output()?;
+    println!("{}", Agent::Claude.version(&version.stdout));
+    let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
+    let handler = hook_handler(&std::env::current_exe()?)?;
+    let path = std::env::var("PATH").unwrap_or_default();
+    let setup = hook::Setup {
+        work: work.path(),
+        hook,
+        handler: &handler,
+        model: options.model,
+        path: &path,
+    };
+    let stub = |case: Case| -> Result<Option<Stub>> {
+        Ok(if options.real {
+            None
+        } else {
+            Some(Stub::start(hook.script(case))?)
+        })
+    };
+    let mut check = HookCheck::new(hook);
+
+    // A message waits for session a; with --all, session b, with its own empty source, runs at the
+    // same time.
+    let stub_a = stub(Case::Waiting)?;
+    let a = setup.run("a", Case::Waiting, stub_a.as_ref())?;
+    let source_a = Source::open(&a.source)?;
+    let token_a = token();
+    let message = channel::add_message(&source_a, &token_a)?;
+    let b = if options.all {
+        let stub = stub(Case::Waiting)?;
+        Some((setup.run("b", Case::Waiting, stub.as_ref())?, stub))
+    } else {
+        None
+    };
+    let timed = |run: &Run, stub: Option<&Stub>| -> Result<(Session, HookRuns)> {
+        let mut runs = HookRuns::new(hook);
+        let session = run_session(run, stub, |event| runs.on_event(event, now_ms()))?;
+        Ok((session, runs))
+    };
+    let (session_a, session_b) = thread::scope(|scope| {
+        let session_b = b
+            .as_ref()
+            .map(|(b, stub)| scope.spawn(|| timed(b, stub.as_ref())));
+        (
+            timed(&a, stub_a.as_ref()),
+            session_b.map(|session| session.join().expect("session b ran")),
+        )
+    });
+    let (session_a, runs_a) = session_a?;
+    let state = source_a.state(&message.msg_id)?;
+    println!("{}", check.waiting(&session_a, &runs_a, &token_a, state));
+    if let Some(session_b) = session_b {
+        let (session_b, runs_b) = session_b?;
+        println!("{}", check.other(&session_b, &runs_b, &token_a));
+    }
+
+    // Busy: the message arrives while the agent runs a shell command.
+    if options.all {
+        let stub = stub(Case::Busy)?;
+        let c = setup.run("c", Case::Busy, stub.as_ref())?;
+        let source_c = Source::open(&c.source)?;
+        let token_c = token();
+        let mut busy = BusyMessage::default();
+        let mut runs = HookRuns::new(hook);
+        let session_c = run_session(&c, stub.as_ref(), |event| {
+            runs.on_event(event, now_ms());
+            busy.on_event(event, || channel::add_message(&source_c, &token_c));
+        })?;
+        let message = busy.added().transpose()?;
+        let state = match &message {
+            Some(message) => source_c.state(&message.msg_id)?,
+            None => None,
+        };
+        let added_at_ms = message.map(|message| message.added_at_ms);
+        println!(
+            "{}",
+            check.busy(&session_c, &runs, &token_c, added_at_ms, state)
+        );
+    }
+
+    println!("{}", check.verdict(options));
+    if options.keeps_logs(check.pass()) {
+        println!("logs: {}", work.keep().display());
+    }
+    Ok(check.pass())
+}
+
 /// Runs `run`'s session to its end, calling `on_event` with each event; `stub` is its model stub.
 fn run_session(
     run: &Run,
@@ -147,5 +238,12 @@ fn run_session(
         );
     }
     session.stub = stub.map(Stub::log);
+    if let Some(stub) = &session.stub {
+        // The requests hold the session's context; the stub keeps no credential's value.
+        std::fs::write(
+            run.log.with_file_name("stub.json"),
+            serde_json::to_string_pretty(&stub.requests)?,
+        )?;
+    }
     Ok(session)
 }

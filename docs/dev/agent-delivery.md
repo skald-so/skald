@@ -16,9 +16,9 @@ Each path's section answers, for each agent:
 | Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
 
 ## Prototypes
-- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
+- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the [hook](#claude-code-hooks) handler; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex` or `channel claude`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub).
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude` or `stop claude`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub).
 
 ## Model stub
 Both CLIs accept a custom model endpoint, so every check runs on the stub unless `--real` is given. The stub:
@@ -34,7 +34,7 @@ The CLI on the stub gets only these variables:
 | Codex | `PATH`; `HOME` and `CODEX_HOME`, empty temporary directories; `SKALD_STUB_API_KEY`, the placeholder | a `stub` model provider given with `-c`: `base_url` the stub, `env_key = "SKALD_STUB_API_KEY"`, `wire_api = "responses"` |
 
 ## Session config
-With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`. With `--real`, Claude Code in `inbox claude` and `channel claude` gets none of the variables that would sign it in other than with the owner's subscription: every `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`.
+With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`. With `--real`, Claude Code gets none of the variables that would sign it in other than with the owner's subscription: every `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`.
 
 Each [`inbox`](#mcp-inbox) session, on the stub and with `--real`, gets these flags:
 
@@ -166,6 +166,55 @@ Findings:
 - A lost event cannot be seen: Claude Code drops the events of a channel it did not load, such as one started without the flag (D), a plugin off the allowlist or an organization without `channelsEnabled`. A message marked handed over may be lost. A way for the session to confirm receipt, such as a tool the agent calls, was not checked.
 - Unattended sessions need the dialogs answered by code, as the check does.
 
+## Claude Code hooks
+`agent-hook <source-dir>`: a command hook for `PostToolUse` and `Stop`. It reads the hook input on stdin, takes the waiting messages and prints them as `hookSpecificOutput.additionalContext`, the text of [MCP `inbox`](#mcp-inbox):
+- `PostToolUse`: Claude Code adds them next to the tool result;
+- `Stop`: the turn goes on with them; Claude Code labels it "Stop hook feedback", where `decision: "block"` would show a hook error ([docs](https://code.claude.com/docs/en/hooks.md#stop-decision-control));
+- with none waiting, or on another event, it prints nothing, so `Stop` lets the turn end.
+
+It marks the messages handed over once its output is written and puts them back if the write fails. It fails with exit code 1, never 2: on `Stop`, 2 keeps the turn going with stderr as the agent's instruction.
+
+`live-check <post-tool-use|stop> claude` runs `claude -p` sessions, each in its own temporary directory with its own source:
+- **A, a message waiting at the start:** `PostToolUse`: the prompt tells the agent to run `true`, then reply with the token or `NONE`; `Stop`: only to reply. The stub does the same. A passes when one run of the hook printed the message, the token reached the model and the message is handed over; for `Stop`, when the hook's last run then printed nothing.
+- **B, with `--all`:** runs at the same time as A, with an empty source. B passes when the hook ran, printed nothing and the token did not reach the model.
+- **C, busy, with `--all`:** the prompt tells the agent to run `sleep 20`, then reply with the token or `NONE`; the stub runs it. The message is added once the command starts. C passes as A does.
+
+Session flags: `-p <prompt> --output-format stream-json --verbose --include-hook-events --setting-sources local --strict-mcp-config --settings <dir>/settings.json --disable-slash-commands --tools <tools> --effort low --no-session-persistence`; `<tools>` is `Bash`, or empty for `Stop` in A and B. The settings file holds the hook, in exec form (`command` the handler, `args` the source), and `permissions.allow` with `Bash(true)` and `Bash(sleep:*)`. The project directory stays empty. Environment: [Model stub](#model-stub) or [Session config](#session-config); with `--real` the session loads what [Session config](#session-config) lists for Claude Code. `--include-hook-events` adds `hook_started` and `hook_response` events to the output: the check times each run of the hook with them and reads its output.
+
+Results on 2026-11-11, on Claude Code 2.1.322; the handler is the debug build:
+
+| Command | Model and sign-in | Result | A: handed over after the session started | C: handed over after adding | Handler run, `hook_started` to `hook_response`: with messages / without | Tokens |
+|---|---|---|---|---|---|---|
+| `live-check post-tool-use claude` | the stub, `ANTHROPIC_API_KEY` | pass | 0.7 s | | 4 ms / no such run | none |
+| `live-check post-tool-use claude --all` | the stub, `ANTHROPIC_API_KEY` | pass | 0.9 s | 20.1 s | 4–9 ms / 3 ms | none |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check post-tool-use claude --real` | `claude-opus-5-5`, Claude account (`apiKeySource` `none`) | pass | 2.8 s | | 4 ms / no such run | input 10,036 (cached 7,203), output 128 |
+| `live-check stop claude` | the stub, `ANTHROPIC_API_KEY` | pass | 0.9 s | | 4 ms / 3 ms | none |
+| `live-check stop claude --all` | the stub, `ANTHROPIC_API_KEY` | pass | 0.7 s | 20.1 s | 4–6 ms / 2–3 ms | none |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check stop claude --real` | `claude-opus-5-5`, Claude account (`apiKeySource` `none`) | pass | 2.0 s | | 7 ms / 6 ms | input 6,109 (cached 3,290), output 112 |
+
+| Check | `PostToolUse` | `Stop` |
+|---|---|---|
+| Idle session | No: hooks run only in a turn. A message that waits when a turn starts arrives after the turn's first tool call | No, the same. A message that waits when a turn starts arrives at its end; the turn goes on |
+| Busy session | Yes, after the running tool call ends, in the same turn (C: 20.1 s into `sleep 20`). A turn without tool calls gets nothing | Yes, at the end of the turn |
+| Delay | Until the agent's next tool call ends: see the results | Until the turn ends: see the results |
+| In context | A system message right after the tool result: `PostToolUse:Bash hook additional context: ` and the text; the sender label in `from` | A user text block after the agent's reply: `<system-reminder>` with `Stop hook additional context: ` and the text; the sender label in `from`. The `Stop` input has `stop_hook_active: true` in the turn that goes on |
+| Handover known | Yes, once the output is written to Claude Code; not whether the model read it | The same, but Claude Code may drop it: see the findings |
+| One of two sessions | Yes: each session runs the hook from its own settings with its own source, so B got nothing. Sessions with one settings file run the same command on one source; the hook input's `session_id` and `cwd` could tell them apart (not checked) | The same |
+| Needs | See below | See below |
+
+Claude Code needs:
+- the hook in settings: a file given with `--settings`, the project's or user's settings, or a plugin's `hooks/hooks.json`;
+- the check's flags: those above; `--include-hook-events` only for timing;
+- a sign-in: an API key and a Claude account both work.
+
+The Claude Code plugin can ship the hooks. Checked by hand on the stub: the hooks moved from the settings file into a plugin's `hooks/hooks.json`, with the handler in the plugin's `bin/` as `${CLAUDE_PLUGIN_ROOT}/bin/agent-hook`, and the plugin loaded by `--plugin-dir` as `skald@inline`. Both checks pass.
+
+Findings:
+- Hooks deliver only while the agent works: they can be a fallback for a busy session, not a path to an idle one.
+- `PostToolUse` delivers within a turn, as soon as a tool call ends; `Stop` delivers at the end of a turn and keeps it going, so it also reaches a turn without tool calls.
+- Claude Code ends the turn after 8 `Stop` continuations in a row with no tool call between them, and drops the 9th hook's output ([docs](https://code.claude.com/docs/en/hooks.md#stop-input); `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` changes the limit). Checked by hand on the stub, with a message added before each run: the 9th message was marked handed over and never reached the model. A handler must count the continuations, or leave messages waiting at the cap.
+- The handler adds a few milliseconds to a tool call; Claude Code runs it after the tool and before the next model request.
+
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
 - Claude Code, an interactive session with the server in the project's `.mcp.json` and without `permissions.allow`: whether it asks to approve the server and each `inbox` call.
@@ -173,3 +222,4 @@ Steps that need a person, left to the owner's check by hand ([rules.md](../../ru
 - Codex signed in with ChatGPT: whether `live-check inbox codex --real` passes, with and without `--model gpt-5.5`. Only the owner changes a CLI's sign-in.
 - Claude Code started by a person with the channel: the trust dialog and the development channel warning at each start; a message reaches the session; not checked on a claude.ai Team or Enterprise account.
 - The Claude Code plugin installed from the monorepo marketplace (`/plugin marketplace add skald-so/skald`) with the channel: whether `--channels plugin:skald@skald` refuses it and the development flag loads it. The check does not install plugins: it would change the user's config.
+- Claude Code, an interactive session with the hooks in the project's `.claude/settings.json`: whether it asks to approve them, and a message reaches the session after a tool call and at the end of a turn.

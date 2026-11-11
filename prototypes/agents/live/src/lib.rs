@@ -1,9 +1,10 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
-//! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path. The binary
-//! only starts the CLIs and reads their output.
+//! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path and
+//! [`hook`] for Claude Code's hooks. The binary only starts the CLIs and reads their output.
 
 pub mod channel;
+pub mod hook;
 mod stub;
 
 use std::fs;
@@ -16,7 +17,7 @@ use agent_inbox::INBOX;
 use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
-pub use stub::{Call, DONE, PLACEHOLDER, Request, Response, SHELL, Stub, StubLog};
+pub use stub::{Call, DONE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub, StubLog};
 
 /// The name of the MCP server in each session's config.
 pub const SERVER: &str = "skald";
@@ -226,6 +227,26 @@ impl Agent {
                         })
                     }),
                 }],
+                // With `--include-hook-events`.
+                Some("system") => {
+                    let text = |key: &str| value[key].as_str().map(String::from);
+                    match (
+                        value["subtype"].as_str(),
+                        text("hook_id"),
+                        text("hook_event"),
+                    ) {
+                        (Some("hook_started"), Some(id), Some(event)) => {
+                            vec![Event::HookStarted { id, event }]
+                        }
+                        (Some("hook_response"), Some(id), Some(event)) => vec![Event::HookEnded {
+                            id,
+                            event,
+                            outcome: text("outcome").unwrap_or_default(),
+                            stdout: text("stdout").unwrap_or_default(),
+                        }],
+                        _ => Vec::new(),
+                    }
+                }
                 Some("assistant") => value["message"]["content"]
                     .as_array()
                     .into_iter()
@@ -364,6 +385,15 @@ pub enum Event {
     Reply(String),
     /// The tokens a turn used.
     Used(Usage),
+    /// Claude Code started the hook `id` of the hook event `event`.
+    HookStarted { id: String, event: String },
+    /// The hook `id` of `event` ended with `outcome`, such as `success`, and printed `stdout`.
+    HookEnded {
+        id: String,
+        event: String,
+        outcome: String,
+        stdout: String,
+    },
 }
 
 /// The options of `live-check inbox`.
@@ -597,7 +627,7 @@ impl Session {
                 usage.cached += used.cached;
                 usage.output += used.output;
             }
-            Event::ShellStarted => {}
+            Event::ShellStarted | Event::HookStarted { .. } | Event::HookEnded { .. } => {}
         }
     }
 
@@ -631,16 +661,28 @@ impl Session {
     }
 
     pub fn summary(&self, token: &str) -> String {
-        let mut summary = format!("reply {:?}", self.reply.trim());
-        if let Some(sign_in) = &self.sign_in {
-            summary.push_str(&format!(", apiKeySource {sign_in}"));
-        }
+        let mut summary = self.head();
         if self.inbox_connected == Some(false) {
             summary.push_str(", the inbox server did not connect");
         }
         if !self.inbox_called {
             summary.push_str(", inbox not called");
         }
+        summary.push_str(&self.tail(token));
+        summary
+    }
+
+    /// The start of a summary: the reply and the sign-in.
+    fn head(&self) -> String {
+        let mut head = format!("reply {:?}", self.reply.trim());
+        if let Some(sign_in) = &self.sign_in {
+            head.push_str(&format!(", apiKeySource {sign_in}"));
+        }
+        head
+    }
+
+    /// The end of a summary: what the stub saw, or the tokens the real model used.
+    fn tail(&self, token: &str) -> String {
         match &self.stub {
             Some(stub) => {
                 let reached = if stub.saw(token) {
@@ -648,24 +690,22 @@ impl Session {
                 } else {
                     "did not reach"
                 };
-                summary.push_str(&format!(
+                let mut tail = format!(
                     ", requests to the stub: {}, the token {reached} it",
                     stub.requests.len()
-                ));
+                );
                 if let Some(failure) = stub.failure() {
-                    summary.push_str(&format!(", {failure}"));
+                    tail.push_str(&format!(", {failure}"));
                 }
+                tail
             }
-            None => {
-                if let Some(usage) = self.usage {
-                    summary.push_str(&format!(
-                        ", tokens: input {} (cached {}), output {}",
-                        usage.input, usage.cached, usage.output
-                    ));
-                }
-            }
+            None => self.usage.map_or_else(String::new, |usage| {
+                format!(
+                    ", tokens: input {} (cached {}), output {}",
+                    usage.input, usage.cached, usage.output
+                )
+            }),
         }
-        summary
     }
 }
 
@@ -788,6 +828,9 @@ mod tests {
     const CLAUDE_RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"tok-7f3a91","stop_reason":"end_turn","usage":{"input_tokens":6,"cache_creation_input_tokens":3900,"cache_read_input_tokens":15200,"output_tokens":42}}"#;
     const CLAUDE_RESULT_WITHOUT_USAGE: &str =
         r#"{"type":"result","subtype":"error_during_execution","is_error":true}"#;
+    // With `--include-hook-events`.
+    const CLAUDE_HOOK_STARTED: &str = r#"{"type":"system","subtype":"hook_started","hook_id":"c899","hook_name":"PostToolUse:Bash","hook_event":"PostToolUse","uuid":"32d0","session_id":"3b19"}"#;
+    const CLAUDE_HOOK_ENDED: &str = r#"{"type":"system","subtype":"hook_response","hook_id":"c899","hook_name":"PostToolUse:Bash","hook_event":"PostToolUse","output":"{}\n","stdout":"{}\n","stderr":"","exit_code":0,"outcome":"success","uuid":"9600","session_id":"3b19"}"#;
 
     // Lines recorded from Codex 0.162.1 (`codex exec --json`), shortened.
     const CODEX_INBOX: &str = r#"{"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"skald","tool":"inbox","arguments":{},"result":null,"error":null,"status":"in_progress"}}"#;
@@ -834,6 +877,41 @@ mod tests {
             }]
         );
         assert_eq!(claude.events(CLAUDE_HOOK), []);
+        assert_eq!(
+            claude.events(CLAUDE_HOOK_STARTED),
+            [Event::HookStarted {
+                id: "c899".to_owned(),
+                event: "PostToolUse".to_owned()
+            }]
+        );
+        assert_eq!(
+            claude.events(CLAUDE_HOOK_ENDED),
+            [Event::HookEnded {
+                id: "c899".to_owned(),
+                event: "PostToolUse".to_owned(),
+                outcome: "success".to_owned(),
+                stdout: "{}\n".to_owned()
+            }]
+        );
+        let bare =
+            r#"{"type":"system","subtype":"hook_response","hook_id":"h","hook_event":"Stop"}"#;
+        assert_eq!(
+            claude.events(bare),
+            [Event::HookEnded {
+                id: "h".to_owned(),
+                event: "Stop".to_owned(),
+                outcome: String::new(),
+                stdout: String::new()
+            }]
+        );
+        for line in [
+            r#"{"type":"system","subtype":"hook_started","hook_event":"Stop"}"#,
+            r#"{"type":"system","subtype":"hook_started","hook_id":"h"}"#,
+            r#"{"type":"system","subtype":"hook_progress","hook_id":"h","hook_event":"Stop"}"#,
+            r#"{"type":"system","subtype":"status","hook_id":"h","hook_event":"Stop"}"#,
+        ] {
+            assert_eq!(claude.events(line), [], "{line}");
+        }
         assert_eq!(claude.events(CLAUDE_SEARCH), []);
         assert_eq!(claude.events(CLAUDE_INBOX), [Event::InboxCalled]);
         assert_eq!(claude.events(CLAUDE_BASH), [Event::ShellStarted]);
@@ -1227,6 +1305,16 @@ mod tests {
             inbox_connected: false,
         });
         session.record(&Event::ShellStarted);
+        session.record(&Event::HookStarted {
+            id: "h".to_owned(),
+            event: "Stop".to_owned(),
+        });
+        session.record(&Event::HookEnded {
+            id: "h".to_owned(),
+            event: "Stop".to_owned(),
+            outcome: "success".to_owned(),
+            stdout: "tok-0".to_owned(),
+        });
         session.record(&Event::Reply("working".to_owned()));
         session.record(&Event::InboxCalled);
         session.record(&Event::Reply("tok-1".to_owned()));

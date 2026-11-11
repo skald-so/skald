@@ -67,6 +67,10 @@ fn wrong_arguments_print_the_usage() {
         &["channel"],
         &["channel", "codex"],
         &["channel", "claude", "--verbose"],
+        &["stop"],
+        &["stop", "codex"],
+        &["post-tool-use", "claude", "--verbose"],
+        &["pre-tool-use", "claude"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -375,6 +379,92 @@ fn channel_on_the_real_model_drops_the_sign_in_variables_and_adds_the_terminal_a
                 !session.env.contains_key("CLAUDE_CONFIG_DIR"),
                 "{at}: CLAUDE_CONFIG_DIR is set"
             );
+        }
+    }
+}
+
+/// The hook command and source of a hook session, from the settings file in its arguments.
+fn hook_of(session: &Recorded, event: &str) -> (String, String) {
+    let at = session
+        .args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .expect("a settings file");
+    let settings: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&session.args[at + 1]).unwrap()).unwrap();
+    let hooks = settings["hooks"].as_object().unwrap();
+    assert_eq!(
+        hooks.keys().collect::<Vec<_>>(),
+        [event],
+        "only the hook under check"
+    );
+    let handler = &hooks[event][0]["hooks"][0];
+    (
+        handler["command"].as_str().unwrap().to_owned(),
+        handler["args"][0].as_str().unwrap().to_owned(),
+    )
+}
+
+#[test]
+fn hooks_run_one_session_or_all_three_on_the_stub_with_only_its_environment() {
+    for (hook, event) in [("post-tool-use", "PostToolUse"), ("stop", "Stop")] {
+        for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
+            let (recorded, path, dir) = sessions_of(&[hook, "claude"], flags);
+            let at = format!("{hook} {flags:?}");
+            assert_eq!(recorded.len(), sessions, "{at}");
+            let mut sources = Vec::new();
+            for session in &recorded {
+                assert!(
+                    !session.env.contains_key(SENTINEL),
+                    "{at}: {SENTINEL} reached the CLI"
+                );
+                let home = &session.env["HOME"];
+                assert!(
+                    home.starts_with(dir.path().join("tmp").to_str().unwrap()),
+                    "{at}: HOME is not in TMPDIR"
+                );
+                let expected: BTreeMap<String, String> = Agent::Claude
+                    .environment(Path::new(home), &session.env["ANTHROPIC_BASE_URL"], &path)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+                assert_eq!(
+                    session.env.keys().collect::<Vec<_>>(),
+                    expected.keys().collect::<Vec<_>>(),
+                    "{at}: the CLI's variables"
+                );
+                for (name, value) in &expected {
+                    assert!(session.env[name] == *value, "{at}: {name} differs");
+                }
+                let (command, source) = hook_of(session, event);
+                assert_eq!(
+                    Path::new(&command),
+                    Path::new(env!("CARGO_BIN_EXE_live-check")).with_file_name("agent-hook"),
+                    "{at}"
+                );
+                sources.push(source);
+            }
+            sources.sort();
+            sources.dedup();
+            assert_eq!(sources.len(), sessions, "{at}: a source per session");
+        }
+    }
+}
+
+#[test]
+fn hooks_on_the_real_model_drop_the_variables_that_replace_the_sign_in() {
+    for hook in ["post-tool-use", "stop"] {
+        for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
+            let (recorded, path, _dir) = sessions_of(&[hook, "claude"], flags);
+            let at = format!("{hook} {flags:?}");
+            assert_eq!(recorded.len(), sessions, "{at}");
+            for session in &recorded {
+                assert_real_environment(&at, session, &path);
+                assert!(
+                    !session.env.contains_key("CLAUDE_CONFIG_DIR"),
+                    "{at}: CLAUDE_CONFIG_DIR is set"
+                );
+            }
         }
     }
 }
