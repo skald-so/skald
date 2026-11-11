@@ -57,6 +57,13 @@ if checks rust; then
     echo "script/test: node is missing; the MLS prototypes' WASM tests run in Node.js: https://nodejs.org" >&2
     exit 1
   fi
+  # The edit comparison prototype reads the conflicts of `git merge-tree --write-tree -z`, git 2.39.
+  IFS=. read -r git_major git_minor _ <<<"$(git version | awk '{ print $3 }')"
+  if ((git_major < 2 || (git_major == 2 && git_minor < 39))); then
+    echo "script/test: git 2.39 or newer is missing; the edit comparison prototype runs git merge-tree:" \
+      "https://git-scm.com" >&2
+    exit 1
+  fi
 fi
 if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
