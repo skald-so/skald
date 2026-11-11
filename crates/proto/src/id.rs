@@ -44,6 +44,7 @@ pub mod kind {
         Queue "QueueId": "A queue, issued by the server at creation.";
         Task "TaskId": "A task (`task`), issued by the sending device; also the A2A `messageId` of its request.";
         Claim "ClaimId": "A claim of a task (`claim_id`), issued by the server at the claim.";
+        Blob "BlobId": "An attachment's encrypted blob, issued by the server at upload.";
     }
 
     impl super::Issued for Account {}
@@ -53,6 +54,7 @@ pub mod kind {
     impl super::Issued for Queue {}
     impl super::Issued for Task {}
     impl super::Issued for Claim {}
+    impl super::Issued for Blob {}
 }
 
 /// A UUID that identifies one entity of kind `K`: 16 bytes on the wire, the lowercase hyphenated
@@ -71,6 +73,7 @@ pub type MessageId = Id<kind::Message>;
 pub type QueueId = Id<kind::Queue>;
 pub type TaskId = Id<kind::Task>;
 pub type ClaimId = Id<kind::Claim>;
+pub type BlobId = Id<kind::Blob>;
 
 /// The length of an ID in text: 32 hex digits and 4 hyphens.
 const TEXT_LEN: usize = 36;

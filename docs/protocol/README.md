@@ -9,7 +9,8 @@ Documents:
 - [delivery.md](delivery.md): mailbox, delivery, receipts and attachments;
 - [membership.md](membership.md): accounts, devices, rosters, invites, channels and history;
 - [queues.md](queues.md): queues, tasks, claims and results;
-- [agents.md](agents.md): persons, presence and `ask_user`.
+- [agents.md](agents.md): persons, presence and `ask_user`;
+- [test-vectors.md](test-vectors.md): envelopes, content and receipts in hex, for implementations.
 
 ## Contents
 - [Conventions](#conventions)
@@ -204,7 +205,8 @@ A recipient MUST reject content from a `service` device unless:
   - HTTPS, for sending without a WebSocket and for long-poll answers: one item per request or response body, of type `application/cbor`;
   - SSE [[HTML, "Server-sent events"](https://html.spec.whatwg.org/multipage/server-sent-events.html)]: one item per event, its `data` the item in base64url without padding [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §5], because SSE carries only text.
 - Which transport a client uses: [architecture.md, "Network"](../dev/architecture.md#network).
-- CBOR [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)] uses the core deterministic encoding (§4.2.1): shortest forms, definite lengths, map keys in bytewise order of their encodings. Text strings are UTF-8. Tags and floating-point values are not used.
+- CBOR [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949)] uses the core deterministic encoding (§4.2.1): shortest forms, definite lengths, map keys in bytewise order of their encodings. Text strings are UTF-8. Tags, floating-point values and simple values other than `false`, `true` and `null` are not used.
+- An item nests at most 64 arrays and maps, the outermost included. A byte string that holds an item counts that item's nesting on its own.
 - A decoder MUST reject an item that breaks these rules or repeats a map key, and MUST ignore map keys it does not know.
 
 ## Protocol version
