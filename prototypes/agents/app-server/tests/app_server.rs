@@ -5,7 +5,6 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
@@ -16,6 +15,7 @@ use std::time::{Duration, Instant};
 use agent_source::{Message, Source};
 use agent_testing::{
     assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
+    write_executable,
 };
 use serde_json::{Value, json};
 
@@ -163,9 +163,7 @@ impl StandIn {
             dir = dir.path().display(),
             handed = source.join("handed").display(),
         );
-        let codex = dir.path().join("bin/codex");
-        fs::write(&codex, script).unwrap();
-        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&dir.path().join("bin/codex"), &script);
         Self { dir }
     }
 
@@ -265,6 +263,17 @@ impl Running {
         self.exit()
     }
 
+    /// Waits for the events named `names`, in order, then stops the client, asserts that it
+    /// succeeded and returns every event it printed.
+    fn stop_after(mut self, names: &[&'static str]) -> Vec<Value> {
+        for name in names {
+            self.wait_for(event(name));
+        }
+        let (output, events) = self.stop();
+        assert!(output.status.success(), "{}", stderr(&output));
+        events
+    }
+
     /// Waits for the client to exit on its own, its stdin still open.
     fn stop_after_exit(self) -> (Output, Vec<Value>) {
         self.exit()
@@ -330,21 +339,51 @@ fn waiting() -> (tempfile::TempDir, Source, [Message; 2]) {
     (dir, source, messages)
 }
 
+/// A replay of an exchange by a stand-in `codex`, with two messages waiting in its source.
+struct Replay {
+    dir: tempfile::TempDir,
+    source: Source,
+    messages: [Message; 2],
+    codex: StandIn,
+}
+
+impl Replay {
+    fn new(exchange: &Exchange) -> Self {
+        let (dir, source, messages) = waiting();
+        let codex = StandIn::new(exchange, &dir.path().join("source"));
+        Self {
+            dir,
+            source,
+            messages,
+            codex,
+        }
+    }
+
+    /// Starts `agent-app-server <source> <args>` in the project, on the stand-in.
+    fn start(&self, args: &[&str]) -> Running {
+        Running::start(
+            &self.dir.path().join("source"),
+            args,
+            &self.dir.path().join("project"),
+            Some(&self.codex.bin()),
+        )
+    }
+}
+
 #[test]
 fn starts_a_thread_and_hands_the_waiting_messages_to_it_with_turn_start() {
     let exchange = Exchange::load("idle.jsonl");
-    let (dir, source, messages) = waiting();
-    let codex = StandIn::new(&exchange, &dir.path().join("source"));
-    let log = dir.path().join("exchange.jsonl");
-    let mut client = Running::start(
-        &dir.path().join("source"),
-        &["--log", log.to_str().unwrap(), "--", "-c", "a=1"],
-        &dir.path().join("project"),
-        Some(&codex.bin()),
-    );
-    client.wait_for(event("turnCompleted"));
-    let (output, events) = client.stop();
-    assert!(output.status.success(), "{}", stderr(&output));
+    let replay = Replay::new(&exchange);
+    let log = replay.dir.path().join("exchange.jsonl");
+    let args = ["--log", log.to_str().unwrap(), "--", "-c", "a=1"];
+    let events = replay.start(&args).stop_after(&["turnCompleted"]);
+    let Replay {
+        dir,
+        source,
+        messages,
+        codex,
+    } = &replay;
+    let messages: &[Message] = messages;
     assert!(codex.ended(), "the client exits once its app-server did");
     assert_eq!(codex.args(), ["app-server", "-c", "a=1"]);
 
@@ -365,12 +404,12 @@ fn starts_a_thread_and_hands_the_waiting_messages_to_it_with_turn_start() {
     let (turn, handed) = received.nth("turn/start", 0);
     let thread = exchange.thread();
     assert_eq!(turn["params"]["threadId"], thread);
-    assert_carries_once(text(turn), &messages);
+    assert_carries_once(text(turn), messages);
     assert_eq!(
         handed, "",
         "nothing was handed over before the app-server accepted it"
     );
-    assert_handed_over(&source, &messages);
+    assert_handed_over(source, messages);
 
     let recorded_turn = exchange
         .0
@@ -382,7 +421,7 @@ fn starts_a_thread_and_hands_the_waiting_messages_to_it_with_turn_start() {
             "event": "handedOver",
             "via": "turn/start",
             "turnId": recorded_turn,
-            "msgIds": msg_ids(&messages),
+            "msgIds": msg_ids(messages),
         })]
     );
     assert_eq!(
@@ -418,18 +457,18 @@ fn starts_a_thread_and_hands_the_waiting_messages_to_it_with_turn_start() {
 #[test]
 fn steers_the_waiting_messages_into_the_running_turn() {
     let exchange = Exchange::load("busy.jsonl");
-    let (dir, source, messages) = waiting();
-    let codex = StandIn::new(&exchange, &dir.path().join("source"));
+    let replay = Replay::new(&exchange);
     let prompt = "Run the shell command `sleep 20`. Then reply with only OK.";
-    let mut client = Running::start(
-        &dir.path().join("source"),
-        &["--prompt", prompt],
-        &dir.path().join("project"),
-        Some(&codex.bin()),
-    );
-    client.wait_for(event("turnCompleted"));
-    let (output, events) = client.stop();
-    assert!(output.status.success(), "{}", stderr(&output));
+    let events = replay
+        .start(&["--prompt", prompt])
+        .stop_after(&["turnCompleted"]);
+    let Replay {
+        source,
+        messages,
+        codex,
+        ..
+    } = &replay;
+    let messages: &[Message] = messages;
     assert_eq!(codex.args(), ["app-server"]);
 
     let received = codex.received();
@@ -443,17 +482,17 @@ fn steers_the_waiting_messages_into_the_running_turn() {
         .find_map(|line| line["server"]["result"]["turn"]["id"].as_str());
     assert_eq!(steer["params"]["threadId"], exchange.thread());
     assert_eq!(steer["params"]["expectedTurnId"], json!(turn));
-    assert_carries_once(text(steer), &messages);
+    assert_carries_once(text(steer), messages);
     assert_eq!(
         handed, "",
         "nothing was handed over before the app-server accepted it"
     );
-    assert_handed_over(&source, &messages);
+    assert_handed_over(source, messages);
 
     assert_eq!(
         named(&events, "handedOver"),
         [
-            &json!({ "event": "handedOver", "via": "turn/steer", "turnId": turn, "msgIds": msg_ids(&messages) })
+            &json!({ "event": "handedOver", "via": "turn/steer", "turnId": turn, "msgIds": msg_ids(messages) })
         ]
     );
     assert_eq!(
@@ -474,28 +513,27 @@ fn steers_the_waiting_messages_into_the_running_turn() {
 #[test]
 fn a_refused_steer_leaves_the_messages_waiting_for_the_next_turn() {
     let exchange = Exchange::load("refused.jsonl");
-    let (dir, source, messages) = waiting();
-    let codex = StandIn::new(&exchange, &dir.path().join("source"));
-    let mut client = Running::start(
-        &dir.path().join("source"),
-        &["--prompt", "Reply with only OK."],
-        &dir.path().join("project"),
-        Some(&codex.bin()),
-    );
-    client.wait_for(event("handedOver"));
-    client.wait_for(event("turnCompleted"));
-    let (output, events) = client.stop();
-    assert!(output.status.success(), "{}", stderr(&output));
+    let replay = Replay::new(&exchange);
+    let events = replay
+        .start(&["--prompt", "Reply with only OK."])
+        .stop_after(&["handedOver", "turnCompleted"]);
+    let Replay {
+        source,
+        messages,
+        codex,
+        ..
+    } = &replay;
+    let messages: &[Message] = messages;
 
     let received = codex.received();
     assert_sent_as_recorded(&received, &exchange);
     let (steer, _) = received.nth("turn/steer", 0);
-    assert_carries_once(text(steer), &messages);
+    assert_carries_once(text(steer), messages);
     // The prompt's turn/start, then the messages' after the refused steer.
     let (start, handed) = received.nth("turn/start", 1);
-    assert_carries_once(text(start), &messages);
+    assert_carries_once(text(start), messages);
     assert_eq!(handed, "", "the refused steer marked nothing");
-    assert_handed_over(&source, &messages);
+    assert_handed_over(source, messages);
     assert_eq!(
         named(&events, "refused"),
         [&json!({ "event": "refused", "via": "turn/steer", "error": "no active turn to steer" })]
@@ -507,18 +545,13 @@ fn a_refused_steer_leaves_the_messages_waiting_for_the_next_turn() {
 fn messages_refused_until_the_client_stops_stay_waiting() {
     let exchange =
         Exchange::load("refused.jsonl").until(|line| line["server"].get("error").is_some());
-    let (dir, source, messages) = waiting();
-    let codex = StandIn::new(&exchange, &dir.path().join("source"));
-    let mut client = Running::start(
-        &dir.path().join("source"),
-        &["--prompt", "Reply with only OK."],
-        &dir.path().join("project"),
-        Some(&codex.bin()),
-    );
+    let replay = Replay::new(&exchange);
+    let mut client = replay.start(&["--prompt", "Reply with only OK."]);
     client.wait_for(event("refused"));
     // The next steer, which the stand-in never answers.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while codex
+    while replay
+        .codex
         .received()
         .methods()
         .iter()
@@ -529,9 +562,8 @@ fn messages_refused_until_the_client_stops_stay_waiting() {
         assert!(Instant::now() < deadline, "no second steer");
         thread::sleep(Duration::from_millis(20));
     }
-    let (output, events) = client.stop();
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_waiting(&source, &messages);
+    let events = client.stop_after(&[]);
+    assert_waiting(&replay.source, &replay.messages);
     assert!(named(&events, "handedOver").is_empty(), "{events:?}");
     // The second steer waited for its answer when the client stopped: no refusal.
     assert_eq!(named(&events, "refused").len(), 1, "{events:?}");
@@ -567,27 +599,20 @@ fn fails_when_the_app_server_refuses_the_thread_or_closes() {
         ),
         (idle(), Some(4), closed, true),
     ] {
-        let (dir, source, messages) = waiting();
-        let codex = StandIn::new(&exchange, &dir.path().join("source"));
+        let replay = Replay::new(&exchange);
         if let Some(lines) = closes_after {
-            let script = codex.bin().join("codex");
+            let script = replay.codex.bin().join("codex");
             let text = fs::read_to_string(&script).unwrap();
             let closing = format!("n=$((n + 1)); if [ $n = {lines} ]; then exec 1>&-; fi");
             fs::write(&script, text.replace("n=$((n + 1))", &closing)).unwrap();
         }
-        let client = Running::start(
-            &dir.path().join("source"),
-            &[],
-            &dir.path().join("project"),
-            Some(&codex.bin()),
-        );
-        let (output, _) = client.stop_after_exit();
+        let (output, _) = replay.start(&[]).stop_after_exit();
         assert_eq!(stderr(&output), error, "{closes_after:?}");
         assert_eq!(output.status.code(), Some(1));
         if handed {
-            assert_handed_over(&source, &messages);
+            assert_handed_over(&replay.source, &replay.messages);
         } else {
-            assert_waiting(&source, &messages);
+            assert_waiting(&replay.source, &replay.messages);
         }
     }
 

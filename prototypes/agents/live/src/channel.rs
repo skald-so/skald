@@ -461,17 +461,7 @@ impl PtySession {
         if self.channel_listening == Some(false) {
             summary.push_str(", the channel did not load");
         }
-        match (&self.stub, self.usage) {
-            (Some(stub), _) => {
-                summary.push_str(&format!(", requests to the stub: {}", stub.requests.len()));
-                if let Some(failure) = stub.failure() {
-                    summary.push_str(&format!(", {failure}"));
-                }
-            }
-            // On the stub, the CLI's token counts are the stub's.
-            (None, Some(usage)) => summary.push_str(&format!(", {}", usage.summary())),
-            (None, None) => {}
-        }
+        summary.push_str(&crate::model_use(self.stub.as_ref(), self.usage));
         summary
     }
 }

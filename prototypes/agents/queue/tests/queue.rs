@@ -2,13 +2,13 @@
 //! which messages were handed over while it ran, and fails if told to.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use agent_source::Source;
 use agent_testing::{
     assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
+    write_executable,
 };
 
 /// A directory with the stand-in `codex` in `bin` and its records in `calls`.
@@ -36,9 +36,7 @@ impl StandIn {
             handed = source.join("handed").display(),
             exit = dir.path().join("exit").display(),
         );
-        let codex = bin.join("codex");
-        fs::write(&codex, script).unwrap();
-        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&bin.join("codex"), &script);
         Self { dir }
     }
 

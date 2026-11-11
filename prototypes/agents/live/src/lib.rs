@@ -805,6 +805,23 @@ impl Session {
     }
 }
 
+/// The end of a session's summary: the requests to the model stub, and why it fails the session if
+/// it does; or, on the real model, the tokens the CLI says it used. On the stub, the CLI's token
+/// counts are the stub's, so they are left out.
+pub(crate) fn model_use(stub: Option<&StubLog>, usage: Option<Usage>) -> String {
+    match (stub, usage) {
+        (Some(stub), _) => {
+            let mut text = format!(", requests to the stub: {}", stub.requests.len());
+            if let Some(failure) = stub.failure() {
+                text.push_str(&format!(", {failure}"));
+            }
+            text
+        }
+        (None, Some(usage)) => format!(", {}", usage.summary()),
+        (None, None) => String::new(),
+    }
+}
+
 /// `ms` milliseconds as seconds, such as `1.5 s`.
 pub fn seconds(ms: u64) -> String {
     format!("{:.1} s", ms as f64 / 1000.0)

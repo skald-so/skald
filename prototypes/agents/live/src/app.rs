@@ -69,8 +69,8 @@ pub fn app_server(options: &Options) -> Result<bool> {
         check.shared(&mut verdicts)?;
     }
 
-    let verdict = verdicts.verdict(options);
-    Ok(finish(work, options, &verdict, verdicts.pass()))
+    let (verdict, pass) = verdicts.verdict(options);
+    Ok(finish(work, options, &verdict, pass))
 }
 
 /// What every session of the check shares.

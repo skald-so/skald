@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::channel::{Files, Sent};
 use crate::{Agent, Checks, Kind, Options, StubLog, Usage, codex_config, handed_over};
-use crate::{handover_delay, queue, seconds};
+use crate::{handover_delay, model_use, queue, seconds};
 
 /// The client's binary, next to `live-check`.
 pub const CLIENT_BIN: &str = "agent-app-server";
@@ -248,16 +248,7 @@ impl Delivery {
         if !self.declined.is_empty() {
             summary.push_str(&format!(", declined {:?}", self.declined));
         }
-        match (&self.stub, self.usage) {
-            (Some(stub), _) => {
-                summary.push_str(&format!(", requests to the stub: {}", stub.requests.len()));
-                if let Some(failure) = stub.failure() {
-                    summary.push_str(&format!(", {failure}"));
-                }
-            }
-            (None, Some(usage)) => summary.push_str(&format!(", {}", usage.summary())),
-            (None, None) => {}
-        }
+        summary.push_str(&model_use(self.stub.as_ref(), self.usage));
         summary
     }
 
@@ -375,14 +366,10 @@ impl AppServerCheck {
             .report("the session a person works in", pass, &details)
     }
 
-    /// Whether every check passed.
-    pub fn pass(&self) -> bool {
-        self.checks.pass()
-    }
-
-    /// The last line of the output.
-    pub fn verdict(&self, options: &Options) -> String {
-        self.checks.verdict("app-server", Agent::Codex, options)
+    /// The last line of the output, and whether every check passed.
+    pub fn verdict(&self, options: &Options) -> (String, bool) {
+        let line = self.checks.verdict("app-server", Agent::Codex, options);
+        (line, self.checks.pass())
     }
 }
 
@@ -677,10 +664,12 @@ mod tests {
             check.busy(&busy, Some(&sent("tok-1", handed()))),
             r#"  busy thread: pass — replies ["Done."], requests to the stub: 1; added while the shell command ran, handed over in turn/steer 0.2 s and answered 2.2 s after adding"#
         );
-        assert!(check.pass());
         assert_eq!(
             check.verdict(&Options::default()),
-            "app-server on codex with the model stub: pass"
+            (
+                "app-server on codex with the model stub: pass".to_owned(),
+                true
+            )
         );
 
         let mut other_turn = busy.clone();
@@ -724,7 +713,7 @@ mod tests {
             let mut check = AppServerCheck::default();
             let line = check.idle(&delivery, &sent);
             assert!(line.contains(": fail — "), "{case}: {line}");
-            assert!(!check.pass(), "{case}");
+            assert!(!check.verdict(&Options::default()).1, "{case}");
         }
         for (delivery, sent, case) in [
             (
@@ -758,7 +747,10 @@ mod tests {
         };
         assert_eq!(
             check.verdict(&real),
-            "app-server on codex with the real model: fail"
+            (
+                "app-server on codex with the real model: fail".to_owned(),
+                false
+            )
         );
     }
 
@@ -782,7 +774,7 @@ mod tests {
             check.person(&b, &sent("tok-d", handed()), true),
             r#"  the session a person works in: pass — replies ["Done."], requests to the stub: 3; handed over in turn/start 0.4 s and answered 2.4 s after the client started; the token reached the session's thread, its terminal UI showed it"#
         );
-        assert!(check.pass());
+        assert!(check.verdict(&Options::default()).1);
 
         for (pass, line) in [
             // The person's session got the other thread's message.
