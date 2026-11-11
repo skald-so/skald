@@ -140,13 +140,16 @@ const PAIRS: [[Branch; 2]; 6] = [
     ],
 ];
 
+/// Alice's, Bob's and the maintainer's clones of the test repository.
+fn clones(tmp: &TempDir) -> [Machine; 3] {
+    let repo = Repo::create(tmp);
+    ["alice-laptop", "bob-desktop", "maintainer"].map(|name| repo.machine(name).0)
+}
+
 /// The fixture: an octopus merge of two branches, then the merges of [`PAIRS`]. Returns the
 /// maintainer's clone, whose `HEAD` is the last merge.
 fn fixture(tmp: &TempDir) -> Machine {
-    let repo = Repo::create(tmp);
-    let (alice, _) = repo.machine("alice-laptop");
-    let (bob, _) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let [alice, bob, maintainer] = clones(tmp);
     branch(
         &alice,
         "octopus-a",
@@ -423,10 +426,7 @@ fn replaying_a_commit_that_is_not_a_merge_fails() {
 #[test]
 fn merges_with_several_merge_bases_are_counted() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (alice, _) = repo.machine("alice-laptop");
-    let (bob, _) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let [alice, bob, maintainer] = clones(&tmp);
     // Each branch merges the other before the maintainer merges both: the last merge has the
     // two branches' commits for merge bases.
     branch(
@@ -499,10 +499,7 @@ fn report_gives_a_repository_without_merges_and_lifetimes() {
 #[test]
 fn a_conflict_in_a_renamed_file_has_no_file_level_warning() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (alice, _) = repo.machine("alice-laptop");
-    let (bob, _) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let [alice, bob, maintainer] = clones(&tmp);
     // Alice renames the file and edits a line of it; Bob edits that line at the old path.
     let renames = [("src/inventory.rs", "src/stock.rs")];
     let line = (7, "    let reserved = 10;");
@@ -559,10 +556,7 @@ fn a_conflict_in_a_renamed_file_has_no_file_level_warning() {
 #[test]
 fn the_same_change_on_both_sides_is_counted() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (alice, _) = repo.machine("alice-laptop");
-    let (bob, _) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let [alice, bob, maintainer] = clones(&tmp);
     // Both make one change to `reserve()`, and different changes to distant lines of the guide.
     let same = ("src/inventory.rs", 7, "    let reserved = 10;");
     branch(
