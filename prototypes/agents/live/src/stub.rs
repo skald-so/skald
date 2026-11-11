@@ -123,6 +123,13 @@ impl Stub {
     pub fn log(&self) -> StubLog {
         lock(&self.log).clone()
     }
+
+    /// What the stub saw so far, its requests also saved to `path` ([`StubLog::save`]).
+    pub fn saved_log(&self, path: &Path) -> io::Result<StubLog> {
+        let log = self.log();
+        log.save(path)?;
+        Ok(log)
+    }
 }
 
 impl Drop for Stub {
@@ -770,6 +777,21 @@ mod tests {
         log.save(&path).unwrap();
         assert_eq!(read_json(&path), json!(["{}", "a\"b"]));
         assert!(log.save(&dir.path().join("missing/stub.json")).is_err());
+    }
+
+    #[test]
+    fn a_stubs_log_is_saved_as_it_is_returned() {
+        let stub = Stub::start(&[]).unwrap();
+        lock(&stub.log).requests.push("{\"tok-1\"}".to_owned());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stub.json");
+        let log = stub.saved_log(&path).unwrap();
+        assert_eq!(log, stub.log());
+        assert_eq!(read_json(&path), json!(["{\"tok-1\"}"]));
+        assert!(
+            stub.saved_log(&dir.path().join("missing/stub.json"))
+                .is_err()
+        );
     }
 
     #[test]

@@ -1,10 +1,19 @@
 //! Assertions the delivery prototypes' tests share.
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Output;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_source::{Message, Source, State};
+
+/// Writes `script` to `path` as an executable file, such as a stand-in for a CLI.
+pub fn write_executable(path: &Path, script: &str) {
+    fs::write(path, script).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+}
 
 /// A command's stderr as text.
 pub fn stderr(output: &Output) -> String {

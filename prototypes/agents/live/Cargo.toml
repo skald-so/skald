@@ -7,6 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+agent-app-server = { path = "../app-server" }
 agent-inbox = { path = "../inbox" }
 agent-source = { path = "../source" }
 libc = "0.2"
