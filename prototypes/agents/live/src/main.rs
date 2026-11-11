@@ -1,15 +1,11 @@
-//! Live checks of the delivery paths against the installed CLIs. `script/test` does not run them.
-//!
-//! ```text
-//! live-check add <source-dir> <sender> <text>
-//! live-check inbox <claude|codex> [--model <model>] [--keep]
-//! ```
+//! Live checks of the delivery paths against the installed CLIs; `usage` lists the commands.
+//! `script/test` does not run them.
 
 mod run;
 
 use std::process::ExitCode;
 
-use agent_live::{Agent, Options};
+use agent_live::{Agent, Options, exit_code};
 use agent_source::Source;
 
 fn main() -> ExitCode {
@@ -32,8 +28,7 @@ fn main() -> ExitCode {
                 return usage();
             };
             match run::inbox(agent, &options) {
-                Ok(true) => ExitCode::SUCCESS,
-                Ok(false) => ExitCode::FAILURE,
+                Ok(pass) => exit_code(pass),
                 Err(error) => {
                     eprintln!("live-check: {error}");
                     ExitCode::FAILURE

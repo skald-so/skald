@@ -17,6 +17,7 @@ dependencies = [
 name = "agent-live"
 version = "0.0.0"
 dependencies = [
+ "agent-inbox",
  "agent-source",
  "serde_json",
  "tempfile",

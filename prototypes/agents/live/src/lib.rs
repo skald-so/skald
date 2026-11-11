@@ -1,16 +1,22 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
-//! and how to read the session's events; and the checks' options and verdicts.
+//! and how to read the session's events; and the checks' options, prompts, messages and verdicts.
+//! The binary only starts the CLIs and reads their output.
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{ExitCode, ExitStatus};
+use std::time::Duration;
 
-use agent_source::State;
+use agent_inbox::INBOX;
+use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
-/// The name of the MCP server in each session's config; Claude Code names its tool
-/// `mcp__skald__inbox`.
+/// The name of the MCP server in each session's config.
 pub const SERVER: &str = "skald";
+
+/// The sender label of the checks' messages.
+pub const SENDER: &str = "live-check of skald";
 
 /// An agent CLI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +42,11 @@ impl Agent {
         }
     }
 
+    /// The CLI's version line from the output of `<cli> --version`.
+    pub fn version(self, stdout: &[u8]) -> String {
+        format!("{}: {}", self.cli(), String::from_utf8_lossy(stdout).trim())
+    }
+
     /// Attaches the `inbox` MCP server, `inbox <source>`, to sessions in `project` and returns the
     /// arguments of a non-interactive session there that gets `prompt`. Only files in `project` and
     /// the arguments change the CLI's config.
@@ -59,7 +70,7 @@ impl Agent {
                 // each call of its tool.
                 let settings = json!({
                     "enableAllProjectMcpServers": true,
-                    "permissions": { "allow": [format!("mcp__{SERVER}__inbox"), "Bash(sleep:*)"] },
+                    "permissions": { "allow": [inbox_tool(), "Bash(sleep:*)"] },
                 });
                 fs::create_dir_all(project.join(".claude"))?;
                 fs::write(
@@ -75,11 +86,12 @@ impl Agent {
             }
             Self::Codex => {
                 // `-c` values are TOML; a JSON string or array of strings is valid TOML.
+                let server = format!("mcp_servers.{SERVER}");
                 let config = [
-                    format!("mcp_servers.{SERVER}.command={}", json!(inbox)),
-                    format!("mcp_servers.{SERVER}.args={}", json!([source])),
+                    format!("{server}.command={}", json!(inbox)),
+                    format!("{server}.args={}", json!([source])),
                     // Without it, `codex exec` refuses the tool call: it cannot ask a person.
-                    format!("mcp_servers.{SERVER}.default_tools_approval_mode=\"approve\""),
+                    format!("{server}.default_tools_approval_mode=\"approve\""),
                 ];
                 args.extend(
                     [
@@ -136,7 +148,7 @@ impl Agent {
                 match (value["type"].as_str()?, item["type"].as_str()?) {
                     ("item.started", "command_execution") => Some(Event::ShellStarted),
                     ("item.started", "mcp_tool_call")
-                        if item["server"] == SERVER && item["tool"] == "inbox" =>
+                        if item["server"] == SERVER && item["tool"] == INBOX =>
                     {
                         Some(Event::InboxCalled)
                     }
@@ -150,8 +162,9 @@ impl Agent {
     }
 }
 
+/// Claude Code's name of the `inbox` tool.
 fn inbox_tool() -> String {
-    format!("mcp__{SERVER}__inbox")
+    format!("mcp__{SERVER}__{INBOX}")
 }
 
 fn pretty(value: &Value) -> String {
@@ -196,6 +209,127 @@ impl<'a> Options<'a> {
                 _ => return None,
             }
         }
+    }
+
+    /// Whether the sessions' logs stay after a check that ended with `pass`: after a fail, always.
+    pub fn keeps_logs(&self, pass: bool) -> bool {
+        self.keep || !pass
+    }
+}
+
+/// The `agent-inbox` binary next to `live-check`, the binary `exe`.
+pub fn inbox_server(exe: &Path) -> Result<PathBuf, String> {
+    let inbox = exe.with_file_name("agent-inbox");
+    if inbox.exists() {
+        Ok(inbox)
+    } else {
+        Err(format!(
+            "{} is missing: build the workspace",
+            inbox.display()
+        ))
+    }
+}
+
+/// A session to run: its project, its inbox's source, its logs and the CLI's arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Run {
+    pub name: String,
+    pub agent: Agent,
+    pub project: PathBuf,
+    pub source: PathBuf,
+    pub args: Vec<String>,
+    /// The session's JSON output.
+    pub log: PathBuf,
+    /// The CLI's stderr.
+    pub stderr: PathBuf,
+}
+
+impl Run {
+    /// Prepares the session `name` in `work/<name>`: a project with the `inbox` server attached.
+    pub fn new(
+        work: &Path,
+        name: &str,
+        agent: Agent,
+        inbox: &Path,
+        prompt: &str,
+        model: Option<&str>,
+    ) -> io::Result<Self> {
+        let dir = work.join(name);
+        let project = dir.join("project");
+        let source = dir.join("source");
+        fs::create_dir_all(&project)?;
+        let args = agent.session(&project, inbox, &source, prompt, model)?;
+        Ok(Self {
+            name: name.to_owned(),
+            agent,
+            project,
+            source,
+            args,
+            log: dir.join("session.jsonl"),
+            stderr: dir.join("session.stderr"),
+        })
+    }
+}
+
+/// Why a session ended badly, if it did: it was stopped after `timeout`, or its CLI failed.
+pub fn session_failure(timed_out: bool, timeout: Duration, status: ExitStatus) -> Option<String> {
+    if timed_out {
+        Some(format!("timed out after {} s", timeout.as_secs()))
+    } else if status.success() {
+        None
+    } else {
+        Some(status.to_string())
+    }
+}
+
+/// The idle sessions' prompt.
+pub fn idle_prompt() -> String {
+    format!("Call {}", ask())
+}
+
+/// The busy session's prompt: its message comes while the shell command runs.
+pub fn busy_prompt() -> String {
+    format!("Run the shell command `sleep 20`. Then call {}", ask())
+}
+
+fn ask() -> String {
+    format!(
+        "the {INBOX} tool of the {SERVER} MCP server and reply with only the check token from \
+         the message, or NONE if there is none."
+    )
+}
+
+/// A random check token.
+pub fn token() -> String {
+    format!("tok-{}", &uuid::Uuid::new_v4().simple().to_string()[..12])
+}
+
+/// Adds a check's message with `token` to `source`.
+pub fn add_message(source: &Source, token: &str) -> io::Result<Message> {
+    source.add(SENDER, &format!("The check token is {token}."))
+}
+
+/// The busy check's message: added once, when the agent starts its first shell command.
+#[derive(Debug)]
+pub struct BusyMessage<T>(Option<T>);
+
+impl<T> Default for BusyMessage<T> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<T> BusyMessage<T> {
+    /// Adds the message with `add` if `event` starts the session's first shell command.
+    pub fn on_event(&mut self, event: &Event, add: impl FnOnce() -> T) {
+        if *event == Event::ShellStarted && self.0.is_none() {
+            self.0 = Some(add());
+        }
+    }
+
+    /// What `add` returned; `None` if the agent ran no shell command.
+    pub fn added(self) -> Option<T> {
+        self.0
     }
 }
 
@@ -275,13 +409,85 @@ pub fn handover_delay(state: Option<State>, from_ms: u64) -> String {
     }
 }
 
+/// The `inbox` path's checks: each returns its line in the output.
+#[derive(Debug, Default)]
+pub struct InboxCheck {
+    passed: Vec<bool>,
+}
+
+impl InboxCheck {
+    /// The idle session, one of two, and its message with `token`, now in `state`.
+    pub fn idle(&mut self, session: &Session, token: &str, state: Option<State>) -> String {
+        let details = format!(
+            "{}; handed over {} after the session started",
+            session.summary(),
+            handover_delay(state, session.started_ms)
+        );
+        self.report(
+            "idle session, one of two",
+            session.received(token, state),
+            &details,
+        )
+    }
+
+    /// The other idle session, which must not get the message with `token`.
+    pub fn other(&mut self, session: &Session, token: &str) -> String {
+        let details = format!("{}; the message did not reach it", session.summary());
+        self.report("the other idle session", session.missed(token), &details)
+    }
+
+    /// The busy session and its message with `token`: added at `added_at_ms`, if the agent ran a
+    /// shell command, and now in `state`.
+    pub fn busy(
+        &mut self,
+        session: &Session,
+        token: &str,
+        added_at_ms: Option<u64>,
+        state: Option<State>,
+    ) -> String {
+        let message = match added_at_ms {
+            Some(added_at_ms) => format!(
+                "added while the shell command ran, handed over {} later",
+                handover_delay(state, added_at_ms)
+            ),
+            None => "the agent ran no shell command".to_owned(),
+        };
+        let details = format!("{}; {message}", session.summary());
+        self.report("busy session", session.received(token, state), &details)
+    }
+
+    /// Whether every check passed.
+    pub fn pass(&self) -> bool {
+        self.passed.iter().all(|pass| *pass)
+    }
+
+    /// The last line of the output.
+    pub fn verdict(&self, agent: Agent) -> String {
+        format!("{INBOX} on {}: {}", agent.cli(), verdict(self.pass()))
+    }
+
+    fn report(&mut self, check: &str, pass: bool, details: &str) -> String {
+        self.passed.push(pass);
+        report(check, pass, details)
+    }
+}
+
 /// A check's line in the output.
-pub fn report(check: &str, pass: bool, details: &str) -> String {
+fn report(check: &str, pass: bool, details: &str) -> String {
     format!("  {check}: {} — {details}", verdict(pass))
 }
 
-pub fn verdict(pass: bool) -> &'static str {
+fn verdict(pass: bool) -> &'static str {
     if pass { "pass" } else { "fail" }
+}
+
+/// `live-check`'s exit code after a check that ended with `pass`.
+pub fn exit_code(pass: bool) -> ExitCode {
+    if pass {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +791,209 @@ mod tests {
             "never (state Some(Taken))"
         );
         assert_eq!(handover_delay(None, 1_000), "never (state None)");
+    }
+
+    #[test]
+    fn reads_the_cli_version() {
+        assert_eq!(
+            Agent::Claude.version(b"2.1.322 (Claude Code)\n"),
+            "claude: 2.1.322 (Claude Code)"
+        );
+        assert_eq!(
+            Agent::Codex.version(b"codex-cli 0.162.1\n"),
+            "codex: codex-cli 0.162.1"
+        );
+    }
+
+    #[test]
+    fn keeps_the_logs_when_asked_or_after_a_fail() {
+        let keep = Options {
+            model: None,
+            keep: true,
+        };
+        assert!(!Options::default().keeps_logs(true));
+        assert!(Options::default().keeps_logs(false));
+        assert!(keep.keeps_logs(true));
+        assert!(keep.keeps_logs(false));
+    }
+
+    #[test]
+    fn finds_the_inbox_server_next_to_live_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("live-check");
+        let inbox = dir.path().join("agent-inbox");
+        assert_eq!(
+            inbox_server(&exe),
+            Err(format!(
+                "{} is missing: build the workspace",
+                inbox.display()
+            ))
+        );
+        fs::write(&inbox, "").unwrap();
+        assert_eq!(inbox_server(&exe), Ok(inbox));
+    }
+
+    #[test]
+    fn prepares_a_session_in_its_own_directory() {
+        let work = tempfile::tempdir().unwrap();
+        let inbox = Path::new("/bin/inbox");
+        let run = Run::new(work.path(), "a", Agent::Codex, inbox, "p", Some("m")).unwrap();
+        let dir = work.path().join("a");
+        let project = dir.join("project");
+        let source = dir.join("source");
+        assert!(project.is_dir());
+        assert_eq!(
+            run,
+            Run {
+                name: "a".to_owned(),
+                agent: Agent::Codex,
+                args: Agent::Codex
+                    .session(&project, inbox, &source, "p", Some("m"))
+                    .unwrap(),
+                project,
+                source,
+                log: dir.join("session.jsonl"),
+                stderr: dir.join("session.stderr"),
+            }
+        );
+        let claude = Run::new(work.path(), "b", Agent::Claude, inbox, "p", None).unwrap();
+        assert_eq!(claude.args[..2], ["-p", "p"]);
+        assert!(claude.project.join(".mcp.json").is_file());
+    }
+
+    #[test]
+    fn tells_why_a_session_failed() {
+        use std::os::unix::process::ExitStatusExt;
+        let timeout = Duration::from_secs(300);
+        let ok = ExitStatus::from_raw(0);
+        let failed = ExitStatus::from_raw(1 << 8);
+        let killed = ExitStatus::from_raw(9);
+        assert_eq!(session_failure(false, timeout, ok), None);
+        assert_eq!(
+            session_failure(false, timeout, failed),
+            Some("exit status: 1".to_owned())
+        );
+        assert_eq!(
+            session_failure(true, timeout, killed),
+            Some("timed out after 300 s".to_owned())
+        );
+        assert_eq!(
+            session_failure(true, timeout, ok),
+            Some("timed out after 300 s".to_owned())
+        );
+    }
+
+    #[test]
+    fn prompts_name_the_inbox_tool() {
+        assert_eq!(
+            idle_prompt(),
+            "Call the inbox tool of the skald MCP server and reply with only the check token \
+             from the message, or NONE if there is none."
+        );
+        assert_eq!(
+            busy_prompt(),
+            "Run the shell command `sleep 20`. Then call the inbox tool of the skald MCP server \
+             and reply with only the check token from the message, or NONE if there is none."
+        );
+    }
+
+    #[test]
+    fn makes_random_tokens() {
+        let token = token();
+        assert_eq!(token.len(), 16, "{token}");
+        assert!(token.starts_with("tok-"), "{token}");
+        assert!(token[4..].chars().all(|c| c.is_ascii_hexdigit()), "{token}");
+        assert_ne!(token, super::token());
+    }
+
+    #[test]
+    fn adds_a_message_with_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Source::open(dir.path()).unwrap();
+        let message = add_message(&source, "tok-1").unwrap();
+        assert_eq!(message.sender, "live-check of skald");
+        assert_eq!(message.text, "The check token is tok-1.");
+        assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
+    }
+
+    #[test]
+    fn adds_the_busy_message_at_the_first_shell_command() {
+        let mut busy = BusyMessage::default();
+        let mut calls = 0;
+        for event in [
+            Event::Started {
+                sign_in: None,
+                inbox_connected: true,
+            },
+            Event::InboxCalled,
+            Event::Reply("working".to_owned()),
+        ] {
+            busy.on_event(&event, || {
+                calls += 1;
+                "early"
+            });
+        }
+        assert_eq!(calls, 0, "added before the shell command");
+        busy.on_event(&Event::ShellStarted, || {
+            calls += 1;
+            "first"
+        });
+        busy.on_event(&Event::ShellStarted, || {
+            calls += 1;
+            "second"
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(busy.added(), Some("first"));
+        assert_eq!(BusyMessage::<()>::default().added(), None);
+    }
+
+    #[test]
+    fn checks_the_inbox_path() {
+        let handed_over = Some(State::HandedOver { at_ms: 5_900 });
+        let mut check = InboxCheck::default();
+        assert_eq!(
+            check.idle(&replied("tok-1"), "tok-1", handed_over),
+            r#"  idle session, one of two: pass — reply "tok-1"; handed over 4.9 s after the session started"#
+        );
+        assert_eq!(
+            check.other(&replied("NONE"), "tok-1"),
+            r#"  the other idle session: pass — reply "NONE"; the message did not reach it"#
+        );
+        assert_eq!(
+            check.busy(&replied("tok-2"), "tok-2", Some(3_000), handed_over),
+            r#"  busy session: pass — reply "tok-2"; added while the shell command ran, handed over 2.9 s later"#
+        );
+        assert!(check.pass());
+        assert_eq!(check.verdict(Agent::Codex), "inbox on codex: pass");
+
+        // One failed check fails the path.
+        assert_eq!(
+            check.busy(&replied("NONE"), "tok-2", None, None),
+            r#"  busy session: fail — reply "NONE"; the agent ran no shell command"#
+        );
+        assert!(!check.pass());
+        assert_eq!(check.verdict(Agent::Claude), "inbox on claude: fail");
+
+        let mut check = InboxCheck::default();
+        assert!(
+            check
+                .idle(&replied("NONE"), "tok-1", None)
+                .contains(": fail — ")
+        );
+        assert!(!check.pass());
+        let mut check = InboxCheck::default();
+        assert!(
+            check
+                .other(&replied("tok-1"), "tok-1")
+                .contains(": fail — ")
+        );
+        assert!(!check.pass());
+    }
+
+    #[test]
+    fn exits_with_the_verdict() {
+        assert_eq!(exit_code(true), ExitCode::SUCCESS);
+        assert_eq!(exit_code(false), ExitCode::FAILURE);
     }
 
     #[test]
