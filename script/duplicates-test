@@ -14,8 +14,13 @@ fail() {
   failures=$((failures + 1))
 }
 
-# numbers <n> [<separator>]: 1 to <n>, joined with <separator>, `, ` by default.
-numbers() { seq -s "${2:-, }" 1 "$1"; }
+# numbers <n> [<separator>]: 1 to <n>, joined with <separator>, `, ` by default. Not `seq -s`: BSD
+# seq ends with the separator too.
+numbers() {
+  local list=1 i
+  for ((i = 2; i <= $1; i++)); do list+="${2:-, }$i"; done
+  echo "$list"
+}
 
 # copy <code> <file>...: a fresh scratch repository with an empty list of known clones and <code>
 # in each <file>.
@@ -50,9 +55,9 @@ expect() {
 rust() { printf 'fn total() -> u32 {\n    sum(&[%s])\n}' "$1"; }
 
 # 49 tokens pass; 50 fail, on however few lines.
-copy "$(rust "$(numbers 17)")" src/a.rs src/b.rs
-expect '' src
 copy "$(rust "$(numbers 17),")" src/a.rs src/b.rs
+expect '' src
+copy "$(rust "$(numbers 18)")" src/a.rs src/b.rs
 expect 'src/a.rs:1-3 src/b.rs:1-3' src
 
 # Each scanned format, a shell script known by its shebang.
