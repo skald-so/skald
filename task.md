@@ -1559,8 +1559,8 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 
 **Scope:**
 - OpenClaw: adds `mcp.servers.skald` to `~/.openclaw/openclaw.json` (JSON5), keeping the other entries and the comments.
-- Crush: adds the Skald MCP server to its `crushrc`, keeping the rest of the file.
-- Both rows move into `agents.md`, "Setup by `skald connect`".
+- Crush: adds the Skald MCP server to `~/.config/crush/crushrc`, keeping the rest of the file.
+- `agents.md`, "Setup by `skald connect`", gets a row for each, and its "OpenClaw and Crush" line goes.
 - **Done when:** with OpenClaw and Crush on a machine, `skald connect` adds the Skald MCP server to each, with its other config kept.
 
 - **Release:** Post-MVP

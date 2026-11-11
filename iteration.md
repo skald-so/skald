@@ -167,6 +167,8 @@
 
 ## Story 55: Homebrew, winget and cargo-binstall
 
+## Story 69: OpenClaw and Crush setup by `skald connect`
+
 ## Story 56: Managed keys: custodian device
 
 ## Story 57: Hosted MCP for ChatGPT and Claude.ai
