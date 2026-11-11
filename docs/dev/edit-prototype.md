@@ -4,7 +4,7 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 
 - Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. The harness's commits carry a fixed date, so they get the same hashes on every run; the client's snapshot commits keep the current time. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity, for the harness's commands the fixed date, and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
-- Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths and changed lines.
+- Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
 - Run: `cargo test --manifest-path prototypes/edits/Cargo.toml`; it needs `git` ([CONTRIBUTING.md](../../CONTRIBUTING.md), "Requirements"). `script/test` runs it.
 
@@ -144,7 +144,6 @@ Open questions of edit comparison, and how the prototype answers them:
   - Other files, `.tsx` and `.go` among them, get path and hunk fingerprints only.
 - **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit symbol"`, the scope, the path, and the node kind and the name of each symbol from the outermost, each after its length as a big-endian `u64`. No line numbers or content: a symbol moved within its file keeps its fingerprint.
 - **Publication:** in one set with the path and hunk fingerprints. Each changed symbol adds a fingerprint, so the server learns how many symbols a machine changes.
-- **Mapping back:** a machine maps shared symbol fingerprints to its own symbols.
 - **Matches without a conflict:**
   - Edits to distant lines of one function, which `git merge-tree` merges cleanly: what this level is for.
   - Symbols of one name and kind in one scope, such as a TypeScript getter and setter, share a fingerprint.
