@@ -47,6 +47,13 @@
 ## Story 5: Edit comparison prototype with HMAC fingerprints
 
 ## Story 6: Staging environment
+- [ ] **6.1:** `skald-server` Docker image
+- [ ] **6.2:** Publishing `:edge` to GHCR
+- [ ] **6.3:** Caddy instead of nginx on the staging VPS
+- [ ] **6.4:** Staging stack at `dev.skald.so`
+- [ ] **6.5:** Deploy access to the staging VPS
+- [ ] **6.6:** Deploying every merge into `dev`
+- [ ] **6.7:** Staging status check
 
 ## Story 7: Release pipeline
 

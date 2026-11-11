@@ -601,6 +601,89 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Depends on:** Story 1
 - **Docs:** `infrastructure.md` — "Flow", "Repositories", "Cloud", "Self-host", `tech-stack.md`
 
+#### Iteration 6.1: `skald-server` Docker image
+- **Goal:** `skald-server` runs from a Docker image, checked on every change that affects it.
+- **What we do:**
+  - A Docker image of `skald-server` built from the workspace: it holds the binary and only what it needs at run time, runs it as a non-root user, listens on all interfaces inside the container and takes its settings from the environment, as the binary does.
+  - Its labels name the source repository and the commit it was built from.
+  - `script/test` builds the image and tests it with PostgreSQL in a container; the CI path filters run this when the server, its dependencies or the image definition change; `infrastructure.md`, "PR checks", lists it.
+  - Tests: a container from the image applies the migrations and answers the health check against PostgreSQL; it exits with an error when PostgreSQL is unreachable; its process does not run as root; the path filter tests cover the image's paths.
+- **Definition of done:** `script/test` builds the image and its integration tests pass, locally and in CI; a PR that changes only docs or the web UI does not build the image.
+
+#### Iteration 6.2: Publishing `:edge` to GHCR
+- **Goal:** Every merge into `dev` publishes the image that staging runs.
+- **What we do:**
+  - On every push to `dev`, a workflow builds the image from that commit and pushes it to GHCR as `skald-server`, tagged `:edge` and with the commit.
+  - When merges overlap, `:edge` never moves back to an older commit.
+  - The build reuses the dependency build of earlier runs, so a merge reaches GHCR within a few minutes.
+  - The workflow never runs for PRs; its token can write packages and nothing else.
+  - The first publish runs on this iteration's merge; 6.4 checks it.
+- **Definition of done:** the workflow runs only on pushes to `dev`, builds from the image definition that `script/test` tests, and its token has no write access besides packages.
+
+#### Iteration 6.3: Caddy instead of nginx on the staging VPS
+- **Goal:** One Caddy serves every site on the staging VPS, and the other projects' sites keep working through and after the move.
+- **What we do:**
+  - Before the iteration starts, the owner allows the switch in chat; the orchestrator states the allowance in the developer's prompt.
+  - Here and in 6.4 and 6.5: the developer works on the VPS through the owner's SSH access; `skald-cloud` changes go through a PR to its `main`, linked from this iteration's PR and merged with it.
+  - `skald-cloud` gets a `script/test` that runs its tests (`rules.md`, rule 2).
+  - An inventory in `skald-cloud`:
+    - each site nginx serves on the VPS: its domains, what it serves (proxies, WebSocket, static files, redirects, access rules, limits) and its certificates;
+    - whatever changes nginx's config or reloads it. If anything outside the VPS does, such as another project's deploy, the switch waits for the owner's decision.
+  - A site check in `skald-cloud`: for each site of the inventory, it compares the HTTPS responses and the certificate with a baseline recorded through nginx before the switch.
+  - Caddy takes over every site, each in its own config, so changing one leaves the others alone. It runs apart from any project's stack, so no project's deploy stops it. Its config is validated before the switch.
+  - Caddy holds a valid certificate for every site before nginx stops; the switch interrupts the sites only for the restart.
+  - The switch: Caddy serves ports 80 and 443; nginx is stopped and disabled, its config and certificates kept.
+  - Rollback: the runbook in `skald-cloud` gives the steps back to nginx; the developer rehearses them once, to nginx and back to Caddy.
+  - Tests, against local stand-in sites: the site check passes when the responses match the baseline and fails, naming the site, on a different status or redirect target, or an invalid certificate.
+- **Definition of done:** only Caddy serves ports 80 and 443 on the VPS, and nginx is stopped with its config kept; the site check, rerun by the reviewer, passes for every site of the inventory; its output in the PR, through the switch and after each step of the rehearsed rollback, shows no site down beyond a restart; the site check's tests pass in `skald-cloud`'s `script/test`.
+
+#### Iteration 6.4: Staging stack at `dev.skald.so`
+- **Goal:** Staging runs `skald-server` from the `:edge` image behind Caddy, deployed by one command.
+- **What we do:**
+  - Before the iteration starts, the owner makes the `skald-server` package in GHCR public; the merge of 6.2 has published it.
+  - The staging stack in `skald-cloud`: `skald-server` from an `:edge` digest; PostgreSQL 19 with its data in a persistent volume; a persistent disk volume for attachments, mounted into the server container for Story 41.
+  - A Caddy site for `dev.skald.so` passes HTTPS and WebSocket to the server; adding it interrupts no other site.
+  - Only Caddy reaches the server, and only the server reaches PostgreSQL; the server container runs without privileges or host access beyond its volumes.
+  - The stack's secrets live only on the VPS; `skald-cloud` names them without values.
+  - A deploy command on the VPS takes an image digest, pulls it and restarts the server with it. It passes only when the running server container has that digest and the health check over `https://dev.skald.so` answers ok.
+  - The runbook in `skald-cloud`: bringing the stack up, applying a config change, deploying and rolling back a digest, logs, where the secrets are.
+  - `infrastructure.md`, "Repositories": `skald-cloud` also holds the staging configs.
+  - Tests, with stand-ins for Docker and the HTTPS check: the deploy command passes when the requested digest runs and the health check answers ok, and fails on a failed pull, another running digest or a failed health check.
+- **Definition of done:** `https://dev.skald.so/health` answers ok with a valid certificate; the deploy command, rerun by the reviewer with the current `:edge` digest, passes, and the image's labels name a `dev` commit; the database and the attachment volume keep their data across that redeploy; PostgreSQL and the server's port are closed from outside; the site check of 6.3 passes; the deploy command's tests pass in `skald-cloud`'s `script/test`.
+
+#### Iteration 6.5: Deploy access to the staging VPS
+- **Goal:** CI can deploy staging and nothing else on the shared VPS.
+- **What we do:**
+  - A deploy account on the VPS whose SSH key runs only the deploy command of 6.4 with one digest of the `skald-server` image: no shell, port forwarding or other command, and no access to other projects' files.
+  - Any other input is refused before anything runs.
+  - The runbook in `skald-cloud`: how the owner creates the key pair and installs the public key with this restriction; rotating and revoking the key; the host key CI pins; what the VPS's firewall must let in from GitHub-hosted runners.
+  - Tests, with a stand-in for the deploy command: one well-formed digest of the `skald-server` image reaches it; other commands, extra arguments, other images and malformed digests are refused without running it.
+- **Definition of done:** run as the deploy account the way SSH runs the key's command, it deploys the current `:edge` digest and refuses every other input, checked by the reviewer through the owner's SSH access; the runbook's install steps give the key exactly this restriction; the tests pass in `skald-cloud`'s `script/test`.
+
+#### Iteration 6.6: Deploying every merge into `dev`
+- **Goal:** Each `:edge` image CI publishes reaches staging without a person.
+- **What we do:**
+  - Before the iteration starts, the owner:
+    - creates the deploy key pair and installs the public key on the VPS as the runbook of 6.5 says;
+    - in `skald-so/skald`, creates a GitHub environment for staging that only `dev` may deploy from, with the private key as its secret;
+    - opens the VPS's firewall to GitHub-hosted runners, if the runbook says it is needed.
+  - After the workflow of 6.2 publishes `:edge`, a deploy job in that environment connects to the VPS with the deploy key, checks the pinned host key and deploys the published digest; it fails when the deploy fails.
+  - Deploys run one at a time; when merges overlap, staging never moves back to an older commit.
+  - The job's public log shows the commit and digest deployed and the health check result, and no secret.
+  - `infrastructure.md`, "Cloud": the staging deploy runs in this repository's CI, in an environment only `dev` deploys from.
+  - The first deploy runs on this iteration's merge; 6.7 checks it.
+- **Definition of done:** the installed key carries the restriction of 6.5; the environment admits only `dev`, and no other secret of the repository holds the key; only the deploy job uses the environment, and it pins the host key.
+
+#### Iteration 6.7: Staging status check
+- **Goal:** Anyone can tell whether staging runs the latest merge into `dev`, and a merge is shown to reach staging within a few minutes.
+- **What we do:**
+  - A command reports, for the latest commit on `dev`: its merge time; the latest staging deploy in CI, with its commit, result and how long after the merge it finished; the health check over `https://dev.skald.so`.
+  - It passes only when the latest staging deploy is of that commit and succeeded, and the health check answers ok. Otherwise it fails, naming the cause: the publish or the deploy failed, has not run or is still running, or the health check fails.
+  - It uses only public data: the CI runs of `skald-so/skald` and the health check.
+  - `infrastructure.md`, "Cloud": the staging line names the command.
+  - Tests, on recorded GitHub API responses and a local stand-in for the health check: it passes for a succeeded deploy of the latest commit with the health check ok, and fails, naming the cause, in each other case above.
+- **Definition of done:** the command, run by the reviewer, passes for the latest commit on `dev` and shows that it reached staging within a few minutes of its merge; its unit tests run in `script/test`.
+
 ### Story 7: Release pipeline
 
 **Goal:** A release ships with one action, merging the Release PR, and the artifacts are signed and verifiable.
