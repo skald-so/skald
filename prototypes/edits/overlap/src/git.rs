@@ -168,9 +168,10 @@ pub fn unbundle(dir: &Path, bundle: &[u8]) -> Result<String> {
         .to_str()
         .ok_or("a temporary path that is not UTF-8")?;
     let heads = String::from_utf8(run(dir, &["bundle", "unbundle", path])?)?;
+    // `git bundle` refuses a bundle whose references do not start with an object ID.
     match heads.lines().collect::<Vec<_>>()[..] {
         [head] => match head.split_once(' ') {
-            Some((commit, BUNDLE_REF)) if is_object_id(commit) => Ok(commit.to_owned()),
+            Some((commit, BUNDLE_REF)) => Ok(commit.to_owned()),
             _ => Err(format!("a bundle with another reference: {head}").into()),
         },
         _ => Err(format!("a bundle without exactly one reference: {heads}").into()),
