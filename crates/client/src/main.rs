@@ -1,12 +1,102 @@
 //! The `skald` client binary.
 
-use clap::Parser;
+mod connection;
+
+use std::num::NonZeroU64;
+use std::process::ExitCode;
+use std::time::Duration;
+
+use clap::{Parser, Subcommand};
+use connection::{Connection, TIMEOUT};
+use skald_proto::VersionRange;
 
 /// Message broker and task queue for AI agents.
 #[derive(Parser)]
-#[command(name = "skald", version)]
-struct Cli {}
+#[command(name = "skald", version, arg_required_else_help = true)]
+struct Cli {
+    /// Protocol versions to speak, for tests: <n> or <oldest>-<latest>
+    /// [default: the current version and the previous one].
+    #[arg(
+        long,
+        env = "SKALD_PROTOCOL_VERSIONS",
+        value_name = "VERSIONS",
+        global = true,
+        hide = true
+    )]
+    protocol_versions: Option<VersionRange>,
 
-fn main() {
-    Cli::parse();
+    /// How long a request to the server may take, in seconds, for tests [default: 30].
+    #[arg(
+        long,
+        env = "SKALD_TIMEOUT",
+        value_name = "SECONDS",
+        global = true,
+        hide = true
+    )]
+    timeout: Option<NonZeroU64>,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Shows whether the server is reachable and speaks a compatible protocol version.
+    Status {
+        /// The server's URL, such as http://localhost:8080.
+        #[arg(long, value_name = "URL")]
+        server: String,
+    },
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let speaks = cli.protocol_versions.unwrap_or_default();
+    let timeout = cli
+        .timeout
+        .map_or(TIMEOUT, |seconds| Duration::from_secs(seconds.get()));
+    match cli.command {
+        Command::Status { server } => status(&server, speaks, timeout),
+    }
+}
+
+/// `skald status`: requests the protocol versions and opens a WebSocket, then reports.
+fn status(server: &str, speaks: VersionRange, timeout: Duration) -> ExitCode {
+    let mut connection = match Connection::new(server, speaks, timeout) {
+        Ok(connection) => connection,
+        Err(err) => {
+            eprintln!("skald: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let result = connection
+        .get("/protocol")
+        .and_then(|_| connection.open_websocket("/ws"))
+        // The WebSocket carries nothing yet: it closes on drop.
+        .map(drop);
+    match result {
+        Ok(()) => {
+            println!("Server {server}: reachable");
+            println!("Protocol: version {}, compatible", connection.version());
+            if let Some(latest) = connection.update_available() {
+                println!(
+                    "Update available: the server speaks protocol version {latest}; update skald"
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            let reached = if err.reached() {
+                "reachable"
+            } else {
+                "unreachable"
+            };
+            println!("Server {server}: {reached}");
+            if err.incompatible() {
+                println!("Protocol: incompatible");
+            }
+            eprintln!("skald: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }

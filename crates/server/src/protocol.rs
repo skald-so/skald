@@ -10,28 +10,25 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use skald_proto::{
-    LATEST_HEADER, PROTOCOL_VERSION, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem,
-    parse_version,
+    LATEST_HEADER, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem, VersionRange, parse_version,
 };
 
 /// The protocol versions the server accepts: its current version and, optionally, the previous one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Versions {
-    oldest: NonZeroU64,
-    latest: NonZeroU64,
-}
+/// The default is [`VersionRange`]'s.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Versions(VersionRange);
 
 impl Versions {
     /// The accepted versions, ascending.
     pub fn supported(self) -> Vec<u64> {
-        (self.oldest.get()..=self.latest.get()).collect()
+        self.0.list()
     }
 
     /// Whether the server accepts `version`, and if not, why.
     fn check(self, version: NonZeroU64) -> Result<(), VersionProblem> {
-        if version < self.oldest {
+        if version < self.0.oldest() {
             Err(VersionProblem::TooOld)
-        } else if version > self.latest {
+        } else if version > self.0.latest() {
             Err(VersionProblem::TooNew)
         } else {
             Ok(())
@@ -39,41 +36,19 @@ impl Versions {
     }
 }
 
-/// [`PROTOCOL_VERSION`] and the version before it; version 1 alone while it is the only one.
-impl Default for Versions {
-    fn default() -> Self {
-        Versions {
-            oldest: NonZeroU64::new(PROTOCOL_VERSION.get().saturating_sub(1))
-                .unwrap_or(PROTOCOL_VERSION),
-            latest: PROTOCOL_VERSION,
-        }
-    }
-}
-
-/// `<n>`, or `<oldest>-<latest>` for two adjacent versions, such as `2-3`.
+/// A [`VersionRange`] of at most two adjacent versions, such as `2-3`.
 impl FromStr for Versions {
     type Err = String;
 
     fn from_str(text: &str) -> Result<Self, String> {
-        let version = |text: &str| {
-            text.parse::<NonZeroU64>()
-                .map_err(|_| format!("{text:?} is not a protocol version, an integer from 1"))
-        };
-        let (oldest, latest) = match text.split_once('-') {
-            Some((oldest, latest)) => (version(oldest)?, version(latest)?),
-            None => (version(text)?, version(text)?),
-        };
-        if oldest > latest {
-            return Err(format!(
-                "the oldest version, {oldest}, is above the latest, {latest}"
-            ));
-        }
+        let range: VersionRange = text.parse()?;
+        let (oldest, latest) = (range.oldest(), range.latest());
         if latest.get() - oldest.get() > 1 {
             return Err(format!(
                 "{oldest}-{latest} spans more than two versions: the server accepts its current version and the previous one"
             ));
         }
-        Ok(Versions { oldest, latest })
+        Ok(Versions(range))
     }
 }
 
@@ -113,7 +88,7 @@ pub async fn check(
     };
     response
         .headers_mut()
-        .insert(LATEST_HEADER, HeaderValue::from(versions.latest.get()));
+        .insert(LATEST_HEADER, HeaderValue::from(versions.0.latest().get()));
     response
 }
 
@@ -159,18 +134,15 @@ fn refusal(versions: Versions, problem: VersionProblem, stated: &str) -> Respons
         VersionProblem::TooNew => "This server is older than the client",
         VersionProblem::Invalid => "Missing or invalid protocol version",
     };
-    let Versions { oldest, latest } = versions;
-    let accepts = if oldest == latest {
-        format!("protocol version {latest}")
-    } else {
-        format!("protocol versions {oldest} and {latest}")
-    };
     let status = StatusCode::BAD_REQUEST;
     let problem = Problem {
         kind: problem.type_uri(),
         title,
         status: status.as_u16(),
-        detail: format!("This server accepts {accepts}; the request stated {stated}."),
+        detail: format!(
+            "This server accepts {}; the request stated {stated}.",
+            versions.0
+        ),
         supported: versions.supported(),
     };
     (
