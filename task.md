@@ -471,7 +471,8 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - it runs without a person where the CLI allows it;
     - the owner's preparation, done beforehand, is the only step a person does in an iteration: signing in to the CLIs, and for GUI live checks what 4.7 lists;
     - a step the CLI needs from a person beyond it goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
-    - it attaches hooks, MCP servers and channels only through project config in a temporary directory and leaves the user's own CLI config untouched;
+    - it attaches hooks, MCP servers and channels only through project config in a temporary directory and changes none of the user's own CLI settings, plugins or sign-in;
+    - off the stub, the CLI runs in the owner's own config home on the owner's sign-in (for Claude Code, the subscription, with no API key in its place); the entries the CLI adds for the temporary project, such as trust, session stats and memory, are allowed;
     - with the real model it spends the fewest tokens:
       - the CLI loads as little of the user's own config (MCP servers, plugins, skills, instruction files) as it allows, and the report records what each check still loads;
       - the model runs at the lowest reasoning effort the CLI allows;
@@ -532,7 +533,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - Per source: whether a local program reads it without vendor tokens, credential files or switching accounts, as `features.md` §14 says; the vendor terms that allow or forbid it, with links.
   - For each source that exists and may be read:
     - a prototype reads the limits from it;
-    - its live check follows the rules of 4.1 on the owner's signed-in CLI, without the stub and with neither flag;
+    - its live check follows the rules of 4.1, without the stub and with neither flag;
     - the developer runs the check once for the report;
     - the check prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time.
   - Without such a source for an agent, the report says so and there is no prototype.
@@ -549,7 +550,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - installs the apps and signs in to them;
     - grants the terminal that runs Claude Code macOS Accessibility, Screen Recording, and Automation of System Events and of each app under test;
     - allows GUI runs in chat before the orchestrator starts a developer or reviewer who runs GUI live checks, here or in 4.8. The orchestrator states the allowance in the developer's or reviewer's prompt; without it, they do not drive the app.
-  - A GUI live check follows the rules of 4.1, except that it runs on the real model under the owner's sign-in and the developer or reviewer drives the app:
+  - A GUI live check follows the rules of 4.1, except that it runs on the real model and the developer or reviewer drives the app:
     - code prepares the temporary project with the surface's config and the message source with a random token, and reads the surface version from the installed app or extension;
     - code does not show the token to the developer or reviewer until they report the token they read;
     - the developer or reviewer opens the directory in the app, types the prompt and reads the token from a screenshot of the reply of the Claude Code or Codex session under test, not from tool results or hook output; they use only `screencapture`, `cliclick` and `osascript`;
