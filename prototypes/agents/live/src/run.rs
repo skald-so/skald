@@ -6,10 +6,10 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use agent_live::hook::{self, Case, Hook, HookCheck, HookRuns, hook_handler};
+use agent_live::hook::{self, Case, HOOK_BIN, Hook, HookCheck, HookRuns};
 use agent_live::{
-    Agent, BusyMessage, Event, InboxCheck, Kind, Options, Run, Session, Setup, Stub, add_message,
-    channel, inbox_server, session_failure, token,
+    Agent, BusyMessage, Event, INBOX_BIN, InboxCheck, Kind, Options, Run, Session, Setup, Stub,
+    add_message, binary, channel, session_failure, token,
 };
 use agent_source::{Source, now_ms};
 
@@ -24,7 +24,7 @@ pub fn inbox(agent: Agent, options: &Options) -> Result<bool> {
     let version = agent.command().arg("--version").output()?;
     println!("{}", agent.version(&version.stdout));
     let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
-    let inbox = inbox_server(&std::env::current_exe()?)?;
+    let inbox = binary(&std::env::current_exe()?, INBOX_BIN)?;
     let path = std::env::var("PATH").unwrap_or_default();
     let setup = Setup {
         work: work.path(),
@@ -37,13 +37,13 @@ pub fn inbox(agent: Agent, options: &Options) -> Result<bool> {
 
     // Idle: a message waits for session a; with --all, session b, in its own project with its own
     // inbox, runs at the same time.
-    let stub_a = options.stub(Kind::Idle)?;
+    let stub_a = options.stub(Kind::Idle.script())?;
     let a = setup.run("a", Kind::Idle, stub_a.as_ref())?;
     let source_a = Source::open(&a.source)?;
     let token_a = token();
     let message = add_message(&source_a, &token_a)?;
     let b = if options.all {
-        let stub = options.stub(Kind::Idle)?;
+        let stub = options.stub(Kind::Idle.script())?;
         Some((setup.run("b", Kind::Idle, stub.as_ref())?, stub))
     } else {
         None
@@ -66,7 +66,7 @@ pub fn inbox(agent: Agent, options: &Options) -> Result<bool> {
 
     // Busy: the message arrives while the agent runs a shell command.
     if options.all {
-        let stub = options.stub(Kind::Busy)?;
+        let stub = options.stub(Kind::Busy.script())?;
         let c = setup.run("c", Kind::Busy, stub.as_ref())?;
         let source_c = Source::open(&c.source)?;
         let token_c = token();
@@ -96,7 +96,7 @@ pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
     let version = Agent::Claude.command().arg("--version").output()?;
     println!("{}", Agent::Claude.version(&version.stdout));
     let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
-    let handler = hook_handler(&std::env::current_exe()?)?;
+    let handler = binary(&std::env::current_exe()?, HOOK_BIN)?;
     let path = std::env::var("PATH").unwrap_or_default();
     let setup = hook::Setup {
         work: work.path(),
@@ -105,24 +105,17 @@ pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
         model: options.model,
         path: &path,
     };
-    let stub = |case: Case| -> Result<Option<Stub>> {
-        Ok(if options.real {
-            None
-        } else {
-            Some(Stub::start(hook.script(case))?)
-        })
-    };
     let mut check = HookCheck::new(hook);
 
     // A message waits for session a; with --all, session b, with its own empty source, runs at the
     // same time.
-    let stub_a = stub(Case::Waiting)?;
+    let stub_a = options.stub(hook.script(Case::Waiting))?;
     let a = setup.run("a", Case::Waiting, stub_a.as_ref())?;
     let source_a = Source::open(&a.source)?;
     let token_a = token();
     let message = channel::add_message(&source_a, &token_a)?;
     let b = if options.all {
-        let stub = stub(Case::Waiting)?;
+        let stub = options.stub(hook.script(Case::Waiting))?;
         Some((setup.run("b", Case::Waiting, stub.as_ref())?, stub))
     } else {
         None
@@ -151,7 +144,7 @@ pub fn hook(hook: Hook, options: &Options) -> Result<bool> {
 
     // Busy: the message arrives while the agent runs a shell command.
     if options.all {
-        let stub = stub(Case::Busy)?;
+        let stub = options.stub(hook.script(Case::Busy))?;
         let c = setup.run("c", Case::Busy, stub.as_ref())?;
         let source_c = Source::open(&c.source)?;
         let token_c = token();
@@ -239,11 +232,7 @@ fn run_session(
     }
     session.stub = stub.map(Stub::log);
     if let Some(stub) = &session.stub {
-        // The requests hold the session's context; the stub keeps no credential's value.
-        std::fs::write(
-            run.log.with_file_name("stub.json"),
-            serde_json::to_string_pretty(&stub.requests)?,
-        )?;
+        stub.save(&run.log.with_file_name("stub.json"))?;
     }
     Ok(session)
 }

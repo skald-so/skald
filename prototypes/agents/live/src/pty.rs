@@ -12,10 +12,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_live::channel::{
-    Case, ChannelCheck, ChannelSession, Files, HookEvent, IN_A_ROW, LISTENING, Screen, Sent,
-    add_message, channel_server, extra_environment, hook_events, session, stub_environment,
+    CHANNEL_BIN, Case, ChannelCheck, ChannelSession, Files, HookEvent, IN_A_ROW, LISTENING, Screen,
+    Sent, add_message, extra_environment, hook_events, session, stub_environment,
 };
-use agent_live::{Agent, Options, Stub, token};
+use agent_live::{Agent, Options, Stub, binary, token};
 use agent_source::{Source, now_ms};
 
 /// The longest wait for a turn.
@@ -37,7 +37,7 @@ pub fn channel(options: &Options) -> Result<bool> {
     let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
     let prepare = Prepare {
         work: work.path(),
-        channel: &channel_server(&std::env::current_exe()?)?,
+        channel: &binary(&std::env::current_exe()?, CHANNEL_BIN)?,
         options,
         path: &std::env::var("PATH").unwrap_or_default(),
     };
@@ -406,11 +406,7 @@ impl Live {
         }
         self.refresh()?;
         if let Some(stub) = &self.session.stub {
-            // The requests hold the session's context; the stub keeps no credential's value.
-            fs::write(
-                self.prepared.files.dir.join("stub.json"),
-                serde_json::to_string_pretty(&stub.requests)?,
-            )?;
+            stub.save(&self.prepared.files.dir.join("stub.json"))?;
         }
         Ok(self.session)
     }

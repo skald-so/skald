@@ -3,8 +3,10 @@
 //! records the requests. It refuses a request whose credential headers hold anything but
 //! `PLACEHOLDER`, and records the header's name, never its value.
 
+use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -74,6 +76,12 @@ impl StubLog {
                 self.credentials.join(", ")
             )
         })
+    }
+
+    /// Writes the requests to `path` as a JSON array: they hold the session's context; the stub
+    /// keeps no credential's value.
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        fs::write(path, serde_json::to_string_pretty(&self.requests)?)
     }
 }
 
@@ -747,6 +755,20 @@ mod tests {
         assert!(log.saw("tok-1"));
         assert!(!log.saw("tok-2"));
         assert!(!StubLog::default().saw("tok-1"));
+    }
+
+    #[test]
+    fn saves_the_requests_as_a_json_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stub.json");
+        let log = StubLog {
+            requests: vec!["{}".to_owned(), "a\"b".to_owned()],
+            credentials: vec!["x-api-key".to_owned()],
+        };
+        log.save(&path).unwrap();
+        let saved: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved, json!(["{}", "a\"b"]));
+        assert!(log.save(&dir.path().join("missing/stub.json")).is_err());
     }
 
     #[test]

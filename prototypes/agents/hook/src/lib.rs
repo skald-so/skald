@@ -58,16 +58,16 @@ pub fn output(event: Event, messages: &[Message]) -> Option<Value> {
 
 /// Handles the hook input `input`: takes the waiting messages of `source`, writes the output to
 /// `out` and marks them handed over; puts them back if the write fails. Takes nothing for an event
-/// it does not answer. Returns the messages it handed over.
-pub fn handle(input: &[u8], source: &Source, out: &mut impl Write) -> io::Result<Vec<Message>> {
+/// it does not answer.
+pub fn handle(input: &[u8], source: &Source, out: &mut impl Write) -> io::Result<()> {
     let input: Value = serde_json::from_slice(input)
         .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
     let Some(event) = Event::of(&input) else {
-        return Ok(Vec::new());
+        return Ok(());
     };
     let messages = source.take()?;
     let Some(output) = output(event, &messages) else {
-        return Ok(messages);
+        return Ok(());
     };
     let ids: Vec<String> = messages.iter().map(|m| m.msg_id.clone()).collect();
     let written = writeln!(out, "{output}").and_then(|()| out.flush());
@@ -75,8 +75,7 @@ pub fn handle(input: &[u8], source: &Source, out: &mut impl Write) -> io::Result
         source.release(&ids)?;
         return Err(error);
     }
-    source.handed_over(&ids)?;
-    Ok(messages)
+    source.handed_over(&ids)
 }
 
 #[cfg(test)]

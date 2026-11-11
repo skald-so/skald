@@ -230,17 +230,13 @@ impl Agent {
                 // With `--include-hook-events`.
                 Some("system") => {
                     let text = |key: &str| value[key].as_str().map(String::from);
-                    match (
-                        value["subtype"].as_str(),
-                        text("hook_id"),
-                        text("hook_event"),
-                    ) {
-                        (Some("hook_started"), Some(id), Some(event)) => {
-                            vec![Event::HookStarted { id, event }]
-                        }
-                        (Some("hook_response"), Some(id), Some(event)) => vec![Event::HookEnded {
+                    match (value["subtype"].as_str(), text("hook_id")) {
+                        (Some("hook_started"), Some(id)) => text("hook_event")
+                            .map(|event| Event::HookStarted { id, event })
+                            .into_iter()
+                            .collect(),
+                        (Some("hook_response"), Some(id)) => vec![Event::HookEnded {
                             id,
-                            event,
                             outcome: text("outcome").unwrap_or_default(),
                             stdout: text("stdout").unwrap_or_default(),
                         }],
@@ -320,6 +316,11 @@ fn pretty(value: &Value) -> String {
     serde_json::to_string_pretty(value).expect("JSON values serialize")
 }
 
+/// Whether a message in `state` is handed over.
+fn handed_over(state: Option<State>) -> bool {
+    matches!(state, Some(State::HandedOver { .. }))
+}
+
 /// A session's case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -387,10 +388,9 @@ pub enum Event {
     Used(Usage),
     /// Claude Code started the hook `id` of the hook event `event`.
     HookStarted { id: String, event: String },
-    /// The hook `id` of `event` ended with `outcome`, such as `success`, and printed `stdout`.
+    /// The hook `id` ended with `outcome`, such as `success`, and printed `stdout`.
     HookEnded {
         id: String,
-        event: String,
         outcome: String,
         stdout: String,
     },
@@ -430,12 +430,12 @@ impl<'a> Options<'a> {
         self.keep || !pass
     }
 
-    /// The model stub of a `kind` session, started; none with `--real`.
-    pub fn stub(&self, kind: Kind) -> io::Result<Option<Stub>> {
+    /// The model stub of a session, started with `script`; none with `--real`.
+    pub fn stub(&self, script: &'static [Call]) -> io::Result<Option<Stub>> {
         if self.real {
             Ok(None)
         } else {
-            Stub::start(kind.script()).map(Some)
+            Stub::start(script).map(Some)
         }
     }
 
@@ -461,15 +461,18 @@ pub fn replaces_sign_in(name: &str) -> bool {
         || (name.starts_with("CLAUDE_") && MARKS.iter().any(|mark| name.contains(mark)))
 }
 
-/// The `agent-inbox` binary next to `live-check`, the binary `exe`.
-pub fn inbox_server(exe: &Path) -> Result<PathBuf, String> {
-    let inbox = exe.with_file_name("agent-inbox");
-    if inbox.exists() {
-        Ok(inbox)
+/// The `inbox` server's binary, next to `live-check`.
+pub const INBOX_BIN: &str = "agent-inbox";
+
+/// The binary `name` of the workspace next to `live-check`, the binary `exe`.
+pub fn binary(exe: &Path, name: &str) -> Result<PathBuf, String> {
+    let binary = exe.with_file_name(name);
+    if binary.exists() {
+        Ok(binary)
     } else {
         Err(format!(
             "{} is missing: build the workspace",
-            inbox.display()
+            binary.display()
         ))
     }
 }
@@ -649,10 +652,7 @@ impl Session {
     /// The idle and busy checks: the session called `inbox`, `token` reached the model and the
     /// message with it, in `state`, was handed over. A message never added has no state.
     pub fn received(&self, token: &str, state: Option<State>) -> bool {
-        self.clean()
-            && self.inbox_called
-            && self.got(token)
-            && matches!(state, Some(State::HandedOver { .. }))
+        self.clean() && self.inbox_called && self.got(token) && handed_over(state)
     }
 
     /// The other idle session's check: it called `inbox` and `token` did not reach the model.
@@ -888,18 +888,15 @@ mod tests {
             claude.events(CLAUDE_HOOK_ENDED),
             [Event::HookEnded {
                 id: "c899".to_owned(),
-                event: "PostToolUse".to_owned(),
                 outcome: "success".to_owned(),
                 stdout: "{}\n".to_owned()
             }]
         );
-        let bare =
-            r#"{"type":"system","subtype":"hook_response","hook_id":"h","hook_event":"Stop"}"#;
+        let bare = r#"{"type":"system","subtype":"hook_response","hook_id":"h"}"#;
         assert_eq!(
             claude.events(bare),
             [Event::HookEnded {
                 id: "h".to_owned(),
-                event: "Stop".to_owned(),
                 outcome: String::new(),
                 stdout: String::new()
             }]
@@ -907,6 +904,7 @@ mod tests {
         for line in [
             r#"{"type":"system","subtype":"hook_started","hook_event":"Stop"}"#,
             r#"{"type":"system","subtype":"hook_started","hook_id":"h"}"#,
+            r#"{"type":"system","subtype":"hook_response","hook_event":"Stop"}"#,
             r#"{"type":"system","subtype":"hook_progress","hook_id":"h","hook_event":"Stop"}"#,
             r#"{"type":"system","subtype":"status","hook_id":"h","hook_event":"Stop"}"#,
         ] {
@@ -1251,9 +1249,12 @@ mod tests {
             real: true,
             ..Options::default()
         };
-        assert!(real.stub(Kind::Idle).unwrap().is_none());
+        assert!(real.stub(Kind::Idle.script()).unwrap().is_none());
         assert_eq!(real.model_name(), "the real model");
-        let stub = Options::default().stub(Kind::Busy).unwrap().unwrap();
+        let stub = Options::default()
+            .stub(Kind::Busy.script())
+            .unwrap()
+            .unwrap();
         assert!(stub.url().starts_with("http://127.0.0.1:"));
         assert_eq!(Options::default().model_name(), "the model stub");
     }
@@ -1311,7 +1312,6 @@ mod tests {
         });
         session.record(&Event::HookEnded {
             id: "h".to_owned(),
-            event: "Stop".to_owned(),
             outcome: "success".to_owned(),
             stdout: "tok-0".to_owned(),
         });
@@ -1474,19 +1474,20 @@ mod tests {
     }
 
     #[test]
-    fn finds_the_inbox_server_next_to_live_check() {
+    fn finds_a_binary_next_to_live_check() {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("live-check");
-        let inbox = dir.path().join("agent-inbox");
+        let inbox = dir.path().join(INBOX_BIN);
         assert_eq!(
-            inbox_server(&exe),
+            binary(&exe, INBOX_BIN),
             Err(format!(
                 "{} is missing: build the workspace",
                 inbox.display()
             ))
         );
         fs::write(&inbox, "").unwrap();
-        assert_eq!(inbox_server(&exe), Ok(inbox));
+        assert_eq!(binary(&exe, INBOX_BIN), Ok(inbox));
+        assert!(binary(&exe, "agent-other").is_err());
     }
 
     #[test]

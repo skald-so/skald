@@ -11,7 +11,8 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 use crate::{
-    Agent, Options, PLACEHOLDER, SENDER, SERVER, StubLog, handover_delay, report, verdict,
+    Agent, Options, PLACEHOLDER, SENDER, SERVER, StubLog, handed_over, handover_delay, pretty,
+    report, verdict,
 };
 
 /// The channel server's binary, next to `live-check`.
@@ -63,19 +64,6 @@ pub fn text(token: &str) -> String {
 /// Adds a check's message with `token` to `source`.
 pub fn add_message(source: &Source, token: &str) -> io::Result<Message> {
     source.add(SENDER, &text(token))
-}
-
-/// The `agent-channel` binary next to `live-check`, the binary `exe`.
-pub fn channel_server(exe: &Path) -> Result<PathBuf, String> {
-    let channel = exe.with_file_name(CHANNEL_BIN);
-    if channel.exists() {
-        Ok(channel)
-    } else {
-        Err(format!(
-            "{} is missing: build the workspace",
-            channel.display()
-        ))
-    }
 }
 
 /// Where a session's files go.
@@ -205,10 +193,6 @@ pub fn stub_environment(home: &Path, stub: &str, path: &str) -> io::Result<Vec<(
     )?;
     env.extend(extra_environment(false));
     Ok(env)
-}
-
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).expect("JSON values serialize")
 }
 
 /// A dialog Claude Code opens before the session starts.
@@ -490,10 +474,6 @@ pub struct Sent {
     pub state: Option<State>,
 }
 
-fn handed_over(state: Option<State>) -> bool {
-    matches!(state, Some(State::HandedOver { .. }))
-}
-
 /// The Channels path's checks: each returns its line in the output.
 #[derive(Debug, Default)]
 pub struct ChannelCheck {
@@ -659,22 +639,6 @@ mod tests {
             "The check token is tok-1. Reply with only the check token."
         );
         assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
-    }
-
-    #[test]
-    fn finds_the_channel_server_next_to_live_check() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("live-check");
-        let channel = dir.path().join("agent-channel");
-        assert_eq!(
-            channel_server(&exe),
-            Err(format!(
-                "{} is missing: build the workspace",
-                channel.display()
-            ))
-        );
-        fs::write(&channel, "").unwrap();
-        assert_eq!(channel_server(&exe), Ok(channel));
     }
 
     #[test]

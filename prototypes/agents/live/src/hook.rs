@@ -4,14 +4,14 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use agent_source::State;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{
-    Agent, Call, Event, Options, QUICK, Run, SERVER, SHELL, Session, Stub, handover_delay, report,
-    verdict,
+    Agent, Call, Event, Options, QUICK, Run, SERVER, SHELL, Session, Stub, handed_over,
+    handover_delay, pretty, report, verdict,
 };
 
 /// The hook handler's binary, next to `live-check`.
@@ -82,19 +82,6 @@ impl Hook {
     }
 }
 
-/// The `agent-hook` binary next to `live-check`, the binary `exe`.
-pub fn hook_handler(exe: &Path) -> Result<PathBuf, String> {
-    let handler = exe.with_file_name(HOOK_BIN);
-    if handler.exists() {
-        Ok(handler)
-    } else {
-        Err(format!(
-            "{} is missing: build the workspace",
-            handler.display()
-        ))
-    }
-}
-
 /// Writes the session's settings into `dir` and returns the arguments of a non-interactive `case`
 /// session that runs `handler <source>` as its `hook` hook. Only the settings file and the
 /// arguments change Claude Code's config: no project or user settings, no MCP server, no skills,
@@ -145,10 +132,6 @@ pub fn session(
         args.extend(["--model".to_owned(), model.to_owned()]);
     }
     Ok(args)
-}
-
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).expect("JSON values serialize")
 }
 
 /// What every session of the check shares.
@@ -249,7 +232,6 @@ impl HookRuns {
                 id,
                 outcome,
                 stdout,
-                ..
             } => {
                 if let Some(at) = self.ids.iter().position(|started| started == id) {
                     let run = &mut self.runs[at];
@@ -302,10 +284,6 @@ impl HookRuns {
             runs.join(", ")
         )
     }
-}
-
-fn handed_over(state: Option<State>) -> bool {
-    matches!(state, Some(State::HandedOver { .. }))
 }
 
 /// The hook's checks: each returns its line in the output.
@@ -424,6 +402,8 @@ impl HookCheck {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use crate::{DONE, StubLog, Usage};
 
     use super::*;
@@ -462,22 +442,6 @@ mod tests {
         assert_eq!(Hook::Stop.tools(Case::Waiting), "");
         assert_eq!(Hook::PostToolUse.script(Case::Waiting), [Call::Quick]);
         assert_eq!(Hook::PostToolUse.tools(Case::Waiting), "Bash");
-    }
-
-    #[test]
-    fn finds_the_hook_handler_next_to_live_check() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("live-check");
-        let handler = dir.path().join("agent-hook");
-        assert_eq!(
-            hook_handler(&exe),
-            Err(format!(
-                "{} is missing: build the workspace",
-                handler.display()
-            ))
-        );
-        fs::write(&handler, "").unwrap();
-        assert_eq!(hook_handler(&exe), Ok(handler));
     }
 
     #[test]
@@ -610,10 +574,9 @@ mod tests {
         }
     }
 
-    fn ended(id: &str, event: &str, outcome: &str, stdout: &str) -> Event {
+    fn ended(id: &str, outcome: &str, stdout: &str) -> Event {
         Event::HookEnded {
             id: id.to_owned(),
-            event: event.to_owned(),
             outcome: outcome.to_owned(),
             stdout: stdout.to_owned(),
         }
@@ -625,13 +588,13 @@ mod tests {
         runs.on_event(&started("h1", "Stop"), 1_000);
         // Other hooks and events do not count.
         runs.on_event(&started("p1", "PostToolUse"), 1_001);
-        runs.on_event(&ended("p1", "PostToolUse", "success", "x"), 1_002);
+        runs.on_event(&ended("p1", "success", "x"), 1_002);
         runs.on_event(&Event::ShellStarted, 1_003);
-        runs.on_event(&ended("h1", "Stop", "success", "{\"tok-1\"}\n"), 1_012);
+        runs.on_event(&ended("h1", "success", "{\"tok-1\"}\n"), 1_012);
         runs.on_event(&started("h2", "Stop"), 2_000);
-        runs.on_event(&ended("h3", "Stop", "success", "unknown run"), 2_005);
+        runs.on_event(&ended("h3", "success", "unknown run"), 2_005);
         runs.on_event(&started("h4", "Stop"), 3_000);
-        runs.on_event(&ended("h2", "Stop", "error", ""), 2_007);
+        runs.on_event(&ended("h2", "error", ""), 2_007);
         assert_eq!(
             runs.runs,
             [
@@ -668,7 +631,7 @@ mod tests {
         for (at, (outcome, stdout)) in (0u64..).zip(outputs) {
             let id = at.to_string();
             runs.on_event(&started(&id, hook.event()), at * 100);
-            runs.on_event(&ended(&id, hook.event(), outcome, stdout), at * 100 + 5);
+            runs.on_event(&ended(&id, outcome, stdout), at * 100 + 5);
         }
         runs
     }

@@ -30,7 +30,7 @@ fn main() -> ExitCode {
         .read_to_end(&mut input)
         .and_then(|_| agent_hook::handle(&input, &source, &mut io::stdout().lock()));
     match handled {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("agent-hook: {error}");
             ExitCode::FAILURE
