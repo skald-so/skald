@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 
 use crate::{
     Agent, Call, Checks, Options, PLACEHOLDER, SENDER, SERVER, SHELL, StubLog, Usage, handed_over,
-    handover_delay, pretty,
+    handover_delay, pretty, shell_quote,
 };
 
 /// The channel server's binary, next to `live-check`.
@@ -95,6 +95,12 @@ impl Files {
             screen: dir.join("screen.log"),
         }
     }
+
+    /// The shell command of a hook that only records what the agent does: it appends the hook's
+    /// input to `hooks`.
+    pub fn record(&self) -> String {
+        format!("cat >> {}", shell_quote(&self.hooks.to_string_lossy()))
+    }
 }
 
 /// Writes the session's MCP and settings files into `files.dir` and returns the arguments of an
@@ -114,9 +120,8 @@ pub fn session(
         &servers,
         pretty(&json!({ "mcpServers": { SERVER: server } })),
     )?;
-    // The hooks only record what the agent does: each event's input goes to one file.
-    let record = format!("cat >> '{}'", files.hooks.display());
-    let hook = json!([{ "hooks": [{ "type": "command", "command": record }] }]);
+    // Each event's input goes to one file.
+    let hook = json!([{ "hooks": [{ "type": "command", "command": files.record() }] }]);
     let settings = files.dir.join("settings.json");
     // Prompt suggestions would cost a model request after each turn.
     fs::write(
@@ -617,7 +622,7 @@ fn reached(yes: bool) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::tests::read_json;
 
     use super::*;
@@ -860,7 +865,8 @@ mod tests {
         assert_eq!(hook_events(""), []);
     }
 
-    fn real(replies: &[&str]) -> PtySession {
+    /// A session on the real model whose turns ended with `replies`.
+    pub(crate) fn real(replies: &[&str]) -> PtySession {
         let mut session = PtySession::new(1_000);
         session.channel_listening = Some(true);
         for reply in replies {
@@ -869,14 +875,24 @@ mod tests {
         session
     }
 
-    /// A session on the stub whose requests are `bodies`.
-    fn stubbed(bodies: &[Value], credentials: &[&str]) -> PtySession {
-        let mut session = real(&["Done."]);
+    /// A session on the stub whose turns ended with `replies`, whose requests are `bodies` and
+    /// whose credential headers other than the placeholder are `credentials`.
+    pub(crate) fn on_stub(
+        replies: &[&str],
+        bodies: &[impl ToString],
+        credentials: &[&str],
+    ) -> PtySession {
+        let mut session = real(replies);
         session.stub = Some(StubLog {
-            requests: bodies.iter().map(Value::to_string).collect(),
+            requests: bodies.iter().map(ToString::to_string).collect(),
             credentials: credentials.iter().map(|name| (*name).to_owned()).collect(),
         });
         session
+    }
+
+    /// A session on the stub whose one turn ended with `DONE` and whose requests are `bodies`.
+    fn stubbed(bodies: &[Value], credentials: &[&str]) -> PtySession {
+        on_stub(&["Done."], bodies, credentials)
     }
 
     fn channel_turn(token: &str) -> Value {

@@ -16,7 +16,7 @@ Each path's section answers, for each agent:
 | Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
 
 ## Prototypes
-- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
+- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-testing` the tests' shared assertions; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
 - Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex` or `queue codex`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub).
 
@@ -215,17 +215,17 @@ Findings:
 ## Codex hooks
 `agent-hook --codex <source-dir>`: a command hook for `PostToolUse`, `Stop` and `UserPromptSubmit` ([docs](https://developers.openai.com/codex/hooks)):
 - `PostToolUse` and `UserPromptSubmit` print the waiting messages as `hookSpecificOutput.additionalContext`, the text of [MCP `inbox`](#mcp-inbox);
-- `Stop` prints `decision: "block"` with that text as `reason`: Codex goes on with it as a new user prompt. Codex drops `additionalContext` on `Stop` and ends the turn (checked by hand on the stub);
+- `Stop` prints `decision: "block"` with that text as `reason`, which keeps the turn going. Codex drops `additionalContext` on `Stop` and ends the turn (checked by hand on the stub);
 - with none waiting, or on another event, it prints nothing, so `Stop` lets the turn end.
 
-It marks and puts back messages and fails with exit code 1 as on [Claude Code](#claude-code-hooks). On Codex, exit code 2 also blocks: on `PostToolUse`, stderr replaces the tool result.
+It marks and puts back messages and fails with exit code 1 as on [Claude Code](#claude-code-hooks). On Codex, exit code 2 also blocks `PostToolUse`: stderr replaces the tool result.
 
 `live-check <post-tool-use|stop|user-prompt-submit> codex` runs `codex exec` sessions, each in its own temporary directory with its own source:
 - **A, B and C:** as for [Claude Code hooks](#claude-code-hooks). `UserPromptSubmit`'s A prompt only asks for the reply.
-- `UserPromptSubmit` has no C: the hook runs only when a prompt starts a turn, so a message that arrives during a turn waits for the next prompt, A's case.
+- `UserPromptSubmit` has no C: see "Busy session" below.
 - `codex exec --json` shows no hook events. So the hook runs as `live-check timed-hook <dir>/hook-runs.jsonl <handler> --codex <source>`: it times the handler from its start to its exit and records its input and output. The wrapper's own start is not counted.
 
-Session flags: those of the [`inbox`](#session-config) Codex session without the MCP server, plus `--dangerously-bypass-hook-trust` and the hook as `-c hooks.<event>=[{hooks=[{type="command",command="<command>"}]}]`. Without the flag Codex skips a hook until a person trusts it in `/hooks`, which saves the trust in the user's config. Environment: [Model stub](#model-stub) or [Session config](#session-config); with `--real` the session loads what [Session config](#session-config) lists for Codex.
+Session flags: those of the [`inbox`](#session-config) Codex session without the MCP server, plus `--dangerously-bypass-hook-trust` and the hook as `-c hooks.<event>=[{hooks=[{type="command",command="<command>"}]}]`. Environment: [Model stub](#model-stub) or [Session config](#session-config); with `--real` the session loads what [Session config](#session-config) lists for Codex.
 
 Results on 2026-11-11, on Codex 0.162.1; the handler is the debug build:
 
@@ -233,43 +233,42 @@ Results on 2026-11-11, on Codex 0.162.1; the handler is the debug build:
 |---|---|---|---|---|---|---|
 | `live-check post-tool-use codex` | the stub, its provider's key | pass | 0.1 s | | 3 ms / no such run | none |
 | `live-check post-tool-use codex --all` | the stub, its provider's key | pass | 0.1 s | 19.9 s | 3–4 ms / 3 ms | none |
-| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check post-tool-use codex --real --model gpt-5.5` | `gpt-5.5`, the owner's sign-in | pass | 10.6 s | | 3 ms / no such run | input 21,703 (cached 10,624), output 77 |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check post-tool-use codex --real --model gpt-5.5` | `gpt-5.5`, OpenAI API key (`codex login status`) | pass | 10.6 s | | 3 ms / no such run | input 21,703 (cached 10,624), output 77 |
 | `live-check stop codex` | the stub, its provider's key | pass | 0.1 s | | 3 ms / 2 ms | none |
 | `live-check stop codex --all` | the stub, its provider's key | pass | 0.1 s | 19.9 s | 3–5 ms / 1–2 ms | none |
-| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check stop codex --real --model gpt-5.5` | `gpt-5.5`, the owner's sign-in | pass | 7.4 s | | 2 ms / 2 ms | input 54,825 (cached 52,096), output 178 |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check stop codex --real --model gpt-5.5` | `gpt-5.5`, OpenAI API key (`codex login status`) | pass | 7.4 s | | 2 ms / 2 ms | input 54,825 (cached 52,096), output 178 |
 | `live-check user-prompt-submit codex` | the stub, its provider's key | pass | 0.1 s | | 2 ms / no such run | none |
 | `live-check user-prompt-submit codex --all` | the stub, its provider's key | pass | 0.1 s | | 3 ms / 3 ms | none |
-| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check user-prompt-submit codex --real --model gpt-5.5` | `gpt-5.5`, the owner's sign-in | pass | 1.7 s | | 2 ms / no such run | input 10,829 (cached 0), output 10 |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check user-prompt-submit codex --real --model gpt-5.5` | `gpt-5.5`, OpenAI API key (`codex login status`) | pass | 1.7 s | | 2 ms / no such run | input 10,829 (cached 0), output 10 |
 
 In the `Stop` check with `--real`, the agent ran three shell commands looking for the message before it replied `NONE`; the continuation then gave it the message.
 
 | Check | `PostToolUse` | `Stop` | `UserPromptSubmit` |
 |---|---|---|---|
-| Idle session | No: hooks run only in a turn. A message that waits when a turn starts arrives after the turn's first tool call | No, the same. A message that waits when a turn starts arrives at its end | Only with a prompt: a message that waits when a prompt starts a turn arrives with it. Nothing starts a turn |
-| Busy session | Yes, after the running tool call ends, in the same turn. A turn without tool calls gets nothing | Yes, at the end of the turn | No: it waits for the next prompt |
-| Delay | Until the agent's next tool call ends: see the results | Until the turn ends: see the results | Until the next prompt |
+| Idle session | As on [Claude Code](#claude-code-hooks) | As on Claude Code | Only with a prompt: a message that waits when a prompt starts a turn arrives with it. Nothing starts a turn |
+| Busy session | As on Claude Code | As on Claude Code | No |
+| Delay | As on Claude Code | As on Claude Code | Until the next prompt |
 | In context | A developer message between the tool call and its output, with the text; the sender label in `from` | A user message `<hook_prompt hook_run_id="stop:0:/<session-flags>/config.toml">` with the text, `<` and `>` escaped as `&lt;` and `&gt;`; the sender label in `from`. The `Stop` input has `stop_hook_active: true` in the turn that goes on | A developer message right after the prompt, with the text; the sender label in `from` |
-| Handover known | Yes, once the output is written to Codex; not whether the model read it | The same | The same |
-| One of two sessions | Yes: each session runs the hook from its own config with its own source, so B got nothing. Sessions with one config run the same command on one source; the hook input's `session_id` and `cwd` could tell them apart (not checked) | The same | The same |
+| Handover known | As on Claude Code | As on Claude Code | As on Claude Code |
+| One of two sessions | As on Claude Code | As on Claude Code | As on Claude Code |
 | Needs | See below | See below | See below |
 
 Codex needs:
 - the `hooks` feature, on by default;
 - the hook in a config layer: `-c`, the `config.toml` or `hooks.json` of the user (`~/.codex/`) or of a trusted project (`<repo>/.codex/`), or a plugin's `hooks/hooks.json`;
-- a person's trust in `/hooks` for each new or changed hook, or `--dangerously-bypass-hook-trust` for one invocation; managed hooks from `requirements.toml` need none;
+- a person's trust in `/hooks` for each new or changed hook, which Codex saves in the user's config, or `--dangerously-bypass-hook-trust` for one invocation; managed hooks from `requirements.toml` need none;
 - the check's flags: those above;
-- a sign-in: a model provider's API key and the owner's sign-in work.
+- a sign-in: a model provider's API key and an OpenAI API key work; ChatGPT is under [Manual check](#manual-check).
 
 Findings:
-- Codex hooks reach a busy session, not an idle one: a path for a busy session, as on Claude Code. `UserPromptSubmit` adds what waits when a prompt starts a turn.
 - Codex does not cap `Stop` continuations. Checked by hand on the stub: a `Stop` hook that always continued ran 5,191 times in 120 s, until the session was killed. The handler continues only while messages wait, so a steady stream of messages keeps the turn going.
 
 ## `codex queue`
-Codex 0.162.1 has `codex queue --thread <thread> --message <text>`: it queues a text message for an existing session by its ID or name ([docs](https://developers.openai.com/codex/cli/reference#codex-queue)). It stores the message in `queue_1.sqlite` in the config home. The session's app-server takes it when its turn ends, or within about 10 s when the session is idle, and runs a new turn with the text as the user's prompt.
+Codex 0.162.1 has `codex queue --thread <thread> --message <text>`: it queues a text message for an existing session by its ID or name ([docs](https://developers.openai.com/codex/cli/reference#codex-queue)). It stores the message in `queue_1.sqlite` in the config home, and the session's app-server runs it as a new turn.
 
 `agent-queue <source-dir> <thread>`: takes the waiting messages and runs `codex queue --thread <thread> --message <text>` with the text of [MCP `inbox`](#mcp-inbox) for all of them. It marks them handed over once the command succeeds and puts them back if it fails.
 
-A `codex exec` session takes a queued message when its turn ends and exits, aborting the message's turn: checked by hand on the stub, the message left the queue and never reached the model. So `live-check queue codex` runs Codex's terminal UI in a pseudo-terminal of 200×50, as the [Channels](#channels) check runs Claude Code:
+A `codex exec` session takes a queued message when its turn ends and exits, aborting the message's turn: checked by hand on the stub, the message left the queue and never reached the model, though `codex queue` succeeded. So `live-check queue codex` runs Codex's terminal UI in a pseudo-terminal of 200×50, as the [Channels](#channels) check runs Claude Code:
 - `Stop` and `PreToolUse` hooks append their input to a file: the check reads the session's thread (`session_id`), the agent's replies and when it starts a shell command;
 - it ends each session with Ctrl-C twice.
 
@@ -288,35 +287,33 @@ Results on 2026-11-11, on Codex 0.162.1:
 |---|---|---|---|---|---|
 | `live-check queue codex` | the stub, its provider's key | pass | 0.2 s / 9.9 s | | none |
 | `live-check queue codex --all` | the stub, its provider's key | pass | 0.2 s / 9.3 s | 0.0 s / 20.1 s | none |
-| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check queue codex --real --model gpt-5.5` | `gpt-5.5`, the owner's sign-in | pass | 0.1 s / 8.3 s | | input 13,316 (cached 12,672), output 20: the terminal UI prints them when it exits |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check queue codex --real --model gpt-5.5` | `gpt-5.5`, OpenAI API key (`codex login status`) | pass | 0.1 s / 8.3 s | | input 13,316 (cached 12,672), output 20: the terminal UI prints them when it exits |
 
 | Check | Codex |
 |---|---|
-| Idle session | Yes: the message starts a turn without a person, within about 10 s |
+| Idle session | Yes: the message starts a turn without a person |
 | Busy session | Yes, once the running turn ends, in a turn of its own |
-| Delay | Handover: as soon as `codex queue` returns. Idle: the model gets it 8–10 s later; busy: once the turn ends (20.1 s into `sleep 20`) |
+| Delay | Handover: as soon as `codex queue` returns; reaching the model: see the results |
 | In context | A user message with the text, as if the person typed it; the terminal UI shows it as the user's prompt. The sender label is only in the text's `from` |
-| Handover known | Only that `codex queue` stored the message, not that a session took it: a `codex exec` session takes it and drops it |
+| Handover known | Only that `codex queue` stored the message, not that a session ran it |
 | One of two sessions | Yes, by thread: B never got A's message |
 | Needs | See below |
 
 Codex needs:
 - a running interactive session with a thread: the terminal UI makes the thread at the first prompt;
-- the session's thread ID, here from a hook input's `session_id`;
+- the session's thread ID;
 - `codex queue` run with the session's config home;
-- no sign-in for `codex queue` itself: on the stub it ran with an empty config home.
+- a sign-in for the session: a model provider's API key and an OpenAI API key work; ChatGPT is under [Manual check](#manual-check). `codex queue` itself needs none: on the stub it ran with an empty config home.
 
 Findings:
-- `codex queue` reaches an idle and a busy interactive session without a tool call, so it can be a path to an idle session, where hooks reach none.
-- The message arrives as the user's own prompt, with no framing that marks it as data from another agent but its text.
-- A message queued for a `codex exec` session is lost, though `codex queue` succeeded.
-- The test machine's shared app-server runs Codex 0.167.1, newer than the CLI. The check used `--no-daemon`; a session on the shared app-server was not checked.
+- `codex queue` can be the path to an idle Codex session, which hooks do not reach.
+- The test machine's shared app-server runs Codex 0.167.1, newer than the CLI; a session on it was not checked.
 
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
 - Claude Code, an interactive session with the server in the project's `.mcp.json` and without `permissions.allow`: whether it asks to approve the server and each `inbox` call.
 - Codex, an interactive session without `default_tools_approval_mode`: whether it asks to approve each `inbox` call.
-- Codex signed in with ChatGPT: whether `live-check inbox codex --real` passes, with and without `--model gpt-5.5`. Only the owner changes a CLI's sign-in.
+- Codex signed in with ChatGPT: whether `live-check inbox codex --real`, the Codex hooks' and `codex queue`'s checks pass, with and without `--model gpt-5.5`. Only the owner changes a CLI's sign-in.
 - Claude Code started by a person with the channel: the trust dialog and the development channel warning at each start; a message reaches the session; not checked on a claude.ai Team or Enterprise account.
 - The Claude Code plugin installed from the monorepo marketplace (`/plugin marketplace add skald-so/skald`) with the channel: whether `--channels plugin:skald@skald` refuses it and the development flag loads it. The check does not install plugins: it would change the user's config.
 - Claude Code, an interactive session with the hooks in the project's `.claude/settings.json`: whether it asks to approve them, and a message reaches the session after a tool call and at the end of a turn.

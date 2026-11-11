@@ -17,3 +17,6 @@ uuid = { version = "1", features = ["v4"] }
 [[bin]]
 name = "live-check"
 path = "src/main.rs"
+
+[dev-dependencies]
+agent-testing = { path = "../testing" }

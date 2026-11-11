@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::{
     Agent, Call, Checks, Event, Kind, Options, QUICK, Run, SERVER, SHELL, Session, Stub,
-    busy_details, claude_print, codex_exec, handed_over, other_details, prepare, pretty,
-    waiting_details,
+    busy_details, claude_print, codex_exec, codex_hook, handed_over, other_details, prepare,
+    pretty, shell_quote, waiting_details,
 };
 
 /// The hook handler's binary, next to `live-check`.
@@ -161,25 +161,14 @@ pub fn codex_session(
     ]
     .map(|arg| shell_quote(&arg.to_string_lossy()))
     .join(" ");
-    // A `-c` value is TOML; a JSON string is a valid TOML string.
-    let hooks = format!(
-        "hooks.{}=[{{hooks=[{{type=\"command\",command={}}}]}}]",
-        hook.event(),
-        json!(command)
-    );
     codex_exec(
         project,
         &["--dangerously-bypass-hook-trust"],
-        &[hooks],
+        &[codex_hook(hook.event(), &command)],
         model,
         stub,
         &hook.prompt(kind),
     )
-}
-
-/// `text` as one word of a POSIX shell command.
-pub fn shell_quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// What every session of the check shares.
@@ -532,13 +521,6 @@ mod tests {
         );
         assert_eq!(Hook::UserPromptSubmit.script(Kind::Idle), []);
         assert_eq!(Hook::UserPromptSubmit.tools(Kind::Idle), "");
-    }
-
-    #[test]
-    fn quotes_a_shell_word() {
-        assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
-        assert_eq!(shell_quote("it's"), r"'it'\''s'");
-        assert_eq!(shell_quote(""), "''");
     }
 
     #[test]

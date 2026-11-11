@@ -5,7 +5,10 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 
-use agent_source::{Message, Source, State};
+use agent_source::Source;
+use agent_testing::{
+    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
+};
 use serde_json::Value;
 
 /// A CLI's hook inputs, recorded from it with the temporary directories' paths replaced, and the
@@ -77,16 +80,6 @@ fn hook(cli: &Cli, source: &Path, input: &str) -> Output {
     child.wait_with_output().unwrap()
 }
 
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-/// Asserts that the handler failed with exit code 1 and an error that starts with `error`.
-fn failed(output: &Output, error: &str) {
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
-    assert!(stderr(output).starts_with(error), "{}", stderr(output));
-}
-
 /// What a successful run of `cli`'s `event` hook gave the agent: the `additionalContext`, or on
 /// Codex's `Stop` the reason of the decision that keeps the turn going.
 fn given(cli: &Cli, output: &Output, event: &str) -> String {
@@ -107,34 +100,9 @@ fn given(cli: &Cli, output: &Output, event: &str) -> String {
     specific["additionalContext"].as_str().unwrap().to_owned()
 }
 
-/// Asserts that `context` carries each of `messages` once, with its sender label and `msg_id`.
-fn carries_once(context: &str, messages: &[Message]) {
-    for message in messages {
-        let element = format!(
-            "<message msg_id=\"{}\" from=\"{}\">\n{}\n</message>",
-            message.msg_id, message.sender, message.text
-        );
-        assert_eq!(context.matches(&element).count(), 1, "{context}");
-        assert_eq!(context.matches(&message.msg_id).count(), 1, "{context}");
-    }
-}
-
 fn quiet(output: &Output) {
     assert!(output.status.success(), "{}", stderr(output));
     assert!(output.stdout.is_empty(), "{:?}", output.stdout);
-}
-
-fn handed_over(source: &Source, messages: &[Message]) {
-    for message in messages {
-        assert!(matches!(
-            source.state(&message.msg_id).unwrap(),
-            Some(State::HandedOver { .. })
-        ));
-    }
-}
-
-fn waiting(source: &Source, message: &Message) {
-    assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
 }
 
 /// Asserts that `cli`'s `event` hook, with `input`, adds each waiting message to the context once
@@ -146,14 +114,14 @@ fn adds_each_waiting_message_once(cli: &Cli, input: &str, event: &str) {
         source.add("alice of skald", "first").unwrap(),
         source.add("bob", "second").unwrap(),
     ];
-    carries_once(&given(cli, &hook(cli, dir.path(), input), event), &messages);
-    handed_over(&source, &messages);
+    assert_carries_once(&given(cli, &hook(cli, dir.path(), input), event), &messages);
+    assert_handed_over(&source, &messages);
     // Handed over: the next run adds nothing.
     quiet(&hook(cli, dir.path(), input));
 
     let later = [source.add("carol", "third").unwrap()];
     let context = given(cli, &hook(cli, dir.path(), input), event);
-    carries_once(&context, &later);
+    assert_carries_once(&context, &later);
     assert!(!context.contains(&messages[0].msg_id), "{context}");
 }
 
@@ -177,18 +145,18 @@ fn stop_keeps_the_turn_going_with_the_waiting_messages_and_then_lets_it_end() {
         let source = Source::open(dir.path()).unwrap();
         let messages = [source.add("alice", "the token").unwrap()];
         // The output keeps the turn going: the agent gets the messages.
-        carries_once(
+        assert_carries_once(
             &given(cli, &hook(cli, dir.path(), cli.stop), "Stop"),
             &messages,
         );
-        handed_over(&source, &messages);
+        assert_handed_over(&source, &messages);
         // The turn went on; with none waiting, the next Stop lets it end.
         quiet(&hook(cli, dir.path(), cli.stop_active));
 
         // A message that arrives during the kept turn keeps it going again.
         let more = [source.add("bob", "more").unwrap()];
         let output = hook(cli, dir.path(), cli.stop_active);
-        carries_once(&given(cli, &output, "Stop"), &more);
+        assert_carries_once(&given(cli, &output, "Stop"), &more);
     }
 }
 
@@ -219,7 +187,7 @@ fn another_event_takes_nothing() {
         let source = Source::open(dir.path()).unwrap();
         let message = source.add("alice", "hi").unwrap();
         quiet(&hook(cli, dir.path(), &input));
-        waiting(&source, &message);
+        assert_waiting(&source, &[message]);
     }
 }
 
@@ -235,8 +203,8 @@ fn a_closed_output_puts_the_messages_back() {
         let mut stdin = child.stdin.take().unwrap();
         stdin.write_all(cli.stop.as_bytes()).unwrap();
         drop(stdin);
-        failed(&child.wait_with_output().unwrap(), "agent-hook: ");
-        waiting(&source, &message);
+        assert_failed(&child.wait_with_output().unwrap(), "agent-hook: ");
+        assert_waiting(&source, &[message]);
     }
 }
 
@@ -248,12 +216,12 @@ fn fails_with_exit_code_1() {
         let source = Source::open(dir.path()).unwrap();
         let message = source.add("alice", "hi").unwrap();
         let output = hook(cli, dir.path(), "not JSON");
-        failed(&output, "agent-hook: ");
+        assert_failed(&output, "agent-hook: ");
         assert!(output.stdout.is_empty());
-        waiting(&source, &message);
+        assert_waiting(&source, &[message]);
 
         let file = tempfile::NamedTempFile::new().unwrap();
-        failed(
+        assert_failed(
             &hook(cli, file.path(), cli.stop),
             "agent-hook: cannot open the source ",
         );

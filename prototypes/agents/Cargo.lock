@@ -7,6 +7,7 @@ name = "agent-channel"
 version = "0.0.0"
 dependencies = [
  "agent-source",
+ "agent-testing",
  "rmcp",
  "serde_json",
  "tempfile",
@@ -19,6 +20,7 @@ version = "0.0.0"
 dependencies = [
  "agent-inbox",
  "agent-source",
+ "agent-testing",
  "serde_json",
  "tempfile",
 ]
@@ -28,6 +30,7 @@ name = "agent-inbox"
 version = "0.0.0"
 dependencies = [
  "agent-source",
+ "agent-testing",
  "rmcp",
  "serde_json",
  "tempfile",
@@ -40,6 +43,7 @@ version = "0.0.0"
 dependencies = [
  "agent-inbox",
  "agent-source",
+ "agent-testing",
  "libc",
  "serde_json",
  "tempfile",
@@ -52,6 +56,7 @@ version = "0.0.0"
 dependencies = [
  "agent-inbox",
  "agent-source",
+ "agent-testing",
  "tempfile",
 ]
 
@@ -63,6 +68,13 @@ dependencies = [
  "serde_json",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "agent-testing"
+version = "0.0.0"
+dependencies = [
+ "agent-source",
 ]
 
 [[package]]

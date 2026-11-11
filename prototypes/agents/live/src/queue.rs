@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 
 use crate::channel::{Files, PtySession, Sent, TERM, reached_delay};
 use crate::{
-    Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config, handed_over, handover_delay,
+    Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config, codex_hook, handed_over,
+    handover_delay,
 };
 
 /// The prototype's binary, next to `live-check`.
@@ -40,8 +41,6 @@ pub fn script(kind: Kind) -> &'static [Call] {
 /// approval asked; the lowest effort; and its own app-server, not the shared background one. The
 /// terminal UI has no flag that ignores the user's config.
 pub fn session(files: &Files, kind: Kind, model: Option<&str>, stub: Option<&str>) -> Vec<String> {
-    let record = json!(format!("cat >> '{}'", files.hooks.display()));
-    let hook = format!("[{{hooks=[{{type=\"command\",command={record}}}]}}]");
     let project = files.project.to_string_lossy().into_owned();
     let mut args: Vec<String> = [
         "--no-daemon",
@@ -56,8 +55,8 @@ pub fn session(files: &Files, kind: Kind, model: Option<&str>, stub: Option<&str
     .map(String::from)
     .to_vec();
     let mut config = vec![
-        format!("hooks.Stop={hook}"),
-        format!("hooks.PreToolUse={hook}"),
+        codex_hook("Stop", &files.record()),
+        codex_hook("PreToolUse", &files.record()),
         format!(
             "projects={{{}={{trust_level=\"trusted\"}}}}",
             json!(project)
@@ -187,7 +186,7 @@ mod tests {
     use agent_source::State;
 
     use crate::StubLog;
-    use crate::channel::HookEvent;
+    use crate::channel::tests::{on_stub, real};
 
     use super::*;
 
@@ -286,8 +285,7 @@ mod tests {
         assert_eq!(usage("no usage"), None);
         assert_eq!(usage("Token usage: total=5 output=1"), None);
 
-        let mut session = PtySession::new(1_000);
-        session.hooks.push(HookEvent::Stopped("OK".to_owned()));
+        let mut session = real(&["OK"]);
         session.usage = usage(screen);
         assert_eq!(
             session.summary(),
@@ -313,19 +311,6 @@ mod tests {
         assert_eq!(thread(r#"{"session_id":"#), None, "a partly written input");
     }
 
-    /// A session on the stub whose turns ended with `replies` and whose requests are `bodies`.
-    fn stubbed(replies: &[&str], bodies: &[&str], credentials: &[&str]) -> PtySession {
-        let mut session = PtySession::new(1_000);
-        for reply in replies {
-            session.hooks.push(HookEvent::Stopped((*reply).to_owned()));
-        }
-        session.stub = Some(StubLog {
-            requests: bodies.iter().map(|body| (*body).to_owned()).collect(),
-            credentials: credentials.iter().map(|name| (*name).to_owned()).collect(),
-        });
-        session
-    }
-
     fn sent(token: &str, state: Option<State>) -> Sent {
         Sent {
             token: token.to_owned(),
@@ -340,7 +325,7 @@ mod tests {
 
     #[test]
     fn checks_the_idle_and_busy_sessions() {
-        let mut session = stubbed(&["Done.", "Done."], &["{}", "{\"tok-1\"}"], &[]);
+        let mut session = on_stub(&["Done.", "Done."], &["{}", "{\"tok-1\"}"], &[]);
         session.note(&["tok-1"], 11_300);
         let mut check = QueueCheck::default();
         assert_eq!(
@@ -366,7 +351,7 @@ mod tests {
             (session.clone(), Some(sent("tok-2", handed()))),
             // A credential other than the placeholder.
             (
-                stubbed(&["Done."], &["{\"tok-1\"}"], &["authorization"]),
+                on_stub(&["Done."], &["{\"tok-1\"}"], &["authorization"]),
                 Some(sent("tok-1", handed())),
             ),
         ] {
@@ -381,19 +366,14 @@ mod tests {
         }
         let mut check = QueueCheck::default();
         assert_eq!(
-            check.busy(&stubbed(&["Done."], &[], &[]), None),
+            check.busy(&on_stub(&["Done."], &[] as &[&str], &[]), None),
             r#"  busy session: fail — replies ["Done."], requests to the stub: 0; no message was queued"#
         );
     }
 
     #[test]
     fn on_the_real_model_the_session_repeats_the_token() {
-        let session = {
-            let mut session = PtySession::new(1_000);
-            session.hooks.push(HookEvent::Stopped("OK".to_owned()));
-            session.hooks.push(HookEvent::Stopped("tok-1".to_owned()));
-            session
-        };
+        let session = real(&["OK", "tok-1"]);
         let mut check = QueueCheck::default();
         let line = check.idle(&session, Some(&sent("tok-1", handed())));
         assert!(line.contains(": pass — "), "{line}");
@@ -411,15 +391,15 @@ mod tests {
     fn checks_the_other_of_two_sessions() {
         let mut check = QueueCheck::default();
         assert_eq!(
-            check.other(&stubbed(&["Done."], &["{}"], &[]), "tok-1"),
+            check.other(&on_stub(&["Done."], &["{}"], &[]), "tok-1"),
             r#"  the other of two idle sessions: pass — replies ["Done."], requests to the stub: 1; the message is the first session's, its token did not reach the session"#
         );
         assert!(check.pass());
         for session in [
-            stubbed(&["Done."], &["{\"tok-1\"}"], &[]),
+            on_stub(&["Done."], &["{\"tok-1\"}"], &[]),
             // Its first turn never ended.
-            stubbed(&[], &["{}"], &[]),
-            stubbed(&["Done."], &["{}"], &["x-api-key"]),
+            on_stub(&[], &["{}"], &[]),
+            on_stub(&["Done."], &["{}"], &["x-api-key"]),
         ] {
             let mut check = QueueCheck::default();
             let line = check.other(&session, "tok-1");

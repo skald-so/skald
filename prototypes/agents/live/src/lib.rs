@@ -377,6 +377,20 @@ fn codex_config(stub: Option<&str>) -> Vec<String> {
     config
 }
 
+/// The `-c` value that makes `command` Codex's command hook for `event`. A `-c` value is TOML; a
+/// JSON string is a valid TOML string.
+fn codex_hook(event: &str, command: &str) -> String {
+    format!(
+        "hooks.{event}=[{{hooks=[{{type=\"command\",command={}}}]}}]",
+        json!(command)
+    )
+}
+
+/// `text` as one word of a POSIX shell command.
+pub fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// Claude Code's name of the `inbox` tool.
 fn inbox_tool() -> String {
     format!("mcp__{SERVER}__{INBOX}")
@@ -1127,6 +1141,21 @@ mod tests {
             assert!(!Agent::Claude.replaces_sign_in(name), "{name}");
             assert!(!Agent::Codex.replaces_sign_in(name), "{name}");
         }
+    }
+
+    #[test]
+    fn quotes_a_shell_word() {
+        assert_eq!(shell_quote("/tmp/a b"), "'/tmp/a b'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn makes_a_codex_command_hook() {
+        assert_eq!(
+            codex_hook("Stop", r#"cat >> '/w/a "b"'"#),
+            r#"hooks.Stop=[{hooks=[{type="command",command="cat >> '/w/a \"b\"'"}]}]"#
+        );
     }
 
     #[test]

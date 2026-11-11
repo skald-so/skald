@@ -11,4 +11,5 @@ agent-inbox = { path = "../inbox" }
 agent-source = { path = "../source" }
 
 [dev-dependencies]
+agent-testing = { path = "../testing" }
 tempfile = "3"

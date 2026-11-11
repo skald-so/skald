@@ -138,17 +138,7 @@ pub fn queue(options: &Options) -> Result<bool> {
         let args = queue::session(&files, kind, options.model, url.as_deref());
         let term = vec![("TERM".to_owned(), TERM.to_owned())];
         let env = Env::of(&files, stub.as_ref(), &path, queue::stub_environment, term)?;
-        let source = Source::open(&files.source)?;
-        Ok(Prepared {
-            name: name.to_owned(),
-            agent: Agent::Codex,
-            channel: false,
-            files,
-            args,
-            env,
-            stub,
-            source,
-        })
+        Prepared::new(name, Agent::Codex, false, files, args, env, stub)
     };
     let mut check = QueueCheck::default();
 
@@ -242,17 +232,7 @@ impl Prepare<'_> {
             stub_environment,
             extra_environment(true),
         )?;
-        let source = Source::open(&files.source)?;
-        Ok(Prepared {
-            name: name.to_owned(),
-            agent: Agent::Claude,
-            channel: true,
-            files,
-            args,
-            env,
-            stub,
-            source,
-        })
+        Prepared::new(name, Agent::Claude, true, files, args, env, stub)
     }
 
     /// The `case` session `name` with a check's message waiting.
@@ -351,6 +331,30 @@ impl Added {
 }
 
 impl Prepared {
+    /// The session `name` of `agent` in `files`, ready to start with `args` in `env`, on `stub`
+    /// unless the model is real; `channel` if it belongs to the Channels check.
+    fn new(
+        name: &str,
+        agent: Agent,
+        channel: bool,
+        files: Files,
+        args: Vec<String>,
+        env: Env,
+        stub: Option<Stub>,
+    ) -> Result<Self> {
+        let source = Source::open(&files.source)?;
+        Ok(Self {
+            name: name.to_owned(),
+            agent,
+            channel,
+            files,
+            args,
+            env,
+            stub,
+            source,
+        })
+    }
+
     /// Adds a check's message with `token` to the session's source.
     fn add(&self, token: &str) -> Result<Added> {
         Added::new(&self.source, &self.files.source, token)

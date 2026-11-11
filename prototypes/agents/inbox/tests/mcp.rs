@@ -1,9 +1,9 @@
 //! An MCP client starts `agent-inbox` over stdio and calls `inbox`.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
 
-use agent_source::{Source, State};
+use agent_source::Source;
+use agent_testing::{assert_carries_once, wait_handed_over};
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
@@ -33,22 +33,6 @@ async fn inbox(client: &Client) -> String {
     content.as_text().expect("text content").text.clone()
 }
 
-/// Waits until the server marks `msg_id` handed over: it does so after writing the result.
-async fn handed_over(source: &Source, msg_id: &str) {
-    let start = Instant::now();
-    while !matches!(
-        source.state(msg_id).unwrap(),
-        Some(State::HandedOver { .. })
-    ) {
-        assert!(
-            start.elapsed() < Duration::from_secs(10),
-            "{msg_id} is not marked handed over: {:?}",
-            source.state(msg_id).unwrap()
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 #[tokio::test]
 async fn lists_the_inbox_tool() {
     let dir = tempfile::tempdir().unwrap();
@@ -71,20 +55,13 @@ async fn inbox_returns_each_waiting_message_once() {
     let first = source.add("reviewer of alice", "Tests pass.").unwrap();
     let second = source.add("planner of bob", "Take 4.2 next.").unwrap();
     let text = inbox(&client).await;
-    for message in [&first, &second] {
-        let element = format!(
-            "<message msg_id=\"{}\" from=\"{}\">\n{}\n</message>",
-            message.msg_id, message.sender, message.text
-        );
-        assert_eq!(text.matches(&element).count(), 1, "{text}");
-        assert_eq!(text.matches(&message.msg_id).count(), 1, "{text}");
-    }
+    assert_carries_once(&text, &[first.clone(), second.clone()]);
     assert!(
         text.find(&first.msg_id) < text.find(&second.msg_id),
         "oldest first: {text}"
     );
-    handed_over(&source, &first.msg_id).await;
-    handed_over(&source, &second.msg_id).await;
+    wait_handed_over(&source, &first.msg_id);
+    wait_handed_over(&source, &second.msg_id);
 
     assert_eq!(inbox(&client).await, "No messages are waiting.");
     let third = source.add("reviewer of alice", "Merged.").unwrap();
@@ -110,7 +87,7 @@ async fn two_sessions_on_one_source_get_each_message_once() {
     for msg_id in &added {
         let count = a.matches(msg_id.as_str()).count() + b.matches(msg_id.as_str()).count();
         assert_eq!(count, 1, "{msg_id} in:\n{a}\n{b}");
-        handed_over(&source, msg_id).await;
+        wait_handed_over(&source, msg_id);
     }
     for session in sessions {
         session.cancel().await.unwrap();
@@ -130,6 +107,6 @@ async fn messages_of_a_server_that_died_are_handed_over_again() {
     let client = start(dir.path()).await;
     let text = inbox(&client).await;
     assert!(text.contains(&message.msg_id), "{text}");
-    handed_over(&source, &message.msg_id).await;
+    wait_handed_over(&source, &message.msg_id);
     client.cancel().await.unwrap();
 }

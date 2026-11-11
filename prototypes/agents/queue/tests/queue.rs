@@ -6,7 +6,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use agent_source::{Message, Source, State};
+use agent_source::Source;
+use agent_testing::{
+    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
+};
 
 /// A directory with the stand-in `codex` in `bin` and its records in `calls`.
 struct StandIn {
@@ -76,26 +79,6 @@ fn agent_queue(bin: &Path, source: &Path, thread: &str) -> Output {
         .unwrap()
 }
 
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn state(source: &Source, message: &Message) -> Option<State> {
-    source.state(&message.msg_id).unwrap()
-}
-
-/// Asserts that `text` carries each of `messages` once, with its sender label and `msg_id`.
-fn carries_once(text: &str, messages: &[Message]) {
-    for message in messages {
-        let element = format!(
-            "<message msg_id=\"{}\" from=\"{}\">\n{}\n</message>",
-            message.msg_id, message.sender, message.text
-        );
-        assert_eq!(text.matches(&element).count(), 1, "{text}");
-        assert_eq!(text.matches(&message.msg_id).count(), 1, "{text}");
-    }
-}
-
 #[test]
 fn queues_each_waiting_message_once_and_marks_it_after_the_command_succeeds() {
     let dir = tempfile::tempdir().unwrap();
@@ -114,14 +97,9 @@ fn queues_each_waiting_message_once_and_marks_it_after_the_command_succeeds() {
     // The message text is the last argument; it holds new lines.
     let head: Vec<&str> = args.iter().take(4).map(String::as_str).collect();
     assert_eq!(head, ["queue", "--thread", "thread-1", "--message"]);
-    carries_once(&args[4..].join("\n"), &messages);
+    assert_carries_once(&args[4..].join("\n"), &messages);
     assert_eq!(handed, "", "nothing was handed over while the command ran");
-    for message in &messages {
-        assert!(matches!(
-            state(&source, message),
-            Some(State::HandedOver { .. })
-        ));
-    }
+    assert_handed_over(&source, &messages);
 
     // Handed over: with none waiting, it runs no command.
     let output = agent_queue(&codex.bin(), dir.path(), "thread-1");
@@ -139,7 +117,7 @@ fn queues_each_waiting_message_once_and_marks_it_after_the_command_succeeds() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[1].0[2], "thread-2");
     let text = calls[1].0[4..].join("\n");
-    carries_once(&text, &later);
+    assert_carries_once(&text, &later);
     assert!(!text.contains(&messages[0].msg_id), "{text}");
 }
 
@@ -148,28 +126,25 @@ fn a_failed_command_leaves_the_messages_waiting() {
     let dir = tempfile::tempdir().unwrap();
     let source = Source::open(dir.path()).unwrap();
     let codex = StandIn::new(dir.path());
-    let message = source.add("alice", "hi").unwrap();
+    let messages = [source.add("alice", "hi").unwrap()];
     codex.fail_with(1);
     let output = agent_queue(&codex.bin(), dir.path(), "thread-1");
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert_failed(&output, "agent-queue: ");
     assert_eq!(
         stderr(&output),
         "agent-queue: codex queue failed with exit status: 1: thread not found\n"
     );
     assert!(output.stdout.is_empty());
     assert_eq!(codex.calls().len(), 1);
-    assert_eq!(state(&source, &message), Some(State::Waiting));
+    assert_waiting(&source, &messages);
 
     // Without the command at all.
     let empty = tempfile::tempdir().unwrap();
-    let output = agent_queue(empty.path(), dir.path(), "thread-1");
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(
-        stderr(&output).starts_with("agent-queue: "),
-        "{}",
-        stderr(&output)
+    assert_failed(
+        &agent_queue(empty.path(), dir.path(), "thread-1"),
+        "agent-queue: ",
     );
-    assert_eq!(state(&source, &message), Some(State::Waiting));
+    assert_waiting(&source, &messages);
 
     // The next run that succeeds hands it over.
     fs::remove_file(codex.dir.path().join("exit")).unwrap();
@@ -178,10 +153,7 @@ fn a_failed_command_leaves_the_messages_waiting() {
             .status
             .success()
     );
-    assert!(matches!(
-        state(&source, &message),
-        Some(State::HandedOver { .. })
-    ));
+    assert_handed_over(&source, &messages);
 }
 
 #[test]
@@ -199,11 +171,8 @@ fn wrong_arguments_print_the_usage() {
             "usage: agent-queue <source-dir> <thread>\n"
         );
     }
-    let output = agent_queue(Path::new("/nonexistent"), file.path(), "thread-1");
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).starts_with("agent-queue: "),
-        "{}",
-        stderr(&output)
+    assert_failed(
+        &agent_queue(Path::new("/nonexistent"), file.path(), "thread-1"),
+        "agent-queue: ",
     );
 }

@@ -11,6 +11,7 @@ use agent_live::Agent;
 use agent_live::channel::stub_environment;
 use agent_live::queue;
 use agent_source::{Source, State};
+use agent_testing::{assert_failed, stderr};
 
 /// Runs `live-check` with no variable of the test's environment, so none of its credentials
 /// reach the output.
@@ -20,20 +21,6 @@ fn live_check(args: &[&str]) -> Output {
         .env_clear()
         .output()
         .expect("live-check runs")
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-/// Asserts that `live-check` failed with exit code 1 and said why.
-fn assert_failed(output: &Output) {
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
-    assert!(
-        stderr(output).starts_with("live-check: "),
-        "{}",
-        stderr(output)
-    );
 }
 
 #[test]
@@ -57,12 +44,10 @@ fn add_puts_a_waiting_message_in_the_source() {
 #[test]
 fn add_fails_when_the_source_cannot_open() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    assert_failed(&live_check(&[
-        "add",
-        file.path().to_str().unwrap(),
-        "s",
-        "t",
-    ]));
+    assert_failed(
+        &live_check(&["add", file.path().to_str().unwrap(), "s", "t"]),
+        "live-check: ",
+    );
 }
 
 #[test]
@@ -105,7 +90,7 @@ fn inbox_fails_without_the_cli() {
         .env("PATH", empty.path())
         .output()
         .expect("live-check runs");
-    assert_failed(&output);
+    assert_failed(&output, "live-check: ");
 }
 
 /// A variable of `live-check`'s environment that the CLI on the stub must not get.
@@ -245,59 +230,6 @@ fn stub_url(agent: Agent, session: &Recorded) -> String {
     }
 }
 
-#[test]
-fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
-    for agent in [Agent::Claude, Agent::Codex] {
-        for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
-            let (recorded, path, dir) = sessions_of(agent, &["inbox", agent.cli()], flags);
-            // A failure names the variables, never their values.
-            let at = format!("{} {flags:?}", agent.cli());
-            assert_eq!(recorded.len(), sessions, "{at}");
-            for session in &recorded {
-                assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
-                    agent.environment(home, &stub_url(agent, session), &path)
-                });
-            }
-        }
-    }
-}
-
-#[test]
-fn inbox_on_the_real_model_drops_the_variables_that_replace_the_sign_in() {
-    for agent in [Agent::Claude, Agent::Codex] {
-        for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
-            let (recorded, path, _dir) = sessions_of(agent, &["inbox", agent.cli()], flags);
-            let at = format!("{} {flags:?}", agent.cli());
-            assert_eq!(recorded.len(), sessions, "{at}");
-            for session in &recorded {
-                assert_real_environment(agent, &at, session, &path);
-            }
-        }
-    }
-}
-
-/// Runs `live-check channel claude <flags>` with stand-in CLIs and returns the sessions the
-/// stand-in `claude` recorded and the `PATH` it ran with. Asserts that there are `sessions` and
-/// all but the fourth load the channel.
-fn channel_sessions(
-    flags: &[&str],
-    sessions: usize,
-) -> (Vec<Recorded>, String, tempfile::TempDir, String) {
-    let (recorded, path, dir) = sessions_of(Agent::Claude, &["channel", "claude"], flags);
-    let at = format!("{flags:?}");
-    assert_eq!(recorded.len(), sessions, "{at}");
-    let with_channel = recorded
-        .iter()
-        .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
-        .count();
-    assert_eq!(
-        with_channel,
-        sessions.min(3),
-        "{at}: sessions that load the channel"
-    );
-    (recorded, path, dir, at)
-}
-
 /// Runs `live-check <command> <flags>` with stand-in CLIs, [`SENTINEL`] and [`SIGN_IN`] and no
 /// other variable of the test's in its environment, and returns the sessions the stand-in of
 /// `agent` recorded and the `PATH` it ran with.
@@ -332,28 +264,97 @@ fn sessions_of(
     (recorded(&record, agent.cli()), path, dir)
 }
 
-const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
+/// The sessions of one run of `live-check`, as the stand-in CLI recorded them.
+struct Checked {
+    sessions: Vec<Recorded>,
+    /// The run in failure messages.
+    at: String,
+    /// The run's temporary directory, which holds the sessions' files.
+    _dir: tempfile::TempDir,
+}
+
+/// Runs `live-check <command> <flags>` with stand-in CLIs and asserts that the stand-in of `agent`
+/// recorded `sessions` sessions, each with only its environment: with `--real`, that of
+/// [`assert_real_environment`]; on the stub, what `on_stub` gives for its home, the stub's address
+/// and `PATH`. A failure names the variables, never their values.
+fn checked_sessions(
+    agent: Agent,
+    command: &[&str],
+    flags: &[&str],
+    sessions: usize,
+    on_stub: impl Fn(&Path, &str, &str) -> io::Result<Vec<(String, String)>>,
+) -> Checked {
+    let (recorded, path, dir) = sessions_of(agent, command, flags);
+    let at = format!("{command:?} {flags:?}");
+    assert_eq!(recorded.len(), sessions, "{at}");
+    for session in &recorded {
+        if flags.contains(&"--real") {
+            assert_real_environment(agent, &at, session, &path);
+        } else {
+            assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
+                on_stub(home, &stub_url(agent, session), &path)
+            });
+        }
+    }
+    Checked {
+        sessions: recorded,
+        at,
+        _dir: dir,
+    }
+}
+
+/// The flags of each run and how many sessions it has, given that number without and with `--all`.
+fn runs(one: usize, all: usize) -> [(&'static [&'static str], usize); 4] {
+    [
+        (&[], one),
+        (&["--all"], all),
+        (&["--real"], one),
+        (&["--real", "--all"], all),
+    ]
+}
 
 #[test]
-fn channel_runs_one_session_or_all_four_on_the_stub_with_only_its_environment() {
-    for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 4)] {
-        let (recorded, path, dir, at) = channel_sessions(flags, sessions);
-        for session in &recorded {
-            assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
-                stub_environment(home, &stub_url(Agent::Claude, session), &path)
-            });
+fn inbox_sessions_get_only_their_environment() {
+    for agent in [Agent::Claude, Agent::Codex] {
+        for (flags, sessions) in runs(1, 3) {
+            checked_sessions(
+                agent,
+                &["inbox", agent.cli()],
+                flags,
+                sessions,
+                |h, s, p| agent.environment(h, s, p),
+            );
         }
     }
 }
 
+const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
+
 #[test]
-fn channel_on_the_real_model_drops_the_sign_in_variables_and_adds_the_terminal_and_child_mark() {
-    for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 4)] {
-        let (recorded, path, _dir, at) = channel_sessions(flags, sessions);
-        for session in &recorded {
+fn channel_sessions_get_only_their_environment_and_all_but_the_fourth_load_the_channel() {
+    for (flags, sessions) in runs(1, 4) {
+        let real = flags.contains(&"--real");
+        let checked = checked_sessions(
+            Agent::Claude,
+            &["channel", "claude"],
+            flags,
+            sessions,
+            stub_environment,
+        );
+        let at = &checked.at;
+        let with_channel = checked
+            .sessions
+            .iter()
+            .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
+            .count();
+        assert_eq!(
+            with_channel,
+            sessions.min(3),
+            "{at}: sessions that load the channel"
+        );
+        for session in checked.sessions.iter().filter(|_| real) {
             // The real model signs in from the user's config home: the rest of the check's
-            // environment passes on.
-            assert_real_environment(Agent::Claude, &at, session, &path);
+            // environment passes on, with the terminal and the child mark.
             assert!(
                 session.env["TERM"] == "xterm-256color",
                 "{at}: TERM differs"
@@ -421,19 +422,18 @@ const HOOKS: [(&str, Agent, &str, usize, usize); 5] = [
 ];
 
 #[test]
-fn hooks_run_one_session_or_all_on_the_stub_with_only_its_environment() {
+fn hook_sessions_get_only_their_environment_and_run_the_handler_on_a_source_of_their_own() {
     let live_check = Path::new(env!("CARGO_BIN_EXE_live-check"));
     let handler = live_check.with_file_name("agent-hook");
     for (hook, agent, event, one, all) in HOOKS {
-        for (flags, sessions) in [(&[][..], one), (&["--all"][..], all)] {
-            let (recorded, path, dir) = sessions_of(agent, &[hook, agent.cli()], flags);
-            let at = format!("{hook} {} {flags:?}", agent.cli());
-            assert_eq!(recorded.len(), sessions, "{at}");
-            let mut sources = Vec::new();
-            for session in &recorded {
-                assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
-                    agent.environment(home, &stub_url(agent, session), &path)
+        for (flags, sessions) in runs(one, all) {
+            let checked =
+                checked_sessions(agent, &[hook, agent.cli()], flags, sessions, |h, s, p| {
+                    agent.environment(h, s, p)
                 });
+            let at = &checked.at;
+            let mut sources = Vec::new();
+            for session in &checked.sessions {
                 let source = match agent {
                     Agent::Claude => {
                         let (command, source) = hook_of(session, event);
@@ -462,20 +462,6 @@ fn hooks_run_one_session_or_all_on_the_stub_with_only_its_environment() {
             sources.sort();
             sources.dedup();
             assert_eq!(sources.len(), sessions, "{at}: a source per session");
-        }
-    }
-}
-
-#[test]
-fn hooks_on_the_real_model_drop_the_variables_that_replace_the_sign_in() {
-    for (hook, agent, _, one, all) in HOOKS {
-        for (flags, sessions) in [(&["--real"][..], one), (&["--real", "--all"][..], all)] {
-            let (recorded, path, _dir) = sessions_of(agent, &[hook, agent.cli()], flags);
-            let at = format!("{hook} {} {flags:?}", agent.cli());
-            assert_eq!(recorded.len(), sessions, "{at}");
-            for session in &recorded {
-                assert_real_environment(agent, &at, session, &path);
-            }
         }
     }
 }
@@ -517,55 +503,39 @@ fn timed_hook_runs_the_handler_and_records_its_run() {
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
-    assert_failed(&output);
-}
-
-/// Runs `live-check queue codex <flags>` with stand-in CLIs and returns the sessions the stand-in
-/// `codex` recorded, after asserting that there are `sessions`, each an interactive session that
-/// runs its own app-server and records its hooks.
-fn queue_sessions(flags: &[&str], sessions: usize) -> (Vec<Recorded>, String, tempfile::TempDir) {
-    let (recorded, path, dir) = sessions_of(Agent::Codex, &["queue", "codex"], flags);
-    let at = format!("{flags:?}");
-    assert_eq!(recorded.len(), sessions, "{at}");
-    for session in &recorded {
-        assert_eq!(session.args[0], "--no-daemon", "{at}");
-        for event in ["Stop", "PreToolUse"] {
-            assert!(
-                session
-                    .args
-                    .iter()
-                    .any(|arg| arg.starts_with(&format!("hooks.{event}="))),
-                "{at}: no {event} hook"
-            );
-        }
-    }
-    (recorded, path, dir)
+    assert_failed(&output, "live-check: ");
 }
 
 #[test]
-fn queue_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
-    for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
-        let (recorded, path, dir) = queue_sessions(flags, sessions);
-        let at = format!("{flags:?}");
-        for session in &recorded {
-            assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
-                queue::stub_environment(home, &stub_url(Agent::Codex, session), &path)
-            });
-        }
-    }
-}
-
-#[test]
-fn queue_on_the_real_model_drops_the_variables_that_replace_the_sign_in() {
-    for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
-        let (recorded, path, _dir) = queue_sessions(flags, sessions);
-        let at = format!("{flags:?}");
-        for session in &recorded {
-            assert_real_environment(Agent::Codex, &at, session, &path);
-            assert!(
-                session.env["TERM"] == "xterm-256color",
-                "{at}: TERM differs"
-            );
+fn queue_sessions_get_only_their_environment_and_run_interactive_with_their_hooks() {
+    for (flags, sessions) in runs(1, 3) {
+        let real = flags.contains(&"--real");
+        let checked = checked_sessions(
+            Agent::Codex,
+            &["queue", "codex"],
+            flags,
+            sessions,
+            queue::stub_environment,
+        );
+        let at = &checked.at;
+        for session in &checked.sessions {
+            // Its own app-server, and the hooks that tell the check its thread and turns.
+            assert_eq!(session.args[0], "--no-daemon", "{at}");
+            for event in ["Stop", "PreToolUse"] {
+                assert!(
+                    session
+                        .args
+                        .iter()
+                        .any(|arg| arg.starts_with(&format!("hooks.{event}="))),
+                    "{at}: no {event} hook"
+                );
+            }
+            if real {
+                assert!(
+                    session.env["TERM"] == "xterm-256color",
+                    "{at}: TERM differs"
+                );
+            }
         }
     }
 }
