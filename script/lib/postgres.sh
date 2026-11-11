@@ -1,9 +1,9 @@
-# PostgreSQL 19 in a container for the integration tests. Sourced by script/test and script/mutants;
-# the caller removes the container with postgres_stop, e.g. in its EXIT trap.
+# PostgreSQL 19 in a container for the integration tests. Sourced by script/test, script/mutants and
+# script/image-test; the caller removes the container with postgres_stop, e.g. in its EXIT trap.
 
 # postgres_start: starts the container and sets $postgres to its ID.
-# 19rc1 until PostgreSQL 19.0 is released. The data lives in a tmpfs: a volume would outlive
-# `docker rm --force`.
+# 19rc1 until PostgreSQL 19.0 is released. The data lives in a tmpfs, so the container leaves no
+# volume behind; it fails if the container still gets one.
 postgres_start() {
   postgres=$(docker run --detach --rm --tmpfs /var/lib/postgresql --env POSTGRES_PASSWORD=skald \
     --publish 127.0.0.1::5432 postgres:19rc1 -c fsync=off)
@@ -29,9 +29,9 @@ postgres_wait() {
   export SKALD_TEST_DATABASE_URL
 }
 
-# postgres_stop: removes the container, if it was started.
+# postgres_stop: removes the container and its volumes, if it was started.
 postgres_stop() {
   if [[ -n ${postgres:-} ]]; then
-    docker rm --force "$postgres" >/dev/null
+    docker rm --force --volumes "$postgres" >/dev/null
   fi
 }
