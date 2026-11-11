@@ -49,10 +49,10 @@ queued-task = {            ; what the sender uploads; the server keeps and retur
   * int => any,            ; fields of later versions
 }
 
-sched = {                  ; scheduling fields, in plaintext
+sched = {                  ; scheduling fields, in plaintext; keys 2 and 3 are reserved
   ? 1 => bstr .size (1..32),  ; idempotency_key
-  ? 2 => tstr,             ; template: a `name`
-  ? 3 => timestamp,        ; deadline
+  ? 4 => tstr,             ; template: a `name`
+  ? 5 => timestamp,        ; deadline
   * int => any,
 }
 

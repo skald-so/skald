@@ -7,7 +7,7 @@ Versions as of 2026-11-09.
 | Layer | Choice |
 |---|---|
 | HTTP, WebSocket | axum 0.8 + tokio; SSE and long-poll as fallbacks |
-| Client HTTP, WebSocket | ureq 3 and tungstenite 0.29, blocking; plain HTTP until Story 14 adds HTTPS and `HTTPS_PROXY` ([Network](architecture.md#network)) |
+| Client HTTP, WebSocket | ureq 3 and tungstenite 0.29, blocking; plain HTTP until the client's one-shot mode and helper add HTTPS and `HTTPS_PROXY` ([Network](architecture.md#network)) |
 | Database | PostgreSQL 19 (in production, from 19.1), sqlx 0.9: `SKIP LOCKED`, `LISTEN/NOTIFY` |
 | Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage) |
 | MLS | mls-rs 0.57 with mls-rs-crypto-rustcrypto 0.23: [choice](mls-prototypes.md#choice) |

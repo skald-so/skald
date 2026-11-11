@@ -1,6 +1,6 @@
 # MLS prototypes
 
-Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Story 3).
+Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)).
 
 - Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives. `mls-interop` runs the [interoperability](#interoperability) scenarios on both. `mls-bench` holds the [benchmarks](#benchmarks).
 - Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0, and the `js` feature in WASM; mls-rs 0.57.0 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0, with the `browser` feature in WASM.
@@ -395,9 +395,9 @@ How each library meets the requirements of [membership.md](../protocol/membershi
 - Its dependencies pass the product's `cargo deny` policy and use the RustCrypto generation of the product crates. OpenMLS's RustCrypto provider brings MPL-2.0 crates, a vulnerability, an unmaintained crate and a second RustCrypto generation.
 - At 1000 devices it is faster in all but one operation; its saved state is a third of OpenMLS's; its browser module is 18% smaller compressed.
 - Both libraries interoperate. On audit, mls-rs states it has none, and none was found for OpenMLS.
-- Accepted against it: a smaller team, a breaking release every two months, fewer official test vectors in its CI, the signing key in each group's state, and Commits merged before the application's checks ([For Story 10](#for-story-10)).
+- Accepted against it: a smaller team, a breaking release every two months, fewer official test vectors in its CI, the signing key in each group's state, and Commits merged before the application's checks ([For the crypto core](#for-the-crypto-core)).
 
-## For Story 10
+## For the crypto core
 The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls-rs)):
 - **Features:** `external_client` for the Delivery Service and the browser, `last_resort_key_package_ext`; `browser` of `mls-rs-crypto-rustcrypto` in WASM.
 - **Storage:** one store implementing `GroupStateStorage` and `KeyPackageStorage` over the local state, with a direct `mls-rs-core` dependency; it also drops a group ("Saving state", "Dropping a group").
