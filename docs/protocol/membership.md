@@ -85,7 +85,7 @@ cert-body = {
   * int => any,            ; fields of later versions
 }
 
-device-kind = &(client: 1, browser: 2, service: 3, custodian: 4, auditor: 5)
+device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 ```
 
 - Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it.
@@ -95,7 +95,7 @@ device-kind = &(client: 1, browser: 2, service: 3, custodian: 4, auditor: 5)
 - Issuers:
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
   - a `client` device of the same account: any kind.
-- A `service` device is certified on the account of the admin who creates it, a `custodian` device on that of the admin who enables managed-keys mode, an `auditor` device on an organization admin's account.
+- A `service` device is certified on the account of the admin who creates it.
 - `name` and `issued` are for display; nothing depends on them. A client shows a device only by its certificate's `name`, `kind` and `issued`, never by a name the server gives.
 - **SSH signature** (`ssh`, optional): an SSH signature [[OpenSSH PROTOCOL.sshsig](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.sshsig)] with namespace `skald.so` over the encoded `["skald ssh", account, device, signing]`, all byte strings. It is made with one of the user's SSH keys on GitHub. A client that checks it fetches the user's keys from GitHub, not from the Skald server; a signature that does not verify is a key change.
 - An MLS credential names the device: [MLS profile](#mls-profile).
@@ -107,7 +107,7 @@ A new device generates its keys, derives its ID from its signing key and registe
   - The issuing device stores the certificate's `body` and `signature`; the new device checks that `body` holds its account, ID, keys and `name`, signs `proof` and stores the complete certificate.
   - A `browser` is linked only this way.
   - With the certificate, the issuing device stores a link object for the new device: the [roster](#roster) revisions it starts from.
-- **With the recovery key**, entered only in the CLI or `skald ui`: the new device unlocks the master key and issues its own certificate with it. It MUST reject a [master backup](#account) that does not open in PSK mode with that recovery key, and pins `master` only from one that does. It shows its user the account's devices, revoked or not, and in this order:
+- **With the recovery key**, entered only in the CLI: the new device unlocks the master key and issues its own certificate with it. It MUST reject a [master backup](#account) that does not open in PSK mode with that recovery key, and pins `master` only from one that does. It shows its user the account's devices, revoked or not, and in this order:
   1. revokes with the master key each device its user names as stolen ([Revocation](#revocation));
   2. takes its [anchors](#anchors);
   3. revokes with its own key each device its user names as lost or wiped;
@@ -196,7 +196,7 @@ A recipient device sets the level of each message it accepts from the sending de
 |---|---|
 | `own` | A `client` or `browser` device of the recipient's account |
 | `member` | A `client` or `browser` device of an account the recipient's space roster lists as a member |
-| `service` | Any other: a `service` or `custodian` device, or a member of the other space of a [shared channel](#shared-channel) |
+| `service` | A `service` device |
 
 - The level comes from the sending device's valid certificate, its `account` and `kind`, and the roster of the recipient's space; never from the content.
 - `own` is above `member`, which is above `service`.
@@ -244,7 +244,6 @@ channel = {
   1 => id,                 ; channel
   2 => [* channel-member],
   3 => [* id],             ; services: `service` devices in its MLS group
-  ? 4 => shared,           ; only in a shared channel
   * int => any,
 }
 
@@ -268,20 +267,6 @@ A client starts from an anchor: revision 1 of a space it created, the revision i
 
 A revision that fails, and every revision built on it, has no effect: the client keeps the last revision it accepted, warns its user and keeps working with that one. Two valid revisions with the same number mean the server forked the roster: the client keeps the one it accepted and warns its user.
 
-### Shared channel
-A shared channel ([features.md §3](../dev/features.md#3-spaces-and-shared-channels)) is in the rosters of both its spaces, each entry with the other side in `shared`.
-
-```cddl
-shared = [
-  space: id,               ; the other space
-  revision: bstr .size 32, ; hash of a revision of its roster the signer accepted
-]
-```
-
-- The channel is shared only while both rosters list it, each naming the other.
-- Its members are those of both entries. A client checks the other space's roster from the revision in `shared` onward, as it checks its own.
-- A shared channel's messages carry `space` of the sender's side ([Envelope](README.md#envelope)).
-
 ## Policy
 A space's policy travels in its roster, so an admin's device signs every change.
 
@@ -289,22 +274,15 @@ A space's policy travels in its roster, so an admin's device signs every change.
 policy = {
   1 => [own: mode, member: mode, service: mode],  ; restrictions: per trust level
   2 => uint .ge 86400,     ; history: the history key's longest age, in seconds
-  3 => edit-action,
-  ? 4 => id,               ; custodian: managed-keys mode, with this `custodian` device
-  ? 5 => id,               ; auditor: the `auditor` device that reads the space
   * int => any,            ; fields of later versions
 }
 
 mode = &(read-only: 1, no-shell: 2, no-network: 3, full: 4)
-edit-action = &(notify: 1, warn: 2, ask: 3, block: 4)
 ```
 
 - `restrictions`: the mode a task runs in, by the [trust level](#trust-levels) of its sender. `read-only` reads files; `no-shell` also edits them; `no-network` also runs commands, without network; `full` has no limits.
 - `history`: [History key](#history-key).
-- `edit-action`: [features.md §11](../dev/features.md#11-cross-machine-edit-coordination).
-- `custodian` and `auditor`: the space mode, [Custodian, auditor and federation](README.md#custodian-auditor-and-federation). Without `custodian`, the space is end-to-end encrypted.
-- A new space starts with `[full, read-only, read-only]`, 30 days, `warn`, and neither `custodian` nor `auditor`.
-- Checks: `custodian` and `auditor` name devices of their kind with valid certificates on members' accounts.
+- A new space starts with `[full, read-only, read-only]` and 30 days.
 
 ## Invite
 An admin invites a person by link. The link's secret proves the newcomer is the one invited and never reaches the server.
@@ -363,23 +341,20 @@ A channel is an MLS group [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)] w
 ### MLS profile
 - Ciphersuite `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519` (`0x0001`).
 - Credential: `basic`, its `identity` the 16-byte device ID. A leaf's `signature_key` MUST equal the `signing` key of the device's certificate, so `identity` is the ID derived from `signature_key`.
-- Members: devices of kind `client`, `custodian` and `auditor`, and `service` devices that keep state. A `browser` and a stateless `service` device are never members.
+- Members: `client` devices and `service` devices that keep state. A `browser` and a stateless `service` device are never members.
 - Application messages are PrivateMessages. Proposals and Commits are PublicMessages, so the server knows each epoch's member devices.
 - Each Commit's sender uploads the GroupInfo of the new epoch, with the `ratchet_tree` and `external_pub` extensions, over HTTPS. Any member device of the current epoch uploads one if the server has none. The server keeps the latest.
 
 ### Admitted devices
 A device is admitted to a channel when its certificate is valid and it is one of:
 - a `client` device of an account in the channel's `channel-member` entries in the latest revision the client accepted, unless that member's `excluded` lists it;
-- a device in the channel's `services`;
-- the `custodian` or `auditor` device the [space mode](README.md#custodian-auditor-and-federation) admits.
-
-For a shared channel, both spaces' entries count.
+- a device in the channel's `services`.
 
 A member device:
 - MUST NOT commit the Add of a device that is not admitted;
 - before it treats a device a Commit adds as not admitted, MUST fetch the space's latest revisions and accept them as [Roster](#roster) says;
 - after it processes a Commit or accepts a revision, MUST commit the Remove of each member that is not admitted, and MUST NOT send application messages in the channel until no such member is left;
-- MUST warn its user when a Commit by another device added a device that is not admitted, and when a `custodian` or `auditor` device in the channel stops being admitted.
+- MUST warn its user when a Commit by another device added a device that is not admitted.
 
 ### Creating a channel
 1. An admin's device gets a channel ID from the server and signs a revision with the channel.
@@ -472,7 +447,7 @@ wrap-recipient = [1, device: id] / [2, account: id]  ; a browser, or an account'
 - Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate. `client` devices take keys from MLS and the key chain and need no wrap.
 - A browser linked later gets wraps of the current epochs from member devices that find them missing.
 
-A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, revoked or not. That certificate MUST pass checks 1 and 2 of [Device checks](#device-checks) with the master key of an account that an accepted revision lists as a member of the space or, for a shared channel, of the other space.
+A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, revoked or not. That certificate MUST pass checks 1 and 2 of [Device checks](#device-checks) with the master key of an account that an accepted revision lists as a member of the space.
 
 A browser writes entries only in the epoch of the channel's latest GroupInfo, under the key of a wrap of that epoch. It MUST NOT write any unless that GroupInfo is of the channel and the wrap's epoch, its signature verifies with the `signature_key` of a member leaf, it lists `signer` as a member, and every member it lists is admitted.
 

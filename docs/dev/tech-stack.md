@@ -7,7 +7,7 @@ Versions as of 2026-11-09.
 | Layer | Choice |
 |---|---|
 | HTTP, WebSocket | axum 0.8 + tokio; SSE and long-poll as fallbacks |
-| Client HTTP, WebSocket | ureq 3 and tungstenite 0.29, blocking; plain HTTP until Story 14 adds HTTPS and `HTTPS_PROXY` ([Network](architecture.md#network)) |
+| Client HTTP, WebSocket | ureq 3 and tungstenite 0.29, blocking; plain HTTP until the client's one-shot mode and helper add HTTPS and `HTTPS_PROXY` ([Network](architecture.md#network)) |
 | Database | PostgreSQL 19 (in production, from 19.1), sqlx 0.9: `SKIP LOCKED`, `LISTEN/NOTIFY` |
 | Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage) |
 | MLS | mls-rs 0.57 with mls-rs-crypto-rustcrypto 0.23: [choice](mls-prototypes.md#choice) |
@@ -25,7 +25,7 @@ Versions as of 2026-11-09.
 | Web accessibility check | axe-core 4 over the kit page in headless Chrome, driven by playwright-core 1 |
 | Web screenshot comparison | The kit page in the Chromium of the Playwright Docker image (linux/amd64, pinned by digest) on every machine; pixelmatch 8 compares with the references, anti-aliasing aside |
 | In-browser decryption | WASM build of the Rust core |
-| SDK | Rust; later Python (PyO3) and TypeScript (WASM or napi) |
-| Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package with prebuilt binaries (`npx skald-so`); Claude Code plugin; server Docker image. Later: Homebrew, winget, cargo-binstall, Helm |
+| SDK | Rust |
+| Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package with prebuilt binaries (`npx skald-so`); Claude Code plugin; server Docker image |
 | Server image | Built in the `rust` Debian 13 image; runs on distroless `cc-debian13` as a non-root user; base images pinned by digest |
 | Infrastructure | Hetzner, Docker Compose, Caddy, WAL-G, Prometheus, Grafana, Sentry; details in [infrastructure.md](infrastructure.md) |

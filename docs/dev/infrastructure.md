@@ -11,7 +11,7 @@ merge Release PR → tag vX.Y.Z → dist builds → GitHub Releases, npm, GHCR
 A human takes one action per release: merging the Release PR.
 
 ## Names
-- Product, binary and Homebrew formula: `skald`; domain: `skald.so`.
+- Product and binary: `skald`; domain: `skald.so`.
 - Where `skald` is taken: `skald-so` — the GitHub organization, npm, crates.io, PyPI.
 
 ## Repositories
@@ -19,7 +19,6 @@ A human takes one action per release: merging the Release PR.
 |---|---|---|
 | `skald-so/skald` | Public | Monorepo: code, docs, `docker-compose.yml` for self-hosting, Claude Code plugin marketplace |
 | `skald-so/skald-cloud` | Private | Production configs, deployment, anti-abuse rules, runbooks, approved UI designs (`design/`) |
-| `skald-so/homebrew-tap` | Public, later | Homebrew formula, updated by dist |
 
 ## Branches
 - `dev` — the main and default branch; PRs from people and agents go here.
@@ -63,7 +62,6 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 | `skald-server` image | GHCR. Every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |
 | Claude Code plugin | Monorepo: `/plugin marketplace add skald-so/skald` |
 | Website and docs | GitHub Pages, built from `docs/` |
-| Homebrew, winget, crates.io, Helm | Later |
 
 ## Trust in builds
 - Builds get **GitHub Artifact Attestations** (Sigstore); verify with `gh attestation verify`.
@@ -75,7 +73,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - Later: reproducible builds of the binaries.
 
 ## Cloud
-- **The same image that is published for self-hosting.** `ee/` features are enabled by a license key.
+- **The same image that is published for self-hosting.**
 - **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
   - PostgreSQL 19 with synchronous streaming replication: `stored` is sent after the replica has the write. If the replica is down, replication switches to asynchronous and an alert fires.
@@ -91,4 +89,3 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 ## Self-host
 - `docker compose up` brings up `skald-server`, PostgreSQL and Caddy. The user sets their domain in a single variable, and HTTPS works right away.
 - Attachments are kept in a disk volume by default; an external S3-compatible bucket is optional.
-- Helm later.

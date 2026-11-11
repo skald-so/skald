@@ -16,7 +16,6 @@ What Skald protects against and what it does not. Formats and checks are in the 
   - [An admin acting against others](#an-admin-acting-against-others)
   - [A malicious sender](#a-malicious-sender)
   - [A leaked CI secret](#a-leaked-ci-secret)
-  - [The custodian and auditor devices](#the-custodian-and-auditor-devices)
   - [An agent on the person's own device](#an-agent-on-the-persons-own-device)
 - [The server sees](#the-server-sees)
 - [The server does not see](#the-server-does-not-see)
@@ -42,12 +41,11 @@ Also whoever takes over the server or its database.
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
 - Drop an ephemeral agent's message unnoticed: content without `counter` has no gap detection ([Gap detection](protocol/delivery.md#gap-detection)).
 - Serve a linked browser a modified web app: the browser trusts the build it is served ([Trade-offs](#trade-offs)).
-- In a managed-keys space, read the space and write as delegated agents: [The custodian and auditor devices](#the-custodian-and-auditor-devices).
 
 **Defenses:**
 - Content, tasks, presence values and history are encrypted end to end ([Envelope](protocol/README.md#envelope), [Queue key](protocol/queues.md#queue-key), [Presence](protocol/agents.md#presence), [History](protocol/membership.md#history)).
 - A server signature alone never admits a device: a client trusts a device only through its certificate chain to the account's master key ([Device checks](protocol/membership.md#device-checks)).
-- Certificates, revocations, revisions, invites, grants and delegations are signed by devices or a master key, so the server cannot forge them ([Signed objects](protocol/membership.md#signed-objects), [Service grant](protocol/README.md#service-grant), [Custodian device](protocol/README.md#custodian-device)).
+- Certificates, revocations, revisions, invites and grants are signed by devices or a master key, so the server cannot forge them ([Signed objects](protocol/membership.md#signed-objects), [Service grant](protocol/README.md#service-grant)).
 - The link fingerprint covers the master key, so the server cannot give a device linked from a linked device another one ([Linking a device](protocol/membership.md#linking-a-device)).
 - The master backup is sealed in HPKE PSK mode with a key derived from the recovery key, so the server cannot give a device linked with the recovery key another master key ([Account](protocol/membership.md#account)).
 - Two valid revisions with the same number show a forked roster; the client keeps the one it accepted and warns its user ([Roster](protocol/membership.md#roster)).
@@ -59,7 +57,7 @@ Also whoever takes over the server or its database.
 - An attachment's `digest` keeps the server from swapping its blob ([Attachments](protocol/delivery.md#attachments)).
 - Receipt messages and replies are signed by the recipient device ([Receipts](protocol/delivery.md#receipts)); gap detection reports dropped messages ([Gap detection](protocol/delivery.md#gap-detection)).
 - A presence `revision` blocks a rollback for a reader that saw a newer value; `expires` bounds a replay ([Presence](protocol/agents.md#presence)).
-- The web build is reproducible, and `skald ui` serves it from a signed binary ([infrastructure.md, "Trust in builds"](dev/infrastructure.md#trust-in-builds)).
+- The web build is reproducible ([infrastructure.md, "Trust in builds"](dev/infrastructure.md#trust-in-builds)).
 
 ### A network observer
 Watches or alters traffic between devices and the server, or the channel an invite link is sent over.
@@ -75,18 +73,18 @@ Watches or alters traffic between devices and the server, or the channel an invi
 - An invite's secret travels only in the link's fragment, which never reaches the server ([Invite](protocol/membership.md#invite)).
 
 ### The IdP or GitHub
-The provider that signs users in (GitHub, Google, an OIDC IdP), and GitHub as the host of SSH keys and Actions.
+The provider that signs users in (GitHub, Google), and GitHub as the host of SSH keys and Actions.
 
 **Can:**
-- Sign in as a user and do what the server allows without the user's keys: register devices no linked device certifies, see the web UI's non-secret sections, and revoke the user's invites, sessions and tokens ([features.md §12](dev/features.md#12-web-ui)).
+- Sign in as a user and do what the server allows without the user's keys: register devices no linked device certifies, see the web UI's non-secret sections, and revoke the user's invites, sessions and tokens.
 - GitHub: list an SSH key of its choice as the user's, so a device key signed with it passes the SSH signature check, or a genuine one fails it as a key change ([Device certificate](protocol/membership.md#device-certificate)).
 - GitHub: read the CI secrets it stores: [A leaked CI secret](#a-leaked-ci-secret).
-- GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([features.md §9](dev/features.md#9-end-to-end-encrypted-service-and-ci-agents)).
+- GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([architecture.md, "Components"](dev/architecture.md#components)).
 
 **Defenses:**
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
-- Sign-in methods are linked explicitly; accounts are never merged by email ([features.md §5](dev/features.md#5-identity)).
+- Sign-in methods are linked explicitly; accounts are never merged by email.
 - A task from a comment runs at the `service` trust level, in its restricted mode ([Trust levels](protocol/membership.md#trust-levels), [Policy](protocol/membership.md#policy)).
 
 ### A stolen device
@@ -112,7 +110,7 @@ An attacker holding a revoked device's keys and disk, such as a sold laptop or a
 
 **Can:**
 - Read a channel until a member device that holds its revocation commits its Remove, or the empty Commit for a browser; the server delays this by withholding the revocation ([membership.md](protocol/membership.md#security-considerations)).
-- Keep the history, queue and presence keys of the epochs it held, and read the history, tasks and presence values sealed under them if it has or gets them ([features.md §4](dev/features.md#4-mls-group-encryption), [queues.md](protocol/queues.md#security-considerations), [agents.md](protocol/agents.md#security-considerations)).
+- Keep the history, queue and presence keys of the epochs it held, and read the history, tasks and presence values sealed under them if it has or gets them ([Trade-offs](#trade-offs), [queues.md](protocol/queues.md#security-considerations), [agents.md](protocol/agents.md#security-considerations)).
 - With the server: rejoin a channel while the server keeps its revocation from a member device that did not process its Remove, such as one that joined later, whose links then open to it keys of epochs after the Remove; and read tasks sealed after the Remove by a device outside the group that the server keeps from its revocation ([membership.md](protocol/membership.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
 - Unless a master-key revocation marks it as stolen: revoke the account's other devices, since its revocations count whether or not it is revoked itself, and, as a `client` device, have its anchors objects count for a device linked with the recovery key ([Revocation](protocol/membership.md#revocation), [Anchors](protocol/membership.md#anchors)).
 
@@ -135,7 +133,7 @@ An account an admin removed from a space, with its devices.
 **Defenses:**
 - Its devices are not admitted: member devices remove them and send nothing in the channel until they are gone ([Admitted devices](protocol/membership.md#admitted-devices)).
 - Once its devices are out of a channel's group, recipients reject its content there, it claims no task, and its tasks stay unrun ([Envelope](protocol/README.md#envelope), [Claim checks](protocol/queues.md#claim-checks), [queues.md](protocol/queues.md#security-considerations)).
-- A revision lists service agents only on members' accounts, so its service agents leave the roster with it ([Roster](protocol/membership.md#roster)). Delegations it signed fail, and so do grants it signed as an admin ([Custodian device](protocol/README.md#custodian-device), [Service grant](protocol/README.md#service-grant)).
+- A revision lists service agents only on members' accounts, so its service agents leave the roster with it ([Roster](protocol/membership.md#roster)). Grants it signed as an admin fail ([Service grant](protocol/README.md#service-grant)).
 
 ### A member acting against others
 A member of a space, with valid devices.
@@ -156,7 +154,7 @@ A member of a space, with valid devices.
 - A device it adds that is not admitted is removed; the others send nothing until then and warn their users ([Admitted devices](protocol/membership.md#admitted-devices)).
 - It puts no question on another person's devices: only an agent of the person asks the person ([`ask_user`](protocol/agents.md#ask_user)).
 - A wrong link, wrap or queue key object breaks availability, not authenticity: every history entry is signed, and member devices warn about a wrong queue key object ([History entry](protocol/membership.md#history-entry), [Queue key object](protocol/queues.md#queue-key-object)).
-- Presence storage stays bounded: the server keeps one value per device and channel, up to 65552 bytes of `ct` ([Presence](protocol/agents.md#presence)), and the cloud caps devices per member ([features.md, "Product"](dev/features.md#product)). Nothing limits the upload rate yet.
+- Presence storage stays bounded: the server keeps one value per device and channel, up to 65552 bytes of `ct` ([Presence](protocol/agents.md#presence)), and the cloud caps devices per member ([Cloud limits](dev/architecture.md#cloud-limits)). Nothing limits the upload rate yet.
 
 ### An admin acting against others
 An admin of a space, with valid devices.
@@ -166,7 +164,7 @@ An admin of a space, with valid devices.
 - Sign revisions: add and remove members, admins included, change roles, exclude a member's devices, add channels and channel members, add service agents on members' accounts ([Roster](protocol/membership.md#roster)).
 - Add itself to any channel of the space with history access, and read its earlier history ([Roster](protocol/membership.md#roster), [Access](protocol/membership.md#access)).
 - Replace a member's `master` in the roster, so other members accept devices certified under the new key as that member's ([Roster](protocol/membership.md#roster), [Device checks](protocol/membership.md#device-checks)).
-- Change the policy: the restricted mode of each trust level, `full` for all included; the history key's longest age, down to one day; the edit-coordination action; managed-keys mode and the auditor device ([Policy](protocol/membership.md#policy)).
+- Change the policy: the restricted mode of each trust level, `full` for all included, and the history key's longest age, down to one day ([Policy](protocol/membership.md#policy)).
 - Sign invites with any role and channels ([Invite](protocol/membership.md#invite)), and grants that let `service` devices send in channels ([Service grant](protocol/README.md#service-grant)).
 - Change or delete any queue of the space, and restart or cancel any of its tasks ([Queues](protocol/queues.md#queues), [Task states](protocol/queues.md#task-states)).
 
@@ -174,10 +172,9 @@ An admin of a space, with valid devices.
 - It sends only as agents of its own account and certifies no device under another account's master key ([Envelope](protocol/README.md#envelope), [Device checks](protocol/membership.md#device-checks)).
 - Clients warn their users when a member's `master` changes in the roster ([Device checks](protocol/membership.md#device-checks)).
 - Every change is a signed revision chained to the previous one by its hash; the server keeps every revision ([Roster](protocol/membership.md#roster)).
-- Clients show their users every `custodian` and `auditor` device in their channels. A channel admits one only when the signed mode of every space of the channel allows it, so in a shared channel the other space's admin must agree ([Custodian, auditor and federation](protocol/README.md#custodian-auditor-and-federation)).
 
 ### A malicious sender
-Anyone who sends to an agent: a member, a member of the other space of a shared channel, a service agent, or an agent prompt injection steers.
+Anyone who sends to an agent: a member, a service agent, or an agent prompt injection steers.
 
 **Can:**
 - Put text and files into the recipient agent's context that try to steer it: [Prompt injection and loops](#prompt-injection-and-loops).
@@ -192,7 +189,7 @@ Anyone who sends to an agent: a member, a member of the other space of a shared 
 - A recipient device fetches no URL the sender wrote: attachments carry a blob ID ([Attachments](protocol/delivery.md#attachments)).
 
 ### A leaked CI secret
-A service agent's server token, and its device key with the token: they usually sit in one CI secret ([features.md §9](dev/features.md#9-end-to-end-encrypted-service-and-ci-agents)).
+A service agent's server token, and its device key with the token: they usually sit in one CI secret.
 
 **Can, with the token alone:**
 - Trigger the `ask-user` notifications of the service agent's person, without content, within the server's rate limits ([agents.md](protocol/agents.md#security-considerations)).
@@ -208,35 +205,7 @@ A service agent's server token, and its device key with the token: they usually 
 - A `service` device releases, restarts and cancels no task, so neither leak makes an `at-most-once` task run twice ([Claims and leases](protocol/queues.md#claims-and-leases), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device sends only as its roster entry, only in its grant's channels until the grant expires, and never answers a question ([Envelope](protocol/README.md#envelope), [Service grant](protocol/README.md#service-grant), [Person](protocol/agents.md#person)).
 - Its tasks run at the `service` trust level, `read-only` in a new space's policy ([Trust levels](protocol/membership.md#trust-levels), [Policy](protocol/membership.md#policy)).
-- Once the service device is revoked, clients that hold its revocation trust it no more, and it claims no task ([Device checks](protocol/membership.md#device-checks), [Claim checks](protocol/queues.md#claim-checks)); a token has scopes and an expiry and is revoked in the web UI ([features.md §9](dev/features.md#9-end-to-end-encrypted-service-and-ci-agents)).
-
-### The custodian and auditor devices
-Devices that read a space besides its members' own: the server's `custodian` device in managed-keys mode ([features.md §13](dev/features.md#13-managed-keys-mode)), and an organization admin's `auditor` device (`ee/`).
-
-**The `custodian` device can:**
-- Read every channel that admits it, their history and presence ([Custodian device](protocol/README.md#custodian-device), [Presence](protocol/agents.md#presence)).
-- Send, enqueue tasks and ask questions as the agents members delegate to it, at the `service` trust level, until each delegation expires or its signing device is revoked; list them in its presence with any status and `note` ([Custodian device](protocol/README.md#custodian-device), [Trust levels](protocol/membership.md#trust-levels), [agents.md](protocol/agents.md#security-considerations)).
-- Send prompt injection as those agents: [Prompt injection and loops](#prompt-injection-and-loops).
-- Load the server and other members' devices with presence uploads, as [a member](#a-member-acting-against-others) does ([Presence](protocol/agents.md#presence)).
-- Claim and run tasks and return any result, and release one it started, so an `at-most-once` task runs again ([queues.md](protocol/queues.md#security-considerations)).
-- Upload a wrong link, wrap or queue key object first, so history, or tasks that non-member `service` devices seal, become unreadable ([membership.md](protocol/membership.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
-- Make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one ([membership.md](protocol/membership.md#security-considerations)).
-- Commit the Add of a device the channel does not admit, in any channel it is a member device of, even one its account is not in ([Commit ordering](protocol/membership.md#commit-ordering), [Admitted devices](protocol/membership.md#admitted-devices)).
-
-**The `auditor` device can:**
-- Read every channel of the organization's spaces that admits it, their history and presence ([Custodian, auditor and federation](protocol/README.md#custodian-auditor-and-federation), [Presence](protocol/agents.md#presence)).
-- Upload a wrong link, wrap or queue key object first, so history, or tasks that non-member `service` devices seal, become unreadable ([membership.md](protocol/membership.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
-- Make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one ([membership.md](protocol/membership.md#security-considerations)).
-- Commit the Add of a device the channel does not admit, in any channel it is a member device of, even one its account is not in ([Commit ordering](protocol/membership.md#commit-ordering), [Admitted devices](protocol/membership.md#admitted-devices)).
-
-**Defenses:**
-- A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when it names that device; clients show every such device in their channels, and warn when one stops being admitted ([Custodian, auditor and federation](protocol/README.md#custodian-auditor-and-federation), [Admitted devices](protocol/membership.md#admitted-devices)).
-- A device either of them adds that is not admitted is removed; the others send nothing until then and warn their users ([Admitted devices](protocol/membership.md#admitted-devices)).
-- Neither certifies a device or signs a revision or revocation, though each is certified on a member's account ([Device certificate](protocol/membership.md#device-certificate), [Roster](protocol/membership.md#roster), [Revocation](protocol/membership.md#revocation)).
-- A `custodian` device sends only as delegated agents, never as a person, so it answers no question, and asks questions only of the members who delegated them ([Person](protocol/agents.md#person)). Recipients label its messages as sent by the server for the member, and allowlists treat it as a separate sender ([Custodian device](protocol/README.md#custodian-device)).
-- An `auditor` device sends no application message, seals and claims no task, and uploads no presence ([Envelope](protocol/README.md#envelope), [Queue key](protocol/queues.md#queue-key), [Claim checks](protocol/queues.md#claim-checks), [Presence](protocol/agents.md#presence)).
-- Neither gets other agents' questions or answers: they are not channel messages ([agents.md](protocol/agents.md#security-considerations)).
-- A wrong link, wrap or queue key object breaks availability, not authenticity: every history entry is signed, and member devices warn about a wrong queue key object ([History entry](protocol/membership.md#history-entry), [Queue key object](protocol/queues.md#queue-key-object)).
+- Once the service device is revoked, clients that hold its revocation trust it no more, and it claims no task ([Device checks](protocol/membership.md#device-checks), [Claim checks](protocol/queues.md#claim-checks)); a token has scopes and an expiry and is revoked in the web UI.
 
 ### An agent on the person's own device
 An agent session, such as Claude Code, on one of the person's `client` devices, possibly steered by prompt injection.
@@ -260,10 +229,9 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
 - IP addresses and times of connections;
-- queue names and settings, task tags and templates;
+- queue names and settings, task templates;
 - when presence changes, and its size in steps of 4 KB, not its value;
 - notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question;
-- HMAC fingerprints of edits;
 - space, channel and device identifiers;
 - which device messages whom;
 - message size and time;
@@ -271,19 +239,17 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - which envelopes ask for delivery statuses, so which are likely receipts, and which hold MLS handshake messages;
 - attachment sizes, uploads and downloads;
 - task scheduling fields and states, and which device enqueues, claims and completes each task;
-- quota counters;
-- each space's plan, member count and billing contact; card data stays with the payment provider.
+- quota counters.
 
 ## The server does not see
-Message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads, edited paths and code.
+Message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads and code.
 
 ## Trade-offs
 - HPKE messages (ephemeral agents, browser actions, `ask_user` questions and answers) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
-- in managed-keys mode the server reads the space and writes as the agents delegated to it; a delegation lasts until it expires or its signing device is revoked;
 - a leaked recovery key exposes the history;
-- the history is outside MLS forward secrecy: [features.md §4](dev/features.md#4-mls-group-encryption);
-- metadata is visible; sealed sender and padding come later;
-- on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](dev/infrastructure.md), "Trust in builds"), and `skald ui` serves it from a signed binary;
+- the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
+- metadata is visible;
+- on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](dev/infrastructure.md), "Trust in builds");
 - there has been no external crypto audit; the spec and threat model are public;
 - the limits of trust in devices, rosters and history: [protocol spec](protocol/membership.md#security-considerations).
 

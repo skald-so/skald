@@ -1,6 +1,6 @@
 # Edit comparison prototype
 
-A prototype of edit coordination ([features.md §11](features.md#11-cross-machine-edit-coordination); Story 5 in [task.md](../../task.md)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
+The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
 - Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
@@ -34,16 +34,16 @@ A prototype of edit coordination ([features.md §11](features.md#11-cross-machin
 | `server_receives_and_keeps_nothing_of_the_exchanged_changes` | During the check of both machines the server receives nothing and keeps what it kept; nothing it received or keeps holds a path, file or directory name or line of the changes |
 
 ## Questions
-The prototype answers these questions of [features.md §11](features.md#11-cross-machine-edit-coordination), "To decide", in the iteration given:
-| Question | Iteration |
+Open questions of edit comparison, and how the prototype answers them:
+| Question | How |
 |---|---|
-| Data source: diff, hooks or declarations | 5.8; the earlier ones use the diff |
-| When to warn | 5.5: warnings at each level against `git merge-tree` conflicts |
-| Reservation TTL | 5.5: how long each side of a merge lived |
-| How to catch edits made via Bash and generators | 5.8 |
-| Path normalization | 5.7 |
-| Noise from lockfiles and migrations | 5.6 |
-| Whether intents like "replacing / extending" are needed | 5.5: whether both sides of a warning only add lines |
+| Data source: diff, hooks or declarations | Open; the prototype uses the diff so far |
+| When to warn | Warnings at each level against `git merge-tree` conflicts |
+| Reservation TTL | How long each side of a merge lived |
+| How to catch edits made via Bash and generators | Open |
+| Path normalization | Open |
+| Noise from lockfiles and migrations | Open |
+| Whether intents like "replacing / extending" are needed | Whether both sides of a warning only add lines |
 
 ## File fingerprints
 - **Edit set:** `git diff --no-renames --name-only <merge base>` against the working tree, and `git ls-files --others --exclude-standard`.
@@ -51,7 +51,7 @@ The prototype answers these questions of [features.md §11](features.md#11-cross
   - A machine leaves an overlap only once it fetches the merge of its changes; until then the server keeps its old fingerprints.
   - `--no-renames` lists a rename as a deletion and an addition, so both paths count without rename detection and its similarity threshold.
   - Ignored files, such as build output, are not edits.
-- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit path"`, the scope and the path, each after its length as a big-endian `u64`; 32 bytes per path. The path is as git gives it: relative to the root, with `/` separators, not normalized (5.7).
+- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit path"`, the scope and the path, each after its length as a big-endian `u64`; 32 bytes per path. The path is as git gives it: relative to the root, with `/` separators, not normalized.
 - **Scope:** the least root commit of the upstream's default branch.
   - Every clone has it without setup. It goes only into the HMAC; the server never sees it.
   - Rejected: the remote URL, which differs between HTTPS and SSH and for mirrors; a random ID per repository, which needs a step on each machine.

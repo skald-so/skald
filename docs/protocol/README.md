@@ -21,7 +21,6 @@ Documents:
 - [Encoding](#encoding)
 - [Protocol version](#protocol-version)
 - [A2A extension](#a2a-extension)
-- [Custodian, auditor and federation](#custodian-auditor-and-federation)
 - [Related work](#related-work)
 - [Security considerations](#security-considerations)
 
@@ -50,7 +49,7 @@ Documents:
 | Claim of a task | ID (`claim_id`) | Server, at the claim |
 
 - A service agent holds its own key, so it is also a device, with a device ID.
-- Every device has a kind, fixed in its [certificate](membership.md#device-certificate): `client` (a `skald` installation), `browser` (a linked browser), `service` (a service agent), `custodian` or `auditor` ([below](#custodian-auditor-and-federation)).
+- Every device has a kind, fixed in its [certificate](membership.md#device-certificate): `client` (a `skald` installation), `browser` (a linked browser) or `service` (a service agent).
 
 ## Agent address
 An address names an agent on any server: `acme/alice/claude-api@skald.example`.
@@ -97,7 +96,7 @@ scheme = &(mls: 1, hpke: 2)
 ```
 
 - `v`: the protocol version of the sending device.
-- `space`: the space the sending device sends from; in a shared channel, the sender's side.
+- `space`: the space the sending device sends from.
 - `msg_id`: unique per sending device; a retried send keeps it, and the per-device envelopes of one `hpke` message share it.
 - `scheme`: how the payload is encrypted: [`mls`](#scheme-mls) or [`hpke`](#scheme-hpke).
 - `recipients`: absent, the envelope goes to every member device of the channel except the sending one. Under `mls`, application messages always go to the whole channel, and `recipients` reaches devices outside the group, such as a joining device receiving an MLS Welcome. Under `hpke`, it holds exactly one device.
@@ -107,10 +106,10 @@ scheme = &(mls: 1, hpke: 2)
 
 A recipient routes by the header but trusts only what the payload authenticates. It MUST reject an application message unless:
 1. the payload authenticates the sending device as its scheme says: [`mls`](#scheme-mls), [`hpke`](#scheme-hpke);
-2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), a `custodian` device only as an agent delegated to it ([Custodian device](#custodian-device)), an `auditor` device sends no application message, and only a `client` or `browser` device sends as a [person](agents.md#person);
+2. the content's `from` is an agent of the sending device's account; a `service` device sends only as itself ([Roster](membership.md#roster)), and only a `client` or `browser` device sends as a [person](agents.md#person);
 3. the sender may send in `channel`:
    - a `service` device: its content carries a [grant](#service-grant) for `channel`;
-   - any other device: the account that owns `from` is a member of `channel`, that is, one of its `client` devices is in the channel's MLS group; for a `custodian` device, that is the delegating member's account;
+   - any other device: the account that owns `from` is a member of `channel`, that is, one of its `client` devices is in the channel's MLS group;
 4. the A2A `messageId` is `msg_id` in text form.
 
 A recipient outside the channel's MLS group, such as a linked browser, takes the group's members from the latest GroupInfo with the ratchet tree [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §12.4.3], signed by a member device.
@@ -156,7 +155,7 @@ content = {
   4 => uint,           ; hops: hop counter, for loop protection
   ? 5 => id,           ; reply_to: msg_id of the message this one answers
   $$body,
-  ? 7 => delegation,   ; only from a custodian device
+  ? 7 => delegation,   ; reserved
   ? 8 => grant,        ; only from a service device
   ? 10 => [+ attachment], ; only with a body that holds an A2A message
   * int => any,        ; fields of later versions
@@ -169,7 +168,7 @@ $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 - `to`: absent, the message is for every agent in the channel.
 - `counter`: 1 for the first application message a device sends in a channel, one more for each next one; used by [gap detection](delivery.md#gap-detection). Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
 - `hops`: 0 for a message a human asked for; a message an agent sends in reaction to another carries that message's `hops` plus one.
-- `delegation`: required in content from a `custodian` device, absent otherwise: [Custodian device](#custodian-device).
+- `delegation`: [Delegation](#delegation).
 - `grant`: required in content from a `service` device, absent otherwise: [Service grant](#service-grant).
 - `attachments`: the encrypted files the A2A message refers to: [Attachments](delivery.md#attachments).
 - A content carries exactly one body. Other bodies, such as [receipts](delivery.md#receipts) and [tasks](queues.md#tasks), get their own keys.
@@ -198,6 +197,29 @@ A recipient MUST reject content from a `service` device unless:
 2. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of an admin of `space`, and `signature` verifies with its certificate;
 3. `expires` has not passed.
 
+### Delegation
+Content field 7 is reserved for a later version. Its format:
+
+```cddl
+delegation = [
+  body: bstr .cbor delegation-body,
+  signature: bstr .size 64,
+]
+
+delegation-body = {
+  1 => address,        ; agent
+  2 => id,             ; custodian
+  3 => id,             ; signer
+  4 => uint,           ; expires: seconds since the Unix epoch
+  * int => any,        ; fields of later versions
+}
+```
+
+A decoder MUST reject:
+- content with both `delegation` and `grant`, or whose `from` is not the delegation's `agent`;
+- a `delegation-body` whose `agent` is a [person address](agents.md#person), or whose `signer` is its `custodian`;
+- an [HPKE plaintext](#scheme-hpke) whose content's delegation names in `custodian` a device other than `sender`.
+
 ## Encoding
 - API: JSON over HTTPS, described by the OpenAPI spec, [api/openapi.json](../../api/openapi.json).
 - CBOR data items, such as envelopes, travel as the same bytes on every transport:
@@ -216,7 +238,7 @@ A recipient MUST reject content from a `service` device unless:
 - Each version pins one A2A version ([A2A extension](#a2a-extension)). A new version moves only to an A2A version whose messages the previous one reads.
 
 ### Stating the version
-- HTTPS: every request a Skald client (`skald`, the web app, an SDK) makes to the API carries `Skald-Protocol-Version: <n>`. Requests that do not depend on the protocol carry none, and the server does not check it on them:
+- HTTPS: every request a Skald client (`skald` or the web app) makes to the API carries `Skald-Protocol-Version: <n>`. Requests that do not depend on the protocol carry none, and the server does not check it on them:
   - `/health` and `/openapi.json`;
   - what a browser opens or is redirected to: web pages and their static files, sign-in, OAuth and OIDC callbacks, the device flow verification page;
   - downloads: install scripts and binaries.
@@ -276,44 +298,6 @@ Skald is an extension of A2A [[A2A 1.0](https://a2a-protocol.org/v1.0.0/specific
 | `role` | `ROLE_USER` from the agent that started the context, `ROLE_AGENT` from the agent answering it |
 | `taskId`, `referenceTaskIds`, `extensions`, `metadata` | Carried unchanged |
 
-## Custodian, auditor and federation
-Version 1 already has what these need: enabling them changes neither the envelope nor the content and needs no new version.
-
-- **Device kinds.** Clients of version 1 know all five kinds and MUST show their users every `custodian` and `auditor` device in their channels.
-- **Space mode.** A space admin signs the space's mode: whether it is in managed-keys mode, and which `auditor` device, if any, reads it. Members see it. Format: [Policy](membership.md#policy).
-- **Admission.** A channel admits a `custodian` device only when the signed mode of every space of the channel is managed-keys, and an `auditor` device only when the signed mode of every space of the channel names it: of both spaces, for a shared channel. A device the channel does not admit is handled as in [Admitted devices](membership.md#admitted-devices).
-- **Custodian device:** [below](#custodian-device).
-- **Auditor device** (`ee/`): a device of kind `auditor` on an organization admin's account, a member of every channel of the organization's spaces that admits it. It decrypts like any member device and sends no application message.
-- **Federation** ([features.md §15](../dev/features.md#15-server-federation)): addresses carry the server name; IDs do not collide across servers; servers forward envelopes as received bytes. Federation adds an API between servers, not a change for clients. A server MUST refuse an ID from another server that collides with one it knows.
-
-### Custodian device
-A device of kind `custodian` that the server runs for spaces in managed-keys mode ([features.md §13](../dev/features.md#13-managed-keys-mode)). It decrypts like any member device and sends only as agents that members delegate to it, such as their hosted MCP agents.
-
-A member delegates an agent by signing a delegation on one of their `client` or `browser` devices. The custodian puts it in every content it sends as that agent.
-
-```cddl
-delegation = [
-  body: bstr .cbor delegation-body,
-  signature: bstr .size 64,  ; by `signer`, over ["skald delegation", body]
-]
-
-delegation-body = {
-  1 => address,        ; agent: the delegated agent
-  2 => id,             ; custodian: the custodian device
-  3 => id,             ; signer: the member's device
-  4 => uint,           ; expires: seconds since the Unix epoch
-  * int => any,        ; fields of later versions
-}
-```
-
-A recipient MUST reject content from a `custodian` device unless:
-1. the channel [admits](#custodian-auditor-and-federation) the custodian;
-2. the content's `delegation` names `from` as `agent` and the sending device as `custodian`;
-3. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of the member whose handle is the owner in `from`, and `signature` verifies with its certificate;
-4. `expires` has not passed.
-
-A recipient MUST label every message from a `custodian` device as sent by the server for the member, apart from the member's own messages. Allowlists treat it as a separate sender: an entry that admits an agent does not admit the custodian sending as that agent.
-
 ## Related work
 
 ### draft-chapman-a2a-mls
@@ -348,7 +332,7 @@ Differs:
 - **Names on the wire.** SLIM's routing nodes route by endpoint names. Skald's server routes by space, channel and device IDs; agent names stay inside the ciphertext.
 - **Membership.** A moderator application invites and removes members. In Skald, space roles and the signed roster decide, and the server orders Commits.
 - **Encoding.** Protocol Buffers over gRPC or WebSocket, with A2A as RPC over SLIM sessions. Skald uses deterministic CBOR and carries A2A messages asynchronously.
-- **Deployment.** SLIM runs a network of routing nodes and an optional control plane. Skald runs one server with PostgreSQL; federation links servers.
+- **Deployment.** SLIM runs a network of routing nodes and an optional control plane. Skald runs one server with PostgreSQL.
 
 The two are not wire-compatible; a bridge that is a member on both sides could relay between them.
 

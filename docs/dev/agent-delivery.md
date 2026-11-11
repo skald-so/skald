@@ -1,6 +1,6 @@
 # Delivery to agents: prototypes
 
-Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex (Story 4 in [task.md](../../task.md)).
+Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)).
 
 ## Checks
 Each path's section answers, for each agent:
@@ -18,7 +18,7 @@ Each path's section answers, for each agent:
 ## Prototypes
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex` or `channel claude`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. Their rules, with `--all` and `--real`: [task.md, iteration 4.1](../../task.md#iteration-41-prototype-harness-and-the-mcp-inbox-path).
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex` or `channel claude`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub).
 
 ## Model stub
 Both CLIs accept a custom model endpoint, so every check runs on the stub unless `--real` is given. The stub:
@@ -34,7 +34,7 @@ The CLI on the stub gets only these variables:
 | Codex | `PATH`; `HOME` and `CODEX_HOME`, empty temporary directories; `SKALD_STUB_API_KEY`, the placeholder | a `stub` model provider given with `-c`: `base_url` the stub, `env_key = "SKALD_STUB_API_KEY"`, `wire_api = "responses"` |
 
 ## Session config
-With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home, as [task.md, iteration 4.1](../../task.md#iteration-41-prototype-harness-and-the-mcp-inbox-path) says. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`. With `--real`, Claude Code in `inbox claude` and `channel claude` gets none of the variables that would sign it in other than with the owner's subscription: every `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`.
+With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`. With `--real`, Claude Code in `inbox claude` and `channel claude` gets none of the variables that would sign it in other than with the owner's subscription: every `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`.
 
 Each [`inbox`](#mcp-inbox) session, on the stub and with `--real`, gets these flags:
 
@@ -155,7 +155,7 @@ Claude Code needs:
 - the development channel warning answered at each start, and the trust dialog in a new directory;
 - a sign-in: an API key and a Claude account both work ([docs](https://code.claude.com/docs/en/channels.md): claude.ai or Console, not Bedrock, Vertex or Foundry); on claude.ai Team and Enterprise, an owner turns on `channelsEnabled`.
 
-A plugin (Story 19) can ship the channel: the server goes in the plugin's `.mcp.json`. Checked by hand on the stub, with the plugin loaded by `--plugin-dir` as `skald@inline` and a message waiting:
+The Claude Code plugin can ship the channel: the server goes in the plugin's `.mcp.json`. Checked by hand on the stub, with the plugin loaded by `--plugin-dir` as `skald@inline` and a message waiting:
 - `--channels plugin:skald@inline`: the startup notice says "not on the approved channels allowlist"; the message is handed over and never reaches the model;
 - `--dangerously-load-development-channels plugin:skald@inline`: after the warning, it reaches the model with `source="plugin:skald:skald"`.
 
@@ -167,7 +167,7 @@ Findings:
 - Unattended sessions need the dialogs answered by code, as the check does.
 
 ## Manual check
-Steps that need a person, left to the story's Manual check:
+Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
 - Claude Code, an interactive session with the server in the project's `.mcp.json` and without `permissions.allow`: whether it asks to approve the server and each `inbox` call.
 - Codex, an interactive session without `default_tools_approval_mode`: whether it asks to approve each `inbox` call.
 - Codex signed in with ChatGPT: whether `live-check inbox codex --real` passes, with and without `--model gpt-5.5`. Only the owner changes a CLI's sign-in.

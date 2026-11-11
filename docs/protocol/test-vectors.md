@@ -5,7 +5,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - Each vector is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
-- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the service and custodian device from "TEST 3".
+- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant and of the delegation from "TEST 3".
 - The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's [`stored` frame](delivery.md#frames), and its `delivery-status` for `delivered` and `expired`. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
