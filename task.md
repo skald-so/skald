@@ -40,6 +40,7 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 | 63 | Notifications to people | MVP | 18, 21, 22, 26, 35, 41 |
 | 66 | Restricted mode for tasks from other people | MVP | 19, 20, 21, 26 |
 | 36 | GitHub Action | MVP | 14, 35, 65, 66 |
+| 43 | Gemini, Cursor, OpenCode and Copilot adapters | MVP | 15, 24 |
 | 29 | End-to-end MVP scenario | MVP | 9, 18, 21, 23, 24, 26, 27, 28, 36, 41, 63, 65, 66 |
 | 30 | Admin rights transfer and account deletion | MVP | 13, 16, 17, 22 |
 | 31 | Load testing | MVP | 21, 25 |
@@ -53,7 +54,6 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 | 39 | Shared channels between organizations | Post-MVP | 13, 22, 68 |
 | 40 | Corporate IdP sign-in | Post-MVP | 9 |
 | 42 | Shared team instructions | Post-MVP | 19, 20 |
-| 43 | Gemini, Cursor, OpenCode and Copilot adapters | Post-MVP | 15, 24 |
 | 44 | Edit coordination: file level | Post-MVP | 5, 19, 20, 26, 65 |
 | 45 | Edit coordination: hunk and symbol | Post-MVP | 44 |
 | 46 | Web: security center, human inbox, edit map | Post-MVP | 18, 27, 41, 44 |
@@ -87,9 +87,9 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - Wave 8: 15, 17, 35.
 - Wave 9: 18, 19, 20, 21, 23, 26, 30.
 - Wave 10: 24, 27, 31, 34, 41, 65, 66.
-- Wave 11: 28, 32, 36, 63.
+- Wave 11: 28, 32, 36, 43, 63.
 - Wave 12: 29 — end of MVP.
-- Wave 13: 37, 38, 40, 42, 43, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67, 68.
+- Wave 13: 37, 38, 40, 42, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67, 68.
 - Wave 14: 39, 45, 46, 48, 50, 57, 61.
 - Wave 15: 51, 52, 60.
 
@@ -1136,6 +1136,20 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Depends on:** Story 14, Story 35, Story 65, Story 66
 - **Docs:** `features.md` §2, §9, §16, `architecture.md` — "Components", "Security"
 
+### Story 43: Gemini, Cursor, OpenCode and Copilot adapters
+
+**Goal:** Messages reach live Gemini CLI, Cursor, OpenCode and Copilot sessions.
+
+**Scope:**
+- Their paths in `architecture.md`, "Delivery to agents", first checked on current CLI versions with live checks, as Story 4 does for Claude Code and Codex.
+- `skald connect` finds these agents and, after confirmation, connects them.
+- e2e tests against real CLIs.
+- **Done when:** a message reaches a live session of each of the four agents.
+
+- **Release:** MVP
+- **Depends on:** Story 15, Story 24
+- **Docs:** `features.md` §7, `architecture.md` — "Components", "Delivery to agents"
+
 ### Story 29: End-to-end MVP scenario
 
 **Goal:** The MVP demo passes in full, automatically, on real agents.
@@ -1331,20 +1345,6 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Release:** Post-MVP
 - **Depends on:** Story 19, Story 20
 - **Docs:** `features.md` §8, "Out of scope"
-
-### Story 43: Gemini, Cursor, OpenCode and Copilot adapters
-
-**Goal:** Messages reach live Gemini CLI, Cursor, OpenCode and Copilot sessions.
-
-**Scope:**
-- Their paths in `architecture.md`, "Delivery to agents".
-- `skald connect` finds these agents and, after confirmation, connects them.
-- e2e tests against real CLIs.
-- **Done when:** a message reaches a live session of each of the four agents.
-
-- **Release:** Post-MVP
-- **Depends on:** Story 15, Story 24
-- **Docs:** `features.md` §7, `architecture.md` — "Components", "Delivery to agents"
 
 ### Story 44: Edit coordination: file level
 
