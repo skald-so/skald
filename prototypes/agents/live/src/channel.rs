@@ -860,6 +860,10 @@ mod tests {
         assert!(screen.showed("abcdde f"));
         assert!(!screen.showed("x"));
         assert!(!screen.showed("Bc"));
+        // Spaces and control characters do not count.
+        let mut screen = Screen::default();
+        screen.feed(b"a b\x08\tc\r\n");
+        assert!(screen.showed("abc"));
     }
 
     // Hook inputs recorded from Claude Code 2.1.322, shortened.
