@@ -11,6 +11,9 @@ use skald_proto::PROTOCOL_VERSION;
 /// The range the server accepts: N = 3, N−1 = 2.
 const RANGE: &str = "2-3";
 
+/// A `protocol-too-old` problem details object.
+const TOO_OLD: &str = r#"{"type":"https://skald.so/problems/protocol-too-old","title":"Please update skald","status":400,"detail":"This server accepts protocol versions 2 and 3; the request stated 1.","supported":[2,3]}"#;
+
 fn status(url: &str, versions: Option<&str>) -> Output {
     skald(&["status", "--server", url], versions)
 }
@@ -164,9 +167,11 @@ fn refusal_of_the_websocket_is_reported() {
 
 #[test]
 fn answer_outside_the_protocol_is_reported() {
-    let answers: [fn(&str) -> String; 2] = [
+    let answers: [fn(&str) -> String; 3] = [
         |_| response("404 Not Found", "text/plain", "not found"),
         |_| response("400 Bad Request", "application/problem+json", "not JSON"),
+        // A problem's fields count only in a problem details object.
+        |_| response("400 Bad Request", "application/json", TOO_OLD),
     ];
     for answer in answers {
         let stub = Stub::start(answer);
@@ -180,6 +185,28 @@ fn answer_outside_the_protocol_is_reported() {
         assert_eq!(output.stdout, stdout);
         assert!(output.stderr.starts_with(stderr), "{:?}", output.stderr);
     }
+}
+
+/// A server that answers `protocol-too-new` while it lists the stated version: the client does not
+/// state it again.
+#[test]
+fn too_new_listing_the_stated_version_says_the_server_is_older() {
+    let stub = Stub::start(|_| {
+        response(
+            "400 Bad Request",
+            "application/problem+json",
+            r#"{"type":"https://skald.so/problems/protocol-too-new","supported":[2,3]}"#,
+        )
+    });
+    let url = &stub.url;
+
+    let output = status(url, Some("3"));
+
+    let stdout = format!("Server {url}: reachable\nProtocol: incompatible\n");
+    let stderr = "skald: the server is older than this skald: it accepts protocol versions 2 and 3; \
+                  this skald speaks protocol version 3\n";
+    assert_output(&output, false, &stdout, stderr);
+    assert_eq!(stub.requests().len(), 1);
 }
 
 #[test]

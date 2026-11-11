@@ -3,11 +3,9 @@
 mod connection;
 
 use std::process::ExitCode;
-use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use connection::{Connection, Versions, WebSocket};
-use tungstenite::stream::MaybeTlsStream;
+use connection::{Connection, Versions};
 
 /// Message broker and task queue for AI agents.
 #[derive(Parser)]
@@ -58,7 +56,8 @@ fn status(server: &str, speaks: Versions) -> ExitCode {
     let result = connection
         .get("/protocol")
         .and_then(|_| connection.open_websocket("/ws"))
-        .map(close);
+        // The WebSocket carries nothing yet: it closes on drop.
+        .map(drop);
     match result {
         Ok(()) => {
             println!("Server {server}: reachable");
@@ -83,15 +82,5 @@ fn status(server: &str, speaks: Versions) -> ExitCode {
             eprintln!("skald: {err}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// Closes `socket`, waiting a few seconds for the server to close it too.
-fn close(mut socket: WebSocket) {
-    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    }
-    if socket.close(None).is_ok() {
-        while socket.read().is_ok() {}
     }
 }
