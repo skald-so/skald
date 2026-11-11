@@ -2,10 +2,15 @@
 # the caller removes the container with postgres_stop, e.g. in its EXIT trap.
 
 # postgres_start: starts the container and sets $postgres to its ID.
-# 19rc1 until PostgreSQL 19.0 is released.
+# 19rc1 until PostgreSQL 19.0 is released. The data lives in a tmpfs: a volume would outlive
+# `docker rm --force`.
 postgres_start() {
-  postgres=$(docker run --detach --rm --env POSTGRES_PASSWORD=skald --publish 127.0.0.1::5432 \
-    postgres:19rc1 -c fsync=off)
+  postgres=$(docker run --detach --rm --tmpfs /var/lib/postgresql --env POSTGRES_PASSWORD=skald \
+    --publish 127.0.0.1::5432 postgres:19rc1 -c fsync=off)
+  if [[ -n $(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$postgres") ]]; then
+    echo "script/${0##*/}: the PostgreSQL container has a volume" >&2
+    exit 1
+  fi
 }
 
 # postgres_wait: waits until PostgreSQL accepts connections, then exports SKALD_TEST_DATABASE_URL.
