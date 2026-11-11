@@ -4,12 +4,12 @@
 //! `app_server` module.
 
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::RecvTimeoutError;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,7 +24,7 @@ use serde_json::json;
 
 use crate::Result;
 use crate::pty::{Added, Env, Prepared};
-use crate::run::{finish, side_by_side, start};
+use crate::run::{finish, read_lines, side_by_side, start};
 
 /// The longest wait for a turn.
 const TURN: Duration = Duration::from_secs(120);
@@ -118,10 +118,8 @@ impl Check<'_> {
         let options = app_server::options(self.options.model, url.as_deref());
         let args = client(files, &Connect::Own(options), prompt);
         let mut delivery = run_client(self.client, &args, files, env, on_line)?;
-        delivery.stub = stub.map(Stub::log);
-        if let Some(stub) = &delivery.stub {
-            stub.save(&files.dir.join("stub.json"))?;
-        }
+        let path = files.dir.join("stub.json");
+        delivery.stub = stub.map(|stub| stub.saved_log(&path)).transpose()?;
         Ok(delivery)
     }
 
@@ -320,15 +318,7 @@ fn run_client(
         .stdout(Stdio::piped())
         .stderr(File::create(files.dir.join("client.stderr"))?)
         .spawn()?;
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let (lines, received) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
-            if lines.send((line, now_ms())).is_err() {
-                break;
-            }
-        }
-    });
+    let received = read_lines(child.stdout.take().expect("stdout is piped"));
     let mut log = File::create(files.dir.join("client.jsonl"))?;
     let mut delivery = Delivery::new(now_ms());
     let deadline = Instant::now() + TURN;

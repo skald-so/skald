@@ -805,12 +805,15 @@ impl Session {
     }
 }
 
+/// `ms` milliseconds as seconds, such as `1.5 s`.
+pub fn seconds(ms: u64) -> String {
+    format!("{:.1} s", ms as f64 / 1000.0)
+}
+
 /// How long after `from_ms` a message in `state` was handed over.
 pub fn handover_delay(state: Option<State>, from_ms: u64) -> String {
     match state {
-        Some(State::HandedOver { at_ms }) => {
-            format!("{:.1} s", at_ms.saturating_sub(from_ms) as f64 / 1000.0)
-        }
+        Some(State::HandedOver { at_ms }) => seconds(at_ms.saturating_sub(from_ms)),
         other => format!("never (state {other:?})"),
     }
 }

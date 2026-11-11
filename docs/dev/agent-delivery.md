@@ -327,7 +327,7 @@ The threads it starts run without a person under the most restrictive settings t
 - **D, a session a person works in, with `--all`:** an app-server listens on a Unix socket; Codex's terminal UI joins it with `--remote` in a pseudo-terminal of 200×50, with a prompt to reply `OK`. Once that turn ends, the client resumes the session's thread, found with `thread/list` by its directory and first prompt. D passes as A does, when the token reached the model in that thread and the terminal UI showed it.
 - **B, with `--all`:** before D's client, another client starts a thread of its own on that app-server, with its own message. B passes as A does, when its token reached neither D's thread nor D's terminal UI.
 
-App-server options: `--disable plugins`, then with `-c` `notify=[]`, `skills.include_instructions=false`, `model_reasoning_effort="low"` and `model` with `--model`; the one that listens also trusts D's project. The app-server has no option that ignores the user's config. Environment: on the stub, that of [Model stub](#model-stub), and `TERM` for the terminal UI; with `--real`, that of [Session config](#session-config). With `--real` the app-server loads the user's `config.toml` and starts its MCP servers; `-c mcp_servers={}` does not stop them (checked by hand on the stub).
+App-server options: `--disable plugins`, then with `-c` `notify=[]`, `skills.include_instructions=false`, `model_reasoning_effort="low"` and `model` with `--model`; the one that listens also trusts D's project. The app-server has no option that ignores the user's config. Environment: on the stub, that of [Model stub](#model-stub), and `TERM` for the terminal UI; with `--real`, that of [Session config](#session-config). With `--real` the app-server loads the user's `config.toml` and starts its MCP servers; `-c mcp_servers={}` does not stop them (checked by hand on the stub); `-c mcp_servers.<name>.enabled=false` stops the server `<name>`.
 
 Results on 2026-11-12, on Codex 0.162.1:
 
@@ -343,8 +343,8 @@ In the `--all` run, B's and D's messages were handed over and answered within 0.
 |---|---|
 | Idle session | Yes: `turn/start` starts a turn without a person |
 | Busy session | Yes, in the running turn: after `turn/steer`, the model gets the message once the running tool ends. A steer after the turn ended is refused with "no active turn to steer", and the message waits for a `turn/start`. A `turn/start` while a turn runs also adds to that turn and returns its ID (checked by hand on the stub) |
-| Delay | Handover: as soon as the app-server accepts the request; reaching the model: see the results |
-| In context | A user message with the text, as if the person typed it; the terminal UI shows it as the person's prompt. The sender label is only in the text's `from` |
+| Delay | Handover: as soon as the app-server accepts the request; answering: see the results |
+| In context | As for [`codex queue`](#codex-queue) |
 | Handover known | Yes, once the app-server accepts the request; the client also gets the agent's reply in that turn |
 | One of two sessions | Yes, by thread: on one app-server, B's message never reached D's thread |
 | Needs | See below |
@@ -354,11 +354,15 @@ Codex needs:
 - `initialize`, then `initialized`, on each connection;
 - the thread's ID: its own from `thread/start`, or that of the session a person works in. `thread/resume` subscribes the client to the thread's events; without it, a `turn/start` still reached the session, but the client got none of the turn's events (checked by hand on the stub);
 - for a thread without a person, the approval and sandbox settings above;
-- a sign-in for the app-server: a model provider's API key and an OpenAI API key work; ChatGPT is under [Manual check](#manual-check).
+- a sign-in for the app-server, as for [MCP `inbox`](#mcp-inbox).
 
 Findings:
 - The app-server reaches idle and busy threads and returns the agent's reply, so it can be the path to Codex threads that run without a person.
 - It reaches a session a person works in only when the session runs on an app-server the client can connect to, such as a terminal UI with `--remote`. A session with `--no-daemon` runs its own app-server on stdio, which nothing else reaches. Sessions on the user's shared background app-server were not checked: the check never connects to it.
+
+Open questions:
+- Codex 0.162.1 also has a `granular` approval policy, which allows or refuses each kind of approval request; it was not compared with `never`.
+- In D the client resumes a thread with the terminal UI's settings, `approvalPolicy: "on-request"`, and declines every request of the app-server. Whether an approval in a turn the client started goes to the client or to the terminal UI was not checked.
 
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):

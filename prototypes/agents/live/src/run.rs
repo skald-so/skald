@@ -1,8 +1,8 @@
 //! Starts the installed CLIs and reads their output; everything else is in the library.
 
 use std::io::{self, BufRead, BufReader, Write};
-use std::process::Stdio;
-use std::sync::mpsc;
+use std::process::{ChildStdout, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -198,6 +198,20 @@ fn read_hook_runs(run: &Run, runs: &mut HookRuns) {
     }
 }
 
+/// Reads `stdout` line by line in a thread of its own: each line with when it came, in
+/// milliseconds since the Unix epoch. The receiver disconnects at the end of `stdout`.
+pub fn read_lines(stdout: ChildStdout) -> Receiver<(String, u64)> {
+    let (lines, received) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
+            if lines.send((line, now_ms())).is_err() {
+                break;
+            }
+        }
+    });
+    received
+}
+
 /// Runs `run`'s session to its end, calling `on_event` with each event; `stub` is its model stub.
 fn run_session(
     run: &Run,
@@ -218,22 +232,14 @@ fn run_session(
         .stderr(std::fs::File::create(&run.stderr)?)
         .spawn()?;
     let mut session = Session::new(now_ms());
-    let stdout = child.stdout.take().expect("stdout is piped");
-    let (lines, received) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(|line| line.ok()) {
-            if lines.send(line).is_err() {
-                break;
-            }
-        }
-    });
+    let received = read_lines(child.stdout.take().expect("stdout is piped"));
     let mut log = std::fs::File::create(&run.log)?;
     let deadline = Instant::now() + TIMEOUT;
     let mut timed_out = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         let line = match received.recv_timeout(left) {
-            Ok(line) => line,
+            Ok((line, _)) => line,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 child.kill()?;
@@ -255,9 +261,7 @@ fn run_session(
             run.stderr.display()
         );
     }
-    session.stub = stub.map(Stub::log);
-    if let Some(stub) = &session.stub {
-        stub.save(&run.log.with_file_name("stub.json"))?;
-    }
+    let path = run.log.with_file_name("stub.json");
+    session.stub = stub.map(|stub| stub.saved_log(&path)).transpose()?;
     Ok(session)
 }

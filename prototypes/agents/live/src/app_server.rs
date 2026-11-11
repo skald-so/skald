@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::channel::{Files, Sent};
 use crate::{Agent, Checks, Kind, Options, StubLog, Usage, codex_config, handed_over};
-use crate::{handover_delay, queue};
+use crate::{handover_delay, queue, seconds};
 
 /// The client's binary, next to `live-check`.
 pub const CLIENT_BIN: &str = "agent-app-server";
@@ -283,10 +283,6 @@ impl Delivery {
             && self.got(&sent.token)
             && self.answer().is_some()
     }
-}
-
-fn seconds(ms: u64) -> String {
-    format!("{:.1} s", ms as f64 / 1000.0)
 }
 
 /// Whether a request of `stub` holds both `token` and `text`.
