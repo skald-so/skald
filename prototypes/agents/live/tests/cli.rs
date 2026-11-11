@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use agent_live::Agent;
+use agent_live::channel::stub_environment;
 use agent_source::{Source, State};
 
 /// Runs `live-check` with no variable of the test's environment, so none of its credentials
@@ -63,6 +64,9 @@ fn wrong_arguments_print_the_usage() {
         &["inbox", "claude", "--model"],
         &["inbox", "codex", "--verbose"],
         &["inbox", "codex", "--all", "--real", "--stub"],
+        &["channel"],
+        &["channel", "codex"],
+        &["channel", "claude", "--verbose"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -89,6 +93,33 @@ fn inbox_fails_without_the_cli() {
 
 /// A variable of `live-check`'s environment that the CLI on the stub must not get.
 const SENTINEL: &str = "SKALD_LIVE_TEST_CREDENTIAL";
+
+/// Variables, with fake values, that would sign Claude Code in other than with the owner's
+/// subscription: off the stub it must not get them.
+const SIGN_IN: [(&str, &str); 6] = [
+    ("ANTHROPIC_API_KEY", "sk-ant-fake"),
+    ("ANTHROPIC_AUTH_TOKEN", "fake-token"),
+    ("ANTHROPIC_BASE_URL", "http://127.0.0.1:1"),
+    ("CLAUDE_CODE_OAUTH_TOKEN", "fake-oauth-token"),
+    ("CLAUDE_CODE_USE_BEDROCK", "1"),
+    ("AWS_BEARER_TOKEN_BEDROCK", "fake-bearer"),
+];
+
+/// Asserts that a session off the stub got `live-check`'s `PATH` and [`SENTINEL`] and none of
+/// [`SIGN_IN`].
+fn assert_real_environment(at: &str, session: &Recorded, path: &str) {
+    assert!(session.env["PATH"] == path, "{at}: PATH differs");
+    assert!(
+        session
+            .env
+            .get(SENTINEL)
+            .is_some_and(|value| value == "secret"),
+        "{at}: {SENTINEL} did not pass on"
+    );
+    for (name, _) in SIGN_IN {
+        assert!(!session.env.contains_key(name), "{at}: {name} is set");
+    }
+}
 
 /// Variables the stand-ins' shell sets itself.
 const SHELL_VARS: [&str; 3] = ["PWD", "SHLVL", "_"];
@@ -217,6 +248,133 @@ fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
                     assert!(session.env[name] == *value, "{at}: {name} differs");
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn inbox_claude_on_the_real_model_drops_the_variables_that_replace_the_sign_in() {
+    for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
+        let (recorded, path, _dir) = sessions_of(&["inbox", "claude"], flags);
+        let at = format!("{flags:?}");
+        assert_eq!(recorded.len(), sessions, "{at}");
+        for session in &recorded {
+            assert_real_environment(&at, session, &path);
+        }
+    }
+}
+
+/// Runs `live-check channel claude <flags>` with stand-in CLIs and returns the sessions the
+/// stand-in `claude` recorded and the `PATH` it ran with.
+fn channel_sessions(flags: &[&str]) -> (Vec<Recorded>, String, tempfile::TempDir) {
+    sessions_of(&["channel", "claude"], flags)
+}
+
+/// Runs `live-check <command> <flags>` for Claude Code with stand-in CLIs, [`SENTINEL`] and
+/// [`SIGN_IN`] in its environment, and returns the sessions the stand-in `claude` recorded and
+/// the `PATH` it ran with.
+fn sessions_of(command: &[&str], flags: &[&str]) -> (Vec<Recorded>, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let (bin, record, tmp) = (
+        dir.path().join("bin"),
+        dir.path().join("record"),
+        dir.path().join("tmp"),
+    );
+    for dir in [&bin, &record, &tmp] {
+        fs::create_dir(dir).unwrap();
+    }
+    stand_ins(&bin, &record);
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args(command)
+        .args(flags)
+        .env_clear()
+        .env("PATH", &path)
+        .env("TMPDIR", &tmp)
+        .env(SENTINEL, "secret")
+        .envs(SIGN_IN)
+        .output()
+        .expect("live-check runs");
+    // The stand-in ends each session at once, so the check fails.
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    (recorded(&record, "claude"), path, dir)
+}
+
+const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
+
+#[test]
+fn channel_runs_one_session_or_all_four_on_the_stub_with_only_its_environment() {
+    for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 4)] {
+        let (recorded, path, dir) = channel_sessions(flags);
+        let at = format!("{flags:?}");
+        assert_eq!(recorded.len(), sessions, "{at}");
+        let with_channel = recorded
+            .iter()
+            .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
+            .count();
+        assert_eq!(
+            with_channel,
+            sessions.min(3),
+            "{at}: sessions that load the channel"
+        );
+        for session in &recorded {
+            assert!(
+                !session.env.contains_key(SENTINEL),
+                "{at}: {SENTINEL} reached the CLI"
+            );
+            let home = &session.env["HOME"];
+            assert!(
+                home.starts_with(dir.path().join("tmp").to_str().unwrap()),
+                "{at}: HOME is not in TMPDIR"
+            );
+            let expected: BTreeMap<String, String> =
+                stub_environment(Path::new(home), &session.env["ANTHROPIC_BASE_URL"], &path)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+            assert_eq!(
+                session.env.keys().collect::<Vec<_>>(),
+                expected.keys().collect::<Vec<_>>(),
+                "{at}: the CLI's variables"
+            );
+            for (name, value) in &expected {
+                assert!(session.env[name] == *value, "{at}: {name} differs");
+            }
+        }
+    }
+}
+
+#[test]
+fn channel_on_the_real_model_drops_the_sign_in_variables_and_adds_the_terminal_and_child_mark() {
+    for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 4)] {
+        let (recorded, path, _dir) = channel_sessions(flags);
+        let at = format!("{flags:?}");
+        assert_eq!(recorded.len(), sessions, "{at}");
+        let with_channel = recorded
+            .iter()
+            .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
+            .count();
+        assert_eq!(
+            with_channel,
+            sessions.min(3),
+            "{at}: sessions that load the channel"
+        );
+        for session in &recorded {
+            // The real model signs in from the user's config home: the rest of the check's
+            // environment passes on.
+            assert_real_environment(&at, session, &path);
+            assert!(
+                session.env["TERM"] == "xterm-256color",
+                "{at}: TERM differs"
+            );
+            assert!(
+                session.env["CLAUDE_CODE_CHILD_SESSION"] == "1",
+                "{at}: CLAUDE_CODE_CHILD_SESSION differs"
+            );
+            assert!(
+                !session.env.contains_key("CLAUDE_CONFIG_DIR"),
+                "{at}: CLAUDE_CONFIG_DIR is set"
+            );
         }
     }
 }

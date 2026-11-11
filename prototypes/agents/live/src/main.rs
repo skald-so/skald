@@ -1,6 +1,7 @@
 //! Live checks of the delivery paths against the installed CLIs; `usage` lists the commands.
 //! `script/test` does not run them.
 
+mod pty;
 mod run;
 
 use std::process::ExitCode;
@@ -35,6 +36,18 @@ fn main() -> ExitCode {
                 }
             }
         }
+        ["channel", "claude", options @ ..] => {
+            let Some(options) = Options::parse(options) else {
+                return usage();
+            };
+            match pty::channel(&options) {
+                Ok(pass) => exit_code(pass),
+                Err(error) => {
+                    eprintln!("live-check: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         _ => usage(),
     }
 }
@@ -42,7 +55,8 @@ fn main() -> ExitCode {
 fn usage() -> ExitCode {
     eprintln!(
         "usage: live-check add <source-dir> <sender> <text>\n       \
-         live-check inbox <claude|codex> [--all] [--real] [--model <model>] [--keep]"
+         live-check inbox <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check channel claude [--all] [--real] [--model <model>] [--keep]"
     );
     ExitCode::from(2)
 }

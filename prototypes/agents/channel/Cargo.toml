@@ -1,0 +1,18 @@
+[package]
+name = "agent-channel"
+description = "A stdio MCP server that pushes each waiting message into a Claude Code session through Channels."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-source = { path = "../source" }
+rmcp = { version = "3.9", default-features = false, features = ["server", "transport-io"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+rmcp = { version = "3.9", default-features = false, features = ["client", "transport-child-process"] }
+tempfile = "3"
+tokio = { version = "1", features = ["io-util"] }
