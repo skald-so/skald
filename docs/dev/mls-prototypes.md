@@ -2,7 +2,7 @@
 
 Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Story 3 in [task.md](../../task.md)).
 
-- Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives. `mls-interop` runs the [interoperability](#interoperability) scenarios on both.
+- Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives. `mls-interop` runs the [interoperability](#interoperability) scenarios on both. `mls-bench` holds the [benchmarks](#benchmarks).
 - Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0, and the `js` feature in WASM; mls-rs 0.57.0 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0, with the `browser` feature in WASM.
 - Profile: [membership.md](../protocol/membership.md#mls-profile), "MLS profile". The device's Ed25519 signing key is generated outside the library.
 - Every step of a device loads its saved state and saves it after the step, as one-shot mode does ([architecture.md](architecture.md#components)). A failed step leaves the saved state as it was.
@@ -85,6 +85,153 @@ After each step, every member is at the same epoch with the same members in leaf
 
 **Result:** no mismatch: every scenario passes in both directions on OpenMLS 0.9.2 and mls-rs 0.57.0. They exposed a defect of the mls-rs prototype's rejoin, not a mismatch: [mls-rs](#mls-rs), "External Commit".
 
+## Benchmarks
+`mls-bench` times each channel operation on both prototypes through the suite's `Device`, `Fleet` and `DeliveryService`, on groups of 2, 10, 100 and 1000 devices. [`prototypes/mls/benchmarks`](../../prototypes/mls/benchmarks) runs them and prints the results below; it needs the WASM test tools. `script/test` runs each benchmark once on a group of 2, natively and in WASM.
+
+- Group: device 0 creates it with the other devices from their KeyPackages; only device 1 joins from the Welcome. Every benchmark starts from that epoch 1, whose tree biases the results: [Tree](#tree).
+- A run loads its device from the saved state, untimed, and times only the operation. The operation reads the group from the library's storage and writes it back, as a one-shot step does.
+- Each benchmark runs at least 5 times, then until its runs take 1 s, at most 100 times. A cell is the median and, in parentheses, the fastest and the slowest run, in ms.
+- Natively, the benchmarks run on every core and, with `RAYON_NUM_THREADS=1`, on one: "Parallelism" in [OpenMLS](#openmls) and [mls-rs](#mls-rs). WASM has one thread.
+
+| Operation | Timed |
+|---|---|
+| Create the group with its devices | Device 0 creates the group, commits the Add of the other devices, each KeyPackage checked, and merges it |
+| Commit an Add | Device 0 commits the Add of one device, its KeyPackage checked, and merges it |
+| Process an Add | Device 1 checks the added device and merges the Commit |
+| Commit a Remove | Device 0 commits the Remove of the last device, its revocation in `authenticated_data`, and merges it |
+| Process a Remove | Device 1 reads the revocation and merges the Commit; in a group of 2, as the removed device |
+| Commit an empty Commit | Device 0 commits an empty Commit and merges it |
+| Process an empty Commit | Device 1 processes and merges it |
+| Join from a Welcome | The device of the Add checks the Welcome's signer and members and joins |
+| Join by external Commit | A device outside the group checks the GroupInfo's signer and members and joins |
+| Process an external Commit | Device 1 checks the joiner as an Add and merges the Commit |
+| Make a KeyPackage | Device 1 makes one |
+| Encrypt a message, Decrypt a message | Device 0 encrypts 1 KiB; device 1 decrypts it |
+| Catch up on missed Commits | Device 1 processes 10 empty Commits of device 0 in order |
+| Delivery Service's Commit check | `DeliveryService::send` accepts the empty Commit: its `Observer` verifies it and the sender's leaf |
+| Browser's GroupInfo check | `mls_scenario::browser::members` on the GroupInfo, for a wrap by device 0 |
+
+Objects: a KeyPackage; the Commits of the operations; the Welcome creating the group, for all devices but its creator, and that of an Add, for one; the GroupInfo with `ratchet_tree` and `external_pub`; the saved state of device 1, a member of only this group.
+
+### Tree
+The creating Commit has no UpdatePath ([OpenMLS](#openmls) and [mls-rs](#mls-rs), "Commits of Adds") and no member has committed one, so the group's tree has no parent nodes. Once members have committed, most parent nodes are set. Against such a group of n devices:
+- **Commits:** an UpdatePath encrypts a path secret to each node in the resolution of the committer's copath: here about n − 1 leaves, 82 bytes each; once members have committed, about log2(n) nodes. Every Commit with an UpdatePath, all but those of Adds, is the most a group of n has. Its time grows with the recipients: on one core, an empty Commit takes about 50 µs more per device from 100 to 1000 devices. The times of committing a Remove or an empty Commit and of joining by external Commit are the most for the size.
+- **Processing:** a member decrypts one path secret either way, but here it decodes and verifies a Commit of about n ciphertexts instead of about log2(n). The rows that process a Commit with an UpdatePath, "Catch up on missed Commits" and "Delivery Service's Commit check" among them, are high by that work.
+- **Joining:** a joining device and the browser verify the tree: here without parent nodes' parent hashes. "Join from a Welcome", the tree check of "Join by external Commit" and "Browser's GroupInfo check" are low by that work.
+- **Sizes:** a set parent node adds 68 bytes to the encoded tree, its HPKE public key and parent hash: about 68 KB at 1000 devices. The GroupInfo, the Welcome of an Add and the saved state hold the tree: they are low by that. The Commit and the Welcome creating the group are those of any channel.
+
+### Results
+- Machine: Apple M3 Max, 14 cores, 36 GiB, macOS on arm64, shared with other workloads.
+- Versions: OpenMLS 0.9.2, openmls_rust_crypto 0.6.0, mls-rs 0.57.0, mls-rs-crypto-rustcrypto 0.23.0; Rust 1.99.1, Node.js 26.5.0.
+- Three runs at load averages from 2 to 13; below is the one at the lowest, 2.36, 6.25, 10.55 (1, 5, 15 min) before it and 2.23, 5.17, 9.67 after.
+- Across the runs, the median cell's median changed by 13% on every core, 2% on one core and 1% in WASM. Changes over 30% are in cells under 4 ms, but OpenMLS's "Commit a Remove" at 1000 devices on every core: 15.0 to 20.3 ms.
+
+Native, every core:
+
+| Operation, ms | Library | 2 | 10 | 100 | 1000 |
+|---|---|---|---|---|---|
+| Create the group with its devices | OpenMLS | 0.290 (0.284–0.325) | 1.31 (1.29–1.41) | 14.5 (14.3–15.0) | 349 (304–409) |
+| Create the group with its devices | mls-rs | 0.288 (0.277–0.336) | 0.767 (0.661–0.902) | 3.66 (3.20–4.42) | 56.9 (44.6–63.1) |
+| Commit an Add | OpenMLS | 0.252 (0.250–0.303) | 0.331 (0.325–0.357) | 1.21 (1.20–1.39) | 10.2 (9.96–10.6) |
+| Commit an Add | mls-rs | 0.239 (0.219–0.441) | 0.324 (0.318–0.456) | 1.27 (1.16–1.61) | 6.89 (6.43–13.3) |
+| Process an Add | OpenMLS | 0.137 (0.137–0.217) | 0.176 (0.173–0.227) | 0.605 (0.592–0.700) | 5.02 (4.86–5.17) |
+| Process an Add | mls-rs | 0.120 (0.104–0.166) | 0.138 (0.136–0.168) | 0.430 (0.418–0.537) | 2.18 (2.15–2.54) |
+| Commit a Remove | OpenMLS | 0.149 (0.147–0.189) | 0.573 (0.490–0.821) | 2.05 (1.91–2.49) | 19.4 (14.5–25.5) |
+| Commit a Remove | mls-rs | 0.141 (0.140–0.198) | 0.550 (0.487–0.646) | 2.11 (1.94–2.45) | 17.9 (12.5–21.6) |
+| Process a Remove | OpenMLS | 0.190 (0.187–0.228) | 0.422 (0.385–0.518) | 1.04 (0.952–6.24) | 7.57 (6.77–9.86) |
+| Process a Remove | mls-rs | 0.157 (0.156–0.178) | 0.346 (0.324–0.413) | 0.719 (0.667–0.791) | 3.30 (2.73–4.12) |
+| Commit an empty Commit | OpenMLS | 0.201 (0.198–0.249) | 0.535 (0.475–0.720) | 2.00 (1.82–2.36) | 19.0 (15.2–19.9) |
+| Commit an empty Commit | mls-rs | 0.195 (0.193–0.223) | 0.548 (0.483–0.679) | 2.07 (1.86–2.29) | 16.3 (12.1–19.0) |
+| Process an empty Commit | OpenMLS | 0.158 (0.157–0.217) | 0.313 (0.279–0.442) | 0.937 (0.852–1.05) | 7.00 (6.41–8.83) |
+| Process an empty Commit | mls-rs | 0.112 (0.112–0.126) | 0.223 (0.222–0.254) | 0.584 (0.542–0.643) | 3.28 (2.96–4.02) |
+| Join from a Welcome | OpenMLS | 0.204 (0.200–0.237) | 0.475 (0.468–0.533) | 3.61 (3.56–3.99) | 37.9 (37.6–41.3) |
+| Join from a Welcome | mls-rs | 0.209 (0.130–0.283) | 0.344 (0.274–0.426) | 1.04 (0.944–1.20) | 8.72 (6.79–10.1) |
+| Join by external Commit | OpenMLS | 0.446 (0.428–0.574) | 1.19 (1.12–9.36) | 8.37 (8.03–8.99) | 84.3 (81.2–87.3) |
+| Join by external Commit | mls-rs | 0.701 (0.613–0.824) | 1.24 (1.10–1.47) | 4.23 (3.83–4.83) | 32.2 (28.7–35.3) |
+| Process an external Commit | OpenMLS | 0.213 (0.212–0.262) | 0.263 (0.258–0.311) | 0.794 (0.776–0.865) | 6.05 (5.82–6.69) |
+| Process an external Commit | mls-rs | 0.176 (0.175–0.204) | 0.261 (0.247–0.295) | 0.589 (0.582–0.703) | 3.44 (2.86–4.90) |
+| Make a KeyPackage | OpenMLS | 0.0469 (0.0466–0.0547) | 0.0468 (0.0465–0.0542) | 0.0495 (0.0491–0.0659) | 0.0468 (0.0465–0.0843) |
+| Make a KeyPackage | mls-rs | 0.0762 (0.0760–0.0967) | 0.0958 (0.0954–0.117) | 0.104 (0.103–0.127) | 0.0799 (0.0797–0.0967) |
+| Encrypt a message | OpenMLS | 0.0426 (0.0417–0.0563) | 0.0665 (0.0655–0.0925) | 0.327 (0.322–0.359) | 3.44 (2.73–3.74) |
+| Encrypt a message | mls-rs | 0.0392 (0.0390–0.0559) | 0.0671 (0.0666–0.107) | 0.224 (0.222–0.265) | 1.33 (1.26–1.56) |
+| Decrypt a message | OpenMLS | 0.0607 (0.0604–0.0701) | 0.0843 (0.0840–0.101) | 0.346 (0.341–0.354) | 3.10 (2.80–3.28) |
+| Decrypt a message | mls-rs | 0.0442 (0.0440–0.0458) | 0.0752 (0.0747–0.0798) | 0.251 (0.232–0.292) | 1.47 (1.43–1.55) |
+| Catch up on missed Commits | OpenMLS | 1.63 (1.61–1.70) | 3.36 (3.18–3.75) | 10.9 (9.59–11.9) | 62.5 (61.8–65.9) |
+| Catch up on missed Commits | mls-rs | 1.29 (1.20–1.34) | 2.11 (2.00–2.48) | 5.20 (4.90–5.64) | 26.6 (25.7–27.7) |
+| Delivery Service's Commit check | OpenMLS | 0.0717 (0.0714–0.0795) | 0.0963 (0.0956–0.110) | 0.351 (0.324–0.453) | 2.72 (2.65–3.45) |
+| Delivery Service's Commit check | mls-rs | 0.0758 (0.0686–0.0975) | 0.0984 (0.0905–0.113) | 0.297 (0.256–0.393) | 2.15 (1.41–3.14) |
+| Browser's GroupInfo check | OpenMLS | 0.101 (0.0997–0.112) | 0.367 (0.361–0.412) | 3.45 (3.35–3.88) | 36.5 (36.1–37.2) |
+| Browser's GroupInfo check | mls-rs | 0.147 (0.0824–0.267) | 0.239 (0.164–0.356) | 0.998 (0.892–1.12) | 8.28 (6.92–9.76) |
+
+Native, one core:
+
+| Operation, ms | Library | 2 | 10 | 100 | 1000 |
+|---|---|---|---|---|---|
+| Create the group with its devices | OpenMLS | 0.409 (0.406–0.452) | 1.31 (1.30–1.46) | 14.5 (14.3–15.0) | 301 (300–320) |
+| Create the group with its devices | mls-rs | 0.298 (0.289–0.351) | 1.18 (1.15–1.27) | 12.0 (11.8–12.4) | 241 (241–242) |
+| Commit an Add | OpenMLS | 0.336 (0.333–0.395) | 0.332 (0.326–0.360) | 1.20 (1.18–1.29) | 10.6 (9.94–12.9) |
+| Commit an Add | mls-rs | 0.232 (0.225–0.254) | 0.299 (0.281–0.326) | 0.840 (0.825–0.916) | 6.76 (6.44–7.27) |
+| Process an Add | OpenMLS | 0.183 (0.183–0.246) | 0.177 (0.173–0.240) | 0.596 (0.585–0.681) | 5.14 (4.84–5.41) |
+| Process an Add | mls-rs | 0.123 (0.110–0.175) | 0.140 (0.139–0.169) | 0.324 (0.317–0.352) | 2.39 (2.31–2.59) |
+| Commit a Remove | OpenMLS | 0.201 (0.188–0.311) | 0.684 (0.673–0.751) | 5.50 (5.45–5.91) | 53.5 (53.0–55.2) |
+| Commit a Remove | mls-rs | 0.145 (0.141–0.226) | 0.656 (0.650–0.687) | 4.89 (4.85–5.10) | 48.4 (48.0–50.6) |
+| Process a Remove | OpenMLS | 0.235 (0.234–0.268) | 0.366 (0.354–0.434) | 0.921 (0.899–1.02) | 6.17 (6.07–6.52) |
+| Process a Remove | mls-rs | 0.158 (0.157–0.183) | 0.296 (0.295–0.322) | 0.507 (0.497–0.566) | 2.62 (2.60–2.91) |
+| Commit an empty Commit | OpenMLS | 0.252 (0.251–0.274) | 0.719 (0.703–0.817) | 5.49 (5.44–5.77) | 53.4 (53.1–56.1) |
+| Commit an empty Commit | mls-rs | 0.199 (0.194–0.218) | 0.726 (0.693–0.821) | 4.97 (4.87–7.68) | 48.3 (47.9–48.9) |
+| Process an empty Commit | OpenMLS | 0.199 (0.189–0.247) | 0.286 (0.262–5.48) | 0.824 (0.807–0.893) | 6.03 (5.96–6.36) |
+| Process an empty Commit | mls-rs | 0.115 (0.111–0.157) | 0.199 (0.198–0.228) | 0.515 (0.483–0.792) | 2.53 (2.50–2.73) |
+| Join from a Welcome | OpenMLS | 0.241 (0.240–0.287) | 0.551 (0.542–0.826) | 3.60 (3.56–3.79) | 37.9 (37.6–38.4) |
+| Join from a Welcome | mls-rs | 0.175 (0.170–0.235) | 0.477 (0.475–0.516) | 3.92 (3.56–4.46) | 31.1 (30.9–31.5) |
+| Join by external Commit | OpenMLS | 0.462 (0.451–0.631) | 1.64 (1.55–1.88) | 11.7 (11.6–12.0) | 120 (120–121) |
+| Join by external Commit | mls-rs | 0.570 (0.558–0.646) | 1.63 (1.61–1.80) | 11.3 (10.7–13.5) | 106 (105–162) |
+| Process an external Commit | OpenMLS | 0.213 (0.212–0.247) | 0.298 (0.297–0.350) | 0.769 (0.751–0.858) | 5.84 (5.78–6.21) |
+| Process an external Commit | mls-rs | 0.153 (0.152–0.181) | 0.206 (0.205–0.220) | 0.379 (0.372–0.443) | 3.48 (3.19–3.88) |
+| Make a KeyPackage | OpenMLS | 0.0467 (0.0465–0.0572) | 0.0537 (0.0535–0.0622) | 0.0468 (0.0465–0.0608) | 0.0467 (0.0465–0.0622) |
+| Make a KeyPackage | mls-rs | 0.0674 (0.0661–0.0879) | 0.0798 (0.0795–0.0962) | 0.0664 (0.0661–0.0813) | 0.0967 (0.0960–0.131) |
+| Encrypt a message | OpenMLS | 0.0428 (0.0418–0.0532) | 0.0765 (0.0761–0.127) | 0.310 (0.303–0.333) | 3.40 (2.69–3.72) |
+| Encrypt a message | mls-rs | 0.0341 (0.0339–0.0547) | 0.0555 (0.0550–0.0850) | 0.155 (0.153–0.176) | 1.59 (1.50–2.00) |
+| Decrypt a message | OpenMLS | 0.0619 (0.0616–0.0697) | 0.0975 (0.0972–0.107) | 0.328 (0.322–0.358) | 3.00 (2.72–3.24) |
+| Decrypt a message | mls-rs | 0.0383 (0.0381–0.0479) | 0.0624 (0.0619–0.0697) | 0.174 (0.173–0.198) | 1.71 (1.62–1.79) |
+| Catch up on missed Commits | OpenMLS | 1.63 (1.61–1.74) | 2.89 (2.75–3.18) | 8.44 (8.34–8.74) | 70.1 (61.0–77.0) |
+| Catch up on missed Commits | mls-rs | 1.14 (1.12–1.18) | 1.94 (1.84–2.07) | 4.14 (4.10–4.35) | 27.5 (26.7–29.0) |
+| Delivery Service's Commit check | OpenMLS | 0.0711 (0.0707–0.0821) | 0.0967 (0.0962–0.170) | 0.333 (0.325–0.396) | 2.70 (2.66–3.91) |
+| Delivery Service's Commit check | mls-rs | 0.0623 (0.0619–0.0807) | 0.0819 (0.0796–0.0934) | 0.188 (0.178–0.242) | 1.21 (1.16–1.43) |
+| Browser's GroupInfo check | OpenMLS | 0.100 (0.0998–0.117) | 0.367 (0.361–0.408) | 3.37 (3.34–3.49) | 36.4 (36.1–36.7) |
+| Browser's GroupInfo check | mls-rs | 0.104 (0.0990–0.132) | 0.348 (0.333–0.379) | 3.01 (2.98–3.14) | 30.3 (29.9–31.5) |
+
+WASM, in Node.js:
+
+| Operation, ms | Library | 2 | 10 | 100 | 1000 |
+|---|---|---|---|---|---|
+| Browser's GroupInfo check | OpenMLS | 0.256 (0.242–0.571) | 0.878 (0.843–1.09) | 7.72 (7.59–8.13) | 77.9 (77.5–95.3) |
+| Browser's GroupInfo check | mls-rs | 0.206 (0.202–0.291) | 0.776 (0.765–0.903) | 7.17 (7.10–7.37) | 71.9 (71.6–72.9) |
+
+Object sizes, the same on every run but OpenMLS's saved state ([OpenMLS](#openmls), "Saved state size"):
+
+| Object, bytes | Library | 2 | 10 | 100 | 1000 |
+|---|---|---|---|---|---|
+| KeyPackage | OpenMLS | 294 | 294 | 294 | 294 |
+| KeyPackage | mls-rs | 296 | 296 | 296 | 296 |
+| Commit creating the group | OpenMLS | 464 | 2808 | 29180 | 292880 |
+| Commit creating the group | mls-rs | 466 | 2826 | 29378 | 294878 |
+| Commit of an Add | OpenMLS | 464 | 464 | 464 | 464 |
+| Commit of an Add | mls-rs | 466 | 466 | 466 | 466 |
+| Commit of a Remove | OpenMLS | 479 | 1308 | 8793 | 82704 |
+| Commit of a Remove | mls-rs | 483 | 1312 | 8797 | 82708 |
+| Empty Commit | OpenMLS | 490 | 1251 | 8736 | 82647 |
+| Empty Commit | mls-rs | 494 | 1255 | 8740 | 82651 |
+| External Commit | OpenMLS | 571 | 1262 | 8677 | 82588 |
+| External Commit | mls-rs | 575 | 1266 | 8681 | 82592 |
+| Welcome creating the group | OpenMLS | 726 | 3182 | 30820 | 307122 |
+| Welcome creating the group | mls-rs | 732 | 3204 | 31022 | 309124 |
+| Welcome of an Add | OpenMLS | 915 | 2427 | 19445 | 189545 |
+| Welcome of an Add | mls-rs | 923 | 2451 | 19649 | 191549 |
+| GroupInfo | OpenMLS | 622 | 2134 | 19150 | 189250 |
+| GroupInfo | mls-rs | 628 | 2156 | 19352 | 191252 |
+| Member's saved state | OpenMLS | 6790 | 15031 | 105492 | 1000440 |
+| Member's saved state | mls-rs | 1295 | 4508 | 37642 | 354186 |
+
 ## Findings
 
 ### OpenMLS
@@ -104,7 +251,7 @@ After each step, every member is at the same epoch with the same members in leaf
 - **Late messages:** a member in a new epoch rejects every message of an earlier one, the removed device's and other members' alike, with `Generation is too old to be processed`: the group config keeps no past epochs unless `max_past_epochs` is set.
 - **KeyPackage lifetime:** the builder's default is 84 days from an hour back; `Lifetime::init` sets both bounds. Validation does not bound a lifetime's length, which RFC 9420, §7.2, asks applications to do: `Lifetime::has_acceptable_range` exists, but nothing calls it.
 - **Last resort:** `mark_as_last_resort` adds the `last_resort` extension, and joining from a Welcome keeps such a KeyPackage's private keys; a regular one's are deleted, and its second Welcome fails with `NoMatchingKeyPackage`. The builder's default capabilities list no extensions, and `KeyPackageIn::validate` refuses a KeyPackage with an extension its capabilities lack: a last-resort KeyPackage from the default builder fails validation. Workaround: every KeyPackage lists `LastResort` in its capabilities.
-- **KeyPackage checks:** `KeyPackageIn::validate` verifies both signatures, the lifetime at the current time, the protocol version and distinct init and encryption keys. `add_members` refuses another ciphersuite when it builds the Commit (`InvalidAddProposalCiphersuiteOrVersion`). Nothing checks the credential: the device checks the validated KeyPackage's credential and `signature_key` against the admitted devices before `add_members`.
+- **KeyPackage checks:** `KeyPackageIn::validate` verifies both signatures, the lifetime at the current time, the protocol version and distinct init and encryption keys. `add_members_without_update` refuses another ciphersuite when it builds the Commit (`InvalidAddProposalCiphersuiteOrVersion`). Nothing checks the credential: the device checks the validated KeyPackage's credential and `signature_key` against the admitted devices before `add_members_without_update`.
 - **Added devices:** a staged Commit's `add_proposals` give each added KeyPackage, with its credential and `signature_key`, before the merge.
 - **GroupInfo:** with `use_ratchet_tree_extension` in the group config, every Commit comes with the new epoch's GroupInfo with `ratchet_tree` and `external_pub`, signed by the committer.
 - **Outside party:** `PublicGroup::from_external` takes the ratchet tree, which it does not read from the GroupInfo itself, a `ProposalStore` and a storage of its own. `process_message` stages a Commit, so the Delivery Service checks the sender's leaf before `merge_commit`. A member's membership tag goes unchecked, as without the group's secrets it must.
@@ -118,6 +265,9 @@ After each step, every member is at the same epoch with the same members in leaf
 - **Missed Commits:** the Commit after a missed one fails with `ValidationError(WrongEpoch)`; the group stays in its epoch. Processing 100 missed Commits in order needs no configuration.
 - **WASM build:** needs the `js` feature, for the browser's clock and random number generator; without it, a `compile_error!` names the feature. `openmls_rust_crypto` also takes getrandom 0.2 through `rand_core` 0.6, which `js` does not reach: the prototype turns on getrandom 0.2's `js` feature itself. The module holds getrandom 0.2 and 0.4.
 - **Browser check:** `PublicGroup::from_external` checks the tree first: each leaf's signature (`InvalidNodeSignature`), then the tree hash against the GroupInfo's (`TreeHashMismatch`). Then the signer's leaf (`UnknownSender` for a blank or missing one) and the GroupInfo's signature (`InvalidGroupInfoSignature`).
+- **Parallelism:** natively, tree operations run in parallel with rayon, a required dependency; `RAYON_NUM_THREADS` limits it.
+- **Commits of Adds:** `add_members` forces an UpdatePath; `add_members_without_update` and `commit_builder`, whose `force_self_update` defaults to `false`, commit only Adds without one, as RFC 9420, §12.4, allows. The prototype uses `add_members_without_update`.
+- **Saved state size:** the storage keeps its values as JSON, so a member's state varies in length by up to 150 bytes with the values' bytes.
 
 ### mls-rs
 - **Saving state:** the in-memory storages have no save or load. `InMemoryKeyPackageStorage` exports through `key_packages()` and imports through `insert()`. `InMemoryGroupStateStorage` exports through `stored_groups()` and its `GroupStateStorage` methods, but lists no prior epoch IDs: an export walks back from `max_epoch_id`. Workaround: one store implementing `GroupStateStorage` and `KeyPackageStorage` that saves its maps directly, about 100 lines, instead of export and import code over two storages; its `GroupState` and `EpochRecord` need a direct dependency on `mls-rs-core`.
@@ -152,6 +302,8 @@ After each step, every member is at the same epoch with the same members in leaf
 - **Missed Commits:** the Commit after a missed one fails with `InvalidEpoch`; the group stays in its epoch. Processing 100 missed Commits in order needs no configuration.
 - **WASM build:** on `wasm32`, mls-rs itself takes getrandom's `wasm_js` and reads the clock with `Date.now` through wasm-bindgen; the RustCrypto provider's `browser` feature turns on `wasm_js` for its own getrandom. Nothing else changes.
 - **Browser check:** `ExternalClient::observe_group` checks the tree hash first: an altered tree fails with `TreeHashMismatch`, signed again or not. Then the signer's leaf (`ExpectedNode` for a blank one, `InvalidNodeIndex` past the tree) and the GroupInfo's signature (`InvalidSignature`).
+- **Parallelism:** natively, with the default `rayon` feature, tree operations run in parallel; `RAYON_NUM_THREADS` limits it.
+- **Commits of Adds:** a Commit of only Adds has no UpdatePath, as RFC 9420, §12.4, allows, unless the client's `MlsRules` give `CommitOptions::with_path_required`.
 
 ### Spec
 - The server cannot check a channel's first Commit: it has no state of epoch 0. Nor can it tie the GroupInfo of epoch 1 to that Commit, so [Creating a channel](../protocol/membership.md#creating-a-channel) leaves open whose GroupInfo it takes.

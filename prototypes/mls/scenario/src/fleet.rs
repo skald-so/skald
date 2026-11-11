@@ -7,9 +7,10 @@ use crate::{
     scenarios::ACCOUNT,
 };
 
-/// Devices on one library, kept only as their signing keys and saved states, and the [`Roster`]
-/// they share: the channel's one member account is [`ACCOUNT`], whose master key certifies each
-/// device [`Fleet::add_device`] adds as a `client` device.
+/// Devices of one [`Device`] type, kept only as their signing keys and saved states, and the
+/// [`Roster`] they share: the channel's one member account is [`ACCOUNT`], whose master key
+/// certifies each device [`Fleet::add_device`] adds as a `client` device. With
+/// [`crate::interop::Mixed`], the devices are on two libraries.
 pub struct Fleet<D> {
     devices: Vec<Saved>,
     roster: Roster,

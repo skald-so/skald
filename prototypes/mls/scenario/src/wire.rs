@@ -22,6 +22,7 @@ pub const APPLICATION: u8 = 1;
 pub const COMMIT: u8 = 3;
 
 /// `ProposalType` values.
+pub const ADD: u16 = 1;
 pub const REMOVE: u16 = 3;
 pub const EXTERNAL_INIT: u16 = 6;
 
@@ -137,6 +138,15 @@ impl KeyPackage {
 pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
     let mut input = Input(message);
     expect_wire_format(&mut input, KEY_PACKAGE)?;
+    let key_package = read_key_package(&mut input)?;
+    if !input.0.is_empty() {
+        return Err("KeyPackage: trailing bytes".into());
+    }
+    Ok(key_package)
+}
+
+/// The KeyPackage at the start of `input`.
+fn read_key_package(input: &mut Input) -> Result<KeyPackage> {
     if input.u16()? != PROTOCOL_VERSION {
         return Err("KeyPackage: not mls10".into());
     }
@@ -162,9 +172,6 @@ pub fn key_package(message: &[u8]) -> Result<KeyPackage> {
     let leaf_signature = input.vector()?.to_vec();
     let extensions = extensions(input.vector()?)?;
     let signature = input.vector()?.to_vec();
-    if !input.0.is_empty() {
-        return Err("KeyPackage: trailing bytes".into());
-    }
     Ok(KeyPackage {
         cipher_suite,
         init_key,
@@ -338,7 +345,7 @@ pub struct PublicCommit {
     pub removed: Vec<u32>,
     /// Whether it has an ExternalInit proposal by value, as an external Commit does.
     pub external_init: bool,
-    /// The number of its other proposals, by value or by reference.
+    /// The number of its other proposals: Adds by value and any by reference.
     pub other_proposals: usize,
     /// Whether it has an UpdatePath.
     pub path: bool,
@@ -349,6 +356,35 @@ pub fn welcome_cipher_suite(message: &[u8]) -> Result<u16> {
     let mut input = Input(message);
     expect_wire_format(&mut input, WELCOME)?;
     input.u16()
+}
+
+/// The `new_member` of each of a Welcome message's `secrets`: the KeyPackageRef of each device it
+/// is for, in order.
+pub fn welcome_recipients(message: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let mut input = Input(message);
+    expect_wire_format(&mut input, WELCOME)?;
+    input.u16()?; // cipher_suite
+    let mut secrets = Input(input.vector()?);
+    let mut recipients = Vec::new();
+    while !secrets.0.is_empty() {
+        recipients.push(secrets.vector()?.to_vec());
+        secrets.vector()?; // kem_output
+        secrets.vector()?; // ciphertext
+    }
+    Ok(recipients)
+}
+
+/// The KeyPackageRef of a KeyPackage message with ciphersuite `0x0001`:
+/// `RefHash("MLS 1.0 KeyPackage Reference", KeyPackage)` with SHA-256 [RFC 9420, §5.2].
+pub fn key_package_ref(message: &[u8]) -> Result<Vec<u8>> {
+    use sha2::{Digest, Sha256};
+
+    let mut input = Input(message);
+    expect_wire_format(&mut input, KEY_PACKAGE)?;
+    let mut hashed = Vec::new();
+    put_vector(&mut hashed, b"MLS 1.0 KeyPackage Reference");
+    put_vector(&mut hashed, input.0);
+    Ok(Sha256::digest(&hashed).to_vec())
 }
 
 /// The plaintext header of a PublicMessage or a PrivateMessage.
@@ -401,6 +437,10 @@ pub fn public_commit(message: &[u8]) -> Result<PublicCommit> {
     while !proposals.0.is_empty() {
         match proposals.u8()? {
             1 => match proposals.u16()? {
+                ADD => {
+                    read_key_package(&mut proposals)?;
+                    other_proposals += 1;
+                }
                 REMOVE => removed.push(proposals.u32()?),
                 EXTERNAL_INIT if !external_init => {
                     proposals.vector()?; // kem_output
@@ -655,6 +695,39 @@ mod tests {
         assert!(welcome_cipher_suite(&[0, 1, 0, 5, 0, 3]).is_err());
     }
 
+    #[test]
+    fn reads_a_welcomes_recipients() {
+        let welcome = b"\x00\x01\x00\x03\x00\x01\x0d\x02r1\x01k\x02ct\x02r2\x00\x00\x03gi!";
+        assert_eq!(
+            welcome_recipients(welcome).unwrap(),
+            [b"r1".to_vec(), b"r2".to_vec()]
+        );
+        let no_secrets = b"\x00\x01\x00\x03\x00\x01\x00\x00";
+        assert!(welcome_recipients(no_secrets).unwrap().is_empty());
+        let mut other = welcome.to_vec();
+        other[3] = 5;
+        assert!(welcome_recipients(&other).is_err(), "a KeyPackage");
+        let truncated = b"\x00\x01\x00\x03\x00\x01\x04\x02r1\x01k";
+        assert!(welcome_recipients(truncated).is_err(), "a truncated secret");
+    }
+
+    #[test]
+    fn hashes_a_key_package_to_its_ref() {
+        use sha2::{Digest, Sha256};
+
+        let (message, _) = a_key_package();
+        let mut hashed = b"\x1cMLS 1.0 KeyPackage Reference".to_vec();
+        hashed.push((message.len() - 4) as u8);
+        hashed.extend_from_slice(&message[4..]);
+        assert_eq!(
+            key_package_ref(&message).unwrap(),
+            Sha256::digest(&hashed).to_vec()
+        );
+        let mut other = message.clone();
+        other[3] = 3;
+        assert!(key_package_ref(&other).is_err(), "a Welcome");
+    }
+
     /// A GroupInfo message of group `g1` at epoch 7 with `extensions`, signed by leaf 3.
     fn a_group_info(extensions: &[u8]) -> Vec<u8> {
         let mut message = vec![0, 1, 0, 4, 0, 1, 0, 1, 2, b'g', b'1'];
@@ -798,6 +871,26 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_commit_of_adds_by_value() {
+        let (key_package, _) = a_key_package();
+        let add = [&[1, 0, 1][..], &key_package[4..]].concat();
+        let mut content = vec![COMMIT];
+        put_vector(&mut content, &[add.clone(), add].concat());
+        content.push(0);
+        let commit = public_commit(&public_message(b"", &content)).unwrap();
+        assert_eq!(
+            (commit.removed, commit.other_proposals, commit.path),
+            (vec![], 2, false)
+        );
+
+        // The second Add's KeyPackage lacks its last byte.
+        let last = content.len() - 2;
+        content.remove(last);
+        content[2] -= 1;
+        assert!(public_commit(&public_message(b"", &content)).is_err());
+    }
+
+    #[test]
     fn rejects_what_is_not_a_members_public_commit() {
         let mut private = vec![0, 1, 0, 2, 1, b'g'];
         private.extend_from_slice(&[0; 8]);
@@ -809,7 +902,11 @@ mod tests {
             ),
             (
                 public_message(b"", &[COMMIT, 3, 1, 0, 1]),
-                "an Add by value",
+                "an Add without a KeyPackage",
+            ),
+            (
+                public_message(b"", &[COMMIT, 3, 1, 0, 2]),
+                "an Update by value",
             ),
             (
                 public_message(b"", &[COMMIT, 1, 3]),
