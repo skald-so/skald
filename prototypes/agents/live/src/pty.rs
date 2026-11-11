@@ -12,11 +12,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_live::channel::{
-    Case, ChannelCheck, ChannelSession, Files, HookEvent, IN_A_ROW, LISTENING, Screen, Sent,
-    add_message, channel_server, extra_environment, hook_events, session, stub_environment,
+    CHANNEL_BIN, Case, ChannelCheck, ChannelSession, Files, HookEvent, IN_A_ROW, LISTENING, Screen,
+    Sent, add_message, extra_environment, hook_events, session, stub_environment,
 };
-use agent_live::{Agent, Options, Stub, token};
+use agent_live::{Agent, Options, Stub, binary, token};
 use agent_source::{Source, now_ms};
+
+use crate::Result;
+use crate::run::{finish, side_by_side, start};
 
 /// The longest wait for a turn.
 const TURN: Duration = Duration::from_secs(120);
@@ -27,17 +30,13 @@ const QUIET: Duration = Duration::from_secs(20);
 /// How long a read of the terminal waits.
 const TICK: Duration = Duration::from_millis(100);
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
 /// The Channels path's live check: an idle session; with `--all`, also messages in a row, the
 /// other of two idle sessions, a busy session and a session without the channel flag.
 pub fn channel(options: &Options) -> Result<bool> {
-    let version = Agent::Claude.command().arg("--version").output()?;
-    println!("{}", Agent::Claude.version(&version.stdout));
-    let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
+    let work = start(Agent::Claude)?;
     let prepare = Prepare {
         work: work.path(),
-        channel: &channel_server(&std::env::current_exe()?)?,
+        channel: &binary(&std::env::current_exe()?, CHANNEL_BIN)?,
         options,
         path: &std::env::var("PATH").unwrap_or_default(),
     };
@@ -51,16 +50,8 @@ pub fn channel(options: &Options) -> Result<bool> {
     } else {
         None
     };
-    let (session_a, row, session_b) = thread::scope(|scope| {
-        let b = b.map(|(b, added_b)| {
-            scope.spawn(move || -> Result<(ChannelSession, Added)> {
-                let mut b = b.start()?;
-                b.watch(added_b.token());
-                b.wait(TURN, |s| s.got(added_b.token()) && turn_ended(s))?;
-                Ok((b.end()?, added_b))
-            })
-        });
-        let a = (|| -> Result<(ChannelSession, Vec<Added>)> {
+    let (session_a, session_b) = side_by_side(
+        || -> Result<(ChannelSession, Vec<Added>)> {
             let mut a = a.start()?;
             a.watch(added_a.token());
             a.wait(TURN, |s| s.got(added_a.token()) && turn_ended(s))?;
@@ -76,10 +67,17 @@ pub fn channel(options: &Options) -> Result<bool> {
                 })?;
             }
             Ok((a.end()?, row))
-        })();
-        let b = b.map(|b| b.join().expect("session b ran"));
-        a.map(|(a, row)| (a, row, b))
-    })?;
+        },
+        b.map(|(b, added_b)| {
+            move || -> Result<(ChannelSession, Added)> {
+                let mut b = b.start()?;
+                b.watch(added_b.token());
+                b.wait(TURN, |s| s.got(added_b.token()) && turn_ended(s))?;
+                Ok((b.end()?, added_b))
+            }
+        }),
+    );
+    let (session_a, row) = session_a?;
     println!("{}", check.idle(&session_a, &added_a.now()?));
     if options.all {
         let row = row.iter().map(Added::now).collect::<Result<Vec<_>>>()?;
@@ -119,11 +117,8 @@ pub fn channel(options: &Options) -> Result<bool> {
         println!("{}", check.unloaded(&session_d, &added_d.now()?));
     }
 
-    println!("{}", check.verdict(options));
-    if options.keeps_logs(check.pass()) {
-        println!("logs: {}", work.keep().display());
-    }
-    Ok(check.pass())
+    let verdict = check.verdict(options);
+    Ok(finish(work, options, &verdict, check.pass()))
 }
 
 /// Whether the session's last turn ended: the agent waits for a prompt.
@@ -144,14 +139,7 @@ impl Prepare<'_> {
     fn prepared(&self, name: &str, case: Case) -> Result<Prepared> {
         let files = Files::new(&self.work.join(name));
         let args = session(&files, self.channel, case, self.options.model)?;
-        let stub = if self.options.real {
-            None
-        } else {
-            Some(Stub::start(match case {
-                Case::Busy => &[agent_live::Call::Shell],
-                Case::Idle | Case::Unloaded => &[],
-            })?)
-        };
+        let stub = self.options.stub(case.script())?;
         let env = match &stub {
             Some(stub) => Env::Only(stub_environment(
                 &files.dir.join("home"),
@@ -406,11 +394,7 @@ impl Live {
         }
         self.refresh()?;
         if let Some(stub) = &self.session.stub {
-            // The requests hold the session's context; the stub keeps no credential's value.
-            fs::write(
-                self.prepared.files.dir.join("stub.json"),
-                serde_json::to_string_pretty(&stub.requests)?,
-            )?;
+            stub.save(&self.prepared.files.dir.join("stub.json"))?;
         }
         Ok(self.session)
     }

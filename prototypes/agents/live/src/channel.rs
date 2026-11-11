@@ -11,7 +11,8 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 use crate::{
-    Agent, Options, PLACEHOLDER, SENDER, SERVER, StubLog, handover_delay, report, verdict,
+    Agent, Call, Checks, Options, PLACEHOLDER, SENDER, SERVER, SHELL, StubLog, handed_over,
+    handover_delay, pretty,
 };
 
 /// The channel server's binary, next to `live-check`.
@@ -23,15 +24,12 @@ pub const TERM: &str = "xterm-256color";
 /// Messages added in a row to the idle session with `--all`.
 pub const IN_A_ROW: usize = 3;
 
-/// The busy session's shell command.
-pub const SLEEP: &str = "sleep 20";
-
 /// A session's case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Case {
     /// No prompt: the session waits for one when the messages arrive.
     Idle,
-    /// The prompt has the agent run `SLEEP`; the message arrives while it runs.
+    /// The prompt has the agent run `SHELL`; the message arrives while it runs.
     Busy,
     /// Idle, but without the flag that loads the channel.
     Unloaded,
@@ -43,9 +41,17 @@ impl Case {
         match self {
             Self::Idle | Self::Unloaded => None,
             Self::Busy => Some(format!(
-                "Run the shell command `{SLEEP}`. Then reply with only the check token from the \
+                "Run the shell command `{SHELL}`. Then reply with only the check token from the \
                  {SERVER} channel message, or NONE if there is none."
             )),
+        }
+    }
+
+    /// The model stub's tool calls, in order, before it replies `DONE`.
+    pub fn script(self) -> &'static [Call] {
+        match self {
+            Self::Busy => &[Call::Shell],
+            Self::Idle | Self::Unloaded => &[],
         }
     }
 
@@ -63,19 +69,6 @@ pub fn text(token: &str) -> String {
 /// Adds a check's message with `token` to `source`.
 pub fn add_message(source: &Source, token: &str) -> io::Result<Message> {
     source.add(SENDER, &text(token))
-}
-
-/// The `agent-channel` binary next to `live-check`, the binary `exe`.
-pub fn channel_server(exe: &Path) -> Result<PathBuf, String> {
-    let channel = exe.with_file_name(CHANNEL_BIN);
-    if channel.exists() {
-        Ok(channel)
-    } else {
-        Err(format!(
-            "{} is missing: build the workspace",
-            channel.display()
-        ))
-    }
 }
 
 /// Where a session's files go.
@@ -205,10 +198,6 @@ pub fn stub_environment(home: &Path, stub: &str, path: &str) -> io::Result<Vec<(
     )?;
     env.extend(extra_environment(false));
     Ok(env)
-}
-
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).expect("JSON values serialize")
 }
 
 /// A dialog Claude Code opens before the session starts.
@@ -490,14 +479,10 @@ pub struct Sent {
     pub state: Option<State>,
 }
 
-fn handed_over(state: Option<State>) -> bool {
-    matches!(state, Some(State::HandedOver { .. }))
-}
-
 /// The Channels path's checks: each returns its line in the output.
 #[derive(Debug, Default)]
 pub struct ChannelCheck {
-    passed: Vec<bool>,
+    checks: Checks,
 }
 
 impl ChannelCheck {
@@ -513,7 +498,7 @@ impl ChannelCheck {
             handover_delay(sent.state, session.started_ms),
             reached_delay(session, &sent.token, session.started_ms)
         );
-        self.report("idle session", pass, &details)
+        self.checks.report("idle session", pass, &details)
     }
 
     /// The messages added in a row to the idle session after its first turn.
@@ -540,7 +525,7 @@ impl ChannelCheck {
             session.replies().len(),
             delays.join(", ")
         );
-        self.report("messages in a row", pass, &details)
+        self.checks.report("messages in a row", pass, &details)
     }
 
     /// The other of two idle sessions: its own message reaches it, the first session's does not,
@@ -564,7 +549,8 @@ impl ChannelCheck {
             reached(session.got(first_token)),
             reached(first.got(&own.token))
         );
-        self.report("the other of two idle sessions", pass, &details)
+        self.checks
+            .report("the other of two idle sessions", pass, &details)
     }
 
     /// The busy session and its message, added when the agent started the shell command, if it
@@ -572,7 +558,7 @@ impl ChannelCheck {
     pub fn busy(&mut self, session: &ChannelSession, sent: Option<&Sent>) -> String {
         let Some(sent) = sent else {
             let details = format!("{}; the agent ran no shell command", session.summary());
-            return self.report("busy session", false, &details);
+            return self.checks.report("busy session", false, &details);
         };
         let pass = session.clean() && session.got(&sent.token) && handed_over(sent.state);
         let turn = match session.in_first_turn(&sent.token) {
@@ -587,7 +573,7 @@ impl ChannelCheck {
             handover_delay(sent.state, sent.added_at_ms),
             reached_delay(session, &sent.token, sent.added_at_ms)
         );
-        self.report("busy session", pass, &details)
+        self.checks.report("busy session", pass, &details)
     }
 
     /// A session without the channel flag: its message is handed over, yet never reaches the
@@ -603,26 +589,18 @@ impl ChannelCheck {
             handover_delay(sent.state, session.started_ms),
             reached(session.got(&sent.token))
         );
-        self.report("session without the channel flag", pass, &details)
+        self.checks
+            .report("session without the channel flag", pass, &details)
     }
 
     /// Whether every check passed.
     pub fn pass(&self) -> bool {
-        self.passed.iter().all(|pass| *pass)
+        self.checks.pass()
     }
 
     /// The last line of the output.
     pub fn verdict(&self, options: &Options) -> String {
-        format!(
-            "channel on claude with {}: {}",
-            options.model_name(),
-            verdict(self.pass())
-        )
-    }
-
-    fn report(&mut self, check: &str, pass: bool, details: &str) -> String {
-        self.passed.push(pass);
-        report(check, pass, details)
+        self.checks.verdict("channel", Agent::Claude, options)
     }
 }
 
@@ -632,10 +610,12 @@ fn reached(yes: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use crate::tests::read_json;
+
     use super::*;
 
     #[test]
-    fn prompts_and_loads_the_channel_per_case() {
+    fn prompts_scripts_and_loads_the_channel_per_case() {
         assert_eq!(Case::Idle.prompt(), None);
         assert_eq!(Case::Unloaded.prompt(), None);
         assert_eq!(
@@ -643,6 +623,9 @@ mod tests {
             "Run the shell command `sleep 20`. Then reply with only the check token from the \
              skald channel message, or NONE if there is none."
         );
+        assert_eq!(Case::Busy.script(), [Call::Shell]);
+        assert_eq!(Case::Idle.script(), []);
+        assert_eq!(Case::Unloaded.script(), []);
         assert!(Case::Idle.loads_channel());
         assert!(Case::Busy.loads_channel());
         assert!(!Case::Unloaded.loads_channel());
@@ -659,22 +642,6 @@ mod tests {
             "The check token is tok-1. Reply with only the check token."
         );
         assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
-    }
-
-    #[test]
-    fn finds_the_channel_server_next_to_live_check() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("live-check");
-        let channel = dir.path().join("agent-channel");
-        assert_eq!(
-            channel_server(&exe),
-            Err(format!(
-                "{} is missing: build the workspace",
-                channel.display()
-            ))
-        );
-        fs::write(&channel, "").unwrap();
-        assert_eq!(channel_server(&exe), Ok(channel));
     }
 
     #[test]
@@ -719,15 +686,12 @@ mod tests {
             0,
             "the project is empty"
         );
-        let servers: Value =
-            serde_json::from_str(&fs::read_to_string(at("mcp.json")).unwrap()).unwrap();
         assert_eq!(
-            servers,
+            read_json(at("mcp.json")),
             json!({ "mcpServers": { "skald": {
                 "command": "/bin/channel", "args": [files.source] } } })
         );
-        let settings: Value =
-            serde_json::from_str(&fs::read_to_string(at("settings.json")).unwrap()).unwrap();
+        let settings = read_json(at("settings.json"));
         let hook = json!([{ "hooks": [{
             "type": "command",
             "command": format!("cat >> '{}'", files.hooks.display()),
@@ -790,11 +754,8 @@ mod tests {
             .unwrap();
         expected.extend(owned(&[("TERM", "xterm-256color")]));
         assert_eq!(env, expected);
-        let config: Value =
-            serde_json::from_str(&fs::read_to_string(home.join(".claude/.claude.json")).unwrap())
-                .unwrap();
         assert_eq!(
-            config,
+            read_json(home.join(".claude/.claude.json")),
             json!({
                 "hasCompletedOnboarding": true,
                 "theme": "dark",
