@@ -55,10 +55,7 @@ pub fn merge(dir: &Path, ours: &str, theirs: &str) -> Result<Check> {
     for (path, stages) in &merged.files {
         let lines = match (&stages[1], &stages[2]) {
             (Some(own), Some(_)) => {
-                let file = git::run(
-                    dir,
-                    &["cat-file", "blob", &format!("{}:{path}", merged.tree)],
-                )?;
+                let file = git::blob(dir, &merged.tree, path)?;
                 own_lines(dir, own, &file, ours, theirs)?
             }
             _ => Vec::new(),

@@ -13,6 +13,9 @@ pub struct Change {
     /// The change's lines in this machine's version of the file, 1-based and end-exclusive. A
     /// change that only deletes lines has an empty range before the line that follows them.
     pub lines: Range<usize>,
+    /// The lines of the merge base the change deletes or replaces, 1-based and end-exclusive. A
+    /// change that only inserts lines has an empty range before the line that follows them.
+    pub old: Range<usize>,
     /// Each boundary between two lines of the merge base that the change touches, in order: the
     /// lines on either side of it, each with its line ending, or empty at the start or the end of
     /// the file. An insertion touches the one boundary it goes into; a change of `n` lines of the
@@ -62,10 +65,10 @@ fn parse(diff: &[u8]) -> Result<Vec<Change>> {
             continue;
         };
         let Header {
+            old,
             old_lines,
             new,
             new_lines,
-            ..
         } = header(text)?;
         // The hunk's lines: each one's side, ` `, `-` or `+`, and its text with its line ending.
         let mut body: Vec<(u8, Vec<u8>)> = Vec::new();
@@ -93,7 +96,8 @@ fn parse(diff: &[u8]) -> Result<Vec<Change>> {
             }
             body.push((side, text.to_vec()));
         }
-        // A hunk without new lines comes after its line `new`.
+        // A side without lines comes after its line `old` or `new`.
+        let mut next_old = if old_lines == 0 { old + 1 } else { old };
         let mut next = if new_lines == 0 { new + 1 } else { new };
         // Runs of context lines and runs of changed lines, in turn.
         let runs: Vec<_> = body
@@ -103,20 +107,25 @@ fn parse(diff: &[u8]) -> Result<Vec<Change>> {
         for (i, run) in runs.iter().enumerate() {
             if run[0].0 == b' ' {
                 before = &run[run.len() - 1].1;
+                next_old += run.len();
                 next += run.len();
                 continue;
             }
-            let start = next;
+            let (start_old, start) = (next_old, next);
             let mut base = vec![before];
             for (side, text) in *run {
                 match side {
-                    b'-' => base.push(text),
+                    b'-' => {
+                        base.push(text);
+                        next_old += 1;
+                    }
                     _ => next += 1,
                 }
             }
             base.push(runs.get(i + 1).map_or(&b""[..], |context| &context[0].1));
             changes.push(Change {
                 lines: start..next,
+                old: start_old..next_old,
                 boundaries: base
                     .windows(2)
                     .map(|pair| (pair[0].to_vec(), pair[1].to_vec()))
@@ -165,9 +174,10 @@ pub(crate) fn header(header: &[u8]) -> Result<Header> {
 mod tests {
     use super::*;
 
-    fn change(lines: Range<usize>, boundaries: &[(&str, &str)]) -> Change {
+    fn change(lines: Range<usize>, old: Range<usize>, boundaries: &[(&str, &str)]) -> Change {
         Change {
             lines,
+            old,
             boundaries: boundaries
                 .iter()
                 .map(|(before, after)| (before.as_bytes().to_vec(), after.as_bytes().to_vec()))
@@ -185,10 +195,10 @@ mod tests {
         assert_eq!(
             parse(diff).unwrap(),
             [
-                change(2..4, &[("1\n", "2\n"), ("2\n", "3\n")]),
-                change(6..7, &[("4\n", "5\n")]),
-                change(8..8, &[("5\n", "6\n"), ("6\n", "7\n")]),
-                change(9..10, &[("7\n", "8\n"), ("8\n", "9\n"), ("9\n", "")]),
+                change(2..4, 2..3, &[("1\n", "2\n"), ("2\n", "3\n")]),
+                change(6..7, 5..5, &[("4\n", "5\n")]),
+                change(8..8, 6..7, &[("5\n", "6\n"), ("6\n", "7\n")]),
+                change(9..10, 8..10, &[("7\n", "8\n"), ("8\n", "9\n"), ("9\n", "")]),
             ]
         );
     }
@@ -202,10 +212,10 @@ mod tests {
         assert_eq!(
             parse(diff).unwrap(),
             [
-                change(1..2, &[("", "1\n")]),
-                change(1..1, &[("", "1\n"), ("1\n", "2\n")]),
-                change(1..3, &[("", "")]),
-                change(1..1, &[("", "x\n"), ("x\n", "y\n"), ("y\n", "")]),
+                change(1..2, 1..1, &[("", "1\n")]),
+                change(1..1, 1..2, &[("", "1\n"), ("1\n", "2\n")]),
+                change(1..3, 1..1, &[("", "")]),
+                change(1..1, 1..3, &[("", "x\n"), ("x\n", "y\n"), ("y\n", "")]),
             ]
         );
     }
@@ -218,8 +228,8 @@ mod tests {
         assert_eq!(
             parse(diff).unwrap(),
             [
-                change(3..4, &[("\n", "a\n"), ("a\n", "b")]),
-                change(6..7, &[("x\n", "y"), ("y", "")]),
+                change(3..4, 3..4, &[("\n", "a\n"), ("a\n", "b")]),
+                change(6..7, 6..7, &[("x\n", "y"), ("y", "")]),
             ]
         );
     }

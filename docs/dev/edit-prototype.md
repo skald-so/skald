@@ -2,7 +2,7 @@
 
 The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
-- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
+- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. The harness's commits carry a fixed date, so they get the same hashes on every run; the client's snapshot commits keep the current time. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity, for the harness's commands the fixed date, and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths and changed lines.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
@@ -37,7 +37,7 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `server_receives_and_keeps_nothing_of_the_exchanged_changes` | During the check of both machines the server receives nothing and keeps what it kept; nothing it received or keeps holds a path, file or directory name or line of the changes |
 | `edits_to_the_same_lines_overlap_at_hunk_level_and_conflict` | Two lines edited on both machines, committed on one and uncommitted on the other, which also edits a distant line: each learns the other at hunk level with its two lines, the lines the check finds conflicting |
 | `edits_next_to_each_other_or_at_one_place_overlap_at_hunk_level_and_conflict` | An edit of a line, an edit of the next line, and two different lines inserted between them: every pair overlaps at hunk level and conflicts |
-| `edits_to_different_hunks_of_one_file_overlap_at_file_level_only` | Edits of lines 7 and 9, one unchanged line apart, and of line 2: every pair overlaps at file level only and merges cleanly |
+| `edits_to_different_hunks_of_one_file_do_not_overlap_at_hunk_level` | Edits of lines 7 and 9 of one function, one unchanged line apart, and of line 2 of another: every pair overlaps at file level, not at hunk level, and merges cleanly; the first two overlap at symbol level |
 | `bases_that_differ_by_lines_added_above_the_hunk_still_match` | Lines added on top upstream, pulled by one machine only, and an edit of one line on both: they overlap at hunk level, each at its own line, and conflict there |
 | `hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_and_config` | Edits that the histogram diff places differently from the Myers or patience diff, or diffs without and with the indent heuristic place differently, and edits of `src/[id].rs` and of `src/i.rs`, which it matches as a glob, in a repository whose `.gitattributes` makes files binary or text-converted, with an external diff, no context lines and `color.diff=always` in one machine's config and empty context lines without their space in the other's: the hunks overlap in each file where `git merge-tree` conflicts, and only there |
 | `submodule_moves_overlap_at_hunk_level_whatever_the_repository_config` | A submodule that `.gitmodules` sets to `ignore = all`, moved to different commits on two machines, committed on one with `diff.submodule=log` and staged on the other with `diff.ignoreSubmodules=all`: each sees the other at hunk level on the submodule's line, and `git merge-tree` reports `CONFLICT (submodule)` |
@@ -45,6 +45,15 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `rename_matches_an_edit_of_its_old_path_at_hunk_level_and_merges_cleanly` | A committed rename and an edit of the last line of its old path: the editor sees the renamer at hunk level on that line, the renamer sees the editor on its deletion; they merge cleanly |
 | `conflicts_with_upstream_commits_only_one_machine_has_do_not_match_at_hunk_level` | A line changed upstream and pulled by one machine, which edits another line, and an edit of that line on the other: they overlap at file level only; the check finds the conflict |
 | `server_receives_no_line_of_the_test_repository` | What the machines send holds no line of the test repository or of their edits |
+| `<language>::edits_to_different_functions_of_one_file_overlap_at_file_level_only` | A line of the function and one of the method of its name: they overlap at file level only |
+| `<language>::edits_to_distant_lines_of_one_function_overlap_at_symbol_level_and_merge_cleanly` | The first and the last line of a method's body: they overlap at symbol level, on the method named with its type, and merge cleanly |
+| `<language>::edits_to_two_methods_of_one_type_do_not_overlap_at_symbol_level` | A line of each method: they overlap at file level only |
+| `<language>::a_symbol_moved_within_its_file_keeps_its_fingerprint` | The function moved to the end of its file upstream, pulled by one machine only, and a line of it edited on both: they overlap at symbol level |
+| `<language>::a_file_in_another_language_gets_no_symbol_fingerprints` | Distant lines of one function edited in the file and in a Go file: only the first has symbols; the machines share the fingerprints of the two paths and of the method, nothing of the Go function |
+| `<language>::server_receives_no_symbol_name` | What the machines send holds no kind or name of their changed symbols |
+| `insertions_deletions_and_added_and_deleted_files_get_symbol_fingerprints` | In Rust, a line inserted into a method's body and a deleted file on one machine, a line deleted from it and an added file on the other: each gets the symbols of its changes, the deleted ones from the merge base; they overlap at symbol level on the method and merge cleanly |
+
+`<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
 ## Questions
 Open questions of edit comparison, and how the prototype answers them:
@@ -72,7 +81,7 @@ Open questions of edit comparison, and how the prototype answers them:
   - Forks and mirrors share it, so their machines overlap.
   - Repositories with byte-identical root commits share it: the same tree, message, author and time.
   - A shallow clone takes its shallow boundary for the root, so it gets another scope than a full clone. Open: a scope for shallow clones.
-- **Publication:** each machine sends the fingerprints of its whole edit set and its [hunks](#hunk-fingerprints), which replace its earlier ones. The server sees the machine, how many fingerprints it sends and when that changes, and which machines share fingerprints.
+- **Publication:** each machine sends the fingerprints of its whole edit set, its [hunks](#hunk-fingerprints) and its [symbols](#symbol-fingerprints), which replace its earlier ones. The server sees the machine, how many fingerprints it sends and when that changes, and which machines share fingerprints.
 
 ## Exact check
 - **Exchange:** on an overlap, a machine asks the other for its changes over an end-to-end encrypted message; the request carries the asker's merge base with the upstream's default branch.
@@ -119,3 +128,30 @@ Open questions of edit comparison, and how the prototype answers them:
   - Renames: a rename deletes its old path, which touches each of its boundaries, so it matches any edit of the old path. `git merge-tree` carries the edit into the renamed file and merges cleanly.
 - **Misses:** a conflict with upstream commits only one machine has pulled, on the conflicting lines or next to them. Each machine fingerprints its own changes since its own base; the file still matches. The conflict is with upstream, and the other machine meets it when it pulls.
 - **Cost:** each publication takes a snapshot, whose changed files stay as loose objects until `git gc`, and one `git diff` per path. Cost on real repositories: open.
+
+## Symbol fingerprints
+- **Symbols:** functions, methods and types, found with a [tree-sitter](https://tree-sitter.github.io) grammar of the file's language, which its extension gives. A symbol is a syntax node of a kind its language lists, with its name; it is named with the symbols that enclose it, outermost first, such as `impl_item Store > function_item reserve`.
+- **Changed lines:** each line a hunk adds or changes in the snapshot, and each line it deletes or changes in the merge base, gets the innermost symbol enclosing it in that version of the file. Lines outside every symbol get none.
+- **Languages:**
+
+  | Language | Extension | Grammar | Symbols |
+  |---|---|---|---|
+  | Rust | `.rs` | `tree-sitter-rust` | Functions, trait method declarations, structs, enums, unions, type aliases, traits, modules; `impl` blocks, named by their trait and type, such as `fmt::Display for Box<T>` |
+  | TypeScript | `.ts` | `tree-sitter-typescript` | Functions, generators, classes, abstract classes, methods, abstract and interface method signatures, interfaces, enums, type aliases, namespaces; variables and class fields that hold an arrow function, a function or a generator expression |
+  | Python | `.py` | `tree-sitter-python` | Functions, classes |
+
+  - Each language needs its grammar, compiled from C at build time, and the list of node kinds that are symbols with the field that names each.
+  - Other files, `.tsx` and `.go` among them, get path and hunk fingerprints only.
+- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit symbol"`, the scope, the path, and the node kind and the name of each symbol from the outermost, each after its length as a big-endian `u64`. No line numbers or content: a symbol moved within its file keeps its fingerprint.
+- **Publication:** in one set with the path and hunk fingerprints. Each changed symbol adds a fingerprint, so the server learns how many symbols a machine changes.
+- **Mapping back:** a machine maps shared symbol fingerprints to its own symbols.
+- **Matches without a conflict:**
+  - Edits to distant lines of one function, which `git merge-tree` merges cleanly: what this level is for.
+  - Symbols of one name and kind in one scope, such as a TypeScript getter and setter, share a fingerprint.
+- **Misses:**
+  - Doc comments, attributes and decorators are outside the symbol they belong to: their lines count towards the enclosing symbol, or none.
+  - Closures, lambdas and callbacks are not symbols: their lines count towards the symbol around them. A TypeScript test file of `describe` and `it` callbacks has none.
+  - Edits outside every symbol, such as imports and module-level constants, match at file and hunk level only.
+  - A type's fields and its methods are different symbols; so are a Rust struct and its `impl` block.
+- **Open:** a symbol moved to another file, which gets another fingerprint; files with syntax errors, as during an edit; a line that holds two symbols, which counts towards the last; more languages and extensions, such as `.tsx` and JavaScript.
+- **Cost:** two parses of each changed file in a supported language, of the merge base and of the snapshot. Cost on real repositories: open.
