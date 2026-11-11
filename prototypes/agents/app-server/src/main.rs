@@ -11,7 +11,6 @@
 //! It stops once its stdin ends, and fails with exit code 1 when the app-server refuses to start or
 //! resume the thread or closes the connection.
 
-use std::fs::File;
 use std::io;
 use std::path::Path;
 use std::process::{Command, ExitCode};
@@ -19,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use agent_app_server::{Client, Logged, Socket, Stdio, Transport};
+use agent_app_server::{Client, Socket, Stdio, Transport, logged};
 use agent_source::Source;
 
 const USAGE: &str = "usage: agent-app-server <source-dir> [--socket <path>] [--thread <id>] \
@@ -102,10 +101,7 @@ fn run(args: &Args, stop: Arc<AtomicBool>) -> io::Result<()> {
             Box::new(Stdio::spawn(codex)?)
         }
     };
-    let transport: Box<dyn Transport> = match args.log {
-        Some(log) => Box::new(Logged::new(transport, File::create(log)?)),
-        None => transport,
-    };
+    let transport = logged(transport, args.log)?;
     let mut client = Client::new(transport, io::stdout().lock(), stop);
     client.initialize()?;
     match args.thread {

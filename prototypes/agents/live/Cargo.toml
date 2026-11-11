@@ -1,6 +1,6 @@
 [package]
 name = "agent-live"
-description = "Live checks of each delivery path against the installed Claude Code and Codex."
+description = "Live checks of each delivery path and of the limits data against the installed Claude Code and Codex."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 agent-app-server = { path = "../app-server" }
 agent-inbox = { path = "../inbox" }
+agent-limits = { path = "../limits" }
 agent-source = { path = "../source" }
 libc = "0.2"
 serde_json = "1"

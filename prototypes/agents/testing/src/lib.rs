@@ -1,4 +1,4 @@
-//! Assertions the delivery prototypes' tests share.
+//! Assertions and recorded exchanges the delivery prototypes' tests share.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_source::{Message, Source, State};
+use serde_json::Value;
 
 /// Writes `script` to `path` as an executable file, such as a stand-in for a CLI.
 pub fn write_executable(path: &Path, script: &str) {
@@ -77,5 +78,92 @@ pub fn wait_handed_over(source: &Source, msg_id: &str) {
             source.state(msg_id).unwrap()
         );
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// An exchange recorded from the Codex app-server: each line `{"client": <message>}` or
+/// `{"server": <message>}`.
+pub struct Exchange(pub Vec<Value>);
+
+impl Exchange {
+    /// The exchange in the file at `path`, one line each.
+    pub fn read(path: &Path) -> Self {
+        let text = fs::read_to_string(path).unwrap();
+        Self(
+            text.lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect(),
+        )
+    }
+
+    /// The exchange up to the first line for which `last` holds, that line included.
+    pub fn until(mut self, last: impl Fn(&Value) -> bool) -> Self {
+        let end = self.0.iter().position(last).unwrap();
+        self.0.truncate(end + 1);
+        self
+    }
+
+    /// The client's messages.
+    pub fn client(&self) -> Vec<&Value> {
+        self.0
+            .iter()
+            .filter_map(|line| line.get("client"))
+            .collect()
+    }
+
+    /// The server's messages after each of the client's, before its next one.
+    pub fn answers(&self) -> Vec<Vec<&Value>> {
+        let mut answers: Vec<Vec<&Value>> = Vec::new();
+        for line in &self.0 {
+            match (line.get("client"), line.get("server")) {
+                (Some(_), _) => answers.push(Vec::new()),
+                (_, Some(message)) => answers.last_mut().unwrap().push(message),
+                _ => panic!("{line}"),
+            }
+        }
+        answers
+    }
+
+    /// Puts in `dir/bin` a stand-in `codex` that replays the exchange as `codex app-server` on
+    /// stdio. It writes its arguments, one per line, to `dir/args`; then for each line it reads, it
+    /// writes the line to `dir/received/<n>`, runs the shell commands `on_line`, and answers with
+    /// the server's messages that follow the client's `n`-th in the exchange, kept in
+    /// `dir/answers/<n>`. Once its stdin ends, it runs `at_end`. Both commands find `dir` in `$dir`
+    /// and the line's number in `$n`.
+    pub fn stand_in(&self, dir: &Path, on_line: &str, at_end: &str) {
+        for sub in ["bin", "received", "answers"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        for (n, answer) in self.answers().iter().enumerate() {
+            let lines: String = answer
+                .iter()
+                .map(|message| format!("{message}\n"))
+                .collect();
+            fs::write(dir.join(format!("answers/{n}")), lines).unwrap();
+        }
+        let script = format!(
+            "#!/bin/sh\n\
+             dir='{dir}'\n\
+             printf '%s\\n' \"$@\" >\"$dir/args\"\n\
+             n=0\n\
+             while IFS= read -r line; do\n\
+             printf '%s\\n' \"$line\" >\"$dir/received/$n\"\n\
+             {on_line}\n\
+             if [ -f \"$dir/answers/$n\" ]; then cat \"$dir/answers/$n\"; fi\n\
+             n=$((n + 1))\n\
+             done\n\
+             {at_end}\n",
+            dir = dir.display()
+        );
+        write_executable(&dir.join("bin/codex"), &script);
+    }
+
+    /// The thread's ID, from the result of `thread/start` or `thread/resume`.
+    pub fn thread(&self) -> String {
+        self.0
+            .iter()
+            .find_map(|line| line["server"]["result"]["thread"]["id"].as_str())
+            .unwrap()
+            .to_owned()
     }
 }
