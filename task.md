@@ -459,9 +459,9 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - it runs one session and sends it one message with a random token, and prints the CLI version and pass or fail;
     - with `--all` it also runs the other cases of the list of checks below: a busy session and reaching one of two sessions;
     - by default a local stub stands in for the model, where the CLI accepts a custom model endpoint and the path and its data work under a placeholder key:
-      - the stub answers with scripted turns, such as calling the path's tool or running a shell command, and its last reply repeats the token it received;
+      - the stub answers with scripted turns, such as calling the path's tool or running a shell command;
       - the check passes when the token reaches a request the CLI sends to the stub; it spends no tokens;
-      - the CLI runs with the placeholder key and without the vendors' key variables, such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, in its environment;
+      - the CLI has no real credential to send: it runs in an environment the check builds, with only the variables the CLI needs and the placeholder key, and with a temporary config home that holds no sign-in, such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`;
       - the stub fails the check, without printing the value, on a request whose credential headers hold anything but the placeholder; a test of the stub covers it;
     - with `--real`, or where the stub cannot stand in, the real model answers:
       - the check passes when the agent repeats the token;
@@ -543,7 +543,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - installs the apps and signs in to them;
     - grants the terminal that runs Claude Code macOS Accessibility, Screen Recording, and Automation of System Events and of each app under test;
     - allows GUI runs in chat before the orchestrator starts a developer or reviewer who runs GUI live checks, here or in 4.8. The orchestrator states the allowance in the developer's or reviewer's prompt; without it, they do not drive the app.
-  - A GUI live check follows the rules of 4.1, except that the developer or reviewer drives the app:
+  - A GUI live check follows the rules of 4.1, except that it runs on the real model under the owner's sign-in and the developer or reviewer drives the app:
     - code prepares the temporary project with the surface's config and the message source with a random token, and reads the surface version from the installed app or extension;
     - code does not show the token to the developer or reviewer until they report the token they read;
     - the developer or reviewer opens the directory in the app, types the prompt and reads the token from a screenshot of the reply of the Claude Code or Codex session under test, not from tool results or hook output; they use only `screencapture`, `cliclick` and `osascript`;
