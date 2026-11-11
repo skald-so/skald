@@ -36,14 +36,15 @@ A human takes one action per release: merging the Release PR.
 All checks except e2e, the PR title and the CLA run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md).
-- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' tests.
+- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
+- **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
 - **Tooling:** tests of the scripts in `script/`, Renovate config validation.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Daily:** e2e with real Claude Code and Codex.
-- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
+- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
 
 ## Release
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (build, installers, publishing).
