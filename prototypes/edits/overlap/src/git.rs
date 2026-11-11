@@ -11,18 +11,19 @@ use crate::{Result, Scope};
 /// The upstream's default branch, as `git clone` records it.
 pub const UPSTREAM_HEAD: &str = "refs/remotes/origin/HEAD";
 
-/// A `git` command in `dir` that reads no global or system config and no repository from the
-/// environment, never prompts, and commits as a fixed identity.
+/// A `git` command in `dir` whose environment holds only `PATH` and the settings below: no
+/// credentials, config, repository or home directory of the parent's. It reads no global or
+/// system config, attributes or ignore files, never prompts, and commits as a fixed identity.
 pub fn command(dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new("git");
+    command.args(args).current_dir(dir).env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
     command
-        .args(args)
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_ATTR_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_AUTHOR_NAME", "skald")
         .env("GIT_AUTHOR_EMAIL", "skald@example.com")
@@ -136,31 +137,27 @@ pub fn bundle(dir: &Path, commit: &str, base: &str) -> Result<Vec<u8>> {
     } else {
         merge_base(dir)?
     };
-    let file = tempfile::NamedTempFile::new()?;
-    let path = file
-        .path()
-        .to_str()
-        .ok_or("a temporary path that is not UTF-8")?;
     run(dir, &["update-ref", BUNDLE_REF, commit])?;
+    // `-` writes the bundle to the standard output: it never reaches a file.
     let created = run(
         dir,
         &[
             "bundle",
             "create",
             "--quiet",
-            path,
+            "-",
             BUNDLE_REF,
             &format!("^{base}"),
         ],
     );
     run(dir, &["update-ref", "-d", BUNDLE_REF])?;
-    created?;
-    Ok(fs::read(file.path())?)
+    created
 }
 
 /// Stores the objects of `bundle`, made by [`bundle`], in the repository at `dir` and returns its
 /// commit. The repository must have the bundle's base.
 pub fn unbundle(dir: &Path, bundle: &[u8]) -> Result<String> {
+    // Created readable by its owner only; git only reads it.
     let mut file = tempfile::NamedTempFile::new()?;
     file.write_all(bundle)?;
     let path = file

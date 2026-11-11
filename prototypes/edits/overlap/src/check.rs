@@ -58,7 +58,8 @@ pub fn merge(dir: &Path, ours: &str, theirs: &str) -> Result<Check> {
                     dir,
                     &["cat-file", "blob", &format!("{}:{path}", merged.tree)],
                 )?;
-                own_lines(dir, own, &file, ours, theirs)?
+                let size = marker_size(dir, path)?;
+                own_lines(dir, own, &file, size, ours, theirs)?
             }
             _ => Vec::new(),
         };
@@ -127,21 +128,54 @@ fn parse(stdout: &[u8]) -> Result<Merged> {
     })
 }
 
+/// The size of the conflict markers `git merge-tree` writes in `path`: its `conflict-marker-size`
+/// attribute.
+fn marker_size(dir: &Path, path: &str) -> Result<usize> {
+    // `<path>\0conflict-marker-size\0<value>\0`
+    let output = git::run(
+        dir,
+        &["check-attr", "-z", "conflict-marker-size", "--", path],
+    )?;
+    let value = String::from_utf8(output)?
+        .split('\0')
+        .nth(2)
+        .ok_or("git check-attr gave no value")?
+        .to_owned();
+    Ok(parse_marker_size(&value))
+}
+
+/// The conflict marker size for the value of the `conflict-marker-size` attribute, as git reads
+/// it: its leading number if it is positive, otherwise 7. `set`, `unset` and `unspecified` give 7.
+fn parse_marker_size(value: &str) -> usize {
+    let digits = value.strip_prefix('+').unwrap_or(value);
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
+    match digits[..end].parse() {
+        Ok(size) if size > 0 => size,
+        _ => 7,
+    }
+}
+
 /// The conflicting ranges, in this machine's version `own` of a file, of `file`, the file as
-/// `git merge-tree` writes it with conflict markers labelled `ours` and `theirs`.
+/// `git merge-tree` writes it with conflict markers of `size` characters labelled `ours` and
+/// `theirs`.
 fn own_lines(
     dir: &Path,
     own: &str,
     file: &[u8],
+    size: usize,
     ours: &str,
     theirs: &str,
 ) -> Result<Vec<Range<usize>>> {
-    let (kept, ranges) = keep_ours(file, ours, theirs);
+    let (kept, ranges) = keep_ours(file, size, ours, theirs);
     if ranges.is_empty() {
         return Ok(ranges);
     }
     // Outside the conflicts, the file holds the other machine's clean changes too; a diff from
-    // this machine's version maps the ranges back to it.
+    // this machine's version maps the ranges back to it. The options fix what the repository's
+    // attributes and config could change: a binary diff without hunks, hunks joined across the
+    // lines between them, and where a hunk slides.
     let kept = git::run_with_input(dir, &["hash-object", "-w", "--stdin"], &kept)?;
     let kept = String::from_utf8(kept)?;
     let diff = git::run(
@@ -149,6 +183,9 @@ fn own_lines(
         &[
             "diff",
             "--unified=0",
+            "--inter-hunk-context=0",
+            "--text",
+            "--indent-heuristic",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
@@ -165,17 +202,20 @@ fn own_lines(
 }
 
 /// `file` with each conflict resolved to this machine's side, and the range of that side in it.
-/// Conflict markers start with `<<<<<<< <ours>` and end with `>>>>>>> <theirs>`; the merge base's
-/// side, with the `diff3` and `zdiff3` styles, starts with `|||||||`.
-fn keep_ours(file: &[u8], ours: &str, theirs: &str) -> (Vec<u8>, Vec<Range<usize>>) {
+/// Conflict markers are `size` characters long: with 7, they start with `<<<<<<< <ours>` and end
+/// with `>>>>>>> <theirs>`; the merge base's side, with the `diff3` and `zdiff3` styles, starts
+/// with `|||||||`.
+fn keep_ours(file: &[u8], size: usize, ours: &str, theirs: &str) -> (Vec<u8>, Vec<Range<usize>>) {
     enum Side {
         Outside,
         Ours,
         Base,
         Theirs,
     }
-    let start = format!("<<<<<<< {ours}");
-    let end = format!(">>>>>>> {theirs}");
+    let start = format!("{} {ours}", "<".repeat(size));
+    let base = "|".repeat(size);
+    let middle = "=".repeat(size);
+    let end = format!("{} {theirs}", ">".repeat(size));
     let mut kept = Vec::new();
     let mut ranges = Vec::new();
     let mut side = Side::Outside;
@@ -190,8 +230,14 @@ fn keep_ours(file: &[u8], ours: &str, theirs: &str) -> (Vec<u8>, Vec<Range<usize
                 side = Side::Ours;
                 first = next;
             }
-            Side::Ours if text.starts_with(b"|||||||") => side = Side::Base,
-            Side::Ours | Side::Base if text == b"=======" => {
+            Side::Ours
+                if text
+                    .strip_prefix(base.as_bytes())
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(b" ")) =>
+            {
+                side = Side::Base
+            }
+            Side::Ours | Side::Base if text == middle.as_bytes() => {
                 ranges.push(first..next);
                 side = Side::Theirs;
             }
@@ -336,12 +382,45 @@ mod tests {
             <<<<<<< ours1\r\n||||||| base1\r\nx\r\n=======\r\nX\r\n>>>>>>> theirs1\r\n\
             <<<<<<< other\n=======\n>>>>>>> other\n\
             e";
-        let (kept, ranges) = keep_ours(file, "ours1", "theirs1");
+        let (kept, ranges) = keep_ours(file, 7, "ours1", "theirs1");
         assert_eq!(
             String::from_utf8(kept).unwrap(),
             "a\nb\nc\nd\n<<<<<<< other\n=======\n>>>>>>> other\ne"
         );
         assert_eq!(ranges, [2..4, 5..5]);
+    }
+
+    #[test]
+    fn keep_ours_reads_markers_of_the_given_size_only() {
+        let file = b"a\n\
+            <<<<<<<<< ours1\n<<<<<<< ours1\n|||||||\n=======\n>>>>>>> theirs1\n\
+            |||||||||x\n|||||||||\nx\n=========\nX\n>>>>>>>>> theirs1\n\
+            <<<<<<<<< ours1\n||||||||| base1\n=========\n>>>>>>>>> theirs1\n\
+            e\n";
+        let (kept, ranges) = keep_ours(file, 9, "ours1", "theirs1");
+        assert_eq!(
+            String::from_utf8(kept).unwrap(),
+            "a\n<<<<<<< ours1\n|||||||\n=======\n>>>>>>> theirs1\n|||||||||x\ne\n"
+        );
+        assert_eq!(ranges, [2..7, 7..7]);
+    }
+
+    #[test]
+    fn parse_marker_size_reads_the_attribute_as_git_does() {
+        for (value, size) in [
+            ("9", 9),
+            ("32", 32),
+            ("+12", 12),
+            ("12abc", 12),
+            ("0", 7),
+            ("-3", 7),
+            ("set", 7),
+            ("unset", 7),
+            ("unspecified", 7),
+            ("", 7),
+        ] {
+            assert_eq!(parse_marker_size(value), size, "{value}");
+        }
     }
 
     #[test]

@@ -65,10 +65,16 @@ struct Repo {
 
 impl Repo {
     fn create(tmp: &TempDir) -> Self {
+        Self::create_with(tmp, &[])
+    }
+
+    /// The test repository with `extra` files, each a path and its contents.
+    fn create_with(tmp: &TempDir, extra: &[(&str, &str)]) -> Self {
         let files = files();
         let files: Vec<(&str, &str)> = files
             .iter()
             .map(|(path, text)| (*path, text.as_str()))
+            .chain(extra.iter().copied())
             .collect();
         Self {
             upstream: Upstream::create(&tmp.path().join("repo"), &files).unwrap(),
@@ -289,6 +295,66 @@ fn edits_to_the_same_lines_conflict_with_their_files_and_lines() {
 }
 
 #[test]
+fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
+    let tmp = TempDir::new().unwrap();
+    // Markers of 32 characters in Rust files, as git's own repository sets for some files, and
+    // of 7 in the others; `-diff` makes `git diff` show any file as binary, without hunks.
+    let repo = Repo::create_with(
+        &tmp,
+        &[(
+            ".gitattributes",
+            "* -diff\nsrc/*.rs conflict-marker-size=32\n",
+        )],
+    );
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    // `git diff` joins hunks up to 3 lines apart into one.
+    a.git(&["config", "diff.interHunkContext", "3"]).unwrap();
+    a.write(
+        "src/inventory.rs",
+        &inventory(&[(7, "    let reserved = 10;")]),
+    )
+    .unwrap();
+    a.write("notes/plan.md", "- count\n- reserve\n").unwrap();
+    a.commit("reserve ten").unwrap();
+    // A line added two lines above the conflict and one changed two lines below it merge cleanly.
+    let mut lines = INVENTORY.to_vec();
+    lines[6] = "    let reserved = 20;";
+    lines[8] = "} // reserve";
+    lines.insert(5, "/// Reserves one item.");
+    b.write("src/inventory.rs", &(lines.join("\n") + "\n"))
+        .unwrap();
+    b.write("notes/plan.md", "- count\n- release\n").unwrap();
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+
+    let conflicts: &[(&str, &[&str])] = &[
+        ("CONFLICT (contents)", &["notes/plan.md"]),
+        ("CONFLICT (contents)", &["src/inventory.rs"]),
+    ];
+    assert_eq!(
+        space.check("alice-laptop"),
+        BTreeMap::from([(
+            "bob-desktop".into(),
+            conflicted(
+                conflicts,
+                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[7..8])]
+            )
+        )])
+    );
+    assert_eq!(
+        space.check("bob-desktop"),
+        BTreeMap::from([(
+            "alice-laptop".into(),
+            conflicted(
+                conflicts,
+                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[8..9])]
+            )
+        )])
+    );
+}
+
+#[test]
 fn edits_to_distant_lines_of_one_file_merge_cleanly() {
     let tmp = TempDir::new().unwrap();
     let repo = Repo::create(&tmp);
@@ -481,6 +547,55 @@ fn a_request_with_a_base_that_is_not_an_object_id_is_refused() {
     let snapshot = git::snapshot(a.dir()).unwrap();
     let error = git::bundle(a.dir(), &snapshot, "--all").unwrap_err();
     assert_eq!(error.to_string(), "not an object ID: \"--all\"");
+}
+
+/// A bundle of `machine`'s `HEAD` in the references `refs`, in their order, without the
+/// upstream's default branch.
+fn bundle_of(machine: &Machine, refs: &[&str]) -> Vec<u8> {
+    machine
+        .write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
+        .unwrap();
+    machine.commit("count").unwrap();
+    for name in refs {
+        machine.git(&["update-ref", name, "HEAD"]).unwrap();
+    }
+    let without = format!("^{}", git::UPSTREAM_HEAD);
+    let args: Vec<&str> = ["bundle", "create", "--quiet", "-"]
+        .into_iter()
+        .chain(refs.iter().copied())
+        .chain([without.as_str()])
+        .collect();
+    machine.git(&args).unwrap()
+}
+
+#[test]
+fn a_bundle_with_another_reference_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, _) = repo.machine("alice-laptop");
+    let (b, _) = repo.machine("bob-desktop");
+    let bundle = bundle_of(&a, &["refs/heads/main"]);
+    let error = git::unbundle(b.dir(), &bundle).unwrap_err().to_string();
+    assert!(
+        error.starts_with("a bundle with another reference: ")
+            && error.ends_with(" refs/heads/main"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_bundle_with_two_references_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (a, _) = repo.machine("alice-laptop");
+    let (b, _) = repo.machine("bob-desktop");
+    // The bundle's own reference first.
+    let bundle = bundle_of(&a, &[git::BUNDLE_REF, "refs/heads/main"]);
+    let error = git::unbundle(b.dir(), &bundle).unwrap_err().to_string();
+    assert!(
+        error.starts_with("a bundle without exactly one reference: "),
+        "{error}"
+    );
 }
 
 #[test]
