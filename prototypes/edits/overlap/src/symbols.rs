@@ -179,6 +179,7 @@ mod tests {
     fn assert_symbols(language: Language, lines: &[(&str, &str)]) {
         let source: String = lines.iter().map(|(line, _)| format!("{line}\n")).collect();
         let symbols = innermost(language, source.as_bytes()).unwrap();
+        assert_eq!(symbols.len(), lines.len(), "one item per line");
         let got: Vec<(&str, String)> = lines
             .iter()
             .zip(symbols)
