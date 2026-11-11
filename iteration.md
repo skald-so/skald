@@ -45,6 +45,16 @@
 - [ ] **4.8:** Summary and the "Delivery to agents" table
 
 ## Story 5: Edit comparison prototype with HMAC fingerprints
+- [ ] **5.1:** Prototype harness and file fingerprints
+- [ ] **5.2:** Exact check with `git merge-tree`
+- [ ] **5.3:** Hunk fingerprints
+- [ ] **5.4:** Symbol fingerprints
+- [ ] **5.5:** Measurement on real repositories
+- [ ] **5.6:** Noise from lockfiles, migrations and generated code
+- [ ] **5.7:** Path normalization on macOS and Windows
+- [ ] **5.8:** Edits via Bash and generators
+- [ ] **5.9:** What the server learns and the space key
+- [ ] **5.10:** Preliminary answers to "To decide"
 
 ## Story 6: Staging environment
 
@@ -166,6 +176,8 @@
 ## Story 54: Python and TypeScript SDKs
 
 ## Story 55: Homebrew, winget and cargo-binstall
+
+## Story 69: OpenClaw and Crush setup by `skald connect`
 
 ## Story 56: Managed keys: custodian device
 

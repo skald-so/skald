@@ -28,7 +28,7 @@ Numbers in parentheses are features from [features.md](features.md).
 - Notifications to Telegram, Slack or a webhook (12).
 - Restricted mode for tasks from other people (10).
 - Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis (12, 6).
-- One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code and Codex, new device confirmation, invite by link, Claude Code plugin (16).
+- One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code, Codex and the agents of [agents.md](agents.md#setup-by-skald-connect), new device confirmation, invite by link, Claude Code plugin (16).
 - Admin rights transfer, "only one admin" warning, account deletion (4, 5).
 - Load testing before launch.
 - Documentation: quick start, CLI reference.
@@ -57,6 +57,7 @@ List order is priority.
 - History export and migration from the cloud to a self-hosted server (6).
 - Python and TypeScript SDKs.
 - Homebrew, winget, cargo-binstall (16).
+- `skald connect` sets up OpenClaw and Crush (16).
 - Managed-keys mode, on demand (13).
 - `skald ui`: a local copy of the web UI from a signed binary, on demand (12).
 - Sealed sender and padding.

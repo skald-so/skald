@@ -3,5 +3,12 @@
   "extends": ["config:recommended"],
   "baseBranchPatterns": ["dev"],
   "semanticCommits": "enabled",
-  "lockFileMaintenance": { "enabled": true }
+  "lockFileMaintenance": { "enabled": true },
+  "packageRules": [
+    {
+      "description": "Stays on 0.2: see prototypes/mls/openmls/Cargo.toml",
+      "matchDepNames": ["getrandom-02"],
+      "allowedVersions": "<0.3"
+    }
+  ]
 }
