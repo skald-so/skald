@@ -137,6 +137,26 @@ impl Source {
         Ok(())
     }
 
+    /// Takes the waiting messages and hands them over with `hand`: marks them handed over once it
+    /// succeeds, or puts them back and returns its error. With none waiting, calls nothing. Returns
+    /// the messages handed over.
+    pub fn hand_over(
+        &self,
+        hand: impl FnOnce(&[Message]) -> io::Result<()>,
+    ) -> io::Result<Vec<Message>> {
+        let messages = self.take()?;
+        if messages.is_empty() {
+            return Ok(messages);
+        }
+        let ids: Vec<String> = messages.iter().map(|m| m.msg_id.clone()).collect();
+        if let Err(error) = hand(&messages) {
+            self.release(&ids)?;
+            return Err(error);
+        }
+        self.handed_over(&ids)?;
+        Ok(messages)
+    }
+
     /// Where the message is, or `None` if the source does not have it.
     pub fn state(&self, msg_id: &str) -> io::Result<Option<State>> {
         let name = file_name(msg_id);
@@ -329,6 +349,54 @@ mod tests {
         source.release(&ids(&taken)).unwrap();
         assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
         assert_eq!(source.take().unwrap(), vec![message]);
+    }
+
+    #[test]
+    fn hands_over_the_waiting_messages_or_puts_them_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Source::open(dir.path()).unwrap();
+        let mut calls = 0;
+        let none = source.hand_over(|_| {
+            calls += 1;
+            Ok(())
+        });
+        assert!(none.unwrap().is_empty());
+        assert_eq!(calls, 0, "nothing to hand over");
+
+        let added = [
+            source.add("alice", "one").unwrap(),
+            source.add("bob", "two").unwrap(),
+        ];
+        let error = source
+            .hand_over(|messages| {
+                assert_eq!(messages, added);
+                Err(io::Error::other("refused"))
+            })
+            .unwrap_err();
+        assert_eq!(error.to_string(), "refused");
+        for message in &added {
+            assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
+        }
+
+        let handed = source
+            .hand_over(|messages| {
+                assert_eq!(messages, added);
+                // Not handed over before the handover succeeds.
+                assert_eq!(
+                    source.state(&messages[0].msg_id).unwrap(),
+                    Some(State::Taken)
+                );
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(handed, added);
+        for message in &added {
+            assert!(matches!(
+                source.state(&message.msg_id).unwrap(),
+                Some(State::HandedOver { .. })
+            ));
+        }
+        assert!(source.hand_over(|_| unreachable!()).unwrap().is_empty());
     }
 
     #[test]

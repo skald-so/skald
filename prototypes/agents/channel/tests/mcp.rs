@@ -1,9 +1,10 @@
 //! An MCP client starts `agent-channel` over stdio and gets its channel events.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use agent_source::{Message, Source, State};
+use agent_source::{Message, Source};
+use agent_testing::wait_handed_over;
 use rmcp::model::{CustomNotification, ProtocolVersion};
 use rmcp::service::{NotificationContext, RunningService};
 use rmcp::transport::TokioChildProcess;
@@ -58,22 +59,6 @@ fn assert_carries(event: &CustomNotification, message: &Message) {
     );
 }
 
-/// Waits until the server marks `msg_id` handed over.
-async fn handed_over(source: &Source, msg_id: &str) {
-    let start = Instant::now();
-    while !matches!(
-        source.state(msg_id).unwrap(),
-        Some(State::HandedOver { .. })
-    ) {
-        assert!(
-            start.elapsed() < Duration::from_secs(10),
-            "{msg_id} is not marked handed over: {:?}",
-            source.state(msg_id).unwrap()
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 #[tokio::test]
 async fn declares_a_channel_on_a_revision_with_a_handshake() {
     let dir = tempfile::tempdir().unwrap();
@@ -105,12 +90,12 @@ async fn pushes_one_event_per_waiting_message_once() {
     // The messages that waited before the session, oldest first.
     for message in [&first, &second] {
         assert_carries(&next(&mut received).await, message);
-        handed_over(&source, &message.msg_id).await;
+        wait_handed_over(&source, &message.msg_id);
     }
     // A message added later, while the session runs.
     let third = source.add("reviewer of alice", "Merged.").unwrap();
     assert_carries(&next(&mut received).await, &third);
-    handed_over(&source, &third.msg_id).await;
+    wait_handed_over(&source, &third.msg_id);
 
     // Nothing is pushed again: the server polls every 100 ms.
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -137,7 +122,7 @@ async fn two_sessions_on_one_source_get_each_message_once() {
         got.push(event.params.unwrap()["meta"]["msg_id"].clone());
     }
     for msg_id in &added {
-        handed_over(&source, msg_id).await;
+        wait_handed_over(&source, msg_id);
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
@@ -163,7 +148,7 @@ async fn messages_of_a_server_that_died_are_pushed_again() {
 
     let (client, mut received) = start(dir.path()).await;
     assert_carries(&next(&mut received).await, &message);
-    handed_over(&source, &message.msg_id).await;
+    wait_handed_over(&source, &message.msg_id);
     client.cancel().await.unwrap();
 }
 
@@ -186,6 +171,6 @@ async fn a_server_whose_source_fails_ends_and_its_messages_are_pushed_again() {
     std::fs::create_dir(&handed).unwrap();
     let (client, mut received) = start(dir.path()).await;
     assert_carries(&next(&mut received).await, &message);
-    handed_over(&source, &message.msg_id).await;
+    wait_handed_over(&source, &message.msg_id);
     client.cancel().await.unwrap();
 }

@@ -1,8 +1,14 @@
 # Code that script/mutants skips in the delivery prototypes' workspace; the tests cannot catch its
 # mutants.
-# The live checks' code that runs the installed agent CLIs, which script/test does not.
-exclude_globs = ["live/src/run.rs", "live/src/pty.rs"]
+# The live checks' code that runs the installed agent CLIs, which script/test does not; and the
+# tests' shared assertions, which are themselves tests.
+exclude_globs = ["live/src/run.rs", "live/src/pty.rs", "testing/src/lib.rs"]
 # cargo-mutants builds and tests only the mutated packages in its baseline run; live-check's tests
-# also need the server and hook handler binaries. `--workspace` would repeat in the mutants' runs,
-# which cargo refuses.
-additional_cargo_args = ["--package=agent-inbox", "--package=agent-channel", "--package=agent-hook"]
+# also need the server, hook handler and queue prototype binaries. `--workspace` would repeat in the
+# mutants' runs, which cargo refuses.
+additional_cargo_args = [
+  "--package=agent-inbox",
+  "--package=agent-channel",
+  "--package=agent-hook",
+  "--package=agent-queue",
+]

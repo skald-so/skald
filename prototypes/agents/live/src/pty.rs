@@ -1,21 +1,24 @@
-//! Runs the Channels live check: Claude Code in a pseudo-terminal, which it needs to load a
-//! channel. Everything that runs no CLI is in the library's `channel` module.
+//! Runs the live checks whose sessions run in a pseudo-terminal: Channels, as Claude Code loads a
+//! channel only in an interactive session, and `codex queue`, as a queued message reaches only a
+//! session that keeps running after its turn. Everything that runs no CLI is in the library's
+//! `channel` and `queue` modules.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_live::channel::{
-    CHANNEL_BIN, Case, ChannelCheck, ChannelSession, Files, HookEvent, IN_A_ROW, LISTENING, Screen,
-    Sent, add_message, extra_environment, hook_events, session, stub_environment,
+    CHANNEL_BIN, Case, ChannelCheck, Files, HookEvent, IN_A_ROW, LISTENING, PtySession, Screen,
+    Sent, TERM, add_message, extra_environment, hook_events, session, stub_environment,
 };
-use agent_live::{Agent, Options, Stub, binary, token};
+use agent_live::queue::{self, QUEUE_BIN, QueueCheck, thread};
+use agent_live::{Agent, Kind, Options, Stub, binary, token};
 use agent_source::{Source, now_ms};
 
 use crate::Result;
@@ -51,7 +54,7 @@ pub fn channel(options: &Options) -> Result<bool> {
         None
     };
     let (session_a, session_b) = side_by_side(
-        || -> Result<(ChannelSession, Vec<Added>)> {
+        || -> Result<(PtySession, Vec<Added>)> {
             let mut a = a.start()?;
             a.watch(added_a.token());
             a.wait(TURN, |s| s.got(added_a.token()) && turn_ended(s))?;
@@ -69,7 +72,7 @@ pub fn channel(options: &Options) -> Result<bool> {
             Ok((a.end()?, row))
         },
         b.map(|(b, added_b)| {
-            move || -> Result<(ChannelSession, Added)> {
+            move || -> Result<(PtySession, Added)> {
                 let mut b = b.start()?;
                 b.watch(added_b.token());
                 b.wait(TURN, |s| s.got(added_b.token()) && turn_ended(s))?;
@@ -121,8 +124,90 @@ pub fn channel(options: &Options) -> Result<bool> {
     Ok(finish(work, options, &verdict, check.pass()))
 }
 
+/// The `codex queue` path's live check: an idle session, once its first turn ends; with `--all`,
+/// also the other of two idle sessions and a busy session.
+pub fn queue(options: &Options) -> Result<bool> {
+    let work = start(Agent::Codex)?;
+    let agent_queue = binary(&std::env::current_exe()?, QUEUE_BIN)?;
+    let path = std::env::var("PATH").unwrap_or_default();
+    let prepare = |name: &str, kind: Kind| -> Result<Prepared> {
+        let files = Files::new(&work.path().join(name));
+        fs::create_dir_all(&files.project)?;
+        let stub = options.stub(queue::script(kind))?;
+        let url = stub.as_ref().map(Stub::url);
+        let args = queue::session(&files, kind, options.model, url.as_deref());
+        let term = vec![("TERM".to_owned(), TERM.to_owned())];
+        let env = Env::of(&files, stub.as_ref(), &path, queue::stub_environment, term)?;
+        Prepared::new(name, Agent::Codex, false, files, args, env, stub)
+    };
+    let mut check = QueueCheck::default();
+
+    // Idle: once session a's first turn ends, a message is queued for it; with --all, session b
+    // runs at the same time and gets nothing.
+    let a = prepare("a", Kind::Idle)?;
+    let b = if options.all {
+        Some(prepare("b", Kind::Idle)?)
+    } else {
+        None
+    };
+    let (session_a, session_b) = side_by_side(
+        || -> Result<(PtySession, Option<Added>)> {
+            let mut a = a.start()?;
+            a.wait(TURN, turn_ended)?;
+            let added = a.queue(&agent_queue)?;
+            if let Some(added) = &added {
+                a.watch(added.token());
+                a.wait(TURN, |s| answered(s, added.token()))?;
+            }
+            Ok((a.end()?, added))
+        },
+        b.map(|b| {
+            move || -> Result<PtySession> {
+                let mut b = b.start()?;
+                b.wait(TURN, turn_ended)?;
+                b.wait(QUIET, |_| false)?;
+                b.end()
+            }
+        }),
+    );
+    let (session_a, added_a) = session_a?;
+    let sent_a = added_a.as_ref().map(Added::now).transpose()?;
+    println!("{}", check.idle(&session_a, sent_a.as_ref()));
+    if let Some(session_b) = session_b {
+        let token_a = added_a.as_ref().map_or("", Added::token);
+        println!("{}", check.other(&session_b?, token_a));
+    }
+
+    // Busy: the message is queued when the agent starts the shell command.
+    if options.all {
+        let mut c = prepare("c", Kind::Busy)?.start()?;
+        c.wait(TURN, |s| s.shell_started() || turn_ended(s))?;
+        let added = if c.session.shell_started() {
+            c.queue(&agent_queue)?
+        } else {
+            None
+        };
+        if let Some(added) = &added {
+            c.watch(added.token());
+            c.wait(TURN, |s| answered(s, added.token()))?;
+        }
+        let session_c = c.end()?;
+        let sent_c = added.as_ref().map(Added::now).transpose()?;
+        println!("{}", check.busy(&session_c, sent_c.as_ref()));
+    }
+
+    let verdict = check.verdict(options);
+    Ok(finish(work, options, &verdict, check.pass()))
+}
+
+/// Whether `token` reached the model and the turn it came in ended: a queued message comes in a
+/// turn after the first.
+fn answered(session: &PtySession, token: &str) -> bool {
+    session.got(token) && session.replies().len() >= 2 && turn_ended(session)
+}
+
 /// Whether the session's last turn ended: the agent waits for a prompt.
-fn turn_ended(session: &ChannelSession) -> bool {
+fn turn_ended(session: &PtySession) -> bool {
     matches!(session.hooks.last(), Some(HookEvent::Stopped(_)))
 }
 
@@ -140,23 +225,14 @@ impl Prepare<'_> {
         let files = Files::new(&self.work.join(name));
         let args = session(&files, self.channel, case, self.options.model)?;
         let stub = self.options.stub(case.script())?;
-        let env = match &stub {
-            Some(stub) => Env::Only(stub_environment(
-                &files.dir.join("home"),
-                &stub.url(),
-                self.path,
-            )?),
-            None => Env::Add(extra_environment(true)),
-        };
-        let source = Source::open(&files.source)?;
-        Ok(Prepared {
-            name: name.to_owned(),
-            files,
-            args,
-            env,
-            stub,
-            source,
-        })
+        let env = Env::of(
+            &files,
+            stub.as_ref(),
+            self.path,
+            stub_environment,
+            extra_environment(true),
+        )?;
+        Prepared::new(name, Agent::Claude, true, files, args, env, stub)
     }
 
     /// The `case` session `name` with a check's message waiting.
@@ -174,8 +250,42 @@ enum Env {
     Add(Vec<(String, String)>),
 }
 
+impl Env {
+    /// The environment of the session in `files`: on `stub`, only the variables `on_stub` gives
+    /// for a home of its own, the stub's address and `path`; on the real model, the check's own and
+    /// `real`.
+    fn of(
+        files: &Files,
+        stub: Option<&Stub>,
+        path: &str,
+        on_stub: impl FnOnce(&Path, &str, &str) -> io::Result<Vec<(String, String)>>,
+        real: Vec<(String, String)>,
+    ) -> io::Result<Self> {
+        Ok(match stub {
+            Some(stub) => Env::Only(on_stub(&files.dir.join("home"), &stub.url(), path)?),
+            None => Env::Add(real),
+        })
+    }
+
+    /// Gives `command` this environment.
+    fn apply(&self, command: &mut Command) {
+        match self {
+            Env::Only(env) => {
+                command.env_clear().envs(env.iter().map(|(n, v)| (n, v)));
+            }
+            Env::Add(env) => {
+                command.envs(env.iter().map(|(n, v)| (n, v)));
+            }
+        }
+    }
+}
+
 struct Prepared {
     name: String,
+    agent: Agent,
+    /// Whether the session belongs to the Channels check: the screen tells whether its channel
+    /// loaded.
+    channel: bool,
     files: Files,
     args: Vec<String>,
     env: Env,
@@ -221,23 +331,40 @@ impl Added {
 }
 
 impl Prepared {
+    /// The session `name` of `agent` in `files`, ready to start with `args` in `env`, on `stub`
+    /// unless the model is real; `channel` if it belongs to the Channels check.
+    fn new(
+        name: &str,
+        agent: Agent,
+        channel: bool,
+        files: Files,
+        args: Vec<String>,
+        env: Env,
+        stub: Option<Stub>,
+    ) -> Result<Self> {
+        let source = Source::open(&files.source)?;
+        Ok(Self {
+            name: name.to_owned(),
+            agent,
+            channel,
+            files,
+            args,
+            env,
+            stub,
+            source,
+        })
+    }
+
     /// Adds a check's message with `token` to the session's source.
     fn add(&self, token: &str) -> Result<Added> {
         Added::new(&self.source, &self.files.source, token)
     }
 
-    /// Starts Claude Code in a pseudo-terminal.
+    /// Starts the CLI in a pseudo-terminal.
     fn start(self) -> Result<Live> {
         let (master, slave) = open_pty()?;
-        let mut command = Agent::Claude.command();
-        match &self.env {
-            Env::Only(env) => {
-                command.env_clear().envs(env.iter().map(|(n, v)| (n, v)));
-            }
-            Env::Add(env) => {
-                command.envs(env.iter().map(|(n, v)| (n, v)));
-            }
-        }
+        let mut command = self.agent.command();
+        self.env.apply(&mut command);
         command
             .args(&self.args)
             .current_dir(&self.files.project)
@@ -270,10 +397,12 @@ impl Prepared {
                 }
             }
         });
+        let mut session = PtySession::new(now_ms());
+        session.channel_listening = self.channel.then_some(false);
         Ok(Live {
             log: File::create(&self.files.screen)?,
             writer: File::from(master),
-            session: ChannelSession::new(now_ms()),
+            session,
             screen: Screen::default(),
             tokens: Vec::new(),
             child,
@@ -291,7 +420,7 @@ struct Live {
     output: Receiver<Vec<u8>>,
     screen: Screen,
     log: File,
-    session: ChannelSession,
+    session: PtySession,
     /// The tokens whose arrival at the model is timed.
     tokens: Vec<String>,
 }
@@ -306,8 +435,39 @@ impl Live {
         self.prepared.add(token)
     }
 
+    /// Adds a check's message and queues it for the session with `agent_queue`, in the session's
+    /// environment, so that `codex queue` finds the session's config home. `None` if no hook told
+    /// the session's thread yet.
+    fn queue(&self, agent_queue: &Path) -> Result<Option<Added>> {
+        let hooks = fs::read_to_string(&self.prepared.files.hooks).unwrap_or_default();
+        let Some(thread) = thread(&hooks) else {
+            eprintln!(
+                "live-check: session {} has no thread yet; see {}",
+                self.prepared.name,
+                self.prepared.files.screen.display()
+            );
+            return Ok(None);
+        };
+        let added = self.add(&token())?;
+        let mut command = self.prepared.agent.command_for(agent_queue);
+        self.prepared.env.apply(&mut command);
+        let output = command
+            .arg(&self.prepared.files.source)
+            .arg(&thread)
+            .stdin(Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            eprintln!(
+                "live-check: session {}: {}",
+                self.prepared.name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(Some(added))
+    }
+
     /// Runs the session until `done` holds or `limit` passes; whether `done` held.
-    fn wait(&mut self, limit: Duration, done: impl Fn(&ChannelSession) -> bool) -> Result<bool> {
+    fn wait(&mut self, limit: Duration, done: impl Fn(&PtySession) -> bool) -> Result<bool> {
         let deadline = Instant::now() + limit;
         while Instant::now() < deadline {
             let alive = self.pump()?;
@@ -362,8 +522,8 @@ impl Live {
     }
 
     fn refresh(&mut self) -> Result<()> {
-        if !self.session.channel_listening {
-            self.session.channel_listening = self.screen.showed(LISTENING);
+        if self.session.channel_listening == Some(false) {
+            self.session.channel_listening = Some(self.screen.showed(LISTENING));
         }
         if let Ok(text) = fs::read_to_string(&self.prepared.files.hooks) {
             self.session.hooks = hook_events(&text);
@@ -375,7 +535,7 @@ impl Live {
     }
 
     /// Ends the session as a person does, with Ctrl-C twice, or kills it.
-    fn end(mut self) -> Result<ChannelSession> {
+    fn end(mut self) -> Result<PtySession> {
         for _ in 0..2 {
             let _ = self.writer.write_all(b"\x03");
             let pause = Instant::now() + Duration::from_millis(500);
@@ -396,6 +556,9 @@ impl Live {
         if let Some(stub) = &self.session.stub {
             stub.save(&self.prepared.files.dir.join("stub.json"))?;
         }
+        // Codex's terminal UI prints the tokens it used when it exits.
+        let screen = fs::read(&self.prepared.files.screen)?;
+        self.session.usage = queue::usage(&String::from_utf8_lossy(&screen));
         Ok(self.session)
     }
 }
