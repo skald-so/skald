@@ -119,6 +119,10 @@ pub enum FieldProblem {
     TwoBodies,
     /// A field is present where the spec does not allow it.
     NotAllowed,
+    /// The field differs from another one it must equal; holds the other's name.
+    Mismatch(&'static str),
+    /// The field equals another one it must differ from; holds the other's name.
+    Same(&'static str),
     /// An agent address is invalid.
     Address(AddressError),
     /// A byte string that holds a CBOR item does not decode.
@@ -169,6 +173,8 @@ impl fmt::Display for FieldProblem {
             Self::NoBody => f.write_str("no body"),
             Self::TwoBodies => f.write_str("more than one body"),
             Self::NotAllowed => f.write_str("not allowed here"),
+            Self::Mismatch(other) => write!(f, "differs from {other}"),
+            Self::Same(other) => write!(f, "the same as {other}"),
             Self::Address(error) => write!(f, "{error}"),
             Self::Embedded(error) => write!(f, "{error}"),
         }
@@ -177,7 +183,7 @@ impl fmt::Display for FieldProblem {
 
 impl std::error::Error for DecodeError {}
 
-fn field_error(field: &'static str, problem: FieldProblem) -> DecodeError {
+pub(crate) fn field_error(field: &'static str, problem: FieldProblem) -> DecodeError {
     DecodeError::Field { field, problem }
 }
 
@@ -519,6 +525,14 @@ impl<'i, 'b> Fields<'i, 'b> {
     ) -> Result<&'i Item<'b>, DecodeError> {
         self.take(key)
             .ok_or(field_error(field, FieldProblem::Missing))
+    }
+
+    /// Whether a field with this key is left.
+    pub(crate) fn has(&self, key: u64) -> bool {
+        let key = i128::from(key);
+        self.entries
+            .iter()
+            .any(|entry| matches!(entry, Some((found, _, _)) if *found == key))
     }
 
     /// Whether every field has been taken.

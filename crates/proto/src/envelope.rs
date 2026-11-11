@@ -2,8 +2,10 @@
 
 use std::num::NonZeroU64;
 
-use crate::cbor::{self, Codec, DecodeError, FieldProblem, Item, MapOut, NonEmpty, Unknown};
-use crate::content::Content;
+use crate::cbor::{
+    self, Codec, DecodeError, FieldProblem, Item, MapOut, NonEmpty, Unknown, field_error,
+};
+use crate::content::{Content, TASK};
 use crate::id::{ChannelId, DeviceId, MessageId, SpaceId};
 
 /// A message as it travels: the plaintext header the server routes by and the encrypted payload.
@@ -67,9 +69,15 @@ impl Codec for Envelope {
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let [header, payload] = item.tuple("envelope")?;
+        let header = Header::decode(header)?;
+        let bytes = payload.bytes("envelope.payload")?.to_vec();
+        // Under `hpke`, the payload holds an `hpke-payload`; it stays as bytes, as received.
+        if header.scheme == Scheme::Hpke {
+            payload.embedded::<HpkePayload>("envelope.payload")?;
+        }
         Ok(Self {
-            header: Header::decode(header)?,
-            payload: payload.bytes("envelope.payload")?.to_vec(),
+            header,
+            payload: bytes,
         })
     }
 }
@@ -164,11 +172,34 @@ impl Codec for HpkePlaintext {
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let [sender, content, signature] = item.tuple("hpke-plaintext")?;
-        Ok(Self {
+        let plaintext = Self {
             sender: sender.id("hpke-plaintext.sender")?,
             content: content.embedded("hpke-plaintext.content")?,
             signature: signature.fixed("hpke-plaintext.signature")?,
-        })
+        };
+        // A `task` body appears only in a task, never in a message (`queues.md`, "Tasks").
+        if plaintext.content.unknown.get(i128::from(TASK)).is_some() {
+            return Err(field_error(
+                "hpke-plaintext.content",
+                FieldProblem::Embedded(Box::new(field_error(
+                    "content.task",
+                    FieldProblem::NotAllowed,
+                ))),
+            ));
+        }
+        // A grant names the sending service device, a delegation the sending custodian device.
+        let named = match (&plaintext.content.grant, &plaintext.content.delegation) {
+            (Some(grant), _) => Some((grant.body.service, "grant-body.service")),
+            (_, Some(delegation)) => Some((delegation.body.custodian, "delegation-body.custodian")),
+            (None, None) => None,
+        };
+        match named {
+            Some((device, field)) if device != plaintext.sender => Err(field_error(
+                "hpke-plaintext.sender",
+                FieldProblem::Mismatch(field),
+            )),
+            _ => Ok(plaintext),
+        }
     }
 }
 

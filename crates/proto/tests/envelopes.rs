@@ -9,17 +9,27 @@ use std::fmt::Debug;
 use common::*;
 use skald_proto::{
     AddressError, Attachment, Body, Cbor, Content, DecodeError, Delegation, DelegationBody,
-    DeliveryStatus, Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload, HpkePlaintext,
-    NameError, NonEmpty, Receipt, ReceiptStatus, Scheme, Segment, SendKey, ServerStatus, Stored,
-    Unknown,
+    DeliveryStatus, EncodingProblem, Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload,
+    HpkePlaintext, NameError, NonEmpty, Receipt, ReceiptStatus, Scheme, Segment, SendKey,
+    ServerStatus, Stored, Unknown,
 };
 
 /// The encoding of a 16-byte ID: `h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6'`.
 const ID: &str = "50019a6f1e2b3c7d4e8f5061a2b3c4d5e6";
 /// `"a/b/c@d"`.
 const ADDRESS: &str = "67612f622f6340 64";
+/// The encoding of another ID: `h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7'`.
+const ID2: &str = "50019a6f1e2b3c7d4e8f5061a2b3c4d5e7";
+/// `"a/b/user@d"`, a person address.
+const PERSON: &str = "6a612f622f757365724064";
 /// `"{}"`, an `a2a` body.
 const JSON: &str = "627b7d";
+/// The content entry `3: 1`, a `counter`.
+const COUNTER: &str = "0301";
+/// The content entry `9: {1: 3, 2: [ID]}`, a `receipt` body.
+const RECEIPT: &str = "09a2 0103 0281 50019a6f1e2b3c7d4e8f5061a2b3c4d5e6";
+/// `{1: "{}"}`, a value for the bodies `Content` keeps in `unknown`.
+const OTHER_BODY: &str = "a101627b7d";
 
 fn round_trip<T: Cbor + PartialEq + Debug>(value: &T) {
     let bytes = value.to_cbor();
@@ -52,6 +62,22 @@ fn field(field: &'static str, problem: FieldProblem) -> Result<(), DecodeError> 
 /// Decodes `hex` as a `T` and drops the value.
 fn decode<T: Cbor>(text: &str) -> Result<(), DecodeError> {
     T::from_cbor(&hex(text)).map(drop)
+}
+
+/// Encodes `value`, decodes the bytes and drops the result.
+fn check<T: Cbor>(value: &T) -> Result<(), DecodeError> {
+    T::from_cbor(&value.to_cbor()).map(drop)
+}
+
+fn embedded(field: &'static str, error: DecodeError) -> Result<(), DecodeError> {
+    Err(DecodeError::Field {
+        field,
+        problem: FieldProblem::Embedded(Box::new(error)),
+    })
+}
+
+fn json() -> Body {
+    Body::A2a("{}".to_owned())
 }
 
 /// The header of the `mls` vector, `{1: 1, 2: ID, 3: ID, 4: ID, 5: 1}`, with `extra` entries,
@@ -212,70 +238,301 @@ fn unknown_fields_are_kept_in_key_order() {
 
 #[test]
 fn content_with_a_body_of_a_later_version_keeps_it() {
-    // {1: "a/b/c@d", 4: 0, 11: {1: "{}"}}: the `task` body, unknown to this version.
-    let bytes = hex(&format!("a3 01{ADDRESS} 0400 0b a101{JSON}"));
+    // {1: "a/b/c@d", 4: 0, 15: {1: "{}"}}: no version defines key 15, so it may be a later body.
+    // A counter is required only with a body of version 1.
+    let bytes = hex(&format!("a3 01{ADDRESS} 0400 0f{OTHER_BODY}"));
     let content = Content::from_cbor(&bytes).unwrap();
     assert_eq!(content.body, None);
-    assert_eq!(content.unknown.keys().collect::<Vec<_>>(), [11]);
+    assert_eq!(content.unknown.keys().collect::<Vec<_>>(), [15]);
     assert_eq!(content.to_cbor(), bytes);
+}
+
+#[test]
+fn content_keeps_the_version_1_bodies_it_does_not_decode() {
+    // `task`, `task-result`, `ask` and `ask-answer`.
+    for key in [11_u8, 12, 13, 14] {
+        let bytes = hex(&format!(
+            "a4 01{ADDRESS} {COUNTER} 0400 {key:02x}{OTHER_BODY}"
+        ));
+        let content = Content::from_cbor(&bytes).unwrap();
+        assert_eq!(content.body, None);
+        assert_eq!(
+            content.unknown.keys().collect::<Vec<_>>(),
+            [i128::from(key)]
+        );
+        assert_eq!(content.to_cbor(), bytes);
+    }
 }
 
 #[test]
 fn content_needs_exactly_one_body() {
     assert_eq!(
-        decode::<Content>(&format!("a2 01{ADDRESS} 0400")),
+        decode::<Content>(&format!("a3 01{ADDRESS} {COUNTER} 0400")),
         field("content", FieldProblem::NoBody)
     );
     assert_eq!(
-        decode::<Content>(&format!("a4 01{ADDRESS} 0400 06{JSON} 09a2 0103 0281{ID}")),
-        field("content", FieldProblem::TwoBodies)
-    );
-    assert_eq!(
-        decode::<Content>(&format!("a3 01{ADDRESS} 0400 06{JSON}")),
+        decode::<Content>(&format!("a4 01{ADDRESS} {COUNTER} 0400 06{JSON}")),
         Ok(())
     );
+    // Every two bodies of version 1: `a2a`, `receipt`, `task`, `task-result`, `ask`, `ask-answer`.
+    let bodies = [
+        format!("06{JSON}"),
+        RECEIPT.to_owned(),
+        format!("0b{OTHER_BODY}"),
+        format!("0c{OTHER_BODY}"),
+        format!("0d{OTHER_BODY}"),
+        format!("0e{OTHER_BODY}"),
+    ];
+    for (i, first) in bodies.iter().enumerate() {
+        for second in &bodies[i + 1..] {
+            assert_eq!(
+                decode::<Content>(&format!(
+                    "a6 01{ADDRESS} 02{ADDRESS} {COUNTER} 0400 {first} {second}"
+                )),
+                field("content", FieldProblem::TwoBodies),
+                "{first} and {second}"
+            );
+        }
+    }
+}
+
+#[test]
+fn content_needs_a_counter_unless_it_is_a_task_or_has_a_grant() {
+    assert_eq!(
+        decode::<Content>(&format!("a3 01{ADDRESS} 0400 06{JSON}")),
+        field("content.counter", FieldProblem::Missing)
+    );
+    assert_eq!(
+        decode::<Content>(&format!("a4 01{ADDRESS} 02{ADDRESS} 0400 {RECEIPT}")),
+        field("content.counter", FieldProblem::Missing)
+    );
+    // `task-result`, `ask` and `ask-answer`.
+    for key in [12_u8, 13, 14] {
+        assert_eq!(
+            decode::<Content>(&format!("a3 01{ADDRESS} 0400 {key:02x}{OTHER_BODY}")),
+            field("content.counter", FieldProblem::Missing),
+            "body {key}"
+        );
+    }
+    // A task is no mailbox message.
+    assert_eq!(
+        decode::<Content>(&format!("a3 01{ADDRESS} 0400 0b{OTHER_BODY}")),
+        Ok(())
+    );
+    // A stateless service device.
+    let from_service = Content {
+        counter: None,
+        grant: Some(grant()),
+        ..content(alice(), json())
+    };
+    assert_eq!(check(&from_service), Ok(()));
 }
 
 #[test]
 fn content_has_a_delegation_or_a_grant_not_both() {
-    let delegation = to_hex(&delegation().to_cbor());
-    let grant = to_hex(&grant().to_cbor());
+    let from_custodian = Content {
+        delegation: Some(delegation()),
+        ..content(delegation().body.agent, json())
+    };
+    assert_eq!(check(&from_custodian), Ok(()));
     assert_eq!(
-        decode::<Content>(&format!(
-            "a6 01{ADDRESS} 0301 0400 06{JSON} 07{delegation} 08{grant}"
-        )),
+        check(&Content {
+            grant: Some(grant()),
+            ..from_custodian
+        }),
         field("content.grant", FieldProblem::NotAllowed)
     );
     assert_eq!(
-        decode::<Content>(&format!("a5 01{ADDRESS} 0301 0400 06{JSON} 07{delegation}")),
-        Ok(())
-    );
-    assert_eq!(
-        decode::<Content>(&format!("a5 01{ADDRESS} 0301 0400 06{JSON} 08{grant}")),
+        check(&Content {
+            grant: Some(grant()),
+            ..content(alice(), json())
+        }),
         Ok(())
     );
 }
 
 #[test]
-fn attachments_need_an_a2a_body() {
+fn custodians_send_as_the_delegated_agent_and_services_not_as_a_person() {
+    let person = address("acme/alice/user@skald.example");
+    assert_eq!(
+        check(&Content {
+            delegation: Some(delegation()),
+            ..content(alice(), json())
+        }),
+        field(
+            "content.from",
+            FieldProblem::Mismatch("delegation-body.agent")
+        )
+    );
+    assert_eq!(
+        check(&Content {
+            grant: Some(grant()),
+            ..content(person.clone(), json())
+        }),
+        field("content.from", FieldProblem::NotAllowed)
+    );
+    // A person is not an agent, so no one delegates it.
+    let to_person = DelegationBody {
+        agent: person.clone(),
+        ..delegation().body
+    };
+    assert_eq!(
+        check(&to_person),
+        field("delegation-body.agent", FieldProblem::NotAllowed)
+    );
+    assert_eq!(
+        check(&Content {
+            delegation: Some(Delegation {
+                body: to_person,
+                signature: SIGNATURE
+            }),
+            ..content(person.clone(), json())
+        }),
+        embedded(
+            "delegation.body",
+            DecodeError::Field {
+                field: "delegation-body.agent",
+                problem: FieldProblem::NotAllowed
+            }
+        )
+    );
+    // A `client` or `browser` device sends as a person, with neither.
+    assert_eq!(check(&content(person, json())), Ok(()));
+}
+
+#[test]
+fn signers_are_neither_the_service_nor_the_custodian() {
+    assert_eq!(
+        check(&GrantBody {
+            signer: server_device(),
+            ..grant().body
+        }),
+        field(
+            "grant-body.signer",
+            FieldProblem::Same("grant-body.service")
+        )
+    );
+    assert_eq!(
+        check(&DelegationBody {
+            signer: server_device(),
+            ..delegation().body
+        }),
+        field(
+            "delegation-body.signer",
+            FieldProblem::Same("delegation-body.custodian")
+        )
+    );
+}
+
+#[test]
+fn hpke_plaintexts_name_their_sender_in_the_grant_or_the_delegation() {
+    let from_service = Content {
+        counter: None,
+        grant: Some(grant()),
+        ..content(alice(), json())
+    };
+    let from_custodian = Content {
+        delegation: Some(delegation()),
+        ..content(delegation().body.agent, json())
+    };
+    let plaintext = |sender, content| HpkePlaintext {
+        sender,
+        content,
+        signature: SIGNATURE,
+    };
+    assert_eq!(
+        check(&plaintext(server_device(), from_service.clone())),
+        Ok(())
+    );
+    assert_eq!(
+        check(&plaintext(server_device(), from_custodian.clone())),
+        Ok(())
+    );
+    assert_eq!(
+        check(&plaintext(alice_device(), from_service)),
+        field(
+            "hpke-plaintext.sender",
+            FieldProblem::Mismatch("grant-body.service")
+        )
+    );
+    assert_eq!(
+        check(&plaintext(alice_device(), from_custodian)),
+        field(
+            "hpke-plaintext.sender",
+            FieldProblem::Mismatch("delegation-body.custodian")
+        )
+    );
+    assert_eq!(
+        check(&plaintext(alice_device(), content(alice(), json()))),
+        Ok(())
+    );
+}
+
+#[test]
+fn hpke_plaintexts_hold_no_task() {
+    let plaintext = |content: &str| HpkePlaintext {
+        sender: alice_device(),
+        content: Content::from_cbor(&hex(content)).unwrap(),
+        signature: SIGNATURE,
+    };
+    assert_eq!(
+        check(&plaintext(&format!("a3 01{ADDRESS} 0400 0b{OTHER_BODY}"))),
+        embedded(
+            "hpke-plaintext.content",
+            DecodeError::Field {
+                field: "content.task",
+                problem: FieldProblem::NotAllowed
+            }
+        )
+    );
+    assert_eq!(
+        check(&plaintext(&format!(
+            "a5 01{ADDRESS} 02{ADDRESS} {COUNTER} 0400 0c{OTHER_BODY}"
+        ))),
+        Ok(())
+    );
+}
+
+#[test]
+fn attachments_go_only_with_a_body_that_holds_an_a2a_message() {
     let attachment = format!(
         "0a81 a4 01{ID} 0250{} 035820{} 0400",
         "00".repeat(16),
         "00".repeat(32)
     );
-    assert_eq!(
-        decode::<Content>(&format!("a4 01{ADDRESS} 0400 06{JSON} {attachment}")),
-        Ok(())
-    );
+    let other = |key: u8| format!("{key:02x}{OTHER_BODY}");
+    // `a2a`, `task`, `task-result`, a body of a later version; `receipt`, `ask`, `ask-answer`.
+    for (key, body, allowed) in [
+        (6, format!("06{JSON}"), true),
+        (11, other(11), true),
+        (12, other(12), true),
+        (15, other(15), true),
+        (9, RECEIPT.to_owned(), false),
+        (13, other(13), false),
+        (14, other(14), false),
+    ] {
+        // Map keys go in order: a body before `attachments`, key 10, or after it.
+        let entries = if key < 10 {
+            format!("{body} {attachment}")
+        } else {
+            format!("{attachment} {body}")
+        };
+        let expected = if allowed {
+            Ok(())
+        } else {
+            field("content.attachments", FieldProblem::NotAllowed)
+        };
+        assert_eq!(
+            decode::<Content>(&format!(
+                "a6 01{ADDRESS} 02{ADDRESS} {COUNTER} 0400 {entries}"
+            )),
+            expected,
+            "{body}"
+        );
+    }
     assert_eq!(
         decode::<Content>(&format!(
-            "a5 01{ADDRESS} 02{ADDRESS} 0400 09a2 0103 0281{ID} {attachment}"
-        )),
-        field("content.attachments", FieldProblem::NotAllowed)
-    );
-    assert_eq!(
-        decode::<Content>(&format!(
-            "a4 01{ADDRESS} 02{ADDRESS} 0400 09a2 0103 0281{ID}"
+            "a5 01{ADDRESS} 02{ADDRESS} {COUNTER} 0400 {RECEIPT}"
         )),
         Ok(())
     );
@@ -283,28 +540,31 @@ fn attachments_need_an_a2a_body() {
 
 #[test]
 fn receipt_messages_go_from_an_agent_to_the_sender_with_no_hops() {
-    // "a/b/user@d"
-    let person = "6a612f622f757365724064";
-    let receipt = format!("09a2 0103 0281{ID}");
     assert_eq!(
-        decode::<Content>(&format!("a3 01{ADDRESS} 0400 {receipt}")),
+        decode::<Content>(&format!("a4 01{ADDRESS} {COUNTER} 0400 {RECEIPT}")),
         field("content.to", FieldProblem::Missing)
     );
     assert_eq!(
-        decode::<Content>(&format!("a4 01{ADDRESS} 02{ADDRESS} 0401 {receipt}")),
+        decode::<Content>(&format!(
+            "a5 01{ADDRESS} 02{ADDRESS} {COUNTER} 0401 {RECEIPT}"
+        )),
         field("content.hops", FieldProblem::Value(1))
     );
     assert_eq!(
-        decode::<Content>(&format!("a4 01{person} 02{ADDRESS} 0400 {receipt}")),
+        decode::<Content>(&format!(
+            "a5 01{PERSON} 02{ADDRESS} {COUNTER} 0400 {RECEIPT}"
+        )),
         field("content.from", FieldProblem::NotAllowed)
     );
     assert_eq!(
-        decode::<Content>(&format!("a4 01{ADDRESS} 02{person} 0400 {receipt}")),
+        decode::<Content>(&format!(
+            "a5 01{ADDRESS} 02{PERSON} {COUNTER} 0400 {RECEIPT}"
+        )),
         Ok(())
     );
     // The rules are the receipt's: an `a2a` body may come from a person, to every agent, after hops.
     assert_eq!(
-        decode::<Content>(&format!("a3 01{person} 0401 06{JSON}")),
+        decode::<Content>(&format!("a4 01{PERSON} {COUNTER} 0401 06{JSON}")),
         Ok(())
     );
 }
@@ -583,8 +843,53 @@ fn envelope_and_hpke_arrays_need_their_items() {
 }
 
 #[test]
+fn hpke_envelopes_carry_an_hpke_payload() {
+    let envelope = |scheme, payload: &str| Envelope {
+        header: Header {
+            recipients: Some(NonEmpty::new(bob_device())),
+            ..header(msg(1), scheme)
+        },
+        payload: hex(payload),
+    };
+    let payload = to_hex(
+        &HpkePayload {
+            enc: [0xe0; 32],
+            ct: vec![0xc0],
+        }
+        .to_cbor(),
+    );
+    assert_eq!(check(&envelope(Scheme::Hpke, &payload)), Ok(()));
+    assert_eq!(
+        check(&envelope(Scheme::Hpke, "ff00")),
+        embedded(
+            "envelope.payload",
+            DecodeError::Encoding {
+                at: 0,
+                problem: EncodingProblem::Malformed
+            }
+        )
+    );
+    assert_eq!(
+        check(&envelope(Scheme::Hpke, "")),
+        embedded("envelope.payload", DecodeError::Truncated)
+    );
+    assert_eq!(
+        check(&envelope(Scheme::Hpke, "a0")),
+        embedded(
+            "envelope.payload",
+            DecodeError::Field {
+                field: "hpke-payload",
+                problem: FieldProblem::Type("an array")
+            }
+        )
+    );
+    // Under `mls`, the payload is an MLSMessage, which is not CBOR.
+    assert_eq!(check(&envelope(Scheme::Mls, "ff00")), Ok(()));
+}
+
+#[test]
 fn embedded_items_are_checked_like_any_other() {
-    let content = format!("a3 01{ADDRESS} 0400 06{JSON}");
+    let content = format!("a4 01{ADDRESS} {COUNTER} 0400 06{JSON}");
     let signature = format!("5840{}", "5a".repeat(64));
     let embed = |item: &str| {
         let item = hex(item);
@@ -612,7 +917,7 @@ fn embedded_items_are_checked_like_any_other() {
     assert_eq!(
         decode::<HpkePlaintext>(&format!(
             "83 {ID} {} {signature}",
-            embed(&format!("a2 01{ADDRESS} 0400"))
+            embed(&format!("a3 01{ADDRESS} {COUNTER} 0400"))
         )),
         field(
             "hpke-plaintext.content",
@@ -632,7 +937,7 @@ fn embedded_items_are_checked_like_any_other() {
             }
         )
     );
-    let grant_body = format!("a4 01{ID} 0281{ID} 03{ID} 0400");
+    let grant_body = format!("a4 01{ID} 0281{ID} 03{ID2} 0400");
     assert_eq!(
         decode::<Grant>(&format!("82 {} {signature}", embed(&grant_body))),
         Ok(())
@@ -640,7 +945,7 @@ fn embedded_items_are_checked_like_any_other() {
     assert_eq!(
         decode::<Grant>(&format!(
             "82 {} {signature}",
-            embed(&format!("a4 01{ID} 0280 03{ID} 0400"))
+            embed(&format!("a4 01{ID} 0280 03{ID2} 0400"))
         )),
         field(
             "grant.body",
@@ -657,7 +962,7 @@ fn embedded_items_are_checked_like_any_other() {
     assert_eq!(
         decode::<Delegation>(&format!(
             "82 {} {signature}",
-            embed(&format!("a3 01{ADDRESS} 02{ID} 03{ID}"))
+            embed(&format!("a3 01{ADDRESS} 02{ID} 03{ID2}"))
         )),
         field(
             "delegation.body",
@@ -672,10 +977,10 @@ fn embedded_items_are_checked_like_any_other() {
 #[test]
 fn signed_bodies_encode_to_the_bytes_their_signatures_cover() {
     // A grant body with a field of a later version: the signature covers those exact bytes.
-    let body = hex(&format!("a5 01{ID} 0281{ID} 03{ID} 0400 1864f5"));
+    let body = hex(&format!("a5 01{ID} 0281{ID} 03{ID2} 0400 1864f5"));
     let grant = GrantBody::from_cbor(&body).unwrap();
     assert_eq!(grant.to_cbor(), body);
-    let delegation = hex(&format!("a5 01{ADDRESS} 02{ID} 03{ID} 0400 20f4"));
+    let delegation = hex(&format!("a5 01{ADDRESS} 02{ID} 03{ID2} 0400 20f4"));
     assert_eq!(
         DelegationBody::from_cbor(&delegation).unwrap().to_cbor(),
         delegation
@@ -752,4 +1057,28 @@ fn errors_name_the_field_and_the_problem() {
     assert_eq!(error.to_string(), "header.scheme: 3 is not a defined value");
     let error = Content::from_cbor(&hex(&format!("a2 01{ADDRESS} 0400"))).unwrap_err();
     assert_eq!(error.to_string(), "content: no body");
+    let error = Content::from_cbor(
+        &Content {
+            delegation: Some(delegation()),
+            ..content(alice(), json())
+        }
+        .to_cbor(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "content.from: differs from delegation-body.agent"
+    );
+    let error = GrantBody::from_cbor(
+        &GrantBody {
+            signer: server_device(),
+            ..grant().body
+        }
+        .to_cbor(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "grant-body.signer: the same as grant-body.service"
+    );
 }

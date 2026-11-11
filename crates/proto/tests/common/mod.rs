@@ -141,12 +141,12 @@ pub fn a2a_with_attachment(msg_id: MessageId, text: &str) -> String {
     )
 }
 
-/// Content from `from` with the `a2a` body and no optional field.
+/// Content from `from` with `body`, `counter` 1 and no other optional field.
 pub fn content(from: Address, body: Body) -> Content {
     Content {
         from,
         to: None,
-        counter: None,
+        counter: Some(nonzero(1)),
         hops: 0,
         reply_to: None,
         body: Some(body),
@@ -254,7 +254,6 @@ fn vector<T: Cbor + PartialEq + Debug + 'static>(name: &'static str, value: T) -
 pub fn vectors() -> Vec<Vector> {
     let hpke_content = Content {
         to: Some(bob()),
-        counter: Some(nonzero(1)),
         ..content(alice(), Body::A2a(a2a(msg(2), "Review PR 12")))
     };
     let hpke_plaintext = HpkePlaintext {
@@ -303,6 +302,7 @@ pub fn vectors() -> Vec<Vector> {
         vector(
             "Content from a service device",
             Content {
+                counter: None,
                 grant: Some(grant()),
                 ..content(
                     address("acme/ci/deploy@skald.example"),
