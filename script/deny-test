@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests the license and vulnerability policy: workspace crates declare their planned licenses;
 # no other crate has a normal or build dependency on the AGPL skald-server;
-# no workspace crate depends on the MLS prototypes in prototypes/, which never ship;
+# no workspace crate depends on the prototypes in prototypes/, which never ship;
 # cargo-deny with deny.toml accepts permissive dependencies and rejects disallowed licenses,
 # unlicensed crates and known vulnerabilities.
 set -euo pipefail
@@ -50,7 +50,7 @@ prototype_packages() {
 }
 
 prototypes=$(prototype_packages "$root/Cargo.toml" "$root/prototypes" --locked)
-[[ -z $prototypes ]] || fail "workspace crates depend on the MLS prototypes: $prototypes"
+[[ -z $prototypes ]] || fail "workspace crates depend on the prototypes: $prototypes"
 
 # Creates the fixture <case>: an MIT package that depends on <dependency>.
 fixture() {
