@@ -1,9 +1,10 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
 //! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path, [`hook`]
-//! for the hooks and [`queue`] for `codex queue`. The binary only starts the CLIs and reads their
-//! output.
+//! for the hooks, [`queue`] for `codex queue` and [`app_server`] for the Codex app-server. The
+//! binary only starts the CLIs and reads their output.
 
+pub mod app_server;
 pub mod channel;
 pub mod hook;
 pub mod queue;
@@ -804,12 +805,32 @@ impl Session {
     }
 }
 
+/// The end of a session's summary: the requests to the model stub, and why it fails the session if
+/// it does; or, on the real model, the tokens the CLI says it used. On the stub, the CLI's token
+/// counts are the stub's, so they are left out.
+pub(crate) fn model_use(stub: Option<&StubLog>, usage: Option<Usage>) -> String {
+    match (stub, usage) {
+        (Some(stub), _) => {
+            let mut text = format!(", requests to the stub: {}", stub.requests.len());
+            if let Some(failure) = stub.failure() {
+                text.push_str(&format!(", {failure}"));
+            }
+            text
+        }
+        (None, Some(usage)) => format!(", {}", usage.summary()),
+        (None, None) => String::new(),
+    }
+}
+
+/// `ms` milliseconds as seconds, such as `1.5 s`.
+pub fn seconds(ms: u64) -> String {
+    format!("{:.1} s", ms as f64 / 1000.0)
+}
+
 /// How long after `from_ms` a message in `state` was handed over.
 pub fn handover_delay(state: Option<State>, from_ms: u64) -> String {
     match state {
-        Some(State::HandedOver { at_ms }) => {
-            format!("{:.1} s", at_ms.saturating_sub(from_ms) as f64 / 1000.0)
-        }
+        Some(State::HandedOver { at_ms }) => seconds(at_ms.saturating_sub(from_ms)),
         other => format!("never (state {other:?})"),
     }
 }

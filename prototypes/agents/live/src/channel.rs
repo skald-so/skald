@@ -461,17 +461,7 @@ impl PtySession {
         if self.channel_listening == Some(false) {
             summary.push_str(", the channel did not load");
         }
-        match (&self.stub, self.usage) {
-            (Some(stub), _) => {
-                summary.push_str(&format!(", requests to the stub: {}", stub.requests.len()));
-                if let Some(failure) = stub.failure() {
-                    summary.push_str(&format!(", {failure}"));
-                }
-            }
-            // On the stub, the CLI's token counts are the stub's.
-            (None, Some(usage)) => summary.push_str(&format!(", {}", usage.summary())),
-            (None, None) => {}
-        }
+        summary.push_str(&crate::model_use(self.stub.as_ref(), self.usage));
         summary
     }
 }
@@ -479,7 +469,7 @@ impl PtySession {
 /// How long after `from_ms` the token reached the model, if it did.
 pub(crate) fn reached_delay(session: &PtySession, token: &str, from_ms: u64) -> String {
     match session.reached_at(token) {
-        Some(at_ms) => format!("{:.1} s", at_ms.saturating_sub(from_ms) as f64 / 1000.0),
+        Some(at_ms) => crate::seconds(at_ms.saturating_sub(from_ms)),
         None => "never".to_owned(),
     }
 }
