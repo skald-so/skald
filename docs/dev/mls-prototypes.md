@@ -115,7 +115,7 @@ Objects: a KeyPackage; the Commits of the operations; the Welcome creating the g
 
 ### Tree
 The creating Commit has no UpdatePath ([OpenMLS](#openmls) and [mls-rs](#mls-rs), "Commits of Adds") and no member has committed one, so the group's tree has no parent nodes. Once members have committed, most parent nodes are set. Against such a group of n devices:
-- **Commits:** an UpdatePath encrypts a path secret to each node in the resolution of the committer's copath: here about n − 1 leaves, 82 bytes each; once members have committed, about log2(n) nodes. Every Commit with an UpdatePath, all but those of Adds, is the most a group of n has: 82647 bytes for OpenMLS's empty Commit at 1000 devices, against about 10 ciphertexts. Its time grows with the recipients: on one core, an empty Commit takes about 50 µs more per device from 100 to 1000 devices. The times of committing a Remove or an empty Commit and of joining by external Commit are the most for the size.
+- **Commits:** an UpdatePath encrypts a path secret to each node in the resolution of the committer's copath: here about n − 1 leaves, 82 bytes each; once members have committed, about log2(n) nodes. Every Commit with an UpdatePath, all but those of Adds, is the most a group of n has. Its time grows with the recipients: on one core, an empty Commit takes about 50 µs more per device from 100 to 1000 devices. The times of committing a Remove or an empty Commit and of joining by external Commit are the most for the size.
 - **Processing:** a member decrypts one path secret either way, but here it decodes and verifies a Commit of about n ciphertexts instead of about log2(n). The rows that process a Commit with an UpdatePath, "Catch up on missed Commits" and "Delivery Service's Commit check" among them, are high by that work.
 - **Joining:** a joining device and the browser verify the tree: here without parent nodes' parent hashes. "Join from a Welcome", the tree check of "Join by external Commit" and "Browser's GroupInfo check" are low by that work.
 - **Sizes:** a set parent node adds 68 bytes to the encoded tree, its HPKE public key and parent hash: about 68 KB at 1000 devices. The GroupInfo, the Welcome of an Add and the saved state hold the tree: they are low by that. The Commit and the Welcome creating the group are those of any channel.
@@ -207,7 +207,7 @@ WASM, in Node.js:
 | Browser's GroupInfo check | OpenMLS | 0.256 (0.242–0.571) | 0.878 (0.843–1.09) | 7.72 (7.59–8.13) | 77.9 (77.5–95.3) |
 | Browser's GroupInfo check | mls-rs | 0.206 (0.202–0.291) | 0.776 (0.765–0.903) | 7.17 (7.10–7.37) | 71.9 (71.6–72.9) |
 
-Object sizes, the same on every run but OpenMLS's saved state, whose length varies by up to 150 bytes ([OpenMLS](#openmls), "Saved state size"):
+Object sizes, the same on every run but OpenMLS's saved state ([OpenMLS](#openmls), "Saved state size"):
 
 | Object, bytes | Library | 2 | 10 | 100 | 1000 |
 |---|---|---|---|---|---|
@@ -267,7 +267,7 @@ Object sizes, the same on every run but OpenMLS's saved state, whose length vari
 - **Browser check:** `PublicGroup::from_external` checks the tree first: each leaf's signature (`InvalidNodeSignature`), then the tree hash against the GroupInfo's (`TreeHashMismatch`). Then the signer's leaf (`UnknownSender` for a blank or missing one) and the GroupInfo's signature (`InvalidGroupInfoSignature`).
 - **Parallelism:** natively, tree operations run in parallel with rayon, a required dependency; `RAYON_NUM_THREADS` limits it.
 - **Commits of Adds:** `add_members` forces an UpdatePath; `add_members_without_update` and `commit_builder`, whose `force_self_update` defaults to `false`, commit only Adds without one, as RFC 9420, §12.4, allows. The prototype uses `add_members_without_update`.
-- **Saved state size:** the storage keeps its values as JSON: a member's state is 1 MB at 1000 devices, and its length varies by up to 150 bytes with the values' bytes.
+- **Saved state size:** the storage keeps its values as JSON, so a member's state varies in length by up to 150 bytes with the values' bytes.
 
 ### mls-rs
 - **Saving state:** the in-memory storages have no save or load. `InMemoryKeyPackageStorage` exports through `key_packages()` and imports through `insert()`. `InMemoryGroupStateStorage` exports through `stored_groups()` and its `GroupStateStorage` methods, but lists no prior epoch IDs: an export walks back from `max_epoch_id`. Workaround: one store implementing `GroupStateStorage` and `KeyPackageStorage` that saves its maps directly, about 100 lines, instead of export and import code over two storages; its `GroupState` and `EpochRecord` need a direct dependency on `mls-rs-core`.
