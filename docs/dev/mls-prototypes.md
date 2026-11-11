@@ -312,3 +312,105 @@ Object sizes, the same on every run but OpenMLS's saved state ([OpenMLS](#openml
 - "MLS profile" says only that the server keeps the latest GroupInfo. Without a check, one member could give joiners and browsers a GroupInfo of another group.
 - [Envelope](../protocol/README.md#envelope) has a browser take the members from the latest GroupInfo, but names its checks of that GroupInfo's channel, epoch and members only in [Wraps](../protocol/membership.md#wraps), before the browser writes entries.
 - [Group changes](../protocol/membership.md#group-changes) says a joining device checks a GroupInfo's or a Welcome's members, but not what it does when one is not admitted. In the prototypes it refuses and joins by itself once a member has removed that device.
+- [KeyPackages](../protocol/membership.md#keypackages) bounds a device's own KeyPackages to 60 days, but not those it adds. RFC 9420, §7.2, asks applications to bound a lifetime's length.
+
+## Comparison
+OpenMLS 0.9.2 against mls-rs 0.57.0. Facts from outside this repository were checked on 2026-11-11 at the linked sources.
+
+### RFC 9420 compliance
+**Test vectors:** the [official set](https://github.com/mlswg/mls-implementations/tree/2034fe72e0c805a683ba76165660c834f2a8142a/test-vectors) has 16 files. Each library's tests read its own copies, OpenMLS's [`test_vectors`](https://github.com/openmls/openmls/tree/v0.9.2/openmls/test_vectors) and mls-rs's [`test_data`](https://github.com/awslabs/mls-rs/tree/0.57.0/mls-rs/test_data); CI passed on each tagged commit ([OpenMLS](https://github.com/openmls/openmls/commit/8a8f83b4b61fc45f28facec25e914992b3465de6), [mls-rs](https://github.com/awslabs/mls-rs/commit/a1436f4a5433214ed62349e77835b57a0accdc42)). The prototypes do not run them.
+
+| Copy of an official file | OpenMLS | mls-rs |
+|---|---|---|
+| Identical | 12: `deserialization`, `key-schedule`, `messages`, the three `passive-client-*`, `secret-tree`, `tree-math`, `tree-operations`, `tree-validation`, `treekem`, `welcome` | 6: `crypto-basics`, `key-schedule`, `secret-tree`, `transcript-hashes`, `tree-validation`, `treekem` |
+| A subset of its cases | `psk_secret`: 70 of 77 | `tree-math`: 8 of 10 |
+| Its format, other values | `crypto-basics`, `message-protection`, `transcript-hashes` | `message-protection`, `messages`, `psk_secret`, the three `passive-client-*`; `tree-operations` without the ciphersuite and tree hashes |
+| None | — | `deserialization`, `welcome` |
+| Crypto provider of the run | RustCrypto, the prototypes' | OpenSSL; the RustCrypto provider passes `mls-rs-core`'s provider tests |
+
+**Interoperability:**
+- With each other: no mismatch ([Interoperability](#interoperability)).
+- OpenMLS: one manual run of its interop workflow, on 2026-09-23 from a development branch, against mls-rs and MLS++ through the mlswg test runner, reports no interop failures ([run](https://github.com/openmls/openmls/actions/runs/35860183185)).
+- mls-rs: its CI runs that test runner against mls-rs only ([`interop_tests.yml`](https://github.com/awslabs/mls-rs/blob/0.57.0/.github/workflows/interop_tests.yml)).
+
+**Gaps the prototypes found:** OpenMLS does not check an external Commit's Removes, RFC 9420, §12.2 ([OpenMLS](#openmls), "Removes in an external Commit"); mls-rs does. Neither bounds a KeyPackage lifetime's length (§7.2).
+
+### Audit
+- **OpenMLS:** no published audit found. Its [README](https://github.com/openmls/openmls/blob/v0.9.2/README.md), [SECURITY.md](https://github.com/openmls/openmls/blob/main/SECURITY.md) on `main`, the repository at v0.9.2 and [openmls.tech](https://openmls.tech) name none; an audit, its scope or date cannot be confirmed.
+- **mls-rs:** none. Its [README](https://github.com/awslabs/mls-rs/blob/0.57.0/README.md#security-notice): "validated for conformance to the RFC 9420 specification but has not yet received a full security audit by a 3rd party".
+
+### API ergonomics
+From the [findings](#findings):
+- **OpenMLS** matches the check-then-merge steps of the spec: a staged Commit and a `StagedWelcome` give everything before the merge. The device's signing key stays outside the library's state. Workarounds: "Saving state", "Last resort", "GroupInfo signer", "Removes in an external Commit", "Dropping a group", "WASM build".
+- **mls-rs** checks more itself: an external Commit's Removes, the GroupInfo's signer. It merges a processed Commit at once and keeps a removed device in its old epoch, so the device checks before `write_to_storage()` and acts on `CommitEffect::Removed`. It copies the signing key into each group's state. Two needed features are off by default. Workarounds: "Saving state", "Client", "Reading before merging", "KeyPackage lifetime", "Credential check", "GroupInfo", "External Commit", "Removed device".
+
+### Performance
+From the [results](#results):
+- At 2 and 10 devices, the libraries differ by under 1.3 ms in each operation.
+- At 1000 devices, mls-rs is faster in every operation but making a KeyPackage: 0.080–0.097 ms against OpenMLS's 0.047 ms. On one core, it processes Commits, catches up, encrypts and decrypts in 39–60% of OpenMLS's time, and commits and joins in 64–90%. On every core, it creates a group in 57 ms against 349 ms and joins from a Welcome in 8.7 ms against 37.9 ms.
+- The browser's GroupInfo check in WASM at 1000 devices: 71.9 ms against 77.9 ms.
+- A member's saved state at 1000 devices: 354 KB against 1.0 MB. Wire objects differ by under 2%.
+
+### WASM size
+mls-rs's modules are 31% smaller raw and 18–23% smaller with Brotli: the browser check 94.9 KiB against 115.4 KiB, the whole suite 336.2 KiB against 434.8 KiB ([WASM](#wasm)).
+
+### Maintenance
+| | OpenMLS | mls-rs |
+|---|---|---|
+| Releases, 2025-11-11 to 2026-11-11 ([OpenMLS](https://crates.io/crates/openmls/versions), [mls-rs](https://crates.io/crates/mls-rs/versions)) | 10, and 4 release candidates: 2 breaking (0.8.0, 0.9.0) and fixes to 0.7 and 0.8 next to 0.9 | 9: 6 breaking (0.52.0 to 0.57.0) |
+| Maintainers | Phoenix R&D and CE Labs ([README](https://github.com/openmls/openmls/blob/v0.9.2/README.md#maintenance--support)); 3 crates.io owners and 2 teams ([crates.io](https://crates.io/crates/openmls)); 258 commits by 28 people in the 12 months, 151 by the top three ([commits](https://github.com/openmls/openmls/commits/main)) | AWS (`awslabs`); 3 crates.io owners ([crates.io](https://crates.io/crates/mls-rs)); 50 commits by 11 people in the 12 months, 30 by one ([commits](https://github.com/awslabs/mls-rs/commits/main)) |
+| Security advisories | 7 in its repository from 2025-09 to 2026-10, 2 high, 4 medium, 1 low, each fixed in 0.9.2 ([advisories](https://github.com/openmls/openmls/security/advisories)); 2 of them in the GitHub Advisory Database | None in its repository ([advisories](https://github.com/awslabs/mls-rs/security/advisories)) or the GitHub Advisory Database |
+| RustSec advisories ([database](https://github.com/rustsec/advisory-db/tree/main/crates)) | None | None |
+| Minimum Rust version, `rust_version` in the crates.io API ([OpenMLS](https://crates.io/api/v1/crates/openmls/versions), [mls-rs](https://crates.io/api/v1/crates/mls-rs/versions)) | 1.91.0 | 1.82.0; the RustCrypto provider declares none |
+| License | MIT | Apache-2.0 OR MIT, as the product crates |
+| Dependencies, `cargo tree -e normal --prune mls-scenario` of each prototype | 125 crate versions natively, 135 in WASM. Two RustCrypto generations: the provider signs with ed25519-dalek 2 and sha2 0.10, and its `hpke-rs-rust-crypto` takes x25519-dalek 3 and sha2 0.11. rayon is required | 91 natively, 94 in WASM. One RustCrypto generation, that of [tech-stack.md](tech-stack.md): ed25519-dalek 3, sha2 0.11, getrandom 0.4 |
+| `cargo deny check advisories licenses` with the product's [`deny.toml`](../../deny.toml) | Fails: `hpke-rs`, `hpke-rs-crypto` and `hpke-rs-rust-crypto` are MPL-2.0; RUSTSEC-2026-0387, constant-time defects of crypto-bigint 0.5.5, through p256 and p384 0.13, outside the profile's ciphersuite; RUSTSEC-2026-0173, proc-macro-error2 unmaintained, through `hpke-rs`'s libcrux-sha3 | Passes |
+
+### Spec fit
+How each library meets the requirements of [membership.md](../protocol/membership.md) that the prototypes exercised. "App": the device's or the Delivery Service's own code does it; a quoted name is a finding of [OpenMLS](#openmls) or [mls-rs](#mls-rs).
+
+| Requirement | OpenMLS | mls-rs |
+|---|---|---|
+| [MLS profile](../protocol/membership.md#mls-profile): ciphersuite, `basic` credential, the device's signing key | Met; the key stays in the device's key store ("Signing key") | Met; the key is copied into each group's state ("Signing key in the state") |
+| MLS profile: PrivateMessages and PublicMessages | Met by configuration ("Wire formats") | Met by default |
+| MLS profile: the new epoch's GroupInfo with each Commit | Met by configuration, with external Commits too ("GroupInfo") | Met by configuration; the app makes it after an external Commit ("GroupInfo", "External Commit") |
+| [Admitted devices](../protocol/membership.md#admitted-devices): no Add of a device that is not admitted | App, before the Add ("KeyPackage checks") | App, in the `IdentityProvider` of the committing client ("Credential check") |
+| Admitted devices: see added devices before merging, remove those not admitted | App, on a staged Commit ("Added devices") | App, before saving the merged group ("Reading before merging") |
+| [Creating a channel](../protocol/membership.md#creating-a-channel): a refused creator drops its group and joins the kept one | App deletes the group first ("Dropping a group") | Met: a Welcome replaces the group |
+| [KeyPackages](../protocol/membership.md#keypackages): lifetime, batches, last resort | Met; last resort with a workaround ("Last resort") | Met with configuration and a feature ("KeyPackage lifetime", "Last resort") |
+| KeyPackages: the checks before an Add | Signature, lifetime, ciphersuite; app: credential ("KeyPackage checks") | Signature, lifetime, ciphersuite; app: credential ("KeyPackage checks") |
+| [Commit ordering](../protocol/membership.md#commit-ordering): the server checks epoch and sender without group secrets | Met: `PublicGroup`, given the tree ("Outside party") | Met with a feature: `ExternalGroup`, on a copy ("Outside party") |
+| Commit ordering: refused senders drop their Commit and commit again | Met ("Dropping a Commit") | Met ("Dropping a Commit") |
+| [Group changes](../protocol/membership.md#group-changes): revocations in `authenticated_data` read before merging | App, on a staged Commit ("Reading before merging") | App, before saving the merged group ("Reading before merging") |
+| Group changes: a joiner checks the GroupInfo's signer and members; members check it as an Add | App; the signer only by a workaround ("GroupInfo signer") | App, with the signer from the library ("GroupInfo signer", "Processing an external Commit") |
+| Group changes: a device checks a Welcome's signer and members | App, before `into_group` ("Checking a Welcome") | App, before saving the group ("Checking a Welcome") |
+| [Rejoining](../protocol/membership.md#rejoining): an external Commit that removes the old leaf | Met; app refuses one that removes another leaf ("External Commit", "Removes in an external Commit") | Met with workarounds ("External Commit"); refuses one that removes another leaf |
+| Rejoining: process missed Commits in order | Met ("Missed Commits") | Met ("Missed Commits") |
+| [History key](../protocol/membership.md#history-key): the exporter, an empty Commit, the removed device | Met ("Removed device") | Met; app acts on the removal ("Removed device") |
+| [Wraps](../protocol/membership.md#wraps): the browser's GroupInfo check | Met, with the signer by a workaround ("GroupInfo signer", "Browser check") | Met ("Browser check") |
+
+## Choice
+**mls-rs 0.57 with `mls-rs-crypto-rustcrypto` 0.23.**
+- It refuses an external Commit that removes another device's leaf (RFC 9420, §12.2). OpenMLS leaves that check to the application, and a missed check lets any holder of the latest GroupInfo remove any member. mls-rs also gives a GroupInfo's signer, which OpenMLS does not.
+- Its dependencies pass the product's `cargo deny` policy and use the RustCrypto generation of the product crates. OpenMLS's RustCrypto provider brings MPL-2.0 crates, a vulnerability, an unmaintained crate and a second RustCrypto generation.
+- At 1000 devices it is faster in all but one operation; its saved state is a third of OpenMLS's; its browser module is 18% smaller compressed.
+- On compliance the evidence does not separate them: both interoperate, neither has a published audit.
+- Accepted against it: a smaller team, a breaking release every two months, fewer official test vectors in its CI, the signing key in each group's state, and Commits merged before the application's checks ([For Story 10](#for-story-10)).
+
+## For Story 10
+The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls-rs)):
+- **Features:** `external_client` for the Delivery Service and the browser, `last_resort_key_package_ext`; `browser` of `mls-rs-crypto-rustcrypto` in WASM.
+- **Storage:** one store implementing `GroupStateStorage` and `KeyPackageStorage` over the local state, with a direct `mls-rs-core` dependency; it also drops a group ("Saving state", "Dropping a group").
+- **Checks before saving:** a processed Commit's sender, Adds, Removes and `authenticated_data`, and a Welcome's signer and members, are checked before `write_to_storage()`; a failed check drops the group unsaved ("Reading before merging", "Checking a Welcome").
+- **Admission:** the `IdentityProvider` refuses devices that are not admitted only in the client that commits an Add; members remove such devices after processing ("Credential check").
+- **KeyPackages:** `key_package_lifetime` of 60 days from an hour back ("KeyPackage lifetime").
+- **GroupInfo:** `CommitOptions::with_allow_external_commit`; after an external Commit, `group_info_message_allowing_ext_commit(true)` ("GroupInfo", "External Commit").
+- **Rejoining:** `with_removal` of the old leaf, found by its signature key and accepted by `valid_successor`; the device drops its old state of the group before the build ("External Commit").
+- **Removed device:** acts on `CommitEffect::Removed` ("Removed device").
+- **Delivery Service:** processes a copy of its `ExternalGroup` and keeps it only if the sender check passes ("Outside party").
+- **Client:** built per step by a function returning `Client<impl MlsConfig>` ("Client").
+
+Requirements mls-rs does not meet, each left for its own spec change:
+- [threat-model.md](../threat-model.md#a-stolen-device), "A stolen device": keys live in the OS key store or a 0600 file. mls-rs copies the device's signing key into each group's saved state, in the local state ("Signing key in the state").
+
+Of the [membership.md](../protocol/membership.md) requirements the prototypes exercised, mls-rs meets each, with the workarounds above. The gaps in [Spec](#spec) are the spec's own.
