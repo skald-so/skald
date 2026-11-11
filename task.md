@@ -66,6 +66,7 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 | 53 | History export and migration to a self-hosted server | Post-MVP | 16, 17, 64 |
 | 54 | Python and TypeScript SDKs | Post-MVP | 14, 26 |
 | 55 | Homebrew, winget and cargo-binstall | Post-MVP | 7 |
+| 69 | OpenClaw and Crush setup by `skald connect` | Post-MVP | 24 |
 | 56 | Managed keys: custodian device | Post-MVP | 16, 27 |
 | 57 | Hosted MCP for ChatGPT and Claude.ai | Post-MVP | 15, 56 |
 | 58 | skald ui | Post-MVP | 7, 27 |
@@ -89,7 +90,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - Wave 10: 24, 27, 31, 34, 41, 65, 66.
 - Wave 11: 28, 32, 36, 43, 63.
 - Wave 12: 29 — end of MVP.
-- Wave 13: 37, 38, 40, 42, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67, 68.
+- Wave 13: 37, 38, 40, 42, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67, 68, 69.
 - Wave 14: 39, 45, 46, 48, 50, 57, 61.
 - Wave 15: 51, 52, 60.
 
@@ -1551,6 +1552,20 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Release:** Post-MVP
 - **Depends on:** Story 7
 - **Docs:** `features.md` §16, `infrastructure.md` — "Repositories", "Channels", "Trust in builds"
+
+### Story 69: OpenClaw and Crush setup by `skald connect`
+
+**Goal:** `skald connect` connects OpenClaw and Crush like the agents of `agents.md`, "Setup by `skald connect`".
+
+**Scope:**
+- OpenClaw: adds `mcp.servers.skald` to `~/.openclaw/openclaw.json` (JSON5), keeping the other entries and the comments.
+- Crush: adds the Skald MCP server to its `crushrc`, keeping the rest of the file.
+- Both rows move into `agents.md`, "Setup by `skald connect`".
+- **Done when:** with OpenClaw and Crush on a machine, `skald connect` adds the Skald MCP server to each, with its other config kept.
+
+- **Release:** Post-MVP
+- **Depends on:** Story 24
+- **Docs:** `features.md` §16, `agents.md` — "Setup by `skald connect`"
 
 ### Story 56: Managed keys: custodian device
 

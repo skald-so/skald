@@ -57,7 +57,7 @@ List order is priority.
 - History export and migration from the cloud to a self-hosted server (6).
 - Python and TypeScript SDKs.
 - Homebrew, winget, cargo-binstall (16).
-- `skald connect` sets up Pi, Hermes Agent, OpenClaw, Qoder, CodeBuddy, Kimi Code, Mistral Vibe, Crush and Deep Agents Code (16).
+- `skald connect` sets up OpenClaw and Crush (16).
 - Managed-keys mode, on demand (13).
 - `skald ui`: a local copy of the web UI from a signed binary, on demand (12).
 - Sealed sender and padding.
