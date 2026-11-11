@@ -11,7 +11,7 @@
   - **One-shot mode** (CI, cron, sandboxes): load state → sync → run the operation → save.
   - **Helper `skald helper`:** started by the first client. Holds the WebSocket, dispatches messages to sessions over a unix socket, exits after being idle. No root or system service needed.
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.
-- **GitHub Action:** the client in one-shot mode and the GitHub bridge, which runs inside the Action, not on the server. A `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment. Their trust level: [threat model](../threat-model.md#the-idp-or-github).
+- **GitHub Action:** the client in one-shot mode and the GitHub bridge, which runs inside the Action, not on the server. A `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment. The trust level of such tasks: [threat model](../threat-model.md#the-idp-or-github).
 - **Frontend** — a single static SPA at `app.skald.so`:
   - gets the non-secret sections from the server API;
   - content sections are decrypted in the browser by a WASM build of the Rust core.
