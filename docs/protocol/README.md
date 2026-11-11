@@ -221,6 +221,7 @@ A recipient MUST reject content from a `service` device unless:
   - what a browser opens or is redirected to: web pages and their static files, sign-in, OAuth and OIDC callbacks, the device flow verification page;
   - downloads: install scripts and binaries.
 - WebSocket: the client offers the subprotocol `skald.<n>` in its opening request; the server selects it.
+- `<n>` is in decimal without a leading zero. A request with two `Skald-Protocol-Version` headers or two `skald.<n>` offers states no valid version.
 - An envelope's `v` is the version of the connection or request it is sent on. The server MUST refuse a sent envelope with another `v`.
 - A stored envelope keeps its `v`. The server delivers it only on a connection or request whose version is `v` or adjacent to it; on another, its mailbox entry expires: [Mailbox](delivery.md#mailbox).
 

@@ -2,14 +2,20 @@
 //! Each test binary uses a subset of them.
 #![allow(dead_code)]
 
+pub mod spec;
+
 use std::env;
 use std::io::{BufRead, BufReader, Read};
+use std::net::TcpStream;
 use std::process::{self, Child, ChildStderr, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::http::HeaderMap;
+use tungstenite::stream::MaybeTlsStream;
 
 pub const SERVER: &str = env!("CARGO_BIN_EXE_skald-server");
 
@@ -68,7 +74,15 @@ pub struct Server {
 impl Server {
     /// Starts the server on `db` and waits until it listens: its migrations are applied by then.
     pub fn start(db: &TestDb) -> Self {
-        let mut child = spawn(&["--listen", "127.0.0.1:0", "--database-url", &db.url()]);
+        Self::start_with(db, &[])
+    }
+
+    /// Starts the server on `db` with the extra arguments `args`, as [`Server::start`] does.
+    pub fn start_with(db: &TestDb, args: &[&str]) -> Self {
+        let url = db.url();
+        let mut all = vec!["--listen", "127.0.0.1:0", "--database-url", &url];
+        all.extend_from_slice(args);
+        let mut child = spawn(&all);
         let stderr = BufReader::new(child.stderr.take().expect("stderr is piped"));
         let mut server = Server {
             child,
@@ -89,26 +103,63 @@ impl Server {
     }
 
     pub fn get(&self, path: &str) -> Response {
+        self.get_with(path, &[])
+    }
+
+    /// `GET <path>` with the request headers `headers`.
+    pub fn get_with(&self, path: &str, headers: &[(&str, &str)]) -> Response {
         let agent = ureq::Agent::config_builder()
             .proxy(None)
             .http_status_as_error(false)
             .build()
             .new_agent();
-        let mut response = agent
-            .get(format!("{}{path}", self.base))
+        let mut request = agent.get(format!("{}{path}", self.base));
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let mut response = request
             .call()
             .unwrap_or_else(|err| panic!("GET {path}: {err}"));
-        Response {
-            status: response.status().as_u16(),
-            content_type: response
-                .headers()
-                .get("content-type")
-                .map(|value| value.to_str().expect("content type is ASCII").to_owned())
-                .unwrap_or_default(),
-            body: response.body_mut().read_to_vec().expect("read body"),
+        let body = response.body_mut().read_to_vec().expect("read body");
+        Response::new(response.status().as_u16(), response.headers(), body)
+    }
+
+    /// Sends a WebSocket opening request to `path` with `Sec-WebSocket-Protocol: <offer>`, or
+    /// without it if `offer` is `None`. `Ok` holds the open WebSocket and the `101` response; `Err`,
+    /// the response that refuses it.
+    pub fn open_websocket(
+        &self,
+        path: &str,
+        offer: Option<&str>,
+    ) -> Result<(WebSocket, Response), Response> {
+        let url = format!("{}{path}", self.base.replacen("http://", "ws://", 1));
+        let mut request = url.into_client_request().expect("a WebSocket URL");
+        if let Some(offer) = offer {
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                offer.parse().expect("a header value"),
+            );
+        }
+        match tungstenite::connect(request) {
+            Ok((socket, response)) => {
+                let response =
+                    Response::new(response.status().as_u16(), response.headers(), Vec::new());
+                Ok((socket, response))
+            }
+            Err(tungstenite::Error::Http(response)) => {
+                let body = response.body().clone().unwrap_or_default();
+                Err(Response::new(
+                    response.status().as_u16(),
+                    response.headers(),
+                    body,
+                ))
+            }
+            Err(err) => panic!("WebSocket {path}: {err}"),
         }
     }
 }
+
+pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 
 impl Drop for Server {
     fn drop(&mut self) {
@@ -117,10 +168,41 @@ impl Drop for Server {
     }
 }
 
+#[derive(Clone)]
 pub struct Response {
     pub status: u16,
     pub content_type: String,
+    /// Every header but `content-type`: lowercase names and their values.
+    pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl Response {
+    fn new(status: u16, headers: &HeaderMap, body: Vec<u8>) -> Self {
+        let mut response = Response {
+            status,
+            content_type: String::new(),
+            headers: Vec::new(),
+            body,
+        };
+        for (name, value) in headers {
+            let value = value.to_str().expect("header values are ASCII").to_owned();
+            if name == "content-type" {
+                response.content_type = value;
+            } else {
+                response.headers.push((name.as_str().to_owned(), value));
+            }
+        }
+        response
+    }
+
+    /// The value of the first header `name`, in lowercase.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header == name)
+            .map(|(_, value)| value.as_str())
+    }
 }
 
 /// A migration as recorded in the database.

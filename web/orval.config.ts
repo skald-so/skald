@@ -1,9 +1,13 @@
 import { defineConfig } from "orval";
 
-// The API client and its MSW mocks, generated from the spec into src/api/.
+// The API client and its MSW mocks, generated from the spec into src/api/. The WebSocket opening
+// request is left out: a browser opens a WebSocket with its WebSocket API, not with fetch.
 export default defineConfig({
   skald: {
-    input: "../api/openapi.json",
+    input: {
+      target: "../api/openapi.json",
+      filters: { mode: "exclude", operationIds: ["openWebSocket"] },
+    },
     output: {
       target: "src/api/skald.ts",
       mode: "split",

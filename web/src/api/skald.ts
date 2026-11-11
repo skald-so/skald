@@ -5,6 +5,8 @@ import type {
   GetOpenApiSpec200,
   Health,
   HealthUnavailable,
+  Protocol,
+  ProtocolProblem,
 } from "./skald.schemas";
 
 export type getHealthResponse200 = {
@@ -85,4 +87,50 @@ export const getOpenApiSpec = async (
     status: res.status,
     headers: res.headers,
   } as getOpenApiSpecResponse;
+};
+
+export type getProtocolResponse200 = {
+  data: Protocol;
+  status: 200;
+};
+
+export type getProtocolResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getProtocolResponseSuccess = getProtocolResponse200 & {
+  headers: Headers;
+};
+export type getProtocolResponseError = getProtocolResponse400 & {
+  headers: Headers;
+};
+
+export type getProtocolResponse =
+  getProtocolResponseSuccess | getProtocolResponseError;
+
+export const getGetProtocolUrl = () => {
+  return `/protocol`;
+};
+
+/**
+ * Checks the protocol version the request states, as docs/protocol/README.md, "Server answers", says.
+ * @summary Protocol versions the server accepts
+ */
+export const getProtocol = async (
+  options?: RequestInit,
+): Promise<getProtocolResponse> => {
+  const res = await fetch(getGetProtocolUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getProtocolResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getProtocolResponse;
 };

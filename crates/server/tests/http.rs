@@ -3,79 +3,26 @@
 mod common;
 
 use std::net::TcpListener;
-use std::path::Path;
 use std::process::Command;
 
+use common::spec::{spec, spec_bytes, spec_violations};
 use common::{Response, SERVER, Server, TestDb, start_failure};
-use jsonschema::Registry;
 use serde_json::{Value, json};
-
-/// The base URI the spec is registered under to resolve `$ref`s.
-const SPEC_URI: &str = "urn:skald:openapi";
-
-fn spec_bytes() -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api/openapi.json");
-    std::fs::read(path).expect("read api/openapi.json")
-}
-
-fn spec() -> Value {
-    serde_json::from_slice(&spec_bytes()).expect("api/openapi.json is JSON")
-}
 
 impl Response {
     fn json(status: u16, body: Value) -> Self {
         Response {
             status,
             content_type: "application/json".to_owned(),
+            headers: Vec::new(),
             body: body.to_string().into_bytes(),
         }
     }
-}
 
-/// Returns how `response` to `GET <path>` deviates from `spec`: a status or a content type
-/// the spec does not list for the operation, or a body that does not match the response schema.
-fn spec_violations(spec: &Value, path: &str, response: &Response) -> Vec<String> {
-    let documented = format!(
-        "/paths/{}/get/responses/{}",
-        pointer_token(path),
-        response.status
-    );
-    if spec.pointer(&documented).is_none() {
-        return vec![format!(
-            "GET {path}: status {} is not in the spec",
-            response.status
-        )];
+    fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_owned(), value.to_owned()));
+        self
     }
-    let media_type = response.content_type.split(';').next().unwrap_or("").trim();
-    let schema = format!("{documented}/content/{}/schema", pointer_token(media_type));
-    if spec.pointer(&schema).is_none() {
-        return vec![format!(
-            "GET {path} {}: content type {media_type:?} is not in the spec",
-            response.status
-        )];
-    }
-    let body: Value = match serde_json::from_slice(&response.body) {
-        Ok(body) => body,
-        Err(err) => return vec![format!("GET {path}: body is not JSON: {err}")],
-    };
-    let registry = Registry::new()
-        .add(SPEC_URI, spec)
-        .expect("register the spec")
-        .prepare()
-        .expect("index the spec");
-    let validator = jsonschema::options()
-        .with_registry(&registry)
-        .build(&json!({ "$ref": format!("{SPEC_URI}#{schema}") }))
-        .expect("compile the response schema");
-    validator
-        .iter_errors(&body)
-        .map(|err| format!("GET {path}: {err} at {:?}", err.instance_path().as_str()))
-        .collect()
-}
-
-/// Escapes `token` for a JSON pointer (RFC 6901).
-fn pointer_token(token: &str) -> String {
-    token.replace('~', "~0").replace('/', "~1")
 }
 
 #[test]
@@ -147,13 +94,77 @@ fn spec_violations_reports_responses_outside_spec() {
         Vec::<String>::new()
     );
 
+    let protocol = Response::json(200, json!({ "supported": [2, 3] }));
+    let switching = Response {
+        content_type: String::new(),
+        body: Vec::new(),
+        ..Response::json(101, Value::Null)
+    }
+    .with_header("sec-websocket-protocol", "skald.3");
+    let not_websocket = Response {
+        content_type: "text/plain; charset=utf-8".to_owned(),
+        body: b"Connection header did not include 'upgrade'".to_vec(),
+        ..Response::json(400, Value::Null)
+    };
+    for (path, response) in [
+        ("/protocol", &protocol),
+        ("/ws", &switching),
+        ("/ws", &not_websocket),
+    ] {
+        assert_eq!(
+            spec_violations(
+                &spec,
+                path,
+                &response.clone().with_header("skald-protocol-latest", "3")
+            ),
+            Vec::<String>::new()
+        );
+    }
+
     let mut text = Response::json(200, ok.clone());
     text.content_type = "text/plain".to_owned();
     let not_json = Response {
         body: b"ok".to_vec(),
         ..Response::json(200, Value::Null)
     };
+    let switching_with_body = Response {
+        body: b"ok".to_vec(),
+        ..switching.clone()
+    };
     let outside = [
+        // A required header is missing or breaks its schema.
+        ("/protocol", protocol.clone()),
+        (
+            "/protocol",
+            protocol.clone().with_header("skald-protocol-latest", "0"),
+        ),
+        (
+            "/protocol",
+            protocol.with_header("skald-protocol-latest", "three"),
+        ),
+        ("/ws", switching.clone()),
+        (
+            "/ws",
+            Response {
+                headers: Vec::new(),
+                ..switching.clone()
+            }
+            .with_header("skald-protocol-latest", "3"),
+        ),
+        (
+            "/ws",
+            Response {
+                headers: Vec::new(),
+                ..switching.clone()
+            }
+            .with_header("sec-websocket-protocol", "skald.03")
+            .with_header("skald-protocol-latest", "3"),
+        ),
+        // A body where the spec lists no content.
+        (
+            "/ws",
+            switching_with_body.with_header("skald-protocol-latest", "3"),
+        ),
         ("/missing", Response::json(200, ok.clone())),
         ("/health", Response::json(503, ok)),
         ("/health", Response::json(200, unavailable.clone())),

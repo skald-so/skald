@@ -6,13 +6,15 @@ edition.workspace = true
 license = "AGPL-3.0-only"
 
 [dependencies]
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["ws"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
+skald-proto = { path = "../proto" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "migrate", "macros"] }
 tokio = { version = "1.54", features = ["macros", "net", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }
 serde_json = "1.0"
+tungstenite = "0.29"
 ureq = { version = "3.5", default-features = false }

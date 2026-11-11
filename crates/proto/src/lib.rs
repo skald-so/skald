@@ -6,6 +6,7 @@ mod content;
 mod envelope;
 mod id;
 mod receipt;
+mod version;
 
 pub use address::{
     Address, AddressError, Name, NameError, PERSON, Segment, ServerError, ServerName,
@@ -18,3 +19,7 @@ pub use id::{
     SpaceId, TaskId, kind,
 };
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
+pub use version::{
+    LATEST_HEADER, PROTOCOL_VERSION, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem,
+    parse_version, subprotocol,
+};

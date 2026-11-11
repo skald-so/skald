@@ -50,9 +50,131 @@
           }
         }
       }
+    },
+    "/protocol": {
+      "get": {
+        "operationId": "getProtocol",
+        "summary": "Protocol versions the server accepts",
+        "description": "Checks the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The server accepts the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Protocol"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws": {
+      "get": {
+        "operationId": "openWebSocket",
+        "summary": "WebSocket opening request",
+        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. The connection carries no frames yet.",
+        "parameters": [
+          {
+            "name": "Sec-WebSocket-Protocol",
+            "in": "header",
+            "required": true,
+            "description": "Offers the subprotocol `skald.<n>`, which states protocol version n.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "The server accepts the stated version and selects its subprotocol.",
+            "headers": {
+              "Sec-WebSocket-Protocol": {
+                "description": "The selected subprotocol: the offered `skald.<n>`.",
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^skald\\.[1-9][0-9]*$"
+                }
+              },
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`application/problem+json`), or the request is not a WebSocket opening request (`text/plain`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
+    "parameters": {
+      "ProtocolVersion": {
+        "name": "Skald-Protocol-Version",
+        "in": "header",
+        "required": true,
+        "description": "The protocol version the request states.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "headers": {
+      "ProtocolLatest": {
+        "description": "The server's current protocol version.",
+        "required": true,
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
     "schemas": {
       "Health": {
         "type": "object",
@@ -75,6 +197,55 @@
           }
         },
         "additionalProperties": false
+      },
+      "Protocol": {
+        "type": "object",
+        "required": ["supported"],
+        "properties": {
+          "supported": {
+            "$ref": "#/components/schemas/SupportedVersions"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProtocolProblem": {
+        "description": "A problem details object (RFC 9457) that refuses the stated protocol version.",
+        "type": "object",
+        "required": ["type", "title", "status", "detail", "supported"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "https://skald.so/problems/protocol-too-old",
+              "https://skald.so/problems/protocol-too-new",
+              "https://skald.so/problems/protocol-version-invalid"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "enum": [400]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "supported": {
+            "$ref": "#/components/schemas/SupportedVersions"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SupportedVersions": {
+        "description": "The protocol versions the server accepts, ascending.",
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minItems": 1,
+        "maxItems": 2
       }
     }
   }
