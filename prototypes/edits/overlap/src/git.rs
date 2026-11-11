@@ -185,7 +185,9 @@ pub fn is_object_id(text: &str) -> bool {
 
 /// The edit set of the working tree at `dir`, its root: the paths changed since the merge base of
 /// `HEAD` and the upstream's default branch, committed or not, untracked ones included and ignored
-/// ones not. A rename counts both paths: `--no-renames` lists it as a deletion and an addition.
+/// ones not. A rename counts both paths: `--no-renames` lists it as a deletion and an addition. A
+/// submodule counts when its commit changes, whatever the config and `.gitmodules` say, not when its
+/// work tree does: the snapshot records its commit only.
 pub fn edit_set(dir: &Path) -> Result<BTreeSet<String>> {
     let base = merge_base(dir)?;
     let changed = run(
@@ -194,6 +196,7 @@ pub fn edit_set(dir: &Path) -> Result<BTreeSet<String>> {
             "diff",
             "--no-ext-diff",
             "--no-renames",
+            "--ignore-submodules=dirty",
             "--name-only",
             "-z",
             &base,

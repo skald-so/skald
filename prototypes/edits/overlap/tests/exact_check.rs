@@ -11,33 +11,12 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
-use common::{INVENTORY, Repo, Space, bytes, holds, inventory, inventory_with, lines};
+use common::{
+    INVENTORY, Repo, Space, assert_holds_none, bytes, inventory, inventory_with, lines, long_lines,
+};
 use edit_overlap::harness::Machine;
 use edit_overlap::{Check, Conflict, Edits, Publication, git};
 use tempfile::TempDir;
-
-impl Space<'_> {
-    /// `name` asks each machine the server says it overlaps for its changes, they answer, and it
-    /// checks them: what it finds, by machine.
-    fn check(&mut self, name: &str) -> BTreeMap<String, Check> {
-        let (machine, client) = self.find(name);
-        for overlap in self.server.overlaps(name) {
-            client
-                .request_changes(machine.dir(), &overlap.machine, &mut self.messages)
-                .unwrap();
-            let (other, other_client) = self.find(&overlap.machine);
-            other_client
-                .answer_requests(other.dir(), &mut self.messages)
-                .unwrap();
-        }
-        let checks = client.check(machine.dir(), &mut self.messages).unwrap();
-        assert!(
-            self.messages.waiting().values().all(Vec::is_empty),
-            "every message is answered"
-        );
-        checks
-    }
-}
 
 /// A check that found the conflicts `conflicts`, each a type and paths, in the files `files`, each
 /// a path and the conflicting ranges of the checking machine's lines.
@@ -187,24 +166,47 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     let tmp = TempDir::new().unwrap();
     // Markers of 32 characters in Rust files, as git's own repository sets for some files, and
     // of 7 in the others; `-diff` makes `git diff` show any file as binary, without hunks.
+    let order = "x\n}\n\nx\n}\ny\ny\n\n";
+    let blocks =
+        "}\n    y();\n    y();\nfn f() {\n    y();\n    y();\n    z();\n    z();\nfn f() {\n";
     let repo = Repo::create_with(
         &tmp,
-        &[(
-            ".gitattributes",
-            "* -diff\nsrc/*.rs conflict-marker-size=32\n",
-        )],
+        &[
+            (
+                ".gitattributes",
+                "* -diff\nsrc/*.rs conflict-marker-size=32\n",
+            ),
+            ("notes/order.txt", order),
+            ("src/blocks.rs", blocks),
+        ],
     );
     let (a, a_client) = repo.machine("alice-laptop");
     let (b, b_client) = repo.machine("bob-desktop");
-    // `git diff` joins hunks up to 3 lines apart into one, and colors its output.
+    // `git diff` joins hunks up to 3 lines apart into one, colors its output, runs an external
+    // diff that fails, and diffs with the histogram algorithm; it slides hunks with the indent
+    // heuristic by default.
     a.git(&["config", "diff.interHunkContext", "3"]).unwrap();
     a.git(&["config", "color.diff", "always"]).unwrap();
+    a.git(&["config", "diff.external", "false"]).unwrap();
+    a.git(&["config", "diff.algorithm", "histogram"]).unwrap();
+    // `git diff` converts any file with `sort` first.
+    b.write(".git/info/attributes", "* diff=sorted\n").unwrap();
+    b.git(&["config", "diff.sorted.textconv", "sort"]).unwrap();
+    // A line added on top merges cleanly.
     a.write(
         "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 10;")]),
+        &inventory_with(&["//! Inventory."], &[(7, "    let reserved = 10;")]),
     )
     .unwrap();
     a.write("notes/plan.md", "- count\n- reserve\n").unwrap();
+    // Line 4 emptied: the histogram diff from Alice's version to the merge, resolved to her side,
+    // keeps line 3 instead and maps her conflicting line to line 3.
+    a.write("notes/order.txt", "x\n}\n\n\n}\ny\ny\n\n").unwrap();
+    // Line 1 replaced: with the indent heuristic, the diff from Alice's version to the merge,
+    // resolved to her side, deletes lines 1 to 3 instead of 4 to 6 and maps her conflicting line
+    // to line 4.
+    a.write("src/blocks.rs", &blocks.replacen("}", "fn f() {", 1))
+        .unwrap();
     a.commit("reserve ten").unwrap();
     // A line added two lines above the conflict and one changed two lines below it merge cleanly.
     let mut lines = INVENTORY.to_vec();
@@ -214,11 +216,20 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     b.write("src/inventory.rs", &(lines.join("\n") + "\n"))
         .unwrap();
     b.write("notes/plan.md", "- count\n- release\n").unwrap();
+    b.write("notes/order.txt", "}\n\n}\n}\n}\ny\nx\ny\n\n")
+        .unwrap();
+    let mut lines: Vec<&str> = blocks.lines().collect();
+    lines.splice(3..6, []);
+    lines.splice(0..0, ["    y();", "    y();", "    y();", "fn f() {"]);
+    b.write("src/blocks.rs", &(lines.join("\n") + "\n"))
+        .unwrap();
     let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
     space.publish();
 
     let conflicts: &[(&str, &[&str])] = &[
+        ("CONFLICT (contents)", &["notes/order.txt"]),
         ("CONFLICT (contents)", &["notes/plan.md"]),
+        ("CONFLICT (contents)", &["src/blocks.rs"]),
         ("CONFLICT (contents)", &["src/inventory.rs"]),
     ];
     assert_eq!(
@@ -227,7 +238,12 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
             "bob-desktop".into(),
             conflicted(
                 conflicts,
-                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[7..8])]
+                &[
+                    ("notes/order.txt", &[4..5]),
+                    ("notes/plan.md", &[2..3]),
+                    ("src/blocks.rs", &[1..2]),
+                    ("src/inventory.rs", &[8..9])
+                ]
             )
         )])
     );
@@ -237,7 +253,12 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
             "alice-laptop".into(),
             conflicted(
                 conflicts,
-                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[8..9])]
+                &[
+                    ("notes/order.txt", &[3..5]),
+                    ("notes/plan.md", &[2..3]),
+                    ("src/blocks.rs", &[1..6]),
+                    ("src/inventory.rs", &[8..9])
+                ]
             )
         )])
     );
@@ -409,9 +430,7 @@ fn machines_on_different_bases_get_the_right_result() {
         )
         .unwrap();
     maintainer.commit("document the inventory").unwrap();
-    maintainer
-        .git(&["push", "--quiet", "origin", "HEAD:main"])
-        .unwrap();
+    maintainer.push("main").unwrap();
     maintainer.merge("count-one").unwrap();
     a.pull().unwrap();
     let merged = ["//! Inventory.", "", ""];
@@ -553,27 +572,20 @@ fn server_receives_and_keeps_nothing_of_the_exchanged_changes() {
     assert_eq!(space.server.kept(), &kept);
     let sent: Vec<Publication> = edits.iter().map(|edit| edit.publication.clone()).collect();
     assert_eq!(received, sent);
-    // Every path of the exchanged changes, its file and directory names, and every line of them
-    // long enough not to occur in random bytes by chance.
+    // Every path of the exchanged changes, its file and directory names, and every long line of
+    // them.
     let mut needles: BTreeSet<&str> = edits.iter().flat_map(Edits::paths).collect();
     assert!(needles.contains("notes/todo-list.md"));
     needles.extend(needles.clone().iter().flat_map(|path| path.split('/')));
-    for text in [
+    needles.extend(long_lines([
         a_text.as_str(),
         b_text.as_str(),
         "- ship the reservations\n",
-    ] {
-        needles.extend(text.lines().map(str::trim).filter(|line| line.len() >= 4));
-    }
+    ]));
     assert!(needles.contains("let reserved = 20;"));
     let received = received
         .iter()
         .map(|publication| (&publication.machine, &publication.fingerprints));
     let bytes = bytes(received.chain(&kept));
-    for needle in needles {
-        assert!(
-            !holds(&bytes, needle),
-            "{needle} in what the server received or keeps"
-        );
-    }
+    assert_holds_none(&bytes, needles, "what the server received or keeps");
 }

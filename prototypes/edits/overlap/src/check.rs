@@ -143,8 +143,11 @@ fn own_lines(
     }
     // Outside the conflicts, the file holds the other machine's clean changes too; a diff from
     // this machine's version maps the ranges back to it. The options fix what the repository's
-    // attributes and config could change: a binary diff without hunks, hunks joined across the
-    // lines between them, where a hunk slides, and colors.
+    // attributes, which reach a diff of two blobs through patterns such as `*`, and config could
+    // change: a binary diff without hunks, a text conversion, an external diff, hunks joined
+    // across the lines between them, colors, and the diff algorithm and indent heuristic, which
+    // decide which of repeated lines a hunk takes. Myers without the indent heuristic maps the
+    // conflicts of the scenarios to the lines `git merge-tree` merged.
     let kept = git::run_with_input(dir, &["hash-object", "-w", "--stdin"], &kept)?;
     let kept = String::from_utf8(kept)?;
     let diff = git::run(
@@ -154,7 +157,7 @@ fn own_lines(
             "--unified=0",
             "--inter-hunk-context=0",
             "--text",
-            "--indent-heuristic",
+            "--no-indent-heuristic",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",

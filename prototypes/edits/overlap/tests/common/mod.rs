@@ -1,11 +1,13 @@
 //! What the scenario tests share: the space key, the test repositories and a space of machines.
 #![allow(dead_code, reason = "each test file uses some of the helpers")]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use edit_overlap::harness::{Machine, Upstream};
-use edit_overlap::{Client, Edits, Fingerprint, Lines, MachineId, Messages, Server, SpaceKey};
+use edit_overlap::{
+    Check, Client, Edits, Fingerprint, Lines, MachineId, Messages, Server, SpaceKey,
+};
 use tempfile::TempDir;
 
 /// The space key, a test fixture.
@@ -144,6 +146,27 @@ impl<'a> Space<'a> {
             .find(|(_, client)| client.machine == name)
             .unwrap()
     }
+
+    /// `name` asks each machine the server says it overlaps for its changes, they answer, and it
+    /// checks them: what it finds, by machine.
+    pub fn check(&mut self, name: &str) -> BTreeMap<String, Check> {
+        let (machine, client) = self.find(name);
+        for overlap in self.server.overlaps(name) {
+            client
+                .request_changes(machine.dir(), &overlap.machine, &mut self.messages)
+                .unwrap();
+            let (other, other_client) = self.find(&overlap.machine);
+            other_client
+                .answer_requests(other.dir(), &mut self.messages)
+                .unwrap();
+        }
+        let checks = client.check(machine.dir(), &mut self.messages).unwrap();
+        assert!(
+            self.messages.waiting().values().all(Vec::is_empty),
+            "every message is answered"
+        );
+        checks
+    }
 }
 
 /// Paths with ranges of lines, `[(path, [lines])]`.
@@ -168,9 +191,23 @@ pub fn bytes<'p>(
     bytes
 }
 
-/// Whether `bytes` holds `needle`.
-pub fn holds(bytes: &[u8], needle: &str) -> bool {
-    bytes
-        .windows(needle.len())
-        .any(|window| window == needle.as_bytes())
+/// The lines of `texts` without the spaces around them, each long enough not to occur in random
+/// bytes by chance.
+pub fn long_lines<'t>(texts: impl IntoIterator<Item = &'t str>) -> BTreeSet<&'t str> {
+    texts
+        .into_iter()
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter(|line| line.len() >= 4)
+        .collect()
+}
+
+/// Panics if `bytes`, which stand for `what`, hold any of `needles`.
+pub fn assert_holds_none<'n>(bytes: &[u8], needles: impl IntoIterator<Item = &'n str>, what: &str) {
+    for needle in needles {
+        let found = bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes());
+        assert!(!found, "{needle} in {what}");
+    }
 }

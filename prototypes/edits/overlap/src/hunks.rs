@@ -23,7 +23,8 @@ pub struct Change {
 /// The changes of `path` from the commit `base` to the commit `commit`, both in the repository at
 /// `dir`, as `git diff` finds them with the diff algorithm of `git merge-tree`, histogram without
 /// the indent heuristic. The options fix what the repository's attributes and config could change:
-/// a binary diff without hunks, a text conversion, an external diff, the diff algorithm and colors.
+/// a binary diff without hunks, a text conversion, an external diff, the diff algorithm, colors, a
+/// submodule's log in place of its `Subproject commit` line, and a hidden submodule.
 /// `--literal-pathspecs` takes `path` as it is, not as a pattern that matches other paths. Hunks
 /// that `diff.interHunkContext` joins read as the same changes, and a diff of one path finds no
 /// rename.
@@ -40,6 +41,8 @@ pub fn changes(dir: &Path, base: &str, commit: &str, path: &str) -> Result<Vec<C
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
+            "--submodule=short",
+            "--ignore-submodules=none",
             base,
             commit,
             "--",
@@ -219,6 +222,15 @@ mod tests {
                 change(6..7, &[("x\n", "y"), ("y", "")]),
             ]
         );
+    }
+
+    #[test]
+    fn parse_reads_joined_hunks_as_the_hunks_they_join() {
+        // Lines 2 and 6 changed: two hunks, or one that `diff.interHunkContext` joins.
+        let apart = b"@@ -1,3 +1,3 @@\n 1\n-2\n+b\n 3\n@@ -5,3 +5,3 @@\n 5\n-6\n+f\n 7\n";
+        let joined = b"@@ -1,7 +1,7 @@\n 1\n-2\n+b\n 3\n 4\n 5\n-6\n+f\n 7\n";
+        assert_eq!(parse(joined).unwrap(), parse(apart).unwrap());
+        assert_eq!(parse(apart).unwrap().len(), 2);
     }
 
     #[test]

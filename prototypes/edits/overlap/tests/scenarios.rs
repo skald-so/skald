@@ -5,7 +5,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{Repo, Space, bytes, holds};
+use common::{Repo, Space, assert_holds_none, bytes};
 use edit_overlap::{Edits, Publication, SpaceKey};
 use tempfile::TempDir;
 
@@ -289,12 +289,7 @@ fn server_receives_and_keeps_no_path() {
     let names: BTreeSet<&str> = paths.iter().flat_map(|path| path.split('/')).collect();
     for publication in &sent {
         let bytes = bytes([(&publication.machine, &publication.fingerprints)]);
-        for path in paths.union(&names) {
-            assert!(
-                !holds(&bytes, path),
-                "{path} in what {} sent",
-                publication.machine
-            );
-        }
+        let what = format!("what {} sent", publication.machine);
+        assert_holds_none(&bytes, paths.union(&names).copied(), &what);
     }
 }

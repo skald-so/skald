@@ -9,8 +9,11 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{Repo, Space, bytes, files, holds, inventory, inventory_with, lines};
-use edit_overlap::{Check, Lines};
+use common::{
+    Repo, Space, assert_holds_none, bytes, files, inventory, inventory_with, lines, long_lines,
+};
+use edit_overlap::harness::Machine;
+use edit_overlap::{Lines, git};
 use tempfile::TempDir;
 
 /// What each machine learns from the server, by the other machine.
@@ -31,20 +34,6 @@ impl Space<'_> {
             paths: edits.overlapping_paths(&overlaps),
             hunks: edits.overlapping_hunks(&overlaps),
         }
-    }
-
-    /// `name` checks its overlap with `other` with `git merge-tree`.
-    fn check(&mut self, name: &str, other: &str) -> Check {
-        let (machine, client) = self.find(name);
-        let (other_machine, other_client) = self.find(other);
-        client
-            .request_changes(machine.dir(), other, &mut self.messages)
-            .unwrap();
-        other_client
-            .answer_requests(other_machine.dir(), &mut self.messages)
-            .unwrap();
-        let mut checks = client.check(machine.dir(), &mut self.messages).unwrap();
-        checks.remove(other).unwrap()
     }
 }
 
@@ -113,7 +102,7 @@ fn edits_to_the_same_lines_overlap_at_hunk_level_and_conflict() {
         ("alice-laptop", "bob-desktop"),
         ("bob-desktop", "alice-laptop"),
     ] {
-        let check = space.check(machine, other);
+        let check = &space.check(machine)[other];
         assert!(!check.clean);
         assert_eq!(check.files, space.seen(machine).hunks[other]);
     }
@@ -169,8 +158,9 @@ fn edits_next_to_each_other_or_at_one_place_overlap_at_hunk_level_and_conflict()
             })
             .collect();
         assert_eq!(space.seen(machine).hunks, hunks(&others), "{machine}");
+        let checks = space.check(machine);
         for (other, _) in &others {
-            assert!(!space.check(machine, other).clean, "{machine} and {other}");
+            assert!(!checks[*other].clean, "{machine} and {other}");
         }
     }
 }
@@ -211,8 +201,9 @@ fn edits_to_different_hunks_of_one_file_overlap_at_file_level_only() {
             },
             "{machine}"
         );
+        let checks = space.check(machine);
         for (other, _) in others {
-            assert!(space.check(machine, other).clean, "{machine} and {other}");
+            assert!(checks[other].clean, "{machine} and {other}");
         }
     }
 }
@@ -230,9 +221,7 @@ fn bases_that_differ_by_lines_added_above_the_hunk_still_match() {
         .write("src/inventory.rs", &inventory_with(&top, &[]))
         .unwrap();
     maintainer.commit("document the inventory").unwrap();
-    maintainer
-        .git(&["push", "--quiet", "origin", "HEAD:main"])
-        .unwrap();
+    maintainer.push("main").unwrap();
     a.pull().unwrap();
     a.write(
         "src/inventory.rs",
@@ -259,7 +248,7 @@ fn bases_that_differ_by_lines_added_above_the_hunk_still_match() {
         ("alice-laptop", "bob-desktop"),
         ("bob-desktop", "alice-laptop"),
     ] {
-        let check = space.check(machine, other);
+        let check = &space.check(machine)[other];
         assert!(!check.clean);
         assert_eq!(check.files, space.seen(machine).hunks[other]);
     }
@@ -336,7 +325,7 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
         ("bob-desktop", "alice-laptop"),
     ] {
         let seen = space.seen(machine).hunks;
-        let check = space.check(machine, other);
+        let check = &space.check(machine)[other];
         assert_eq!(
             seen[other]
                 .keys()
@@ -353,6 +342,64 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
             files
         );
     }
+}
+
+#[test]
+fn submodule_moves_overlap_at_hunk_level_whatever_the_repository_config() {
+    let tmp = TempDir::new().unwrap();
+    // `ignore = all` hides the submodule's changes from `git diff`.
+    let modules = "[submodule \"lib\"]\n\tpath = vendor/lib\n\turl = ./lib\n\tignore = all\n";
+    let repo = Repo::create_with(&tmp, &[(".gitmodules", modules)]);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (maintainer, _) = repo.machine("maintainer");
+    // Points the submodule at `commit`; it is not checked out, so its directory stays empty.
+    let point = |machine: &Machine, commit: char| {
+        std::fs::create_dir_all(machine.dir().join("vendor/lib")).unwrap();
+        let entry = format!("160000,{},vendor/lib", commit.to_string().repeat(40));
+        machine
+            .git(&["update-index", "--add", "--cacheinfo", &entry])
+            .unwrap();
+    };
+    point(&maintainer, '1');
+    maintainer.commit("add the library").unwrap();
+    maintainer.push("main").unwrap();
+    a.pull().unwrap();
+    b.pull().unwrap();
+    // `git diff` writes a log of the submodule in place of its `Subproject commit` line, or hides
+    // its changes.
+    a.git(&["config", "diff.submodule", "log"]).unwrap();
+    b.git(&["config", "diff.ignoreSubmodules", "all"]).unwrap();
+    // Both move it, committed on one machine and staged on the other.
+    point(&a, '2');
+    a.commit("update the library").unwrap();
+    point(&b, '3');
+    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    space.publish();
+
+    for (machine, other) in [
+        ("alice-laptop", "bob-desktop"),
+        ("bob-desktop", "alice-laptop"),
+    ] {
+        assert_eq!(
+            space.seen(machine),
+            Seen {
+                paths: paths(&[(other, &["vendor/lib"])]),
+                hunks: hunks(&[(other, lines(&[("vendor/lib", &[1..2])]))]),
+            },
+            "{machine}"
+        );
+    }
+    // The exact check reads each conflicted path as a file, so `git merge-tree` runs here.
+    let ours = git::snapshot(a.dir()).unwrap();
+    let base = git::merge_base(a.dir()).unwrap();
+    let bundle = git::bundle(b.dir(), &git::snapshot(b.dir()).unwrap(), &base).unwrap();
+    let theirs = git::unbundle(a.dir(), &bundle).unwrap();
+    let args = ["merge-tree", "--write-tree", "--name-only", &ours, &theirs];
+    let output = git::command(a.dir(), &args).output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("CONFLICT (submodule)"), "{stdout}");
 }
 
 #[test]
@@ -382,8 +429,8 @@ fn hunk_fingerprints_match_without_a_conflict_on_common_lines_and_identical_edit
             ("carol-server", lines(&[("src/inventory.rs", &[5..6])])),
         ])
     );
-    assert!(space.check("alice-laptop", "bob-desktop").clean);
-    assert!(space.check("alice-laptop", "carol-server").clean);
+    let checks = space.check("alice-laptop");
+    assert!(checks["bob-desktop"].clean && checks["carol-server"].clean);
 }
 
 #[test]
@@ -416,8 +463,8 @@ fn rename_matches_an_edit_of_its_old_path_at_hunk_level_and_merges_cleanly() {
             hunks: hunks(&[("bob-desktop", lines(&[("docs/guide.md", &[1..1])]))]),
         }
     );
-    assert!(space.check("bob-desktop", "alice-laptop").clean);
-    assert!(space.check("alice-laptop", "bob-desktop").clean);
+    assert!(space.check("bob-desktop")["alice-laptop"].clean);
+    assert!(space.check("alice-laptop")["bob-desktop"].clean);
 }
 
 #[test]
@@ -435,9 +482,7 @@ fn conflicts_with_upstream_commits_only_one_machine_has_do_not_match_at_hunk_lev
         )
         .unwrap();
     maintainer.commit("reserve five").unwrap();
-    maintainer
-        .git(&["push", "--quiet", "origin", "HEAD:main"])
-        .unwrap();
+    maintainer.push("main").unwrap();
     a.pull().unwrap();
     a.write(
         "src/inventory.rs",
@@ -460,7 +505,7 @@ fn conflicts_with_upstream_commits_only_one_machine_has_do_not_match_at_hunk_lev
         }
     );
     // The conflict is with the upstream change, which Alice did not make.
-    let check = space.check("bob-desktop", "alice-laptop");
+    let check = &space.check("bob-desktop")["alice-laptop"];
     assert_eq!(check.files, lines(&[("src/inventory.rs", &[7..8])]));
 }
 
@@ -484,26 +529,12 @@ fn server_receives_no_line_of_the_test_repository() {
 
     // Every line of the repository and of the edits long enough not to occur in random bytes by
     // chance.
-    let mut needles = BTreeSet::new();
-    for (_, text) in files() {
-        needles.extend(text.lines().map(str::to_owned));
-    }
-    for text in [a_text.as_str(), &b_text, "- ship the reservations\n"] {
-        needles.extend(text.lines().map(str::to_owned));
-    }
-    needles.retain(|line| line.trim().len() >= 4);
-    assert!(
-        needles.contains("    let reserved = 20;") && needles.contains("pub struct Warehouse;")
-    );
+    let files = files();
+    let texts = files.iter().map(|(_, text)| text.as_str());
+    let needles = long_lines(texts.chain([a_text.as_str(), &b_text, "- ship the reservations\n"]));
+    assert!(needles.contains("let reserved = 20;") && needles.contains("pub struct Warehouse;"));
     let received = space.server.received().iter();
     let bytes =
         bytes(received.map(|publication| (&publication.machine, &publication.fingerprints)));
-    for needle in needles {
-        for needle in [needle.as_str(), needle.trim()] {
-            assert!(
-                !holds(&bytes, needle),
-                "{needle} in what the server received"
-            );
-        }
-    }
+    assert_holds_none(&bytes, needles, "what the server received");
 }
