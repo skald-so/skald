@@ -49,7 +49,8 @@ fn main() -> ExitCode {
                 }
             }
         }
-        [hook, "claude", options @ ..] if Hook::parse(hook).is_some() => {
+        // The commands above take their own `claude`.
+        [hook, "claude", options @ ..] => {
             let (Some(hook), Some(options)) = (Hook::parse(hook), Options::parse(options)) else {
                 return usage();
             };

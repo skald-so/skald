@@ -244,12 +244,13 @@ impl HookRuns {
                     ..HookRun::default()
                 });
             }
+            // A run's ID tells which hook ended.
             Event::HookEnded {
                 id,
-                event,
                 outcome,
                 stdout,
-            } if event == self.event => {
+                ..
+            } => {
                 if let Some(at) = self.ids.iter().position(|started| started == id) {
                     let run = &mut self.runs[at];
                     run.ended_ms = Some(now_ms);
