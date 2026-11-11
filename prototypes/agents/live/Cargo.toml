@@ -1,0 +1,17 @@
+[package]
+name = "agent-live"
+description = "Live checks of each delivery path against the installed Claude Code and Codex."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-source = { path = "../source" }
+serde_json = "1"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
+
+[[bin]]
+name = "live-check"
+path = "src/main.rs"

@@ -50,6 +50,7 @@ jobs:
           workspaces: |
             . -> target
             prototypes/mls -> target
+            prototypes/agents -> target
       # The MLS prototypes' WASM tests need the wasm-bindgen-cli of their Cargo.lock.
       - id: wasm-bindgen
         shell: bash # -o pipefail: a failure of awk fails the step
