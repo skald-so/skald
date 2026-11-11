@@ -442,6 +442,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - Every Claude Code and Codex path in `architecture.md`, "Delivery to agents".
 - What subscription limit data the CLIs themselves show the user, within vendor rules.
 - A minimal prototype for each path.
+- The same paths in the Claude Code and Codex desktop apps and IDE extensions, checked by an agent that drives the app.
 - **Done when:** a report is in the docs; the primary and fallback paths are confirmed for each agent; the "Delivery to agents" table in `architecture.md` is up to date.
 
 - **Release:** MVP
@@ -520,16 +521,30 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - Tests, for each prototype: on outputs recorded from the real CLI, it gives each limit with its usage and reset time; an output without limits gives none.
 - **Definition of done:** the report answers, per agent, whether the data exists and may be read, with its source and the vendor terms; for each source that may be read, its live check, rerun, gives the result and CLI version the report records, and unit tests on its recorded outputs run in `script/test`.
 
-#### Iteration 4.7: Summary and the "Delivery to agents" table
+#### Iteration 4.7: Desktop apps and IDE extensions
+- **Goal:** It is known which paths confirmed on the CLIs reach a live session in the Claude Code and Codex desktop apps and IDE extensions.
+- **What we do:**
+  - Surfaces: Claude Code in the Claude desktop app and in its VS Code extension; Codex in its desktop app and in its VS Code extension. The report gives each surface's version.
+  - A GUI live check follows the rules of 4.1, except that an agent drives the app instead of the CLI:
+    - it takes screenshots and moves the mouse and types on this machine;
+    - it attaches the path through project config in a temporary directory, opens that directory in the app, sends a message with a random token and passes when the session shows the agent repeating the token;
+    - it prints the surface version and pass or fail;
+    - it runs only when the owner allows it, because it takes over the mouse and keyboard.
+  - The owner prepares beforehand: the apps installed and signed in; the macOS Accessibility and Screen Recording permissions for the terminal that runs the agent.
+  - A GUI live check of each path that passed its CLI live check in 4.1–4.5, on each surface.
+  - Findings in the report: per surface and path, the result with the reason, and what the surface needs beyond the CLI.
+- **Definition of done:** for each surface, every path that passed its CLI live check has a GUI live check result and the surface version in the report; the reviewer's rerun gives the same results; a step that needs a person beyond the owner's preparation is listed under the story's Manual check.
+
+#### Iteration 4.8: Summary and the "Delivery to agents" table
 - **Goal:** Stories 19, 20, 38 and 61 build on confirmed paths and data, and `architecture.md` shows the confirmed paths.
 - **What we do:**
-  - Every live check reruns on the current CLI versions; the report gives those versions and results.
-  - The report sums up, per agent: the primary and fallback paths with their results and what each needs; refuted paths with the reason.
+  - Every live check reruns on the current CLI and surface versions; the report gives those versions and results.
+  - The report sums up, per agent and surface: the primary and fallback paths with their results and what each needs; refuted paths with the reason.
   - For Stories 19, 20 and 38: the paths and setup each takes, and what the daily e2e with real CLIs needs (`infrastructure.md`, "PR checks"); for Story 61: whether the limit data exists.
-  - `architecture.md`, "Delivery to agents": the table matches the report; refuted paths and "(to verify)" go; it links to the report.
+  - `architecture.md`, "Delivery to agents": the table matches the report and names the surfaces each path works on; refuted paths and "(to verify)" go; it links to the report.
   - `roadmap.md`: the lines on the Claude Code and Codex adapters ("MVP") and on Codex background agents ("Post-MVP") name the agents, not paths, and link to `architecture.md`, "Delivery to agents".
   - `features.md` §16: the `skald connect` step that sets up MCP and hooks sets up the paths of `architecture.md`, "Delivery to agents", and links there instead of naming them.
-- **Definition of done:** each primary and fallback path the report names for an agent passes its live check, rerun, on the CLI version the report gives; the table in `architecture.md` matches the report; the two `roadmap.md` lines and `features.md` §16 name no path; no other doc repeats the report.
+- **Definition of done:** each primary and fallback path the report names for an agent passes its live check, rerun, on the CLI and surface versions the report gives; the table in `architecture.md` matches the report; the two `roadmap.md` lines and `features.md` §16 name no path; no other doc repeats the report.
 
 ### Story 5: Edit comparison prototype with HMAC fingerprints
 
@@ -1142,6 +1157,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 
 **Scope:**
 - Their paths in `architecture.md`, "Delivery to agents", first checked on current CLI versions with live checks, as Story 4 does for Claude Code and Codex.
+- Surfaces: Cursor in its IDE and CLI, Copilot in VS Code and its CLI, Google's agent in Gemini CLI and Antigravity, OpenCode in its CLI and desktop app; the GUI surfaces are checked by an agent that drives the app, as Story 4 does.
 - `skald connect` finds these agents and, after confirmation, connects them.
 - e2e tests against real CLIs.
 - **Done when:** a message reaches a live session of each of the four agents.
