@@ -167,10 +167,7 @@ Findings:
 - Unattended sessions need the dialogs answered by code, as the check does.
 
 ## Claude Code hooks
-`agent-hook <source-dir>`: a command hook for `PostToolUse` and `Stop`. It reads the hook input on stdin, takes the waiting messages and prints them as `hookSpecificOutput.additionalContext`, the text of [MCP `inbox`](#mcp-inbox):
-- `PostToolUse`: Claude Code adds them next to the tool result;
-- `Stop`: the turn goes on with them; Claude Code labels it "Stop hook feedback", where `decision: "block"` would show a hook error ([docs](https://code.claude.com/docs/en/hooks.md#stop-decision-control));
-- with none waiting, or on another event, it prints nothing, so `Stop` lets the turn end.
+`agent-hook <source-dir>`: a command hook for `PostToolUse` and `Stop`. It reads the hook input on stdin, takes the waiting messages and prints them as `hookSpecificOutput.additionalContext`, the text of [MCP `inbox`](#mcp-inbox). On `Stop` the turn goes on with them; Claude Code labels it "Stop hook feedback", where `decision: "block"` would show a hook error ([docs](https://code.claude.com/docs/en/hooks.md#stop-decision-control)). With none waiting, or on another event, it prints nothing, so `Stop` lets the turn end.
 
 It marks the messages handed over once its output is written and puts them back if the write fails. It fails with exit code 1, never 2: on `Stop`, 2 keeps the turn going with stderr as the agent's instruction.
 
@@ -194,8 +191,8 @@ Results on 2026-11-11, on Claude Code 2.1.322; the handler is the debug build:
 
 | Check | `PostToolUse` | `Stop` |
 |---|---|---|
-| Idle session | No: hooks run only in a turn. A message that waits when a turn starts arrives after the turn's first tool call | No, the same. A message that waits when a turn starts arrives at its end; the turn goes on |
-| Busy session | Yes, after the running tool call ends, in the same turn (C: 20.1 s into `sleep 20`). A turn without tool calls gets nothing | Yes, at the end of the turn |
+| Idle session | No: hooks run only in a turn. A message that waits when a turn starts arrives after the turn's first tool call | No, the same. A message that waits when a turn starts arrives at its end |
+| Busy session | Yes, after the running tool call ends, in the same turn. A turn without tool calls gets nothing | Yes, at the end of the turn |
 | Delay | Until the agent's next tool call ends: see the results | Until the turn ends: see the results |
 | In context | A system message right after the tool result: `PostToolUse:Bash hook additional context: ` and the text; the sender label in `from` | A user text block after the agent's reply: `<system-reminder>` with `Stop hook additional context: ` and the text; the sender label in `from`. The `Stop` input has `stop_hook_active: true` in the turn that goes on |
 | Handover known | Yes, once the output is written to Claude Code; not whether the model read it | The same, but Claude Code may drop it: see the findings |
@@ -204,16 +201,14 @@ Results on 2026-11-11, on Claude Code 2.1.322; the handler is the debug build:
 
 Claude Code needs:
 - the hook in settings: a file given with `--settings`, the project's or user's settings, or a plugin's `hooks/hooks.json`;
-- the check's flags: those above; `--include-hook-events` only for timing;
+- the check's flags: those above;
 - a sign-in: an API key and a Claude account both work.
 
 The Claude Code plugin can ship the hooks. Checked by hand on the stub: the hooks moved from the settings file into a plugin's `hooks/hooks.json`, with the handler in the plugin's `bin/` as `${CLAUDE_PLUGIN_ROOT}/bin/agent-hook`, and the plugin loaded by `--plugin-dir` as `skald@inline`. Both checks pass.
 
 Findings:
-- Hooks deliver only while the agent works: they can be a fallback for a busy session, not a path to an idle one.
-- `PostToolUse` delivers within a turn, as soon as a tool call ends; `Stop` delivers at the end of a turn and keeps it going, so it also reaches a turn without tool calls.
+- Hooks can be a fallback for a busy session, not a path to an idle one.
 - Claude Code ends the turn after 8 `Stop` continuations in a row with no tool call between them, and drops the 9th hook's output ([docs](https://code.claude.com/docs/en/hooks.md#stop-input); `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` changes the limit). Checked by hand on the stub, with a message added before each run: the 9th message was marked handed over and never reached the model. A handler must count the continuations, or leave messages waiting at the cap.
-- The handler adds a few milliseconds to a tool call; Claude Code runs it after the tool and before the next model request.
 
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
