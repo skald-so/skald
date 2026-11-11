@@ -6,7 +6,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,9 +32,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 /// The Channels path's live check: an idle session; with `--all`, also messages in a row, the
 /// other of two idle sessions, a busy session and a session without the channel flag.
 pub fn channel(options: &Options) -> Result<bool> {
-    let version = Command::new(Agent::Claude.cli())
-        .arg("--version")
-        .output()?;
+    let version = Agent::Claude.command().arg("--version").output()?;
     println!("{}", Agent::Claude.version(&version.stdout));
     let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
     let prepare = Prepare {
@@ -181,7 +179,8 @@ impl Prepare<'_> {
     }
 }
 
-/// The CLI's environment: only these variables, or the check's own and these.
+/// The CLI's environment: only these variables, or the check's own, but for what
+/// [`Agent::command`] drops, and these.
 enum Env {
     Only(Vec<(String, String)>),
     Add(Vec<(String, String)>),
@@ -242,7 +241,7 @@ impl Prepared {
     /// Starts Claude Code in a pseudo-terminal.
     fn start(self) -> Result<Live> {
         let (master, slave) = open_pty()?;
-        let mut command = Command::new(Agent::Claude.cli());
+        let mut command = Agent::Claude.command();
         match &self.env {
             Env::Only(env) => {
                 command.env_clear().envs(env.iter().map(|(n, v)| (n, v)));

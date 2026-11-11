@@ -9,7 +9,7 @@ mod stub;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{ExitCode, ExitStatus};
+use std::process::{Command, ExitCode, ExitStatus};
 use std::time::Duration;
 
 use agent_inbox::INBOX;
@@ -49,6 +49,20 @@ impl Agent {
             Self::Claude => "claude",
             Self::Codex => "codex",
         }
+    }
+
+    /// The command that starts the CLI. Claude Code gets none of the variables of `live-check`'s
+    /// environment that [`replaces_sign_in`] names, so off the stub it runs on the owner's sign-in.
+    pub fn command(self) -> Command {
+        let mut command = Command::new(self.cli());
+        if self == Self::Claude {
+            for (name, _) in std::env::vars_os() {
+                if name.to_str().is_some_and(replaces_sign_in) {
+                    command.env_remove(name);
+                }
+            }
+        }
+        command
     }
 
     /// The CLI's version line from the output of `<cli> --version`.
@@ -405,6 +419,18 @@ impl<'a> Options<'a> {
     }
 }
 
+/// Whether the variable `name` would make Claude Code sign in other than with the owner's
+/// subscription: with an API key, a token, another endpoint or a cloud provider. These are every
+/// `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`, and every `CLAUDE_*`
+/// variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`.
+pub fn replaces_sign_in(name: &str) -> bool {
+    const MARKS: [&str; 5] = ["KEY", "TOKEN", "AUTH", "SECRET", "PROVIDER"];
+    ["ANTHROPIC_", "AWS_BEARER_TOKEN_", "CLAUDE_CODE_USE_"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        || (name.starts_with("CLAUDE_") && MARKS.iter().any(|mark| name.contains(mark)))
+}
+
 /// The `agent-inbox` binary next to `live-check`, the binary `exe`.
 pub fn inbox_server(exe: &Path) -> Result<PathBuf, String> {
     let inbox = exe.with_file_name("agent-inbox");
@@ -473,7 +499,8 @@ pub struct Run {
     pub project: PathBuf,
     pub source: PathBuf,
     pub args: Vec<String>,
-    /// The CLI's whole environment; `None` inherits `live-check`'s, for the real model's sign-in.
+    /// The CLI's whole environment; `None` inherits `live-check`'s, for the real model's sign-in,
+    /// but for what [`Agent::command`] drops.
     pub env: Option<Vec<(String, String)>>,
     /// The session's JSON output.
     pub log: PathBuf,
@@ -859,6 +886,41 @@ mod tests {
         assert_eq!(codex.events(CODEX_DONE_WITHOUT_USAGE), []);
         assert_eq!(codex.events(CLAUDE_RESULT), []);
         assert_eq!(codex.events("not JSON"), []);
+    }
+
+    #[test]
+    fn names_the_variables_that_replace_the_sign_in() {
+        for name in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_FOUNDRY_API_KEY",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR",
+            "CLAUDE_CODE_GATEWAY_TOKEN",
+            "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+            "CLAUDE_API_KEY",
+            "CLAUDE_SECRET",
+        ] {
+            assert!(replaces_sign_in(name), "{name}");
+        }
+        for name in [
+            "PATH",
+            "HOME",
+            "USER",
+            "TERM",
+            "TMPDIR",
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "OPENAI_API_KEY",
+            "SKALD_STUB_API_KEY",
+            "MY_ANTHROPIC_API_KEY",
+        ] {
+            assert!(!replaces_sign_in(name), "{name}");
+        }
     }
 
     #[test]

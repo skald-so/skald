@@ -34,7 +34,7 @@ The CLI on the stub gets only these variables:
 | Codex | `PATH`; `HOME` and `CODEX_HOME`, empty temporary directories; `SKALD_STUB_API_KEY`, the placeholder | a `stub` model provider given with `-c`: `base_url` the stub, `env_key = "SKALD_STUB_API_KEY"`, `wire_api = "responses"` |
 
 ## Session config
-With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home, as [task.md, iteration 4.1](../../task.md#iteration-41-prototype-harness-and-the-mcp-inbox-path) says. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`.
+With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home, as [task.md, iteration 4.1](../../task.md#iteration-41-prototype-harness-and-the-mcp-inbox-path) says. Claude Code, in every check, gets none of the variables that would sign it in other than with the owner's subscription: every `ANTHROPIC_*` and `AWS_BEARER_TOKEN_*` variable, `CLAUDE_CODE_USE_*`, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`.
 
 Each [`inbox`](#mcp-inbox) session, on the stub and with `--real`, gets these flags:
 
@@ -111,7 +111,7 @@ Findings:
 - Claude Code defers MCP tools while `ToolSearch` is among its tools: the agent loads `inbox` with it first, one more step. With `--tools` naming only other tools, `inbox` is in the first request.
 
 ## Channels
-`agent-channel <source-dir>`: a stdio MCP server on rmcp 3.9.0 with the `claude/channel` capability and no tools. Every 100 ms it takes the waiting messages and pushes each as a `notifications/claude/channel` event: the text as `content`, `msg_id` and the sender label in `meta`. It marks a message handed over once its event is written to the CLI. When a write or the source fails, it puts back the messages not yet pushed and ends, so the next take, in any process, puts back what its claim still holds. It speaks MCP revisions up to 2025-11-25: Claude Code does not register a channel that negotiates 2026-07-28 ([docs](https://code.claude.com/docs/en/mcp.md#push-messages-with-channels)).
+`agent-channel <source-dir>`: a stdio MCP server on rmcp 3.9.0 with the `claude/channel` capability and no tools. Every 100 ms it takes the waiting messages and pushes each as a `notifications/claude/channel` event: the text as `content`, `msg_id` and the sender label in `meta`. It marks a message handed over once its event is written to the CLI. When a write or the source fails, it puts back the messages not yet pushed and ends ([Message source](#message-source)). It speaks MCP revisions up to 2025-11-25: Claude Code does not register a channel that negotiates 2026-07-28 ([docs](https://code.claude.com/docs/en/mcp.md#push-messages-with-channels)).
 
 Claude Code loads a channel only in an interactive session: with `-p` it ignores the flag ([docs](https://code.claude.com/docs/en/channels-reference.md#test-during-the-research-preview)). So `live-check channel claude` runs each session in a pseudo-terminal of 200×50:
 - it answers two dialogs: the trust dialog of the new working directory, whose default is "No, exit", with Down and Enter; the development channel warning with Enter on "I am using this for local development";
@@ -127,7 +127,7 @@ Its sessions, each with its own server, source and stub:
 
 Session flags: `[<prompt>] --setting-sources local --strict-mcp-config --mcp-config <dir>/mcp.json --settings <dir>/settings.json --disable-slash-commands --tools <tools> --permission-mode dontAsk --effort low --dangerously-load-development-channels server:skald`; C adds `--allowedTools 'Bash(sleep:*)'`. The settings file holds the hooks and `promptSuggestionEnabled: false`, which saves a model request after each turn. The working directory stays empty: files in it, such as `.claude/settings.local.json` with `permissions.allow`, add a warning to the trust dialog.
 
-Environment: on the stub, that of [Model stub](#model-stub), `TERM=xterm-256color`, and a `.claude.json` in the empty config home with onboarding done and the placeholder key approved, so no other dialog opens. With `--real`, the environment of `live-check`, `TERM` and `CLAUDE_CODE_CHILD_SESSION=1`, so Claude Code saves no transcript or prompt history in the user's config home. With `--real` the session still loads what [Session config](#session-config) lists for Claude Code; on the stub, its requests held the auto-memory instructions and no tools.
+Environment: on the stub, that of [Model stub](#model-stub), `TERM=xterm-256color`, and a `.claude.json` in the empty config home with onboarding done and the placeholder key approved, so no other dialog opens. With `--real`, that of [Session config](#session-config), `TERM` and `CLAUDE_CODE_CHILD_SESSION=1`, so Claude Code saves no transcript or prompt history in the user's config home. With `--real` the session still loads what [Session config](#session-config) lists for Claude Code; on the stub, its requests held the auto-memory instructions and no tools.
 
 Results on 2026-11-11, on Claude Code 2.1.322:
 
@@ -135,7 +135,7 @@ Results on 2026-11-11, on Claude Code 2.1.322:
 |---|---|---|---|---|---|
 | `live-check channel claude` | the stub, `ANTHROPIC_API_KEY` | pass | 1.8 s / 1.8 s | | none |
 | `live-check channel claude --all` | the stub, `ANTHROPIC_API_KEY` | pass | 1.9 s / 1.9 s | 0.0 s / 20.1 s | none |
-| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check channel claude --real` | Opus 5.5, Claude account | pass | 2.3 s / 4.8 s | none shown: the terminal UI's spinner shows only an estimate, the reply's characters divided by 4, while a turn runs |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check channel claude --real` | Opus 5.5, Claude account | pass | 2.3 s / 4.8 s | | none shown: the terminal UI's spinner shows only an estimate, the reply's characters divided by 4, while a turn runs |
 
 `--real` needs `USER`: without it Claude Code finds no sign-in and answers "Not logged in".
 

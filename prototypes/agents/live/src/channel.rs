@@ -173,9 +173,10 @@ pub fn session(
     Ok(args)
 }
 
-/// The variables the session gets on top of its environment: the terminal, and, on the real
-/// model, the mark of a session started by another, so Claude Code keeps no transcript or prompt
-/// history of it in the user's config home.
+/// The variables the session gets on top of its environment, which off the stub is `live-check`'s
+/// but for what [`Agent::command`] drops: the terminal, and, on the real model, the mark of a
+/// session started by another, so Claude Code keeps no transcript or prompt history of it in the
+/// user's config home.
 pub fn extra_environment(real: bool) -> Vec<(String, String)> {
     let mut env = vec![("TERM", TERM)];
     if real {
