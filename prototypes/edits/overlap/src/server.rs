@@ -1,5 +1,6 @@
 //! A minimal in-process stand-in for the server: without the space key, it keeps each machine's
 //! latest fingerprints and tells a machine which other machines share fingerprints with it.
+//! Its only input is [`Server::publish`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,11 +26,13 @@ pub struct Overlap {
 #[derive(Debug, Default)]
 pub struct Server {
     latest: BTreeMap<MachineId, BTreeSet<Fingerprint>>,
+    received: Vec<Publication>,
 }
 
 impl Server {
     /// Keeps the publication in place of the machine's earlier one.
     pub fn publish(&mut self, publication: Publication) {
+        self.received.push(publication.clone());
         self.latest
             .insert(publication.machine, publication.fingerprints);
     }
@@ -50,6 +53,11 @@ impl Server {
                 })
             })
             .collect()
+    }
+
+    /// Everything the server has received: each publication, in order.
+    pub fn received(&self) -> &[Publication] {
+        &self.received
     }
 
     /// Everything the server keeps: each machine's latest fingerprints.
@@ -106,5 +114,13 @@ mod tests {
         server.publish(publication("a", &[2]));
         assert_eq!(server.overlaps("a"), []);
         assert_eq!(server.kept()["a"], publication("", &[2]).fingerprints);
+        assert_eq!(
+            server.received(),
+            [
+                publication("a", &[1]),
+                publication("b", &[1]),
+                publication("a", &[2])
+            ]
+        );
     }
 }
