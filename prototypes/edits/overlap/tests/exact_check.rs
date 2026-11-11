@@ -108,6 +108,41 @@ fn snapshot_commits_the_working_tree_and_leaves_the_repository_as_it_is() {
 }
 
 #[test]
+fn snapshot_takes_an_edit_that_keeps_the_size_and_time_of_the_file() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::create(&tmp);
+    let (machine, _) = repo.machine("alice-laptop");
+    // The index holds an old modification time for the file. Then an edit of the same size keeps
+    // that time, as an edit within the timestamp's resolution after the index was written would,
+    // and the index is as old. Git finds the file's stat data unchanged and rehashes it only
+    // because its entry is as new as the index.
+    machine
+        .git(&["config", "core.trustctime", "false"])
+        .unwrap();
+    let path = machine.dir().join("src/warehouse.rs");
+    let index = machine.dir().join(".git/index");
+    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    let set_modified = |file: &std::path::Path| {
+        let file = std::fs::File::options().write(true).open(file).unwrap();
+        file.set_modified(old).unwrap();
+    };
+    set_modified(&path);
+    machine.git(&["update-index", "--refresh"]).unwrap();
+    machine
+        .write("src/warehouse.rs", "pub struct Wardrobes;\n")
+        .unwrap();
+    set_modified(&path);
+    set_modified(&index);
+
+    let snapshot = git::snapshot(machine.dir()).unwrap();
+
+    let text = machine
+        .git(&["show", &format!("{snapshot}:src/warehouse.rs")])
+        .unwrap();
+    assert_eq!(String::from_utf8(text).unwrap(), "pub struct Wardrobes;\n");
+}
+
+#[test]
 fn edits_to_the_same_lines_conflict_with_their_files_and_lines() {
     let tmp = TempDir::new().unwrap();
     let repo = Repo::create(&tmp);

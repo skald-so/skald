@@ -97,6 +97,14 @@ pub fn snapshot(dir: &Path) -> Result<String> {
     let copy = index.with_file_name(format!("skald-snapshot-index-{}", std::process::id()));
     let result = (|| {
         fs::copy(&index, &copy)?;
+        // The copy keeps the index's modification time: git rehashes a file whose stat data
+        // matches its entry only when the entry is as new as the index file, and a later copy
+        // would hide an edit of the same size made within the timestamp's resolution.
+        let modified = fs::metadata(&index)?.modified()?;
+        fs::File::options()
+            .write(true)
+            .open(&copy)?
+            .set_modified(modified)?;
         let with_copy = |args: &[&str]| {
             let output = command(dir, args).env("GIT_INDEX_FILE", &copy).output()?;
             checked(output, args, dir)
