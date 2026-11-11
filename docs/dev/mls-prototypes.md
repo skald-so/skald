@@ -336,13 +336,13 @@ OpenMLS 0.9.2 against mls-rs 0.57.0. Facts from outside this repository were che
 **Gaps the prototypes found:** OpenMLS does not check an external Commit's Removes, RFC 9420, §12.2 ([OpenMLS](#openmls), "Removes in an external Commit"); mls-rs does. Neither bounds a KeyPackage lifetime's length (§7.2).
 
 ### Audit
-- **OpenMLS:** no published audit found. Its [README](https://github.com/openmls/openmls/blob/v0.9.2/README.md), [SECURITY.md](https://github.com/openmls/openmls/blob/main/SECURITY.md) on `main`, the repository at v0.9.2 and [openmls.tech](https://openmls.tech) name none; an audit, its scope or date cannot be confirmed.
+- **OpenMLS:** no published audit found. Its [README](https://github.com/openmls/openmls/blob/v0.9.2/README.md), [SECURITY.md](https://github.com/openmls/openmls/blob/main/SECURITY.md) on `main`, the [repository at v0.9.2](https://github.com/openmls/openmls/tree/v0.9.2) and [openmls.tech](https://openmls.tech) name none; an audit, its scope or date cannot be confirmed.
 - **mls-rs:** none. Its [README](https://github.com/awslabs/mls-rs/blob/0.57.0/README.md#security-notice): "validated for conformance to the RFC 9420 specification but has not yet received a full security audit by a 3rd party".
 
 ### API ergonomics
 From the [findings](#findings):
-- **OpenMLS** matches the check-then-merge steps of the spec: a staged Commit and a `StagedWelcome` give everything before the merge. The device's signing key stays outside the library's state. Workarounds: "Saving state", "Last resort", "GroupInfo signer", "Removes in an external Commit", "Dropping a group", "WASM build".
-- **mls-rs** checks more itself: an external Commit's Removes, the GroupInfo's signer. It merges a processed Commit at once and keeps a removed device in its old epoch, so the device checks before `write_to_storage()` and acts on `CommitEffect::Removed`. It copies the signing key into each group's state. Two needed features are off by default. Workarounds: "Saving state", "Client", "Reading before merging", "KeyPackage lifetime", "Credential check", "GroupInfo", "External Commit", "Removed device".
+- **OpenMLS** matches the check-then-merge steps of the spec: a staged Commit and a `StagedWelcome` give everything before the merge. The device's signing key stays outside the library's state. Workarounds: "Saving state", "Decoding", "Sender", "Last resort", "Outside party", "Dropping a group", "GroupInfo signer", "External Commit", "Removes in an external Commit", "WASM build".
+- **mls-rs** checks more itself: an external Commit's Removes, the GroupInfo's signer. It merges a processed Commit at once and keeps a removed device in its old epoch, so the device checks before `write_to_storage()` and acts on `CommitEffect::Removed`. It copies the signing key into each group's state. Two needed features are off by default. Workarounds: "Saving state", "Signing key format", "Client", "Sender", "Reading before merging", "Removed device", "KeyPackage lifetime", "Credential check", "GroupInfo", "Outside party", "Dropping a group", "Checking a Welcome", "External Commit", "Processing an external Commit".
 
 ### Performance
 From the [results](#results):
@@ -394,7 +394,7 @@ How each library meets the requirements of [membership.md](../protocol/membershi
 - It refuses an external Commit that removes another device's leaf (RFC 9420, §12.2). OpenMLS leaves that check to the application, and a missed check lets any holder of the latest GroupInfo remove any member. mls-rs also gives a GroupInfo's signer, which OpenMLS does not.
 - Its dependencies pass the product's `cargo deny` policy and use the RustCrypto generation of the product crates. OpenMLS's RustCrypto provider brings MPL-2.0 crates, a vulnerability, an unmaintained crate and a second RustCrypto generation.
 - At 1000 devices it is faster in all but one operation; its saved state is a third of OpenMLS's; its browser module is 18% smaller compressed.
-- On compliance, mls-rs enforces RFC 9420, §12.2, and OpenMLS's CI covers more official test vectors; both interoperate. On audit, mls-rs states it has none, and none was found for OpenMLS.
+- Both libraries interoperate. On audit, mls-rs states it has none, and none was found for OpenMLS.
 - Accepted against it: a smaller team, a breaking release every two months, fewer official test vectors in its CI, the signing key in each group's state, and Commits merged before the application's checks ([For Story 10](#for-story-10)).
 
 ## For Story 10
