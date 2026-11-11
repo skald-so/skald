@@ -456,7 +456,9 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - A local message source stands in for the helper: a test or a person adds a message with a `msg_id`, a sender label and text; a path takes the waiting messages and marks each handed over, as `docs/protocol/delivery.md`, "Device to agent", says.
   - A live check per path, one command against the installed CLI:
     - it sends a message with a random token, passes when the agent repeats the token, and prints the CLI version and pass or fail;
-    - it runs without a person where the CLI allows it. The owner signs the CLIs in beforehand; that is the only step for a person. Any other step that needs a person goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
+    - it runs without a person where the CLI allows it;
+    - signing in, done by the owner beforehand, is the only step a person does in an iteration;
+    - a step the CLI needs from a person beyond it goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
     - it attaches hooks, MCP servers and channels only through project config in a temporary directory and leaves the user's own CLI config untouched; its prompts are short, to save subscription limits;
     - the developer runs it and the reviewer reruns it; `script/test` does not, since it needs the CLIs and vendor accounts.
   - The report in `docs/dev/` starts with the list of checks it answers for each path: an idle and a busy session; the delay; how the message appears in the agent's context, with its sender label; whether the prototype learns that the handover happened, for `read`; reaching one of two sessions on a device; what the path needs: CLI version, sign-in kinds, settings, flags and prompts to the user.
@@ -478,22 +480,22 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 #### Iteration 4.3: Claude Code `Stop` and `PostToolUse` hooks
 - **Goal:** The Claude Code fallback through hooks is confirmed or refuted on the current version, with its limits.
 - **What we do:**
-  - A hook handler: after a tool call (`PostToolUse`) it adds the waiting messages to the context with `additionalContext`; at the end of a turn (`Stop`) it gives the agent the waiting messages before the turn ends, and lets the turn end when none wait.
+  - A hook handler: after a tool call (`PostToolUse`) it adds the waiting messages to the context with `additionalContext`; at the end of a turn (`Stop`) it keeps the turn going and gives the agent the waiting messages, and lets the turn end when none wait.
   - A live check of each hook, and the answers to the list of checks, with the time the handler adds to a tool call.
   - Whether the plugin can ship the hooks (Story 19).
   - Findings in the report.
-  - Tests: on hook inputs recorded from the real Claude Code, the handler's output carries each waiting message once; with none waiting it adds nothing, and `Stop` lets the turn end.
+  - Tests: on hook inputs recorded from the real Claude Code, the handler's output carries each waiting message once; with messages waiting, `Stop` keeps the turn going and gives them to the agent; with none waiting it adds nothing, and `Stop` lets the turn end.
 - **Definition of done:** the live check of each hook, rerun, gives the result and Claude Code version the report records; the report answers every check of the list for each hook; unit tests on the recorded hook inputs run in `script/test`.
 
 #### Iteration 4.4: Codex hooks and `codex queue`
 - **Goal:** The Codex primary path through hooks and the `codex queue` fallback are confirmed or refuted on the current version.
 - **What we do:**
-  - The hook handler for Codex: `PostToolUse` after a tool call, `Stop` at the end of a turn and `UserPromptSubmit` with the user's next prompt add the waiting messages to the context; `Stop` lets the turn end when none wait.
+  - The hook handler for Codex: `PostToolUse` after a tool call, `Stop` at the end of a turn and `UserPromptSubmit` with the user's next prompt add the waiting messages to the context; `Stop` keeps the turn going while messages wait and lets it end when none wait.
   - A live check of each hook, and the answers to the list of checks, with the time the handler adds to a tool call.
   - Whether `codex queue` exists and adds a message to a running session from outside. If it does, a prototype hands the waiting messages to it, with its live check and the answers to the list of checks; if not, the report says so, with the Codex version.
   - Findings in the report.
   - Tests:
-    - on hook inputs recorded from the real Codex, the handler's output carries each waiting message once; with none waiting it adds nothing, and `Stop` lets the turn end;
+    - on hook inputs recorded from the real Codex, the handler's output carries each waiting message once; with messages waiting, `Stop` keeps the turn going and gives them to the agent; with none waiting it adds nothing, and `Stop` lets the turn end;
     - if `codex queue` exists, against a stand-in for the command: the prototype passes each waiting message once, with its sender label and `msg_id`; it marks a message handed over only after the command succeeds and leaves it waiting when the command fails.
 - **Definition of done:** the live check of each hook, rerun, gives the result and Codex version the report records, and the report answers every check of the list for each hook; if `codex queue` exists, the same holds for it, otherwise the report says it does not; unit tests on the recorded hook inputs, and on the `codex queue` stand-in if the command exists, run in `script/test`.
 
@@ -504,7 +506,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - Its live check and the answers to the list of checks; the approval and sandbox settings under which a turn runs without a person.
   - Whether the app-server reaches a session a person works in.
   - Findings in the report.
-  - Tests: against a stand-in that replays an exchange recorded from the real app-server, the client starts and steers turns and gets the reply.
+  - Tests: against a stand-in that replays an exchange recorded from the real app-server, the client starts and steers turns and gets the reply; each waiting message goes into a `turn/start` or `turn/steer` once, with its sender label and `msg_id`; it is marked handed over only after the app-server accepts it and stays waiting when the app-server refuses it.
 - **Definition of done:** the app-server live check, rerun, gives the result and Codex version the report records; the report answers every check of the list for the app-server; integration tests on the recorded exchange run in `script/test`.
 
 #### Iteration 4.6: Subscription limit data
@@ -525,7 +527,8 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - For Stories 19, 20 and 38: the paths and setup each takes, and what the daily e2e with real CLIs needs (`infrastructure.md`, "PR checks"); for Story 61: whether the limit data exists.
   - `architecture.md`, "Delivery to agents": the table matches the report; refuted paths and "(to verify)" go; it links to the report.
   - `roadmap.md`: the lines on the Claude Code and Codex adapters ("MVP") and on Codex background agents ("Post-MVP") name the agents, not paths, and link to `architecture.md`, "Delivery to agents".
-- **Definition of done:** each primary and fallback path the report names for an agent passes its live check, rerun, on the CLI version the report gives; the table in `architecture.md` matches the report; the two `roadmap.md` lines name no path; no other doc repeats the report.
+  - `features.md` §16: the `skald connect` step that sets up MCP and hooks sets up the paths of `architecture.md`, "Delivery to agents", and links there instead of naming them.
+- **Definition of done:** each primary and fallback path the report names for an agent passes its live check, rerun, on the CLI version the report gives; the table in `architecture.md` matches the report; the two `roadmap.md` lines and `features.md` §16 name no path; no other doc repeats the report.
 
 ### Story 5: Edit comparison prototype with HMAC fingerprints
 
