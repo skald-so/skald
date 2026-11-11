@@ -6,8 +6,8 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::{Repo, Space, assert_holds_none, bytes};
-use edit_overlap::harness::Machine;
-use edit_overlap::{Edits, Publication, SpaceKey, git};
+use edit_overlap::harness::{self, Machine};
+use edit_overlap::{Edits, Publication, SpaceKey};
 use tempfile::TempDir;
 
 /// The key of another space.
@@ -257,6 +257,8 @@ fn machines_on_different_upstream_commits_share_the_scope() {
     let (b, b_client) = repo.machine("bob-desktop");
     let (maintainer, _) = repo.machine("maintainer");
     // Upstream commits until one sorts before the root commit; Alice pulls them, Bob does not.
+    // The harness's fixed date makes the hashes, and so the commit the loop ends at, the same on
+    // every run.
     let head = |machine: &Machine| String::from_utf8(machine.git(&["rev-parse", "HEAD"]).unwrap());
     let root = head(&maintainer).unwrap();
     let mut tries = 0;
@@ -298,7 +300,7 @@ fn edit_set_holds_a_submodule_when_its_commit_moves_not_when_its_files_change() 
         &["add", "lib.rs"],
         &["commit", "--quiet", "--message", "add the library"],
     ] {
-        git::run(&nested, args).unwrap();
+        harness::run(&nested, args).unwrap();
     }
     maintainer.commit("add the library").unwrap();
     maintainer.push("main").unwrap();
@@ -316,7 +318,7 @@ fn edit_set_holds_a_submodule_when_its_commit_moves_not_when_its_files_change() 
     );
 
     // Its commit moves.
-    git::run(
+    harness::run(
         &checkout,
         &["commit", "--quiet", "--all", "--message", "lib"],
     )

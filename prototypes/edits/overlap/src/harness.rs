@@ -9,6 +9,20 @@ use crate::{Result, git};
 /// The upstream's default branch.
 pub const DEFAULT_BRANCH: &str = "main";
 
+/// The author and committer date of every commit the harness makes, so that a scenario gets the
+/// same commit hashes on every run.
+pub const DATE: &str = "1700000000 +0000";
+
+/// Runs `git` in `dir` as [`git::run`] does, with the date [`DATE`], and returns its standard
+/// output.
+pub fn run(dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = git::command(dir, args)
+        .env("GIT_AUTHOR_DATE", DATE)
+        .env("GIT_COMMITTER_DATE", DATE)
+        .output()?;
+    git::checked(output, args, dir)
+}
+
 /// A test repository: a bare upstream in a directory of its own.
 pub struct Upstream {
     dir: PathBuf,
@@ -27,7 +41,7 @@ impl Upstream {
         let upstream = Self {
             dir: dir.to_path_buf(),
         };
-        git::run(
+        run(
             dir,
             &[
                 "init",
@@ -41,7 +55,7 @@ impl Upstream {
         let seed = Machine {
             dir: dir.join("seed"),
         };
-        git::run(
+        run(
             dir,
             &[
                 "init",
@@ -56,7 +70,7 @@ impl Upstream {
         }
         seed.commit("initial commit")?;
         let url = upstream.url();
-        git::run(&seed.dir, &["push", "--quiet", &url, DEFAULT_BRANCH])?;
+        run(&seed.dir, &["push", "--quiet", &url, DEFAULT_BRANCH])?;
         Ok(upstream)
     }
 
@@ -66,7 +80,7 @@ impl Upstream {
 
     /// Clones the upstream as the machine `name`, in a directory of that name next to it.
     pub fn clone_as(&self, name: &str) -> Result<Machine> {
-        git::run(&self.dir, &["clone", "--quiet", &self.url(), name])?;
+        run(&self.dir, &["clone", "--quiet", &self.url(), name])?;
         Ok(Machine {
             dir: self.dir.join(name),
         })
@@ -79,9 +93,9 @@ impl Machine {
         &self.dir
     }
 
-    /// Runs `git` in the working tree and returns its standard output.
+    /// Runs `git` in the working tree, as [`run`] does, and returns its standard output.
     pub fn git(&self, args: &[&str]) -> Result<Vec<u8>> {
-        git::run(&self.dir, args)
+        run(&self.dir, args)
     }
 
     /// Writes `contents` to `path`, creating its directories, as an edit tool would.
