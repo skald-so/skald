@@ -326,7 +326,7 @@ OpenMLS 0.9.2 against mls-rs 0.57.0. Facts from outside this repository were che
 | A subset of its cases | `psk_secret`: 70 of 77 | `tree-math`: 8 of 10 |
 | Its format, other values | `crypto-basics`, `message-protection`, `transcript-hashes` | `message-protection`, `messages`, `psk_secret`, the three `passive-client-*`; `tree-operations` without the ciphersuite and tree hashes |
 | None | — | `deserialization`, `welcome` |
-| Crypto provider of the run | RustCrypto, the prototypes' | OpenSSL; the RustCrypto provider passes `mls-rs-core`'s provider tests |
+| Crypto provider of the run | RustCrypto, the prototypes' ([`Cargo.toml`](https://github.com/openmls/openmls/blob/v0.9.2/openmls/Cargo.toml#L184), [`tests.yml`](https://github.com/openmls/openmls/blob/v0.9.2/.github/workflows/tests.yml#L48)) | OpenSSL ([`crypto.rs`](https://github.com/awslabs/mls-rs/blob/0.57.0/mls-rs/src/crypto.rs#L20-L24)); the RustCrypto provider passes `mls-rs-core`'s provider tests ([`mls_core_tests`](https://github.com/awslabs/mls-rs/blob/0.57.0/mls-rs-crypto-rustcrypto/src/lib.rs#L407-L419), run by [`native_build.yml`](https://github.com/awslabs/mls-rs/blob/0.57.0/.github/workflows/native_build.yml#L63-L68)) |
 
 **Interoperability:**
 - With each other: no mismatch ([Interoperability](#interoperability)).
@@ -359,10 +359,10 @@ mls-rs's modules are 31% smaller raw and 18–23% smaller with Brotli: the brows
 |---|---|---|
 | Releases, 2025-11-11 to 2026-11-11 ([OpenMLS](https://crates.io/crates/openmls/versions), [mls-rs](https://crates.io/crates/mls-rs/versions)) | 10, and 4 release candidates: 2 breaking (0.8.0, 0.9.0) and fixes to 0.7 and 0.8 next to 0.9 | 9: 6 breaking (0.52.0 to 0.57.0) |
 | Maintainers | Phoenix R&D and CE Labs ([README](https://github.com/openmls/openmls/blob/v0.9.2/README.md#maintenance--support)); 3 crates.io owners and 2 teams ([crates.io](https://crates.io/crates/openmls)); 258 commits by 28 people in the 12 months, 151 by the top three ([commits](https://github.com/openmls/openmls/commits/main)) | AWS (`awslabs`); 3 crates.io owners ([crates.io](https://crates.io/crates/mls-rs)); 50 commits by 11 people in the 12 months, 30 by one ([commits](https://github.com/awslabs/mls-rs/commits/main)) |
-| Security advisories | 7 in its repository from 2025-09 to 2026-10, 2 high, 4 medium, 1 low, each fixed in 0.9.2 ([advisories](https://github.com/openmls/openmls/security/advisories)); 2 of them in the GitHub Advisory Database | None in its repository ([advisories](https://github.com/awslabs/mls-rs/security/advisories)) or the GitHub Advisory Database |
+| Security advisories | 7 in its repository from 2025-09 to 2026-10, 2 high, 4 medium, 1 low, each fixed in 0.9.2 ([advisories](https://github.com/openmls/openmls/security/advisories)); 2 of them in the GitHub Advisory Database ([query](https://api.github.com/advisories?ecosystem=rust&affects=openmls)) | None in its repository ([advisories](https://github.com/awslabs/mls-rs/security/advisories)) or the GitHub Advisory Database ([query](https://api.github.com/advisories?ecosystem=rust&affects=mls-rs)) |
 | RustSec advisories ([database](https://github.com/rustsec/advisory-db/tree/main/crates)) | None | None |
-| Minimum Rust version, `rust_version` in the crates.io API ([OpenMLS](https://crates.io/api/v1/crates/openmls/versions), [mls-rs](https://crates.io/api/v1/crates/mls-rs/versions)) | 1.91.0 | 1.82.0; the RustCrypto provider declares none |
-| License | MIT | Apache-2.0 OR MIT, as the product crates |
+| Minimum Rust version, `rust_version` in the crates.io API ([OpenMLS](https://crates.io/api/v1/crates/openmls/versions), [mls-rs](https://crates.io/api/v1/crates/mls-rs/versions)) | 1.91.0 | 1.82.0; the RustCrypto provider declares none ([API](https://crates.io/api/v1/crates/mls-rs-crypto-rustcrypto/versions)) |
+| License | MIT ([`Cargo.toml`](https://github.com/openmls/openmls/blob/v0.9.2/openmls/Cargo.toml#L8)) | Apache-2.0 OR MIT ([`Cargo.toml`](https://github.com/awslabs/mls-rs/blob/0.57.0/mls-rs/Cargo.toml#L10), [RustCrypto provider](https://github.com/awslabs/mls-rs/blob/0.57.0/mls-rs-crypto-rustcrypto/Cargo.toml#L9)), as the product crates ([`Cargo.toml`](../../Cargo.toml)) |
 | Dependencies, `cargo tree -e normal --prune mls-scenario` of each prototype | 125 crate versions natively, 135 in WASM. Two RustCrypto generations: the provider signs with ed25519-dalek 2 and sha2 0.10, and its `hpke-rs-rust-crypto` takes x25519-dalek 3 and sha2 0.11. rayon is required | 91 natively, 94 in WASM. One RustCrypto generation, that of [tech-stack.md](tech-stack.md): ed25519-dalek 3, sha2 0.11, getrandom 0.4 |
 | `cargo deny check advisories licenses` with the product's [`deny.toml`](../../deny.toml) | Fails: `hpke-rs`, `hpke-rs-crypto` and `hpke-rs-rust-crypto` are MPL-2.0; RUSTSEC-2026-0387, constant-time defects of crypto-bigint 0.5.5, through p256 and p384 0.13, outside the profile's ciphersuite; RUSTSEC-2026-0173, proc-macro-error2 unmaintained, through `hpke-rs`'s libcrux-sha3 | Passes |
 
@@ -394,13 +394,15 @@ How each library meets the requirements of [membership.md](../protocol/membershi
 - It refuses an external Commit that removes another device's leaf (RFC 9420, §12.2). OpenMLS leaves that check to the application, and a missed check lets any holder of the latest GroupInfo remove any member. mls-rs also gives a GroupInfo's signer, which OpenMLS does not.
 - Its dependencies pass the product's `cargo deny` policy and use the RustCrypto generation of the product crates. OpenMLS's RustCrypto provider brings MPL-2.0 crates, a vulnerability, an unmaintained crate and a second RustCrypto generation.
 - At 1000 devices it is faster in all but one operation; its saved state is a third of OpenMLS's; its browser module is 18% smaller compressed.
-- On compliance the evidence does not separate them: both interoperate, neither has a published audit.
+- On compliance, mls-rs enforces RFC 9420, §12.2, and OpenMLS's CI covers more official test vectors; both interoperate. On audit, mls-rs states it has none, and none was found for OpenMLS.
 - Accepted against it: a smaller team, a breaking release every two months, fewer official test vectors in its CI, the signing key in each group's state, and Commits merged before the application's checks ([For Story 10](#for-story-10)).
 
 ## For Story 10
 The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls-rs)):
 - **Features:** `external_client` for the Delivery Service and the browser, `last_resort_key_package_ext`; `browser` of `mls-rs-crypto-rustcrypto` in WASM.
 - **Storage:** one store implementing `GroupStateStorage` and `KeyPackageStorage` over the local state, with a direct `mls-rs-core` dependency; it also drops a group ("Saving state", "Dropping a group").
+- **Signing key:** the device's Ed25519 key goes into `SignatureSecretKey` as the 64 bytes of the seed and the public key ("Signing key format").
+- **Sender:** the device reads the roster before processing, to take the credentials of the sender and the removed members from their leaf indexes ("Sender"). An external Commit's joiner comes from the new epoch's roster ("Processing an external Commit").
 - **Checks before saving:** a processed Commit's sender, Adds, Removes and `authenticated_data`, and a Welcome's signer and members, are checked before `write_to_storage()`; a failed check drops the group unsaved ("Reading before merging", "Checking a Welcome").
 - **Admission:** the `IdentityProvider` refuses devices that are not admitted only in the client that commits an Add; members remove such devices after processing ("Credential check").
 - **KeyPackages:** `key_package_lifetime` of 60 days from an hour back ("KeyPackage lifetime").
