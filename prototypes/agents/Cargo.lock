@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "agent-channel"
+version = "0.0.0"
+dependencies = [
+ "agent-source",
+ "rmcp",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "agent-inbox"
 version = "0.0.0"
 dependencies = [
@@ -19,6 +30,7 @@ version = "0.0.0"
 dependencies = [
  "agent-inbox",
  "agent-source",
+ "libc",
  "serde_json",
  "tempfile",
  "uuid",

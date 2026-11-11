@@ -1,7 +1,7 @@
 //! Starts the installed CLIs and reads their output; everything else is in the library.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 /// The `inbox` path's live check: an idle session; with `--all`, also the other of two idle
 /// sessions and a busy session.
 pub fn inbox(agent: Agent, options: &Options) -> Result<bool> {
-    let version = Command::new(agent.cli()).arg("--version").output()?;
+    let version = agent.command().arg("--version").output()?;
     println!("{}", agent.version(&version.stdout));
     let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
     let inbox = inbox_server(&std::env::current_exe()?)?;
@@ -95,7 +95,7 @@ fn run_session(
     stub: Option<&Stub>,
     mut on_event: impl FnMut(&Event),
 ) -> Result<Session> {
-    let mut command = Command::new(run.agent.cli());
+    let mut command = run.agent.command();
     if let Some(env) = &run.env {
         command
             .env_clear()
