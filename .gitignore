@@ -1,6 +1,9 @@
 .env*
 !.env.example
 CLAUDE.local.md
+/task.md
+/iteration.md
+/docs/dev/features.md
 .claude/settings.local.json
 /target
 /prototypes/mls/target

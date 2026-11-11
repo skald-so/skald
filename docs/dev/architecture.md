@@ -11,20 +11,19 @@
   - **One-shot mode** (CI, cron, sandboxes): load state → sync → run the operation → save.
   - **Helper `skald helper`:** started by the first client. Holds the WebSocket, dispatches messages to sessions over a unix socket, exits after being idle. No root or system service needed.
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.
-- **GitHub Action:** the client in one-shot mode and the GitHub bridge ([features.md §9](features.md#9-end-to-end-encrypted-service-and-ci-agents)).
+- **GitHub Action:** the client in one-shot mode and the GitHub bridge, which runs inside the Action, not on the server. A `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment. Tasks from comments run at the `service` trust level, in its restricted mode.
 - **Frontend** — a single static SPA at `app.skald.so`:
   - gets the non-secret sections from the server API;
-  - content sections are decrypted in the browser by a WASM build of the Rust core;
-  - `skald ui` (on demand) — the same build served from localhost by a signed binary.
+  - content sections are decrypted in the browser by a WASM build of the Rust core.
 
 ## Device linking
-- The one-time code from the website ([features.md §16](features.md#16-one-command-connect)) binds the device to the account.
+- The one-time code from the website binds the device to the account. It lives for a few minutes, works once and transfers no keys.
 - Keys are generated on the machine.
 - **Account master key:** the first device creates it. It is the account's root of trust and is stored on the server encrypted under the recovery key.
 - Every device certificate chains to the master key: a new device is signed by an already linked device or by the recovery key. A server signature alone never admits a device.
 - Formats and checks: [protocol spec](../protocol/membership.md#account).
-- The device key can also be signed with the user's SSH key from GitHub ([features.md §5](features.md#5-identity)).
-- The recovery key is entered only in the CLI and `skald ui`, never in a web page.
+- The device key can also be signed with the user's SSH key from GitHub: [protocol spec](../protocol/membership.md#device-certificate).
+- The recovery key is entered only in the CLI, never in a web page.
 - **A browser is also a linked device**, linked only with a code or QR from an already linked device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
   - it reads through history keys wrapped to its key;
   - it sends actions (approve, answer `ask_user`) as signed messages via HPKE;
@@ -32,7 +31,7 @@
 
 ## Membership
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
-- **Space policy:** restricted mode per trust level, the history key rotation period, the space mode ([protocol spec](../protocol/README.md#custodian-auditor-and-federation)), the edit-coordination action ([features.md §11](features.md#11-cross-machine-edit-coordination)). An admin's device signs it; clients reject a policy without a valid signature.
+- **Space policy:** restricted mode per trust level and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
 - **Invite:**
   - a valid `client` or `browser` device of an admin signs it: [protocol spec](../protocol/membership.md#invite);
   - its secret travels only in the link's fragment and never reaches the server;
@@ -53,7 +52,7 @@
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
 | Space | A team space and trust boundary. Signed roster and policy: [Membership](#membership); a device can belong to N spaces |
-| Channel | An MLS group. A shared channel joins two spaces |
+| Channel | An MLS group |
 | Envelope | [Protocol spec](../protocol/README.md#envelope) |
 | Mailbox | [Protocol spec](../protocol/delivery.md#mailbox) |
 | History | Copies of channel messages under the channel's history key |
@@ -77,8 +76,6 @@
 - **Signatures:** Ed25519.
 - **Key storage:** Keychain, libsecret or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
-- **Edit coordination:** the server sees only HMAC fingerprints of paths, hunks and symbols, computed with the space key.
-- **The custodian device** in a managed-keys space: [protocol spec](../protocol/README.md#custodian-device).
 - What the server sees: [threat model](../threat-model.md#the-server-sees); what it does not see: [threat model](../threat-model.md#the-server-does-not-see); trade-offs: [threat model](../threat-model.md#trade-offs).
 
 ## Delivery semantics
@@ -92,13 +89,19 @@
 | Agent | Primary path | Fallback |
 |---|---|---|
 | Claude Code | Channels | `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox` |
-| Codex | `PostToolUse`, `Stop`, `UserPromptSubmit` hooks; for background agents, app-server (`turn/start`, `turn/steer`) | MCP `inbox`, `codex queue` (to verify) |
+| Codex | `PostToolUse`, `Stop`, `UserPromptSubmit` hooks | MCP `inbox`, `codex queue` (to verify) |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
 | Agents of [agents.md](agents.md#setup-by-skald-connect) | — | MCP `inbox` |
 | Any agent with a shell | — | `skald recv --wait` |
 | CI | — | One-shot mode |
 
 Adapters are separate modules with e2e tests against real CLIs.
+
+## Notifications
+- To Telegram, Slack or a webhook.
+- The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
+- The person's device triggers the events that come from content: a task, `hold` or `ask_user` waiting for the person, a key changed. The server only relays them, so they need a running device of the person.
+- A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 
 ## Security
 - **An inbound message is data, not an instruction:**
@@ -112,7 +115,22 @@ Adapters are separate modules with e2e tests against real CLIs.
   - rate limit, enforced by the server.
 - **Cloud:**
   - sign-in only via GitHub OAuth or OIDC, no passwords;
-  - quotas and size limits: [features.md](features.md), "Product";
-  - bans: manual by the operator; abuse reports and automatic detection.
+  - quotas and size limits: [Cloud limits](#cloud-limits);
+  - bans: manual by the operator.
 - **Invites** never reach the agent's context.
 - What these defenses do not stop: [threat model](../threat-model.md#prompt-injection-and-loops).
+
+## Cloud limits
+The public cloud applies these limits; a self-hosted server does not.
+
+| Limit | Value |
+|---|---|
+| Spaces an account owns: the ones it created, its personal space included | 2 |
+| Members per space | No limit |
+| Devices per member | 50 |
+| Service agents per space | 10 |
+| Messages per space | About 10M per month |
+| Message text | 64 KB |
+| Attachment | 10 MB |
+| Undelivered messages kept | 7 days |
+| History kept | 90 days |

@@ -1,6 +1,6 @@
 # Edit comparison prototype
 
-A prototype of edit coordination ([features.md §11](features.md#11-cross-machine-edit-coordination); Story 5 in [task.md](../../task.md)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
+A prototype of edit coordination (Story 5): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
 - Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
@@ -34,7 +34,7 @@ A prototype of edit coordination ([features.md §11](features.md#11-cross-machin
 | `server_receives_and_keeps_nothing_of_the_exchanged_changes` | During the check of both machines the server receives nothing and keeps what it kept; nothing it received or keeps holds a path, file or directory name or line of the changes |
 
 ## Questions
-The prototype answers these questions of [features.md §11](features.md#11-cross-machine-edit-coordination), "To decide", in the iteration given:
+The prototype answers these open questions of edit coordination, in the iteration given:
 | Question | Iteration |
 |---|---|
 | Data source: diff, hooks or declarations | 5.8; the earlier ones use the diff |

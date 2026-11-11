@@ -2,11 +2,9 @@
 
 Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/dev/infrastructure.md), "Branches" and "PR checks".
 
-## Picking a story
-- Stories and their iterations are in [task.md](task.md); finished iterations are ticked in [iteration.md](iteration.md).
-- Take a story that may start by [rules.md](rules.md), rule 6; "Order and parallelism" in `task.md` lists the waves.
-- One PR per iteration, in `task.md` order: it does all of "What we do" and meets "Definition of done".
-- A story without iterations is planned first, in its own PR: iterations go to `task.md`, their lines to `iteration.md`.
+## Picking work
+- Maintainers plan the work as stories split into iterations; one PR per iteration.
+- For a change of your own, open an issue first and agree on its scope with a maintainer.
 
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
@@ -44,8 +42,7 @@ Web UI: [web/README.md](web/README.md).
 `./script/mutants origin/dev` mutates the Rust code changed on your branch and runs the tests of each mutated crate; it lists every mutant no test catches (rule 2 in [rules.md](rules.md)).
 
 ## Sending a PR
-- Fork the repository and branch from `dev`: `feature/iteration-<N>.<M>`.
-- Tick the iteration `[x]` in `iteration.md` in the same PR.
+- Fork the repository and branch from `dev`; an iteration's branch is `feature/iteration-<N>.<M>`.
 - Open the PR against `dev`, titled per rule 3 in [rules.md](rules.md).
 - A maintainer squash-merges it once all checks are green. Direct pushes to `dev` and `main` are rejected.
 

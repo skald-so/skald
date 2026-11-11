@@ -51,10 +51,8 @@ queued-task = {            ; what the sender uploads; the server keeps and retur
 
 sched = {                  ; scheduling fields, in plaintext
   ? 1 => bstr .size (1..32),  ; idempotency_key
-  ? 2 => int,              ; priority: higher first; absent, 0
-  ? 3 => [+ tstr],         ; tags: the capabilities a claimer needs, each a `name`
-  ? 4 => tstr,             ; template: a `name`
-  ? 5 => timestamp,        ; deadline
+  ? 2 => tstr,             ; template: a `name`
+  ? 3 => timestamp,        ; deadline
   * int => any,
 }
 
@@ -85,11 +83,9 @@ task = {
 - `task`: unique per sending device; a retried upload keeps it.
 - `sched`: what the server schedules by; `task-body` repeats it, so a change by the server fails [Claim checks](#claim-checks).
   - `idempotency_key`: the server refuses a task whose key is that of another task the queue keeps, with `duplicate`. The server sees it, so it holds no secret.
-  - `priority`: claims take tasks by priority, then in the order the server stored them.
-  - `tags`: a claim states the claimer's tags; it gets only a task whose `tags` are all among them.
   - `template`: [Templates](#templates).
   - `deadline`: the server hands out no task past it.
-- The content: `from` is the enqueuing agent; `hops` as for a message; `grant` and `delegation` as for a message; `attachments` as for the `a2a` body. It has no `to` and no `counter`: tasks are not mailbox messages, so [gap detection](delivery.md#gap-detection) does not apply.
+- The content: `from` is the enqueuing agent; `hops` and `grant` as for a message; `attachments` as for the `a2a` body. It has no `to` and no `counter`: tasks are not mailbox messages, so [gap detection](delivery.md#gap-detection) does not apply.
 - `request`: the A2A Message the agent works on, in the JSON form of the A2A version the protocol version pins ([A2A extension](README.md#a2a-extension)). Its `messageId` is `task` in text form, its `role` `ROLE_USER`.
 - A `task` body appears only in a task. A recipient drops a message whose content holds one.
 
@@ -99,7 +95,7 @@ task = {
   - with `not-a-member`, a device that may not send in the channel ([Send](delivery.md#send)), or a `service` device whose token does not allow the queue;
   - with `duplicate`, a `task` it has from another device;
   - with `epoch-mismatch`, an `epoch` other than the channel's current or previous one;
-  - with `too-large`, a `ct` over the message text limit (cloud: [features.md, "Product"](../dev/features.md#product)); files travel as [attachments](delivery.md#attachments).
+  - with `too-large`, a `ct` over the message text limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)); files travel as [attachments](delivery.md#attachments).
 - The server keeps which device uploaded each task.
 
 ## Queue key
@@ -112,7 +108,7 @@ Each epoch of a channel's group has a queue key pair, an HPKE key pair of DHKEM(
 **Sealing.** `enc` and `ct` are HPKE in base mode, single-shot, with the suite of [Scheme `hpke`](README.md#scheme-hpke), to the `pk` of `epoch`. `info` is the ASCII string `skald task payload`; `aad` the encoded `[channel, queue, task, epoch]`, IDs as byte strings and `epoch` an unsigned integer.
 
 A device seals a task only as follows:
-- a member device other than an `auditor` device, to the `pk` of its current epoch, an epoch it judged [clean](membership.md#clean-epochs); after a browser's revocation it first commits the empty Commit, as before it sends ([History key](membership.md#history-key));
+- a member device, to the `pk` of its current epoch, an epoch it judged [clean](membership.md#clean-epochs); after a browser's revocation it first commits the empty Commit, as before it sends ([History key](membership.md#history-key));
 - a `browser` device, to the `pk` it derives from a wrap of the epoch it may write entries in, as [Wraps](membership.md#wraps) says;
 - a `service` device that is not a member, to the `key` of a [queue key object](#queue-key-object) whose `channel` and `epoch` are those of the channel's latest GroupInfo. It MUST NOT seal unless that GroupInfo passes the checks a browser makes before it writes ([Wraps](membership.md#wraps)), it lists the object's `signer` as a member, and the object's signature verifies with the certificate of `signer`, a valid device ([Device checks](membership.md#device-checks)).
 
@@ -169,7 +165,7 @@ queue-key-body = {
 - The server deletes a `done`, `dead` or `cancelled` task once the channel's history retention has passed since it got there, and every task of a deleted queue.
 
 ## Claims and leases
-A device claims a task from a queue, stating its tags and the templates its client has. The server answers with the first task by `priority`, then by storing order, that is `queued`, past its backoff and before its `deadline`, not in the claimer's wait after its release ([Task states](#task-states)), whose `tags` are all among the claimer's and whose `template`, if any, is among the claimer's; or with none.
+A device claims a task from a queue, stating the templates its client has. The server answers with the first task, in the order it stored them, that is `queued`, past its backoff and before its `deadline`, not in the claimer's wait after its release ([Task states](#task-states)), and whose `template`, if any, is among the claimer's; or with none.
 
 ```cddl
 claim = {
@@ -191,7 +187,7 @@ claim = {
   - in one-shot mode without the helper, the process running the task sends it;
   - a holder whose process stops sends none, so the lease ends.
 - Extend, complete, fail and release name the task, `claim_id` and `generation`; fail also states whether to retry.
-- **Release:** a `client` or `custodian` holder hands back a task it did not start, with no result. It MUST NOT release a task it started. The server refuses a release from a `service` device with `not-allowed`; such a device fails the task instead ([Claim checks](#claim-checks)).
+- **Release:** a `client` holder hands back a task it did not start, with no result. It MUST NOT release a task it started. The server refuses a release from a `service` device with `not-allowed`; such a device fails the task instead ([Claim checks](#claim-checks)).
 
 ### Fencing
 The server takes an extend, complete, fail or release only if, checked and applied in one transaction:
@@ -219,20 +215,20 @@ On `claim-lost` the holder stops the work and sends no result.
 ## Claim checks
 The server hands out a task, and takes an extend, complete, fail or release of its claim, only from a device that at that moment:
 1. is a member device of the channel's current epoch, as it knows from the Commits it accepted ([Commit ordering](membership.md#commit-ordering));
-2. is of kind `client`, `service` or `custodian`;
+2. is of kind `client` or `service`;
 3. is not revoked by the revocations it stores ([Revocation](membership.md#revocation));
 4. if it is a `service` device, holds a token that allows the queue.
 
-Otherwise it answers `not-a-member`. So a `browser`, an `auditor`, a `service` device that is not a member and a device outside the channel claim no task.
+Otherwise it answers `not-a-member`. So a `browser`, a `service` device that is not a member and a device outside the channel claim no task.
 
 The claiming device MUST NOT run a task unless, when it starts it:
 1. `ct` opens with the `sk` of `epoch`, with `aad` from the queue's channel, the claimed queue, `task` and `epoch`;
-2. `signature` verifies with the certificate of `sender`, a valid device ([Device checks](membership.md#device-checks)) of kind `client`, `browser`, `service` or `custodian`, and `sender` is the claim's `uploader`;
+2. `signature` verifies with the certificate of `sender`, a valid device ([Device checks](membership.md#device-checks)) of kind `client`, `browser` or `service`, and `sender` is the claim's `uploader`;
 3. `channel`, `queue` and `task` are those of the claim; `sched` is the same map as the record's; `mode` is the claim's;
 4. the content passes checks 2 and 3 of [Envelope](README.md#envelope) with `sender` as the sending device; it has a `task` body, no `to` and no `counter`; the `request`'s `messageId` is `task` in text form;
 5. `deadline`, if any, has not passed, and under `at-most-once` the claim's `attempt` is 1.
 
-- A task that fails check 1 because the device lacks the epoch's key, or that needs a restricted mode the device cannot enforce: a `client` or `custodian` device releases it, a `service` device fails it with retry.
+- A task that fails check 1 because the device lacks the epoch's key, or that needs a restricted mode the device cannot enforce: a `client` device releases it, a `service` device fails it with retry.
 - A task that fails any other check: the device fails it without retry and tells its user.
 - The device runs the task in the restricted mode the [policy](membership.md#policy) sets for the [trust level](membership.md#trust-levels) of `sender`, and hands the agent the `request` with its `from` and that level. A mode the agent cannot enforce is refused, not weakened.
 
@@ -267,7 +263,7 @@ The task's sending device MUST drop a result unless:
 It takes the first result with `done` that passes as the task's result.
 
 ## Templates
-A template, such as `review`, `test` or `ask` ([features.md §10](../dev/features.md#10-task-queue)), sets the agent's instructions and the formats of the task's input and result.
+A template, such as `review`, `test` or `ask`, sets the agent's instructions and the formats of the task's input and result.
 
 - A task names its template in `sched`; a claim gets it only if it states that template ([Claims and leases](#claims-and-leases)).
 - The input travels in `request` as one part with `data`, the input object in the template's format; the result in `response` the same way. Other parts, such as text and files, travel beside them.
@@ -289,15 +285,15 @@ Queue requests are refused with a problem details object, as in [Server answers]
 | `not-dead` | Restarts a task that is not `dead` |
 | `not-cancellable` | Cancels a task that is `done` or `cancelled` |
 | `too-large` | Uploads a task over the limit |
-| `quota-exceeded` | Is over a limit of its space's plan (cloud: [features.md, "Product"](../dev/features.md#product)) |
+| `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 
 ## Security considerations
 - Scheduling is the server's word. It can withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them and hand one task to two devices at once, an `at-most-once` one included. `at-most-once` holds only with an honest server; a claiming device only refuses a claim with `attempt` above 1.
-- Besides the server, `at-most-once` relies on `client` and `custodian` devices: one that releases a task it started, or whoever holds its credentials to the server, gets the task run again, as a restart does. A `service` device releases none.
+- Besides the server, `at-most-once` relies on `client` devices: one that releases a task it started, or whoever holds its credentials to the server, gets the task run again, as a restart does. A `service` device releases none.
 - The server cannot read, forge or alter a task: the payload is sealed and signed, `aad` and `task-body` bind it to its channel, queue and ID, and `task-body` repeats `sched`. It can hand an old task out again, as it can hand one out twice, until its `deadline`.
 - A member device cannot replay another device's task as a new one: the claim's `uploader` must be its `sender`.
 - A task runs only while its sender is valid and may send in the channel: the tasks of a revoked device or a removed member stay unrun. A stolen device enqueues tasks at its account's `own` level until it is revoked.
-- A revoked device keeps the queue keys of the epochs it held, as it keeps their history keys ([features.md §4](../dev/features.md#4-mls-group-encryption)): it reads the tasks sealed under them if it gets them. It reads none sealed after the Commit that removes it, except by a device outside the group that the server keeps from that revocation ([membership.md](membership.md#security-considerations)). It claims nothing, and its results are dropped.
+- A revoked device keeps the queue keys of the epochs it held, as it keeps their history keys ([threat model, "Trade-offs"](../threat-model.md#trade-offs)): it reads the tasks sealed under them if it gets them. It reads none sealed after the Commit that removes it, except by a device outside the group that the server keeps from that revocation ([membership.md](membership.md#security-considerations)). It claims nothing, and its results are dropped.
 - A queue key comes from the history key, so whoever reads an epoch's history reads its tasks: a member without history access is kept from earlier tasks as from earlier history, by the server.
 - A `service` device that is not a member holds only queue public keys: a leaked service key with its token enqueues tasks at the `service` trust level and reads only what is sent to it under `hpke`. A leaked token alone signs no task, and it creates, changes or deletes no queue and releases, restarts or cancels no task.
 - A member `service` device's key and token usually sit in one CI secret. A leaked token alone claims tasks it cannot open, and fails them or lets their leases end, the device's live claims included: they go to `dead` or back after the backoff. A leak of the whole secret also opens and runs the tasks it claims, reads what the device's keys reach and enqueues tasks at the `service` trust level. Neither releases, restarts or cancels a task, so neither makes an `at-most-once` task run twice.

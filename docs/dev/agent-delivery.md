@@ -1,6 +1,6 @@
 # Delivery to agents: prototypes
 
-Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex (Story 4 in [task.md](../../task.md)).
+Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex (Story 4).
 
 ## Checks
 Each path's section answers, for each agent:
@@ -18,7 +18,7 @@ Each path's section answers, for each agent:
 ## Prototypes
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <claude|codex> [--all] [--real] [--model <model>] [--keep]`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. Their rules, with `--all` and `--real`: [task.md, iteration 4.1](../../task.md#iteration-41-prototype-harness-and-the-mcp-inbox-path).
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <claude|codex> [--all] [--real] [--model <model>] [--keep]`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the busy session and one of two sessions; `--real` runs the real model instead of the [model stub](#model-stub).
 
 ## Model stub
 Both CLIs accept a custom model endpoint, so every check runs on the stub unless `--real` is given. The stub:

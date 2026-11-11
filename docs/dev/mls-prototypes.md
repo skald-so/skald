@@ -1,6 +1,6 @@
 # MLS prototypes
 
-Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Story 3 in [task.md](../../task.md)).
+Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library (Story 3).
 
 - Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives. `mls-interop` runs the [interoperability](#interoperability) scenarios on both. `mls-bench` holds the [benchmarks](#benchmarks).
 - Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0, and the `js` feature in WASM; mls-rs 0.57.0 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0, with the `browser` feature in WASM.
@@ -44,7 +44,7 @@ The failing KeyPackages are the device's own, changed one field at a time and si
 Certificates and revocations are encoded as [Device certificate](../protocol/membership.md#device-certificate) and [Revocation](../protocol/membership.md#revocation) say, in deterministic CBOR. A test fixture, `Roster`, stands in for the certificates, revocations and pinned master keys a device gets and the roster revision it accepted:
 - a certificate counts only if it passes the proof check, and one device's certificates with two bodies make it invalid;
 - a certificate is valid by checks 1 to 4 of [Device checks](../protocol/membership.md#device-checks); a revocation counts as "Revocation" says, but no scenario has a stolen device, so none is voided;
-- the admitted devices are those of [Admitted devices](../protocol/membership.md#admitted-devices) for a channel that is not shared, without `custodian` or `auditor` devices;
+- the admitted devices are those of [Admitted devices](../protocol/membership.md#admitted-devices);
 - a fleet's devices are `client` devices of the channel's one member account, certified by its master key.
 
 A minimal in-process Delivery Service, `DeliveryService`, stands in for `skald-server`. It knows a channel only from its PublicMessage Commits and GroupInfo, through each library's party outside the group, its `Observer`:

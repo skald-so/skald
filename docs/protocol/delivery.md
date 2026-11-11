@@ -83,8 +83,8 @@ timestamp = uint       ; seconds since the Unix epoch
 | `not-a-member` | Comes from a device that may not send in `channel`, or holds a Commit from a device that may not commit it ([Commit ordering](membership.md#commit-ordering)) |
 | `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
 | `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel` |
-| `too-large` | Has a payload over the server's limit (cloud: [features.md, "Product"](../dev/features.md#product)) |
-| `quota-exceeded` | Is over a limit of its space's plan (cloud: [features.md](../dev/features.md#product), "Product") |
+| `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
+| `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 
 - A refused envelope is not stored. The client does not retry it and tells its user.
 
@@ -100,7 +100,7 @@ timestamp = uint       ; seconds since the Unix epoch
 - **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
 - A device MAY hold several connections. The server sends each of them the entries in `seq` order.
 - **Expiry:** an entry expires when it is not acked in time:
-  - a `message` at its storing time plus the envelope's `ttl`, capped by the server's retention (cloud: [features.md, "Product"](../dev/features.md#product)), unless it holds a handshake message;
+  - a `message` at its storing time plus the envelope's `ttl`, capped by the server's retention (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)), unless it holds a handshake message;
   - a `status` at its adding time plus the retention;
   - a `message` whose envelope's `v` is neither the connection's version nor adjacent to it, when the server reaches it while sending;
   - every entry of a revoked device, at revocation.
@@ -201,7 +201,7 @@ attachment = {
 - A recipient device downloads a blob by its ID only from the blob endpoint of the server it receives the channel's envelopes from. It MUST NOT fetch any URL the sender wrote. An A2A file part whose `url` is not the `urn:uuid:` of an attachment of the content fails the check.
 - After the download it checks `digest`, then decrypts the blob with `key` and checks `size`. It hands the agent the file in place of the part's `url`. A part or blob that fails a check is not handed over; the device tells its user.
 - `digest` keeps a channel member who knows `key` from having the server swap the blob for another one under the same key.
-- **Size limit:** the server refuses to store a blob over its limit (cloud: [features.md, "Product"](../dev/features.md#product)).
+- **Size limit:** the server refuses to store a blob over its limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)).
 - **Expiry:** the server keeps a blob as long as it keeps its channel's messages: its mailbox retention, or the channel's history retention if longer. Then it deletes the blob; the device tells its user the attachment expired.
 - Only devices that receive the channel's envelopes can download its blobs.
 
