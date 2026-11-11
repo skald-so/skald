@@ -75,7 +75,7 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 
 **Order and parallelism**
 
-A wave starts when its stories may start by [rules.md](rules.md), rule 6; stories within a wave can be done in parallel. Priority is the order in this file.
+Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be done in parallel. Priority is the order in this file.
 
 - Wave 1: 1.
 - Wave 2: 2, 3, 4, 5, 6, 7, 62.
@@ -1073,7 +1073,7 @@ A wave starts when its stories may start by [rules.md](rules.md), rule 6; storie
   - the review from the PR comment arrives as a PR comment, the `ask_user` notification reaches the webhook, and the restricted-mode task is refused a shell command.
 
 - **Release:** MVP
-- **Manual check:** a week of real work through Skald, the development of Skald included, before the public launch.
+- **Manual check:** a week of real work through Skald, the development of Skald included.
 - **Depends on:** Story 9, Story 18, Story 21, Story 23, Story 24, Story 26, Story 27, Story 28, Story 36, Story 41, Story 63, Story 65, Story 66
 - **Docs:** `roadmap.md` — "MVP", `features.md` §1, §4, §5, §6, §10, §16, `infrastructure.md` — "PR checks"
 

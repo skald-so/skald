@@ -17,6 +17,6 @@
    - The acceptance tests check the Definition of done through public interfaces. The author of the code changes one only to fix a defect in the test, with the reason in the PR.
 6. **The owner checks some stories by hand.**
    - Such a story has the line `- **Manual check:** <what to check>`; the owner sets it.
-   - After the story's gate, the owner checks it and deletes the line once the check passes.
+   - After the story's last iteration is merged and `script/test` passes on `dev`, the owner checks it and deletes the line once the check passes.
    - A story starts when its "Depends on" stories are done and none of them has the line.
    - A check on a story nothing depends on holds its release.
