@@ -1,7 +1,10 @@
-//! HMAC-SHA256 fingerprints of a repository's paths and hunks, computed with the space key.
+//! HMAC-SHA256 fingerprints of a repository's paths, hunks and symbols, computed with the space
+//! key.
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
+
+use crate::symbols::Symbol;
 
 /// The space key: a secret every device of the space holds and the server does not.
 #[derive(Clone)]
@@ -28,7 +31,7 @@ impl Scope {
     }
 }
 
-/// An HMAC fingerprint, all the server learns of a path or a hunk.
+/// An HMAC fingerprint, all the server learns of a path, a hunk or a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fingerprint(pub [u8; 32]);
 
@@ -67,6 +70,24 @@ pub fn hunk(key: &SpaceKey, scope: &Scope, path: &str, before: &[u8], after: &[u
     hmac(key, &fields)
 }
 
+/// The label that separates symbol fingerprints from other HMACs of the space key.
+pub const SYMBOL_LABEL: &str = "skald edit symbol";
+
+/// The fingerprint of `symbol` of the file at `path`: HMAC-SHA256 with the space key over the
+/// label, the scope, the path, and the kind and the name of each symbol, outermost first, each
+/// prefixed with its length as a big-endian `u64`.
+pub fn symbol(key: &SpaceKey, scope: &Scope, path: &str, symbol: &Symbol) -> Fingerprint {
+    let mut fields = vec![
+        SYMBOL_LABEL.as_bytes(),
+        scope.as_str().as_bytes(),
+        path.as_bytes(),
+    ];
+    for (kind, name) in &symbol.0 {
+        fields.extend([kind.as_bytes(), name.as_bytes()]);
+    }
+    hmac(key, &fields)
+}
+
 /// HMAC-SHA256 with the space key over `fields`, each prefixed with its length.
 fn hmac(key: &SpaceKey, fields: &[&[u8]]) -> Fingerprint {
     let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&key.0).expect("HMAC takes any key");
@@ -81,32 +102,57 @@ fn hmac(key: &SpaceKey, fields: &[&[u8]]) -> Fingerprint {
 mod tests {
     use super::*;
 
+    /// The scope `0123abcd` and the path `src/lib.rs`, each after its length.
+    const SCOPE_AND_PATH: &[u8] = b"\0\0\0\0\0\0\0\x080123abcd\0\0\0\0\0\0\0\x0asrc/lib.rs";
+
+    /// HMAC-SHA256 with the key `[7; 32]` over `input`, written out byte by byte.
+    fn want(input: &[&[u8]]) -> Fingerprint {
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&[7; 32]).unwrap();
+        for bytes in input {
+            mac.update(bytes);
+        }
+        Fingerprint(mac.finalize().into_bytes().into())
+    }
+
+    fn key() -> SpaceKey {
+        SpaceKey::from_bytes([7; 32])
+    }
+
+    fn scope() -> Scope {
+        Scope::new("0123abcd")
+    }
+
     #[test]
     fn path_fingerprint_is_hmac_sha256_over_length_prefixed_fields() {
-        let key = SpaceKey::from_bytes([7; 32]);
-        let scope = Scope::new("0123abcd");
-        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&[7; 32]).unwrap();
-        mac.update(b"\0\0\0\0\0\0\0\x0fskald edit path");
-        mac.update(b"\0\0\0\0\0\0\0\x080123abcd");
-        mac.update(b"\0\0\0\0\0\0\0\x0asrc/lib.rs");
-        let want: [u8; 32] = mac.finalize().into_bytes().into();
-        assert_eq!(path(&key, &scope, "src/lib.rs"), Fingerprint(want));
+        let label = b"\0\0\0\0\0\0\0\x0fskald edit path";
+        assert_eq!(
+            path(&key(), &scope(), "src/lib.rs"),
+            want(&[label, SCOPE_AND_PATH])
+        );
     }
 
     #[test]
     fn hunk_fingerprint_is_hmac_sha256_over_length_prefixed_fields() {
-        let key = SpaceKey::from_bytes([7; 32]);
-        let scope = Scope::new("0123abcd");
-        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&[7; 32]).unwrap();
-        mac.update(b"\0\0\0\0\0\0\0\x0fskald edit hunk");
-        mac.update(b"\0\0\0\0\0\0\0\x080123abcd");
-        mac.update(b"\0\0\0\0\0\0\0\x0asrc/lib.rs");
-        mac.update(b"\0\0\0\0\0\0\0\x02}\n");
-        mac.update(b"\0\0\0\0\0\0\0\0");
-        let want: [u8; 32] = mac.finalize().into_bytes().into();
+        let label = b"\0\0\0\0\0\0\0\x0fskald edit hunk";
+        let lines = b"\0\0\0\0\0\0\0\x02}\n\0\0\0\0\0\0\0\0";
         assert_eq!(
-            hunk(&key, &scope, "src/lib.rs", b"}\n", b""),
-            Fingerprint(want)
+            hunk(&key(), &scope(), "src/lib.rs", b"}\n", b""),
+            want(&[label, SCOPE_AND_PATH, lines])
+        );
+    }
+
+    #[test]
+    fn symbol_fingerprint_is_hmac_sha256_over_length_prefixed_fields() {
+        let label = b"\0\0\0\0\0\0\0\x11skald edit symbol";
+        let outer = b"\0\0\0\0\0\0\0\x09impl_item\0\0\0\0\0\0\0\x05Store";
+        let inner = b"\0\0\0\0\0\0\0\x0dfunction_item\0\0\0\0\0\0\0\x07reserve";
+        let reserve = Symbol(vec![
+            ("impl_item".into(), "Store".into()),
+            ("function_item".into(), "reserve".into()),
+        ]);
+        assert_eq!(
+            symbol(&key(), &scope(), "src/lib.rs", &reserve),
+            want(&[label, SCOPE_AND_PATH, outer, inner])
         );
     }
 
