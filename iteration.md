@@ -35,6 +35,13 @@
 - [x] **3.9:** Comparison report and the library choice
 
 ## Story 4: Verifying delivery to Claude Code and Codex
+- [ ] **4.1:** Prototype harness and the MCP `inbox` path
+- [ ] **4.2:** Claude Code Channels
+- [ ] **4.3:** Claude Code `Stop` and `PostToolUse` hooks
+- [ ] **4.4:** Codex hooks and `codex queue`
+- [ ] **4.5:** Codex app-server: `turn/start` and `turn/steer`
+- [ ] **4.6:** Subscription limit data
+- [ ] **4.7:** Summary and the "Delivery to agents" table
 
 ## Story 5: Edit comparison prototype with HMAC fingerprints
 

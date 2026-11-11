@@ -449,6 +449,76 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Depends on:** Story 1
 - **Docs:** `roadmap.md` — "Preparation", `architecture.md` — "Delivery to agents", `features.md` §7, §14
 
+#### Iteration 4.1: Prototype harness and the MCP `inbox` path
+- **Goal:** Every delivery path is checked the same way against the real CLIs, starting with MCP `inbox`, the fallback both agents share.
+- **What we do:**
+  - The prototypes, in Rust on the stack of `tech-stack.md`, live apart from the product crates, which never depend on them; `script/test` builds and tests them, and the CI path filters cover them.
+  - A local message source stands in for the helper: a test or a person adds a message with a `msg_id`, a sender label and text; a path takes the waiting messages and marks each handed over, as `docs/protocol/delivery.md`, "Device to agent", says.
+  - A live check per path: one command runs the path against the installed CLI, sends a message with a random token and passes when the agent repeats the token. Where the CLI needs a person, the report gives the steps. `script/test` does not run live checks: they need the CLIs and vendor accounts.
+  - The report in `docs/dev/` starts with the checks each path gets: an idle and a busy session; the delay; how the message appears in the agent's context, with its sender label; whether the prototype learns that the handover happened, for `read`; reaching one of two sessions on a device; what the path needs: CLI version, sign-in kinds, settings, flags and prompts to the user.
+  - MCP `inbox`: a stdio MCP server whose `inbox` tool returns the waiting messages; its live check on Claude Code and Codex.
+  - Findings in the report.
+  - Tests: the message source hands each message over once; an MCP client calls `inbox` over stdio and gets each waiting message once, with its sender label and `msg_id`.
+- **Definition of done:** the report holds the `inbox` results on both agents, with the CLI versions; unit and MCP integration tests run in `script/test`.
+
+#### Iteration 4.2: Claude Code Channels
+- **Goal:** The Claude Code primary path is confirmed or refuted on the current version, with what it needs.
+- **What we do:**
+  - A prototype channel: an MCP server that pushes each waiting message into a running Claude Code session through Channels.
+  - Its live check and the report's checks, with several messages in a row.
+  - Whether a plugin from the monorepo marketplace can ship the channel (Story 19).
+  - Findings in the report.
+  - Tests: an MCP client gets one channel event per waiting message, with its sender label and `msg_id`; a pushed message is marked handed over and not pushed again.
+- **Definition of done:** the report holds the Channels results with the Claude Code version; MCP integration tests run in `script/test`.
+
+#### Iteration 4.3: Claude Code `Stop` and `PostToolUse` hooks
+- **Goal:** The Claude Code fallback through hooks is confirmed or refuted on the current version, with its limits.
+- **What we do:**
+  - A hook handler: after a tool call (`PostToolUse`) it adds the waiting messages to the context with `additionalContext`; at the end of a turn (`Stop`) it gives the agent the waiting messages before the turn ends, and lets the turn end when none wait.
+  - Its live check and the report's checks, with the time the handler adds to a tool call.
+  - Whether the plugin can ship the hooks (Story 19).
+  - Findings in the report.
+  - Tests: on hook inputs recorded from the real Claude Code, the handler's output carries each waiting message once; with none waiting it adds nothing, and `Stop` lets the turn end.
+- **Definition of done:** the report holds the results of both hooks with the Claude Code version; unit tests on the recorded hook inputs run in `script/test`.
+
+#### Iteration 4.4: Codex hooks and `codex queue`
+- **Goal:** The Codex primary path through hooks and the `codex queue` fallback are confirmed or refuted on the current version.
+- **What we do:**
+  - The hook handler for Codex: `PostToolUse` after a tool call, `Stop` at the end of a turn and `UserPromptSubmit` with the user's next prompt add the waiting messages to the context; `Stop` lets the turn end when none wait.
+  - Its live check and the report's checks, with the time the handler adds to a tool call.
+  - Whether `codex queue` exists and adds a message to a running session from outside. If it does, a prototype with its tests and live check; if not, the report says so.
+  - Findings in the report.
+  - Tests: on hook inputs recorded from the real Codex, the handler's output carries each waiting message once; with none waiting it adds nothing, and `Stop` lets the turn end.
+- **Definition of done:** the report holds the results of the three hooks and of `codex queue` with the Codex version; unit tests on the recorded hook inputs run in `script/test`.
+
+#### Iteration 4.5: Codex app-server: `turn/start` and `turn/steer`
+- **Goal:** The Codex path for background agents (Story 38) is confirmed or refuted on the current version.
+- **What we do:**
+  - A prototype client of the Codex app-server: it starts a thread, gives an idle thread a message with `turn/start` and adds one to a running turn with `turn/steer`; the agent's reply comes back to the client.
+  - Its live check and the report's checks; the approval and sandbox settings under which a turn runs without a person.
+  - Whether the app-server reaches a session a person works in.
+  - Findings in the report.
+  - Tests: against a stand-in that replays an exchange recorded from the real app-server, the client starts and steers turns and gets the reply.
+- **Definition of done:** the report holds the app-server results with the Codex version; integration tests on the recorded exchange run in `script/test`.
+
+#### Iteration 4.6: Subscription limit data
+- **Goal:** It is known what subscription limit data Claude Code and Codex show the user and whether Skald may read it, for Story 61.
+- **What we do:**
+  - Per agent: where the CLI shows the user its limits, such as a command, the status line or the app-server, and what it shows: each limit, its usage and reset time.
+  - Per source: whether a local program reads it without vendor tokens, credential files or switching accounts, as `features.md` §14 says; the vendor terms that allow or forbid it, with links.
+  - A prototype that reads the limits from each allowed source; its live check on each CLI.
+  - Findings in the report.
+  - Tests: on outputs recorded from the real CLIs, the prototype gives each limit with its usage and reset time; an output without limits gives none.
+- **Definition of done:** the report answers, per agent, whether the data exists and may be read, with its source and the vendor terms; unit tests on the recorded outputs run in `script/test`.
+
+#### Iteration 4.7: Summary and the "Delivery to agents" table
+- **Goal:** Stories 19, 20, 38 and 61 build on confirmed paths and data, and `architecture.md` shows the confirmed paths.
+- **What we do:**
+  - The report sums up, per agent: the primary and fallback paths with their results and what each needs; refuted paths with the reason.
+  - For Stories 19, 20 and 38: the paths and setup each takes, and what the daily e2e with real CLIs needs (`infrastructure.md`, "PR checks"); for Story 61: whether the limit data exists.
+  - `architecture.md`, "Delivery to agents": the table matches the report; refuted paths and "(to verify)" go; it links to the report.
+- **Definition of done:** the report names the primary and fallback paths for each agent; the table in `architecture.md` matches it; no other doc repeats the report.
+
 ### Story 5: Edit comparison prototype with HMAC fingerprints
 
 **Goal:** Verify that edit overlaps between machines are found via HMAC fingerprints while the server sees neither paths nor code.
