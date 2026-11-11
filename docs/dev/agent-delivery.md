@@ -16,9 +16,9 @@ Each path's section answers, for each agent:
 | Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
 
 ## Prototypes
-- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-testing` the tests' shared assertions; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
+- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-testing` the tests' shared assertions; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex` or `queue codex`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub).
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex` or `app-server codex`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub).
 
 ## Model stub
 Both CLIs accept a custom model endpoint, so every check runs on the stub unless `--real` is given. The stub:
@@ -309,13 +309,65 @@ Findings:
 - `codex queue` can be the path to an idle Codex session, which hooks do not reach.
 - The test machine's shared app-server runs Codex 0.167.1, newer than the CLI; a session on it was not checked.
 
+## Codex app-server
+`agent-app-server <source-dir> [--socket <path>] [--thread <id>] [--prompt <text>] [--log <file>] [-- <app-server option>...]`: a client of the Codex app-server, JSON-RPC over the stdio of `codex app-server`, or over a WebSocket on the Unix socket of one started with `--listen unix://<path>` ([docs](https://developers.openai.com/codex/app-server)). Codex 0.162.1 marks the app-server experimental.
+- It starts a thread in its working directory, or resumes the thread `--thread` with `thread/resume`; `--prompt` starts the thread's first turn.
+- Every 100 ms it takes the waiting messages and sends them in one request, with the text of [MCP `inbox`](#mcp-inbox): `turn/steer` with `expectedTurnId` while the thread has a running turn, `turn/start` otherwise.
+- It marks them handed over once the app-server accepts the request, and puts them back when the app-server refuses it or the client stops first; the next request takes them again.
+- It prints the thread's events as JSON lines: turns, the agent's replies, tokens, handovers and refusals. It answers each request of the app-server, such as an approval, with an error, and stops when its stdin ends.
+
+The threads it starts run without a person under the most restrictive settings that allow it: `approvalPolicy: "never"` and `sandbox: "read-only"`. They are `ephemeral`, so Codex saves no session. Checked by hand on the stub, with a turn that runs `sleep 5`:
+- `untrusted`: Codex asked the client to approve the command (`item/commandExecution/requestApproval`);
+- `on-request`: the command ran in the sandbox, but the agent may ask for more access, which waits for a person;
+- `never` with `read-only`: the command ran; `touch` in the project failed with "Operation not permitted".
+
+`live-check app-server codex` runs each client in its own temporary directory with its own source:
+- **A, idle:** a message waits; the client starts a thread on an app-server of its own. A passes when the message went in a `turn/start`, is handed over, the token reached the model and the turn answered.
+- **C, busy, with `--all`:** the client starts its thread with a prompt to run `sleep 20`, then reply `OK`; the stub runs it. The message is added once the command starts. C passes as A does, but with the message in a `turn/steer` into that turn.
+- **D, a session a person works in, with `--all`:** an app-server listens on a Unix socket; Codex's terminal UI joins it with `--remote` in a pseudo-terminal of 200×50, with a prompt to reply `OK`. Once that turn ends, the client resumes the session's thread, found with `thread/list` by its directory and first prompt. D passes as A does, when the token reached the model in that thread and the terminal UI showed it.
+- **B, with `--all`:** before D's client, another client starts a thread of its own on that app-server, with its own message. B passes as A does, when its token reached neither D's thread nor D's terminal UI.
+
+App-server options: `--disable plugins`, then with `-c` `notify=[]`, `skills.include_instructions=false`, `model_reasoning_effort="low"` and `model` with `--model`; the one that listens also trusts D's project. The app-server has no option that ignores the user's config. Environment: on the stub, that of [Model stub](#model-stub), and `TERM` for the terminal UI; with `--real`, that of [Session config](#session-config). With `--real` the app-server loads the user's `config.toml` and starts its MCP servers; `-c mcp_servers={}` does not stop them (checked by hand on the stub).
+
+Results on 2026-11-12, on Codex 0.162.1:
+
+| Command | Model and sign-in | Result | Idle: handed over / answered after the client started | Busy: handed over / answered after adding | Tokens |
+|---|---|---|---|---|---|
+| `live-check app-server codex` | the stub, its provider's key | pass | 0.1 s / 0.1 s | | none |
+| `live-check app-server codex --all` | the stub, its provider's key | pass | 0.1 s / 0.1 s | 0.1 s / 19.9 s | none |
+| `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check app-server codex --real --model gpt-5.5` | `gpt-5.5`, OpenAI API key (`codex login status`) | pass | 1.6 s / 6.8 s | | input 12,362 (cached 0), output 14 |
+
+In the `--all` run, B's and D's messages were handed over and answered within 0.1 s after their clients started.
+
+| Check | Codex |
+|---|---|
+| Idle session | Yes: `turn/start` starts a turn without a person |
+| Busy session | Yes, in the running turn: after `turn/steer`, the model gets the message once the running tool ends. A steer after the turn ended is refused with "no active turn to steer", and the message waits for a `turn/start`. A `turn/start` while a turn runs also adds to that turn and returns its ID (checked by hand on the stub) |
+| Delay | Handover: as soon as the app-server accepts the request; reaching the model: see the results |
+| In context | A user message with the text, as if the person typed it; the terminal UI shows it as the person's prompt. The sender label is only in the text's `from` |
+| Handover known | Yes, once the app-server accepts the request; the client also gets the agent's reply in that turn |
+| One of two sessions | Yes, by thread: on one app-server, B's message never reached D's thread |
+| Needs | See below |
+
+Codex needs:
+- an app-server the client reaches: one of its own on stdio, or one on a Unix socket. The socket speaks WebSocket; `codex app-server proxy --sock <path>` passes its raw bytes, not JSON lines (checked by hand);
+- `initialize`, then `initialized`, on each connection;
+- the thread's ID: its own from `thread/start`, or that of the session a person works in. `thread/resume` subscribes the client to the thread's events; without it, a `turn/start` still reached the session, but the client got none of the turn's events (checked by hand on the stub);
+- for a thread without a person, the approval and sandbox settings above;
+- a sign-in for the app-server: a model provider's API key and an OpenAI API key work; ChatGPT is under [Manual check](#manual-check).
+
+Findings:
+- The app-server reaches idle and busy threads and returns the agent's reply, so it can be the path to Codex threads that run without a person.
+- It reaches a session a person works in only when the session runs on an app-server the client can connect to, such as a terminal UI with `--remote`. A session with `--no-daemon` runs its own app-server on stdio, which nothing else reaches. Sessions on the user's shared background app-server were not checked: the check never connects to it.
+
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
 - Claude Code, an interactive session with the server in the project's `.mcp.json` and without `permissions.allow`: whether it asks to approve the server and each `inbox` call.
 - Codex, an interactive session without `default_tools_approval_mode`: whether it asks to approve each `inbox` call.
-- Codex signed in with ChatGPT: whether `live-check inbox codex --real`, the Codex hooks' and `codex queue`'s checks pass, with and without `--model gpt-5.5`. Only the owner changes a CLI's sign-in.
+- Codex signed in with ChatGPT: whether `live-check inbox codex --real`, the Codex hooks', `codex queue`'s and the app-server's checks pass, with and without `--model gpt-5.5`. Only the owner changes a CLI's sign-in.
 - Claude Code started by a person with the channel: the trust dialog and the development channel warning at each start; a message reaches the session; not checked on a claude.ai Team or Enterprise account.
 - The Claude Code plugin installed from the monorepo marketplace (`/plugin marketplace add skald-so/skald`) with the channel: whether `--channels plugin:skald@skald` refuses it and the development flag loads it. The check does not install plugins: it would change the user's config.
 - Claude Code, an interactive session with the hooks in the project's `.claude/settings.json`: whether it asks to approve them, and a message reaches the session after a tool call and at the end of a turn.
 - Codex, an interactive session with the hooks in the project's `.codex/hooks.json`, without `--dangerously-bypass-hook-trust`: the review in `/hooks`, and a message reaches the session after a tool call, at the end of a turn and with the next prompt.
 - `codex queue` for a Codex session a person started on the shared app-server, without `--no-daemon`: whether a message reaches it idle and busy.
+- The app-server client on the socket of the shared background app-server, with `--thread` of a session a person started there without `--no-daemon`: whether a message reaches it idle and busy, and its terminal UI shows it.
