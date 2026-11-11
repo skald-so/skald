@@ -2,9 +2,9 @@
 
 The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
-- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
+- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
-- Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths.
+- Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths and changed lines.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
 - Run: `cargo test --manifest-path prototypes/edits/Cargo.toml`; it needs `git` ([CONTRIBUTING.md](../../CONTRIBUTING.md), "Requirements"). `script/test` runs it.
 
@@ -32,6 +32,14 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `a_bundle_with_two_references_is_refused` | A bundle with the changes reference and another one is refused |
 | `the_parent_environment_does_not_reach_git` | A fake sentinel variable, `HOME`, `XDG_CONFIG_HOME` and config injected through `GIT_CONFIG_COUNT` in the test's environment do not reach git; a directory added to its `PATH`, the fixed identity and the config, attributes and prompt switches do |
 | `server_receives_and_keeps_nothing_of_the_exchanged_changes` | During the check of both machines the server receives nothing and keeps what it kept; nothing it received or keeps holds a path, file or directory name or line of the changes |
+| `edits_to_the_same_lines_overlap_at_hunk_level_and_conflict` | Two lines edited on both machines, committed on one and uncommitted on the other, which also edits a distant line: each learns the other at hunk level with its two lines, the lines the check finds conflicting |
+| `edits_next_to_each_other_or_at_one_place_overlap_at_hunk_level_and_conflict` | An edit of a line, an edit of the next line, and two different lines inserted between them: every pair overlaps at hunk level and conflicts |
+| `edits_to_different_hunks_of_one_file_overlap_at_file_level_only` | Edits of lines 7 and 9, one unchanged line apart, and of line 2: every pair overlaps at file level only and merges cleanly |
+| `bases_that_differ_by_lines_added_above_the_hunk_still_match` | Lines added on top upstream, pulled by one machine only, and an edit of one line on both: they overlap at hunk level, each at its own line, and conflict there |
+| `hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_and_config` | Edits that the histogram and Myers diffs, or diffs without and with the indent heuristic, place differently, in a repository whose `.gitattributes` makes files binary or text-converted, with an external diff and no context lines in one machine's config and empty context lines without their space in the other's: the hunks overlap in each file where `git merge-tree` conflicts |
+| `hunk_fingerprints_match_without_a_conflict_on_common_lines_and_identical_edits` | Lines inserted between `}` and an empty line after two different functions, and the same edit on two machines: they overlap at hunk level and merge cleanly |
+| `conflicts_with_upstream_commits_only_one_machine_has_do_not_match_at_hunk_level` | A line changed upstream and pulled by one machine, which edits another line, and an edit of that line on the other: they overlap at file level only; the check finds the conflict |
+| `server_receives_no_line_of_the_test_repository` | What the machines send holds no line of the test repository or of their edits |
 
 ## Questions
 Open questions of edit comparison, and how the prototype answers them:
@@ -58,7 +66,7 @@ Open questions of edit comparison, and how the prototype answers them:
   - Forks and mirrors share it, so their machines overlap.
   - Repositories with byte-identical root commits share it: the same tree, message, author and time.
   - A shallow clone takes its shallow boundary for the root, so it gets another scope than a full clone. Open: a scope for shallow clones.
-- **Publication:** each machine sends the fingerprints of its whole edit set, which replace its earlier ones. The server sees the machine, how many paths it edits and when that changes, and which machines share fingerprints.
+- **Publication:** each machine sends the fingerprints of its whole edit set and its [hunks](#hunk-fingerprints), which replace its earlier ones. The server sees the machine, how many fingerprints it sends and when that changes, and which machines share fingerprints.
 
 ## Exact check
 - **Exchange:** on an overlap, a machine asks the other for its changes over an end-to-end encrypted message; the request carries the asker's merge base with the upstream's default branch.
@@ -83,3 +91,20 @@ Open questions of edit comparison, and how the prototype answers them:
 - **A shared git remote instead:** it could carry the changes: each machine pushes its snapshot to a ref of its own, such as `refs/skald/<machine>`, and the asker fetches it.
   - For: the other machine need not be online; fetch negotiation sends only missing objects.
   - Against: uncommitted work reaches the git host, which end-to-end encryption keeps from the server; every machine needs push rights; snapshot refs need cleanup; forks and mirrors share a scope but not a remote.
+
+## Hunk fingerprints
+- **Hunks:** `git diff --unified=1` from the merge base to the snapshot of the exact check, for each path of the edit set.
+  - The diff is the one `git merge-tree` uses: histogram, without the indent heuristic. `git diff` defaults to Myers with the indent heuristic; both place some hunks elsewhere.
+  - Options fix what attributes and config could change: `--text`, `--no-textconv`, `--no-ext-diff`, `--unified=1`. Empty context lines without their space, which `diff.suppressBlankEmpty` writes, are read as context.
+- **Boundaries:** a hunk's fingerprints stand for the boundaries between lines of the merge base it touches.
+  - An insertion touches the boundary it goes into; a change of `n` lines touches the `n + 1` boundaries around and between them.
+  - Two hunks share a boundary when they change the same or adjacent lines, or insert at one place: where `git merge-tree` conflicts. Changes with one unchanged line between them merge cleanly and share none.
+  - An added file touches the one boundary of an empty file, so two machines adding one path match; a deleted file touches all of its boundaries.
+- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit hunk"`, the scope, the path, and the lines on either side of the boundary with their line endings, each after its length as a big-endian `u64`; empty at the start or the end of the file. No line numbers: lines added elsewhere in the file keep the fingerprint.
+- **Publication:** in one set with the path fingerprints. The server compares them alike and cannot tell them apart; a hunk match comes with a path match, since the path is in the HMAC. Each changed line of the merge base adds a fingerprint, so the server learns the size of the edits.
+- **Mapping back:** a machine maps shared hunk fingerprints to its own changed lines. On the same-lines scenarios these are the lines the exact check finds conflicting.
+- **False matches:**
+  - Common lines: the lines on either side of a boundary recur in the file, such as `}` before an empty line between functions; insertions after two functions match.
+  - Identical edits on both machines: `git merge-tree` merges them cleanly.
+- **Misses:** a conflict with upstream commits only one machine has pulled, on the conflicting lines or next to them. Each machine fingerprints its own changes since its own base; the file still matches. The conflict is with upstream, and the other machine meets it when it pulls.
+- **Cost:** each publication takes a snapshot, whose changed files stay as loose objects until `git gc`, and one `git diff` per path. Cost on real repositories: open.

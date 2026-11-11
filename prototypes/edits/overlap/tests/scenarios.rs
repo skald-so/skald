@@ -130,7 +130,9 @@ fn edit_set_holds_committed_uncommitted_and_untracked_changes() {
             "src/warehouse.rs",
         ])
     );
-    assert_eq!(edits.publication.fingerprints.len(), 5);
+    // One per path, and one per boundary each hunk touches: 2 for each one-line change, 2 for the
+    // deleted one-line file, 1 for each added file.
+    assert_eq!(edits.publication.fingerprints.len(), 5 + 2 + 2 + 2 + 1 + 1);
     assert_eq!(edits.publication.machine, "alice-laptop");
 }
 
