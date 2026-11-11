@@ -456,13 +456,26 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - The prototypes, in Rust on the stack of `tech-stack.md`, live apart from the product crates, which never depend on them; `script/test` builds and tests them, and the CI path filters cover them.
   - A local message source stands in for the helper: a test or a person adds a message with a `msg_id`, a sender label and text; a path takes the waiting messages and marks each handed over, as `docs/protocol/delivery.md`, "Device to agent", says.
   - A live check per path, one command against the installed CLI:
-    - it sends a message with a random token, passes when the agent repeats the token, and prints the CLI version and pass or fail;
+    - it runs one session and sends it one message with a random token, and prints the CLI version and pass or fail;
+    - with `--all` it also runs the other cases of the list of checks below: a busy session and reaching one of two sessions;
+    - by default a local stub stands in for the model, where the CLI accepts a custom model endpoint and the path and its data work under a placeholder key:
+      - the stub answers with scripted turns, such as calling the path's tool or running a shell command;
+      - the check passes when the token reaches a request the CLI sends to the stub; it spends no tokens;
+      - the CLI has no real credential to send: it runs in an environment the check builds, with only the variables the CLI needs and the placeholder key, and with a temporary config home that holds no sign-in, such as `CODEX_HOME` or `CLAUDE_CONFIG_DIR`;
+      - the stub fails the check, without printing the value, on a request whose credential headers hold anything but the placeholder; a test of the stub covers it;
+    - with `--real`, or where the stub cannot stand in, the real model answers:
+      - the check passes when the agent repeats the token;
+      - it prints the tokens it used, where the CLI's output gives them;
+      - where the stub cannot stand in, the report says why;
     - it runs without a person where the CLI allows it;
     - the owner's preparation, done beforehand, is the only step a person does in an iteration: signing in to the CLIs, and for GUI live checks what 4.7 lists;
     - a step the CLI needs from a person beyond it goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
     - it attaches hooks, MCP servers and channels only through project config in a temporary directory and leaves the user's own CLI config untouched;
-    - its prompts are short;
-    - the developer runs it and the reviewer reruns it; `script/test` does not.
+    - with the real model it spends the fewest tokens:
+      - the CLI loads as little of the user's own config (MCP servers, plugins, skills, instruction files) as it allows, and the report records what each check still loads;
+      - the model runs at the lowest reasoning effort the CLI allows;
+      - its prompts are short;
+    - the developer runs it once with `--all`, and once with `--real` only where it runs on the stub by default, for the report; the reviewer reruns it with neither flag; `script/test` does not run it.
   - The report in `docs/dev/` starts with the list of checks it answers for each path: an idle and a busy session; the delay; how the message appears in the agent's context, with its sender label; whether the prototype learns that the handover happened, for `read`; reaching one of two sessions on a device; what the path needs: CLI version, sign-in kinds, settings, flags and prompts to the user.
   - MCP `inbox`: a stdio MCP server whose `inbox` tool returns the waiting messages; its live check on Claude Code and Codex.
   - Findings in the report.
@@ -473,7 +486,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Goal:** The Claude Code primary path is confirmed or refuted on the current version, with what it needs.
 - **What we do:**
   - A prototype channel: an MCP server that pushes each waiting message into a running Claude Code session through Channels.
-  - Its live check, with several messages in a row, and the answers to the list of checks.
+  - Its live check, with several messages in a row under `--all`, and the answers to the list of checks.
   - Whether a plugin from the monorepo marketplace can ship the channel (Story 19).
   - Findings in the report.
   - Tests: an MCP client gets one channel event per waiting message, with its sender label and `msg_id`; a pushed message is marked handed over and not pushed again.
@@ -516,7 +529,12 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - Per agent: where the CLI shows the user its limits, such as a command, the status line or the app-server, and what it shows: each limit, its usage and reset time.
   - Per source: whether a local program reads it without vendor tokens, credential files or switching accounts, as `features.md` §14 says; the vendor terms that allow or forbid it, with links.
-  - For each source that exists and may be read: a prototype reads the limits from it, with a live check under the rules of 4.1 that prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time. Without such a source for an agent, the report says so and there is no prototype.
+  - For each source that exists and may be read:
+    - a prototype reads the limits from it;
+    - its live check follows the rules of 4.1 on the owner's signed-in CLI, without the stub and with neither flag;
+    - the developer runs the check once for the report;
+    - the check prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time.
+  - Without such a source for an agent, the report says so and there is no prototype.
   - Findings in the report.
   - Tests, for each prototype: on outputs recorded from the real CLI, it gives each limit with its usage and reset time; an output without limits gives none.
 - **Definition of done:** the report answers, per agent, whether the data exists and may be read, with its source and the vendor terms; for each source that may be read, its live check, rerun, gives the result and CLI version the report records, and unit tests on its recorded outputs run in `script/test`.
@@ -530,7 +548,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - installs the apps and signs in to them;
     - grants the terminal that runs Claude Code macOS Accessibility, Screen Recording, and Automation of System Events and of each app under test;
     - allows GUI runs in chat before the orchestrator starts a developer or reviewer who runs GUI live checks, here or in 4.8. The orchestrator states the allowance in the developer's or reviewer's prompt; without it, they do not drive the app.
-  - A GUI live check follows the rules of 4.1, except that the developer or reviewer drives the app:
+  - A GUI live check follows the rules of 4.1, except that it runs on the real model under the owner's sign-in and the developer or reviewer drives the app:
     - code prepares the temporary project with the surface's config and the message source with a random token, and reads the surface version from the installed app or extension;
     - code does not show the token to the developer or reviewer until they report the token they read;
     - the developer or reviewer opens the directory in the app, types the prompt and reads the token from a screenshot of the reply of the Claude Code or Codex session under test, not from tool results or hook output; they use only `screencapture`, `cliclick` and `osascript`;
@@ -546,7 +564,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 #### Iteration 4.8: Summary and the "Delivery to agents" table
 - **Goal:** Stories 19, 20, 38 and 61 build on confirmed paths and data, and `architecture.md` shows the confirmed paths.
 - **What we do:**
-  - Every live check reruns on the current CLI and surface versions; the report gives those versions and results.
+  - Every live check reruns with neither flag on the current CLI and surface versions; the report gives those versions and results, and the version each `--all` and `--real` result was taken on.
   - The report sums up, per agent and surface: the primary and fallback paths with their results and what each needs; refuted paths with the reason.
   - For Stories 19, 20 and 38: the paths and setup each takes, and what the daily e2e with real CLIs needs (`infrastructure.md`, "PR checks"); for Story 61: whether the limit data exists.
   - `architecture.md`, "Delivery to agents": the table matches the report and names the surfaces each path works on; refuted paths and "(to verify)" go; it links to the report.
