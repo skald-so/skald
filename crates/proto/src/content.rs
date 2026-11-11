@@ -1,4 +1,4 @@
-//! Content: `docs/protocol/README.md`, "Content", "Service grant" and "Custodian device";
+//! Content: `docs/protocol/README.md`, "Content" and "Service grant";
 //! attachments: `docs/protocol/delivery.md`, "Attachments".
 
 use std::num::NonZeroU64;
@@ -27,8 +27,6 @@ pub struct Content {
     /// `None` only in decoded content whose body this type does not decode, such as `task` or a
     /// body of a later version; it is in `unknown`.
     pub body: Option<Body>,
-    /// Required in content from a custodian device.
-    pub delegation: Option<Delegation>,
     /// Required in content from a service device.
     pub grant: Option<Grant>,
     /// The encrypted files the A2A message refers to.
@@ -61,28 +59,6 @@ pub struct GrantBody {
     /// The channels it may send in.
     pub channels: NonEmpty<ChannelId>,
     /// The admin's device.
-    pub signer: DeviceId,
-    /// Seconds since the Unix epoch.
-    pub expires: u64,
-    pub unknown: Unknown,
-}
-
-/// A member's permission for a custodian device to send as one of their agents.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Delegation {
-    pub body: DelegationBody,
-    /// By `body.signer` over `["skald delegation", body]`.
-    pub signature: [u8; 64],
-}
-
-/// What a [`Delegation`] signs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DelegationBody {
-    /// The delegated agent.
-    pub agent: Address,
-    /// The custodian device.
-    pub custodian: DeviceId,
-    /// The member's device.
     pub signer: DeviceId,
     /// Seconds since the Unix epoch.
     pub expires: u64,
@@ -127,7 +103,6 @@ impl Codec for Content {
             .put(4, cbor::uint(self.hops))
             .put_some(5, self.reply_to.as_ref().map(cbor::id))
             .put_some(A2A, a2a)
-            .put_some(7, self.delegation.as_ref().map(Codec::encode))
             .put_some(8, self.grant.as_ref().map(Codec::encode))
             .put_some(RECEIPT, receipt)
             .put_some(
@@ -169,12 +144,7 @@ impl Codec for Content {
             .take(RECEIPT)
             .map(|item| Receipt::decode(item).map(Body::Receipt))
             .transpose()?;
-        let delegation = fields.take(7).map(Delegation::decode).transpose()?;
         let grant = fields.take(8).map(Grant::decode).transpose()?;
-        // A device has one kind, so content comes from a custodian or a service device, not both.
-        if delegation.is_some() && grant.is_some() {
-            return Err(field_error("content.grant", FieldProblem::NotAllowed));
-        }
         let attachments = fields
             .take(10)
             .map(|item| item.non_empty("content.attachments", Attachment::decode))
@@ -187,7 +157,11 @@ impl Codec for Content {
             [] => None,
             _ => return Err(field_error("content", FieldProblem::TwoBodies)),
         };
-        check_from(&from, delegation.as_ref(), grant.is_some())?;
+        // A service device, as any device but a `client` or `browser` one, never sends as a person
+        // (`README.md`, "Envelope", check 2).
+        if grant.is_some() && from.is_person() {
+            return Err(field_error("content.from", FieldProblem::NotAllowed));
+        }
         // Only task content and content from a stateless service device, which carries a grant,
         // have no counter.
         if counter.is_none() && grant.is_none() && body_key.is_some_and(|key| key != TASK) {
@@ -210,31 +184,10 @@ impl Codec for Content {
             hops,
             reply_to,
             body,
-            delegation,
             grant,
             attachments,
             unknown: fields.unknown(),
         })
-    }
-}
-
-/// `from` against the content's `delegation` and `grant`: a custodian device sends only as the
-/// agent delegated to it, and a service device, as any device but a `client` or `browser` one,
-/// never as a person (`README.md`, "Envelope", check 2, and "Custodian device", check 2).
-fn check_from(
-    from: &Address,
-    delegation: Option<&Delegation>,
-    grant: bool,
-) -> Result<(), DecodeError> {
-    match delegation {
-        Some(delegation) if delegation.body.agent != *from => Err(field_error(
-            "content.from",
-            FieldProblem::Mismatch("delegation-body.agent"),
-        )),
-        _ if grant && from.is_person() => {
-            Err(field_error("content.from", FieldProblem::NotAllowed))
-        }
-        _ => Ok(()),
     }
 }
 
@@ -307,68 +260,6 @@ impl Codec for GrantBody {
     }
 }
 
-impl Codec for Delegation {
-    fn encode(&self) -> Vec<u8> {
-        cbor::array([
-            cbor::bytes(&self.body.encode()),
-            cbor::bytes(&self.signature),
-        ])
-    }
-
-    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
-        let [body, signature] = item.tuple("delegation")?;
-        Ok(Self {
-            body: body.embedded("delegation.body")?,
-            signature: signature.fixed("delegation.signature")?,
-        })
-    }
-}
-
-impl Codec for DelegationBody {
-    fn encode(&self) -> Vec<u8> {
-        MapOut::new(&self.unknown)
-            .put(1, cbor::text(&self.agent.to_string()))
-            .put(2, cbor::id(&self.custodian))
-            .put(3, cbor::id(&self.signer))
-            .put(4, cbor::uint(self.expires))
-            .finish()
-    }
-
-    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
-        let mut fields = item.map("delegation-body")?;
-        let body = Self {
-            agent: fields
-                .required(1, "delegation-body.agent")?
-                .address("delegation-body.agent")?,
-            custodian: fields
-                .required(2, "delegation-body.custodian")?
-                .id("delegation-body.custodian")?,
-            signer: fields
-                .required(3, "delegation-body.signer")?
-                .id("delegation-body.signer")?,
-            expires: fields
-                .required(4, "delegation-body.expires")?
-                .uint("delegation-body.expires")?,
-            unknown: fields.unknown(),
-        };
-        // A person is not an agent (`agents.md`, "Person").
-        if body.agent.is_person() {
-            return Err(field_error(
-                "delegation-body.agent",
-                FieldProblem::NotAllowed,
-            ));
-        }
-        // The signer is a `client` or `browser` device; the custodian device is of another kind.
-        if body.signer == body.custodian {
-            return Err(field_error(
-                "delegation-body.signer",
-                FieldProblem::Same("delegation-body.custodian"),
-            ));
-        }
-        Ok(body)
-    }
-}
-
 impl Codec for Attachment {
     fn encode(&self) -> Vec<u8> {
         MapOut::new(&self.unknown)
@@ -399,11 +290,4 @@ impl Codec for Attachment {
     }
 }
 
-cbor::cbor!(
-    Content,
-    Grant,
-    GrantBody,
-    Delegation,
-    DelegationBody,
-    Attachment
-);
+cbor::cbor!(Content, Grant, GrantBody, Attachment);

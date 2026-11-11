@@ -8,10 +8,9 @@ use std::fmt::Debug;
 
 use common::*;
 use skald_proto::{
-    AddressError, Attachment, Body, Cbor, Content, DecodeError, Delegation, DelegationBody,
-    DeliveryStatus, EncodingProblem, Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload,
-    HpkePlaintext, NameError, NonEmpty, Receipt, ReceiptStatus, Scheme, Segment, SendKey,
-    ServerStatus, Stored, Unknown,
+    AddressError, Attachment, Body, Cbor, Content, DecodeError, DeliveryStatus, EncodingProblem,
+    Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload, HpkePlaintext, NameError,
+    NonEmpty, Receipt, ReceiptStatus, Scheme, Segment, SendKey, ServerStatus, Stored, Unknown,
 };
 
 /// The encoding of a 16-byte ID: `h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6'`.
@@ -128,8 +127,6 @@ fn every_type_round_trips() {
     });
     round_trip(&grant());
     round_trip(&grant().body);
-    round_trip(&delegation());
-    round_trip(&delegation().body);
     round_trip(&attachment());
     for status in [
         ReceiptStatus::Held,
@@ -329,40 +326,14 @@ fn content_needs_a_counter_unless_it_is_a_task_or_has_a_grant() {
 }
 
 #[test]
-fn content_has_a_delegation_or_a_grant_not_both() {
-    let from_custodian = Content {
-        delegation: Some(delegation()),
-        ..content(delegation().body.agent, json())
-    };
-    assert_eq!(check(&from_custodian), Ok(()));
-    assert_eq!(
-        check(&Content {
-            grant: Some(grant()),
-            ..from_custodian
-        }),
-        field("content.grant", FieldProblem::NotAllowed)
-    );
+fn services_send_not_as_a_person() {
+    let person = address("acme/alice/user@skald.example");
     assert_eq!(
         check(&Content {
             grant: Some(grant()),
             ..content(alice(), json())
         }),
         Ok(())
-    );
-}
-
-#[test]
-fn custodians_send_as_the_delegated_agent_and_services_not_as_a_person() {
-    let person = address("acme/alice/user@skald.example");
-    assert_eq!(
-        check(&Content {
-            delegation: Some(delegation()),
-            ..content(alice(), json())
-        }),
-        field(
-            "content.from",
-            FieldProblem::Mismatch("delegation-body.agent")
-        )
     );
     assert_eq!(
         check(&Content {
@@ -371,37 +342,12 @@ fn custodians_send_as_the_delegated_agent_and_services_not_as_a_person() {
         }),
         field("content.from", FieldProblem::NotAllowed)
     );
-    // A person is not an agent, so no one delegates it.
-    let to_person = DelegationBody {
-        agent: person.clone(),
-        ..delegation().body
-    };
-    assert_eq!(
-        check(&to_person),
-        field("delegation-body.agent", FieldProblem::NotAllowed)
-    );
-    assert_eq!(
-        check(&Content {
-            delegation: Some(Delegation {
-                body: to_person,
-                signature: SIGNATURE
-            }),
-            ..content(person.clone(), json())
-        }),
-        embedded(
-            "delegation.body",
-            DecodeError::Field {
-                field: "delegation-body.agent",
-                problem: FieldProblem::NotAllowed
-            }
-        )
-    );
-    // A `client` or `browser` device sends as a person, with neither.
+    // A `client` or `browser` device sends as a person, without a grant.
     assert_eq!(check(&content(person, json())), Ok(()));
 }
 
 #[test]
-fn signers_are_neither_the_service_nor_the_custodian() {
+fn grant_signers_are_not_the_service() {
     assert_eq!(
         check(&GrantBody {
             signer: server_device(),
@@ -412,28 +358,14 @@ fn signers_are_neither_the_service_nor_the_custodian() {
             FieldProblem::Same("grant-body.service")
         )
     );
-    assert_eq!(
-        check(&DelegationBody {
-            signer: server_device(),
-            ..delegation().body
-        }),
-        field(
-            "delegation-body.signer",
-            FieldProblem::Same("delegation-body.custodian")
-        )
-    );
 }
 
 #[test]
-fn hpke_plaintexts_name_their_sender_in_the_grant_or_the_delegation() {
+fn hpke_plaintexts_name_their_sender_in_the_grant() {
     let from_service = Content {
         counter: None,
         grant: Some(grant()),
         ..content(alice(), json())
-    };
-    let from_custodian = Content {
-        delegation: Some(delegation()),
-        ..content(delegation().body.agent, json())
     };
     let plaintext = |sender, content| HpkePlaintext {
         sender,
@@ -445,21 +377,10 @@ fn hpke_plaintexts_name_their_sender_in_the_grant_or_the_delegation() {
         Ok(())
     );
     assert_eq!(
-        check(&plaintext(server_device(), from_custodian.clone())),
-        Ok(())
-    );
-    assert_eq!(
         check(&plaintext(alice_device(), from_service)),
         field(
             "hpke-plaintext.sender",
             FieldProblem::Mismatch("grant-body.service")
-        )
-    );
-    assert_eq!(
-        check(&plaintext(alice_device(), from_custodian)),
-        field(
-            "hpke-plaintext.sender",
-            FieldProblem::Mismatch("delegation-body.custodian")
         )
     );
     assert_eq!(
@@ -959,19 +880,6 @@ fn embedded_items_are_checked_like_any_other() {
         decode::<Grant>(&format!("82 {grant_body} {signature}")),
         field("grant.body", FieldProblem::Type("a byte string"))
     );
-    assert_eq!(
-        decode::<Delegation>(&format!(
-            "82 {} {signature}",
-            embed(&format!("a3 01{ADDRESS} 02{ID} 03{ID2}"))
-        )),
-        field(
-            "delegation.body",
-            FieldProblem::Embedded(Box::new(DecodeError::Field {
-                field: "delegation-body.expires",
-                problem: FieldProblem::Missing
-            }))
-        )
-    );
 }
 
 #[test]
@@ -980,11 +888,6 @@ fn signed_bodies_encode_to_the_bytes_their_signatures_cover() {
     let body = hex(&format!("a5 01{ID} 0281{ID} 03{ID2} 0400 1864f5"));
     let grant = GrantBody::from_cbor(&body).unwrap();
     assert_eq!(grant.to_cbor(), body);
-    let delegation = hex(&format!("a5 01{ADDRESS} 02{ID} 03{ID2} 0400 20f4"));
-    assert_eq!(
-        DelegationBody::from_cbor(&delegation).unwrap().to_cbor(),
-        delegation
-    );
 }
 
 #[test]
@@ -1057,17 +960,21 @@ fn errors_name_the_field_and_the_problem() {
     assert_eq!(error.to_string(), "header.scheme: 3 is not a defined value");
     let error = Content::from_cbor(&hex(&format!("a2 01{ADDRESS} 0400"))).unwrap_err();
     assert_eq!(error.to_string(), "content: no body");
-    let error = Content::from_cbor(
-        &Content {
-            delegation: Some(delegation()),
-            ..content(alice(), json())
+    let error = HpkePlaintext::from_cbor(
+        &HpkePlaintext {
+            sender: alice_device(),
+            content: Content {
+                grant: Some(grant()),
+                ..content(alice(), json())
+            },
+            signature: SIGNATURE,
         }
         .to_cbor(),
     )
     .unwrap_err();
     assert_eq!(
         error.to_string(),
-        "content.from: differs from delegation-body.agent"
+        "hpke-plaintext.sender: differs from grant-body.service"
     );
     let error = GrantBody::from_cbor(
         &GrantBody {

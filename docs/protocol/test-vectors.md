@@ -5,7 +5,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - Each vector is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
-- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the service and custodian device from "TEST 3".
+- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the service device from "TEST 3".
 - The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's [`stored` frame](delivery.md#frames), and its `delivery-status` for `delivered` and `expired`. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
@@ -14,7 +14,6 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [HPKE plaintext](#hpke-plaintext)
 - [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment)
 - [Content from a service device](#content-from-a-service-device)
-- [Content from a custodian device](#content-from-a-custodian-device)
 - [Receipt `held`](#receipt-held)
 - [Receipt `refused`](#receipt-refused)
 - [Receipt `read`](#receipt-read)
@@ -174,40 +173,6 @@ a401781c61636d652f63692f6465706c6f7940736b616c642e6578616d706c65
 823586a6c5809a18f6dd041a6b36ec8058405a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
-```
-
-## Content from a custodian device
-
-```cbor-diag
-{
-  1: "acme/alice/hosted-mcp@skald.example",
-  3: 3,
-  4: 0,
-  6: "{\"messageId\":\"019a6f20-1a00-7c00-8a00-000000000006\",\"contextId\":\"019a6f20-0000-7000-8000-00000000c0de\",\"role\":\"ROLE_USER\",\"parts\":[{\"text\":\"Done\"}]}",
-  7: [
-    <<{
-      1: "acme/alice/hosted-mcp@skald.example",
-      2: h'42592ce391c8869ebdf88dff1cbfc25a',
-      3: h'19ac5f784938823586a6c5809a18f6dd',
-      4: 1798761600
-    }>>,
-    h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
-  ]
-}
-```
-
-```hex
-a501782361636d652f616c6963652f686f737465642d6d637040736b616c642e
-6578616d706c65030304000678947b226d6573736167654964223a2230313961
-366632302d316130302d376330302d386130302d303030303030303030303036
-222c22636f6e746578744964223a2230313961366632302d303030302d373030
-302d383030302d303030303030303063306465222c22726f6c65223a22524f4c
-455f55534552222c227061727473223a5b7b2274657874223a22446f6e65227d
-5d7d07825851a401782361636d652f616c6963652f686f737465642d6d637040
-736b616c642e6578616d706c65025042592ce391c8869ebdf88dff1cbfc25a03
-5019ac5f784938823586a6c5809a18f6dd041a6b36ec8058405a5a5a5a5a5a5a
-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 ```
 
 ## Receipt `held`

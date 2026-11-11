@@ -187,16 +187,11 @@ impl Codec for HpkePlaintext {
                 ))),
             ));
         }
-        // A grant names the sending service device, a delegation the sending custodian device.
-        let named = match (&plaintext.content.grant, &plaintext.content.delegation) {
-            (Some(grant), _) => Some((grant.body.service, "grant-body.service")),
-            (_, Some(delegation)) => Some((delegation.body.custodian, "delegation-body.custodian")),
-            (None, None) => None,
-        };
-        match named {
-            Some((device, field)) if device != plaintext.sender => Err(field_error(
+        // A grant names the sending service device.
+        match &plaintext.content.grant {
+            Some(grant) if grant.body.service != plaintext.sender => Err(field_error(
                 "hpke-plaintext.sender",
-                FieldProblem::Mismatch(field),
+                FieldProblem::Mismatch("grant-body.service"),
             )),
             _ => Ok(plaintext),
         }
