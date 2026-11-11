@@ -40,6 +40,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
 - **Tooling:** tests of the scripts in `script/`, Renovate config validation.
+- **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
