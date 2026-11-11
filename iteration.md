@@ -41,7 +41,8 @@
 - [ ] **4.4:** Codex hooks and `codex queue`
 - [ ] **4.5:** Codex app-server: `turn/start` and `turn/steer`
 - [ ] **4.6:** Subscription limit data
-- [ ] **4.7:** Summary and the "Delivery to agents" table
+- [ ] **4.7:** Desktop apps and IDE extensions
+- [ ] **4.8:** Summary and the "Delivery to agents" table
 
 ## Story 5: Edit comparison prototype with HMAC fingerprints
 

@@ -84,7 +84,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - **Done when:** all devices are wiped; the recovery key is entered on a new laptop, and the full history is there.
 
 ## 7. Delivery to agents
-- A message reaches a live session of Claude Code, Codex (without tmux), Gemini CLI, Cursor, OpenCode, Copilot or any agent with a shell. Paths: [architecture.md](architecture.md), "Delivery to agents".
+- A message reaches a live session of Claude Code, Codex (without tmux), Gemini, Cursor, OpenCode, Copilot or any agent with a shell. Paths: [architecture.md](architecture.md), "Delivery to agents".
 
 ## 8. Core features (parity with competitors)
 - Presence directory (encrypted): [protocol spec](../protocol/agents.md#presence).
