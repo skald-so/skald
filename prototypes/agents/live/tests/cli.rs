@@ -7,6 +7,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 use agent_live::Agent;
+use agent_live::channel::stub_environment;
 use agent_source::{Source, State};
 
 /// Runs `live-check` with no variable of the test's environment, so none of its credentials
@@ -63,6 +64,9 @@ fn wrong_arguments_print_the_usage() {
         &["inbox", "claude", "--model"],
         &["inbox", "codex", "--verbose"],
         &["inbox", "codex", "--all", "--real", "--stub"],
+        &["channel"],
+        &["channel", "codex"],
+        &["channel", "claude", "--verbose"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -218,5 +222,104 @@ fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
                 }
             }
         }
+    }
+}
+
+/// Runs `live-check channel claude <flags>` with stand-in CLIs and returns the sessions the
+/// stand-in `claude` recorded and the `PATH` it ran with.
+fn channel_sessions(flags: &[&str]) -> (Vec<Recorded>, String, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let (bin, record, tmp) = (
+        dir.path().join("bin"),
+        dir.path().join("record"),
+        dir.path().join("tmp"),
+    );
+    for dir in [&bin, &record, &tmp] {
+        fs::create_dir(dir).unwrap();
+    }
+    stand_ins(&bin, &record);
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args(["channel", "claude"])
+        .args(flags)
+        .env_clear()
+        .env("PATH", &path)
+        .env("TMPDIR", &tmp)
+        .env(SENTINEL, "secret")
+        .output()
+        .expect("live-check runs");
+    // The stand-in ends each session at once, so the check fails.
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    (recorded(&record, "claude"), path, dir)
+}
+
+const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
+
+#[test]
+fn channel_runs_one_session_or_all_four_on_the_stub_with_only_its_environment() {
+    for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 4)] {
+        let (recorded, path, dir) = channel_sessions(flags);
+        let at = format!("{flags:?}");
+        assert_eq!(recorded.len(), sessions, "{at}");
+        let with_channel = recorded
+            .iter()
+            .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
+            .count();
+        assert_eq!(
+            with_channel,
+            sessions.min(3),
+            "{at}: sessions that load the channel"
+        );
+        for session in &recorded {
+            assert!(
+                !session.env.contains_key(SENTINEL),
+                "{at}: {SENTINEL} reached the CLI"
+            );
+            let home = &session.env["HOME"];
+            assert!(
+                home.starts_with(dir.path().join("tmp").to_str().unwrap()),
+                "{at}: HOME is not in TMPDIR"
+            );
+            let expected: BTreeMap<String, String> =
+                stub_environment(Path::new(home), &session.env["ANTHROPIC_BASE_URL"], &path)
+                    .unwrap()
+                    .into_iter()
+                    .collect();
+            assert_eq!(
+                session.env.keys().collect::<Vec<_>>(),
+                expected.keys().collect::<Vec<_>>(),
+                "{at}: the CLI's variables"
+            );
+            for (name, value) in &expected {
+                assert!(session.env[name] == *value, "{at}: {name} differs");
+            }
+        }
+    }
+}
+
+#[test]
+fn channel_on_the_real_model_adds_only_the_terminal_and_the_child_mark() {
+    let (recorded, path, _dir) = channel_sessions(&["--real"]);
+    let [session] = recorded.as_slice() else {
+        panic!("one session, not {}", recorded.len())
+    };
+    assert!(session.args.iter().any(|arg| arg == CHANNEL_FLAG));
+    // The real model signs in from the user's config home: the check's environment passes on.
+    assert!(
+        session.env[SENTINEL] == "secret",
+        "{SENTINEL} did not pass on"
+    );
+    assert!(session.env["PATH"] == path, "PATH differs");
+    assert!(session.env["TERM"] == "xterm-256color", "TERM differs");
+    assert!(
+        session.env["CLAUDE_CODE_CHILD_SESSION"] == "1",
+        "CLAUDE_CODE_CHILD_SESSION differs"
+    );
+    for name in [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CONFIG_DIR",
+    ] {
+        assert!(!session.env.contains_key(name), "{name} is set");
     }
 }

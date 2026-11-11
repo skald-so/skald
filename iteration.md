@@ -36,7 +36,7 @@
 
 ## Story 4: Verifying delivery to Claude Code and Codex
 - [x] **4.1:** Prototype harness and the MCP `inbox` path
-- [ ] **4.2:** Claude Code Channels
+- [x] **4.2:** Claude Code Channels
 - [ ] **4.3:** Claude Code `Stop` and `PostToolUse` hooks
 - [ ] **4.4:** Codex hooks and `codex queue`
 - [ ] **4.5:** Codex app-server: `turn/start` and `turn/steer`

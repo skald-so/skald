@@ -1,7 +1,9 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
-//! options, prompts, messages and verdicts. The binary only starts the CLIs and reads their output.
+//! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path. The binary
+//! only starts the CLIs and reads their output.
 
+pub mod channel;
 mod stub;
 
 use std::fs;
