@@ -4,14 +4,14 @@
 //! `idle.jsonl` with the error Codex gives a `turn/steer` after its turn ended.
 
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use agent_source::{Message, Source};
 use agent_testing::{
@@ -127,7 +127,8 @@ fn text(request: &Value) -> &str {
 
 /// A stand-in `codex` in `bin` that replays `exchange` as `codex app-server` on stdio: it records
 /// its arguments, and each line it reads in `received/<n>` with the names in the source's `handed`
-/// directory then, and answers it with the server's messages that follow it in the exchange.
+/// directory then, and answers it with the server's messages that follow it in the exchange. A
+/// second after its stdin ends, it writes `ended` and exits.
 struct StandIn {
     dir: tempfile::TempDir,
 }
@@ -155,7 +156,9 @@ impl StandIn {
              ls '{handed}' >\"$dir/received/$n.handed\"\n\
              if [ -f \"$dir/answers/$n\" ]; then cat \"$dir/answers/$n\"; fi\n\
              n=$((n + 1))\n\
-             done\n",
+             done\n\
+             sleep 1\n\
+             touch \"$dir/ended\"\n",
             dir = dir.path().display(),
             handed = source.join("handed").display(),
         );
@@ -169,6 +172,11 @@ impl StandIn {
         self.dir.path().join("bin")
     }
 
+    /// Whether the stand-in ended after its stdin did.
+    fn ended(&self) -> bool {
+        self.dir.path().join("ended").exists()
+    }
+
     fn args(&self) -> Vec<String> {
         let args = fs::read_to_string(self.dir.path().join("args")).unwrap();
         args.lines().map(String::from).collect()
@@ -176,10 +184,11 @@ impl StandIn {
 
     fn received(&self) -> Received {
         let dir = self.dir.path().join("received");
+        // Each line's `.handed` file comes after the line's own.
         let count = fs::read_dir(&dir)
             .unwrap()
             .filter(|entry| {
-                !entry
+                entry
                     .as_ref()
                     .unwrap()
                     .path()
@@ -252,8 +261,42 @@ impl Running {
     /// Ends the client's stdin, which stops it, and returns its output, with the events it printed.
     fn stop(mut self) -> (Output, Vec<Value>) {
         drop(self.stdin.take());
-        let output = self.child.wait_with_output().unwrap();
-        self.seen.extend(self.events.try_iter());
+        self.exit()
+    }
+
+    /// Waits for the client to exit on its own, its stdin still open.
+    fn stop_after_exit(self) -> (Output, Vec<Value>) {
+        self.exit()
+    }
+
+    /// Waits up to 10 s for the client to exit, and returns its output and every event it printed.
+    fn exit(mut self) -> (Output, Vec<Value>) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() > deadline {
+                self.child.kill().unwrap();
+                self.child.wait().unwrap();
+                panic!("agent-app-server did not exit: {:?}", self.seen);
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
+        drop(self.stdin.take());
+        let mut stderr = Vec::new();
+        self.child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_end(&mut stderr)
+            .unwrap();
+        self.seen.extend(self.events.iter());
+        let output = Output {
+            status,
+            stdout: Vec::new(),
+            stderr,
+        };
         (output, self.seen)
     }
 }
@@ -301,6 +344,7 @@ fn starts_a_thread_and_hands_the_waiting_messages_to_it_with_turn_start() {
     client.wait_for(event("turnCompleted"));
     let (output, events) = client.stop();
     assert!(output.status.success(), "{}", stderr(&output));
+    assert!(codex.ended(), "the client exits once its app-server did");
     assert_eq!(codex.args(), ["app-server", "-c", "a=1"]);
 
     let received = codex.received();
@@ -471,40 +515,64 @@ fn messages_refused_until_the_client_stops_stay_waiting() {
         Some(&codex.bin()),
     );
     client.wait_for(event("refused"));
+    // The next steer, which the stand-in never answers.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while codex
+        .received()
+        .methods()
+        .iter()
+        .filter(|m| **m == "turn/steer")
+        .count()
+        < 2
+    {
+        assert!(Instant::now() < deadline, "no second steer");
+        thread::sleep(Duration::from_millis(20));
+    }
     let (output, events) = client.stop();
     assert!(output.status.success(), "{}", stderr(&output));
     assert_waiting(&source, &messages);
     assert!(named(&events, "handedOver").is_empty(), "{events:?}");
+    // The second steer waited for its answer when the client stopped: no refusal.
+    assert_eq!(named(&events, "refused").len(), 1, "{events:?}");
 }
 
 #[test]
 fn fails_when_the_app_server_refuses_the_thread_or_closes() {
+    let idle = || Exchange::load("idle.jsonl");
     // thread/start refused.
     let refused = Exchange(
-        Exchange::load("idle.jsonl")
+        idle()
             .until(|line| line["client"]["method"] == "thread/start")
             .0
             .into_iter()
             .chain([json!({ "server": { "id": 1, "error": { "code": -32600, "message": "no" } } })])
             .collect(),
     );
-    // The app-server ends after initialize.
-    let closed = Exchange::load("idle.jsonl").until(|line| line["server"]["id"] == 0);
-    for (exchange, error) in [
-        (refused, "agent-app-server: thread/start refused: no\n"),
+    let closed = "agent-app-server: the app-server closed the connection\n";
+    // The stand-in closes its stdout once it answered that many lines: initialize, or the whole
+    // exchange, so the client sees it close while it waits for messages.
+    for (exchange, closes_after, error, handed) in [
         (
-            closed,
-            "agent-app-server: the app-server closed the connection\n",
+            refused,
+            None,
+            "agent-app-server: thread/start refused: no\n",
+            false,
         ),
+        (
+            idle().until(|line| line["server"]["id"] == 0),
+            Some(1),
+            closed,
+            false,
+        ),
+        (idle(), Some(4), closed, true),
     ] {
         let (dir, source, messages) = waiting();
         let codex = StandIn::new(&exchange, &dir.path().join("source"));
-        if error.contains("closed") {
-            // The stand-in closes its stdout once it answered initialize.
+        if let Some(lines) = closes_after {
             let script = codex.bin().join("codex");
             let text = fs::read_to_string(&script).unwrap();
-            let closing = "n=$((n + 1)); if [ $n = 1 ]; then exec 1>&-; fi";
-            fs::write(&script, text.replace("n=$((n + 1))", closing)).unwrap();
+            let closing = format!("n=$((n + 1)); if [ $n = {lines} ]; then exec 1>&-; fi");
+            fs::write(&script, text.replace("n=$((n + 1))", &closing)).unwrap();
         }
         let client = Running::start(
             &dir.path().join("source"),
@@ -513,9 +581,13 @@ fn fails_when_the_app_server_refuses_the_thread_or_closes() {
             Some(&codex.bin()),
         );
         let (output, _) = client.stop_after_exit();
-        assert_eq!(stderr(&output), error);
+        assert_eq!(stderr(&output), error, "{closes_after:?}");
         assert_eq!(output.status.code(), Some(1));
-        assert_waiting(&source, &messages);
+        if handed {
+            assert_handed_over(&source, &messages);
+        } else {
+            assert_waiting(&source, &messages);
+        }
     }
 
     // No app-server to run.
@@ -527,16 +599,6 @@ fn fails_when_the_app_server_refuses_the_thread_or_closes() {
         None,
     );
     assert_failed(&client.stop_after_exit().0, "agent-app-server: ");
-}
-
-impl Running {
-    /// Waits for the client to exit on its own, its stdin still open.
-    fn stop_after_exit(mut self) -> (Output, Vec<Value>) {
-        let stdin = self.stdin.take();
-        let output = self.child.wait_with_output().unwrap();
-        drop(stdin);
-        (output, self.events.try_iter().collect())
-    }
 }
 
 /// An app-server on a Unix socket that replays `exchange`: one WebSocket text frame a message. It

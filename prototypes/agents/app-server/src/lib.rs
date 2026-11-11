@@ -146,17 +146,18 @@ impl Transport for Socket {
             Ok(tungstenite::Message::Close(_)) => Ok(Received::Closed),
             // Pings, which tungstenite answers itself.
             Ok(_) => Ok(Received::Nothing),
-            Err(tungstenite::Error::Io(error))
-                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
-                Ok(Received::Nothing)
-            }
+            Err(tungstenite::Error::Io(error)) if timed_out(&error) => Ok(Received::Nothing),
             Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
                 Ok(Received::Closed)
             }
             Err(error) => Err(io::Error::other(error)),
         }
     }
+}
+
+/// Whether a read with a timeout failed only because the timeout passed.
+fn timed_out(error: &io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
 }
 
 /// A transport that writes each message it carries to `log`, one JSON object a line:
@@ -593,6 +594,38 @@ mod tests {
                 json!({ "event": "turnCompleted", "turnId": "u1", "status": "completed" }),
             ]
         );
+    }
+
+    #[test]
+    fn a_request_takes_only_its_own_answer() {
+        let mut script = Script::default();
+        // The app-server numbers its requests apart from the client's.
+        script.incoming.extend([
+            APPROVAL.to_owned(),
+            r#"{"id":5,"result":{"other":true}}"#.to_owned(),
+            r#"{"id":0,"result":{"turn":{"id":"u1"}}}"#.to_owned(),
+        ]);
+        let mut client = client(&mut script);
+        let result = client.request("turn/start", json!({})).unwrap();
+        assert_eq!(result, Ok(json!({ "turn": { "id": "u1" } })));
+        assert_eq!(client.next_id, 1);
+        assert_eq!(events(&client).len(), 1, "the approval was declined");
+        script.incoming.push_back(
+            r#"{"id":1,"error":{"code":-32600,"message":"no active turn to steer"}}"#.to_owned(),
+        );
+        let mut client = Client::new(&mut script, Vec::new(), Arc::default());
+        client.next_id = 1;
+        assert_eq!(
+            client.request("turn/steer", json!({})).unwrap(),
+            Err("no active turn to steer".to_owned())
+        );
+    }
+
+    #[test]
+    fn only_a_timeout_is_a_read_without_a_message() {
+        assert!(timed_out(&io::Error::from(ErrorKind::WouldBlock)));
+        assert!(timed_out(&io::Error::from(ErrorKind::TimedOut)));
+        assert!(!timed_out(&io::Error::from(ErrorKind::ConnectionReset)));
     }
 
     #[test]
