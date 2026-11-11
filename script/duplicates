@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Fails when Rust, TypeScript or shell code under <path>s has a block of 50 or more tokens copied
 # from elsewhere under them, unless script/duplicates-known lists that clone, and when that list has
-# a clone between files under <path>s that is no longer found. A clone's key is its two files and a
-# hash of its code without whitespace, so moving its lines keeps it known; a key found more often
-# than listed is new. Prints each new clone as
-# `<file>:<first line>-<last line> <file>:<first line>-<last line> <hash>`, each clone gone as its key.
+# a clone between files under <path>s that is no longer found. A clone's key is its two files and
+# the number of tokens copied, so it stays known when its lines move, the text around it changes
+# or, in TypeScript, a comment in it; a key found more often than listed is new. Prints each new
+# clone as `<file>:<first line>-<last line> <file>:<first line>-<last line> <tokens>`, each clone
+# gone as its key.
 # Runs jscpd, pinned in script/jscpd/package.json.
 # Usage: script/duplicates <path>..., in the repository root.
 set -euo pipefail
@@ -32,19 +33,12 @@ options=(
 "$jscpd/node_modules/.bin/jscpd" "${options[@]}" --absolute --no-tips --silent \
   --reporters json --output "$tmp" "$@" >/dev/null
 
-# Each clone as its two files in order, paths relative to the repository root, then their line
-# ranges, then its code without whitespace.
+# Each clone as `<key>\t<printed line>`, its key its two files in order, paths relative to the
+# repository root, and the number of tokens copied.
 jq -r --arg root "$(pwd -P)/" '.duplicates[]
   | ([.firstFile, .secondFile] | map([(.name | ltrimstr($root)), .start, .end]) | sort) as $files
-  | [($files | map(.[0]) | join(" ")), ($files | map("\(.[0]):\(.[1])-\(.[2])") | join(" ")),
-    (.fragment | gsub("\\s"; ""))]
-  | @tsv' "$tmp/jscpd-report.json" >"$tmp/clones"
-
-# Each clone as `<key>\t<printed line>`.
-while IFS=$'\t' read -r files ranges code; do
-  hash=$(printf '%s' "$code" | git hash-object --stdin | cut -c1-12)
-  printf '%s %s\t%s %s\n' "$files" "$hash" "$ranges" "$hash"
-done <"$tmp/clones" >"$tmp/found"
+  | "\($files | map(.[0]) | join(" ")) \(.tokens)\t\($files | map("\(.[0]):\(.[1])-\(.[2])")
+    | join(" ")) \(.tokens)"' "$tmp/jscpd-report.json" >"$tmp/found"
 cut -f1 "$tmp/found" | sort >"$tmp/found-keys"
 
 # The listed keys whose two files are under <path>s.

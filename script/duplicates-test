@@ -2,7 +2,8 @@
 # Tests script/duplicates on scratch git repositories: a block of 50 or more tokens copied in Rust,
 # TypeScript, TSX or a shell script fails it, however few lines it spans; a shorter one, JSON, the
 # generated API client, git-ignored files and the clones script/duplicates-known lists do not, even
-# when their lines move. A further copy of a listed clone and a listed clone gone fail it.
+# when their lines move, the text around them changes or, in TypeScript, a comment in them. A
+# further copy of a listed clone and a listed clone gone fail it.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -44,7 +45,7 @@ copy() {
 run() { (cd "$tmp/repo" && "$root/script/duplicates" "$@" 2>&1 >/dev/null); }
 
 # expect <want> <path>...: script/duplicates over <path>s of the scratch repository prints <want>,
-# each clone's hash of 12 hex digits cut, and fails; with an empty <want> it passes.
+# each clone's number of tokens cut, and fails; with an empty <want> it passes.
 expect() {
   local want=$1 got status=0
   shift
@@ -52,7 +53,7 @@ expect() {
   if [[ -z $want ]]; then
     [[ $status -eq 0 ]] || fail "$*: want a pass, got status $status: $got"
   else
-    got=$(sed -E 's/^([^ ]+:[0-9]+-[0-9]+ [^ ]+:[0-9]+-[0-9]+) [0-9a-f]{12}$/\1/' <<<"$got")
+    got=$(sed -E 's/^([^ ]+:[0-9]+-[0-9]+ [^ ]+:[0-9]+-[0-9]+) [0-9]+$/\1/' <<<"$got")
     [[ $status -eq 1 && $got == "$want" ]] ||
       fail "$*: want status 1 and '$want', got $status and '$got'"
   fi
@@ -75,6 +76,7 @@ copy "$(rust "$(numbers 17),")" src/a.rs src/b.rs
 expect '' src
 copy "$(rust "$(numbers 18)")" src/a.rs src/b.rs
 expect "$copied"$'\nsrc/a.rs:1-3 src/b.rs:1-3' src
+[[ $(run src) == *" 50" ]] || fail "src: want the clone printed with its 50 tokens"
 
 # Each scanned format, a shell script known by its shebang.
 copy "export function total(): number {"$'\n'"  return sum([$(numbers 30)]);"$'\n'"}" src/a.ts src/b.ts
@@ -103,8 +105,37 @@ expect '' src
 printf '// moved\n\n%s\n' "$code" >"$tmp/repo/src/b.ts"
 expect '' src
 
+# And when two copies in one file swap places, then the text before the first copy on its line
+# changes: jscpd's fragment is the first copy's full lines.
+sums="sum([$(numbers 30)]);"
+copy "export const one = $sums"$'\n'"export const two = $sums" src/a.ts
+list src
+expect '' src
+printf 'export const two = %s\nexport const one = %s\n' "$sums" "$sums" >"$tmp/repo/src/a.ts"
+expect '' src
+printf 'export const first = %s\nexport const one = %s\n' "$sums" "$sums" >"$tmp/repo/src/a.ts"
+expect '' src
+
+# And when a comment in the first copy changes: jscpd skips comments in TypeScript.
+copy "export const total = sum(["$'\n'"  // The numbers."$'\n'"  $(numbers 30),"$'\n'"]);" \
+  src/a.ts src/b.ts
+list src
+sed -i.bak 's|// The numbers.|// Each number once.|' "$tmp/repo/src/a.ts"
+rm "$tmp/repo/src/a.ts.bak"
+expect '' src
+
+# A key listed as often as found passes: jscpd pairs each further copy with the first.
+copy "$code" src/a.ts src/b.ts
+printf '\n%s\n' "$code" >>"$tmp/repo/src/b.ts"
+list src
+[[ $(sort -u "$tmp/repo/script/duplicates-known" | wc -l) -eq 1 ]] ||
+  fail "want one key listed twice"
+expect '' src
+
 # A further copy fails, in another file or in a listed one: a key found more often than listed.
-# jscpd pairs each further copy with the first.
+copy "$code" src/a.ts src/b.ts
+list src
+printf '// moved\n\n%s\n' "$code" >"$tmp/repo/src/b.ts"
 printf '%s\n' "$code" >"$tmp/repo/src/c.ts"
 expect "$copied"$'\nsrc/a.ts:1-1 src/c.ts:1-1' src
 rm "$tmp/repo/src/c.ts"
