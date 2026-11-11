@@ -75,6 +75,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 ## Cloud
 - **The same image that is published for self-hosting.**
 - **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically.
+  - `skald-cloud` holds the Caddy configs of every site on the VPS, a check of those sites against a recorded baseline, and the runbook for switching the VPS's web server to Caddy and back.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
   - PostgreSQL 19 with synchronous streaming replication: `stored` is sent after the replica has the write. If the replica is down, replication switches to asynchronous and an alert fires.
   - WAL-G backups to object storage.
