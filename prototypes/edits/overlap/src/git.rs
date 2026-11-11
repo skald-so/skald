@@ -77,6 +77,12 @@ pub fn merge_base(dir: &Path) -> Result<String> {
     line(dir, &["merge-base", "HEAD", UPSTREAM_HEAD])
 }
 
+/// The contents of `path`, relative to the root, in the commit or tree `tree` of the repository at
+/// `dir`, as git stores them: without the conversions of attributes and config.
+pub fn blob(dir: &Path, tree: &str, path: &str) -> Result<Vec<u8>> {
+    run(dir, &["cat-file", "blob", &format!("{tree}:{path}")])
+}
+
 /// Whether the repository at `dir` has the commit `oid`.
 pub fn has_commit(dir: &Path, oid: &str) -> Result<bool> {
     let status = command(dir, &["cat-file", "-e", &format!("{oid}^{{commit}}")])
