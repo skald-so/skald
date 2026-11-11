@@ -4,3 +4,4 @@ CLAUDE.local.md
 .claude/settings.local.json
 /target
 /prototypes/mls/target
+/prototypes/agents/target

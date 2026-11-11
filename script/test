@@ -2,7 +2,8 @@
 # Builds the workspace and runs every check. Exits 0 only if all of them pass.
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
-#            and their benchmarks' smoke run, natively and in WASM;
+#            and their benchmarks' smoke run, natively and in WASM; the delivery prototypes in
+#            prototypes/agents;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  tests of the scripts in script/, Renovate config validation
 #   web      web UI lint, tests (with the kit page screenshots against their references) and build
@@ -94,6 +95,14 @@ if checks rust; then
       --test scenarios --locked
     cargo test --target wasm32-unknown-unknown -p mls-bench --test smoke --locked
   )
+
+  # The delivery prototypes: a workspace of their own, like the MLS prototypes. Their live checks
+  # run the installed agent CLIs, so script/test does not run them.
+  prototypes=(--manifest-path prototypes/agents/Cargo.toml)
+  cargo build "${prototypes[@]}" --workspace --all-targets --locked
+  cargo fmt "${prototypes[@]}" --all --check
+  cargo clippy "${prototypes[@]}" --workspace --all-targets --locked -- -D warnings
+  cargo test "${prototypes[@]}" --workspace --locked
 fi
 
 if checks tooling; then

@@ -85,6 +85,7 @@ expect rust prototypes/mls/openmls/src/lib.rs
 expect rust prototypes/mls/Cargo.toml
 expect rust prototypes/mls/mls-rs/src/lib.rs
 expect rust -prototypes/mls/openmls/src/lib.rs
+expect rust prototypes/agents/inbox/src/lib.rs
 
 expect 'rust web' crates/server/src/lib.rs web/src/App.tsx
 

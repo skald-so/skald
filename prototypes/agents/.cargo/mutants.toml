@@ -1,0 +1,4 @@
+# Code that script/mutants skips in the delivery prototypes' workspace; the tests cannot catch its
+# mutants.
+# The live checks' code that runs the installed agent CLIs, which script/test does not.
+exclude_globs = ["live/src/run.rs"]
