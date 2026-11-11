@@ -57,7 +57,7 @@
 - [ ] **5.10:** Preliminary answers to "To decide"
 
 ## Story 6: Staging environment
-- [ ] **6.1:** `skald-server` Docker image
+- [x] **6.1:** `skald-server` Docker image
 - [ ] **6.2:** Publishing `:edge` to GHCR
 - [ ] **6.3:** Preparing the move to Caddy on the staging VPS
 - [ ] **6.4:** Switching the staging VPS to Caddy

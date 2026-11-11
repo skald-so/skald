@@ -11,7 +11,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
-- Docker: PostgreSQL for the integration tests, Chrome for the kit page screenshots.
+- Docker: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots.
 - Node.js 26 with npm.
 - git 2.39 or newer: the edit comparison prototype reads the conflicts of `git merge-tree`.
 - The MLS prototypes' WASM tests: the `wasm32-unknown-unknown` target, `rustup target add wasm32-unknown-unknown`, and `wasm-bindgen-cli` of the `wasm-bindgen` version in `prototypes/mls/Cargo.lock`: `cargo install wasm-bindgen-cli --version <version> --locked`. They run in Node.js.

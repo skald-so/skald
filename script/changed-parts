@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Prints which parts of script/test the changes from <base> to HEAD touch, as `<part>=true|false`
 # lines for $GITHUB_OUTPUT. CI checks only those parts; script/test alone checks all of them.
-#   rust     crates/, Cargo.toml, Cargo.lock, deny.toml, prototypes/
+#   rust     crates/ (with the skald-server image definition), Cargo.toml, Cargo.lock, deny.toml,
+#            prototypes/
 #   web      web/
 #   none     docs/, Markdown files in the root
 #   all      any other path: the OpenAPI spec, script/, .github/, renovate.json, new top-level paths

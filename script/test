@@ -3,7 +3,8 @@
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
 #            and their benchmarks' smoke run, natively and in WASM; the delivery prototypes in
-#            prototypes/agents; the edit comparison prototype in prototypes/edits
+#            prototypes/agents; the edit comparison prototype in prototypes/edits;
+#            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  tests of the scripts in script/, Renovate config validation
 #   web      web UI lint, tests (with the kit page screenshots against their references) and build
 set -euo pipefail
@@ -82,6 +83,7 @@ if checks rust; then
 
   cargo deny --locked check advisories licenses
   script/deny-test
+  script/image-test
 
   # The MLS prototypes: a workspace of their own, apart from the product crates (script/deny-test).
   # They never ship, so cargo-deny does not check them.
