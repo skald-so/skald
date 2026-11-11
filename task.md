@@ -587,6 +587,112 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Depends on:** Story 1
 - **Docs:** `roadmap.md` — "Preparation", `features.md` §11, `architecture.md` — "Cryptography"
 
+#### Iteration 5.1: Prototype harness and file fingerprints
+- **Goal:** Machines editing the same files of one repository learn it from a server that sees only HMAC fingerprints.
+- **What we do:**
+  - The prototype, in Rust on the stack of `tech-stack.md`, lives in `prototypes/` apart from the product crates, which never depend on it; `script/test` builds and tests it and `script/mutants` mutates it, as they do `prototypes/mls`.
+  - A scenario harness: each machine is a local clone of one test repository with a shared upstream; it commits and edits its working tree through the `git` CLI.
+  - A machine's edit set: the files changed since its merge base with the upstream's default branch, committed or not, untracked ones included; a rename counts both paths.
+  - Each machine publishes HMAC fingerprints of its edit set's paths with the space key, a test fixture. Fingerprints are scoped to a repository; how clones of one repository get one scope is a finding.
+  - A minimal in-process server stand-in, without the key, keeps each machine's latest fingerprints and tells each machine which other machines share fingerprints with it, and which.
+  - The report in `docs/dev/` starts with the scenario list and the questions of `features.md` §11, "To decide", that the prototype answers; each iteration adds its findings.
+  - Tests: two machines editing one file overlap; different files do not; a rename or a deletion overlaps an edit of either path; a machine whose changes are merged upstream leaves the overlap once it pulls; the same path in another repository or under another key gives no overlap; nothing the server stand-in receives or keeps contains a path of the test repository.
+- **Definition of done:** the scenarios pass; scenario tests run in `script/test`; the report lists the scenarios and the questions.
+
+#### Iteration 5.2: Exact check with `git merge-tree`
+- **Goal:** A client confirms each overlap the server reports with `git merge-tree`, and the server sees none of the changes.
+- **What we do:**
+  - On an overlap, the client gets the other machine's changes, committed and not, over an in-process stand-in for an end-to-end encrypted message that bypasses the server stand-in.
+  - It runs `git merge-tree` on both sides and their merge base and gives the conflicting files and lines, or a clean merge.
+  - The check works when the machines' bases differ, such as when one has pulled newer upstream commits.
+  - `script/test` checks for the git version the check needs; `CONTRIBUTING.md` names it.
+  - Findings in the report: what the check needs from the other machine and its size; whether a shared git remote could carry the changes instead.
+  - Tests: edits to the same lines give a conflict with its files and lines; edits to distant lines of one file merge cleanly; modify/delete and rename conflicts are found; machines on different bases get the right result.
+- **Definition of done:** the scenarios pass; scenario tests run in `script/test`.
+
+#### Iteration 5.3: Hunk fingerprints
+- **Goal:** Edits to the same lines of a file overlap at hunk level; edits to different parts of it do not.
+- **What we do:**
+  - Each machine also publishes HMAC fingerprints of its changed hunks with the space key; the server stand-in compares them as it does paths.
+  - Two machines' hunk fingerprints match where `git merge-tree` reports a conflict between them, also when unrelated commits shift the lines between their bases.
+  - Findings in the report: the scheme, and its misses and false matches on the scenarios, such as on common lines.
+  - Tests: edits to the same lines overlap at hunk level and conflict in `git merge-tree`; edits to different hunks of one file overlap at file level only; bases that differ by lines added above the hunk still match; nothing the server stand-in receives contains a line of the test repository.
+- **Definition of done:** the scenarios pass; scenario tests run in `script/test`.
+
+#### Iteration 5.4: Symbol fingerprints
+- **Goal:** Edits to the same function overlap at symbol level, even when they merge cleanly; edits to different functions of one file do not.
+- **What we do:**
+  - Each machine also publishes HMAC fingerprints of the symbols that enclose its changed lines: functions, methods and types, qualified by their enclosing symbols; the server stand-in compares them as it does paths.
+  - At least three languages, Rust and TypeScript among them; a file in another language gets file and hunk fingerprints only.
+  - Findings in the report: how symbols are found, what each language needs, and the misses and false matches on the scenarios.
+  - Tests, in each supported language: edits to different functions of one file overlap at file level only; edits to distant lines of one function overlap at symbol level while `git merge-tree` merges them cleanly; edits to two methods of one type do not overlap at symbol level; a symbol moved within its file keeps its fingerprint; a file in another language gets no symbol fingerprints; nothing the server stand-in receives contains a symbol name.
+- **Definition of done:** the scenarios pass in each supported language; scenario tests run in `script/test`.
+
+#### Iteration 5.5: Measurement on real repositories
+- **Goal:** It is known how often overlaps at each level match real conflicts on real repositories.
+- **What we do:**
+  - Repositories: public ones whose default branch keeps merge commits, in the languages the symbol fingerprints support; together they hold lockfiles, database migrations and checked-in generated code. The report names each with its URL and the range of merges measured.
+  - One command clones them at fixed commits into a temporary directory and replays each merge as two machines: each parent's changes since their merge base. A rerun gives the same numbers.
+  - Per repository and level: warnings, `git merge-tree` conflicts, warnings without a conflict, conflicts without a warning.
+  - For the reservation TTL: how long each side lived, from its first commit after the merge base to the merge.
+  - For intents: whether both sides of a warning only add lines, or also change or delete them.
+  - Cost: the time to compute a machine's fingerprints and their size at each level, on the largest sides.
+  - The developer runs it for the report; the reviewer reruns it; `script/test` does not run it.
+  - Findings in the report, with the machine and the git version.
+  - Tests: on a fixture repository with known merges, the replay gives the expected counts at each level.
+- **Definition of done:** the measurement, rerun by the reviewer, gives the numbers the report records; tests on the fixture repository run in `script/test`.
+
+#### Iteration 5.6: Noise from lockfiles, migrations and generated code
+- **Goal:** It is known how much noise lockfiles, migrations and generated code add, and which handling of each removes it without hiding conflicts.
+- **What we do:**
+  - Each warning without a conflict and each conflict of 5.5 is classed by the files behind it: lockfile, migration, generated code or other. How each class is recognized, such as by name patterns, `.gitattributes` or generator markers, is a finding.
+  - Ways to handle each class, such as leaving it out, comparing it at file level only, or warning about it apart; each way's noise and missed conflicts on the same merges.
+  - It also counts the merges whose sides add migrations that clash without sharing a file, such as two with one sequence number.
+  - The command of 5.5 prints the new numbers; findings in the report.
+  - Tests: fixture files of each class are classed right; each way of handling gives the expected counts on the fixture repository.
+- **Definition of done:** the measurement, rerun by the reviewer, gives the numbers the report records for each class and way; tests on the fixture repository run in `script/test`.
+
+#### Iteration 5.7: Path normalization on macOS and Windows
+- **Goal:** One file gets one fingerprint on every machine, whatever its OS and the spelling of its path.
+- **What we do:**
+  - Fingerprints take the path relative to the repository, in one Unicode normalization form and with `/` separators; hunks and symbols take content with one line ending.
+  - Paths an agent's tools give, absolute, through a symlink or from another worktree, map to that form.
+  - Whether to fold case: a case-insensitive file system holds one file where a case-sensitive one can hold two. The report gives the choice, with the paths of the measured repositories that collide once case is folded or Unicode normalized.
+  - macOS: a command checks git on this Mac's case-insensitive volume: a case-only rename, file names in NFC and NFD, `core.ignorecase` and `core.precomposeunicode`. The reviewer reruns it; `script/test` does not run it.
+  - Windows: test inputs only, since no Windows machine is used: backslashes, drive letters, case, CRLF with `core.autocrlf`. The report says what is not measured on Windows.
+  - Findings in the report.
+  - Tests: every spelling of one path gives one fingerprint; LF and CRLF versions of one edit give the same hunk and symbol fingerprints; machines with macOS, Windows and Linux spellings of one file overlap.
+- **Definition of done:** the macOS check, rerun by the reviewer, gives what the report records; unit and scenario tests run in `script/test`.
+
+#### Iteration 5.8: Edits via Bash and generators
+- **Goal:** It is known which data source catches the edits an agent makes via Bash and generators, and when.
+- **What we do:**
+  - Sources: the working-tree diff the earlier iterations use; hooks that see an agent's edit tool calls; declarations of the files an agent will edit, made before it edits.
+  - Scripted sessions stand in for agents on clones of the measured repositories; no agent CLI runs. A session mixes edit tool writes, which hooks see, with shell commands: in-place edits, moves and deletions, formatters, package managers that rewrite a lockfile and code generators, all needing no account.
+  - Per source: the share of changed files it misses by kind of command, and when it learns of an edit: at the edit, at the next scan or never.
+  - One command runs the sessions; the reviewer reruns it; `script/test` does not run it.
+  - Findings in the report.
+  - Tests: on a scripted session on a fixture repository, each source reports exactly the files it can see; the diff reports every changed file, the generator's included; a file changed and restored is not reported.
+- **Definition of done:** the measurement, rerun by the reviewer, gives the numbers the report records; tests on the fixture repository run in `script/test`.
+
+#### Iteration 5.9: What the server learns and the space key
+- **Goal:** Story 44 knows what fingerprints show the server, and what a holder of the space key learns from them.
+- **What we do:**
+  - What the server stand-in learns without the key, on the measured merges: which machines edit the same thing, how much and when each edits, and how often each fingerprint recurs.
+  - What a holder of the key learns: a dictionary of common paths and symbol names run against the measured fingerprints, and the share it recovers.
+  - A removed member or a revoked device keeps the key: the report says when the key must change and what a change costs, such as fingerprints that stop matching across it.
+  - Findings in the report.
+  - Tests: with the key, the dictionary recovers a fixture path and symbol name; without it or with another key, it recovers none.
+- **Definition of done:** the report gives what the server learns without the key and what a key holder recovers, with the measured shares; unit tests run in `script/test`.
+
+#### Iteration 5.10: Preliminary answers to "To decide"
+- **Goal:** Stories 44 and 45 start from preliminary answers to `features.md` §11, "To decide", backed by the prototype's evidence.
+- **What we do:**
+  - The report answers each question of "To decide" with the evidence of the earlier iterations, or says what is still open and what would answer it.
+  - For Story 44: what a client sends and what the server compares at file level; for Story 45: the hunk and symbol schemes with their measured noise and misses.
+  - `features.md` §11, "To decide", links to the answers.
+- **Definition of done:** the report answers or marks open each question of "To decide"; `features.md` §11 links to it; no other doc repeats the report.
+
 ### Story 6: Staging environment
 
 **Goal:** Every merge into `dev` is deployed to staging automatically, so stories can be checked on a live server.
