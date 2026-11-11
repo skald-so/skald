@@ -185,8 +185,8 @@ impl QueueCheck {
 mod tests {
     use agent_source::State;
 
-    use crate::StubLog;
     use crate::channel::tests::{on_stub, real};
+    use crate::{StubLog, shell_quote};
 
     use super::*;
 
@@ -203,8 +203,13 @@ mod tests {
 
     #[test]
     fn a_session_records_its_hooks_and_loads_as_little_as_the_terminal_ui_allows() {
-        let files = Files::new(Path::new("/w/a"));
-        let hook = r#"[{hooks=[{type="command",command="cat >> '/w/a/hooks.json'"}]}]"#;
+        // A `'` in the path must not end the recording command's quoted word.
+        let files = Files::new(Path::new("/w/it's"));
+        let record = format!("cat >> {}", shell_quote("/w/it's/hooks.json"));
+        let hook = format!(
+            r#"[{{hooks=[{{type="command",command={}}}]}}]"#,
+            json!(record)
+        );
         let args = session(&files, Kind::Busy, Some("gpt-5.5"), None);
         assert_eq!(
             args,
@@ -216,13 +221,13 @@ mod tests {
                 "--ask-for-approval",
                 "never",
                 "-C",
-                "/w/a/project",
+                "/w/it's/project",
                 "-c",
                 &format!("hooks.Stop={hook}"),
                 "-c",
                 &format!("hooks.PreToolUse={hook}"),
                 "-c",
-                r#"projects={"/w/a/project"={trust_level="trusted"}}"#,
+                r#"projects={"/w/it's/project"={trust_level="trusted"}}"#,
                 "-c",
                 "check_for_update_on_startup=false",
                 "-c",

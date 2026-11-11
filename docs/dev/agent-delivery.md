@@ -247,10 +247,10 @@ In the `Stop` check with `--real`, the agent ran three shell commands looking fo
 |---|---|---|---|
 | Idle session | As on [Claude Code](#claude-code-hooks) | As on Claude Code | Only with a prompt: a message that waits when a prompt starts a turn arrives with it. Nothing starts a turn |
 | Busy session | As on Claude Code | As on Claude Code | No |
-| Delay | As on Claude Code | As on Claude Code | Until the next prompt |
+| Delay | Until the agent's next tool call ends: see the results | Until the turn ends: see the results | Until the next prompt |
 | In context | A developer message between the tool call and its output, with the text; the sender label in `from` | A user message `<hook_prompt hook_run_id="stop:0:/<session-flags>/config.toml">` with the text, `<` and `>` escaped as `&lt;` and `&gt;`; the sender label in `from`. The `Stop` input has `stop_hook_active: true` in the turn that goes on | A developer message right after the prompt, with the text; the sender label in `from` |
-| Handover known | As on Claude Code | As on Claude Code | As on Claude Code |
-| One of two sessions | As on Claude Code | As on Claude Code | As on Claude Code |
+| Handover known | Yes, once the output is written to Codex; not whether the model read it | The same | The same |
+| One of two sessions | Yes: each session runs the hook from its own config with its own source, so B got nothing. Sessions with one config run the same command on one source; the hook input's `session_id` and `cwd` could tell them apart (not checked) | The same | The same |
 | Needs | See below | See below | See below |
 
 Codex needs:

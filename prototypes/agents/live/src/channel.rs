@@ -674,9 +674,11 @@ pub(crate) mod tests {
 
     #[test]
     fn a_session_loads_only_its_own_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = Files::new(dir.path());
-        let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+        let tmp = tempfile::tempdir().unwrap();
+        // A `'` in the path must not end the recording command's quoted word.
+        let dir = tmp.path().join("it's");
+        let files = Files::new(&dir);
+        let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
         let common = [
             "--setting-sources",
             "local",
@@ -707,7 +709,7 @@ pub(crate) mod tests {
         let settings = read_json(at("settings.json"));
         let hook = json!([{ "hooks": [{
             "type": "command",
-            "command": format!("cat >> '{}'", files.hooks.display()),
+            "command": format!("cat >> {}", shell_quote(&at("hooks.json"))),
         }] }]);
         assert_eq!(
             settings,
