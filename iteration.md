@@ -114,6 +114,8 @@
 
 ## Story 36: GitHub Action
 
+## Story 43: Gemini, Cursor, OpenCode and Copilot adapters
+
 ## Story 29: End-to-end MVP scenario
 
 ## Story 30: Admin rights transfer and account deletion
@@ -139,8 +141,6 @@
 ## Story 40: Corporate IdP sign-in
 
 ## Story 42: Shared team instructions
-
-## Story 43: Gemini, Cursor, OpenCode and Copilot adapters
 
 ## Story 44: Edit coordination: file level
 

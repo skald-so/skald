@@ -19,6 +19,7 @@ Numbers in parentheses are features from [features.md](features.md).
 - Key verification without trusting the server: the device key signed with the SSH key from GitHub, cross-signing, key change warnings, fingerprints, DNS root of trust (5).
 - Encrypted history, recovery key, new device linking (6).
 - Claude Code and Codex adapters: MCP, hooks, Channels (7).
+- Gemini CLI, Cursor, OpenCode and Copilot adapters (7).
 - Presence, receipts, loop protection, `accept / hold / refuse` (8).
 - Web UI `app.skald.so`, non-secret sections: quotas, devices, sessions, members and invites, connecting machines (12).
 - Task queue: claim, lease, retries, DLQ; queue MCP tools; Claude Code and Codex claim and complete tasks; templates review, test, ask (10).
@@ -46,7 +47,6 @@ List order is priority.
 - Shared channels between organizations (3).
 - Corporate IdPs (5).
 - Shared team instructions (8).
-- Gemini, Cursor, OpenCode, Copilot adapters (7).
 - Edit coordination: file level first, then hunk and symbol (11).
 - Security center, human inbox with approval from a phone, edit map (12).
 - Public cloud: abuse reports and automatic abuse detection.
