@@ -621,7 +621,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Definition of done:** the workflow runs only on pushes to `dev`, builds from the image definition that `script/test` tests, and its token has no write access besides packages.
 
 #### Iteration 6.3: Preparing the move to Caddy on the staging VPS
-- **Goal:** Everything the web server on the staging VPS does now has a reviewed Caddy replacement, a check and a rollback before anything on the VPS changes.
+- **Goal:** Everything the web server on the staging VPS does now has a reviewed replacement, a check and a rollback before anything on the VPS changes.
 - **What we do:**
   - In 6.3–6.7:
     - the developer works on the VPS through the owner's SSH access;
@@ -633,27 +633,29 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - every port and protocol it listens on, plain HTTP, other ports and TCP or UDP proxies included;
     - each site: its domains, what it serves (proxies, WebSocket, static files, redirects, access rules, limits) and its certificates;
     - what serves each entry after the move: Caddy, or, for what Caddy does not serve, a proposal;
-    - every tool that changes or reloads the old web server, wherever it runs, such as certificate renewal with its hooks or another project's deploy: whether it moves to Caddy or is stopped, as a proposal for a tool of another project.
+    - every tool that changes or reloads the old web server, wherever it runs, such as certificate renewal with its hooks or another project's deploy: whether it moves to Caddy or is stopped, as a proposal for a tool of another project. The developer finds them by searching the VPS's timers, cron, certificate renewal hooks, sudo rules, SSH forced commands, and the scripts that touch the old web server's config or service.
   - A site check in `skald-cloud`: for each entry of the inventory, it compares the responses on each of its ports, port 80 included, with a baseline recorded through the old web server, and checks that each certificate is valid for the site's domains.
   - Caddy configs for every entry Caddy serves, each site in its own config, so changing one leaves the others alone; Caddy validates them.
   - The runbook in `skald-cloud`:
     - the switch: Caddy holds a valid certificate for every site before the old web server stops; the switch interrupts the sites only for the restart; the old web server is stopped and disabled, its config and certificates kept;
     - the rollback: it renews the kept certificates, then switches back to the old web server.
   - Tests, against local stand-in sites: the site check passes when the responses match the baseline and fails, naming the entry, on a different status or redirect target, a port that does not answer, or a certificate not valid for the site's domains.
-- **Definition of done:** comparing the inventory with the old web server's loaded config and listening sockets, the reviewer finds nothing missing; every entry and tool of the inventory says what happens to it after the move; the site check, rerun by the reviewer, passes against the baseline; Caddy validates the configs; the site check's tests pass in `skald-cloud`'s `script/test`.
+- **Definition of done:** comparing the inventory with the old web server's loaded config and listening sockets, the reviewer finds no entry missing; repeating the search for tools on the VPS, the reviewer finds no tool missing; every entry and tool of the inventory says what happens to it after the move; the site check, rerun by the reviewer, passes against the baseline; Caddy validates the configs; the site check's tests pass in `skald-cloud`'s `script/test`.
 
 #### Iteration 6.4: Switching the staging VPS to Caddy
 - **Goal:** One Caddy serves every site on the staging VPS, and the other projects' sites keep working through and after the move.
 - **What we do:**
   - Before the iteration starts, the owner:
-    - decides, from the proposals in the inventory of 6.3, what serves each entry Caddy does not serve and what happens to each tool of another project; the developer records the decisions in the inventory;
-    - allows the switch in chat; the orchestrator states the allowance in the developer's prompt.
+    - decides, from the proposals in the inventory of 6.3, what serves each entry Caddy does not serve and what happens to each tool of another project; for a tool that runs outside the VPS, the decision names who changes it and when, before or after the switch;
+    - allows the switch in chat.
+  - The orchestrator puts the owner's decisions and the allowance in the developer's and the reviewer's prompts; the developer records the decisions in the inventory.
+  - The owner makes each change in another project, at the time its decision names.
   - Caddy runs on the VPS with the configs of 6.3, apart from any project's stack, so no project's deploy stops it.
   - Each entry and tool of the inventory moves or stops as it says.
   - The switch follows the runbook of 6.3, with the site check running through it.
   - The developer rehearses the rollback once: to the old web server and back to Caddy, with the site check after each step.
   - Fixes to the inventory, the configs or the runbook found on the way go to `skald-cloud`.
-- **Definition of done:** only Caddy serves ports 80 and 443 on the VPS, and every other entry of the inventory is served as it says; the old web server is stopped and disabled, its config and certificates kept; each tool of the inventory works with Caddy or is stopped, as it says; the site check, rerun by the reviewer, passes for every entry; its output in the `skald-cloud` PR, through the switch and after each step of the rehearsed rollback, shows no entry down beyond a restart and the kept certificates renewed before the switch back.
+- **Definition of done:** the inventory records exactly the owner's decisions from the reviewer's prompt; only Caddy serves ports 80 and 443 on the VPS, and every other entry of the inventory is served as it says; the old web server is stopped and disabled, its config and certificates kept; each tool of the inventory works with Caddy or is stopped, as it says; the site check, rerun by the reviewer, passes for every entry; its output in the `skald-cloud` PR, through the switch and after each step of the rehearsed rollback, shows no entry down beyond a restart and the kept certificates renewed before the switch back.
 
 #### Iteration 6.5: Staging stack at `dev.skald.so`
 - **Goal:** Staging runs `skald-server` from the `:edge` image behind Caddy, deployed by one command.
@@ -675,7 +677,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - A deploy account on the VPS whose SSH key runs only the deploy command of 6.5 with one digest of the `skald-server` image: no shell, port forwarding or other command, and no access to other projects' files.
   - Any other input is refused before anything runs.
-  - The runbook in `skald-cloud`: how the owner creates the key pair and installs the public key with this restriction; rotating and revoking the key; the host key CI pins; what the VPS's firewall must let in from GitHub-hosted runners.
+  - The runbook in `skald-cloud`: how the owner creates the key pair and installs the public key with this restriction; rotating and revoking the key; the host key CI pins and the SSH address, port and account CI connects with; what the VPS's firewall must let in from GitHub-hosted runners.
   - Tests, with a stand-in for the deploy command: one well-formed digest of the `skald-server` image reaches it; other commands, extra arguments, other images and malformed digests are refused without running it.
 - **Definition of done:** run as the deploy account the way SSH runs the key's command, it deploys the current `:edge` digest and refuses every other input, checked by the reviewer through the owner's SSH access; the runbook's install steps give the key exactly this restriction; the tests pass in `skald-cloud`'s `script/test`.
 
@@ -684,14 +686,14 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - Before the iteration starts, the owner:
     - creates the deploy key pair and installs the public key on the VPS as the runbook of 6.6 says;
-    - in `skald-so/skald`, creates a GitHub environment for staging that only `dev` may deploy from, with the private key as its secret;
+    - in `skald-so/skald`, creates a GitHub environment for staging that only `dev` may deploy from; its secrets hold the private key, the pinned host key, the SSH port and account, and the SSH address unless it is `dev.skald.so`;
     - opens the VPS's firewall to GitHub-hosted runners, if the runbook says it is needed.
-  - After the workflow of 6.2 publishes `:edge`, a deploy job in that environment connects to the VPS with the deploy key, checks the pinned host key and deploys the published digest; it fails when the deploy fails.
+  - After the workflow of 6.2 publishes `:edge`, a deploy job in that environment connects to the VPS with the deploy key and the connection details from the environment's secrets, checks the pinned host key and deploys the published digest; it fails when the deploy fails.
   - Deploys run one at a time; when merges overlap, staging never moves back to an older commit.
-  - The job's public log shows the commit and digest deployed and the health check result, and no secret.
+  - The job's public log shows the commit and digest deployed and the health check result, and none of the environment's secrets.
   - `infrastructure.md`, "Cloud": the staging deploy runs in this repository's CI, in an environment only `dev` deploys from.
   - The first deploy runs on this iteration's merge; 6.8 checks it and its log.
-- **Definition of done:** the installed key carries the restriction of 6.6; the environment admits only `dev`, and no other secret of the repository holds the key; only the deploy job uses the environment, and it pins the host key.
+- **Definition of done:** the installed key carries the restriction of 6.6; the environment admits only `dev`, and no other secret of the repository holds the key; only the deploy job uses the environment, and it pins the host key; the workflow names none of the host key, the SSH port, account or address held in the environment's secrets.
 
 #### Iteration 6.8: Staging status check
 - **Goal:** Anyone can tell whether staging runs the latest merge into `dev`, and a merge is shown to reach staging within a few minutes.
@@ -701,7 +703,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - It uses only public data: the CI runs of `skald-so/skald` and the health check.
   - `infrastructure.md`, "Cloud": the staging line names the command.
   - Tests, on recorded GitHub API responses and a local stand-in for the health check: it passes for a succeeded deploy of the latest commit with the health check ok, and fails, naming the cause, in each other case above.
-- **Definition of done:** the command, run by the reviewer, passes for the latest commit on `dev` and shows that it reached staging within a few minutes of its merge; the log of the deploy run it reports shows the commit, the digest and the health check result, and the reviewer finds no secret in it; its unit tests run in `script/test`.
+- **Definition of done:** the command, run by the reviewer, passes for the latest commit on `dev` and shows that it reached staging within a few minutes of its merge; the log of the deploy run it reports shows the commit, the digest and the health check result, and the reviewer finds no secret in it, the connection details of 6.7 included; its unit tests run in `script/test`.
 
 ### Story 7: Release pipeline
 
