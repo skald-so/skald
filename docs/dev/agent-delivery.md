@@ -34,7 +34,7 @@ The CLI on the stub gets only these variables:
 | Codex | `PATH`; `HOME` and `CODEX_HOME`, empty temporary directories; `SKALD_STUB_API_KEY`, the placeholder | a `stub` model provider given with `-c`: `base_url` the stub, `env_key = "SKALD_STUB_API_KEY"`, `wire_api = "responses"` |
 
 ## Session config
-With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`.
+With `--real`, the CLI inherits the environment of `live-check` and signs in from the user's config home, as [task.md, iteration 4.1](../../task.md#iteration-41-prototype-harness-and-the-mcp-inbox-path) says. A Claude Code session can add its temporary project there: an entry in `~/.claude.json`, with trust and last-session stats, and an empty auto-memory directory in `~/.claude/projects/`.
 
 Each [`inbox`](#mcp-inbox) session, on the stub and with `--real`, gets these flags:
 
