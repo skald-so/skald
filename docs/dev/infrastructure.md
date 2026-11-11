@@ -40,6 +40,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
 - **Tooling:** tests of the scripts in `script/` and of the edge image workflow, Renovate config validation.
+- **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Daily:** e2e with real Claude Code and Codex.
