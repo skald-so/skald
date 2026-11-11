@@ -456,13 +456,14 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - The prototypes, in Rust on the stack of `tech-stack.md`, live apart from the product crates, which never depend on them; `script/test` builds and tests them, and the CI path filters cover them.
   - A local message source stands in for the helper: a test or a person adds a message with a `msg_id`, a sender label and text; a path takes the waiting messages and marks each handed over, as `docs/protocol/delivery.md`, "Device to agent", says.
   - A live check per path, one command against the installed CLI:
-    - it sends a message with a random token, passes when the agent repeats the token, and prints the CLI version and pass or fail;
+    - it runs one session and sends it one message with a random token, passes when the agent repeats the token, and prints the CLI version, the tokens the session used and pass or fail;
+    - the other cases of the list of checks below (a busy session, reaching one of two sessions, several messages) run only with a flag, once, for the report;
     - it runs without a person where the CLI allows it;
     - the owner's preparation, done beforehand, is the only step a person does in an iteration: signing in to the CLIs, and for GUI live checks what 4.7 lists;
     - a step the CLI needs from a person beyond it goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
     - it attaches hooks, MCP servers and channels only through project config in a temporary directory and leaves the user's own CLI config untouched;
-    - its prompts are short;
-    - the developer runs it and the reviewer reruns it; `script/test` does not.
+    - it spends the fewest tokens: the CLI loads none of the user's own config (MCP servers, plugins, skills, instruction files), the model runs at the lowest reasoning effort the CLI allows, and its prompts are short;
+    - the developer runs it and the reviewer reruns it, without the flag; `script/test` does not.
   - The report in `docs/dev/` starts with the list of checks it answers for each path: an idle and a busy session; the delay; how the message appears in the agent's context, with its sender label; whether the prototype learns that the handover happened, for `read`; reaching one of two sessions on a device; what the path needs: CLI version, sign-in kinds, settings, flags and prompts to the user.
   - MCP `inbox`: a stdio MCP server whose `inbox` tool returns the waiting messages; its live check on Claude Code and Codex.
   - Findings in the report.
@@ -473,7 +474,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Goal:** The Claude Code primary path is confirmed or refuted on the current version, with what it needs.
 - **What we do:**
   - A prototype channel: an MCP server that pushes each waiting message into a running Claude Code session through Channels.
-  - Its live check, with several messages in a row, and the answers to the list of checks.
+  - Its live check, with several messages in a row under the flag, and the answers to the list of checks.
   - Whether a plugin from the monorepo marketplace can ship the channel (Story 19).
   - Findings in the report.
   - Tests: an MCP client gets one channel event per waiting message, with its sender label and `msg_id`; a pushed message is marked handed over and not pushed again.
