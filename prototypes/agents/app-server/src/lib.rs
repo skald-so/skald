@@ -141,23 +141,27 @@ impl Transport for Socket {
 
     fn receive(&mut self, wait: Duration) -> io::Result<Received> {
         self.socket.get_ref().set_read_timeout(Some(wait))?;
-        match self.socket.read() {
-            Ok(tungstenite::Message::Text(text)) => Ok(Received::Message(text.as_str().to_owned())),
-            Ok(tungstenite::Message::Close(_)) => Ok(Received::Closed),
-            // Pings, which tungstenite answers itself.
-            Ok(_) => Ok(Received::Nothing),
-            Err(tungstenite::Error::Io(error)) if timed_out(&error) => Ok(Received::Nothing),
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                Ok(Received::Closed)
-            }
-            Err(error) => Err(io::Error::other(error)),
-        }
+        frame(self.socket.read())
     }
 }
 
-/// Whether a read with a timeout failed only because the timeout passed.
-fn timed_out(error: &io::Error) -> bool {
-    matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+/// What a read of the WebSocket with a timeout gave.
+fn frame(read: tungstenite::Result<tungstenite::Message>) -> io::Result<Received> {
+    match read {
+        Ok(tungstenite::Message::Text(text)) => Ok(Received::Message(text.as_str().to_owned())),
+        Ok(tungstenite::Message::Close(_)) => Ok(Received::Closed),
+        // Pings, which tungstenite answers itself.
+        Ok(_) => Ok(Received::Nothing),
+        Err(tungstenite::Error::Io(error))
+            if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+        {
+            Ok(Received::Nothing)
+        }
+        Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
+            Ok(Received::Closed)
+        }
+        Err(error) => Err(io::Error::other(error)),
+    }
 }
 
 /// A transport that writes each message it carries to `log`, one JSON object a line:
@@ -463,13 +467,12 @@ mod tests {
     use super::*;
 
     /// A transport that gives the messages in `incoming` and records what the client sends.
-    #[derive(Default)]
     struct Script {
         incoming: VecDeque<String>,
         sent: Vec<Value>,
     }
 
-    impl Transport for &mut Script {
+    impl Transport for Script {
         fn send(&mut self, text: &str) -> io::Result<()> {
             self.sent.push(serde_json::from_str(text).unwrap());
             Ok(())
@@ -483,14 +486,31 @@ mod tests {
         }
     }
 
-    /// A client of the thread `t1`, with its events.
-    fn client(script: &mut Script) -> Client<&mut Script, Vec<u8>> {
+    /// A client of the thread `t1` that receives `incoming`, with its events.
+    fn client(incoming: &[&str]) -> Client<Script, Vec<u8>> {
+        let script = Script {
+            incoming: incoming.iter().map(|text| (*text).to_owned()).collect(),
+            sent: Vec::new(),
+        };
         let mut client = Client::new(script, Vec::new(), Arc::default());
         client.thread = Some("t1".to_owned());
         client
     }
 
-    fn events(client: &Client<&mut Script, Vec<u8>>) -> Vec<Value> {
+    /// Runs `test` and fails if it takes over 5 s: a client that misses the end of the
+    /// connection would wait for ever.
+    fn bounded(test: impl FnOnce() + Send + 'static) {
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            test();
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the test ends within 5 s");
+    }
+
+    fn events(client: &Client<Script, Vec<u8>>) -> Vec<Value> {
         String::from_utf8_lossy(&client.events)
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -502,8 +522,7 @@ mod tests {
 
     #[test]
     fn declines_what_the_app_server_asks() {
-        let mut script = Script::default();
-        let mut client = client(&mut script);
+        let mut client = client(&[]);
         client
             .handle(&serde_json::from_str(APPROVAL).unwrap())
             .unwrap();
@@ -511,9 +530,8 @@ mod tests {
             events(&client),
             [json!({ "event": "declined", "method": "item/commandExecution/requestApproval" })]
         );
-        drop(client);
         assert_eq!(
-            script.sent,
+            client.transport.sent,
             [
                 json!({ "id": 0, "error": { "code": -32601, "message": "the client answers no requests" } })
             ]
@@ -537,8 +555,7 @@ mod tests {
                 json!({ "turn": { "id": turn, "status": "completed" } }),
             )
         };
-        let mut script = Script::default();
-        let mut client = client(&mut script);
+        let mut client = client(&[]);
         for message in [
             started("t2", "u2"),
             notification("thread/tokenUsage/updated", "t2", json!({})),
@@ -598,40 +615,57 @@ mod tests {
 
     #[test]
     fn a_request_takes_only_its_own_answer() {
-        let mut script = Script::default();
-        // The app-server numbers its requests apart from the client's.
-        script.incoming.extend([
-            APPROVAL.to_owned(),
-            r#"{"id":5,"result":{"other":true}}"#.to_owned(),
-            r#"{"id":0,"result":{"turn":{"id":"u1"}}}"#.to_owned(),
-        ]);
-        let mut client = client(&mut script);
-        let result = client.request("turn/start", json!({})).unwrap();
-        assert_eq!(result, Ok(json!({ "turn": { "id": "u1" } })));
-        assert_eq!(client.next_id, 1);
-        assert_eq!(events(&client).len(), 1, "the approval was declined");
-        script.incoming.push_back(
-            r#"{"id":1,"error":{"code":-32600,"message":"no active turn to steer"}}"#.to_owned(),
-        );
-        let mut client = Client::new(&mut script, Vec::new(), Arc::default());
-        client.next_id = 1;
-        assert_eq!(
-            client.request("turn/steer", json!({})).unwrap(),
-            Err("no active turn to steer".to_owned())
-        );
+        bounded(|| {
+            // The app-server numbers its requests apart from the client's.
+            let mut client = client(&[
+                APPROVAL,
+                r#"{"id":5,"result":{"other":true}}"#,
+                r#"{"id":0,"result":{"turn":{"id":"u1"}}}"#,
+                r#"{"id":1,"error":{"code":-32600,"message":"no active turn to steer"}}"#,
+            ]);
+            let result = client.request("turn/start", json!({})).unwrap();
+            assert_eq!(result, Ok(json!({ "turn": { "id": "u1" } })));
+            assert_eq!(events(&client).len(), 1, "the approval was declined");
+            assert_eq!(
+                client.request("turn/steer", json!({})).unwrap(),
+                Err("no active turn to steer".to_owned())
+            );
+            let ids: Vec<&Value> = client.transport.sent.iter().map(|m| &m["id"]).collect();
+            assert_eq!(
+                ids,
+                [&json!(0), &json!(0), &json!(1)],
+                "the request, the approval's answer, the next request"
+            );
+        });
     }
 
     #[test]
-    fn only_a_timeout_is_a_read_without_a_message() {
-        assert!(timed_out(&io::Error::from(ErrorKind::WouldBlock)));
-        assert!(timed_out(&io::Error::from(ErrorKind::TimedOut)));
-        assert!(!timed_out(&io::Error::from(ErrorKind::ConnectionReset)));
+    fn reads_the_frames_of_the_websocket() {
+        let io = |kind: ErrorKind| Err(tungstenite::Error::Io(io::Error::from(kind)));
+        let text = Ok(tungstenite::Message::text("{}"));
+        assert_eq!(frame(text).unwrap(), Received::Message("{}".to_owned()));
+        assert_eq!(
+            frame(Ok(tungstenite::Message::Close(None))).unwrap(),
+            Received::Closed
+        );
+        let ping = Ok(tungstenite::Message::Ping(Vec::new().into()));
+        assert_eq!(frame(ping).unwrap(), Received::Nothing);
+        assert_eq!(frame(io(ErrorKind::WouldBlock)).unwrap(), Received::Nothing);
+        assert_eq!(frame(io(ErrorKind::TimedOut)).unwrap(), Received::Nothing);
+        assert_eq!(
+            frame(Err(tungstenite::Error::ConnectionClosed)).unwrap(),
+            Received::Closed
+        );
+        assert_eq!(
+            frame(Err(tungstenite::Error::AlreadyClosed)).unwrap(),
+            Received::Closed
+        );
+        assert!(frame(io(ErrorKind::ConnectionReset)).is_err());
     }
 
     #[test]
     fn learns_the_running_turn_from_a_turn_start_result() {
-        let mut script = Script::default();
-        let mut client = client(&mut script);
+        let mut client = client(&[]);
         client.started(&json!({ "turn": { "id": "u1", "status": "completed" } }));
         assert_eq!(client.turn, None);
         client.started(&json!({ "turn": { "id": "u1", "status": "inProgress" } }));
@@ -640,12 +674,13 @@ mod tests {
 
     #[test]
     fn a_closed_connection_or_a_stop_ends_a_request() {
-        let mut script = Script::default();
-        let mut client = client(&mut script);
-        let error = client.request("turn/start", json!({})).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
-        client.stop.store(true, Ordering::SeqCst);
-        let error = client.request("turn/start", json!({})).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Interrupted);
+        bounded(|| {
+            let mut client = client(&[]);
+            let error = client.request("turn/start", json!({})).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+            client.stop.store(true, Ordering::SeqCst);
+            let error = client.request("turn/start", json!({})).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::Interrupted);
+        });
     }
 }

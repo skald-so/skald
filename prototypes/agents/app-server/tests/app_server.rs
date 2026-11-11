@@ -157,6 +157,7 @@ impl StandIn {
              if [ -f \"$dir/answers/$n\" ]; then cat \"$dir/answers/$n\"; fi\n\
              n=$((n + 1))\n\
              done\n\
+             exec 2>&-\n\
              sleep 1\n\
              touch \"$dir/ended\"\n",
             dir = dir.path().display(),
