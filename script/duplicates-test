@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Tests script/duplicates on scratch repositories: a block of 50 or more tokens copied in Rust,
+# Tests script/duplicates on scratch git repositories: a block of 50 or more tokens copied in Rust,
 # TypeScript, TSX or a shell script fails it, however few lines it spans; a shorter one, JSON, the
-# generated API client and the clones script/duplicates-known lists do not.
+# generated API client, git-ignored files and the clones script/duplicates-known lists do not, even
+# when their lines move. A further copy of a listed clone and a listed clone gone fail it.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 failures=0
+copied="script/duplicates: copied code; move it into a shared helper:"
+gone="script/duplicates: listed clones not found; delete their lines from script/duplicates-known:"
 
 fail() {
   echo "duplicates-test: $*" >&2
@@ -22,13 +25,14 @@ numbers() {
   echo "$list"
 }
 
-# copy <code> <file>...: a fresh scratch repository with an empty list of known clones and <code>
-# in each <file>.
+# copy <code> <file>...: a fresh scratch git repository with an empty list of known clones and
+# <code> in each <file>.
 copy() {
   local code=$1 file
   shift
   rm -rf "$tmp/repo"
   mkdir -p "$tmp/repo/script"
+  git init -q "$tmp/repo"
   : >"$tmp/repo/script/duplicates-known"
   for file in "$@"; do
     mkdir -p "$(dirname "$tmp/repo/$file")"
@@ -36,19 +40,31 @@ copy() {
   done
 }
 
-# expect <want> <path>...: script/duplicates over <path>s of the scratch repository reports the
-# clones <want>, one per line, and fails; with an empty <want> it passes.
+# run <path>...: what script/duplicates over <path>s of the scratch repository prints to stderr.
+run() { (cd "$tmp/repo" && "$root/script/duplicates" "$@" 2>&1 >/dev/null); }
+
+# expect <want> <path>...: script/duplicates over <path>s of the scratch repository prints <want>,
+# each clone's hash of 12 hex digits cut, and fails; with an empty <want> it passes.
 expect() {
   local want=$1 got status=0
   shift
-  got=$(cd "$tmp/repo" && "$root/script/duplicates" "$@" 2>&1 >/dev/null) || status=$?
+  got=$(run "$@") || status=$?
   if [[ -z $want ]]; then
     [[ $status -eq 0 ]] || fail "$*: want a pass, got status $status: $got"
   else
-    want="script/duplicates: copied code; move it into a shared helper:"$'\n'$want
+    got=$(sed -E 's/^([^ ]+:[0-9]+-[0-9]+ [^ ]+:[0-9]+-[0-9]+) [0-9a-f]{12}$/\1/' <<<"$got")
     [[ $status -eq 1 && $got == "$want" ]] ||
       fail "$*: want status 1 and '$want', got $status and '$got'"
   fi
+}
+
+# list <path>...: lists the clones script/duplicates now finds over <path>s, their printed lines
+# without the line ranges.
+list() {
+  local found
+  found=$(run "$@") && fail "$*: no clone to list"
+  grep -v '^script/duplicates:' <<<"$found" | sed -E 's/:[0-9]+-[0-9]+//g' \
+    >>"$tmp/repo/script/duplicates-known"
 }
 
 # rust <list>: a Rust function on 3 lines, of 15 tokens and the tokens of <list>.
@@ -58,33 +74,57 @@ rust() { printf 'fn total() -> u32 {\n    sum(&[%s])\n}' "$1"; }
 copy "$(rust "$(numbers 17),")" src/a.rs src/b.rs
 expect '' src
 copy "$(rust "$(numbers 18)")" src/a.rs src/b.rs
-expect 'src/a.rs:1-3 src/b.rs:1-3' src
+expect "$copied"$'\nsrc/a.rs:1-3 src/b.rs:1-3' src
 
 # Each scanned format, a shell script known by its shebang.
 copy "export function total(): number {"$'\n'"  return sum([$(numbers 30)]);"$'\n'"}" src/a.ts src/b.ts
-expect 'src/a.ts:1-3 src/b.ts:1-3' src
+expect "$copied"$'\nsrc/a.ts:1-3 src/b.ts:1-3' src
 copy "export const Total = () => <List items={[$(numbers 30)]} />;" src/a.tsx src/b.tsx
-expect 'src/a.tsx:1-1 src/b.tsx:1-1' src
+expect "$copied"$'\nsrc/a.tsx:1-1 src/b.tsx:1-1' src
 copy "#!/usr/bin/env bash"$'\n'"echo \$(($(numbers 30 ' + ')))" script/a script/b
-expect 'script/a:1-2 script/b:1-2' script
+expect "$copied"$'\nscript/a:1-2 script/b:1-2' script
 
-# Not scanned: JSON, such as lockfiles and recorded inputs, and the API client generated from the
-# spec.
+# Not scanned: JSON, such as lockfiles and recorded inputs, the API client generated from the spec
+# and git-ignored files.
 copy "[$(numbers 50)]" data/a.json data/b.json
 expect '' data
-copy "export const total = sum([$(numbers 30)]);" web/src/api/a.ts web/src/api/b.ts
+code="export const total = sum([$(numbers 30)]);"
+copy "$code" web/src/api/a.ts web/src/api/b.ts
 expect '' web
-
-# Known clones pass, by both fragments' lines exactly; the others still fail. jscpd pairs each
-# further copy with the first.
-copy "export const total = sum([$(numbers 30)]);" src/a.ts src/b.ts src/c.ts
-echo 'src/a.ts:1-1 src/b.ts:1-1' >"$tmp/repo/script/duplicates-known"
-expect 'src/a.ts:1-1 src/c.ts:1-1' src
-printf '# a comment\n\nsrc/a.ts:1-1 src/b.ts:1-1\nsrc/a.ts:1-1 src/c.ts:1-1\n' \
-  >"$tmp/repo/script/duplicates-known"
+copy "$code" src/a.ts src/build/b.ts
+echo /src/build/ >"$tmp/repo/.gitignore"
 expect '' src
-echo 'src/a.ts:1-1 src/b.ts:1-2' >"$tmp/repo/script/duplicates-known"
-expect $'src/a.ts:1-1 src/b.ts:1-1\nsrc/a.ts:1-1 src/c.ts:1-1' src
+
+# Known clones pass, also with their lines moved; comments and blank lines in the list are skipped.
+copy "$code" src/a.ts src/b.ts
+printf '# a comment\n\n' >"$tmp/repo/script/duplicates-known"
+list src
+expect '' src
+printf '// moved\n\n%s\n' "$code" >"$tmp/repo/src/b.ts"
+expect '' src
+
+# A further copy fails, in another file or in a listed one: a key found more often than listed.
+# jscpd pairs each further copy with the first.
+printf '%s\n' "$code" >"$tmp/repo/src/c.ts"
+expect "$copied"$'\nsrc/a.ts:1-1 src/c.ts:1-1' src
+rm "$tmp/repo/src/c.ts"
+printf '%s\n' "$code" >>"$tmp/repo/src/b.ts"
+expect "$copied"$'\nsrc/a.ts:1-1 src/b.ts:3-3\nsrc/a.ts:1-1 src/b.ts:4-4' src
+
+# A listed line matching only part of a found clone's key does not hide it, and is reported gone.
+copy "$code" src/a.ts src/b.ts
+list src
+key=$(cat "$tmp/repo/script/duplicates-known")
+echo "${key%?}" >"$tmp/repo/script/duplicates-known"
+expect "$copied"$'\nsrc/a.ts:1-1 src/b.ts:1-1\n'"$gone"$'\n'"${key%?}" src
+
+# A listed clone gone fails until its line is deleted, but only one between files under the paths.
+copy "$code" src/a.ts src/b.ts
+list src
+echo "export const other = 1;" >"$tmp/repo/src/b.ts"
+expect "$gone"$'\n'"$key" src
+echo "src/a.ts web/b.ts ${key##* }" >"$tmp/repo/script/duplicates-known"
+expect '' src
 
 status=0
 (cd "$tmp/repo" && "$root/script/duplicates" >/dev/null 2>&1) || status=$?

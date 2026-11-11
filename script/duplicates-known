@@ -1,97 +1,127 @@
-# The clones script/duplicates ignores: those on dev when it was added, one per line as it prints
-# them. A clone found later goes into a shared helper, not here; a line goes when its clone does.
-crates/proto/src/content.rs:255-264 crates/proto/src/content.rs:310-319
-crates/proto/src/content.rs:276-283 crates/proto/src/content.rs:331-338
-crates/proto/tests/envelopes.rs:243-246 crates/proto/tests/envelopes.rs:256-261
-crates/server/tests/http.rs:34-40 crates/server/tests/http.rs:51-57
-prototypes/agents/channel/src/lib.rs:165-178 prototypes/agents/channel/tests/mcp.rs:14-27
-prototypes/agents/channel/src/lib.rs:192-195 prototypes/agents/channel/src/lib.rs:239-242
-prototypes/agents/channel/src/lib.rs:192-195 prototypes/agents/channel/src/lib.rs:265-268
-prototypes/agents/channel/src/lib.rs:240-243 prototypes/agents/channel/src/lib.rs:266-269
-prototypes/agents/channel/src/main.rs:11-14 prototypes/agents/hook/src/main.rs:12-15
-prototypes/agents/channel/src/main.rs:5-14 prototypes/agents/inbox/src/main.rs:5-14
-prototypes/agents/channel/tests/mcp.rs:117-125 prototypes/agents/inbox/tests/mcp.rs:96-104
-prototypes/agents/channel/tests/mcp.rs:159-164 prototypes/agents/inbox/tests/mcp.rs:125-130
-prototypes/agents/channel/tests/mcp.rs:162-168 prototypes/agents/channel/tests/mcp.rs:186-191
-prototypes/agents/channel/tests/mcp.rs:62-78 prototypes/agents/inbox/tests/mcp.rs:37-53
-prototypes/agents/hook/src/lib.rs:145-149 prototypes/agents/hook/src/lib.rs:158-162
-prototypes/agents/hook/tests/hook.rs:138-142 prototypes/agents/hook/tests/hook.rs:148-152
-prototypes/agents/hook/tests/hook.rs:138-142 prototypes/agents/hook/tests/hook.rs:164-168
-prototypes/agents/live/src/channel.rs:635-641 prototypes/agents/live/src/lib.rs:1654-1659
-prototypes/agents/live/src/channel.rs:731-736 prototypes/agents/live/src/lib.rs:1221-1226
-prototypes/agents/live/src/channel.rs:731-736 prototypes/agents/live/src/stub.rs:664-669
-prototypes/agents/live/src/channel.rs:882-887 prototypes/agents/live/src/channel.rs:895-900
-prototypes/agents/live/src/run.rs:104-109 prototypes/agents/live/src/run.rs:167-172
-prototypes/agents/live/src/run.rs:79-83 prototypes/agents/live/src/run.rs:137-141
-prototypes/agents/live/tests/cli.rs:251-253 prototypes/agents/live/tests/cli.rs:403-405
-prototypes/agents/source/src/lib.rs:276-279 prototypes/agents/source/src/lib.rs:325-328
-prototypes/edits/overlap/tests/exact_check.rs:184-194 prototypes/edits/overlap/tests/scenarios.rs:104-115
-prototypes/edits/overlap/tests/exact_check.rs:244-248 prototypes/edits/overlap/tests/exact_check.rs:395-399
-prototypes/edits/overlap/tests/exact_check.rs:244-248 prototypes/edits/overlap/tests/exact_check.rs:423-427
-prototypes/edits/overlap/tests/exact_check.rs:244-248 prototypes/edits/overlap/tests/exact_check.rs:449-453
-prototypes/edits/overlap/tests/exact_check.rs:244-248 prototypes/edits/overlap/tests/exact_check.rs:504-508
-prototypes/edits/overlap/tests/exact_check.rs:244-248 prototypes/edits/overlap/tests/exact_check.rs:639-643
-prototypes/edits/overlap/tests/exact_check.rs:264-270 prototypes/edits/overlap/tests/exact_check.rs:325-331
-prototypes/edits/overlap/tests/exact_check.rs:272-291 prototypes/edits/overlap/tests/exact_check.rs:332-351
-prototypes/edits/overlap/tests/exact_check.rs:396-400 prototypes/edits/overlap/tests/exact_check.rs:424-428
-prototypes/edits/overlap/tests/exact_check.rs:412-423 prototypes/edits/overlap/tests/exact_check.rs:569-580
-prototypes/edits/overlap/tests/exact_check.rs:450-454 prototypes/edits/overlap/tests/exact_check.rs:505-509
-prototypes/edits/overlap/tests/exact_check.rs:450-454 prototypes/edits/overlap/tests/exact_check.rs:640-644
-prototypes/edits/overlap/tests/exact_check.rs:609-613 prototypes/edits/overlap/tests/exact_check.rs:624-628
-prototypes/edits/overlap/tests/scenarios.rs:138-142 prototypes/edits/overlap/tests/scenarios.rs:177-181
-prototypes/edits/overlap/tests/scenarios.rs:138-142 prototypes/edits/overlap/tests/scenarios.rs:220-224
-prototypes/edits/overlap/tests/scenarios.rs:138-143 prototypes/edits/overlap/tests/scenarios.rs:203-208
-prototypes/edits/overlap/tests/scenarios.rs:138-144 prototypes/edits/overlap/tests/scenarios.rs:160-166
-prototypes/edits/overlap/tests/scenarios.rs:138-145 prototypes/edits/overlap/tests/scenarios.rs:281-288
-prototypes/edits/overlap/tests/scenarios.rs:149-155 prototypes/edits/overlap/tests/scenarios.rs:209-215
-prototypes/edits/overlap/tests/scenarios.rs:179-182 prototypes/edits/overlap/tests/scenarios.rs:222-225
-prototypes/mls/bench/src/lib.rs:912-916 prototypes/mls/bench/src/lib.rs:998-1002
-prototypes/mls/mls-rs/examples/browser_check.rs:3-15 prototypes/mls/openmls/examples/browser_check.rs:3-15
-prototypes/mls/openmls/src/lib.rs:323-328 prototypes/mls/openmls/src/lib.rs:332-337
-prototypes/mls/scenario/src/certificate.rs:109-113 prototypes/mls/scenario/src/revocation.rs:126-130
-prototypes/mls/scenario/src/interop.rs:282-284 prototypes/mls/scenario/src/interop.rs:321-323
-prototypes/mls/scenario/src/interop.rs:282-286 prototypes/mls/scenario/src/interop.rs:363-367
-prototypes/mls/scenario/src/roster.rs:267-271 prototypes/mls/scenario/src/roster.rs:351-355
-prototypes/mls/scenario/src/scenarios.rs:1198-1202 prototypes/mls/scenario/src/scenarios.rs:1254-1258
-prototypes/mls/scenario/src/scenarios.rs:1205-1212 prototypes/mls/scenario/src/scenarios.rs:1258-1265
-prototypes/mls/scenario/src/scenarios.rs:1367-1370 prototypes/mls/scenario/src/scenarios.rs:1457-1460
-prototypes/mls/scenario/src/scenarios.rs:1457-1461 prototypes/mls/scenario/src/scenarios.rs:1524-1528
-prototypes/mls/scenario/src/scenarios.rs:1963-1968 prototypes/mls/scenario/src/scenarios.rs:2022-2027
-prototypes/mls/scenario/src/scenarios.rs:210-212 prototypes/mls/scenario/src/scenarios.rs:1090-1092
-prototypes/mls/scenario/src/scenarios.rs:2333-2339 prototypes/mls/scenario/src/scenarios.rs:2401-2407
-prototypes/mls/scenario/src/wire.rs:126-129 prototypes/mls/scenario/src/wire.rs:256-259
-prototypes/mls/scenario/src/wire.rs:837-840 prototypes/mls/scenario/src/wire.rs:938-941
-script/test:111-115 script/test:129-133
-web/cabinet.test.ts:215-221 web/kit.test.ts:472-478
-web/cabinet.test.ts:30-35 web/kit.test.ts:64-70
-web/kit-references.test.ts:119-123 web/kit-references.test.ts:136-140
-web/kit-references.test.ts:124-130 web/kit-references.test.ts:142-148
-web/kit.test.ts:110-114 web/kit.test.ts:517-521
-web/kit.test.ts:110-114 web/kit.test.ts:907-911
-web/kit.test.ts:110-115 web/kit.test.ts:225-230
-web/kit.test.ts:471-476 web/kit.test.ts:792-796
-web/kit.test.ts:522-533 web/kit.test.ts:912-923
-web/kit.test.ts:892-896 web/kit.test.ts:1281-1285
-web/src/kit/KitCabinet.tsx:156-165 web/src/kit/KitTables.tsx:121-130
-web/src/kit/KitCabinet.tsx:20-36 web/src/ui/Shell.test.tsx:12-26
-web/src/kit/KitTables.tsx:124-131 web/src/kit/KitTables.tsx:162-169
-web/src/ui/Dropdown.test.tsx:153-159 web/src/ui/Dropdown.test.tsx:184-190
-web/src/ui/Dropdown.test.tsx:153-159 web/src/ui/Dropdown.test.tsx:259-265
-web/src/ui/Dropdown.test.tsx:195-203 web/src/ui/Search.test.tsx:90-98
-web/src/ui/Dropdown.test.tsx:225-232 web/src/ui/Dropdown.test.tsx:238-245
-web/src/ui/Dropdown.test.tsx:91-97 web/src/ui/Dropdown.test.tsx:117-123
-web/src/ui/Dropdown.test.tsx:91-97 web/src/ui/Dropdown.test.tsx:225-231
-web/src/ui/Dropdown.test.tsx:91-97 web/src/ui/Dropdown.test.tsx:238-244
-web/src/ui/Dropdown.tsx:152-160 web/src/ui/Menu.tsx:106-114
-web/src/ui/Dropdown.tsx:98-109 web/src/ui/Menu.tsx:66-77
-web/src/ui/Menu.test.tsx:103-110 web/src/ui/Menu.test.tsx:152-159
-web/src/ui/Menu.test.tsx:119-125 web/src/ui/Menu.test.tsx:193-199
-web/src/ui/Menu.test.tsx:152-158 web/src/ui/Menu.test.tsx:178-184
-web/src/ui/Menu.test.tsx:152-159 web/src/ui/Menu.test.tsx:165-172
-web/src/ui/Shell.test.tsx:258-261 web/src/ui/Shell.test.tsx:269-272
-web/src/ui/Table.test.tsx:173-180 web/src/ui/Table.test.tsx:200-207
-web/src/ui/icons.tsx:4-17 web/src/ui/icons.tsx:105-118
-web/src/ui/icons.tsx:4-17 web/src/ui/icons.tsx:26-39
-web/src/ui/icons.tsx:4-17 web/src/ui/icons.tsx:46-59
-web/src/ui/icons.tsx:4-17 web/src/ui/icons.tsx:84-97
-web/src/ui/icons.tsx:46-59 web/src/ui/icons.tsx:65-78
+# The clones script/duplicates ignores: those on dev when it was added, one per line as
+# `<file> <file> <hash>`, the line it prints without the line ranges. A clone found later goes into
+# a shared helper, not here; script/duplicates fails until the line of a clone gone is deleted.
+crates/proto/src/content.rs crates/proto/src/content.rs 0067003d0e5e
+crates/proto/src/content.rs crates/proto/src/content.rs 068819fe9e08
+crates/proto/tests/envelopes.rs crates/proto/tests/envelopes.rs 3b602e8328ee
+crates/server/tests/http.rs crates/server/tests/http.rs ce69d4324638
+prototypes/agents/channel/src/lib.rs prototypes/agents/channel/src/lib.rs 9cfa0ffd61d3
+prototypes/agents/channel/src/lib.rs prototypes/agents/channel/src/lib.rs ecf8f3e7d9b8
+prototypes/agents/channel/src/lib.rs prototypes/agents/channel/src/lib.rs ecf8f3e7d9b8
+prototypes/agents/channel/src/lib.rs prototypes/agents/channel/tests/mcp.rs b2fd41f984cd
+prototypes/agents/channel/src/main.rs prototypes/agents/inbox/src/main.rs 8887df8c5ca6
+prototypes/agents/channel/tests/mcp.rs prototypes/agents/channel/tests/mcp.rs be8926c995e9
+prototypes/agents/channel/tests/mcp.rs prototypes/agents/inbox/tests/mcp.rs 3d324d1dd7b1
+prototypes/agents/channel/tests/mcp.rs prototypes/agents/inbox/tests/mcp.rs e2ea7f957872
+prototypes/agents/hook/src/lib.rs prototypes/agents/hook/src/lib.rs b4fca23fdab7
+prototypes/agents/hook/tests/hook.rs prototypes/agents/hook/tests/hook.rs 068aba1a0c8a
+prototypes/agents/hook/tests/hook.rs prototypes/agents/hook/tests/hook.rs 34288e1a833e
+prototypes/agents/live/src/channel.rs prototypes/agents/live/src/channel.rs bc7a7cb982ea
+prototypes/agents/live/src/channel.rs prototypes/agents/live/src/lib.rs c0ab1d53271c
+prototypes/agents/live/src/channel.rs prototypes/agents/live/src/lib.rs d9cec87a0650
+prototypes/agents/live/src/channel.rs prototypes/agents/live/src/queue.rs c7d1f52c8d00
+prototypes/agents/live/src/channel.rs prototypes/agents/live/src/stub.rs d9cec87a0650
+prototypes/agents/live/src/hook.rs prototypes/agents/live/src/lib.rs 3a166076eda8
+prototypes/agents/live/src/lib.rs prototypes/agents/live/src/queue.rs e3e32ef502ca
+prototypes/agents/live/src/run.rs prototypes/agents/live/src/run.rs 28ef37f8d4a1
+prototypes/agents/live/src/run.rs prototypes/agents/live/src/run.rs 9de08e4f81be
+prototypes/agents/queue/tests/queue.rs prototypes/agents/queue/tests/queue.rs 9a24dc113f83
+prototypes/agents/queue/tests/queue.rs prototypes/agents/queue/tests/queue.rs aa8fdee2d439
+prototypes/agents/source/src/lib.rs prototypes/agents/source/src/lib.rs ea874afb4698
+prototypes/edits/overlap/src/fingerprint.rs prototypes/edits/overlap/src/fingerprint.rs 592fe753b49a
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 201b7596994f
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 2ecb5db52bca
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 2ecb5db52bca
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 3b54c0e59e87
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs cbdf23aedc0d
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs d27e932e9da2
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 14489862a1b0
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 14489862a1b0
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 1b7bf8db8733
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 256e3a715e07
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 2ecb5db52bca
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 2ecb5db52bca
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 2ecb5db52bca
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 2ecb5db52bca
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 2ecb5db52bca
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 469da53993e9
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 58a97589126e
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 5e0a84c63ccd
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 5e0a84c63ccd
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs f6a9f76f1483
+prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/scenarios.rs 00bfebb8b086
+prototypes/edits/overlap/tests/hunk_fingerprints.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs b72b5c71c844
+prototypes/edits/overlap/tests/hunk_fingerprints.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs e8c5ab395c15
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 101dbad7016c
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 10a0108660e0
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 1417ace7aff9
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 3f6d04e0d428
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 8c002dbccfb9
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 8c002dbccfb9
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 8c002dbccfb9
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs a25640fad1d5
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs d867451f3de3
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs f035295e8654
+prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs f035295e8654
+prototypes/mls/bench/src/lib.rs prototypes/mls/bench/src/lib.rs 2b47a4f94858
+prototypes/mls/mls-rs/examples/browser_check.rs prototypes/mls/openmls/examples/browser_check.rs fac78a24aa7a
+prototypes/mls/openmls/src/lib.rs prototypes/mls/openmls/src/lib.rs 8e918f453cbf
+prototypes/mls/scenario/src/certificate.rs prototypes/mls/scenario/src/revocation.rs aba376646467
+prototypes/mls/scenario/src/interop.rs prototypes/mls/scenario/src/interop.rs a65acb812a97
+prototypes/mls/scenario/src/interop.rs prototypes/mls/scenario/src/interop.rs d1ee105acde2
+prototypes/mls/scenario/src/roster.rs prototypes/mls/scenario/src/roster.rs 079b86fa5369
+prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs 398ec26b68bf
+prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs 582e8b929fd0
+prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs 73741319a410
+prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs 8542f2b0c9b0
+prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs 90e957b98210
+prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs 93c955edd1e2
+prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs e769e40fd68a
+prototypes/mls/scenario/src/wire.rs prototypes/mls/scenario/src/wire.rs 5cdddbf76d7c
+prototypes/mls/scenario/src/wire.rs prototypes/mls/scenario/src/wire.rs f74f4aa26b88
+script/test script/test ab2a529f06b0
+web/cabinet.test.ts web/kit.test.ts 73be310d1d93
+web/cabinet.test.ts web/kit.test.ts 7f169e4e1398
+web/kit-references.test.ts web/kit-references.test.ts 3599571258f3
+web/kit-references.test.ts web/kit-references.test.ts 79480cd6c1f4
+web/kit.test.ts web/kit.test.ts 2a4d1435c232
+web/kit.test.ts web/kit.test.ts 66db06096ac3
+web/kit.test.ts web/kit.test.ts 66db06096ac3
+web/kit.test.ts web/kit.test.ts 7ea05619fc10
+web/kit.test.ts web/kit.test.ts a2a8fe9509a2
+web/kit.test.ts web/kit.test.ts b7d397afafbd
+web/src/kit/KitCabinet.tsx web/src/kit/KitTables.tsx 985426ca68bf
+web/src/kit/KitCabinet.tsx web/src/ui/Shell.test.tsx e33581960eb5
+web/src/kit/KitTables.tsx web/src/kit/KitTables.tsx 4bc27ee9a96e
+web/src/ui/Dropdown.test.tsx web/src/ui/Dropdown.test.tsx 200b40b2744c
+web/src/ui/Dropdown.test.tsx web/src/ui/Dropdown.test.tsx 2540328569d8
+web/src/ui/Dropdown.test.tsx web/src/ui/Dropdown.test.tsx 2540328569d8
+web/src/ui/Dropdown.test.tsx web/src/ui/Dropdown.test.tsx 2540328569d8
+web/src/ui/Dropdown.test.tsx web/src/ui/Dropdown.test.tsx 7c2ebf8533be
+web/src/ui/Dropdown.test.tsx web/src/ui/Dropdown.test.tsx 7c2ebf8533be
+web/src/ui/Dropdown.test.tsx web/src/ui/Search.test.tsx 7b230c30f234
+web/src/ui/Dropdown.tsx web/src/ui/Menu.tsx 255b9f63d045
+web/src/ui/Dropdown.tsx web/src/ui/Menu.tsx 32fab3d647b8
+web/src/ui/Menu.test.tsx web/src/ui/Menu.test.tsx 13549c148084
+web/src/ui/Menu.test.tsx web/src/ui/Menu.test.tsx 70836b6b3012
+web/src/ui/Menu.test.tsx web/src/ui/Menu.test.tsx cc9d85a64ef6
+web/src/ui/Menu.test.tsx web/src/ui/Menu.test.tsx fbd0afd5e9a4
+web/src/ui/Shell.test.tsx web/src/ui/Shell.test.tsx 478fca41f70b
+web/src/ui/Table.test.tsx web/src/ui/Table.test.tsx 745b98e3e7b8
+web/src/ui/icons.tsx web/src/ui/icons.tsx 07b1d51b0289
+web/src/ui/icons.tsx web/src/ui/icons.tsx 07b1d51b0289
+web/src/ui/icons.tsx web/src/ui/icons.tsx 07b1d51b0289
+web/src/ui/icons.tsx web/src/ui/icons.tsx 07b1d51b0289
+web/src/ui/icons.tsx web/src/ui/icons.tsx eeb437c10250

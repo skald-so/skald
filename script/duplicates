@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Fails when Rust, TypeScript or shell code under <path>s has a block of 50 or more tokens copied
-# from elsewhere under them, unless script/duplicates-known lists that clone. Prints each new clone
-# as `<file>:<first line>-<last line> <file>:<first line>-<last line>`, the format of that list.
+# from elsewhere under them, unless script/duplicates-known lists that clone, and when that list has
+# a clone between files under <path>s that is no longer found. A clone's key is its two files and a
+# hash of its code without whitespace, so moving its lines keeps it known; a key found more often
+# than listed is new. Prints each new clone as
+# `<file>:<first line>-<last line> <file>:<first line>-<last line> <hash>`, each clone gone as its key.
 # Runs jscpd, pinned in script/jscpd/package.json.
 # Usage: script/duplicates <path>..., in the repository root.
 set -euo pipefail
@@ -29,16 +32,45 @@ options=(
 "$jscpd/node_modules/.bin/jscpd" "${options[@]}" --absolute --no-tips --silent \
   --reporters json --output "$tmp" "$@" >/dev/null
 
-# Each clone as its two fragments, paths relative to the repository root, as the list has them.
+# Each clone as its two files in order, paths relative to the repository root, then their line
+# ranges, then its code without whitespace.
 jq -r --arg root "$(pwd -P)/" '.duplicates[]
-  | [.firstFile, .secondFile | "\(.name | ltrimstr($root)):\(.start)-\(.end)"] | join(" ")' \
-  "$tmp/jscpd-report.json" >"$tmp/found"
-# grep exits 1 when every clone is known, 2 on an error such as a missing list.
-status=0
-clones=$(grep -vxFf script/duplicates-known "$tmp/found") || status=$?
-((status <= 1)) || exit "$status"
-if [[ -n $clones ]]; then
+  | ([.firstFile, .secondFile] | map([(.name | ltrimstr($root)), .start, .end]) | sort) as $files
+  | [($files | map(.[0]) | join(" ")), ($files | map("\(.[0]):\(.[1])-\(.[2])") | join(" ")),
+    (.fragment | gsub("\\s"; ""))]
+  | @tsv' "$tmp/jscpd-report.json" >"$tmp/clones"
+
+# Each clone as `<key>\t<printed line>`.
+while IFS=$'\t' read -r files ranges code; do
+  hash=$(printf '%s' "$code" | git hash-object --stdin | cut -c1-12)
+  printf '%s %s\t%s %s\n' "$files" "$hash" "$ranges" "$hash"
+done <"$tmp/clones" >"$tmp/found"
+cut -f1 "$tmp/found" | sort >"$tmp/found-keys"
+
+# The listed keys whose two files are under <path>s.
+in_paths() {
+  local path
+  for path in "${@:2}"; do
+    if [[ $1 == "${path%/}/"* ]]; then return 0; fi
+  done
+  return 1
+}
+awk '!/^#/ && NF' script/duplicates-known >"$tmp/listed"
+while read -r first second hash; do
+  if in_paths "$first" "$@" && in_paths "$second" "$@"; then echo "$first $second $hash"; fi
+done <"$tmp/listed" | sort >"$tmp/known"
+
+# comm pairs repeated lines one to one, so it compares the counts of each key.
+comm -23 "$tmp/found-keys" "$tmp/known" | sort -u >"$tmp/new-keys"
+new=$(awk -F '\t' 'NR == FNR { new[$0]; next } $1 in new { print $2 }' "$tmp/new-keys" "$tmp/found")
+gone=$(comm -13 "$tmp/found-keys" "$tmp/known")
+
+if [[ -n $new ]]; then
   echo "script/duplicates: copied code; move it into a shared helper:" >&2
-  echo "$clones" >&2
-  exit 1
+  echo "$new" >&2
 fi
+if [[ -n $gone ]]; then
+  echo "script/duplicates: listed clones not found; delete their lines from script/duplicates-known:" >&2
+  echo "$gone" >&2
+fi
+[[ -z $new && -z $gone ]]
