@@ -6,13 +6,13 @@
   "lockFileMaintenance": { "enabled": true },
   "packageRules": [
     {
-      "description": "openmls_rust_crypto takes getrandom 0.2 through rand_core 0.6; see prototypes/mls/openmls/Cargo.toml",
+      "description": "Stays on 0.2: see prototypes/mls/openmls/Cargo.toml",
       "matchDepNames": ["getrandom-02"],
       "allowedVersions": "<0.3"
     },
     {
-      "description": "Patch updates merge once the checks pass",
       "matchUpdateTypes": ["patch"],
+      "minimumReleaseAge": "3 days",
       "automerge": true
     }
   ]

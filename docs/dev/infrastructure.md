@@ -26,6 +26,7 @@ A human takes one action per release: merging the Release PR.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
   - Squash merges only; the PR title becomes the commit title.
+  - "Allow auto-merge" is on: a PR set to auto-merge merges once the required checks pass.
 - `main` — the latest release; only CI moves it.
   - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.
 - `vX.Y.Z` tags — the releases themselves.
@@ -42,7 +43,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - **Tooling:** tests of the scripts in `script/`, Renovate config validation.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Daily:** e2e with real Claude Code and Codex.
-- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, with Conventional Commits titles; a patch update merges itself once the checks pass; config in `renovate.json`.
+- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, with Conventional Commits titles; a patch update 3 days old or older merges itself once the checks pass; config in `renovate.json`.
 
 ## Release
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (build, installers, publishing).
