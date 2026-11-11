@@ -1,7 +1,7 @@
 //! `agent-hook` runs as each CLI runs it: a hook input recorded from the real CLI on stdin, the
 //! handler's output on stdout.
 
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 
@@ -71,12 +71,11 @@ fn start(cli: &Cli, source: &Path) -> Child {
 /// Runs the handler for `cli` on `source` with `input` on stdin.
 fn hook(cli: &Cli, source: &Path, input: &str) -> Output {
     let mut child = start(cli, source);
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // A handler that fails before reading its input, such as on a source it cannot open, may close
+    // stdin first.
+    if let Err(error) = child.stdin.take().unwrap().write_all(input.as_bytes()) {
+        assert_eq!(error.kind(), ErrorKind::BrokenPipe, "{error}");
+    }
     child.wait_with_output().unwrap()
 }
 
