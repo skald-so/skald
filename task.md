@@ -475,7 +475,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
       - the CLI loads as little of the user's own config (MCP servers, plugins, skills, instruction files) as it allows, and the report records what each check still loads;
       - the model runs at the lowest reasoning effort the CLI allows;
       - its prompts are short;
-    - the developer runs it once with `--all` and once with `--real`, for the report; the reviewer reruns it with neither flag; `script/test` does not run it.
+    - the developer runs it once with `--all`, and once with `--real` only where it runs on the stub by default, for the report; the reviewer reruns it with neither flag; `script/test` does not run it.
   - The report in `docs/dev/` starts with the list of checks it answers for each path: an idle and a busy session; the delay; how the message appears in the agent's context, with its sender label; whether the prototype learns that the handover happened, for `read`; reaching one of two sessions on a device; what the path needs: CLI version, sign-in kinds, settings, flags and prompts to the user.
   - MCP `inbox`: a stdio MCP server whose `inbox` tool returns the waiting messages; its live check on Claude Code and Codex.
   - Findings in the report.
@@ -529,7 +529,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - Per agent: where the CLI shows the user its limits, such as a command, the status line or the app-server, and what it shows: each limit, its usage and reset time.
   - Per source: whether a local program reads it without vendor tokens, credential files or switching accounts, as `features.md` §14 says; the vendor terms that allow or forbid it, with links.
-  - For each source that exists and may be read: a prototype reads the limits from it, with a live check under the rules of 4.1, on the owner's signed-in CLI without the stub, that prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time. Without such a source for an agent, the report says so and there is no prototype.
+  - For each source that exists and may be read: a prototype reads the limits from it, with a live check under the rules of 4.1, on the owner's signed-in CLI without the stub and with neither flag, that the developer runs once for the report and that prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time. Without such a source for an agent, the report says so and there is no prototype.
   - Findings in the report.
   - Tests, for each prototype: on outputs recorded from the real CLI, it gives each limit with its usage and reset time; an output without limits gives none.
 - **Definition of done:** the report answers, per agent, whether the data exists and may be read, with its source and the vendor terms; for each source that may be read, its live check, rerun, gives the result and CLI version the report records, and unit tests on its recorded outputs run in `script/test`.
