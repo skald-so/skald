@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds the skald-server image from crates/server/Dockerfile and tests it with PostgreSQL in a
 # container: its labels name the repository and the commit, and a build without the commit fails;
-# a change to the workspace's own sources reuses the dependency build; a container from it applies
-# the migrations, listens on all interfaces and answers the health check; it exits with an error
-# when PostgreSQL is unreachable; its process does not run as root.
+# it exposes port 8080 and has no shell; a change to the workspace's own sources reuses the
+# dependency build and compiles only the workspace crates; a container from it applies the
+# migrations, listens on all interfaces and answers the health check; it exits with an error when
+# PostgreSQL is unreachable; its process does not run as root.
 # Removes the images, containers and network it creates.
 set -euo pipefail
 
@@ -27,7 +28,7 @@ cleanup() {
     docker network rm "$network" >/dev/null
   fi
   rm -rf "$context"
-  for tag in "$image" "$image-no-revision" "$image-deps" "$image-deps-changed"; do
+  for tag in "$image" "$image-no-revision" "$image-deps" "$image-deps-changed" "$image-changed"; do
     if docker image inspect "$tag" >/dev/null 2>&1; then
       docker image rm "$tag" >/dev/null
     fi
@@ -69,6 +70,14 @@ build=(docker build --file crates/server/Dockerfile .)
 label() { docker image inspect --format "{{index .Config.Labels \"org.opencontainers.image.$1\"}}" "$image"; }
 [[ $(label source) == https://github.com/skald-so/skald ]] || fail "source label: '$(label source)'"
 [[ $(label revision) == "$revision" ]] || fail "revision label: '$(label revision)', want '$revision'"
+[[ $(label title) == skald-server ]] || fail "title label: '$(label title)'"
+[[ $(label licenses) == AGPL-3.0-only ]] || fail "licenses label: '$(label licenses)'"
+ports=$(docker image inspect --format '{{json .Config.ExposedPorts}}' "$image")
+[[ $ports == '{"8080/tcp":{}}' ]] || fail "exposed ports: '$ports', want 8080/tcp"
+# Only what the binary needs at run time: no shell.
+if docker run --rm --entrypoint sh "$image" -c true >/dev/null 2>&1; then
+  fail "the image has a shell"
+fi
 # The build reuses the cached binary and stops at the missing commit; the tag is for cleanup.
 if output=$("${build[@]}" --quiet --tag "$image-no-revision" 2>&1); then
   fail "a build without REVISION succeeded"
@@ -86,6 +95,20 @@ docker build --quiet --file crates/server/Dockerfile --target deps --tag "$image
 layers() { docker image inspect --format '{{json .RootFS.Layers}}' "$1"; }
 [[ $(layers "$image-deps") == "$(layers "$image-deps-changed")" ]] ||
   fail "a change to a server source rebuilds the dependencies"
+# The image from that copy: cargo compiles only the workspace crates, which it names with their
+# paths, and the server among them. --no-cache-filter keeps the build stage from reusing this copy's
+# build by an earlier run.
+if output=$(docker build --progress plain --no-cache-filter build --file crates/server/Dockerfile \
+  --build-arg "REVISION=$revision" --tag "$image-changed" "$context" 2>&1); then
+  compiled=$(sed -nE 's/^#[0-9]+ [0-9.]+ +Compiling //p' <<<"$output")
+  [[ $compiled == *"skald-server v"* ]] ||
+    fail "a change to a server source does not rebuild the server; compiled: '$compiled'"
+  dependencies=$(grep -v ' (/src/' <<<"$compiled" || true)
+  [[ -z $dependencies ]] ||
+    fail "a change to a server source compiles dependencies:"$'\n'"$dependencies"
+else
+  fail "the build from a changed server source failed:"$'\n'"$(tail -n 30 <<<"$output")"
+fi
 
 # A server on PostgreSQL, reached as `postgres` on a network of their own.
 postgres_wait

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Tests .github/workflows/edge.yml: it runs only on pushes to dev, one run at a time; its token
-# writes packages and nothing else; it builds crates/server/Dockerfile, the image definition
-# script/image-test tests, from the pushed commit with the layer cache of earlier runs, pushes it to
-# GHCR tagged with the commit and moves :edge with script/tag-edge.
+# Tests .github/workflows/edge.yml: it runs only on pushes to dev, on every one, one run at a time;
+# its token writes packages and nothing else; on a linux/amd64 runner it checks out the pushed
+# commit, logs in to GHCR with its token, builds crates/server/Dockerfile, the image definition
+# script/image-test tests, from that commit with the layer cache of earlier runs, pushes it to GHCR
+# tagged with the commit and moves :edge with script/tag-edge.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -28,6 +29,8 @@ dockerfile=$(grep -o -- '--file [^ ]*' "$root/script/image-test" | sort -u | sed
 [[ -n $dockerfile && $dockerfile != *$'\n'* ]] ||
   fail "script/image-test names no Dockerfile or several: '$dockerfile'"
 
+expect "it sets nothing but its name, trigger, permissions, concurrency and jobs" \
+  'keys == ["concurrency", "jobs", "name", "on", "permissions"]'
 expect "runs on pushes to dev and on nothing else" '.on == {"push": {"branches": ["dev"]}}'
 expect "its token reads contents and writes packages, nothing else" \
   '.permissions == {"contents": "read", "packages": "write"}'
@@ -39,12 +42,31 @@ expect "every action is pinned to a commit" \
 expect "the checkout keeps no credentials" \
   '[.jobs[].steps[] | select(.uses // "" | startswith("actions/checkout@"))
     | .with["persist-credentials"] == false] | length > 0 and all'
+expect "the checkout takes the pushed commit: it sets nothing but persist-credentials" \
+  '[.jobs[].steps[] | select(.uses // "" | startswith("actions/checkout@"))
+    | .with == {"persist-credentials": false}] | length > 0 and all'
 expect "it uses no secret but its token" \
   '[.. | strings | scan("secrets\\.[A-Za-z_]+")] | unique | . == [] or . == ["secrets.GITHUB_TOKEN"]'
 
-# The publish job: the build, then the move of :edge.
+# The publish job: the checkout, Buildx, the login, the build, then the move of :edge.
 expect "one job" '.jobs | length == 1'
 job='.jobs[]'
+expect "the job runs on every push: it has no condition" "$job | has(\"if\") | not"
+expect "the job sets nothing but its name, runner and steps" \
+  "$job | keys == [\"name\", \"runs-on\", \"steps\"]"
+expect "the job runs on ubuntu-latest, so the image is linux/amd64 like staging" \
+  "$job[\"runs-on\"] == \"ubuntu-latest\""
+expect "the steps: checkout, Buildx, the login, the build, the move of :edge" \
+  "[$job.steps[] | .uses // .name | sub(\"@.*\"; \"\")] == [\"actions/checkout\",
+    \"docker/setup-buildx-action\", \"docker/login-action\", \"docker/build-push-action\",
+    \"Move :edge\"]"
+expect "no step has a condition or may fail" \
+  "[$job.steps[] | keys - [\"env\", \"id\", \"name\", \"run\", \"uses\", \"with\"]] | add == []"
+expect "Buildx runs with its defaults: its docker-container driver exports the layer cache" \
+  "$job.steps[1] | keys == [\"uses\"]"
+expect "the login before the build is to GHCR with the token" \
+  "$job.steps[2].with == {\"registry\": \"ghcr.io\", \"username\": \"\${{ github.actor }}\",
+    \"password\": \"\${{ secrets.GITHUB_TOKEN }}\"}"
 build="[$job.steps[] | select(.uses // \"\" | startswith(\"docker/build-push-action@\"))]"
 expect "one build" "$build | length == 1"
 expect "the build uses $dockerfile with the repository as its context" \
@@ -55,6 +77,9 @@ expect "the build pushes $image tagged with the commit" \
   "$build[0].with | .push == true and .tags == \"$image:\${{ github.sha }}\""
 expect "the build reuses the layers of earlier runs" \
   "$build[0].with | .[\"cache-from\"] == \"type=gha\" and .[\"cache-to\"] == \"type=gha,mode=max\""
+expect "the build sets nothing else, such as a target stage or a platform" \
+  "$build[0] | keys == [\"id\", \"uses\", \"with\"] and (.with | keys == [\"build-args\",
+    \"cache-from\", \"cache-to\", \"context\", \"file\", \"push\", \"tags\"])"
 expect "the step after the build moves :edge to the built digest of the pushed commit" \
   "$job.steps as \$steps | (\$steps | map(.id) | index(\"build\")) as \$i
     | \$steps[\$i].uses == $build[0].uses and \$steps[\$i + 1] == {

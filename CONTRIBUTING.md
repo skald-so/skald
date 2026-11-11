@@ -13,7 +13,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
 - Docker: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots.
 - Node.js 26 with npm.
-- `jq`: the tests of the scripts read JSON with it.
+- `git`, `curl` and `jq`: the tests run them.
 - The MLS prototypes' WASM tests: the `wasm32-unknown-unknown` target, `rustup target add wasm32-unknown-unknown`, and `wasm-bindgen-cli` of the `wasm-bindgen` version in `prototypes/mls/Cargo.lock`: `cargo install wasm-bindgen-cli --version <version> --locked`. They run in Node.js.
 - Google Chrome: the web tests run it headless ([web/README.md](web/README.md)).
 
