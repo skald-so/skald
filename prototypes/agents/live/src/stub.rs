@@ -595,7 +595,13 @@ mod tests {
         );
         assert_eq!(tokens, Response::json(200, &json!({ "input_tokens": 0 })));
         let other = answer(&[], &request("/v1/models", &[], &json!({})), &mut log);
-        assert_eq!(other.status, 404);
+        assert_eq!(
+            other,
+            Response::json(
+                404,
+                &json!({ "type": "error", "error": { "type": "stub_error", "message": "not found" } })
+            )
+        );
         assert_eq!(log.requests.len(), 2);
     }
 
@@ -654,8 +660,15 @@ mod tests {
             ),
             &mut log,
         );
-        assert_eq!(response.status, 401);
-        assert!(!response.body.contains(secret));
+        assert_eq!(
+            response,
+            Response::json(
+                401,
+                &json!({ "type": "error", "error": {
+                    "type": "stub_error", "message": "a credential other than the placeholder",
+                } })
+            )
+        );
         // A second request with the same header adds no name.
         answer(
             &[Call::Inbox],
@@ -734,13 +747,18 @@ mod tests {
     /// Sends `request` to `stub` on one connection, twice, and returns the responses' heads.
     fn exchange(stub: &Stub, request: &str) -> String {
         let url = stub.url();
-        let mut stream = TcpStream::connect(url.strip_prefix("http://").unwrap()).unwrap();
-        stream.write_all(request.as_bytes()).unwrap();
-        stream.write_all(request.as_bytes()).unwrap();
-        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let stream = TcpStream::connect(url.strip_prefix("http://").unwrap()).unwrap();
+        send(stream, &request.repeat(2)).unwrap()
+    }
+
+    /// Sends `requests` on `stream`, closes its write side and reads the answers, at most 1 MiB.
+    fn send(mut stream: TcpStream, requests: &str) -> io::Result<String> {
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+        stream.write_all(requests.as_bytes())?;
+        stream.shutdown(std::net::Shutdown::Write)?;
         let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
-        response
+        stream.take(1 << 20).read_to_string(&mut response)?;
+        Ok(response)
     }
 
     #[test]
@@ -774,11 +792,8 @@ mod tests {
         // The listener stops: a connection is refused or closed without an answer.
         let addr = url.strip_prefix("http://").unwrap();
         thread::sleep(std::time::Duration::from_millis(100));
-        if let Ok(mut stream) = TcpStream::connect(addr) {
-            let _ = stream.write_all(request.as_bytes());
-            let mut response = String::new();
-            let _ = stream.read_to_string(&mut response);
-            assert_eq!(response, "");
+        if let Ok(stream) = TcpStream::connect(addr) {
+            assert_eq!(send(stream, request).unwrap_or_default(), "");
         }
     }
 }

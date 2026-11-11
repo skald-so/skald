@@ -771,6 +771,7 @@ mod tests {
     const CODEX_ERROR: &str = r#"{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting."}}"#;
     const CODEX_DONE: &str = r#"{"type":"turn.completed","usage":{"input_tokens":44124,"cached_input_tokens":3456,"cache_write_input_tokens":0,"output_tokens":118,"reasoning_output_tokens":64}}"#;
     const CODEX_STARTED: &str = r#"{"type":"turn.started"}"#;
+    const CODEX_DONE_WITHOUT_USAGE: &str = r#"{"type":"turn.completed"}"#;
 
     #[test]
     fn reads_claude_code_events() {
@@ -853,6 +854,7 @@ mod tests {
             })]
         );
         assert_eq!(codex.events(CODEX_STARTED), []);
+        assert_eq!(codex.events(CODEX_DONE_WITHOUT_USAGE), []);
         assert_eq!(codex.events(CLAUDE_RESULT), []);
         assert_eq!(codex.events("not JSON"), []);
     }
