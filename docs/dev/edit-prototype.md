@@ -2,7 +2,7 @@
 
 The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
-- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages and the scenario harness.
+- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness and the [measurement](#measurement)'s replay of real merges, with its command, `measure`.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. The harness's commits carry a fixed date, so they get the same hashes on every run; the client's snapshot commits keep the current time. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity, for the harness's commands the fixed date, and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
@@ -52,6 +52,15 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `<language>::a_file_in_another_language_gets_no_symbol_fingerprints` | Distant lines of one function edited in the file and in a Go file: only the first has symbols; the machines share the fingerprints of the two paths and of the method, nothing of the Go function |
 | `<language>::server_receives_no_symbol_name` | What the machines send holds no kind or name of their changed symbols |
 | `insertions_deletions_and_added_and_deleted_files_get_symbol_fingerprints` | In Rust, a line inserted into a method's body and a deleted file on one machine, a line deleted from it and an added file on the other: each gets the symbols of its changes, the deleted ones from the merge base; they overlap at symbol level on the method and merge cleanly |
+| `merges_are_those_of_two_parents_newest_first` | The [measurement](#measurement)'s fixture: an octopus merge, then 12 merges of two parents, each of a branch with one commit. The merges listed are the 12, not the octopus merge; with a limit of 1, the last |
+| `replay_gives_the_expected_counts_at_each_level` | The fixture's pairs of branches, each merged in turn, the second resolved to the default branch's side: different files; the same line of a function; distant lines of a function; different functions of one file and distant lines of another; different lines inserted at one place in a function; the same line outside every function. Replayed on 3 threads, in the order of the merges: the counts of each level |
+| `replay_gives_each_merges_warnings_conflicts_and_sides` | On the fixture: each merge's warned files at each level, its conflicts, and each side's lifetime from the author date of its first commit to the merge |
+| `report_gives_the_tables_of_the_replays` | The fixture's tables: its range of merges, the counts, no conflict without a file-level warning, the lifetimes, and the sizes of its 3 largest sides with the times of a timing run |
+| `merges_with_several_merge_bases_are_counted` | Two branches that each merge the other before both are merged: the last merge has two merge bases, and the table counts it |
+| `replaying_a_commit_that_is_not_a_merge_fails` | A commit of one parent among the merges to replay: the replay fails |
+| `report_gives_a_repository_without_merges_and_lifetimes` | A repository without merges: its tables give no range, lifetimes or largest sides |
+| `a_conflict_in_a_renamed_file_has_no_file_level_warning` | One side renames a file and edits a line of it, the other edits that line at the old path: the warning is on the old path, the conflict on the new one, and the table of conflicts without a file-level warning lists it |
+| `the_same_change_on_both_sides_is_counted` | Both sides make one change to a function and different changes to distant lines of another file: the merge is clean, and the function's file is counted as the same change at each level |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
@@ -60,12 +69,12 @@ Open questions of edit comparison, and how the prototype answers them:
 | Question | How |
 |---|---|
 | Data source: diff, hooks or declarations | Open; the prototype uses the diff so far |
-| When to warn | Warnings at each level against `git merge-tree` conflicts |
-| Reservation TTL | How long each side of a merge lived |
+| When to warn | [Measurement](#measurement): warnings at each level against `git merge-tree` conflicts |
+| Reservation TTL | [Measurement](#measurement): how long each side of a merge lived |
 | How to catch edits made via Bash and generators | Open |
 | Path normalization | Open |
 | Noise from lockfiles and migrations | Open |
-| Whether intents like "replacing / extending" are needed | Whether both sides of a warning only add lines |
+| Whether intents like "replacing / extending" are needed | [Measurement](#measurement): whether both sides of a warning only add lines |
 
 ## File fingerprints
 - **Edit set:** `git diff --no-renames --ignore-submodules=dirty --name-only <merge base>` against the working tree, and `git ls-files --others --exclude-standard`.
@@ -127,7 +136,7 @@ Open questions of edit comparison, and how the prototype answers them:
   - Identical edits on both machines: `git merge-tree` merges them cleanly.
   - Renames: a rename deletes its old path, which touches each of its boundaries, so it matches any edit of the old path. `git merge-tree` carries the edit into the renamed file and merges cleanly.
 - **Misses:** a conflict with upstream commits only one machine has pulled, on the conflicting lines or next to them. Each machine fingerprints its own changes since its own base; the file still matches. The conflict is with upstream, and the other machine meets it when it pulls.
-- **Cost:** each publication takes a snapshot, whose changed files stay as loose objects until `git gc`, and one `git diff` per path. Cost on real repositories: open.
+- **Cost:** each publication takes a snapshot, whose changed files stay as loose objects until `git gc`, and one `git diff` per path. Cost on real repositories: [Measurement](#measurement).
 
 ## Symbol fingerprints
 - **Symbols:** functions, methods and types, found with a [tree-sitter](https://tree-sitter.github.io) grammar of the file's language, which its extension gives. A symbol is a syntax node of a kind its language lists, with its name; it is named with the symbols that enclose it, outermost first, such as `impl_item Store > function_item reserve`.
@@ -153,4 +162,113 @@ Open questions of edit comparison, and how the prototype answers them:
   - Edits outside every symbol, such as imports and module-level constants, match at file and hunk level only.
   - A type's fields and its methods are different symbols; so are a Rust struct and its `impl` block.
 - **Open:** a symbol moved to another file, which gets another fingerprint; files with syntax errors, as during an edit; a line that holds two symbols, which counts towards the last; more languages and extensions, such as `.tsx` and JavaScript.
-- **Cost:** at most two parses of each changed file in a supported language, one of each version, the merge base and the snapshot, that holds changed lines. Cost on real repositories: open.
+- **Cost:** at most two parses of each changed file in a supported language, one of each version, the merge base and the snapshot, that holds changed lines. Cost on real repositories: [Measurement](#measurement).
+
+## Measurement
+How often the warnings of each level match the conflicts of real merges.
+
+- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin measure`; it needs `git` and HTTPS access to GitHub, no account. It fetches each repository at its commit into a temporary directory, deleted at the end, also on an error; replays its merges on every CPU; then times its largest sides one after another. It prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables, times aside. `script/test` does not run it; it runs the replay on a fixture repository ([Scenarios](#scenarios)).
+- **Repositories:** public ones that keep merge commits, one per language with symbol fingerprints:
+  - `diesel`, Rust: `Cargo.lock` files, the SQL migrations of its examples and tests, and schema code that Diesel CLI generates, checked in as its examples' `schema.rs` and as test snapshots.
+  - `drizzle-orm`, TypeScript: `pnpm-lock.yaml`, and the SQL migrations and snapshots drizzle-kit generates, checked in for its tests.
+  - `netbox`, Python: Django migrations, `yarn.lock`, and the bundled scripts and styles of `netbox/project-static/dist/`.
+- **Merges:** the 300 first merges of two parents that `git rev-list --merges` lists from the repository's commit: every merge of its history, not only those on the default branch's first-parent line, such as merges of the default branch into a topic branch. Octopus merges are left out.
+- **Replay:** each parent is a machine; its edit set is the paths `git diff --no-renames` finds from the parents' merge base to the parent, and its fingerprints are those of the client, with the parent's commit for the snapshot. Both publish to a server stand-in. `git merge-tree --write-tree` merges the two parents.
+  - The merge base is the first one `git merge-base --all` gives; `git merge-tree` merges from all of them.
+- **Counts:**
+  - A warning: a file both sides publish a fingerprint of the level of.
+  - A conflict: a `CONFLICT` message of `git merge-tree`, with the files it names. It has a warning when the level warns about one of them.
+  - A warning has a conflict when its file is in a conflict of the merge.
+  - In merges: a merge with a warning, and one that `git merge-tree` does not merge cleanly.
+- **Lifetimes:** of each side with commits after the merge base, from the author date of its first commit after the merge base along its first-parent history to the merge's committer date.
+- **Only additions:** a warning where neither side deletes or replaces a line of the merge base in its file.
+- **Same change:** a warning whose file is the same in both parents.
+- **Cost:** the time to compute a side's fingerprints from its commits, without the snapshot a machine takes, and their size in bytes, for the 3 sides with the most fingerprints of each repository.
+
+### Results
+Machine: macos aarch64, 14 CPUs, git version 2.50.1 (Apple Git-155).
+
+Repositories
+
+| Repository | URL | Commit | Merges | Newest | Oldest | Both sides changed | Several merge bases |
+|---|---|---|---|---|---|---|---|
+| diesel | https://github.com/diesel-rs/diesel | `31afd783aeddb2471bba2bece823816fe4925fed` | 300 | `31afd783aedd` 2026-11-11 | `141e61d4c6c6` 2026-05-19 | 199 | 0 |
+| drizzle-orm | https://github.com/drizzle-team/drizzle-orm | `bea7dd3623279ec2a12ca6c838cf5c8b17d3de42` | 300 | `bea7dd362327` 2026-11-10 | `b779e8bcc086` 2024-06-04 | 175 | 6 |
+| netbox | https://github.com/netbox-community/netbox | `cf6d3f0319fade2fa0f1c51155f1c11330e58ff3` | 300 | `9b5d26700dd1` 2026-11-09 | `cd10087b2b61` 2025-03-19 | 256 | 0 |
+
+Warnings and conflicts, in files
+
+| Repository | Level | Warnings | Conflicts | Warnings without a conflict | Conflicts without a warning | Warnings where both sides only add | Of them with a conflict | Warnings where both sides made the same change |
+|---|---|---|---|---|---|---|---|---|
+| diesel | file | 679 | 203 | 479 | 3 | 113 | 33 | 166 |
+| diesel | hunk | 467 | 203 | 267 | 3 | 58 | 33 | 166 |
+| diesel | symbol | 180 | 203 | 119 | 142 | 7 | 3 | 49 |
+| drizzle-orm | file | 1265 | 174 | 1094 | 3 | 526 | 33 | 866 |
+| drizzle-orm | hunk | 1107 | 174 | 936 | 3 | 505 | 33 | 866 |
+| drizzle-orm | symbol | 790 | 174 | 695 | 79 | 303 | 19 | 592 |
+| netbox | file | 1119 | 438 | 726 | 0 | 128 | 14 | 162 |
+| netbox | hunk | 693 | 438 | 300 | 0 | 102 | 14 | 162 |
+| netbox | symbol | 365 | 438 | 252 | 325 | 54 | 5 | 110 |
+
+Conflicts without a file-level warning
+
+| Repository | Merge | Merge bases | Conflict | Files |
+|---|---|---|---|---|
+| diesel | `bb9ad76bf82b` | 1 | CONFLICT (contents) | `diesel/src/mysql_like/types/json.rs` |
+| diesel | `99d16581814d` | 1 | CONFLICT (contents) | `diesel/src/mysql_like/value.rs` |
+| diesel | `f3d8f4ea4167` | 1 | CONFLICT (directory rename suggested) | `diesel/src/mysql_like/query_builder/batch_update.rs`, `diesel/src/mysql/query_builder/batch_update.rs` |
+| drizzle-orm | `6cb70911457b` | 1 | CONFLICT (contents) | `integration-tests/tests/mysql/tidb-serverless.test.ts` |
+| drizzle-orm | `e78f396b2ea3` | 2 | CONFLICT (contents) | `changelogs/drizzle-orm/0.30.5.md` |
+| drizzle-orm | `e78f396b2ea3` | 2 | CONFLICT (contents) | `drizzle-orm/package.json` |
+
+Warnings and conflicts, in merges
+
+| Repository | Level | With a warning | With a conflict | Warned without a conflict | Conflicted without a warning |
+|---|---|---|---|---|---|
+| diesel | file | 123 | 50 | 73 | 0 |
+| diesel | hunk | 53 | 50 | 3 | 0 |
+| diesel | symbol | 32 | 50 | 6 | 24 |
+| drizzle-orm | file | 78 | 39 | 39 | 0 |
+| drizzle-orm | hunk | 48 | 39 | 9 | 0 |
+| drizzle-orm | symbol | 42 | 39 | 17 | 14 |
+| netbox | file | 61 | 33 | 28 | 0 |
+| netbox | hunk | 39 | 33 | 6 | 0 |
+| netbox | symbol | 33 | 33 | 5 | 5 |
+
+Side lifetimes, in hours
+
+| Repository | Sides | Median | 90th percentile | Longest |
+|---|---|---|---|---|
+| diesel | 501 | 61.8 | 839.8 | 9358.5 |
+| drizzle-orm | 489 | 116.7 | 1116.3 | 7455.8 |
+| netbox | 556 | 51.7 | 310.8 | 2960.4 |
+
+Cost on the largest sides; times are not compared on a rerun
+
+| Repository | Merge | Parent | File | Hunk | Symbol | Bytes | Time, ms |
+|---|---|---|---|---|---|---|---|
+| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 18669 |
+| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 18444 |
+| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 17555 |
+| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 17268 |
+| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 13392 |
+| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 5954 |
+| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2436 |
+| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7186 |
+| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 9715 |
+
+### Findings
+- **When to warn**, in merges:
+  - Hunk level: no merge that `git merge-tree` does not merge cleanly is without a warning; 3, 9 and 6 warned merges merge cleanly.
+  - File level: no conflicted merge without a warning either; 73, 39 and 28 warned merges merge cleanly.
+  - Symbol level: 24, 14 and 5 conflicted merges without a warning. Symbol fingerprints cover only lines inside a symbol of a Rust, TypeScript or Python file.
+- **In files:** 267, 936 and 300 hunk-level warnings without a conflict. 166, 866 and 162 hunk-level warnings are on files both sides changed the same way, which `git merge-tree` merges cleanly.
+- **Conflicts without a file-level warning:** each listed one is in a merge where one side renamed the conflict's file or its directory, by `git diff -M` from the merge base, or in the merge with two merge bases. The fingerprints take a rename as a deletion and an addition; `git merge-tree` follows renames and names the paths after them. Each of these merges has a file-level warning on another file.
+- **Reservation TTL:** a TTL shorter than the median, 61.8, 116.7 and 51.7 hours, ends before at least half of the sides are merged.
+- **Intents:** at hunk level, 33 of 58, 33 of 505 and 14 of 102 warnings where both sides only add lines conflict: insertions at one place conflict as changes do.
+- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2436 to 18669 ms on this Mac.
+- **Open:**
+  - A machine publishes while it works; a replay sees each side only at the merge, so it shows neither how early a warning comes nor warnings on intermediate states.
+  - Warnings on renamed paths: whether to fingerprint a rename's new path for the old one, or to leave the renamed file to the exact check.
+  - Merges with several merge bases: the fingerprints take the first one.
+  - Lockfiles, migrations and generated code among the warnings without a conflict.

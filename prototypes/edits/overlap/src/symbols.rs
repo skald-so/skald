@@ -114,47 +114,11 @@ impl Language {
 /// The innermost symbol enclosing each line of `source`, a file in `language`: the first item for
 /// its first line. A line outside every symbol has none.
 pub fn innermost(language: Language, source: &[u8]) -> Result<Vec<Option<Symbol>>> {
-    let mut parser = Parser::new();
-    parser.set_language(&language.grammar())?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or("tree-sitter gave no tree")?;
-    let lines = source.split_inclusive(|&byte| byte == b'\n').count();
-    let mut symbols = vec![None; lines];
-    visit(
-        language,
-        tree.root_node(),
-        source,
-        &mut Vec::new(),
-        &mut symbols,
-    );
-    Ok(symbols)
-}
-
-/// Gives each line of `node` the innermost symbol that encloses it, below the symbols `enclosing`.
-fn visit(
-    language: Language,
-    node: Node,
-    source: &[u8],
-    enclosing: &mut Vec<(String, String)>,
-    symbols: &mut [Option<Symbol>],
-) {
-    let name = language.name(node, source);
-    if let Some(name) = &name {
-        enclosing.push((node.kind().to_owned(), name.clone()));
-        let (first, last) = (node.start_position().row, node.end_position().row);
-        // The symbols inside this one overwrite their lines next.
-        for line in symbols.iter_mut().take(last + 1).skip(first) {
-            *line = Some(Symbol(enclosing.clone()));
-        }
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        visit(language, child, source, enclosing, symbols);
-    }
-    if name.is_some() {
-        enclosing.pop();
-    }
+    let (symbols, lines) = index(language, source)?;
+    Ok(lines
+        .into_iter()
+        .map(|symbol| symbol.map(|i| symbols[i].clone()))
+        .collect())
 }
 
 /// The innermost symbols enclosing `lines`, 1-based, of `source`, a file in `language`.
@@ -163,11 +127,67 @@ pub fn enclosing(
     source: &[u8],
     lines: impl IntoIterator<Item = usize>,
 ) -> Result<BTreeSet<Symbol>> {
-    let symbols = innermost(language, source)?;
+    let (symbols, innermost) = index(language, source)?;
     Ok(lines
         .into_iter()
-        .filter_map(|line| symbols.get(line - 1).cloned().flatten())
+        .filter_map(|line| innermost.get(line - 1).copied().flatten())
+        .map(|i| symbols[i].clone())
         .collect())
+}
+
+/// The symbols of `source`, a file in `language`, and for each of its lines the index of the
+/// innermost one enclosing it, as [`innermost`] gives them.
+fn index(language: Language, source: &[u8]) -> Result<(Vec<Symbol>, Vec<Option<usize>>)> {
+    let mut parser = Parser::new();
+    parser.set_language(&language.grammar())?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or("tree-sitter gave no tree")?;
+    let lines = source.split_inclusive(|&byte| byte == b'\n').count();
+    let mut index = Index {
+        language,
+        source,
+        enclosing: Vec::new(),
+        symbols: Vec::new(),
+        lines: vec![None; lines],
+    };
+    index.visit(tree.root_node());
+    Ok((index.symbols, index.lines))
+}
+
+/// What [`index`] finds while it walks the syntax tree.
+struct Index<'s> {
+    language: Language,
+    source: &'s [u8],
+    /// The symbols that enclose the node walked, outermost first.
+    enclosing: Vec<(String, String)>,
+    symbols: Vec<Symbol>,
+    lines: Vec<Option<usize>>,
+}
+
+impl Index<'_> {
+    /// Gives each line of `node` the innermost symbol that encloses it, below the symbols
+    /// `enclosing`.
+    fn visit(&mut self, node: Node) {
+        let name = self.language.name(node, self.source);
+        if let Some(name) = &name {
+            self.enclosing.push((node.kind().to_owned(), name.clone()));
+            self.symbols.push(Symbol(self.enclosing.clone()));
+            let symbol = self.symbols.len() - 1;
+            let (first, last) = (node.start_position().row, node.end_position().row);
+            // The symbols inside this one overwrite their lines next.
+            for line in self.lines.iter_mut().take(last + 1).skip(first) {
+                *line = Some(symbol);
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            self.visit(child);
+        }
+        if name.is_some() {
+            self.enclosing.pop();
+        }
+    }
 }
 
 #[cfg(test)]

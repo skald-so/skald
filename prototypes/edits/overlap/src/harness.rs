@@ -139,16 +139,18 @@ impl Machine {
     /// Merges the upstream's branch `branch` into its default branch with a merge commit and
     /// pushes it, as a maintainer merging a pull request would.
     pub fn merge(&self, branch: &str) -> Result<()> {
+        self.merge_with(branch, &[])
+    }
+
+    /// Merges as [`Machine::merge`] does, with `options` for `git merge`, such as
+    /// `--strategy-option=ours` to resolve each conflict to the default branch's side.
+    pub fn merge_with(&self, branch: &str, options: &[&str]) -> Result<()> {
         self.pull()?;
         self.git(&["fetch", "--quiet", "origin", branch])?;
-        self.git(&[
-            "merge",
-            "--quiet",
-            "--no-ff",
-            "--message",
-            branch,
-            "FETCH_HEAD",
-        ])?;
+        let mut merge = vec!["merge", "--quiet", "--no-ff", "--message", branch];
+        merge.extend(options);
+        merge.push("FETCH_HEAD");
+        self.git(&merge)?;
         self.git(&[
             "push",
             "--quiet",

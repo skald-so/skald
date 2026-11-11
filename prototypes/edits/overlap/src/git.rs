@@ -5,6 +5,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use crate::{Result, Scope};
 
@@ -15,7 +16,7 @@ pub const UPSTREAM_HEAD: &str = "refs/remotes/origin/HEAD";
 /// credentials, config, repository or home directory of the parent's. It reads no global or
 /// system config, attributes or ignore files, never prompts, and commits as a fixed identity.
 pub fn command(dir: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = Command::new(program());
     command.args(args).current_dir(dir).env_clear();
     if let Some(path) = std::env::var_os("PATH") {
         command.env("PATH", path);
@@ -30,6 +31,22 @@ pub fn command(dir: &Path, args: &[&str]) -> Command {
         .env("GIT_COMMITTER_NAME", "skald")
         .env("GIT_COMMITTER_EMAIL", "skald@example.com");
     command
+}
+
+/// The `git` that `PATH` gives, the first file named `git` in its absolute directories, or `git`
+/// when there is none. Rust's standard library starts a program given by its path with `posix_spawn`, but
+/// forks to look a name up in a `PATH` the command sets; a fork of a process with many threads and
+/// a large heap holds up each of its threads that allocates.
+fn program() -> &'static Path {
+    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&path)
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join("git"))
+            .find(|git| git.is_file())
+            .unwrap_or_else(|| "git".into())
+    })
 }
 
 /// Runs `git` in `dir`, as [`command`] sets it up, and returns its standard output.
@@ -206,40 +223,56 @@ pub fn is_object_id(text: &str) -> bool {
 /// work tree does: the snapshot records its commit only.
 pub fn edit_set(dir: &Path) -> Result<BTreeSet<String>> {
     let base = merge_base(dir)?;
-    let changed = run(
-        dir,
-        &[
-            "diff",
-            "--no-ext-diff",
-            "--no-renames",
-            "--ignore-submodules=dirty",
-            "--name-only",
-            "-z",
-            &base,
-            "--",
-        ],
-    )?;
+    let mut paths = changed_paths(dir, &[&base])?;
     let untracked = run(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-    let mut paths = BTreeSet::new();
-    for output in [changed, untracked] {
-        for path in output
-            .split(|&byte| byte == 0)
-            .filter(|path| !path.is_empty())
-        {
-            paths.insert(String::from_utf8(path.to_vec())?);
-        }
-    }
+    paths.extend(nul_separated(&untracked)?);
     Ok(paths)
+}
+
+/// The paths changed from the commit `base` to the commit `commit` in the repository at `dir`,
+/// as [`edit_set`] lists those of a working tree.
+pub fn changed(dir: &Path, base: &str, commit: &str) -> Result<BTreeSet<String>> {
+    changed_paths(dir, &[base, commit])
+}
+
+/// The paths `git diff` finds changed from the first of `commits` to the second, or to the working
+/// tree when there is no second, as [`edit_set`] says.
+fn changed_paths(dir: &Path, commits: &[&str]) -> Result<BTreeSet<String>> {
+    let mut args = vec![
+        "diff",
+        "--no-ext-diff",
+        "--no-renames",
+        "--ignore-submodules=dirty",
+        "--name-only",
+        "-z",
+    ];
+    args.extend(commits);
+    args.push("--");
+    nul_separated(&run(dir, &args)?)
+}
+
+/// The paths of `output`, each ended by a NUL.
+fn nul_separated(output: &[u8]) -> Result<BTreeSet<String>> {
+    output
+        .split(|&byte| byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| Ok(String::from_utf8(path.to_vec())?))
+        .collect()
 }
 
 /// The scope of the repository at `dir`: the least root commit of the upstream's default branch,
 /// which every clone of the repository shares.
 pub fn scope(dir: &Path) -> Result<Scope> {
-    let roots = String::from_utf8(run(dir, &["rev-list", "--max-parents=0", UPSTREAM_HEAD])?)?;
+    scope_of(dir, UPSTREAM_HEAD)
+}
+
+/// The scope of the history of `commit` in the repository at `dir`: its least root commit.
+pub fn scope_of(dir: &Path, commit: &str) -> Result<Scope> {
+    let roots = String::from_utf8(run(dir, &["rev-list", "--max-parents=0", commit])?)?;
     let root = roots
         .lines()
         .min()
-        .ok_or("the upstream's default branch has no root commit")?;
+        .ok_or_else(|| format!("{commit} has no root commit"))?;
     Ok(Scope::new(root))
 }
 

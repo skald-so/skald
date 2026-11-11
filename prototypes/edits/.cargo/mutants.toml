@@ -1,0 +1,5 @@
+# Code that script/mutants skips in the edit comparison prototype's workspace; the tests cannot catch
+# its mutants.
+# The measurement command, which fetches the measured repositories over the network and which
+# script/test does not run.
+exclude_globs = ["overlap/src/bin/measure.rs"]
