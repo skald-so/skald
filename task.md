@@ -25,11 +25,11 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 | 17 | Recovery key and new device linking | MVP | 16 |
 | 18 | Key verification without trusting the server | MVP | 17 |
 | 19 | Claude Code adapter and plugin | MVP | 4, 14, 15 |
-| 20 | Codex adapter | MVP | 4, 14, 15 |
+| 20 | Codex adapter | MVP | 4, 14, 15, 17 |
 | 21 | Presence, statuses and loop protection | MVP | 13, 15 |
 | 22 | Web UI: non-secret sections | MVP | 8, 9, 11, 12, 13, 62 |
 | 23 | Space invite by link | MVP | 13, 14, 17, 22 |
-| 24 | One-command machine connect | MVP | 7, 14, 17, 18, 19, 20, 22 |
+| 24 | One-command machine connect | MVP | 6, 7, 14, 17, 18, 19, 20, 22, 23 |
 | 25 | Production cloud, website and monitoring | MVP | 6, 7, 12 |
 | 26 | Task queue: claim, lease and DLQ | MVP | 13, 14, 15 |
 | 27 | Browser linking and history on the web | MVP | 10, 17, 22, 23 |
@@ -75,7 +75,7 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 
 **Order and parallelism**
 
-A wave starts when the dependencies of its stories are done; stories within a wave can be done in parallel. Priority is the order in this file.
+A wave starts when its stories may start by [rules.md](rules.md), rule 6; stories within a wave can be done in parallel. Priority is the order in this file.
 
 - Wave 1: 1.
 - Wave 2: 2, 3, 4, 5, 6, 7, 62.
@@ -445,7 +445,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Done when:** a report is in the docs; the primary and fallback paths are confirmed for each agent; the "Delivery to agents" table in `architecture.md` is up to date.
 
 - **Release:** MVP
-- **Manual check:** the owner reads the report and confirms the primary and fallback delivery paths.
+- **Manual check:** the report's primary and fallback delivery paths for each agent.
 - **Depends on:** Story 1
 - **Docs:** `roadmap.md` — "Preparation", `architecture.md` — "Delivery to agents", `features.md` §7, §14
 
@@ -819,7 +819,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Manual check:** Claude Code and Codex on two machines exchange encrypted messages through the CLI and MCP.
-- **Depends on:** Story 4, Story 14, Story 15
+- **Depends on:** Story 4, Story 14, Story 15, Story 17
 - **Docs:** `features.md` §7, `architecture.md` — "Delivery to agents", `infrastructure.md` — "PR checks"
 
 ### Story 21: Presence, statuses and loop protection
@@ -887,7 +887,7 @@ A wave starts when the dependencies of its stories are done; stories within a wa
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Manual check:** the new-user path on staging: sign-up, one-command connect on macOS, Linux and Windows, invite by link.
-- **Depends on:** Story 7, Story 14, Story 17, Story 18, Story 19, Story 20, Story 22
+- **Depends on:** Story 6, Story 7, Story 14, Story 17, Story 18, Story 19, Story 20, Story 22, Story 23
 - **Docs:** `features.md` §16, `architecture.md` — "Device linking", `infrastructure.md` — "Channels", `docs/protocol/membership.md`
 
 ### Story 25: Production cloud, website and monitoring

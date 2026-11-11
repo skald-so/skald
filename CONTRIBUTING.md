@@ -4,7 +4,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 
 ## Picking a story
 - Stories and their iterations are in [task.md](task.md); finished iterations are ticked in [iteration.md](iteration.md).
-- Take a story whose "Depends on" stories are done; "Order and parallelism" in `task.md` lists the waves.
+- Take a story that may start by [rules.md](rules.md), rule 6; "Order and parallelism" in `task.md` lists the waves.
 - One PR per iteration, in `task.md` order: it does all of "What we do" and meets "Definition of done".
 - A story without iterations is planned first, in its own PR: iterations go to `task.md`, their lines to `iteration.md`.
 
