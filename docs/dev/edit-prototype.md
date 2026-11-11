@@ -96,7 +96,7 @@ Open questions of edit comparison, and how the prototype answers them:
 ## Hunk fingerprints
 - **Hunks:** `git diff --unified=1` from the merge base to the snapshot of the exact check, for each path of the edit set.
   - The diff is the one `git merge-tree` uses: histogram, without the indent heuristic. `git diff` defaults to Myers with the indent heuristic; both place some hunks elsewhere.
-  - Options fix what attributes and config could change: `--text`, `--no-textconv`, `--no-ext-diff`, `--unified=1`, `--no-color`. Empty context lines without their space, which `diff.suppressBlankEmpty` writes, are read as context.
+  - Options fix what attributes and config could change: `--text`, `--no-textconv`, `--no-ext-diff`, `--unified=1`, `--no-color`. Empty context lines without their space, which `diff.suppressBlankEmpty` writes, are read as context. Hunks that `diff.interHunkContext` joins read as the same changes, and a diff of one path finds no rename, so neither needs an option.
   - `--literal-pathspecs`: a path with glob characters, such as `src/[id].rs`, gets only its own hunks, not those of the paths it matches as a glob.
 - **Boundaries:** a hunk's fingerprints stand for the boundaries between lines of the merge base it touches.
   - An insertion touches the boundary it goes into; a change of `n` lines touches the `n + 1` boundaries around and between them.

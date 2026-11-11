@@ -24,7 +24,9 @@ pub struct Change {
 /// `dir`, as `git diff` finds them with the diff algorithm of `git merge-tree`, histogram without
 /// the indent heuristic. The options fix what the repository's attributes and config could change:
 /// a binary diff without hunks, a text conversion, an external diff, the diff algorithm and colors.
-/// `--literal-pathspecs` takes `path` as it is, not as a pattern that matches other paths.
+/// `--literal-pathspecs` takes `path` as it is, not as a pattern that matches other paths. Hunks
+/// that `diff.interHunkContext` joins read as the same changes, and a diff of one path finds no
+/// rename.
 pub fn changes(dir: &Path, base: &str, commit: &str, path: &str) -> Result<Vec<Change>> {
     let diff = git::run(
         dir,
@@ -32,8 +34,6 @@ pub fn changes(dir: &Path, base: &str, commit: &str, path: &str) -> Result<Vec<C
             "--literal-pathspecs",
             "diff",
             "--unified=1",
-            "--inter-hunk-context=0",
-            "--no-renames",
             "--diff-algorithm=histogram",
             "--no-indent-heuristic",
             "--text",
