@@ -84,7 +84,7 @@ Accepted features. Which release each one belongs to: [roadmap.md](roadmap.md).
 - **Done when:** all devices are wiped; the recovery key is entered on a new laptop, and the full history is there.
 
 ## 7. Delivery to agents
-- A message reaches a live session of Claude Code, Codex (without tmux), Gemini, Cursor, OpenCode, Copilot or any agent with a shell. Paths: [architecture.md](architecture.md), "Delivery to agents".
+- A message reaches a live session of Claude Code, Codex (without tmux), Gemini, Cursor, OpenCode, Copilot, any agent with MCP or any agent with a shell. Paths: [architecture.md](architecture.md), "Delivery to agents".
 
 ## 8. Core features (parity with competitors)
 - Presence directory (encrypted): [protocol spec](../protocol/agents.md#presence).
@@ -181,6 +181,7 @@ There is one interface: `app.skald.so`. Content is decrypted in the browser.
   - signs the device key with the user's SSH key from GitHub, if they have one (feature 5);
   - shows the recovery key;
   - finds Claude Code and Codex and, after confirmation, sets up MCP and hooks;
+  - connects the agents of [agents.md](agents.md#setup-by-skald-connect) it finds, after confirmation;
   - starts the helper.
 
   The code lives for a few minutes and works once. It does not transfer keys.

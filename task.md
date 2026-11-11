@@ -66,6 +66,7 @@ Paths in the "Docs" fields are relative to `docs/dev/` unless they start with `d
 | 53 | History export and migration to a self-hosted server | Post-MVP | 16, 17, 64 |
 | 54 | Python and TypeScript SDKs | Post-MVP | 14, 26 |
 | 55 | Homebrew, winget and cargo-binstall | Post-MVP | 7 |
+| 69 | OpenClaw and Crush setup by `skald connect` | Post-MVP | 24 |
 | 56 | Managed keys: custodian device | Post-MVP | 16, 27 |
 | 57 | Hosted MCP for ChatGPT and Claude.ai | Post-MVP | 15, 56 |
 | 58 | skald ui | Post-MVP | 7, 27 |
@@ -89,7 +90,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - Wave 10: 24, 27, 31, 34, 41, 65, 66.
 - Wave 11: 28, 32, 36, 43, 63.
 - Wave 12: 29 — end of MVP.
-- Wave 13: 37, 38, 40, 42, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67, 68.
+- Wave 13: 37, 38, 40, 42, 44, 47, 49, 53, 54, 55, 56, 58, 59, 67, 68, 69.
 - Wave 14: 39, 45, 46, 48, 50, 57, 61.
 - Wave 15: 51, 52, 60.
 
@@ -1005,13 +1006,13 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - `skald connect` does every step of `features.md` §16, including signing the device key with the user's SSH key from GitHub (Story 18).
 - The next machine: the same command, plus confirmation on a linked device or with the recovery key.
 - The status on the website updates by itself.
-- **Done when:** one-click sign-up, one command per machine; after that, Claude Code and Codex on two machines exchange messages; for an account with an SSH key on GitHub, the device key is signed with it.
+- **Done when:** one-click sign-up, one command per machine; after that, Claude Code and Codex on two machines exchange messages; for an account with an SSH key on GitHub, the device key is signed with it; each agent of `agents.md`, "Setup by `skald connect`", found on the machine has the Skald MCP server in every project, in its own user config or read from another agent's user config, with its other entries kept.
 
 - **Release:** MVP
 - **Acceptance tests:** first
 - **Manual check:** the new-user path on staging: sign-up, one-command connect on macOS, Linux and Windows, invite by link.
 - **Depends on:** Story 6, Story 7, Story 14, Story 17, Story 18, Story 19, Story 20, Story 22, Story 23
-- **Docs:** `features.md` §16, `architecture.md` — "Device linking", `infrastructure.md` — "Channels", `docs/protocol/membership.md`
+- **Docs:** `features.md` §16, `agents.md` — "Setup by `skald connect`", `architecture.md` — "Device linking", `infrastructure.md` — "Channels", `docs/protocol/membership.md`
 
 ### Story 25: Production cloud, website and monitoring
 
@@ -1185,12 +1186,16 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - Their paths in `architecture.md`, "Delivery to agents", first checked on current CLI versions with live checks, as Story 4 does for Claude Code and Codex.
 - Surfaces: Cursor in its IDE and CLI, Copilot in VS Code and its CLI, Gemini in Gemini CLI and Antigravity, OpenCode in its CLI and desktop app; the GUI surfaces are checked by the developer or reviewer driving the app, as Story 4 does.
 - `skald connect` finds these agents and, after confirmation, connects them.
+- Other agents also run the config Skald writes for one agent (`agents.md`, "Config that other agents run"). The hook handler and the MCP server find which agent runs them, from the hook input, MCP `initialize` or the environment, and hand over only that agent's messages:
+  - the hook handler hands over nothing in an agent without Skald hooks of its own, such as Devin and Grok Build;
+  - the Channels server pushes events only into an agent that takes them, such as Claude Code.
 - e2e tests against real CLIs.
-- **Done when:** a message reaches a live session of each of the four agents on each of its surfaces.
+- **Done when:** a message reaches a live session of each of the four agents on each of its surfaces; with Skald's hooks and MCP server set up for Claude Code, in the user's and the repository's config, and for Cursor, each message reaches only its own session, once: Claude Code, Cursor and Copilot sessions get theirs; Devin and Grok Build sessions get none through hooks and only their own through MCP `inbox`.
 
 - **Release:** MVP
+- **Acceptance tests:** first
 - **Depends on:** Story 15, Story 24
-- **Docs:** `features.md` §7, `architecture.md` — "Components", "Delivery to agents"
+- **Docs:** `features.md` §7, `agents.md` — "Config that other agents run", `architecture.md` — "Components", "Delivery to agents"
 
 ### Story 29: End-to-end MVP scenario
 
@@ -1566,6 +1571,20 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Release:** Post-MVP
 - **Depends on:** Story 7
 - **Docs:** `features.md` §16, `infrastructure.md` — "Repositories", "Channels", "Trust in builds"
+
+### Story 69: OpenClaw and Crush setup by `skald connect`
+
+**Goal:** `skald connect` connects OpenClaw and Crush like the agents of `agents.md`, "Setup by `skald connect`".
+
+**Scope:**
+- OpenClaw: adds `mcp.servers.skald` to `~/.openclaw/openclaw.json` (JSON5), keeping the other entries and the comments.
+- Crush: adds the Skald MCP server to `~/.config/crush/crushrc`, keeping the rest of the file.
+- `agents.md`, "Setup by `skald connect`", gets a row for each, and its "OpenClaw and Crush" line goes.
+- **Done when:** with OpenClaw and Crush on a machine, `skald connect` adds the Skald MCP server to each, with its other config kept.
+
+- **Release:** Post-MVP
+- **Depends on:** Story 24
+- **Docs:** `features.md` §16, `agents.md` — "Setup by `skald connect`"
 
 ### Story 56: Managed keys: custodian device
 
