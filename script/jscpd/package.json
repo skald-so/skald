@@ -1,0 +1,8 @@
+{
+  "name": "skald-jscpd",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "devDependencies": {
+    "jscpd": "^5.4.3"
+  }
+}
