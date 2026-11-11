@@ -153,7 +153,7 @@ Claude Code needs:
 - the development channel warning answered at each start, and the trust dialog in a new directory;
 - a sign-in: an API key and a Claude account both work ([docs](https://code.claude.com/docs/en/channels.md): claude.ai or Console, not Bedrock, Vertex or Foundry); on claude.ai Team and Enterprise, an owner turns on `channelsEnabled`.
 
-A plugin (Story 19) can ship the channel: the server goes in the plugin's `.mcp.json`. Checked on the stub with the plugin loaded by `--plugin-dir`, as `skald@inline`:
+A plugin (Story 19) can ship the channel: the server goes in the plugin's `.mcp.json`. Checked by hand on the stub, with the plugin loaded by `--plugin-dir` as `skald@inline` and a message waiting:
 - `--channels plugin:skald@inline`: the startup notice says "not on the approved channels allowlist"; the message is handed over and never reaches the model;
 - `--dangerously-load-development-channels plugin:skald@inline`: after the warning, it reaches the model with `source="plugin:skald:skald"`.
 
