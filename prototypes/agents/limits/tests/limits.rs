@@ -17,6 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use agent_limits::{Limit, claude_status_line};
 use agent_testing::{Exchange, assert_failed, stderr, write_executable};
 use serde_json::{Value, json};
 
@@ -235,7 +236,11 @@ fn codex_writes_the_exchange_to_the_log() {
 #[test]
 fn codex_fails_when_the_app_server_closes() {
     let bin = tempfile::tempdir().unwrap();
-    write_executable(&bin.path().join("codex"), "#!/bin/sh\nexit 0\n");
+    // It reads the client's first line, so the client's write never meets a closed pipe.
+    write_executable(
+        &bin.path().join("codex"),
+        "#!/bin/sh\nread -r line\nexit 0\n",
+    );
     let output = agent_limits(&["codex"], bin.path(), "");
     assert_failed(
         &output,
@@ -263,6 +268,28 @@ fn the_status_line_shows_the_limits_of_its_input_and_logs_each_input() {
         "five_hour 30% · seven_day 94%\n"
     );
     assert_eq!(lines(&log), [with.trim_end(), without.trim_end()]);
+}
+
+#[test]
+fn the_status_line_input_gives_each_window_with_its_usage_and_reset_time() {
+    let with = recorded("claude-status-line.json");
+    assert_eq!(
+        claude_status_line(&with),
+        [
+            Limit {
+                name: "five_hour".to_owned(),
+                used_percent: 30.0,
+                resets_at: Some(1_794_424_800),
+            },
+            Limit {
+                name: "seven_day".to_owned(),
+                used_percent: 94.0,
+                resets_at: Some(1_794_754_800),
+            },
+        ]
+    );
+    let without = recorded("claude-status-line-api-key.json");
+    assert_eq!(claude_status_line(&without), []);
 }
 
 #[test]
