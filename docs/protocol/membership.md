@@ -85,7 +85,7 @@ cert-body = {
   * int => any,            ; fields of later versions
 }
 
-device-kind = &(client: 1, browser: 2, service: 3)
+device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 ```
 
 - Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it.

@@ -155,6 +155,7 @@ content = {
   4 => uint,           ; hops: hop counter, for loop protection
   ? 5 => id,           ; reply_to: msg_id of the message this one answers
   $$body,
+  ? 7 => delegation,   ; reserved
   ? 8 => grant,        ; only from a service device
   ? 10 => [+ attachment], ; only with a body that holds an A2A message
   * int => any,        ; fields of later versions
@@ -167,6 +168,7 @@ $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 - `to`: absent, the message is for every agent in the channel.
 - `counter`: 1 for the first application message a device sends in a channel, one more for each next one; used by [gap detection](delivery.md#gap-detection). Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
 - `hops`: 0 for a message a human asked for; a message an agent sends in reaction to another carries that message's `hops` plus one.
+- `delegation`: reserved for a later version: [Delegation](#delegation).
 - `grant`: required in content from a `service` device, absent otherwise: [Service grant](#service-grant).
 - `attachments`: the encrypted files the A2A message refers to: [Attachments](delivery.md#attachments).
 - A content carries exactly one body. Other bodies, such as [receipts](delivery.md#receipts) and [tasks](queues.md#tasks), get their own keys.
@@ -194,6 +196,29 @@ A recipient MUST reject content from a `service` device unless:
 1. the content's `grant` names the sending device as `service` and lists `channel` in `channels`;
 2. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of an admin of `space`, and `signature` verifies with its certificate;
 3. `expires` has not passed.
+
+### Delegation
+Content field 7 is reserved for a later version. Its format:
+
+```cddl
+delegation = [
+  body: bstr .cbor delegation-body,
+  signature: bstr .size 64,
+]
+
+delegation-body = {
+  1 => address,        ; agent
+  2 => id,             ; custodian
+  3 => id,             ; signer
+  4 => uint,           ; expires: seconds since the Unix epoch
+  * int => any,        ; fields of later versions
+}
+```
+
+A decoder MUST reject:
+- content with both `delegation` and `grant`, or whose `from` is not the delegation's `agent`;
+- a `delegation-body` whose `agent` is a [person address](agents.md#person), or whose `signer` is its `custodian`;
+- an [HPKE plaintext](#scheme-hpke) whose content's delegation names in `custodian` a device other than `sender`.
 
 ## Encoding
 - API: JSON over HTTPS, described by the OpenAPI spec, [api/openapi.json](../../api/openapi.json).
