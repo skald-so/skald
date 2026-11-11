@@ -167,6 +167,7 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     // Markers of 32 characters in Rust files, as git's own repository sets for some files, and
     // of 7 in the others; `-diff` makes `git diff` show any file as binary, without hunks.
     let order = "x\n}\n\nx\n}\ny\ny\n\n";
+    let gap = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n";
     let blocks =
         "}\n    y();\n    y();\nfn f() {\n    y();\n    y();\n    z();\n    z();\nfn f() {\n";
     let repo = Repo::create_with(
@@ -177,6 +178,7 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
                 "* -diff\nsrc/*.rs conflict-marker-size=32\n",
             ),
             ("notes/order.txt", order),
+            ("notes/gap.txt", gap),
             ("src/blocks.rs", blocks),
         ],
     );
@@ -207,6 +209,10 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     // to line 4.
     a.write("src/blocks.rs", &blocks.replacen("}", "fn f() {", 1))
         .unwrap();
+    // Line 5 deleted: the diff from Alice's version to the merge, resolved to her side, has hunks
+    // two lines apart around her empty side of the conflict; joined, they map it to line 6.
+    a.write("notes/gap.txt", &gap.replacen("l5\n", "", 1))
+        .unwrap();
     a.commit("reserve ten").unwrap();
     // A line added two lines above the conflict and one changed two lines below it merge cleanly.
     let mut lines = INVENTORY.to_vec();
@@ -218,6 +224,8 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     b.write("notes/plan.md", "- count\n- release\n").unwrap();
     b.write("notes/order.txt", "}\n\n}\n}\n}\ny\nx\ny\n\n")
         .unwrap();
+    b.write("notes/gap.txt", "l1\nl2\ny1\ny2\nl4\nx\nl6\nz\nl8\nl9\n")
+        .unwrap();
     let mut lines: Vec<&str> = blocks.lines().collect();
     lines.splice(3..6, []);
     lines.splice(0..0, ["    y();", "    y();", "    y();", "fn f() {"]);
@@ -227,6 +235,7 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     space.publish();
 
     let conflicts: &[(&str, &[&str])] = &[
+        ("CONFLICT (contents)", &["notes/gap.txt"]),
         ("CONFLICT (contents)", &["notes/order.txt"]),
         ("CONFLICT (contents)", &["notes/plan.md"]),
         ("CONFLICT (contents)", &["src/blocks.rs"]),
@@ -239,6 +248,7 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
             conflicted(
                 conflicts,
                 &[
+                    ("notes/gap.txt", &[5..5]),
                     ("notes/order.txt", &[4..5]),
                     ("notes/plan.md", &[2..3]),
                     ("src/blocks.rs", &[1..2]),
@@ -254,6 +264,7 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
             conflicted(
                 conflicts,
                 &[
+                    ("notes/gap.txt", &[6..7]),
                     ("notes/order.txt", &[3..5]),
                     ("notes/plan.md", &[2..3]),
                     ("src/blocks.rs", &[1..6]),

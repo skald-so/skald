@@ -6,7 +6,8 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::{Repo, Space, assert_holds_none, bytes};
-use edit_overlap::{Edits, Publication, SpaceKey};
+use edit_overlap::harness::Machine;
+use edit_overlap::{Edits, Publication, SpaceKey, git};
 use tempfile::TempDir;
 
 /// The key of another space.
@@ -245,6 +246,84 @@ fn same_path_in_another_repository_or_under_another_key_does_not_overlap() {
     assert_eq!(
         seen_now,
         pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])])
+    );
+}
+
+#[test]
+fn machines_on_different_upstream_commits_share_the_scope() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (a, a_client) = repo.machine("alice-laptop");
+    let (b, b_client) = repo.machine("bob-desktop");
+    let (maintainer, _) = repo.machine("maintainer");
+    // Upstream commits until one sorts before the root commit; Alice pulls them, Bob does not.
+    let head = |machine: &Machine| String::from_utf8(machine.git(&["rev-parse", "HEAD"]).unwrap());
+    let root = head(&maintainer).unwrap();
+    let mut tries = 0;
+    while head(&maintainer).unwrap() >= root {
+        tries += 1;
+        assert!(tries <= 64, "no commit sorts before the root commit");
+        maintainer
+            .write("notes/changelog.md", &format!("- release {tries}\n"))
+            .unwrap();
+        maintainer.commit("release").unwrap();
+    }
+    maintainer.push("main").unwrap();
+    a.pull().unwrap();
+    for machine in [&a, &b] {
+        machine
+            .write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
+            .unwrap();
+    }
+
+    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
+    assert_eq!(
+        seen_now,
+        pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])])
+    );
+}
+
+#[test]
+fn edit_set_holds_a_submodule_when_its_commit_moves_not_when_its_files_change() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Repo::new(&tmp, "repo", FILES);
+    let (machine, client) = repo.machine("alice-laptop");
+    let (maintainer, _) = repo.machine("maintainer");
+    // A repository nested in the maintainer's clone, committed as a submodule.
+    let nested = maintainer.dir().join("vendor/lib");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+    for args in [
+        &["init", "--quiet"][..],
+        &["add", "lib.rs"],
+        &["commit", "--quiet", "--message", "add the library"],
+    ] {
+        git::run(&nested, args).unwrap();
+    }
+    maintainer.commit("add the library").unwrap();
+    maintainer.push("main").unwrap();
+    machine.pull().unwrap();
+    // Checked out at the same commit, with a tracked file changed.
+    let checkout = machine.dir().join("vendor/lib");
+    let source = nested.to_str().unwrap();
+    machine
+        .git(&["clone", "--quiet", source, "vendor/lib"])
+        .unwrap();
+    std::fs::write(checkout.join("lib.rs"), "pub fn lib() -> u8 {\n    1\n}\n").unwrap();
+    assert_eq!(
+        client.edits(machine.dir()).unwrap().paths(),
+        BTreeSet::new()
+    );
+
+    // Its commit moves.
+    git::run(
+        &checkout,
+        &["commit", "--quiet", "--all", "--message", "lib"],
+    )
+    .unwrap();
+    assert_eq!(
+        client.edits(machine.dir()).unwrap().paths(),
+        BTreeSet::from(["vendor/lib"])
     );
 }
 

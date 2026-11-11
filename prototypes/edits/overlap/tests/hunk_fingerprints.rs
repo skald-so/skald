@@ -262,6 +262,7 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
     let steps = "build\nbuild\ntest\ntest\ndeploy\ntest\n";
     let braces = "}\n}\n}\n    y();\nfn f() {\n    y();\nfn f() {\n";
     let ids = "pub fn id() {}\n\n\n\npub fn di() {}\n";
+    let nest = "b\n\n{\n{\n}\na\n}\nb\n}\nb\n";
     let repo = Repo::create_with(
         &tmp,
         &[
@@ -270,6 +271,7 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
             ("src/braces.rs", braces),
             ("src/[id].rs", ids),
             ("src/i.rs", "pub fn i() {}\n"),
+            ("src/nest.rs", nest),
         ],
     );
     let (a, a_client) = repo.machine("alice-laptop");
@@ -305,6 +307,13 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
         .unwrap();
     a.write("src/i.rs", "pub fn i() -> u8 { 1 }\n").unwrap();
     b.write("src/i.rs", "pub fn i() -> u16 { 2 }\n").unwrap();
+    // A `{` added after line 4, and one moved down: the histogram diff deletes line 4 and adds
+    // lines after line 6, so both touch the boundary after line 4; the patience diff adds lines
+    // after line 3 and deletes lines 6 and 7 instead.
+    a.write("src/nest.rs", "b\n\n{\n{\n{\n}\na\n}\nb\n}\nb\n")
+        .unwrap();
+    b.write("src/nest.rs", "b\n\n{\n}\na\na\n{\n}\nb\n}\nb\n")
+        .unwrap();
     // The changed lines follow an empty line.
     a.write(
         "src/inventory.rs",
@@ -319,7 +328,13 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
     let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
     space.publish();
 
-    let files = BTreeSet::from(["src/braces.rs", "src/i.rs", "src/inventory.rs", "steps.txt"]);
+    let files = BTreeSet::from([
+        "src/braces.rs",
+        "src/i.rs",
+        "src/inventory.rs",
+        "src/nest.rs",
+        "steps.txt",
+    ]);
     for (machine, other) in [
         ("alice-laptop", "bob-desktop"),
         ("bob-desktop", "alice-laptop"),
