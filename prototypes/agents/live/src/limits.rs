@@ -419,6 +419,10 @@ mod tests {
         let agent_limits = Path::new("/bin/agent limits");
         let args = status_line_session(&files, agent_limits, Some("haiku")).unwrap();
         assert!(files.project.is_dir());
+        assert_eq!(
+            status_line_log(&files),
+            dir.path().join("status-line.jsonl")
+        );
         let settings = files.dir.join("settings.json");
         let mut expected = vec!["Reply with only OK.".to_owned()];
         expected.extend(
