@@ -58,7 +58,7 @@
 
 ## Story 6: Staging environment
 - [x] **6.1:** `skald-server` Docker image
-- [ ] **6.2:** Publishing `:edge` to GHCR
+- [x] **6.2:** Publishing `:edge` to GHCR
 - [ ] **6.3:** Preparing the move to Caddy on the staging VPS
 - [ ] **6.4:** Switching the staging VPS to Caddy
 - [ ] **6.5:** Staging stack at `dev.skald.so`
