@@ -40,7 +40,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
-- **Tooling:** tests of the scripts in `script/`, Renovate config validation.
+- **Tooling:** tests of the scripts in `script/` and of the edge image workflow, Renovate config validation.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Daily:** e2e with real Claude Code and Codex.
@@ -60,7 +60,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 | `skald` binary: macOS, Linux, Windows; x86_64 and arm64 | GitHub Releases + checksums |
 | `install.sh`, `install.ps1` | GitHub Releases. The command with a code on the website downloads them and runs `skald connect` |
 | `npx skald-so` | npm |
-| `skald-server` image | GHCR |
+| `skald-server` image | GHCR. Every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |
 | Claude Code plugin | Monorepo: `/plugin marketplace add skald-so/skald` |
 | Website and docs | GitHub Pages, built from `docs/` |
 | Homebrew, winget, crates.io, Helm | Later |

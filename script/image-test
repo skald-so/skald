@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds the skald-server image from crates/server/Dockerfile and tests it with PostgreSQL in a
 # container: its labels name the repository and the commit, and a build without the commit fails;
-# a container from it applies the migrations, listens on all interfaces and answers the health
-# check; it exits with an error when PostgreSQL is unreachable; its process does not run as root.
+# a change to the workspace's own sources reuses the dependency build; a container from it applies
+# the migrations, listens on all interfaces and answers the health check; it exits with an error
+# when PostgreSQL is unreachable; its process does not run as root.
 # Removes the images, containers and network it creates.
 set -euo pipefail
 
@@ -12,6 +13,7 @@ source script/lib/postgres.sh
 
 image=skald-server:image-test-$$
 network=skald-image-test-$$
+context=$(mktemp -d)
 containers=()
 failures=0
 
@@ -24,7 +26,8 @@ cleanup() {
   if docker network inspect "$network" >/dev/null 2>&1; then
     docker network rm "$network" >/dev/null
   fi
-  for tag in "$image" "$image-no-revision"; do
+  rm -rf "$context"
+  for tag in "$image" "$image-no-revision" "$image-deps" "$image-deps-changed"; do
     if docker image inspect "$tag" >/dev/null 2>&1; then
       docker image rm "$tag" >/dev/null
     fi
@@ -72,6 +75,17 @@ if output=$("${build[@]}" --quiet --tag "$image-no-revision" 2>&1); then
 elif [[ $output != *"--build-arg REVISION=<sha>"* ]]; then
   fail "a build without REVISION failed for another reason:"$'\n'"$output"
 fi
+
+# The dependency build, from these sources and from a copy with a changed server source: the same
+# layers, so a build for a new commit reuses it.
+cp -R Cargo.toml Cargo.lock api crates .dockerignore "$context/"
+echo '// changed' >>"$context/crates/server/src/main.rs"
+docker build --quiet --file crates/server/Dockerfile --target deps --tag "$image-deps" . >/dev/null
+docker build --quiet --file crates/server/Dockerfile --target deps --tag "$image-deps-changed" \
+  "$context" >/dev/null
+layers() { docker image inspect --format '{{json .RootFS.Layers}}' "$1"; }
+[[ $(layers "$image-deps") == "$(layers "$image-deps-changed")" ]] ||
+  fail "a change to a server source rebuilds the dependencies"
 
 # A server on PostgreSQL, reached as `postgres` on a network of their own.
 postgres_wait

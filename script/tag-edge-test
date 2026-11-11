@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Tests script/tag-edge on a scratch repository with a stand-in for docker: :edge moves to the
+# digest only for the head of dev on origin; for an older commit it stays; malformed input, an
+# origin without dev and a failed move fail.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "tag-edge-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+image=ghcr.io/skald-so/skald-server
+digest=sha256:$(printf '%064d' 1)
+
+# The stand-in for docker records its arguments in $tmp/docker.log and fails if
+# $tmp/docker-fails exists.
+mkdir "$tmp/bin"
+cat >"$tmp/bin/docker" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$tmp/docker.log"
+[[ ! -e "$tmp/docker-fails" ]]
+EOF
+chmod +x "$tmp/bin/docker"
+export PATH="$tmp/bin:$PATH"
+
+# run <args...>: runs script/tag-edge in the clone, setting $status, $output and $docker, the
+# arguments docker got.
+run() {
+  rm -f "$tmp/docker.log"
+  status=0
+  output=$(cd "$tmp/clone" && "$root/script/tag-edge" "$@" 2>&1) || status=$?
+  docker=$(cat "$tmp/docker.log" 2>/dev/null || true)
+}
+
+# expect_refused <case>: the last run failed without running docker.
+expect_refused() {
+  [[ $status -ne 0 ]] || fail "$1: exit code 0, output: $output"
+  [[ -z $docker ]] || fail "$1: docker ran: $docker"
+}
+
+# A scratch origin, isolated from the user's git config, with two commits on dev.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+git init --quiet --bare "$tmp/origin.git"
+git clone --quiet "$tmp/origin.git" "$tmp/clone" 2>/dev/null
+cd "$tmp/clone"
+git checkout --quiet -b dev
+git commit --quiet --allow-empty --message older
+older=$(git rev-parse HEAD)
+git commit --quiet --allow-empty --message head
+head=$(git rev-parse HEAD)
+git push --quiet origin dev
+cd "$tmp"
+
+# Another branch named like dev, at the older commit: only the head of dev counts.
+git -C "$tmp/clone" push --quiet origin "$older:refs/heads/feature/dev"
+
+run "$image" "$head" "$digest"
+[[ $status -eq 0 ]] || fail "head of dev: exit code $status, output: $output"
+[[ $docker == "buildx imagetools create --tag $image:edge $image@$digest" ]] ||
+  fail "head of dev: docker got '$docker'"
+
+run "$image" "$older" "$digest"
+[[ $status -eq 0 ]] || fail "older commit: exit code $status, output: $output"
+[[ -z $docker ]] || fail "older commit: docker ran: $docker"
+[[ $output == *"dev has moved on to $head"* ]] || fail "older commit: output: $output"
+
+touch "$tmp/docker-fails"
+run "$image" "$head" "$digest"
+[[ $status -ne 0 ]] || fail "failed move: exit code 0, output: $output"
+rm "$tmp/docker-fails"
+
+run "$image" "$head"
+expect_refused "two arguments"
+run "$image" "$head" "$digest" extra
+expect_refused "four arguments"
+run "$image" "${head:0:7}" "$digest"
+expect_refused "short commit"
+run "$image" "$head" "${digest#sha256:}"
+expect_refused "digest without algorithm"
+run "$image" "$head" "sha256:${digest: -63}"
+expect_refused "short digest"
+run "$image" "$head" "$digest; echo injected"
+expect_refused "digest with a command"
+
+git -C "$tmp/clone" push --quiet origin --delete dev
+run "$image" "$head" "$digest"
+expect_refused "origin without dev"
+
+if [[ $failures -ne 0 ]]; then
+  echo "tag-edge-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "tag-edge-test: all cases passed"

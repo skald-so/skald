@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Tests .github/workflows/edge.yml: it runs only on pushes to dev, one run at a time; its token
+# writes packages and nothing else; it builds crates/server/Dockerfile, the image definition
+# script/image-test tests, from the pushed commit with the layer cache of earlier runs, pushes it to
+# GHCR tagged with the commit and moves :edge with script/tag-edge.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+workflow=$root/.github/workflows/edge.yml
+image=ghcr.io/skald-so/skald-server
+failures=0
+
+fail() {
+  echo "edge-workflow-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# A pinned version: the YAML 1.2 parser keeps the `on` key a string.
+json=$(npx --yes --package yaml@2.9.1 -- yaml --json --single <"$workflow")
+
+# expect <what> <jq filter>: the filter is true for the workflow.
+expect() {
+  jq --exit-status "$2" <<<"$json" >/dev/null || fail "$1"
+}
+
+# The Dockerfile script/image-test builds: the one it names.
+dockerfile=$(grep -o -- '--file [^ ]*' "$root/script/image-test" | sort -u | sed 's/^--file //')
+[[ -n $dockerfile && $dockerfile != *$'\n'* ]] ||
+  fail "script/image-test names no Dockerfile or several: '$dockerfile'"
+
+expect "runs on pushes to dev and on nothing else" '.on == {"push": {"branches": ["dev"]}}'
+expect "its token reads contents and writes packages, nothing else" \
+  '.permissions == {"contents": "read", "packages": "write"}'
+expect "no job changes the token's permissions" '[.jobs[] | has("permissions")] | any | not'
+expect "one run at a time, without cancelling a running one" \
+  '.concurrency == {"group": "${{ github.workflow }}", "cancel-in-progress": false}'
+expect "every action is pinned to a commit" \
+  '[.jobs[].steps[] | select(has("uses")) | .uses | test("@[0-9a-f]{40}$")] | all'
+expect "the checkout keeps no credentials" \
+  '[.jobs[].steps[] | select(.uses // "" | startswith("actions/checkout@"))
+    | .with["persist-credentials"] == false] | length > 0 and all'
+expect "it uses no secret but its token" \
+  '[.. | strings | scan("secrets\\.[A-Za-z_]+")] | unique | . == [] or . == ["secrets.GITHUB_TOKEN"]'
+
+# The publish job: the build, then the move of :edge.
+expect "one job" '.jobs | length == 1'
+job='.jobs[]'
+build="[$job.steps[] | select(.uses // \"\" | startswith(\"docker/build-push-action@\"))]"
+expect "one build" "$build | length == 1"
+expect "the build uses $dockerfile with the repository as its context" \
+  "$build[0].with | .file == \"$dockerfile\" and .context == \".\""
+expect "the build names the pushed commit" \
+  "$build[0].with[\"build-args\"] == \"REVISION=\${{ github.sha }}\""
+expect "the build pushes $image tagged with the commit" \
+  "$build[0].with | .push == true and .tags == \"$image:\${{ github.sha }}\""
+expect "the build reuses the layers of earlier runs" \
+  "$build[0].with | .[\"cache-from\"] == \"type=gha\" and .[\"cache-to\"] == \"type=gha,mode=max\""
+expect "the step after the build moves :edge to the built digest of the pushed commit" \
+  "$job.steps as \$steps | (\$steps | map(.id) | index(\"build\")) as \$i
+    | \$steps[\$i].uses == $build[0].uses and \$steps[\$i + 1] == {
+      \"name\": \"Move :edge\",
+      \"env\": {\"DIGEST\": \"\${{ steps.build.outputs.digest }}\"},
+      \"run\": \"script/tag-edge $image \\\"\$GITHUB_SHA\\\" \\\"\$DIGEST\\\"\"
+    }"
+
+if [[ $failures -ne 0 ]]; then
+  echo "edge-workflow-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "edge-workflow-test: all cases passed"
