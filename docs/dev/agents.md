@@ -30,7 +30,7 @@ Agents beyond the six of [architecture.md](architecture.md#delivery-to-agents), 
 - An agent that already has a `skald` server in its own user config, or reads one from another agent's user config, stays as it is.
 - Grok Build and Oh My Pi read the server from other agents' config: [Config that other agents run](#config-that-other-agents-run).
 - OpenClaw and Crush: [roadmap.md](roadmap.md), "Post-MVP".
-- Without setup: Trae, OpenHands, Qoder IDE, CodeBuddy IDE, and Cline's and Augment's IDE extensions set MCP servers only in their UI; Letta Code adds them only from inside a session; Aider has no MCP.
+- Without setup: Trae, OpenHands, Qoder IDE, CodeBuddy IDE, and Cline's and Augment's IDE extensions set MCP servers only in their UI; Letta Code adds them only from inside a session; the Warp Agent CLI's docs name its MCP file on macOS only; Aider has no MCP.
 
 ## Config that other agents run
 | Config | Agents that also run it |
