@@ -1,10 +1,11 @@
 //! What the live checks need from each CLI: how to attach a path to a session in a temporary project,
-//! and how to read the session's events.
+//! and how to read the session's events; and the checks' options and verdicts.
 
 use std::fs;
 use std::io;
 use std::path::Path;
 
+use agent_source::State;
 use serde_json::{Value, json};
 
 /// The name of the MCP server in each session's config; Claude Code names its tool
@@ -172,6 +173,115 @@ pub enum Event {
     InboxCalled,
     /// The agent's reply; the last one ends the turn.
     Reply(String),
+}
+
+/// The options of `live-check inbox`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Options<'a> {
+    /// `--model <model>`: the model of every session.
+    pub model: Option<&'a str>,
+    /// `--keep`: keep the sessions' logs after a pass.
+    pub keep: bool,
+}
+
+impl<'a> Options<'a> {
+    /// Parses `[--model <model>] [--keep]`, in any order; `None` for anything else.
+    pub fn parse(mut options: &[&'a str]) -> Option<Self> {
+        let mut parsed = Self::default();
+        loop {
+            match options {
+                [] => return Some(parsed),
+                ["--model", model, rest @ ..] => (parsed.model, options) = (Some(*model), rest),
+                ["--keep", rest @ ..] => (parsed.keep, options) = (true, rest),
+                _ => return None,
+            }
+        }
+    }
+}
+
+/// What a session did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Session {
+    /// The agent's last reply.
+    pub reply: String,
+    /// Claude Code's `apiKeySource`.
+    pub sign_in: Option<String>,
+    /// Whether the inbox server connected, if the CLI says.
+    pub inbox_connected: Option<bool>,
+    pub inbox_called: bool,
+    /// When the session started, in milliseconds since the Unix epoch.
+    pub started_ms: u64,
+}
+
+impl Session {
+    pub fn new(started_ms: u64) -> Self {
+        Self {
+            started_ms,
+            ..Self::default()
+        }
+    }
+
+    /// Records what `event` says about the session.
+    pub fn record(&mut self, event: &Event) {
+        match event {
+            Event::Started {
+                sign_in,
+                inbox_connected,
+            } => {
+                self.sign_in = sign_in.clone();
+                self.inbox_connected = Some(*inbox_connected);
+            }
+            Event::InboxCalled => self.inbox_called = true,
+            Event::Reply(text) => self.reply = text.clone(),
+            Event::ShellStarted => {}
+        }
+    }
+
+    /// The idle and busy checks: the session called `inbox` and repeated `token`, and the message
+    /// with it, in `state`, was handed over. A message never added has no state.
+    pub fn received(&self, token: &str, state: Option<State>) -> bool {
+        self.inbox_called
+            && self.reply.contains(token)
+            && matches!(state, Some(State::HandedOver { .. }))
+    }
+
+    /// The other idle session's check: it called `inbox` and did not get `token`.
+    pub fn missed(&self, token: &str) -> bool {
+        self.inbox_called && !self.reply.contains(token)
+    }
+
+    pub fn summary(&self) -> String {
+        let mut summary = format!("reply {:?}", self.reply.trim());
+        if let Some(sign_in) = &self.sign_in {
+            summary.push_str(&format!(", apiKeySource {sign_in}"));
+        }
+        if self.inbox_connected == Some(false) {
+            summary.push_str(", the inbox server did not connect");
+        }
+        if !self.inbox_called {
+            summary.push_str(", inbox not called");
+        }
+        summary
+    }
+}
+
+/// How long after `from_ms` a message in `state` was handed over.
+pub fn handover_delay(state: Option<State>, from_ms: u64) -> String {
+    match state {
+        Some(State::HandedOver { at_ms }) => {
+            format!("{:.1} s", at_ms.saturating_sub(from_ms) as f64 / 1000.0)
+        }
+        other => format!("never (state {other:?})"),
+    }
+}
+
+/// A check's line in the output.
+pub fn report(check: &str, pass: bool, details: &str) -> String {
+    format!("  {check}: {} — {details}", verdict(pass))
+}
+
+pub fn verdict(pass: bool) -> &'static str {
+    if pass { "pass" } else { "fail" }
 }
 
 #[cfg(test)]
@@ -351,6 +461,141 @@ mod tests {
             fs::read_dir(&project).unwrap().count(),
             0,
             "no files in the project"
+        );
+    }
+
+    #[test]
+    fn parses_options() {
+        assert_eq!(Options::parse(&[]), Some(Options::default()));
+        assert_eq!(
+            Options::parse(&["--keep"]),
+            Some(Options {
+                model: None,
+                keep: true
+            })
+        );
+        assert_eq!(
+            Options::parse(&["--model", "gpt-5.5"]),
+            Some(Options {
+                model: Some("gpt-5.5"),
+                keep: false
+            })
+        );
+        assert_eq!(
+            Options::parse(&["--keep", "--model", "haiku"]),
+            Some(Options {
+                model: Some("haiku"),
+                keep: true
+            })
+        );
+        assert_eq!(Options::parse(&["--model"]), None);
+        assert_eq!(Options::parse(&["--keep", "--verbose"]), None);
+        assert_eq!(Options::parse(&["gpt-5.5"]), None);
+    }
+
+    /// A session that called `inbox` and replied `reply`.
+    fn replied(reply: &str) -> Session {
+        let mut session = Session::new(1_000);
+        session.record(&Event::InboxCalled);
+        session.record(&Event::Reply(reply.to_owned()));
+        session
+    }
+
+    #[test]
+    fn records_session_events() {
+        let mut session = Session::new(1_000);
+        assert_eq!(session.started_ms, 1_000);
+        assert!(!session.inbox_called);
+        session.record(&Event::Started {
+            sign_in: Some("none".to_owned()),
+            inbox_connected: false,
+        });
+        session.record(&Event::ShellStarted);
+        session.record(&Event::Reply("working".to_owned()));
+        session.record(&Event::InboxCalled);
+        session.record(&Event::Reply("tok-1".to_owned()));
+        assert_eq!(
+            session,
+            Session {
+                reply: "tok-1".to_owned(),
+                sign_in: Some("none".to_owned()),
+                inbox_connected: Some(false),
+                inbox_called: true,
+                started_ms: 1_000,
+            }
+        );
+    }
+
+    #[test]
+    fn a_session_receives_a_message_it_repeats_after_the_handover() {
+        let handed_over = Some(State::HandedOver { at_ms: 2_000 });
+        assert!(replied("The token is tok-1.").received("tok-1", handed_over));
+        assert!(!replied("NONE").received("tok-1", handed_over));
+        assert!(!replied("tok-1").received("tok-1", Some(State::Taken)));
+        assert!(!replied("tok-1").received("tok-1", Some(State::Waiting)));
+        // The busy check's message was never added.
+        assert!(!replied("tok-1").received("tok-1", None));
+        let mut uncalled = Session::new(1_000);
+        uncalled.record(&Event::Reply("tok-1".to_owned()));
+        assert!(!uncalled.received("tok-1", handed_over));
+    }
+
+    #[test]
+    fn the_other_session_misses_a_message_after_calling_inbox() {
+        assert!(replied("NONE").missed("tok-1"));
+        assert!(!replied("tok-1").missed("tok-1"));
+        assert!(!Session::new(1_000).missed("tok-1"));
+    }
+
+    #[test]
+    fn summarizes_a_session() {
+        assert_eq!(replied(" tok-1\n").summary(), r#"reply "tok-1""#);
+        let mut session = Session::new(1_000);
+        session.record(&Event::Started {
+            sign_in: Some("none".to_owned()),
+            inbox_connected: false,
+        });
+        assert_eq!(
+            session.summary(),
+            r#"reply "", apiKeySource none, the inbox server did not connect, inbox not called"#
+        );
+        session.record(&Event::Started {
+            sign_in: None,
+            inbox_connected: true,
+        });
+        assert_eq!(session.summary(), r#"reply "", inbox not called"#);
+    }
+
+    #[test]
+    fn measures_the_handover_delay() {
+        assert_eq!(
+            handover_delay(Some(State::HandedOver { at_ms: 5_900 }), 1_000),
+            "4.9 s"
+        );
+        assert_eq!(
+            handover_delay(Some(State::HandedOver { at_ms: 22_600 }), 1_000),
+            "21.6 s"
+        );
+        assert_eq!(
+            handover_delay(Some(State::HandedOver { at_ms: 500 }), 1_000),
+            "0.0 s"
+        );
+        assert_eq!(
+            handover_delay(Some(State::Taken), 1_000),
+            "never (state Some(Taken))"
+        );
+        assert_eq!(handover_delay(None, 1_000), "never (state None)");
+    }
+
+    #[test]
+    fn reports_a_check() {
+        assert_eq!(
+            report("busy session", true, "x"),
+            "  busy session: pass — x"
+        );
+        assert_eq!(
+            report("busy session", false, "x"),
+            "  busy session: fail — x"
         );
     }
 }

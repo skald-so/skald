@@ -18,13 +18,7 @@ Each path's section answers, for each agent:
 ## Prototypes
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-live` the live checks, `live-check`.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <claude|codex> [--model <model>] [--keep]`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `script/test` does not run them.
-
-## Live check rules
-- The owner signs in to each CLI beforehand; that is the only step a person does.
-- A check runs without a person. A step a CLI needs from a person beyond signing in is listed under [Manual check](#manual-check).
-- Hooks, MCP servers and channels are attached only through project config in a temporary directory or the CLI's arguments; the user's own CLI config is not changed.
-- Prompts are short.
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <claude|codex> [--model <model>] [--keep]`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `script/test` does not run them. Their rules: [task.md, iteration 4.1](../../task.md#iteration-41-prototype-harness-and-the-mcp-inbox-path).
 
 ## Message source
 Stands in for the helper, as [delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent), says:
@@ -71,14 +65,14 @@ Claude Code needs:
 - the server in the project's `.mcp.json`;
 - in `.claude/settings.local.json`, `enableAllProjectMcpServers: true`, which starts the project's servers, and `permissions.allow` with `mcp__skald__inbox`, which allowed each call, and `Bash(sleep:*)` for the busy check;
 - the check's flags: `-p --output-format stream-json --verbose`;
-- signing in with an API key was not checked.
+- signing in with an Anthropic API key: under [Manual check](#manual-check).
 
 Codex needs:
 - the server as `mcp_servers.skald.command` and `mcp_servers.skald.args`, given with `-c`;
 - `mcp_servers.skald.default_tools_approval_mode = "approve"`: without it, `codex exec` fails the call with "MCP tool call requires approval, but approval policy is never";
 - the check's flags: `codex exec --json --skip-git-repo-check --ephemeral -C <project>`;
 - `--model gpt-5.5`: the API key of the test machine has no access to Codex's default model;
-- signing in with ChatGPT was not checked.
+- signing in with ChatGPT: under [Manual check](#manual-check).
 
 Findings:
 - `inbox` is a pull path: a message reaches the agent only when the agent calls the tool. It wakes no idle session and reaches a busy one only at its next call, so it can only be a fallback.
@@ -90,3 +84,5 @@ Findings:
 Steps that need a person, left to the story's Manual check:
 - Claude Code, an interactive session without the settings above: whether it asks to approve the project's MCP server and each `inbox` call.
 - Codex, an interactive session without `default_tools_approval_mode`: whether it asks to approve each `inbox` call.
+- Claude Code signed in with an Anthropic API key: whether `live-check inbox claude` passes. The owner keeps Claude Code on the subscription; agents have no API key.
+- Codex signed in with ChatGPT: whether `live-check inbox codex` passes, with and without `--model gpt-5.5`. Only the owner changes a CLI's sign-in.
