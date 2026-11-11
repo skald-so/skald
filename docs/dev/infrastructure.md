@@ -18,7 +18,7 @@ A human takes one action per release: merging the Release PR.
 | Repository | Access | Contents |
 |---|---|---|
 | `skald-so/skald` | Public | Monorepo: code, docs, `docker-compose.yml` for self-hosting, Claude Code plugin marketplace |
-| `skald-so/skald-cloud` | Private | Production configs, deployment, anti-abuse rules, runbooks, approved UI designs (`design/`) |
+| `skald-so/skald-cloud` | Private | Production and staging configs, deployment, anti-abuse rules, runbooks, approved UI designs (`design/`) |
 
 ## Branches
 - `dev` — the main and default branch; PRs from people and agents go here.

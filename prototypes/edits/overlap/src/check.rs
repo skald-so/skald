@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
 
+use crate::hunks::{Header, header};
 use crate::{Result, git};
 
 /// What `git merge-tree` finds when it merges another machine's changes into this machine's.
@@ -142,8 +143,11 @@ fn own_lines(
     }
     // Outside the conflicts, the file holds the other machine's clean changes too; a diff from
     // this machine's version maps the ranges back to it. The options fix what the repository's
-    // attributes and config could change: a binary diff without hunks, hunks joined across the
-    // lines between them, and where a hunk slides.
+    // attributes, which reach a diff of two blobs through patterns such as `*`, and config could
+    // change: a binary diff without hunks, a text conversion, an external diff, hunks joined
+    // across the lines between them, colors, and the diff algorithm and indent heuristic, which
+    // decide which of repeated lines a hunk takes. Myers without the indent heuristic maps the
+    // conflicts of the scenarios to the lines `git merge-tree` merged.
     let kept = git::run_with_input(dir, &["hash-object", "-w", "--stdin"], &kept)?;
     let kept = String::from_utf8(kept)?;
     let diff = git::run(
@@ -153,7 +157,7 @@ fn own_lines(
             "--unified=0",
             "--inter-hunk-context=0",
             "--text",
-            "--indent-heuristic",
+            "--no-indent-heuristic",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
@@ -235,45 +239,16 @@ fn start_size(text: &[u8], ours: &str) -> Option<usize> {
     (size > 0 && label.starts_with(ours.as_bytes())).then_some(size)
 }
 
-/// A hunk of a `--unified=0` diff: the first line and the number of lines on each side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Hunk {
-    old: usize,
-    old_lines: usize,
-    new: usize,
-    new_lines: usize,
-}
-
-fn hunks(diff: &[u8]) -> Result<Vec<Hunk>> {
-    let side = |range: &str| -> Result<(usize, usize)> {
-        Ok(match range.split_once(',') {
-            Some((first, lines)) => (first.parse()?, lines.parse()?),
-            None => (range.parse()?, 1),
-        })
-    };
+/// The hunk headers of a `--unified=0` diff.
+fn hunks(diff: &[u8]) -> Result<Vec<Header>> {
     diff.split(|&byte| byte == b'\n')
         .filter_map(|line| line.strip_prefix(b"@@ -"))
-        .map(|header| {
-            let header = String::from_utf8_lossy(header);
-            let (old, rest) = header
-                .split_once(" +")
-                .ok_or_else(|| format!("a hunk header without a new side: {header}"))?;
-            let (new, _) = rest
-                .split_once(" @@")
-                .ok_or_else(|| format!("a hunk header without an end: {header}"))?;
-            let ((old, old_lines), (new, new_lines)) = (side(old)?, side(new)?);
-            Ok(Hunk {
-                old,
-                old_lines,
-                new,
-                new_lines,
-            })
-        })
+        .map(header)
         .collect()
 }
 
 /// Maps `range`, lines of the new side of `hunks` that no hunk changes, to the old side.
-fn map_back(hunks: &[Hunk], range: Range<usize>) -> Range<usize> {
+fn map_back(hunks: &[Header], range: Range<usize>) -> Range<usize> {
     let mut start = range.start;
     for hunk in hunks {
         // The first new line after the hunk; a hunk without new lines comes after its line `new`.
@@ -398,19 +373,19 @@ mod tests {
         assert_eq!(
             hunks(diff).unwrap(),
             [
-                Hunk {
+                Header {
                     old: 0,
                     old_lines: 0,
                     new: 1,
                     new_lines: 2
                 },
-                Hunk {
+                Header {
                     old: 3,
                     old_lines: 1,
                     new: 5,
                     new_lines: 1
                 },
-                Hunk {
+                Header {
                     old: 7,
                     old_lines: 2,
                     new: 8,
@@ -425,7 +400,7 @@ mod tests {
 
     #[test]
     fn map_back_shifts_a_range_by_the_hunks_before_it() {
-        let hunk = |old, old_lines, new, new_lines| Hunk {
+        let hunk = |old, old_lines, new, new_lines| Header {
             old,
             old_lines,
             new,
