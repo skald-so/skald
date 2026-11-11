@@ -13,7 +13,8 @@ type Client = RunningService<RoleClient, ()>;
 
 async fn start(source: &Path) -> Client {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-inbox"));
-    command.arg(source);
+    // No variable of the test's environment, so none of its credentials reach the server.
+    command.arg(source).env_clear();
     ().serve(TokioChildProcess::new(command).unwrap())
         .await
         .unwrap()

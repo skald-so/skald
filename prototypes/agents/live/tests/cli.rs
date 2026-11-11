@@ -9,9 +9,12 @@ use std::process::{Command, Output};
 use agent_live::Agent;
 use agent_source::{Source, State};
 
+/// Runs `live-check` with no variable of the test's environment, so none of its credentials
+/// reach the output.
 fn live_check(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_live-check"))
         .args(args)
+        .env_clear()
         .output()
         .expect("live-check runs")
 }
@@ -72,6 +75,7 @@ fn inbox_fails_without_the_cli() {
     let empty = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
         .args(["inbox", "claude", "--all", "--real", "--keep"])
+        .env_clear()
         .env("PATH", empty.path())
         .output()
         .expect("live-check runs");
@@ -172,9 +176,11 @@ fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
             }
             stand_ins(&bin, &record);
             let path = format!("{}:/usr/bin:/bin", bin.display());
+            // Only these variables, so the stand-ins record no credential of the test's.
             let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
                 .args(["inbox", agent.cli()])
                 .args(flags)
+                .env_clear()
                 .env("PATH", &path)
                 .env("TMPDIR", &tmp)
                 .env(SENTINEL, "secret")
@@ -184,17 +190,32 @@ fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
             assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
 
             let recorded = recorded(&record, agent.cli());
-            assert_eq!(recorded.len(), sessions, "{} {flags:?}", agent.cli());
+            // A failure names the variables, never their values.
+            let at = format!("{} {flags:?}", agent.cli());
+            assert_eq!(recorded.len(), sessions, "{at}");
             for session in &recorded {
-                assert!(!session.env.contains_key(SENTINEL), "{:?}", session.env);
+                assert!(
+                    !session.env.contains_key(SENTINEL),
+                    "{at}: {SENTINEL} reached the CLI"
+                );
                 let home = &session.env["HOME"];
-                assert!(home.starts_with(tmp.to_str().unwrap()), "{home}");
+                assert!(
+                    home.starts_with(tmp.to_str().unwrap()),
+                    "{at}: HOME is not in TMPDIR"
+                );
                 let expected: BTreeMap<String, String> = agent
                     .environment(Path::new(home), &stub_url(agent, session), &path)
                     .unwrap()
                     .into_iter()
                     .collect();
-                assert_eq!(session.env, expected, "{} {flags:?}", agent.cli());
+                assert_eq!(
+                    session.env.keys().collect::<Vec<_>>(),
+                    expected.keys().collect::<Vec<_>>(),
+                    "{at}: the CLI's variables"
+                );
+                for (name, value) in &expected {
+                    assert!(session.env[name] == *value, "{at}: {name} differs");
+                }
             }
         }
     }
