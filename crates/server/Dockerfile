@@ -3,16 +3,35 @@
 #   docker build --file crates/server/Dockerfile --build-arg REVISION=$(git rev-parse HEAD) .
 # Settings come from the environment, as for the binary: skald-server --help. SKALD_DATABASE_URL is
 # required; the server listens on all interfaces, port 8080.
-# script/image-test tests the image.
+# script/image-test tests the image; .github/workflows/edge.yml publishes it.
 
-FROM rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS build
+FROM rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS chef
+# The cache keeps downloaded crates between builds.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /src
+
+# What skald-server depends on, from the workspace manifests alone.
+FROM chef AS plan
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN cargo chef prepare --bin skald-server --recipe-path recipe.json
+
+# The dependency build: a layer reused while the recipe stays the same, so a change to the
+# workspace's own sources rebuilds only them.
+FROM chef AS deps
+COPY --from=plan /src/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo chef cook --release --locked --bin skald-server --recipe-path recipe.json
+
+FROM deps AS build
 COPY Cargo.toml Cargo.lock ./
 COPY api/openapi.json api/
 COPY crates crates
-# The cache keeps downloaded crates between builds. target/ is not cached: cargo judges freshness by
-# mtimes, which COPY keeps, so a cached target/ could ship a binary built from other sources.
+# cook deletes what it built for its stand-ins of the workspace crates; the touch also makes cargo
+# rebuild them from these sources when COPY kept mtimes older than the dependency build.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    find crates api -type f -exec touch {} + && \
     cargo build --release --locked --package skald-server && \
     cp target/release/skald-server /usr/local/bin/skald-server
 # After the build, so that a new commit reuses it.

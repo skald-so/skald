@@ -5,7 +5,8 @@
 #            and their benchmarks' smoke run, natively and in WASM; the delivery prototypes in
 #            prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
-#   tooling  tests of the scripts in script/, Renovate config validation
+#   tooling  tests of the scripts in script/ and of the edge image workflow, Renovate config
+#            validation
 #   web      web UI lint, tests (with the kit page screenshots against their references) and build
 set -euo pipefail
 
@@ -27,6 +28,14 @@ done
 checks() { [[ $parts == *" $1 "* ]]; }
 echo "script/test: checking$parts"
 
+if { checks rust || checks tooling; } && ! command -v cargo >/dev/null; then
+  echo "script/test: cargo is missing; install Rust: https://rustup.rs" >&2
+  exit 1
+fi
+if { checks rust || checks tooling; } && ! command -v git >/dev/null; then
+  echo "script/test: git is missing; the image labels and the tests of the scripts and the edit prototype run it: https://git-scm.com" >&2
+  exit 1
+fi
 if checks rust && ! command -v cargo-deny >/dev/null; then
   echo "script/test: cargo-deny is missing; install it: cargo install cargo-deny --locked" >&2
   exit 1
@@ -58,6 +67,14 @@ if checks rust; then
 fi
 if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
+  exit 1
+fi
+if { checks rust || checks tooling; } && ! command -v jq >/dev/null; then
+  echo "script/test: jq is missing; the license policy test and the edge workflow test read JSON with it: https://jqlang.org" >&2
+  exit 1
+fi
+if checks rust && ! command -v curl >/dev/null; then
+  echo "script/test: curl is missing; the image test calls the server's health check with it: https://curl.se" >&2
   exit 1
 fi
 if { checks rust || checks tooling || checks web; } && ! command -v docker >/dev/null; then
@@ -123,6 +140,8 @@ if checks tooling; then
   script/check-pr-title-test
   script/changed-parts-test
   script/mutants-test
+  script/tag-edge-test
+  script/edge-workflow-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.
   npx --yes --package renovate@44.225.1 -- renovate-config-validator --strict --no-global renovate.json
 fi

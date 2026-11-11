@@ -1,0 +1,49 @@
+name: Edge image
+
+# Every push to dev publishes the skald-server image built from it, for staging: tagged with the
+# commit, and :edge. Never runs for PRs. script/edge-workflow-test tests this file.
+on:
+  push:
+    branches: [dev]
+
+# Writes packages only; reads the repository to build it.
+permissions:
+  contents: read
+  packages: write
+
+# One run at a time, in push order; a newer push replaces a waiting run. With script/tag-edge,
+# :edge never moves back to an older commit.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The image definition script/image-test tests. The GitHub Actions cache keeps the layers of
+      # earlier runs, the dependency build among them.
+      - id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: crates/server/Dockerfile
+          build-args: REVISION=${{ github.sha }}
+          tags: ghcr.io/skald-so/skald-server:${{ github.sha }}
+          push: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Move :edge
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: script/tag-edge ghcr.io/skald-so/skald-server "$GITHUB_SHA" "$DIGEST"
