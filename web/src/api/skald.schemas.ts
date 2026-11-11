@@ -22,4 +22,51 @@ export interface HealthUnavailable {
   status: HealthUnavailableStatus;
 }
 
+/**
+ * The protocol versions the server accepts, ascending.
+ * @minItems 1
+ * @maxItems 2
+ * @items.minimum 1
+ */
+export type SupportedVersions = number[];
+
+export interface Protocol {
+  supported: SupportedVersions;
+}
+
+export type ProtocolProblemType =
+  (typeof ProtocolProblemType)[keyof typeof ProtocolProblemType];
+
+export const ProtocolProblemType = {
+  "https://skaldso/problems/protocol-too-old":
+    "https://skald.so/problems/protocol-too-old",
+  "https://skaldso/problems/protocol-too-new":
+    "https://skald.so/problems/protocol-too-new",
+  "https://skaldso/problems/protocol-version-invalid":
+    "https://skald.so/problems/protocol-version-invalid",
+} as const;
+
+export type ProtocolProblemStatus =
+  (typeof ProtocolProblemStatus)[keyof typeof ProtocolProblemStatus];
+
+export const ProtocolProblemStatus = {
+  NUMBER_400: 400,
+} as const;
+
+/**
+ * A problem details object (RFC 9457) that refuses the stated protocol version.
+ */
+export interface ProtocolProblem {
+  type: ProtocolProblemType;
+  title: string;
+  status: ProtocolProblemStatus;
+  detail: string;
+  supported: SupportedVersions;
+}
+
+/**
+ * The protocol version the request states.
+ */
+export type ProtocolVersionParameter = number;
+
 export type GetOpenApiSpec200 = { [key: string]: unknown };

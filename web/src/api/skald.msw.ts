@@ -10,6 +10,8 @@ import type {
   GetOpenApiSpec200,
   Health,
   HealthUnavailable,
+  Protocol,
+  ProtocolProblem,
 } from "./skald.schemas";
 
 export const getGetHealthResponseMock = (
@@ -36,6 +38,44 @@ export const getGetHealthResponseMock503 = (
 export const getGetOpenApiSpecResponseMock = (): GetOpenApiSpec200 => ({});
 
 export const getGetOpenApiSpecResponseMock200 = (): GetOpenApiSpec200 => ({});
+
+export const getGetProtocolResponseMock = (
+  overrideResponse: Partial<Extract<Protocol, object>> = {},
+): Protocol => ({
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetProtocolResponseMock200 = (
+  overrideResponse: Partial<Extract<Protocol, object>> = {},
+): Protocol => ({
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetProtocolResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
 
 export const getGetHealthMockHandler = (
   overrideResponse?:
@@ -152,7 +192,83 @@ export const getGetOpenApiSpecMockHandler200 = (
     options,
   );
 };
+
+export const getGetProtocolMockHandler = (
+  overrideResponse?:
+    | Protocol
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Protocol> | Protocol),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/protocol",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetProtocolResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetProtocolMockHandler200 = (
+  overrideResponse?:
+    | Protocol
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Protocol> | Protocol),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/protocol",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetProtocolResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetProtocolMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/protocol",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetProtocolResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
 export const getSkaldAPIMock = () => [
   getGetHealthMockHandler(),
   getGetOpenApiSpecMockHandler(),
+  getGetProtocolMockHandler(),
 ];

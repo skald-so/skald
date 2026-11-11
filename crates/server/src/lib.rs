@@ -3,16 +3,21 @@
 use std::io;
 use std::time::Duration;
 
-use axum::Json;
-use axum::Router;
 use axum::extract::State;
+use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::http::{StatusCode, header};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::{Extension, Json, Router, middleware};
 use serde::Serialize;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
+
+mod protocol;
+
+pub use protocol::Versions;
+use protocol::{Stated, Statement};
 
 /// The OpenAPI spec the server implements: `api/openapi.json`, served at `GET /openapi.json`.
 pub const OPENAPI_SPEC: &str = include_str!("../../../api/openapi.json");
@@ -41,12 +46,27 @@ pub async fn connect(url: &str) -> Result<PgPool, sqlx::Error> {
         .connect_lazy_with(options))
 }
 
-/// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
-pub fn app(db: PgPool) -> Router {
+/// The state the handlers share.
+#[derive(Clone)]
+struct AppState {
+    db: PgPool,
+    versions: Versions,
+}
+
+/// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`, accepting the
+/// protocol versions `versions`.
+pub fn app(db: PgPool, versions: Versions) -> Router {
+    let checked =
+        |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi_spec))
-        .with_state(db)
+        .route(
+            "/protocol",
+            get(protocol_versions).layer(checked(Statement::Header)),
+        )
+        .route("/ws", get(websocket).layer(checked(Statement::Subprotocol)))
+        .with_state(AppState { db, versions })
 }
 
 /// `Health` and `HealthUnavailable` in the spec.
@@ -55,8 +75,8 @@ struct Health {
     status: &'static str,
 }
 
-async fn health(State(db): State<PgPool>) -> (StatusCode, Json<Health>) {
-    let ping = sqlx::query("SELECT 1").execute(&db);
+async fn health(State(state): State<AppState>) -> (StatusCode, Json<Health>) {
+    let ping = sqlx::query("SELECT 1").execute(&state.db);
     match tokio::time::timeout(DATABASE_TIMEOUT, ping).await {
         Ok(Ok(_)) => (StatusCode::OK, Json(Health { status: "ok" })),
         Ok(Err(_)) | Err(_) => (
@@ -70,4 +90,31 @@ async fn health(State(db): State<PgPool>) -> (StatusCode, Json<Health>) {
 
 async fn openapi_spec() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], OPENAPI_SPEC)
+}
+
+/// `Protocol` in the spec.
+#[derive(Serialize)]
+struct Protocol {
+    supported: Vec<u64>,
+}
+
+async fn protocol_versions(State(state): State<AppState>) -> Json<Protocol> {
+    Json(Protocol {
+        supported: state.versions.supported(),
+    })
+}
+
+/// Opens a WebSocket with the subprotocol that states the accepted version.
+async fn websocket(
+    Extension(Stated(version)): Extension<Stated>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade
+        .protocols([skald_proto::subprotocol(version)])
+        .on_upgrade(hold)
+}
+
+/// Keeps a WebSocket open, answering pings, until the client closes it; it carries no frames yet.
+async fn hold(mut socket: WebSocket) {
+    while let Some(Ok(_)) = socket.recv().await {}
 }

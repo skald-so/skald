@@ -20,7 +20,7 @@
 - [x] **2.6:** Threat model
 - [x] **2.7:** Identifiers and agent addresses in `proto`
 - [x] **2.8:** Envelope and receipt types in `proto`
-- [ ] **2.9:** Protocol version check on the server
+- [x] **2.9:** Protocol version check on the server
 - [ ] **2.10:** Protocol version check in the client
 
 ## Story 3: MLS prototypes and library choice
