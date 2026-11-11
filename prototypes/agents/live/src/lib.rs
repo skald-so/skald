@@ -104,32 +104,12 @@ impl Agent {
                     project.join(".claude/settings.local.json"),
                     pretty(&settings),
                 )?;
-                args.extend(
-                    [
-                        "-p",
-                        &kind.prompt(),
-                        "--output-format",
-                        "stream-json",
-                        "--verbose",
-                        // Only the project's local settings, only its MCP server, no skills.
-                        "--setting-sources",
-                        "local",
-                        "--strict-mcp-config",
-                        "--mcp-config",
-                        &servers.to_string_lossy(),
-                        "--disable-slash-commands",
-                        // Only the built-in tools the session needs; MCP tools load at the start.
-                        "--tools",
-                        kind.claude_tools(),
-                        "--effort",
-                        "low",
-                        "--no-session-persistence",
-                    ]
-                    .map(String::from),
+                args = claude_print(
+                    &kind.prompt(),
+                    &["--mcp-config", &servers.to_string_lossy()],
+                    kind.claude_tools(),
+                    model,
                 );
-                if let Some(model) = model {
-                    args.extend(["--model".to_owned(), model.to_owned()]);
-                }
             }
             Self::Codex => {
                 // `-c` values are TOML; a JSON string or array of strings is valid TOML.
@@ -305,6 +285,41 @@ impl Agent {
             }
         }
     }
+}
+
+/// The arguments of a non-interactive Claude Code session with `prompt` that prints its events as
+/// stream-json. It loads only the project's local settings and what `config` adds, no other MCP
+/// server, no skills, only the built-in `tools` (MCP tools load at the start), at the lowest effort,
+/// and saves no session.
+fn claude_print(prompt: &str, config: &[&str], tools: &str, model: Option<&str>) -> Vec<String> {
+    let head = [
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--setting-sources",
+        "local",
+        "--strict-mcp-config",
+    ];
+    let tail = [
+        "--disable-slash-commands",
+        "--tools",
+        tools,
+        "--effort",
+        "low",
+        "--no-session-persistence",
+    ];
+    let mut args: Vec<String> = head
+        .into_iter()
+        .chain(config.iter().copied())
+        .chain(tail)
+        .map(String::from)
+        .collect();
+    if let Some(model) = model {
+        args.extend(["--model".to_owned(), model.to_owned()]);
+    }
+    args
 }
 
 /// Claude Code's name of the `inbox` tool.
@@ -494,34 +509,51 @@ impl Setup<'_> {
     /// Prepares the `kind` session `name` in `work/<name>`: a project with the `inbox` server
     /// attached and, on `stub`, a home of its own.
     pub fn run(&self, name: &str, kind: Kind, stub: Option<&Stub>) -> io::Result<Run> {
-        let dir = self.work.join(name);
-        let project = dir.join("project");
-        let source = dir.join("source");
-        fs::create_dir_all(&project)?;
         let url = stub.map(Stub::url);
-        let args = self.agent.session(
-            &project,
-            self.inbox,
-            &source,
-            kind,
-            self.model,
-            url.as_deref(),
-        )?;
-        let env = match &url {
-            Some(url) => Some(self.agent.environment(&dir.join("home"), url, self.path)?),
-            None => None,
+        let session = |_: &Path, project: &Path, source: &Path| {
+            self.agent.session(
+                project,
+                self.inbox,
+                source,
+                kind,
+                self.model,
+                url.as_deref(),
+            )
         };
-        Ok(Run {
-            name: name.to_owned(),
-            agent: self.agent,
-            project,
-            source,
-            args,
-            env,
-            log: dir.join("session.jsonl"),
-            stderr: dir.join("session.stderr"),
-        })
+        prepare(self.work, name, self.agent, self.path, stub, session)
     }
+}
+
+/// Prepares `agent`'s session `name` in `work/<name>`: an empty project, the source's directory
+/// and the logs there, the arguments `args` gives for the session's directory, project and source,
+/// and, on `stub`, the CLI's environment with a home of its own and `path` as `PATH`.
+fn prepare(
+    work: &Path,
+    name: &str,
+    agent: Agent,
+    path: &str,
+    stub: Option<&Stub>,
+    args: impl FnOnce(&Path, &Path, &Path) -> io::Result<Vec<String>>,
+) -> io::Result<Run> {
+    let dir = work.join(name);
+    let project = dir.join("project");
+    let source = dir.join("source");
+    fs::create_dir_all(&project)?;
+    let args = args(&dir, &project, &source)?;
+    let env = match stub {
+        Some(stub) => Some(agent.environment(&dir.join("home"), &stub.url(), path)?),
+        None => None,
+    };
+    Ok(Run {
+        name: name.to_owned(),
+        agent,
+        project,
+        source,
+        args,
+        env,
+        log: dir.join("session.jsonl"),
+        stderr: dir.join("session.stderr"),
+    })
 }
 
 /// A session to run: its project, its inbox's source, its logs, the CLI's arguments and environment.
@@ -719,33 +751,81 @@ pub fn handover_delay(state: Option<State>, from_ms: u64) -> String {
     }
 }
 
+/// The details of a session's check whose message waited at its start: the session's `summary`
+/// and when the message, now in `state`, was handed over.
+fn waiting_details(summary: &str, state: Option<State>, started_ms: u64) -> String {
+    format!(
+        "{summary}; handed over {} after the session started",
+        handover_delay(state, started_ms)
+    )
+}
+
+/// The details of the other of two sessions' check: the session's `summary`.
+fn other_details(summary: &str) -> String {
+    format!("{summary}; the message is the first session's")
+}
+
+/// The details of the busy session's check: the session's `summary` and its message, added at
+/// `added_at_ms` if the agent ran a shell command, and now in `state`.
+fn busy_details(summary: &str, added_at_ms: Option<u64>, state: Option<State>) -> String {
+    match added_at_ms {
+        Some(added_at_ms) => format!(
+            "{summary}; added while the shell command ran, handed over {} later",
+            handover_delay(state, added_at_ms)
+        ),
+        None => format!("{summary}; the agent ran no shell command"),
+    }
+}
+
+/// The results of a path's checks.
+#[derive(Debug, Default)]
+pub struct Checks {
+    passed: Vec<bool>,
+}
+
+impl Checks {
+    /// Records the result `pass` of `check` and returns the check's line in the output.
+    fn report(&mut self, check: &str, pass: bool, details: &str) -> String {
+        self.passed.push(pass);
+        format!("  {check}: {} — {details}", verdict(pass))
+    }
+
+    /// Whether every check passed.
+    pub fn pass(&self) -> bool {
+        self.passed.iter().all(|pass| *pass)
+    }
+
+    /// The last line of the output: the verdict on `path` on `agent` with the model of `options`.
+    fn verdict(&self, path: &str, agent: Agent, options: &Options) -> String {
+        format!(
+            "{path} on {} with {}: {}",
+            agent.cli(),
+            options.model_name(),
+            verdict(self.pass())
+        )
+    }
+}
+
 /// The `inbox` path's checks: each returns its line in the output.
 #[derive(Debug, Default)]
 pub struct InboxCheck {
-    passed: Vec<bool>,
+    checks: Checks,
 }
 
 impl InboxCheck {
     /// The idle session and its message with `token`, now in `state`.
     pub fn idle(&mut self, session: &Session, token: &str, state: Option<State>) -> String {
-        let details = format!(
-            "{}; handed over {} after the session started",
-            session.summary(token),
-            handover_delay(state, session.started_ms)
-        );
-        self.report("idle session", session.received(token, state), &details)
+        let details = waiting_details(&session.summary(token), state, session.started_ms);
+        self.checks
+            .report("idle session", session.received(token, state), &details)
     }
 
     /// The other of two idle sessions, which must not get the message with `token`.
     pub fn other(&mut self, session: &Session, token: &str) -> String {
-        let details = format!(
-            "{}; the message is the first session's",
-            session.summary(token)
-        );
-        self.report(
+        self.checks.report(
             "the other of two idle sessions",
             session.missed(token),
-            &details,
+            &other_details(&session.summary(token)),
         )
     }
 
@@ -758,41 +838,20 @@ impl InboxCheck {
         added_at_ms: Option<u64>,
         state: Option<State>,
     ) -> String {
-        let message = match added_at_ms {
-            Some(added_at_ms) => format!(
-                "added while the shell command ran, handed over {} later",
-                handover_delay(state, added_at_ms)
-            ),
-            None => "the agent ran no shell command".to_owned(),
-        };
-        let details = format!("{}; {message}", session.summary(token));
-        self.report("busy session", session.received(token, state), &details)
+        let details = busy_details(&session.summary(token), added_at_ms, state);
+        self.checks
+            .report("busy session", session.received(token, state), &details)
     }
 
     /// Whether every check passed.
     pub fn pass(&self) -> bool {
-        self.passed.iter().all(|pass| *pass)
+        self.checks.pass()
     }
 
     /// The last line of the output.
     pub fn verdict(&self, agent: Agent, options: &Options) -> String {
-        format!(
-            "{INBOX} on {} with {}: {}",
-            agent.cli(),
-            options.model_name(),
-            verdict(self.pass())
-        )
+        self.checks.verdict(INBOX, agent, options)
     }
-
-    fn report(&mut self, check: &str, pass: bool, details: &str) -> String {
-        self.passed.push(pass);
-        report(check, pass, details)
-    }
-}
-
-/// A check's line in the output.
-fn report(check: &str, pass: bool, details: &str) -> String {
-    format!("  {check}: {} — {details}", verdict(pass))
 }
 
 fn verdict(pass: bool) -> &'static str {
@@ -811,6 +870,11 @@ pub fn exit_code(pass: bool) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The JSON in the file at `path`.
+    pub(crate) fn read_json(path: impl AsRef<Path>) -> Value {
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+    }
 
     // Lines recorded from Claude Code 2.1.322 (`--output-format stream-json --verbose`), shortened.
     const CLAUDE_INIT: &str = r#"{"type":"system","subtype":"init","mcp_servers":[{"name":"exa","status":"connected","source":"user"},{"name":"skald","status":"connected","source":"dynamic"}],"apiKeySource":"none","claude_code_version":"2.1.322"}"#;
@@ -1046,17 +1110,12 @@ mod tests {
                 "haiku"
             ]
         );
-        let config: Value = serde_json::from_slice(&fs::read(servers).unwrap()).unwrap();
         assert_eq!(
-            config,
+            read_json(servers),
             json!({ "mcpServers": { "skald": { "command": "/bin/inbox", "args": ["/tmp/source"] } } })
         );
-        let settings: Value = serde_json::from_slice(
-            &fs::read(project.path().join(".claude/settings.local.json")).unwrap(),
-        )
-        .unwrap();
         assert_eq!(
-            settings,
+            read_json(project.path().join(".claude/settings.local.json")),
             json!({ "permissions": { "allow": ["mcp__skald__inbox", "Bash(sleep:*)"] } })
         );
 
@@ -1276,7 +1335,7 @@ mod tests {
     }
 
     /// A session that called `inbox` and replied `reply`.
-    fn replied(reply: &str) -> Session {
+    pub(crate) fn replied(reply: &str) -> Session {
         let mut session = Session::new(1_000);
         session.record(&Event::InboxCalled);
         session.record(&Event::Reply(reply.to_owned()));
@@ -1284,7 +1343,7 @@ mod tests {
     }
 
     /// A session on the stub that called `inbox`; `token` reached the stub if given.
-    fn stubbed(token: Option<&str>, credentials: &[&str]) -> Session {
+    pub(crate) fn stubbed(token: Option<&str>, credentials: &[&str]) -> Session {
         let mut session = replied(DONE);
         session.stub = Some(StubLog {
             requests: vec![
@@ -1693,14 +1752,26 @@ mod tests {
     }
 
     #[test]
-    fn reports_a_check() {
+    fn reports_each_check_and_the_verdict() {
+        let mut checks = Checks::default();
+        assert!(checks.pass(), "no check failed yet");
         assert_eq!(
-            report("busy session", true, "x"),
+            checks.report("busy session", true, "x"),
             "  busy session: pass — x"
         );
+        assert!(checks.pass());
         assert_eq!(
-            report("busy session", false, "x"),
+            checks.verdict("channel", Agent::Claude, &Options::default()),
+            "channel on claude with the model stub: pass"
+        );
+        assert_eq!(
+            checks.report("busy session", false, "x"),
             "  busy session: fail — x"
+        );
+        assert!(!checks.pass());
+        assert_eq!(
+            checks.verdict("channel", Agent::Claude, &Options::default()),
+            "channel on claude with the model stub: fail"
         );
     }
 }

@@ -413,6 +413,8 @@ fn responses(script: &[Call], body: &Value) -> Response {
 mod tests {
     use std::io::Read;
 
+    use crate::tests::read_json;
+
     use super::*;
 
     const BUSY: &[Call] = &[Call::Shell, Call::Inbox];
@@ -766,8 +768,7 @@ mod tests {
             credentials: vec!["x-api-key".to_owned()],
         };
         log.save(&path).unwrap();
-        let saved: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(saved, json!(["{}", "a\"b"]));
+        assert_eq!(read_json(&path), json!(["{}", "a\"b"]));
         assert!(log.save(&dir.path().join("missing/stub.json")).is_err());
     }
 

@@ -10,8 +10,8 @@ use agent_source::State;
 use serde_json::json;
 
 use crate::{
-    Agent, Call, Event, Options, QUICK, Run, SERVER, SHELL, Session, Stub, handed_over,
-    handover_delay, pretty, report, verdict,
+    Agent, Call, Checks, Event, Kind, Options, QUICK, Run, SERVER, SHELL, Session, Stub,
+    busy_details, claude_print, handed_over, other_details, prepare, pretty, waiting_details,
 };
 
 /// The hook handler's binary, next to `live-check`.
@@ -22,15 +22,6 @@ pub const HOOK_BIN: &str = "agent-hook";
 pub enum Hook {
     PostToolUse,
     Stop,
-}
-
-/// A session's case.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Case {
-    /// The message waits before the session starts.
-    Waiting,
-    /// The message comes while the agent runs `SHELL`.
-    Busy,
 }
 
 impl Hook {
@@ -52,46 +43,46 @@ impl Hook {
     }
 
     /// The session's prompt: `PostToolUse` needs a tool call, `Stop` only the end of a turn.
-    pub fn prompt(self, case: Case) -> String {
+    pub fn prompt(self, kind: Kind) -> String {
         let token =
             format!("only the check token from the {SERVER} message, or NONE if there is none.");
-        match (self, case) {
-            (Self::Stop, Case::Waiting) => format!("Reply with {token}"),
-            (Self::PostToolUse, Case::Waiting) => {
+        match (self, kind) {
+            (Self::Stop, Kind::Idle) => format!("Reply with {token}"),
+            (Self::PostToolUse, Kind::Idle) => {
                 format!("Run the shell command `{QUICK}`. Then reply with {token}")
             }
-            (_, Case::Busy) => format!("Run the shell command `{SHELL}`. Then reply with {token}"),
+            (_, Kind::Busy) => format!("Run the shell command `{SHELL}`. Then reply with {token}"),
         }
     }
 
     /// The model stub's tool calls, in order, before it replies `DONE`.
-    pub fn script(self, case: Case) -> &'static [Call] {
-        match (self, case) {
-            (Self::Stop, Case::Waiting) => &[],
-            (Self::PostToolUse, Case::Waiting) => &[Call::Quick],
-            (_, Case::Busy) => &[Call::Shell],
+    pub fn script(self, kind: Kind) -> &'static [Call] {
+        match (self, kind) {
+            (Self::Stop, Kind::Idle) => &[],
+            (Self::PostToolUse, Kind::Idle) => &[Call::Quick],
+            (_, Kind::Busy) => &[Call::Shell],
         }
     }
 
     /// The built-in tools of the session.
-    fn tools(self, case: Case) -> &'static str {
-        match (self, case) {
-            (Self::Stop, Case::Waiting) => "",
+    fn tools(self, kind: Kind) -> &'static str {
+        match (self, kind) {
+            (Self::Stop, Kind::Idle) => "",
             _ => "Bash",
         }
     }
 }
 
-/// Writes the session's settings into `dir` and returns the arguments of a non-interactive `case`
+/// Writes the session's settings into `dir` and returns the arguments of a non-interactive `kind`
 /// session that runs `handler <source>` as its `hook` hook. Only the settings file and the
 /// arguments change Claude Code's config: no project or user settings, no MCP server, no skills,
-/// the lowest effort, and no tool but the shell, which may run only the case's command.
+/// the lowest effort, and no tool but the shell, which may run only the kind's command.
 pub fn session(
     dir: &Path,
     handler: &Path,
     source: &Path,
     hook: Hook,
-    case: Case,
+    kind: Kind,
     model: Option<&str>,
 ) -> io::Result<Vec<String>> {
     fs::create_dir_all(dir)?;
@@ -107,31 +98,16 @@ pub fn session(
             "permissions": { "allow": [format!("Bash({QUICK})"), "Bash(sleep:*)"] },
         })),
     )?;
-    let mut args: Vec<String> = [
-        "-p",
-        &hook.prompt(case),
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--include-hook-events",
-        "--setting-sources",
-        "local",
-        "--strict-mcp-config",
-        "--settings",
-        &settings.to_string_lossy(),
-        "--disable-slash-commands",
-        "--tools",
-        hook.tools(case),
-        "--effort",
-        "low",
-        "--no-session-persistence",
-    ]
-    .map(String::from)
-    .into();
-    if let Some(model) = model {
-        args.extend(["--model".to_owned(), model.to_owned()]);
-    }
-    Ok(args)
+    Ok(claude_print(
+        &hook.prompt(kind),
+        &[
+            "--include-hook-events",
+            "--settings",
+            &settings.to_string_lossy(),
+        ],
+        hook.tools(kind),
+        model,
+    ))
 }
 
 /// What every session of the check shares.
@@ -148,30 +124,13 @@ pub struct Setup<'a> {
 }
 
 impl Setup<'_> {
-    /// Prepares the `case` session `name` in `work/<name>`: an empty project, the hook's settings
+    /// Prepares the `kind` session `name` in `work/<name>`: an empty project, the hook's settings
     /// and source and, on `stub`, a home of its own.
-    pub fn run(&self, name: &str, case: Case, stub: Option<&Stub>) -> io::Result<Run> {
-        let dir = self.work.join(name);
-        let project = dir.join("project");
-        let source = dir.join("source");
-        fs::create_dir_all(&project)?;
-        let args = session(&dir, self.handler, &source, self.hook, case, self.model)?;
-        let env = match stub {
-            Some(stub) => {
-                Some(Agent::Claude.environment(&dir.join("home"), &stub.url(), self.path)?)
-            }
-            None => None,
+    pub fn run(&self, name: &str, kind: Kind, stub: Option<&Stub>) -> io::Result<Run> {
+        let session = |dir: &Path, _: &Path, source: &Path| {
+            session(dir, self.handler, source, self.hook, kind, self.model)
         };
-        Ok(Run {
-            name: name.to_owned(),
-            agent: Agent::Claude,
-            project,
-            source,
-            args,
-            env,
-            log: dir.join("session.jsonl"),
-            stderr: dir.join("session.stderr"),
-        })
+        prepare(self.work, name, Agent::Claude, self.path, stub, session)
     }
 }
 
@@ -290,14 +249,14 @@ impl HookRuns {
 #[derive(Debug)]
 pub struct HookCheck {
     hook: Hook,
-    passed: Vec<bool>,
+    checks: Checks,
 }
 
 impl HookCheck {
     pub fn new(hook: Hook) -> Self {
         Self {
             hook,
-            passed: Vec::new(),
+            checks: Checks::default(),
         }
     }
 
@@ -335,12 +294,13 @@ impl HookCheck {
         state: Option<State>,
     ) -> String {
         let pass = self.delivered(session, runs, token, state);
-        let details = format!(
-            "{}; handed over {} after the session started",
-            Self::summary(session, runs, token),
-            handover_delay(state, session.started_ms)
+        let details = waiting_details(
+            &Self::summary(session, runs, token),
+            state,
+            session.started_ms,
         );
-        self.report("message waiting at the start", pass, &details)
+        self.checks
+            .report("message waiting at the start", pass, &details)
     }
 
     /// The other of two sessions, with no message: the hook ran, gave nothing, and the first
@@ -350,11 +310,9 @@ impl HookCheck {
             && !runs.runs.is_empty()
             && runs.runs.iter().all(HookRun::quiet)
             && !session.got(token);
-        let details = format!(
-            "{}; the message is the first session's",
-            Self::summary(session, runs, token)
-        );
-        self.report("the other of two sessions", pass, &details)
+        let details = other_details(&Self::summary(session, runs, token));
+        self.checks
+            .report("the other of two sessions", pass, &details)
     }
 
     /// The busy session and its message with `token`: added at `added_at_ms`, if the agent ran a
@@ -368,43 +326,26 @@ impl HookCheck {
         state: Option<State>,
     ) -> String {
         let pass = added_at_ms.is_some() && self.delivered(session, runs, token, state);
-        let message = match added_at_ms {
-            Some(added_at_ms) => format!(
-                "added while the shell command ran, handed over {} later",
-                handover_delay(state, added_at_ms)
-            ),
-            None => "the agent ran no shell command".to_owned(),
-        };
-        let details = format!("{}; {message}", Self::summary(session, runs, token));
-        self.report("busy session", pass, &details)
+        let details = busy_details(&Self::summary(session, runs, token), added_at_ms, state);
+        self.checks.report("busy session", pass, &details)
     }
 
     /// Whether every check passed.
     pub fn pass(&self) -> bool {
-        self.passed.iter().all(|pass| *pass)
+        self.checks.pass()
     }
 
     /// The last line of the output.
     pub fn verdict(&self, options: &Options) -> String {
-        format!(
-            "{} hook on claude with {}: {}",
-            self.hook.event(),
-            options.model_name(),
-            verdict(self.pass())
-        )
-    }
-
-    fn report(&mut self, check: &str, pass: bool, details: &str) -> String {
-        self.passed.push(pass);
-        report(check, pass, details)
+        let path = format!("{} hook", self.hook.event());
+        self.checks.verdict(&path, Agent::Claude, options)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::Value;
-
-    use crate::{DONE, StubLog, Usage};
+    use crate::Usage;
+    use crate::tests::{read_json, replied, stubbed};
 
     use super::*;
 
@@ -423,25 +364,25 @@ mod tests {
         let reply = "reply with only the check token from the skald message, or NONE if there is \
                      none.";
         assert_eq!(
-            Hook::Stop.prompt(Case::Waiting),
+            Hook::Stop.prompt(Kind::Idle),
             "Reply with only the check token from the skald message, or NONE if there is none."
         );
         assert_eq!(
-            Hook::PostToolUse.prompt(Case::Waiting),
+            Hook::PostToolUse.prompt(Kind::Idle),
             format!("Run the shell command `true`. Then {reply}")
         );
         for hook in [Hook::PostToolUse, Hook::Stop] {
             assert_eq!(
-                hook.prompt(Case::Busy),
+                hook.prompt(Kind::Busy),
                 format!("Run the shell command `sleep 20`. Then {reply}")
             );
-            assert_eq!(hook.script(Case::Busy), [Call::Shell]);
-            assert_eq!(hook.tools(Case::Busy), "Bash");
+            assert_eq!(hook.script(Kind::Busy), [Call::Shell]);
+            assert_eq!(hook.tools(Kind::Busy), "Bash");
         }
-        assert_eq!(Hook::Stop.script(Case::Waiting), []);
-        assert_eq!(Hook::Stop.tools(Case::Waiting), "");
-        assert_eq!(Hook::PostToolUse.script(Case::Waiting), [Call::Quick]);
-        assert_eq!(Hook::PostToolUse.tools(Case::Waiting), "Bash");
+        assert_eq!(Hook::Stop.script(Kind::Idle), []);
+        assert_eq!(Hook::Stop.tools(Kind::Idle), "");
+        assert_eq!(Hook::PostToolUse.script(Kind::Idle), [Call::Quick]);
+        assert_eq!(Hook::PostToolUse.tools(Kind::Idle), "Bash");
     }
 
     #[test]
@@ -454,7 +395,7 @@ mod tests {
             Path::new("/bin/agent-hook"),
             Path::new("/tmp/my source"),
             Hook::Stop,
-            Case::Waiting,
+            Kind::Idle,
             Some("haiku"),
         )
         .unwrap();
@@ -462,14 +403,14 @@ mod tests {
             args,
             [
                 "-p",
-                &Hook::Stop.prompt(Case::Waiting),
+                &Hook::Stop.prompt(Kind::Idle),
                 "--output-format",
                 "stream-json",
                 "--verbose",
-                "--include-hook-events",
                 "--setting-sources",
                 "local",
                 "--strict-mcp-config",
+                "--include-hook-events",
                 "--settings",
                 settings,
                 "--disable-slash-commands",
@@ -482,7 +423,7 @@ mod tests {
                 "haiku",
             ]
         );
-        let written: Value = serde_json::from_str(&fs::read_to_string(settings).unwrap()).unwrap();
+        let written = read_json(settings);
         assert_eq!(
             written,
             json!({
@@ -498,14 +439,14 @@ mod tests {
             Path::new("/bin/agent-hook"),
             Path::new("/s"),
             Hook::PostToolUse,
-            Case::Busy,
+            Kind::Busy,
             None,
         )
         .unwrap();
-        assert_eq!(busy[1], Hook::PostToolUse.prompt(Case::Busy));
+        assert_eq!(busy[1], Hook::PostToolUse.prompt(Kind::Busy));
         assert_eq!(busy[12..14], ["--tools", "Bash"]);
         assert_eq!(busy.len(), 17, "{busy:?}");
-        let written: Value = serde_json::from_str(&fs::read_to_string(settings).unwrap()).unwrap();
+        let written = read_json(settings);
         assert_eq!(
             written["hooks"],
             json!({ "PostToolUse": [{ "hooks": [{
@@ -525,38 +466,30 @@ mod tests {
             path: "/bin",
         };
         let dir = work.path().join("a");
-        let run = setup.run("a", Case::Busy, None).unwrap();
-        let (project, source) = (dir.join("project"), dir.join("source"));
-        assert!(project.is_dir());
+        let run = setup.run("a", Kind::Busy, None).unwrap();
+        assert_eq!(run.agent, Agent::Claude);
+        assert_eq!(run.project, dir.join("project"));
         assert_eq!(
-            fs::read_dir(&project).unwrap().count(),
+            fs::read_dir(&run.project).unwrap().count(),
             0,
             "the project is empty"
         );
         assert_eq!(
-            run,
-            Run {
-                name: "a".to_owned(),
-                agent: Agent::Claude,
-                args: session(
-                    &dir,
-                    Path::new("/bin/agent-hook"),
-                    &source,
-                    Hook::PostToolUse,
-                    Case::Busy,
-                    Some("m")
-                )
-                .unwrap(),
-                env: None,
-                project,
-                source,
-                log: dir.join("session.jsonl"),
-                stderr: dir.join("session.stderr"),
-            }
+            run.args,
+            session(
+                &dir,
+                Path::new("/bin/agent-hook"),
+                &dir.join("source"),
+                Hook::PostToolUse,
+                Kind::Busy,
+                Some("m")
+            )
+            .unwrap()
         );
+        assert_eq!(run.env, None);
 
         let stub = Stub::start(&[]).unwrap();
-        let run = setup.run("b", Case::Waiting, Some(&stub)).unwrap();
+        let run = setup.run("b", Kind::Idle, Some(&stub)).unwrap();
         assert_eq!(
             run.env,
             Some(
@@ -650,23 +583,6 @@ mod tests {
         assert!(!quiet(&[]));
     }
 
-    /// A session on the real model that replied `reply`.
-    fn replied(reply: &str) -> Session {
-        let mut session = Session::new(1_000);
-        session.record(&Event::Reply(reply.to_owned()));
-        session
-    }
-
-    /// A session on the stub whose requests hold `token`, if given.
-    fn stubbed(token: Option<&str>, credentials: &[&str]) -> Session {
-        let mut session = replied(DONE);
-        session.stub = Some(StubLog {
-            requests: vec![format!("{{\"text\":\"{}\"}}", token.unwrap_or("none"))],
-            credentials: credentials.iter().map(|name| (*name).to_owned()).collect(),
-        });
-        session
-    }
-
     fn handed() -> Option<State> {
         Some(State::HandedOver { at_ms: 1_900 })
     }
@@ -677,7 +593,7 @@ mod tests {
         let stop = runs(Hook::Stop, &[("success", "tok-1"), ("success", "")]);
         assert_eq!(
             check.waiting(&stubbed(Some("tok-1"), &[]), &stop, "tok-1", handed()),
-            r#"  message waiting at the start: pass — reply "Done.", Stop ran 2 time(s): 5 ms with messages, 5 ms without, requests to the stub: 1, the token reached it; handed over 0.9 s after the session started"#
+            r#"  message waiting at the start: pass — reply "Done.", Stop ran 2 time(s): 5 ms with messages, 5 ms without, requests to the stub: 2, the token reached it; handed over 0.9 s after the session started"#
         );
         assert!(check.pass());
         assert_eq!(
@@ -746,7 +662,7 @@ mod tests {
         let mut check = HookCheck::new(Hook::PostToolUse);
         assert_eq!(
             check.other(&stubbed(None, &[]), &quiet, "tok-1"),
-            r#"  the other of two sessions: pass — reply "Done.", PostToolUse ran 1 time(s): 5 ms without, requests to the stub: 1, the token did not reach it; the message is the first session's"#
+            r#"  the other of two sessions: pass — reply "Done.", PostToolUse ran 1 time(s): 5 ms without, requests to the stub: 2, the token did not reach it; the message is the first session's"#
         );
         assert!(check.pass());
         for (session, runs) in [

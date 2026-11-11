@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -22,6 +23,16 @@ fn live_check(args: &[&str]) -> Output {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// Asserts that `live-check` failed with exit code 1 and said why.
+fn assert_failed(output: &Output) {
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
+    assert!(
+        stderr(output).starts_with("live-check: "),
+        "{}",
+        stderr(output)
+    );
 }
 
 #[test]
@@ -45,13 +56,12 @@ fn add_puts_a_waiting_message_in_the_source() {
 #[test]
 fn add_fails_when_the_source_cannot_open() {
     let file = tempfile::NamedTempFile::new().unwrap();
-    let output = live_check(&["add", file.path().to_str().unwrap(), "s", "t"]);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).starts_with("live-check: "),
-        "{}",
-        stderr(&output)
-    );
+    assert_failed(&live_check(&[
+        "add",
+        file.path().to_str().unwrap(),
+        "s",
+        "t",
+    ]));
 }
 
 #[test]
@@ -87,12 +97,7 @@ fn inbox_fails_without_the_cli() {
         .env("PATH", empty.path())
         .output()
         .expect("live-check runs");
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).starts_with("live-check: "),
-        "{}",
-        stderr(&output)
-    );
+    assert_failed(&output);
 }
 
 /// A variable of `live-check`'s environment that the CLI on the stub must not get.
@@ -109,8 +114,8 @@ const SIGN_IN: [(&str, &str); 6] = [
     ("AWS_BEARER_TOKEN_BEDROCK", "fake-bearer"),
 ];
 
-/// Asserts that a session off the stub got `live-check`'s `PATH` and [`SENTINEL`] and none of
-/// [`SIGN_IN`].
+/// Asserts that a Claude Code session off the stub got `live-check`'s `PATH` and [`SENTINEL`],
+/// none of [`SIGN_IN`] and no config home of its own.
 fn assert_real_environment(at: &str, session: &Recorded, path: &str) {
     assert!(session.env["PATH"] == path, "{at}: PATH differs");
     assert!(
@@ -122,6 +127,35 @@ fn assert_real_environment(at: &str, session: &Recorded, path: &str) {
     );
     for (name, _) in SIGN_IN {
         assert!(!session.env.contains_key(name), "{at}: {name} is set");
+    }
+    assert!(
+        !session.env.contains_key("CLAUDE_CONFIG_DIR"),
+        "{at}: CLAUDE_CONFIG_DIR is set"
+    );
+}
+
+/// Asserts that a session on the stub got only the environment `expected` gives for its `HOME`,
+/// which lies in `tmp`, and not [`SENTINEL`].
+fn assert_stub_environment(
+    at: &str,
+    session: &Recorded,
+    tmp: &Path,
+    expected: impl FnOnce(&Path) -> io::Result<Vec<(String, String)>>,
+) {
+    assert!(
+        !session.env.contains_key(SENTINEL),
+        "{at}: {SENTINEL} reached the CLI"
+    );
+    let home = Path::new(&session.env["HOME"]);
+    assert!(home.starts_with(tmp), "{at}: HOME is not in TMPDIR");
+    let expected: BTreeMap<String, String> = expected(home).unwrap().into_iter().collect();
+    assert_eq!(
+        session.env.keys().collect::<Vec<_>>(),
+        expected.keys().collect::<Vec<_>>(),
+        "{at}: the CLI's variables"
+    );
+    for (name, value) in &expected {
+        assert!(session.env[name] == *value, "{at}: {name} differs");
     }
 }
 
@@ -200,57 +234,14 @@ fn stub_url(agent: Agent, session: &Recorded) -> String {
 fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
     for agent in [Agent::Claude, Agent::Codex] {
         for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
-            let dir = tempfile::tempdir().unwrap();
-            let (bin, record, tmp) = (
-                dir.path().join("bin"),
-                dir.path().join("record"),
-                dir.path().join("tmp"),
-            );
-            for dir in [&bin, &record, &tmp] {
-                fs::create_dir(dir).unwrap();
-            }
-            stand_ins(&bin, &record);
-            let path = format!("{}:/usr/bin:/bin", bin.display());
-            // Only these variables, so the stand-ins record no credential of the test's.
-            let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
-                .args(["inbox", agent.cli()])
-                .args(flags)
-                .env_clear()
-                .env("PATH", &path)
-                .env("TMPDIR", &tmp)
-                .env(SENTINEL, "secret")
-                .output()
-                .expect("live-check runs");
-            // The stand-ins never call the inbox, so the check fails.
-            assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-
-            let recorded = recorded(&record, agent.cli());
+            let (recorded, path, dir) = sessions_of(agent, &["inbox", agent.cli()], flags);
             // A failure names the variables, never their values.
             let at = format!("{} {flags:?}", agent.cli());
             assert_eq!(recorded.len(), sessions, "{at}");
             for session in &recorded {
-                assert!(
-                    !session.env.contains_key(SENTINEL),
-                    "{at}: {SENTINEL} reached the CLI"
-                );
-                let home = &session.env["HOME"];
-                assert!(
-                    home.starts_with(tmp.to_str().unwrap()),
-                    "{at}: HOME is not in TMPDIR"
-                );
-                let expected: BTreeMap<String, String> = agent
-                    .environment(Path::new(home), &stub_url(agent, session), &path)
-                    .unwrap()
-                    .into_iter()
-                    .collect();
-                assert_eq!(
-                    session.env.keys().collect::<Vec<_>>(),
-                    expected.keys().collect::<Vec<_>>(),
-                    "{at}: the CLI's variables"
-                );
-                for (name, value) in &expected {
-                    assert!(session.env[name] == *value, "{at}: {name} differs");
-                }
+                assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
+                    agent.environment(home, &stub_url(agent, session), &path)
+                });
             }
         }
     }
@@ -259,7 +250,7 @@ fn inbox_runs_one_session_or_all_three_on_the_stub_with_only_its_environment() {
 #[test]
 fn inbox_claude_on_the_real_model_drops_the_variables_that_replace_the_sign_in() {
     for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
-        let (recorded, path, _dir) = sessions_of(&["inbox", "claude"], flags);
+        let (recorded, path, _dir) = sessions_of(Agent::Claude, &["inbox", "claude"], flags);
         let at = format!("{flags:?}");
         assert_eq!(recorded.len(), sessions, "{at}");
         for session in &recorded {
@@ -269,15 +260,35 @@ fn inbox_claude_on_the_real_model_drops_the_variables_that_replace_the_sign_in()
 }
 
 /// Runs `live-check channel claude <flags>` with stand-in CLIs and returns the sessions the
-/// stand-in `claude` recorded and the `PATH` it ran with.
-fn channel_sessions(flags: &[&str]) -> (Vec<Recorded>, String, tempfile::TempDir) {
-    sessions_of(&["channel", "claude"], flags)
+/// stand-in `claude` recorded and the `PATH` it ran with. Asserts that there are `sessions` and
+/// all but the fourth load the channel.
+fn channel_sessions(
+    flags: &[&str],
+    sessions: usize,
+) -> (Vec<Recorded>, String, tempfile::TempDir, String) {
+    let (recorded, path, dir) = sessions_of(Agent::Claude, &["channel", "claude"], flags);
+    let at = format!("{flags:?}");
+    assert_eq!(recorded.len(), sessions, "{at}");
+    let with_channel = recorded
+        .iter()
+        .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
+        .count();
+    assert_eq!(
+        with_channel,
+        sessions.min(3),
+        "{at}: sessions that load the channel"
+    );
+    (recorded, path, dir, at)
 }
 
-/// Runs `live-check <command> <flags>` for Claude Code with stand-in CLIs, [`SENTINEL`] and
-/// [`SIGN_IN`] in its environment, and returns the sessions the stand-in `claude` recorded and
-/// the `PATH` it ran with.
-fn sessions_of(command: &[&str], flags: &[&str]) -> (Vec<Recorded>, String, tempfile::TempDir) {
+/// Runs `live-check <command> <flags>` with stand-in CLIs, [`SENTINEL`] and [`SIGN_IN`] and no
+/// other variable of the test's in its environment, and returns the sessions the stand-in of
+/// `agent` recorded and the `PATH` it ran with.
+fn sessions_of(
+    agent: Agent,
+    command: &[&str],
+    flags: &[&str],
+) -> (Vec<Recorded>, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let (bin, record, tmp) = (
         dir.path().join("bin"),
@@ -301,7 +312,7 @@ fn sessions_of(command: &[&str], flags: &[&str]) -> (Vec<Recorded>, String, temp
         .expect("live-check runs");
     // The stand-in ends each session at once, so the check fails.
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    (recorded(&record, "claude"), path, dir)
+    (recorded(&record, agent.cli()), path, dir)
 }
 
 const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
@@ -309,41 +320,11 @@ const CHANNEL_FLAG: &str = "--dangerously-load-development-channels";
 #[test]
 fn channel_runs_one_session_or_all_four_on_the_stub_with_only_its_environment() {
     for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 4)] {
-        let (recorded, path, dir) = channel_sessions(flags);
-        let at = format!("{flags:?}");
-        assert_eq!(recorded.len(), sessions, "{at}");
-        let with_channel = recorded
-            .iter()
-            .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
-            .count();
-        assert_eq!(
-            with_channel,
-            sessions.min(3),
-            "{at}: sessions that load the channel"
-        );
+        let (recorded, path, dir, at) = channel_sessions(flags, sessions);
         for session in &recorded {
-            assert!(
-                !session.env.contains_key(SENTINEL),
-                "{at}: {SENTINEL} reached the CLI"
-            );
-            let home = &session.env["HOME"];
-            assert!(
-                home.starts_with(dir.path().join("tmp").to_str().unwrap()),
-                "{at}: HOME is not in TMPDIR"
-            );
-            let expected: BTreeMap<String, String> =
-                stub_environment(Path::new(home), &session.env["ANTHROPIC_BASE_URL"], &path)
-                    .unwrap()
-                    .into_iter()
-                    .collect();
-            assert_eq!(
-                session.env.keys().collect::<Vec<_>>(),
-                expected.keys().collect::<Vec<_>>(),
-                "{at}: the CLI's variables"
-            );
-            for (name, value) in &expected {
-                assert!(session.env[name] == *value, "{at}: {name} differs");
-            }
+            assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
+                stub_environment(home, &stub_url(Agent::Claude, session), &path)
+            });
         }
     }
 }
@@ -351,18 +332,7 @@ fn channel_runs_one_session_or_all_four_on_the_stub_with_only_its_environment() 
 #[test]
 fn channel_on_the_real_model_drops_the_sign_in_variables_and_adds_the_terminal_and_child_mark() {
     for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 4)] {
-        let (recorded, path, _dir) = channel_sessions(flags);
-        let at = format!("{flags:?}");
-        assert_eq!(recorded.len(), sessions, "{at}");
-        let with_channel = recorded
-            .iter()
-            .filter(|session| session.args.iter().any(|arg| arg == CHANNEL_FLAG))
-            .count();
-        assert_eq!(
-            with_channel,
-            sessions.min(3),
-            "{at}: sessions that load the channel"
-        );
+        let (recorded, path, _dir, at) = channel_sessions(flags, sessions);
         for session in &recorded {
             // The real model signs in from the user's config home: the rest of the check's
             // environment passes on.
@@ -374,10 +344,6 @@ fn channel_on_the_real_model_drops_the_sign_in_variables_and_adds_the_terminal_a
             assert!(
                 session.env["CLAUDE_CODE_CHILD_SESSION"] == "1",
                 "{at}: CLAUDE_CODE_CHILD_SESSION differs"
-            );
-            assert!(
-                !session.env.contains_key("CLAUDE_CONFIG_DIR"),
-                "{at}: CLAUDE_CONFIG_DIR is set"
             );
         }
     }
@@ -409,33 +375,14 @@ fn hook_of(session: &Recorded, event: &str) -> (String, String) {
 fn hooks_run_one_session_or_all_three_on_the_stub_with_only_its_environment() {
     for (hook, event) in [("post-tool-use", "PostToolUse"), ("stop", "Stop")] {
         for (flags, sessions) in [(&[][..], 1), (&["--all"][..], 3)] {
-            let (recorded, path, dir) = sessions_of(&[hook, "claude"], flags);
+            let (recorded, path, dir) = sessions_of(Agent::Claude, &[hook, "claude"], flags);
             let at = format!("{hook} {flags:?}");
             assert_eq!(recorded.len(), sessions, "{at}");
             let mut sources = Vec::new();
             for session in &recorded {
-                assert!(
-                    !session.env.contains_key(SENTINEL),
-                    "{at}: {SENTINEL} reached the CLI"
-                );
-                let home = &session.env["HOME"];
-                assert!(
-                    home.starts_with(dir.path().join("tmp").to_str().unwrap()),
-                    "{at}: HOME is not in TMPDIR"
-                );
-                let expected: BTreeMap<String, String> = Agent::Claude
-                    .environment(Path::new(home), &session.env["ANTHROPIC_BASE_URL"], &path)
-                    .unwrap()
-                    .into_iter()
-                    .collect();
-                assert_eq!(
-                    session.env.keys().collect::<Vec<_>>(),
-                    expected.keys().collect::<Vec<_>>(),
-                    "{at}: the CLI's variables"
-                );
-                for (name, value) in &expected {
-                    assert!(session.env[name] == *value, "{at}: {name} differs");
-                }
+                assert_stub_environment(&at, session, &dir.path().join("tmp"), |home| {
+                    Agent::Claude.environment(home, &stub_url(Agent::Claude, session), &path)
+                });
                 let (command, source) = hook_of(session, event);
                 assert_eq!(
                     Path::new(&command),
@@ -455,15 +402,11 @@ fn hooks_run_one_session_or_all_three_on_the_stub_with_only_its_environment() {
 fn hooks_on_the_real_model_drop_the_variables_that_replace_the_sign_in() {
     for hook in ["post-tool-use", "stop"] {
         for (flags, sessions) in [(&["--real"][..], 1), (&["--real", "--all"][..], 3)] {
-            let (recorded, path, _dir) = sessions_of(&[hook, "claude"], flags);
+            let (recorded, path, _dir) = sessions_of(Agent::Claude, &[hook, "claude"], flags);
             let at = format!("{hook} {flags:?}");
             assert_eq!(recorded.len(), sessions, "{at}");
             for session in &recorded {
                 assert_real_environment(&at, session, &path);
-                assert!(
-                    !session.env.contains_key("CLAUDE_CONFIG_DIR"),
-                    "{at}: CLAUDE_CONFIG_DIR is set"
-                );
             }
         }
     }

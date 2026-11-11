@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
 use agent_source::{Message, Source, State};
 use serde_json::Value;
@@ -14,16 +14,21 @@ const STOP: &str = include_str!("inputs/stop.json");
 /// The `Stop` input after a `Stop` hook kept the turn going.
 const STOP_ACTIVE: &str = include_str!("inputs/stop-active.json");
 
-/// Runs `agent-hook <source>` with `input` on stdin and no variable of the test's environment.
-fn hook(source: &Path, input: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-hook"))
+/// Starts `agent-hook <source>` with piped stdio and no variable of the test's environment.
+fn start(source: &Path) -> Child {
+    Command::new(env!("CARGO_BIN_EXE_agent-hook"))
         .arg(source)
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap();
+        .unwrap()
+}
+
+/// Runs `agent-hook <source>` with `input` on stdin.
+fn hook(source: &Path, input: &str) -> Output {
+    let mut child = start(source);
     child
         .stdin
         .take()
@@ -35,6 +40,12 @@ fn hook(source: &Path, input: &str) -> Output {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// Asserts that the handler failed with exit code 1 and an error that starts with `error`.
+fn failed(output: &Output, error: &str) {
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(output));
+    assert!(stderr(output).starts_with(error), "{}", stderr(output));
 }
 
 /// The `additionalContext` of a successful run's output for `event`.
@@ -73,6 +84,10 @@ fn handed_over(source: &Source, messages: &[Message]) {
             Some(State::HandedOver { .. })
         ));
     }
+}
+
+fn waiting(source: &Source, message: &Message) {
+    assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
 }
 
 #[test]
@@ -126,7 +141,7 @@ fn another_event_takes_nothing() {
     let message = source.add("alice", "hi").unwrap();
     let input = POST_TOOL_USE.replace("\"PostToolUse\"", "\"PreToolUse\"");
     quiet(&hook(dir.path(), &input));
-    assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
+    waiting(&source, &message);
 }
 
 #[test]
@@ -134,23 +149,14 @@ fn a_closed_output_puts_the_messages_back() {
     let dir = tempfile::tempdir().unwrap();
     let source = Source::open(dir.path()).unwrap();
     let message = source.add("alice", "hi").unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-hook"))
-        .arg(dir.path())
-        .env_clear()
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = start(dir.path());
     // The handler writes only after its input ends, so the output is closed by then.
     drop(child.stdout.take());
     let mut stdin = child.stdin.take().unwrap();
     stdin.write_all(STOP.as_bytes()).unwrap();
     drop(stdin);
-    let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(stderr(&output).starts_with("agent-hook: "));
-    assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
+    failed(&child.wait_with_output().unwrap(), "agent-hook: ");
+    waiting(&source, &message);
 }
 
 /// A failure exits with 1, never with 2, which on `Stop` would keep the turn going.
@@ -160,22 +166,14 @@ fn fails_with_exit_code_1() {
     let source = Source::open(dir.path()).unwrap();
     let message = source.add("alice", "hi").unwrap();
     let output = hook(dir.path(), "not JSON");
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).starts_with("agent-hook: "),
-        "{}",
-        stderr(&output)
-    );
+    failed(&output, "agent-hook: ");
     assert!(output.stdout.is_empty());
-    assert_eq!(source.state(&message.msg_id).unwrap(), Some(State::Waiting));
+    waiting(&source, &message);
 
     let file = tempfile::NamedTempFile::new().unwrap();
-    let output = hook(file.path(), STOP);
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).starts_with("agent-hook: cannot open the source "),
-        "{}",
-        stderr(&output)
+    failed(
+        &hook(file.path(), STOP),
+        "agent-hook: cannot open the source ",
     );
 
     for args in [&[][..], &["a", "b"]] {
