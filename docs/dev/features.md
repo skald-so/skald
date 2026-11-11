@@ -181,7 +181,7 @@ There is one interface: `app.skald.so`. Content is decrypted in the browser.
   - signs the device key with the user's SSH key from GitHub, if they have one (feature 5);
   - shows the recovery key;
   - finds Claude Code and Codex and, after confirmation, sets up MCP and hooks;
-  - adds the Skald MCP server to the agents of [agents.md](agents.md#mcp-setup-by-skald-connect) it finds, after confirmation;
+  - connects the agents of [agents.md](agents.md#setup-by-skald-connect) it finds, after confirmation;
   - starts the helper.
 
   The code lives for a few minutes and works once. It does not transfer keys.

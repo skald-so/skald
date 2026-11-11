@@ -94,7 +94,7 @@
 | Claude Code | Channels | `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox` |
 | Codex | `PostToolUse`, `Stop`, `UserPromptSubmit` hooks; for background agents, app-server (`turn/start`, `turn/steer`) | MCP `inbox`, `codex queue` (to verify) |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
-| Agents of [agents.md](agents.md#mcp-setup-by-skald-connect) | — | MCP `inbox` |
+| Agents of [agents.md](agents.md#setup-by-skald-connect) | — | MCP `inbox` |
 | Any agent with a shell | — | `skald recv --wait` |
 | CI | — | One-shot mode |
 
