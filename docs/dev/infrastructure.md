@@ -18,7 +18,7 @@ A human takes one action per release: merging the Release PR.
 | Repository | Access | Contents |
 |---|---|---|
 | `skald-so/skald` | Public | Monorepo: code, docs, `docker-compose.yml` for self-hosting, Claude Code plugin marketplace |
-| `skald-so/skald-cloud` | Private | Production configs, deployment, anti-abuse rules, runbooks, approved UI designs (`design/`) |
+| `skald-so/skald-cloud` | Private | Production and staging configs, deployment, anti-abuse rules, runbooks, approved UI designs (`design/`) |
 
 ## Branches
 - `dev` — the main and default branch; PRs from people and agents go here.
@@ -75,7 +75,6 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 ## Cloud
 - **The same image that is published for self-hosting.**
 - **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically.
-  - `skald-cloud` holds the Caddy configs of every site on the VPS, a check of those sites against a recorded baseline, and the runbook for switching the VPS's web server to Caddy and back.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
   - PostgreSQL 19 with synchronous streaming replication: `stored` is sent after the replica has the write. If the replica is down, replication switches to asynchronous and an alert fires.
   - WAL-G backups to object storage.
