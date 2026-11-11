@@ -24,17 +24,25 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match ChannelServer::new(source).serve(stdio()).await {
-        Ok(running) => match running.waiting().await {
+    let server = ChannelServer::new(source);
+    let stopped = server.clone();
+    let running = match server.serve(stdio()).await {
+        Ok(running) => running,
+        Err(error) => {
+            eprintln!("agent-channel: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    tokio::select! {
+        ended = running.waiting() => match ended {
             Ok(_) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("agent-channel: {error}");
                 ExitCode::FAILURE
             }
         },
-        Err(error) => {
-            eprintln!("agent-channel: {error}");
-            ExitCode::FAILURE
-        }
+        // Ending frees the claim, so the next take puts back the messages it still holds. The exit
+        // does not wait for the blocked read of stdin, as the runtime's shutdown would.
+        () = stopped.stopped() => std::process::exit(1),
     }
 }

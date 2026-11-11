@@ -166,3 +166,26 @@ async fn messages_of_a_server_that_died_are_pushed_again() {
     handed_over(&source, &message.msg_id).await;
     client.cancel().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_server_whose_source_fails_ends_and_its_messages_are_pushed_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = Source::open(dir.path()).unwrap();
+    let (client, mut received) = start(dir.path()).await;
+    // The server cannot mark a message handed over: it writes it into `handed`.
+    let handed = dir.path().join("handed");
+    std::fs::remove_dir_all(&handed).unwrap();
+    let message = source.add("alice", "hi").unwrap();
+    assert_carries(&next(&mut received).await, &message);
+    tokio::time::timeout(Duration::from_secs(10), client.waiting())
+        .await
+        .expect("the server ends within 10 s")
+        .unwrap();
+
+    // Its claim is free, so the next session gets the message again.
+    std::fs::create_dir(&handed).unwrap();
+    let (client, mut received) = start(dir.path()).await;
+    assert_carries(&next(&mut received).await, &message);
+    handed_over(&source, &message.msg_id).await;
+    client.cancel().await.unwrap();
+}
