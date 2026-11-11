@@ -260,7 +260,12 @@ impl Prepared {
         // SAFETY: setsid and ioctl are async-signal-safe; the child makes the terminal its own.
         unsafe {
             command.pre_exec(|| {
-                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY.into(), 0) < 0 {
+                #[allow(
+                    clippy::useless_conversion,
+                    reason = "TIOCSCTTY is a u32 on macOS and the u64 ioctl takes on Linux"
+                )]
+                let request = libc::TIOCSCTTY.into();
+                if libc::setsid() < 0 || libc::ioctl(0, request, 0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(())
@@ -428,7 +433,8 @@ fn open_pty() -> io::Result<(OwnedFd, OwnedFd)> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // A pointer, not a reference: openpty takes `*mut` on macOS and `*const` on Linux.
+            &raw mut size,
         )
     };
     if opened != 0 {
