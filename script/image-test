@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Builds the skald-server image from crates/server/Dockerfile and tests it with PostgreSQL in a
+# container: its labels name the repository and the commit, and a build without the commit fails;
+# a container from it applies the migrations, listens on all interfaces and answers the health
+# check; it exits with an error when PostgreSQL is unreachable; its process does not run as root.
+# Removes the images, containers and network it creates.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+source script/lib/postgres.sh
+
+image=skald-server:image-test-$$
+network=skald-image-test-$$
+containers=()
+failures=0
+
+cleanup() {
+  for container in "${containers[@]}"; do
+    docker rm --force "$container" >/dev/null
+  done
+  postgres_stop
+  if docker network inspect "$network" >/dev/null 2>&1; then
+    docker network rm "$network" >/dev/null
+  fi
+  for tag in "$image" "$image-no-revision"; do
+    if docker image inspect "$tag" >/dev/null 2>&1; then
+      docker image rm "$tag" >/dev/null
+    fi
+  done
+}
+trap cleanup EXIT
+
+fail() {
+  echo "image-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# start <docker run args...>: starts a detached container from the image and sets $container.
+start() {
+  container=$(docker run --detach "$@" "$image")
+  containers+=("$container")
+}
+
+# wait_exit <container>: waits up to 30 s for <container> to exit; prints its exit code.
+wait_exit() {
+  for _ in $(seq 60); do
+    if [[ $(docker inspect --format '{{.State.Running}}' "$1") == false ]]; then
+      docker inspect --format '{{.State.ExitCode}}' "$1"
+      return
+    fi
+    sleep 0.5
+  done
+  echo "image-test: the container did not exit within 30 s" >&2
+  return 1
+}
+
+postgres_start
+
+revision=$(git rev-parse HEAD)
+build=(docker build --file crates/server/Dockerfile .)
+"${build[@]}" --build-arg "REVISION=$revision" --tag "$image"
+
+# Labels.
+label() { docker image inspect --format "{{index .Config.Labels \"org.opencontainers.image.$1\"}}" "$image"; }
+[[ $(label source) == https://github.com/skald-so/skald ]] || fail "source label: '$(label source)'"
+[[ $(label revision) == "$revision" ]] || fail "revision label: '$(label revision)', want '$revision'"
+# The build reuses the cached binary and stops at the missing commit; the tag is for cleanup.
+if output=$("${build[@]}" --quiet --tag "$image-no-revision" 2>&1); then
+  fail "a build without REVISION succeeded"
+elif [[ $output != *"--build-arg REVISION=<sha>"* ]]; then
+  fail "a build without REVISION failed for another reason:"$'\n'"$output"
+fi
+
+# A server on PostgreSQL, reached as `postgres` on a network of their own.
+postgres_wait
+docker network create "$network" >/dev/null
+docker network connect --alias postgres "$network" "$postgres"
+docker exec "$postgres" psql --quiet --username postgres --command 'CREATE DATABASE skald'
+start --network "$network" --publish 127.0.0.1::8080 \
+  --env "SKALD_DATABASE_URL=${SKALD_TEST_DATABASE_URL%@*}@postgres:5432/skald"
+server=$container
+# The published port reaches the server only if it listens on the container's network interface.
+health=$(docker port "$server" 8080/tcp | head -n 1)/health
+status=
+for _ in $(seq 120); do
+  [[ $(docker inspect --format '{{.State.Running}}' "$server") == true ]] || break
+  status=$(curl --silent --output /dev/null --write-out '%{http_code}' "http://$health") || true
+  [[ $status == 200 ]] && break
+  sleep 0.5
+done
+if [[ $status != 200 ]]; then
+  fail "GET /health: status '$status', want 200; container logs:"$'\n'"$(docker logs "$server" 2>&1)"
+else
+  body=$(curl --silent --fail "http://$health")
+  [[ $body == '{"status":"ok"}' ]] || fail "GET /health: body '$body'"
+
+  logs=$(docker logs "$server" 2>&1)
+  [[ $logs == *"skald-server: listening on http://0.0.0.0:8080"* ]] ||
+    fail "the server does not listen on all interfaces; logs:"$'\n'"$logs"
+
+  applied=$(docker exec "$postgres" psql --username postgres --dbname skald --tuples-only --no-align \
+    --command 'SELECT version FROM _sqlx_migrations WHERE success ORDER BY version')
+  want=$(find crates/server/migrations -name '*.sql' -exec basename {} \; | sed 's/_.*//' | sort)
+  [[ $applied == "$want" ]] || fail "applied migrations '$applied', want '$want'"
+
+  # docker top lists the container's processes as the host sees them; it needs the PID column.
+  uids=$(docker top "$server" -o pid,uid | awk 'NR > 1 { print $2 }')
+  [[ -n $uids ]] || fail "docker top lists no processes"
+  while read -r uid; do
+    [[ $uid != 0 && $uid != root ]] || fail "a process runs as root"
+  done <<<"$uids"
+fi
+
+# No PostgreSQL to reach: no network at all.
+start --network none --env SKALD_DATABASE_URL=postgres://skald@127.0.0.1:5432/skald
+exit_code=$(wait_exit "$container")
+logs=$(docker logs "$container" 2>&1)
+[[ $exit_code != 0 ]] || fail "unreachable PostgreSQL: exit code 0, logs:"$'\n'"$logs"
+[[ $logs == "skald-server: cannot connect to PostgreSQL: "* ]] ||
+  fail "unreachable PostgreSQL: logs:"$'\n'"$logs"
+
+if [[ $failures -ne 0 ]]; then
+  echo "image-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "image-test: all cases passed"

@@ -27,4 +27,5 @@ Versions as of 2026-11-09.
 | In-browser decryption | WASM build of the Rust core |
 | SDK | Rust; later Python (PyO3) and TypeScript (WASM or napi) |
 | Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package with prebuilt binaries (`npx skald-so`); Claude Code plugin; server Docker image. Later: Homebrew, winget, cargo-binstall, Helm |
+| Server image | Built in the `rust` Debian 13 image; runs on distroless `cc-debian13` as a non-root user; base images pinned by digest |
 | Infrastructure | Hetzner, Docker Compose, Caddy, WAL-G, Prometheus, Grafana, Sentry; details in [infrastructure.md](infrastructure.md) |

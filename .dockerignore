@@ -1,0 +1,6 @@
+# The build context of crates/server/Dockerfile: only what the server build reads.
+*
+!Cargo.toml
+!Cargo.lock
+!api/openapi.json
+!crates/

@@ -38,6 +38,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container; the MLS prototypes' tests natively and in WASM, in Node.js.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
+- **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
 - **Tooling:** tests of the scripts in `script/`, Renovate config validation.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
