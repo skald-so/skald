@@ -458,9 +458,15 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - A live check per path, one command against the installed CLI:
     - it runs one session and sends it one message with a random token, and prints the CLI version and pass or fail;
     - with `--all` it also runs the other cases of the list of checks below: a busy session and reaching one of two sessions;
-    - the model is a local stub where the CLI accepts a custom model endpoint: the stub answers with scripted turns, such as calling the path's tool or running a shell command; the check passes when the token reaches a request the CLI sends to the stub, and spends no tokens;
-    - the CLI sends the stub no real credential: it runs with a placeholder key;
-    - with `--real`, or where the CLI accepts no custom model endpoint, the real model answers: the check passes when the agent repeats the token, and prints the tokens it used where the CLI's output gives them;
+    - by default a local stub stands in for the model, where the CLI accepts a custom model endpoint and the path and its data work under a placeholder key:
+      - the stub answers with scripted turns, such as calling the path's tool or running a shell command, and its last reply repeats the token it received;
+      - the check passes when the token reaches a request the CLI sends to the stub; it spends no tokens;
+      - the CLI runs with the placeholder key and without the vendors' key variables, such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, in its environment;
+      - the stub fails the check, without printing the value, on a request whose credential headers hold anything but the placeholder; a test of the stub covers it;
+    - with `--real`, or where the stub cannot stand in, the real model answers:
+      - the check passes when the agent repeats the token;
+      - it prints the tokens it used, where the CLI's output gives them;
+      - where the stub cannot stand in, the report says why;
     - it runs without a person where the CLI allows it;
     - the owner's preparation, done beforehand, is the only step a person does in an iteration: signing in to the CLIs, and for GUI live checks what 4.7 lists;
     - a step the CLI needs from a person beyond it goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
@@ -523,7 +529,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - Per agent: where the CLI shows the user its limits, such as a command, the status line or the app-server, and what it shows: each limit, its usage and reset time.
   - Per source: whether a local program reads it without vendor tokens, credential files or switching accounts, as `features.md` §14 says; the vendor terms that allow or forbid it, with links.
-  - For each source that exists and may be read: a prototype reads the limits from it, with a live check under the rules of 4.1 that prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time. Without such a source for an agent, the report says so and there is no prototype.
+  - For each source that exists and may be read: a prototype reads the limits from it, with a live check under the rules of 4.1, on the owner's signed-in CLI without the stub, that prints the CLI version and passes when the prototype reads each limit the CLI shows the user, with its usage and reset time. Without such a source for an agent, the report says so and there is no prototype.
   - Findings in the report.
   - Tests, for each prototype: on outputs recorded from the real CLI, it gives each limit with its usage and reset time; an output without limits gives none.
 - **Definition of done:** the report answers, per agent, whether the data exists and may be read, with its source and the vendor terms; for each source that may be read, its live check, rerun, gives the result and CLI version the report records, and unit tests on its recorded outputs run in `script/test`.
