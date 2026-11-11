@@ -50,8 +50,8 @@ in_paths() {
   return 1
 }
 awk '!/^#/ && NF' script/duplicates-known >"$tmp/listed"
-while read -r first second hash; do
-  if in_paths "$first" "$@" && in_paths "$second" "$@"; then echo "$first $second $hash"; fi
+while read -r first second tokens; do
+  if in_paths "$first" "$@" && in_paths "$second" "$@"; then echo "$first $second $tokens"; fi
 done <"$tmp/listed" | sort >"$tmp/known"
 
 # comm pairs repeated lines one to one, so it compares the counts of each key.

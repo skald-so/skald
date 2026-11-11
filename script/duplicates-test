@@ -106,7 +106,7 @@ printf '// moved\n\n%s\n' "$code" >"$tmp/repo/src/b.ts"
 expect '' src
 
 # And when two copies in one file swap places, then the text before the first copy on its line
-# changes: jscpd's fragment is the first copy's full lines.
+# changes.
 sums="sum([$(numbers 30)]);"
 copy "export const one = $sums"$'\n'"export const two = $sums" src/a.ts
 list src
