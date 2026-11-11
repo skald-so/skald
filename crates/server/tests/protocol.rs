@@ -3,7 +3,7 @@
 
 mod common;
 
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use common::spec::{spec, spec_violations};
@@ -351,13 +351,17 @@ fn requests_without_protocol_are_not_checked() {
 
 #[test]
 fn exits_with_error_on_invalid_range() {
-    let db = TestDb::create();
+    // No PostgreSQL listens there: a server that accepted the range would exit at once too, but
+    // with another error.
+    let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let database_url = format!("postgres://skald@{}/skald", closed.local_addr().unwrap());
+    drop(closed);
     for range in ["3-2", "1-3", "5-7", "0", "0-1", "2-", "-2", "two", ""] {
         let stderr = start_failure(&[
             "--listen",
             "127.0.0.1:0",
             "--database-url",
-            &db.url(),
+            &database_url,
             &format!("--protocol-versions={range}"),
         ]);
         assert!(
