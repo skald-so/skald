@@ -10,7 +10,7 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::{
-    Repo, Seen, Space, assert_holds_none, bytes, files, hunks, inventory, inventory_with, lines,
+    PAIRS, Repo, Seen, Space, assert_holds_none, files, hunks, inventory, inventory_with, lines,
     long_lines, paths, symbols,
 };
 use edit_overlap::harness::Machine;
@@ -19,6 +19,16 @@ use tempfile::TempDir;
 
 /// The symbol of `reserve()` in `src/inventory.rs`.
 const RESERVE: &str = "function_item reserve";
+
+/// Asserts that each of two machines' changed lines that overlap the other's at hunk level are
+/// the lines that conflict in the check.
+fn assert_hunks_are_the_conflicts(space: &mut Space) {
+    for (machine, other) in PAIRS {
+        let check = &space.check(machine)[other];
+        assert!(!check.clean);
+        assert_eq!(check.files, space.seen(machine).hunks[other]);
+    }
+}
 
 #[test]
 fn edits_to_the_same_lines_overlap_at_hunk_level_and_conflict() {
@@ -63,15 +73,7 @@ fn edits_to_the_same_lines_overlap_at_hunk_level_and_conflict() {
             symbols: symbols(&[("alice-laptop", "src/inventory.rs", &[RESERVE])]),
         }
     );
-    // The lines that overlap at hunk level are the lines that conflict.
-    for (machine, other) in [
-        ("alice-laptop", "bob-desktop"),
-        ("bob-desktop", "alice-laptop"),
-    ] {
-        let check = &space.check(machine)[other];
-        assert!(!check.clean);
-        assert_eq!(check.files, space.seen(machine).hunks[other]);
-    }
+    assert_hunks_are_the_conflicts(&mut space);
 }
 
 #[test]
@@ -217,14 +219,7 @@ fn bases_that_differ_by_lines_added_above_the_hunk_still_match() {
         space.seen("bob-desktop").hunks,
         hunks(&[("alice-laptop", lines(&[("src/inventory.rs", &[7..8])]))])
     );
-    for (machine, other) in [
-        ("alice-laptop", "bob-desktop"),
-        ("bob-desktop", "alice-laptop"),
-    ] {
-        let check = &space.check(machine)[other];
-        assert!(!check.clean);
-        assert_eq!(check.files, space.seen(machine).hunks[other]);
-    }
+    assert_hunks_are_the_conflicts(&mut space);
 }
 
 #[test]
@@ -308,10 +303,7 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
         "src/nest.rs",
         "steps.txt",
     ]);
-    for (machine, other) in [
-        ("alice-laptop", "bob-desktop"),
-        ("bob-desktop", "alice-laptop"),
-    ] {
+    for (machine, other) in PAIRS {
         let seen = space.seen(machine).hunks;
         let check = &space.check(machine)[other];
         assert_eq!(
@@ -365,10 +357,7 @@ fn submodule_moves_overlap_at_hunk_level_whatever_the_repository_config() {
     let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
     space.publish();
 
-    for (machine, other) in [
-        ("alice-laptop", "bob-desktop"),
-        ("bob-desktop", "alice-laptop"),
-    ] {
+    for (machine, other) in PAIRS {
         assert_eq!(
             space.seen(machine),
             Seen {
@@ -525,8 +514,5 @@ fn server_receives_no_line_of_the_test_repository() {
     let texts = files.iter().map(|(_, text)| text.as_str());
     let needles = long_lines(texts.chain([a_text.as_str(), &b_text, "- ship the reservations\n"]));
     assert!(needles.contains("let reserved = 20;") && needles.contains("pub struct Warehouse;"));
-    let received = space.server.received().iter();
-    let bytes =
-        bytes(received.map(|publication| (&publication.machine, &publication.fingerprints)));
-    assert_holds_none(&bytes, needles, "what the server received");
+    assert_holds_none(&space.received_bytes(), needles, "what the server received");
 }

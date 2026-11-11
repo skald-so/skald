@@ -62,7 +62,6 @@ prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hun
 prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 81
 prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/scenarios.rs 61
 prototypes/edits/overlap/tests/hunk_fingerprints.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 51
-prototypes/edits/overlap/tests/hunk_fingerprints.rs prototypes/edits/overlap/tests/hunk_fingerprints.rs 72
 prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 51
 prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 51
 prototypes/edits/overlap/tests/scenarios.rs prototypes/edits/overlap/tests/scenarios.rs 55

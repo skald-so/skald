@@ -216,6 +216,9 @@ mod tests {
         let reserve = "impl_item Store > function_item reserve";
         let display = "impl_item fmt::Display for Box<T>";
         let tests = "mod_item tests";
+        let reserves = "mod_item tests > function_item reserves";
+        let checks = "mod_item tests > function_item checks";
+        let takes = "mod_item tests > function_item takes";
         assert_symbols(
             Language::Rust,
             &[
@@ -272,12 +275,19 @@ mod tests {
                     "impl_item fmt::Display for Box<T> > function_item fmt",
                 ),
                 ("}", display),
+                // Outer doc comments and attributes are outside their item; inner ones are part
+                // of the item they are in, and a parameter's attributes are part of its function.
                 ("mod tests {", tests),
+                ("    //! Tests.", tests),
+                ("    #![allow(dead_code)]", tests),
                 ("    #[test]", tests),
-                (
-                    "    fn reserves() {}",
-                    "mod_item tests > function_item reserves",
-                ),
+                ("    fn reserves() {}", reserves),
+                ("    fn checks() {", checks),
+                ("        #![allow(unused)]", checks),
+                ("    }", checks),
+                ("    fn takes(", takes),
+                ("        #[allow(unused)] n: u32,", takes),
+                ("    ) {}", takes),
                 ("}", tests),
                 ("const LIMIT: u32 = 9;", ""),
             ],
@@ -325,10 +335,10 @@ mod tests {
                 ("  get size(): number { return this.items; }", size),
                 ("  set size(n: number) { this.items = n; }", size),
                 ("}", store),
-                // Decorators of a class not exported, or after `export`, are part of the class;
-                // those before `export` are not. Those of a method, an accessor or a field are not
-                // part of it, unless the field holds a function; a parameter's are part of its
-                // method.
+                // Decorators of a class not exported, or after `export`, are part of the class, and
+                // so is a doc comment between them and `class`; those before `export` are not.
+                // Those of a method, an accessor or a field are not part of it, unless the field
+                // holds a function; a parameter's are part of its method.
                 ("@sealed", bin),
                 ("class Bin {", bin),
                 ("  @logged", bin),
@@ -343,7 +353,11 @@ mod tests {
                 ("    @inject item: string,", fill),
                 ("  ) {}", fill),
                 ("}", bin),
-                ("export @sealed class Crate {}", "class_declaration Crate"),
+                ("export @sealed", "class_declaration Crate"),
+                ("class Crate {}", "class_declaration Crate"),
+                ("@sealed", "class_declaration Between"),
+                ("/** Between. */", "class_declaration Between"),
+                ("class Between {}", "class_declaration Between"),
                 ("@sealed", ""),
                 ("export class Box {}", "class_declaration Box"),
                 ("@sealed", ""),
