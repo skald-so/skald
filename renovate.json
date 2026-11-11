@@ -9,11 +9,6 @@
       "description": "Stays on 0.2: see prototypes/mls/openmls/Cargo.toml",
       "matchDepNames": ["getrandom-02"],
       "allowedVersions": "<0.3"
-    },
-    {
-      "matchUpdateTypes": ["patch"],
-      "minimumReleaseAge": "3 days",
-      "automerge": true
     }
   ]
 }
