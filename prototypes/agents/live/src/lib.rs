@@ -323,7 +323,7 @@ mod tests {
                 Path::new("/bin/my inbox"),
                 Path::new("/tmp/\"source\""),
                 "Call inbox.",
-                Some("gpt-6-luna"),
+                Some("gpt-5.5"),
             )
             .unwrap();
         let project = project.path().to_string_lossy().into_owned();
@@ -343,7 +343,7 @@ mod tests {
                 "-c",
                 r#"mcp_servers.skald.default_tools_approval_mode="approve""#,
                 "-m",
-                "gpt-6-luna",
+                "gpt-5.5",
                 "Call inbox.",
             ]
         );

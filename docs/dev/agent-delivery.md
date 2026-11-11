@@ -2,6 +2,20 @@
 
 Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex (Story 4 in [task.md](../../task.md)).
 
+## Checks
+Each path's section answers, for each agent:
+
+| Check | Question |
+|---|---|
+| Idle session | Does a message reach a session waiting for a prompt? |
+| Busy session | Does a message reach a session in the middle of a turn? |
+| Delay | How long after it is added is a message handed over? |
+| In context | How does the message appear in the agent's context, with its sender label? |
+| Handover known | Does the prototype learn that the handover happened, for `read`? |
+| One of two sessions | Can a message reach one of two sessions on a device? |
+| Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
+
+## Prototypes
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-live` the live checks, `live-check`.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
 - Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <claude|codex> [--model <model>] [--keep]`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `script/test` does not run them.
@@ -18,19 +32,6 @@ Stands in for the helper, as [delivery.md, "Device to agent"](../protocol/delive
 - a path takes the waiting messages, oldest first; each is taken by one path only;
 - the path marks each handed over after the handover, or puts it back if the handover fails;
 - a path that dies before marking leaves its messages taken; the next take, in any process, puts them back, so the handover repeats and is never lost.
-
-## Checks
-Each path's section answers, for each agent:
-
-| Check | Question |
-|---|---|
-| Idle session | Does a message reach a session waiting for a prompt? |
-| Busy session | Does a message reach a session in the middle of a turn? |
-| Delay | How long after it is added is a message handed over? |
-| In context | How does the message appear in the agent's context, with its sender label? |
-| Handover known | Does the prototype learn that the handover happened, for `read`? |
-| One of two sessions | Can a message reach one of two sessions on a device? |
-| Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
 
 ## MCP `inbox`
 `agent-inbox <source-dir>`: a stdio MCP server on rmcp 3.9.0. Its one tool, `inbox`, takes the waiting messages and returns them as text:
@@ -53,8 +54,8 @@ Results on 2026-11-11:
 
 | Agent | CLI version | Sign-in | Command | Result | Idle: handover after the session started | Busy: handover after adding |
 |---|---|---|---|---|---|---|
-| Claude Code | 2.1.322 | Claude account (`apiKeySource` `none`) | `live-check inbox claude` | pass | 5.2 s | 21.5 s |
-| Codex | 0.162.1 | ChatGPT (`codex login status`) | `live-check inbox codex --model gpt-6-luna` | pass | 7.0 s | 24.0 s |
+| Claude Code | 2.1.322 | Claude account (`apiKeySource` `none`) | `live-check inbox claude` | pass | 4.9 s | 21.6 s |
+| Codex | 0.162.1 | OpenAI API key (`codex login status`) | `live-check inbox codex --model gpt-5.5` | pass | 4.7 s | 24.7 s |
 
 | Check | Claude Code | Codex |
 |---|---|---|
@@ -68,7 +69,7 @@ Results on 2026-11-11:
 
 Claude Code needs:
 - the server in the project's `.mcp.json`;
-- in `.claude/settings.local.json`, `enableAllProjectMcpServers: true`, which starts the project's servers, and `permissions.allow` with `mcp__skald__inbox`, which allowed each call;
+- in `.claude/settings.local.json`, `enableAllProjectMcpServers: true`, which starts the project's servers, and `permissions.allow` with `mcp__skald__inbox`, which allowed each call, and `Bash(sleep:*)` for the busy check;
 - the check's flags: `-p --output-format stream-json --verbose`;
 - signing in with an API key was not checked.
 
@@ -76,8 +77,8 @@ Codex needs:
 - the server as `mcp_servers.skald.command` and `mcp_servers.skald.args`, given with `-c`;
 - `mcp_servers.skald.default_tools_approval_mode = "approve"`: without it, `codex exec` fails the call with "MCP tool call requires approval, but approval policy is never";
 - the check's flags: `codex exec --json --skip-git-repo-check --ephemeral -C <project>`;
-- `--model gpt-6-luna`: the model set in `~/.codex/config.toml` on the test machine, `gpt-6-astra`, is refused with a ChatGPT sign-in;
-- signing in with an API key was not checked.
+- `--model gpt-5.5`: the API key of the test machine has no access to Codex's default model;
+- signing in with ChatGPT was not checked.
 
 Findings:
 - `inbox` is a pull path: a message reaches the agent only when the agent calls the tool. It wakes no idle session and reaches a busy one only at its next call, so it can only be a fallback.
