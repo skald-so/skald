@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Builds the workspace and runs every check. Exits 0 only if all of them pass.
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
-#   rust     build, fmt, clippy, tests with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
+#   rust     copied code in crates/ and prototypes/ (script/duplicates); build, fmt, clippy, tests
+#            with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
 #            and their benchmarks' smoke run, natively and in WASM; the delivery prototypes in
 #            prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
-#   tooling  tests of the scripts in script/ and of the edge image workflow, Renovate config
-#            validation
-#   web      web UI lint, tests (with the kit page screenshots against their references) and build
+#   tooling  copied code in script/; tests of the scripts in script/ and of the edge image workflow,
+#            Renovate config validation
+#   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
+#            references) and build
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -69,8 +71,8 @@ if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
   exit 1
 fi
-if { checks rust || checks tooling; } && ! command -v jq >/dev/null; then
-  echo "script/test: jq is missing; the license policy test and the edge workflow test read JSON with it: https://jqlang.org" >&2
+if ! command -v jq >/dev/null; then
+  echo "script/test: jq is missing; the copied code check, the license policy test and the edge workflow test read JSON with it: https://jqlang.org" >&2
   exit 1
 fi
 if checks rust && ! command -v curl >/dev/null; then
@@ -81,12 +83,14 @@ if { checks rust || checks tooling || checks web; } && ! command -v docker >/dev
   echo "script/test: docker is missing; the integration tests run PostgreSQL and the kit page screenshots run Chrome in containers" >&2
   exit 1
 fi
-if { checks web || checks tooling; } && ! command -v npm >/dev/null; then
-  echo "script/test: npm is missing; the web UI and the Renovate config check need Node.js: https://nodejs.org" >&2
+if ! command -v npm >/dev/null; then
+  echo "script/test: npm is missing; the copied code check, the web UI and the Renovate config check need Node.js: https://nodejs.org" >&2
   exit 1
 fi
 
 if checks rust; then
+  script/duplicates crates prototypes
+
   # PostgreSQL for the integration tests starts while the workspace builds; removed on exit.
   trap postgres_stop EXIT
   postgres_start
@@ -137,6 +141,8 @@ if checks rust; then
 fi
 
 if checks tooling; then
+  script/duplicates script
+  script/duplicates-test
   script/check-pr-title-test
   script/changed-parts-test
   script/mutants-test
@@ -150,6 +156,7 @@ fi
 # kit page screenshots against web/kit-references/) and build. A failed screenshot saves a diff image
 # to web/kit-diff/.
 if checks web; then
+  script/duplicates web
   (
     cd web
     npm ci --no-audit --no-fund

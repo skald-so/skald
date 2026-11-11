@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Tests script/duplicates on scratch repositories: a block of 50 or more tokens copied in Rust,
+# TypeScript, TSX or a shell script fails it, however few lines it spans; a shorter one, JSON, the
+# generated API client and the clones script/duplicates-known lists do not.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "duplicates-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# numbers <n> [<separator>]: 1 to <n>, joined with <separator>, `, ` by default.
+numbers() { seq -s "${2:-, }" 1 "$1"; }
+
+# copy <code> <file>...: a fresh scratch repository with an empty list of known clones and <code>
+# in each <file>.
+copy() {
+  local code=$1 file
+  shift
+  rm -rf "$tmp/repo"
+  mkdir -p "$tmp/repo/script"
+  : >"$tmp/repo/script/duplicates-known"
+  for file in "$@"; do
+    mkdir -p "$(dirname "$tmp/repo/$file")"
+    printf '%s\n' "$code" >"$tmp/repo/$file"
+  done
+}
+
+# expect <want> <path>...: script/duplicates over <path>s of the scratch repository reports the
+# clones <want>, one per line, and fails; with an empty <want> it passes.
+expect() {
+  local want=$1 got status=0
+  shift
+  got=$(cd "$tmp/repo" && "$root/script/duplicates" "$@" 2>&1 >/dev/null) || status=$?
+  if [[ -z $want ]]; then
+    [[ $status -eq 0 ]] || fail "$*: want a pass, got status $status: $got"
+  else
+    want="script/duplicates: copied code; move it into a shared helper:"$'\n'$want
+    [[ $status -eq 1 && $got == "$want" ]] ||
+      fail "$*: want status 1 and '$want', got $status and '$got'"
+  fi
+}
+
+# rust <list>: a Rust function on 3 lines, of 15 tokens and the tokens of <list>.
+rust() { printf 'fn total() -> u32 {\n    sum(&[%s])\n}' "$1"; }
+
+# 49 tokens pass; 50 fail, on however few lines.
+copy "$(rust "$(numbers 17)")" src/a.rs src/b.rs
+expect '' src
+copy "$(rust "$(numbers 17),")" src/a.rs src/b.rs
+expect 'src/a.rs:1-3 src/b.rs:1-3' src
+
+# Each scanned format, a shell script known by its shebang.
+copy "export function total(): number {"$'\n'"  return sum([$(numbers 30)]);"$'\n'"}" src/a.ts src/b.ts
+expect 'src/a.ts:1-3 src/b.ts:1-3' src
+copy "export const Total = () => <List items={[$(numbers 30)]} />;" src/a.tsx src/b.tsx
+expect 'src/a.tsx:1-1 src/b.tsx:1-1' src
+copy "#!/usr/bin/env bash"$'\n'"echo \$(($(numbers 30 ' + ')))" script/a script/b
+expect 'script/a:1-2 script/b:1-2' script
+
+# Not scanned: JSON, such as lockfiles and recorded inputs, and the API client generated from the
+# spec.
+copy "[$(numbers 50)]" data/a.json data/b.json
+expect '' data
+copy "export const total = sum([$(numbers 30)]);" web/src/api/a.ts web/src/api/b.ts
+expect '' web
+
+# Known clones pass, by both fragments' lines exactly; the others still fail. jscpd pairs each
+# further copy with the first.
+copy "export const total = sum([$(numbers 30)]);" src/a.ts src/b.ts src/c.ts
+echo 'src/a.ts:1-1 src/b.ts:1-1' >"$tmp/repo/script/duplicates-known"
+expect 'src/a.ts:1-1 src/c.ts:1-1' src
+printf '# a comment\n\nsrc/a.ts:1-1 src/b.ts:1-1\nsrc/a.ts:1-1 src/c.ts:1-1\n' \
+  >"$tmp/repo/script/duplicates-known"
+expect '' src
+echo 'src/a.ts:1-1 src/b.ts:1-2' >"$tmp/repo/script/duplicates-known"
+expect $'src/a.ts:1-1 src/b.ts:1-1\nsrc/a.ts:1-1 src/c.ts:1-1' src
+
+status=0
+(cd "$tmp/repo" && "$root/script/duplicates" >/dev/null 2>&1) || status=$?
+[[ $status -eq 2 ]] || fail "without a path: exit code $status, want 2"
+
+# Without the list of known clones it fails instead of passing everything.
+rm "$tmp/repo/script/duplicates-known"
+if (cd "$tmp/repo" && "$root/script/duplicates" src >/dev/null 2>&1); then
+  fail "passes without script/duplicates-known"
+fi
+
+if [[ $failures -gt 0 ]]; then
+  echo "duplicates-test: $failures failure(s)" >&2
+  exit 1
+fi
+echo "duplicates-test: ok"
