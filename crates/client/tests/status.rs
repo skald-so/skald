@@ -4,6 +4,7 @@
 mod common;
 
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::{Output, Server, Stub, response, skald};
 use skald_proto::PROTOCOL_VERSION;
@@ -188,10 +189,14 @@ fn answer_outside_the_protocol_is_reported() {
 }
 
 /// A server that answers `protocol-too-new` while it lists the stated version: the client does not
-/// state it again.
+/// state it again. A second request would get `404`, so a client that repeats it fails at once.
 #[test]
 fn too_new_listing_the_stated_version_says_the_server_is_older() {
+    static ANSWERED: AtomicBool = AtomicBool::new(false);
     let stub = Stub::start(|_| {
+        if ANSWERED.swap(true, Ordering::SeqCst) {
+            return response("404 Not Found", "text/plain", "not found");
+        }
         response(
             "400 Bad Request",
             "application/problem+json",
