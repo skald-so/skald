@@ -471,7 +471,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
     - it runs without a person where the CLI allows it;
     - the owner's preparation, done beforehand, is the only step a person does in an iteration: signing in to the CLIs, and for GUI live checks what 4.7 lists;
     - a step the CLI needs from a person beyond it goes in the report and is left to the story's Manual check, not to an iteration's Definition of done;
-    - it attaches hooks, MCP servers and channels only through project config in a temporary directory and leaves the user's own CLI config untouched;
+    - it attaches hooks, MCP servers and channels only through project config in a temporary directory and changes none of the user's own CLI settings, plugins or sign-in; with `--real` the CLI runs on the owner's own sign-in, and the entries it adds for any project it opens (trust, session stats, memory) are allowed and named in the report;
     - with the real model it spends the fewest tokens:
       - the CLI loads as little of the user's own config (MCP servers, plugins, skills, instruction files) as it allows, and the report records what each check still loads;
       - the model runs at the lowest reasoning effort the CLI allows;
