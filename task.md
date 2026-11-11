@@ -693,9 +693,9 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - The report answers each question of "To decide" with the evidence of the earlier iterations, or says what is still open and what would answer it.
   - For Story 44: what a client sends and what the server compares at file level; for Story 45: the hunk and symbol schemes with their measured noise and misses.
-  - The commands of 5.5, 5.8 and 5.9 and the macOS check of 5.7 rerun on the final prototype, and the Windows job is started on this iteration's PR; the report's numbers are updated to them.
+  - The commands of 5.5, 5.8 and 5.9 and the macOS check of 5.7 rerun on the final prototype, and the Windows job is started on this iteration's PR; the report's results are updated to them.
   - `features.md` §11, "To decide", links to the answers.
-- **Definition of done:** the commands of 5.5, 5.8 and 5.9 and the macOS check of 5.7, rerun by the reviewer, and the Windows job's run on this PR give the numbers the report records; the report answers or marks open each question of "To decide"; `features.md` §11 links to it; no other doc repeats the report.
+- **Definition of done:** the commands of 5.5, 5.8 and 5.9 and the macOS check of 5.7, rerun by the reviewer, and the Windows job's run on this PR give the results the report records, timings aside; the report answers or marks open each question of "To decide"; `features.md` §11 links to it; no other doc repeats the report.
 
 ### Story 6: Staging environment
 
