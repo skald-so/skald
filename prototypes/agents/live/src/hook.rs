@@ -265,12 +265,12 @@ pub fn hook_runs_file(run: &Run) -> PathBuf {
     run.log.with_file_name(HOOK_RUNS)
 }
 
-/// One run of the hook under check, as Claude Code's hook events show it.
+/// One run of the hook under check, as Claude Code's hook events or, on Codex, [`timed`] show it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HookRun {
-    /// When Claude Code said it started the hook, in milliseconds since the Unix epoch.
+    /// When the hook started, in milliseconds since the Unix epoch.
     pub started_ms: u64,
-    /// When it said the hook ended.
+    /// When the hook ended.
     pub ended_ms: Option<u64>,
     /// `success`, `error` or `cancelled`.
     pub outcome: String,
@@ -368,7 +368,7 @@ impl HookRuns {
         self.runs.last().is_some_and(HookRun::quiet)
     }
 
-    /// The runs and how long each took, as Claude Code saw it.
+    /// The runs and how long each took.
     fn summary(&self) -> String {
         let runs: Vec<String> = self
             .runs
