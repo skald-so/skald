@@ -36,10 +36,11 @@ A human takes one action per release: merging the Release PR.
 All checks except e2e, the PR title and the CLA run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md).
-- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container; the MLS prototypes' tests natively and in WASM, in Node.js; the edit comparison prototype's tests.
+- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **`cargo-deny`:** dependency licenses and vulnerabilities.
 - **Tooling:** tests of the scripts in `script/`, Renovate config validation.
+- **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
@@ -74,7 +75,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 
 ## Cloud
 - **The same image that is published for self-hosting.** `ee/` features are enabled by a license key.
-- **Staging:** an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically.
+- **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
   - PostgreSQL 19 with synchronous streaming replication: `stored` is sent after the replica has the write. If the replica is down, replication switches to asynchronous and an alert fires.
   - WAL-G backups to object storage.

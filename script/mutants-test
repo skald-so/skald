@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests script/mutants on a scratch Cargo workspace: it passes when the tests catch every mutant of the
 # code changed since the base, fails naming the survivors otherwise, never mutates unchanged code,
-# runs the tests with PostgreSQL and removes it afterwards, checks the MLS prototypes' workspace with
-# the tests of all its crates, fails when cargo-mutants cannot list the mutants, and leaves the working
+# runs the tests with PostgreSQL and removes it afterwards, checks each prototype workspace with the
+# tests of all its crates, fails when cargo-mutants cannot list the mutants, and leaves the working
 # tree clean.
 set -euo pipefail
 
@@ -130,46 +130,48 @@ run base
 expect_clean uncovered
 expect_postgres_removed uncovered
 
-# A change only in the MLS prototypes' own workspace: code tested only by another of its crates is
-# covered, and an untested function there is named as a survivor.
+# Changes only in two prototype workspaces, each apart from the others: in each, code tested only by
+# another of its crates is covered, and an untested function is named as a survivor.
 git checkout --quiet -b prototypes base
-mkdir -p prototypes/mls/scenario/src prototypes/mls/proto/src
-printf '[workspace]\nmembers = ["scenario", "proto"]\nresolver = "3"\n' >prototypes/mls/Cargo.toml
-printf '[package]\nname = "scenario"\nversion = "0.1.0"\nedition = "2024"\n' >prototypes/mls/scenario/Cargo.toml
-printf 'pub fn half(x: u32) -> u32 {\n    x / 2\n}\n\npub fn quarter(x: u32) -> u32 {\n    x / 4\n}\n' \
-  >prototypes/mls/scenario/src/lib.rs
-printf '[package]\nname = "proto"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n%s\n' \
-  'scenario = { path = "../scenario" }' >prototypes/mls/proto/Cargo.toml
-printf '#[test]\nfn half() {\n    assert_eq!(scenario::half(6), 3);\n}\n' >prototypes/mls/proto/src/lib.rs
-(cd prototypes/mls && cargo generate-lockfile --quiet --offline)
+# prototype <dir> <shared crate> <testing crate> <tested fn> <untested fn>: a prototype workspace in
+# prototypes/<dir>; the testing crate tests only the tested function of the shared crate.
+prototype() {
+  local dir=prototypes/$1 shared=$2 testing=$3 tested=$4 untested=$5
+  mkdir -p "$dir/$shared/src" "$dir/$testing/src"
+  printf '[workspace]\nmembers = ["%s", "%s"]\nresolver = "3"\n' "$shared" "$testing" >"$dir/Cargo.toml"
+  printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2024"\n' "$shared" >"$dir/$shared/Cargo.toml"
+  printf 'pub fn %s(x: u32) -> u32 {\n    x / 2\n}\n\npub fn %s(x: u32) -> u32 {\n    x / 4\n}\n' \
+    "$tested" "$untested" >"$dir/$shared/src/lib.rs"
+  printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n%s = { path = "../%s" }\n' \
+    "$testing" "$shared" "$shared" >"$dir/$testing/Cargo.toml"
+  printf '#[test]\nfn %s() {\n    assert_eq!(%s::%s(6), 3);\n}\n' "$tested" "$shared" "$tested" \
+    >"$dir/$testing/src/lib.rs"
+  (cd "$dir" && cargo generate-lockfile --quiet --offline)
+}
+prototype mls scenario proto half quarter
+prototype agents source live halve fourth
 git add --all
 git commit --quiet --message prototypes
 run base
 [[ $status -ne 0 ]] || fail "prototypes: exit code 0, want non-zero:"$'\n'"$output"
 [[ $output =~ scenario/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ quarter\ -\>\ u32\ with\ 0 ]] ||
-  fail "prototypes: the survivor is not named:"$'\n'"$output"
-[[ $output != *half* ]] || fail "prototypes: names a caught mutant:"$'\n'"$output"
+  fail "prototypes: the survivor in prototypes/mls is not named:"$'\n'"$output"
+[[ $output =~ source/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ fourth\ -\>\ u32\ with\ 0 ]] ||
+  fail "prototypes: the survivor in prototypes/agents is not named:"$'\n'"$output"
+[[ $output != *half* && $output != *halve* ]] || fail "prototypes: names a caught mutant:"$'\n'"$output"
 expect_clean prototypes
 
-# A change only in the edit comparison prototype's workspace, checked like the MLS prototypes': code
-# tested only by another of its crates is covered, and an untested function there is named.
+# A change only in the edit comparison prototype's workspace, prototypes/edits: code tested only by
+# another of its crates is covered, and an untested function there is named.
 git checkout --quiet -b edits base
-mkdir -p prototypes/edits/overlap/src prototypes/edits/harness/src
-printf '[workspace]\nmembers = ["overlap", "harness"]\nresolver = "3"\n' >prototypes/edits/Cargo.toml
-printf '[package]\nname = "overlap"\nversion = "0.1.0"\nedition = "2024"\n' >prototypes/edits/overlap/Cargo.toml
-printf 'pub fn twice(x: u32) -> u32 {\n    x * 2\n}\n\npub fn thrice(x: u32) -> u32 {\n    x * 3\n}\n' \
-  >prototypes/edits/overlap/src/lib.rs
-printf '[package]\nname = "harness"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n%s\n' \
-  'overlap = { path = "../overlap" }' >prototypes/edits/harness/Cargo.toml
-printf '#[test]\nfn twice() {\n    assert_eq!(overlap::twice(3), 6);\n}\n' >prototypes/edits/harness/src/lib.rs
-(cd prototypes/edits && cargo generate-lockfile --quiet --offline)
+prototype edits overlap harness halved quartered
 git add --all
 git commit --quiet --message edits
 run base
 [[ $status -ne 0 ]] || fail "edits: exit code 0, want non-zero:"$'\n'"$output"
-[[ $output =~ overlap/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ thrice\ -\>\ u32\ with\ 0 ]] ||
+[[ $output =~ overlap/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ quartered\ -\>\ u32\ with\ 0 ]] ||
   fail "edits: the survivor is not named:"$'\n'"$output"
-[[ $output != *twice* ]] || fail "edits: names a caught mutant:"$'\n'"$output"
+[[ $output != *halved* ]] || fail "edits: names a caught mutant:"$'\n'"$output"
 expect_clean edits
 
 # A cargo-mutants config it rejects: listing the mutants fails, and so does the run, testing nothing.

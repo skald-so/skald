@@ -1,6 +1,8 @@
 .env*
+!.env.example
 CLAUDE.local.md
 .claude/settings.local.json
 /target
 /prototypes/mls/target
 /prototypes/edits/target
+/prototypes/agents/target

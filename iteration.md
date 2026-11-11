@@ -35,7 +35,7 @@
 - [x] **3.9:** Comparison report and the library choice
 
 ## Story 4: Verifying delivery to Claude Code and Codex
-- [ ] **4.1:** Prototype harness and the MCP `inbox` path
+- [x] **4.1:** Prototype harness and the MCP `inbox` path
 - [ ] **4.2:** Claude Code Channels
 - [ ] **4.3:** Claude Code `Stop` and `PostToolUse` hooks
 - [ ] **4.4:** Codex hooks and `codex queue`
@@ -57,6 +57,14 @@
 - [ ] **5.10:** Preliminary answers to "To decide"
 
 ## Story 6: Staging environment
+- [ ] **6.1:** `skald-server` Docker image
+- [ ] **6.2:** Publishing `:edge` to GHCR
+- [ ] **6.3:** Preparing the move to Caddy on the staging VPS
+- [ ] **6.4:** Switching the staging VPS to Caddy
+- [ ] **6.5:** Staging stack at `dev.skald.so`
+- [ ] **6.6:** Deploy access to the staging VPS
+- [ ] **6.7:** Deploying every merge into `dev`
+- [ ] **6.8:** Staging status check
 
 ## Story 7: Release pipeline
 
