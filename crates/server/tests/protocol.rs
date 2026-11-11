@@ -356,7 +356,7 @@ fn exits_with_error_on_invalid_range() {
     let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
     let database_url = format!("postgres://skald@{}/skald", closed.local_addr().unwrap());
     drop(closed);
-    for range in ["3-2", "1-3", "5-7", "0", "0-1", "2-", "-2", "two", ""] {
+    for range in ["3-2", "1-3", "5-7", "0", "0-1", "02", "2-", "-2", "two", ""] {
         let stderr = start_failure(&[
             "--listen",
             "127.0.0.1:0",

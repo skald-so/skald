@@ -4,10 +4,11 @@
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener};
-use std::process::{self, Command};
+use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 use tokio::runtime::Runtime;
@@ -23,12 +24,42 @@ pub struct Output {
 
 /// Runs `skald` with `args`, speaking the protocol versions `versions` if given.
 pub fn skald(args: &[&str], versions: Option<&str>) -> Output {
+    output(command(args, versions).output().expect("run skald"))
+}
+
+/// Runs `skald` with `args` and a timeout of `seconds` for each request; fails if `skald` runs for
+/// longer than `limit`.
+pub fn skald_with_timeout(args: &[&str], seconds: u64, limit: Duration) -> Output {
+    let mut child = command(args, None)
+        .env("SKALD_TIMEOUT", seconds.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run skald");
+    let started = Instant::now();
+    while child.try_wait().expect("wait for skald").is_none() {
+        if started.elapsed() > limit {
+            let _ = child.kill();
+            panic!("skald ran for more than {limit:?}");
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    output(child.wait_with_output().expect("read skald's output"))
+}
+
+fn command(args: &[&str], versions: Option<&str>) -> Command {
     let mut command = Command::new(CLIENT);
-    command.args(args).env_remove("SKALD_PROTOCOL_VERSIONS");
+    command
+        .args(args)
+        .env_remove("SKALD_PROTOCOL_VERSIONS")
+        .env_remove("SKALD_TIMEOUT");
     if let Some(versions) = versions {
         command.env("SKALD_PROTOCOL_VERSIONS", versions);
     }
-    let output = command.output().expect("run skald");
+    command
+}
+
+fn output(output: process::Output) -> Output {
     Output {
         success: output.status.success(),
         stdout: String::from_utf8(output.stdout).expect("stdout is UTF-8"),
@@ -149,7 +180,7 @@ impl TestDb {
 }
 
 /// A stub server: answers each request with `answer(path)`, a whole HTTP response, and records
-/// the requests' heads.
+/// the requests' heads. An empty answer keeps the connection open and never answers.
 pub struct Stub {
     pub url: String,
     requests: Arc<Mutex<Vec<String>>>,
@@ -162,6 +193,7 @@ impl Stub {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);
         thread::spawn(move || {
+            let mut silent = Vec::new();
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
                 let mut reader = BufReader::new(stream.try_clone().expect("clone a stream"));
@@ -175,8 +207,13 @@ impl Stub {
                 }
                 let path = head.split(' ').nth(1).unwrap_or_default().to_owned();
                 recorded.lock().unwrap().push(head);
+                let answer = answer(&path);
+                if answer.is_empty() {
+                    silent.push(stream);
+                    continue;
+                }
                 // One write: a WebSocket client reads a refusal's body only from the head's read.
-                let _ = stream.write_all(answer(&path).as_bytes());
+                let _ = stream.write_all(answer.as_bytes());
             }
         });
         Stub {

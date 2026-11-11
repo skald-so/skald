@@ -1,6 +1,8 @@
 //! Protocol versions: `docs/protocol/README.md`, "Protocol version".
 
+use std::fmt;
 use std::num::NonZeroU64;
+use std::str::FromStr;
 
 /// The protocol version this implementation speaks.
 pub const PROTOCOL_VERSION: NonZeroU64 = NonZeroU64::new(1).unwrap();
@@ -56,4 +58,84 @@ pub fn parse_version(text: &str) -> Option<NonZeroU64> {
 /// The WebSocket subprotocol that states `version`: `skald.<n>`.
 pub fn subprotocol(version: NonZeroU64) -> String {
     format!("{SUBPROTOCOL_PREFIX}{version}")
+}
+
+/// The protocol versions from `oldest` to `latest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VersionRange {
+    oldest: NonZeroU64,
+    latest: NonZeroU64,
+}
+
+impl VersionRange {
+    /// The oldest version in the range.
+    pub fn oldest(self) -> NonZeroU64 {
+        self.oldest
+    }
+
+    /// The newest version in the range.
+    pub fn latest(self) -> NonZeroU64 {
+        self.latest
+    }
+
+    /// Whether `version` is in the range.
+    pub fn contains(self, version: u64) -> bool {
+        (self.oldest.get()..=self.latest.get()).contains(&version)
+    }
+
+    /// The versions in the range, ascending.
+    pub fn list(self) -> Vec<u64> {
+        (self.oldest.get()..=self.latest.get()).collect()
+    }
+}
+
+/// [`PROTOCOL_VERSION`] and the version before it; version 1 alone while it is the only one.
+impl Default for VersionRange {
+    fn default() -> Self {
+        VersionRange {
+            oldest: NonZeroU64::new(PROTOCOL_VERSION.get().saturating_sub(1))
+                .unwrap_or(PROTOCOL_VERSION),
+            latest: PROTOCOL_VERSION,
+        }
+    }
+}
+
+/// `<n>`, or `<oldest>-<latest>`, such as `2-3`; each version as [`parse_version`] reads it.
+impl FromStr for VersionRange {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let version = |text: &str| {
+            parse_version(text)
+                .ok_or_else(|| format!("{text:?} is not a protocol version, an integer from 1"))
+        };
+        let (oldest, latest) = match text.split_once('-') {
+            Some((oldest, latest)) => (version(oldest)?, version(latest)?),
+            None => (version(text)?, version(text)?),
+        };
+        if oldest > latest {
+            return Err(format!(
+                "the oldest version, {oldest}, is above the latest, {latest}"
+            ));
+        }
+        Ok(VersionRange { oldest, latest })
+    }
+}
+
+/// As [`describe_versions`] describes the range's versions.
+impl fmt::Display for VersionRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&describe_versions(&self.list()))
+    }
+}
+
+/// `protocol version 3`, `protocol versions 2 and 3`, `protocol versions 1, 2 and 3`;
+/// `no protocol version` for none.
+pub fn describe_versions(versions: &[u64]) -> String {
+    let text: Vec<String> = versions.iter().map(u64::to_string).collect();
+    match text.as_slice() {
+        [] => "no protocol version".to_owned(),
+        [only] => format!("protocol version {only}"),
+        [rest @ .., last] => format!("protocol versions {} and {last}", rest.join(", ")),
+    }
 }

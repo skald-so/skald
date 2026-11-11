@@ -21,5 +21,5 @@ pub use id::{
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
 pub use version::{
     LATEST_HEADER, PROTOCOL_VERSION, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem,
-    parse_version, subprotocol,
+    VersionRange, describe_versions, parse_version, subprotocol,
 };

@@ -5,8 +5,9 @@ mod common;
 
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use common::{Output, Server, Stub, response, skald};
+use common::{Output, Server, Stub, response, skald, skald_with_timeout};
 use skald_proto::PROTOCOL_VERSION;
 
 /// The range the server accepts: N = 3, N−1 = 2.
@@ -164,6 +165,58 @@ fn refusal_of_the_websocket_is_reported() {
         "{:?}",
         requests[1]
     );
+}
+
+/// Control characters in the server's text reach the terminal escaped.
+#[test]
+fn control_characters_in_the_detail_are_escaped() {
+    let stub = Stub::start(|_| {
+        response(
+            "400 Bad Request",
+            "application/problem+json",
+            r#"{"type":"https://skald.so/problems/protocol-version-invalid","detail":"\u001b]0;pwned\u0007\u001b[2Kfake line\nskald: forged"}"#,
+        )
+    });
+    let url = &stub.url;
+
+    let output = status(url, Some("3"));
+
+    let stdout = format!("Server {url}: reachable\n");
+    let stderr = r"skald: the server refused the request with 400: \u{1b}]0;pwned\u{7}\u{1b}[2Kfake line\nskald: forged"
+        .to_owned()
+        + "\n";
+    assert_output(&output, false, &stdout, &stderr);
+}
+
+/// `skald status` against a stub that accepts the connection and never answers its `requests`th
+/// request gives up after its timeout.
+fn assert_times_out(stub: &Stub, requests: usize) {
+    let url = &stub.url;
+
+    let output = skald_with_timeout(
+        &["status", "--server", url, "--protocol-versions", "3"],
+        3,
+        Duration::from_secs(30),
+    );
+
+    let stdout = format!("Server {url}: unreachable\n");
+    let stderr = "skald: cannot reach the server: no answer within 3 s\n";
+    assert_output(&output, false, &stdout, stderr);
+    assert_eq!(stub.requests().len(), requests);
+}
+
+#[test]
+fn silent_server_times_out_on_the_https_request() {
+    assert_times_out(&Stub::start(|_| String::new()), 1);
+}
+
+#[test]
+fn silent_server_times_out_on_the_websocket() {
+    let stub = Stub::start(|path| match path {
+        "/protocol" => response("200 OK", "application/json", r#"{"supported":[2,3]}"#),
+        _ => String::new(),
+    });
+    assert_times_out(&stub, 2);
 }
 
 #[test]

@@ -2,10 +2,13 @@
 
 mod connection;
 
+use std::num::NonZeroU64;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use connection::{Connection, Versions};
+use connection::{Connection, TIMEOUT};
+use skald_proto::VersionRange;
 
 /// Message broker and task queue for AI agents.
 #[derive(Parser)]
@@ -20,7 +23,17 @@ struct Cli {
         global = true,
         hide = true
     )]
-    protocol_versions: Option<Versions>,
+    protocol_versions: Option<VersionRange>,
+
+    /// How long a request to the server may take, in seconds, for tests [default: 30].
+    #[arg(
+        long,
+        env = "SKALD_TIMEOUT",
+        value_name = "SECONDS",
+        global = true,
+        hide = true
+    )]
+    timeout: Option<NonZeroU64>,
 
     #[command(subcommand)]
     command: Command,
@@ -39,14 +52,17 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let speaks = cli.protocol_versions.unwrap_or_default();
+    let timeout = cli
+        .timeout
+        .map_or(TIMEOUT, |seconds| Duration::from_secs(seconds.get()));
     match cli.command {
-        Command::Status { server } => status(&server, speaks),
+        Command::Status { server } => status(&server, speaks, timeout),
     }
 }
 
 /// `skald status`: requests the protocol versions and opens a WebSocket, then reports.
-fn status(server: &str, speaks: Versions) -> ExitCode {
-    let mut connection = match Connection::new(server, speaks) {
+fn status(server: &str, speaks: VersionRange, timeout: Duration) -> ExitCode {
+    let mut connection = match Connection::new(server, speaks, timeout) {
         Ok(connection) => connection,
         Err(err) => {
             eprintln!("skald: {err}");
