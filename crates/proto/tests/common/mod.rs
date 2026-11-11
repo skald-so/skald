@@ -7,9 +7,10 @@ use std::fmt::Debug;
 use std::num::NonZeroU64;
 
 use skald_proto::{
-    Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, DeliveryStatus, DeviceId,
-    Envelope, Grant, GrantBody, Header, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Receipt,
-    ReceiptStatus, Scheme, SendKey, ServerStatus, SpaceId, Stored, Unknown,
+    Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation, DelegationBody,
+    DeliveryStatus, DeviceId, Envelope, Grant, GrantBody, Header, HpkePayload, HpkePlaintext,
+    MessageId, NonEmpty, Receipt, ReceiptStatus, Scheme, SendKey, ServerStatus, SpaceId, Stored,
+    Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -57,7 +58,7 @@ pub fn bob_device() -> DeviceId {
     device(KEY_2)
 }
 
-/// A `service` device.
+/// A `service` or `custodian` device.
 pub fn server_device() -> DeviceId {
     device(KEY_3)
 }
@@ -149,6 +150,7 @@ pub fn content(from: Address, body: Body) -> Content {
         hops: 0,
         reply_to: None,
         body: Some(body),
+        delegation: None,
         grant: None,
         attachments: None,
         unknown: Unknown::default(),
@@ -170,6 +172,19 @@ pub fn grant() -> Grant {
         body: GrantBody {
             service: server_device(),
             channels: NonEmpty::from_vec(vec![channel(), other_channel()]).unwrap(),
+            signer: alice_device(),
+            expires: 1_798_761_600,
+            unknown: Unknown::default(),
+        },
+        signature: SIGNATURE,
+    }
+}
+
+pub fn delegation() -> Delegation {
+    Delegation {
+        body: DelegationBody {
+            agent: address("acme/alice/hosted-mcp@skald.example"),
+            custodian: server_device(),
             signer: alice_device(),
             expires: 1_798_761_600,
             unknown: Unknown::default(),
@@ -292,6 +307,17 @@ pub fn vectors() -> Vec<Vector> {
                 ..content(
                     address("acme/ci/deploy@skald.example"),
                     Body::A2a(a2a(msg(5), "Deployed")),
+                )
+            },
+        ),
+        vector(
+            "Content from a custodian device",
+            Content {
+                counter: Some(nonzero(3)),
+                delegation: Some(delegation()),
+                ..content(
+                    address("acme/alice/hosted-mcp@skald.example"),
+                    Body::A2a(a2a(msg(6), "Done")),
                 )
             },
         ),
