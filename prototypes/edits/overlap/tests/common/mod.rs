@@ -169,6 +169,20 @@ impl<'a> Space<'a> {
     }
 }
 
+/// Two machines, each with the other.
+pub const PAIRS: [(&str, &str); 2] = [
+    ("alice-laptop", "bob-desktop"),
+    ("bob-desktop", "alice-laptop"),
+];
+
+impl Space<'_> {
+    /// The bytes of everything the server has received, as [`bytes`] gives them.
+    pub fn received_bytes(&self) -> Vec<u8> {
+        let received = self.server.received().iter();
+        bytes(received.map(|publication| (&publication.machine, &publication.fingerprints)))
+    }
+}
+
 /// What a machine learns from the server, by the other machine.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Seen {

@@ -292,6 +292,11 @@ mod tests {
         let size = "class_declaration Store > method_definition size";
         let item = "interface_declaration Item";
         let double = "variable_declarator double";
+        let bin = "class_declaration Bin";
+        let open = "class_declaration Bin > method_definition open";
+        let lid = "class_declaration Bin > method_definition lid";
+        let close = "class_declaration Bin > public_field_definition close";
+        let fill = "class_declaration Bin > method_definition fill";
         assert_symbols(
             Language::TypeScript,
             &[
@@ -320,15 +325,30 @@ mod tests {
                 ("  get size(): number { return this.items; }", size),
                 ("  set size(n: number) { this.items = n; }", size),
                 ("}", store),
-                // A class decorator is part of its class; a method decorator is not part of its method.
-                ("@sealed", "class_declaration Box"),
-                ("class Box {", "class_declaration Box"),
-                ("  @logged", "class_declaration Box"),
-                (
-                    "  open(): void {}",
-                    "class_declaration Box > method_definition open",
-                ),
-                ("}", "class_declaration Box"),
+                // Decorators of a class not exported, or after `export`, are part of the class;
+                // those before `export` are not. Those of a method, an accessor or a field are not
+                // part of it, unless the field holds a function; a parameter's are part of its
+                // method.
+                ("@sealed", bin),
+                ("class Bin {", bin),
+                ("  @logged", bin),
+                ("  open(): void {}", open),
+                ("  @logged", bin),
+                ("  get lid(): number { return 1; }", lid),
+                ("  @logged", bin),
+                ("  slots = 1;", bin),
+                ("  @bound", close),
+                ("  close = () => {};", close),
+                ("  fill(", fill),
+                ("    @inject item: string,", fill),
+                ("  ) {}", fill),
+                ("}", bin),
+                ("export @sealed class Crate {}", "class_declaration Crate"),
+                ("@sealed", ""),
+                ("export class Box {}", "class_declaration Box"),
+                ("@sealed", ""),
+                ("export default class Tray {}", "class_declaration Tray"),
+                ("@sealed", "abstract_class_declaration Shelf"),
                 ("abstract class Shelf {", "abstract_class_declaration Shelf"),
                 (
                     "  abstract put(): void;",

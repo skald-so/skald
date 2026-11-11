@@ -7,7 +7,8 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{Repo, Seen, Space, assert_holds_none, bytes, names, paths, symbols};
+use common::{PAIRS, Repo, Seen, Space, assert_holds_none, names, paths, symbols};
+use edit_overlap::harness::Machine;
 use tempfile::TempDir;
 
 /// A file in a supported language: a function, and a type with two methods, the first of the
@@ -223,244 +224,183 @@ fn file_and(fixture: &Fixture, other: &str, functions: &[&str]) -> Seen {
     }
 }
 
-/// The function and the first method share a name; edits to them overlap at file level only.
-fn different_functions(fixture: &Fixture) {
+/// Two machines, Alice and Bob, cloned from a repository with the file of `fixture` and `extra`
+/// files: `edit` edits their working trees, given the repository, then both publish, and `then`
+/// gets their space.
+fn two_machines(
+    fixture: &Fixture,
+    extra: &[(&str, &str)],
+    edit: impl FnOnce(&Repo, &Machine, &Machine),
+    then: impl FnOnce(&mut Space),
+) {
     let tmp = TempDir::new().unwrap();
-    let repo = fixture.repo(&tmp, &[]);
+    let repo = fixture.repo(&tmp, extra);
     let (a, a_client) = repo.machine("alice-laptop");
     let (b, b_client) = repo.machine("bob-desktop");
-    let function = fixture.function.first + 2;
-    let method = fixture.methods[0].first + 2;
-    a.write(fixture.path, &fixture.edited(&[function], "alice"))
-        .unwrap();
-    a.commit("reserve").unwrap();
-    b.write(fixture.path, &fixture.edited(&[method], "bob"))
-        .unwrap();
+    edit(&repo, &a, &b);
     let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
     space.publish();
+    then(&mut space);
+}
 
-    assert_eq!(
-        space.seen("alice-laptop"),
-        file_and(fixture, "bob-desktop", &[])
-    );
-    assert_eq!(
-        space.seen("bob-desktop"),
-        file_and(fixture, "alice-laptop", &[])
-    );
+/// Alice comments the lines `alice` of the file of `fixture` and commits; Bob comments the lines
+/// `bob` and does not commit; then both publish, and `then` gets their space.
+fn edit_lines(fixture: &Fixture, alice: &[usize], bob: &[usize], then: impl FnOnce(&mut Space)) {
+    let edit = |_: &Repo, a: &Machine, b: &Machine| {
+        a.write(fixture.path, &fixture.edited(alice, "alice"))
+            .unwrap();
+        a.commit("alice's edit").unwrap();
+        b.write(fixture.path, &fixture.edited(bob, "bob")).unwrap();
+    };
+    two_machines(fixture, &[], edit, then);
+}
+
+/// Asserts that each of the two machines learns what `seen` gives for the other one.
+fn assert_each_sees(space: &Space, seen: impl Fn(&str) -> Seen) {
+    for (machine, other) in PAIRS {
+        assert_eq!(space.seen(machine), seen(other), "{machine}");
+    }
+}
+
+/// The function and the first method share a name; edits to them overlap at file level only.
+fn different_functions(fixture: &Fixture) {
+    let function = fixture.function.first + 2;
+    let method = fixture.methods[0].first + 2;
+    edit_lines(fixture, &[function], &[method], |space| {
+        assert_each_sees(space, |other| file_and(fixture, other, &[]));
+    });
 }
 
 /// The first and the last line of the first method's body: they overlap at symbol level and
 /// merge cleanly.
 fn distant_lines_of_one_function(fixture: &Fixture) {
-    let tmp = TempDir::new().unwrap();
-    let repo = fixture.repo(&tmp, &[]);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
     let method = &fixture.methods[0];
-    a.write(fixture.path, &fixture.edited(&[method.first + 1], "alice"))
-        .unwrap();
-    a.commit("reserve").unwrap();
-    b.write(fixture.path, &fixture.edited(&[method.first + 3], "bob"))
-        .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
-
-    for (machine, other) in [
-        ("alice-laptop", "bob-desktop"),
-        ("bob-desktop", "alice-laptop"),
-    ] {
-        assert_eq!(
-            space.seen(machine),
-            file_and(fixture, other, &[method.symbol])
-        );
-        assert!(space.check(machine)[other].clean, "{machine}");
-    }
+    edit_lines(fixture, &[method.first + 1], &[method.first + 3], |space| {
+        assert_each_sees(space, |other| file_and(fixture, other, &[method.symbol]));
+        for (machine, other) in PAIRS {
+            assert!(space.check(machine)[other].clean, "{machine}");
+        }
+    });
 }
 
 /// The middle lines of the two methods of one type: they overlap at file level only.
 fn two_methods_of_one_type(fixture: &Fixture) {
-    let tmp = TempDir::new().unwrap();
-    let repo = fixture.repo(&tmp, &[]);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
     let [first, second] = &fixture.methods;
-    a.write(fixture.path, &fixture.edited(&[first.first + 2], "alice"))
-        .unwrap();
-    b.write(fixture.path, &fixture.edited(&[second.first + 2], "bob"))
-        .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
-
-    assert_eq!(
-        space.seen("alice-laptop"),
-        file_and(fixture, "bob-desktop", &[])
-    );
-    assert_eq!(
-        space.seen("bob-desktop"),
-        file_and(fixture, "alice-laptop", &[])
-    );
+    edit_lines(fixture, &[first.first + 2], &[second.first + 2], |space| {
+        assert_each_sees(space, |other| file_and(fixture, other, &[]));
+    });
 }
 
 /// The function moved to the end of the file upstream; one machine pulls it and edits the first
 /// line of its body there, the other does not and edits the last one in its old place.
 fn moved_symbol(fixture: &Fixture) {
-    let tmp = TempDir::new().unwrap();
-    let repo = fixture.repo(&tmp, &[]);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
-    let (moved, first) = fixture.moved();
-    maintainer
-        .write(fixture.path, &edited(&moved, &[], "", ""))
-        .unwrap();
-    maintainer.commit("move the function").unwrap();
-    maintainer.push("main").unwrap();
-    a.pull().unwrap();
-    a.write(
-        fixture.path,
-        &edited(&moved, &[first + 1], fixture.comment, "alice"),
-    )
-    .unwrap();
-    let last = fixture.function.first + 3;
-    b.write(fixture.path, &fixture.edited(&[last], "bob"))
-        .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
-
-    let function = &[fixture.function.symbol][..];
-    assert_eq!(
-        space.seen("alice-laptop"),
-        file_and(fixture, "bob-desktop", function)
-    );
-    assert_eq!(
-        space.seen("bob-desktop"),
-        file_and(fixture, "alice-laptop", function)
-    );
+    let edit = |repo: &Repo, a: &Machine, b: &Machine| {
+        let (maintainer, _) = repo.machine("maintainer");
+        let (moved, first) = fixture.moved();
+        maintainer
+            .write(fixture.path, &edited(&moved, &[], "", ""))
+            .unwrap();
+        maintainer.commit("move the function").unwrap();
+        maintainer.push("main").unwrap();
+        a.pull().unwrap();
+        let text = edited(&moved, &[first + 1], fixture.comment, "alice");
+        a.write(fixture.path, &text).unwrap();
+        let last = fixture.function.first + 3;
+        b.write(fixture.path, &fixture.edited(&[last], "bob"))
+            .unwrap();
+    };
+    two_machines(fixture, &[], edit, |space| {
+        let function = &[fixture.function.symbol][..];
+        assert_each_sees(space, |other| file_and(fixture, other, function));
+    });
 }
 
 /// Distant lines of one function edited in the fixture and in a Go file: only the fixture's
 /// overlap at symbol level.
 fn file_in_another_language(fixture: &Fixture) {
-    let tmp = TempDir::new().unwrap();
     let (go, go_text) = GO;
-    let repo = fixture.repo(&tmp, &[GO]);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let go_lines: Vec<&str> = go_text.lines().collect();
     let method = &fixture.methods[0];
-    for (machine, who, offset, go_line) in [(&a, "alice", 1, 4), (&b, "bob", 3, 6)] {
-        let text = fixture.edited(&[method.first + offset], who);
-        machine.write(fixture.path, &text).unwrap();
-        machine
-            .write(go, &edited(&go_lines, &[go_line], "//", who))
-            .unwrap();
-    }
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
-
-    for (machine, other) in [
-        ("alice-laptop", "bob-desktop"),
-        ("bob-desktop", "alice-laptop"),
-    ] {
-        let edits = space.edits_of(machine);
-        let files: BTreeSet<String> = edits.symbols().into_keys().collect();
-        assert_eq!(files, BTreeSet::from([fixture.path.into()]), "{machine}");
-        assert_eq!(
-            space.seen(machine),
-            Seen {
-                paths: paths(&[(other, &[fixture.path, go])]),
-                hunks: BTreeMap::new(),
-                symbols: symbols(&[(other, fixture.path, &[method.symbol])]),
-            }
-        );
-        // The two paths and the method: nothing of the Go function.
-        let overlaps = space.server.overlaps(machine);
-        assert_eq!(overlaps[0].fingerprints.len(), 3, "{machine}");
-    }
+    let edit = |_: &Repo, a: &Machine, b: &Machine| {
+        let go_lines: Vec<&str> = go_text.lines().collect();
+        for (machine, who, offset, go_line) in [(a, "alice", 1, 4), (b, "bob", 3, 6)] {
+            let text = fixture.edited(&[method.first + offset], who);
+            machine.write(fixture.path, &text).unwrap();
+            machine
+                .write(go, &edited(&go_lines, &[go_line], "//", who))
+                .unwrap();
+        }
+    };
+    two_machines(fixture, &[GO], edit, |space| {
+        assert_each_sees(space, |other| Seen {
+            paths: paths(&[(other, &[fixture.path, go])]),
+            hunks: BTreeMap::new(),
+            symbols: symbols(&[(other, fixture.path, &[method.symbol])]),
+        });
+        for (machine, _) in PAIRS {
+            let files: BTreeSet<String> = space.edits_of(machine).symbols().into_keys().collect();
+            assert_eq!(files, BTreeSet::from([fixture.path.into()]), "{machine}");
+            // The two paths and the method: nothing of the Go function.
+            let overlaps = space.server.overlaps(machine);
+            assert_eq!(overlaps[0].fingerprints.len(), 3, "{machine}");
+        }
+    });
 }
 
 /// Every symbol of the fixture changed on two machines: nothing the server receives holds the
 /// kind or the name of one.
 fn no_symbol_name_reaches_the_server(fixture: &Fixture) {
-    let tmp = TempDir::new().unwrap();
-    let repo = fixture.repo(&tmp, &[]);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
     let [first, second] = &fixture.methods;
-    let a_lines = [fixture.function.first + 1, first.first + 1];
-    a.write(fixture.path, &fixture.edited(&a_lines, "alice"))
-        .unwrap();
-    a.commit("reserve").unwrap();
-    let b_lines = [first.first + 3, second.first + 1];
-    b.write(fixture.path, &fixture.edited(&b_lines, "bob"))
-        .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
-    assert!(!space.seen("alice-laptop").symbols.is_empty());
-
-    let mut needles = BTreeSet::new();
-    for edits in &space.edits {
-        for symbol in edits.symbols().values().flatten() {
-            needles.extend(
-                symbol
-                    .0
-                    .iter()
-                    .flat_map(|(kind, name)| [kind.clone(), name.clone()]),
-            );
+    let alice = [fixture.function.first + 1, first.first + 1];
+    let bob = [first.first + 3, second.first + 1];
+    edit_lines(fixture, &alice, &bob, |space| {
+        assert!(!space.seen("alice-laptop").symbols.is_empty());
+        let mut needles = BTreeSet::new();
+        for edits in &space.edits {
+            for symbol in edits.symbols().values().flatten() {
+                let parts = symbol.0.iter().cloned();
+                needles.extend(parts.flat_map(|(kind, name)| [kind, name]));
+            }
         }
-    }
-    assert!(needles.contains("Store") && needles.contains("release"));
-    let received = space.server.received().iter();
-    let bytes =
-        bytes(received.map(|publication| (&publication.machine, &publication.fingerprints)));
-    assert_holds_none(
-        &bytes,
-        needles.iter().map(String::as_str),
-        "what the server received",
-    );
+        assert!(needles.contains("Store") && needles.contains("release"));
+        let needles = needles.iter().map(String::as_str);
+        assert_holds_none(&space.received_bytes(), needles, "what the server received");
+    });
 }
 
 #[test]
 fn insertions_deletions_and_added_and_deleted_files_get_symbol_fingerprints() {
-    let tmp = TempDir::new().unwrap();
-    let repo = RUST.repo(&tmp, &[]);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
     let method = &RUST.methods[0];
-    // A line inserted after the first line of the method's body, and a deleted file: the merge
-    // base alone holds the deleted file's symbol.
-    let mut inserted = RUST.lines.to_vec();
-    inserted.insert(method.first + 1, "        // Reserve one.");
-    a.write(RUST.path, &edited(&inserted, &[], "", "")).unwrap();
-    a.delete("src/warehouse.rs").unwrap();
-    // The last line of the method's body deleted, and an added file: the snapshot alone holds
-    // the added file's symbol.
-    let mut deleted = RUST.lines.to_vec();
-    deleted.remove(method.first + 2);
-    b.write(RUST.path, &edited(&deleted, &[], "", "")).unwrap();
-    b.write("src/shelf.rs", "pub fn stack() {\n}\n").unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
-
-    let own = |machine: &str| names(&space.edits_of(machine).symbols());
-    let file = |path: &str, symbol: &str| (path.to_owned(), BTreeSet::from([symbol.to_owned()]));
-    let store = file(RUST.path, method.symbol);
-    assert_eq!(
-        own("alice-laptop"),
-        BTreeMap::from([
-            store.clone(),
-            file("src/warehouse.rs", "struct_item Warehouse")
-        ])
-    );
-    assert_eq!(
-        own("bob-desktop"),
-        BTreeMap::from([store, file("src/shelf.rs", "function_item stack")])
-    );
-    assert_eq!(
-        space.seen("alice-laptop"),
-        file_and(&RUST, "bob-desktop", &[method.symbol])
-    );
-    assert!(space.check("alice-laptop")["bob-desktop"].clean);
+    let edit = |_: &Repo, a: &Machine, b: &Machine| {
+        // A line inserted after the first line of the method's body, and a deleted file: the
+        // merge base alone holds the deleted file's symbol.
+        let mut inserted = RUST.lines.to_vec();
+        inserted.insert(method.first + 1, "        // Reserve one.");
+        a.write(RUST.path, &edited(&inserted, &[], "", "")).unwrap();
+        a.delete("src/warehouse.rs").unwrap();
+        // The last line of the method's body deleted, and an added file: the snapshot alone holds
+        // the added file's symbol.
+        let mut deleted = RUST.lines.to_vec();
+        deleted.remove(method.first + 2);
+        b.write(RUST.path, &edited(&deleted, &[], "", "")).unwrap();
+        b.write("src/shelf.rs", "pub fn stack() {\n}\n").unwrap();
+    };
+    two_machines(&RUST, &[], edit, |space| {
+        let own = |machine: &str| names(&space.edits_of(machine).symbols());
+        let file = |path: &str, symbol: &str| (path.to_owned(), BTreeSet::from([symbol.into()]));
+        let store = file(RUST.path, method.symbol);
+        let warehouse = file("src/warehouse.rs", "struct_item Warehouse");
+        let shelf = file("src/shelf.rs", "function_item stack");
+        assert_eq!(
+            own("alice-laptop"),
+            BTreeMap::from([store.clone(), warehouse])
+        );
+        assert_eq!(own("bob-desktop"), BTreeMap::from([store, shelf]));
+        assert_eq!(
+            space.seen("alice-laptop"),
+            file_and(&RUST, "bob-desktop", &[method.symbol])
+        );
+        assert!(space.check("alice-laptop")["bob-desktop"].clean);
+    });
 }
 
 /// The scenarios of each language, in a module named after it.

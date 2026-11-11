@@ -148,7 +148,14 @@ Open questions of edit comparison, and how the prototype answers them:
   - Edits to distant lines of one function, which `git merge-tree` merges cleanly: what this level is for.
   - Symbols of one name and kind in one file under the same enclosing symbols, such as a TypeScript getter and setter, share a fingerprint.
 - **Misses:**
-  - Doc comments, attributes and decorators are outside the symbol they belong to: their lines count towards the enclosing symbol, or none. A TypeScript class's decorators are the exception: they are part of the class.
+  - Doc comments, attributes and decorators outside the symbol they belong to count towards the enclosing symbol, or none:
+
+    | Language | Outside the symbol | Part of it |
+    |---|---|---|
+    | Rust | Doc comments, attributes | — |
+    | TypeScript | Doc comments; decorators of a method, an accessor or a field without a function; decorators before `export` | Decorators of a class or abstract class not exported or after `export`; of a field that holds a function; of a parameter, which are part of its method |
+    | Python | Decorators | — |
+
   - Closures, lambdas and callbacks are not symbols: their lines count towards the symbol around them. A TypeScript test file of `describe` and `it` callbacks has none.
   - Edits outside every symbol, such as imports and module-level constants, match at file and hunk level only.
   - A type's fields and its methods are different symbols; so are a Rust struct and its `impl` block.

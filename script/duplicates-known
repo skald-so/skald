@@ -28,7 +28,6 @@ prototypes/agents/live/src/run.rs prototypes/agents/live/src/run.rs 60
 prototypes/agents/queue/tests/queue.rs prototypes/agents/queue/tests/queue.rs 55
 prototypes/agents/queue/tests/queue.rs prototypes/agents/queue/tests/queue.rs 59
 prototypes/agents/source/src/lib.rs prototypes/agents/source/src/lib.rs 50
-prototypes/edits/overlap/src/fingerprint.rs prototypes/edits/overlap/src/fingerprint.rs 62
 prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 50
 prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 51
 prototypes/edits/overlap/tests/exact_check.rs prototypes/edits/overlap/tests/exact_check.rs 51
