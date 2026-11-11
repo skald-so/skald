@@ -660,7 +660,8 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
   - Whether to fold case: a case-insensitive file system holds one file where a case-sensitive one can hold two. The report gives the choice, with the paths of the measured repositories that collide once case is folded or Unicode normalized; the command of 5.5 prints them.
   - The command of 5.5 prints its numbers again with the new form; the report updates them.
   - macOS: a command checks git on this Mac's case-insensitive volume: a case-only rename, file names in NFC and NFD, `core.ignorecase` and `core.precomposeunicode`. The reviewer reruns it; `script/test` does not run it.
-  - Windows: the same check, with backslashes, drive letters and CRLF under each `core.autocrlf` setting, runs in a CI job on `windows-latest` whenever the prototype changes. Test inputs cover only what the runner cannot produce; the report says which.
+  - Windows: the same check, with backslashes, drive letters and CRLF under each `core.autocrlf` setting, runs in a CI job on `windows-latest` whenever the prototype changes, and on demand. Test inputs cover only what the runner cannot produce; the report says which.
+  - `infrastructure.md`, "PR checks", names the Windows job as a check outside `script/test` and what starts it; "Branches" says whether it is required.
   - Findings in the report.
   - Tests: every spelling of one path gives one fingerprint; LF and CRLF versions of one edit give the same hunk and symbol fingerprints; machines with macOS, Windows and Linux spellings of one file overlap.
 - **Definition of done:** the macOS check, rerun by the reviewer, and the Windows job, read in the PR's checks, give what the report records; the command of 5.5, rerun by the reviewer, gives the colliding paths and numbers the report records; unit and scenario tests run in `script/test`.
@@ -669,7 +670,7 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **Goal:** It is known which data source catches the edits an agent makes via Bash and generators, and when.
 - **What we do:**
   - Sources: the working-tree diff the earlier iterations use; hooks that see an agent's edit tool calls; declarations of the files an agent will edit, made before it edits.
-  - Scripted sessions stand in for agents on clones of the measured repositories; no agent CLI runs. A session mixes edit tool writes, which hooks see, with shell commands: in-place edits, moves and deletions, formatters, package managers that rewrite a lockfile and code generators, all needing no account. The command pins each tool's version, refuses another and records it; package managers run offline.
+  - Scripted sessions stand in for agents on clones of the measured repositories; no agent CLI runs. A session mixes edit tool writes, which hooks see, with shell commands: in-place edits, moves and deletions, formatters, package managers that rewrite a lockfile and code generators, all needing no account. The command pins each tool's version, refuses another and records it; package managers run offline from a cache the command fills at pinned versions in its own directory, never from the machine's shared caches.
   - Per source: the share of changed files it misses by kind of command, and when it learns of an edit: at the edit, at the next scan or never.
   - One command runs the sessions; the reviewer reruns it; `script/test` does not run it.
   - Findings in the report.
@@ -692,9 +693,9 @@ Each story starts by [rules.md](rules.md), rule 6; stories within a wave can be 
 - **What we do:**
   - The report answers each question of "To decide" with the evidence of the earlier iterations, or says what is still open and what would answer it.
   - For Story 44: what a client sends and what the server compares at file level; for Story 45: the hunk and symbol schemes with their measured noise and misses.
-  - Every measurement command reruns on the final prototype; the report's numbers are updated to it.
+  - The commands of 5.5, 5.8 and 5.9 and the macOS check of 5.7 rerun on the final prototype, and the Windows job is started on this iteration's PR; the report's numbers are updated to them.
   - `features.md` §11, "To decide", links to the answers.
-- **Definition of done:** every measurement command, rerun by the reviewer, gives the numbers the report records; the report answers or marks open each question of "To decide"; `features.md` §11 links to it; no other doc repeats the report.
+- **Definition of done:** the commands of 5.5, 5.8 and 5.9 and the macOS check of 5.7, rerun by the reviewer, and the Windows job's run on this PR give the numbers the report records; the report answers or marks open each question of "To decide"; `features.md` §11 links to it; no other doc repeats the report.
 
 ### Story 6: Staging environment
 
