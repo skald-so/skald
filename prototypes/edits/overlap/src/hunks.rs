@@ -86,29 +86,26 @@ fn parse(diff: &[u8]) -> Result<Vec<Change>> {
         }
         // A hunk without new lines comes after its line `new`.
         let mut next = if new_lines == 0 { new + 1 } else { new };
+        // Runs of context lines and runs of changed lines, in turn.
+        let runs: Vec<_> = body
+            .chunk_by(|a, b| (a.0 == b' ') == (b.0 == b' '))
+            .collect();
         let mut before: &[u8] = b"";
-        let mut rest = &body[..];
-        while let Some(((side, text), tail)) = rest.split_first() {
-            if *side == b' ' {
-                before = text;
-                next += 1;
-                rest = tail;
+        for (i, run) in runs.iter().enumerate() {
+            if run[0].0 == b' ' {
+                before = &run[run.len() - 1].1;
+                next += run.len();
                 continue;
             }
-            let end = rest
-                .iter()
-                .position(|(side, _)| *side == b' ')
-                .unwrap_or(rest.len());
-            let (run, tail) = rest.split_at(end);
             let start = next;
             let mut base = vec![before];
-            for (side, text) in run {
+            for (side, text) in *run {
                 match side {
                     b'-' => base.push(text),
                     _ => next += 1,
                 }
             }
-            base.push(tail.first().map_or(&b""[..], |(_, text)| text));
+            base.push(runs.get(i + 1).map_or(&b""[..], |context| &context[0].1));
             changes.push(Change {
                 lines: start..next,
                 boundaries: base
@@ -116,7 +113,6 @@ fn parse(diff: &[u8]) -> Result<Vec<Change>> {
                     .map(|pair| (pair[0].to_vec(), pair[1].to_vec()))
                     .collect(),
             });
-            rest = tail;
         }
     }
     Ok(changes)
