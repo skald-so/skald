@@ -1,6 +1,7 @@
 //! Live checks of the delivery paths against the installed CLIs; `usage` lists the commands.
 //! `script/test` does not run them.
 
+mod app;
 mod pty;
 mod run;
 
@@ -46,6 +47,12 @@ fn main() -> ExitCode {
                 return usage();
             };
             ended(pty::queue(&options))
+        }
+        ["app-server", "codex", options @ ..] => {
+            let Some(options) = Options::parse(options) else {
+                return usage();
+            };
+            ended(app::app_server(&options))
         }
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
@@ -104,6 +111,7 @@ fn usage() -> ExitCode {
          live-check <post-tool-use|stop> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check app-server codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check timed-hook <log> <handler> [<arg>...]"
     );
     ExitCode::from(2)

@@ -1,7 +1,8 @@
 //! Runs the live checks whose sessions run in a pseudo-terminal: Channels, as Claude Code loads a
 //! channel only in an interactive session, and `codex queue`, as a queued message reaches only a
-//! session that keeps running after its turn. Everything that runs no CLI is in the library's
-//! `channel` and `queue` modules.
+//! session that keeps running after its turn. The app-server check runs the terminal UI of a
+//! session a person works in with it. Everything that runs no CLI is in the library's `channel` and
+//! `queue` modules.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -245,7 +246,7 @@ impl Prepare<'_> {
 
 /// The CLI's environment: only these variables, or the check's own, but for what
 /// [`Agent::command`] drops, and these.
-enum Env {
+pub(crate) enum Env {
     Only(Vec<(String, String)>),
     Add(Vec<(String, String)>),
 }
@@ -254,7 +255,7 @@ impl Env {
     /// The environment of the session in `files`: on `stub`, only the variables `on_stub` gives
     /// for a home of its own, the stub's address and `path`; on the real model, the check's own and
     /// `real`.
-    fn of(
+    pub(crate) fn of(
         files: &Files,
         stub: Option<&Stub>,
         path: &str,
@@ -268,7 +269,7 @@ impl Env {
     }
 
     /// Gives `command` this environment.
-    fn apply(&self, command: &mut Command) {
+    pub(crate) fn apply(&self, command: &mut Command) {
         match self {
             Env::Only(env) => {
                 command.env_clear().envs(env.iter().map(|(n, v)| (n, v)));
@@ -280,7 +281,7 @@ impl Env {
     }
 }
 
-struct Prepared {
+pub(crate) struct Prepared {
     name: String,
     agent: Agent,
     /// Whether the session belongs to the Channels check: the screen tells whether its channel
@@ -295,7 +296,7 @@ struct Prepared {
 
 /// A check's message and where it is.
 #[derive(Debug, Clone)]
-struct Added {
+pub(crate) struct Added {
     sent: Sent,
     dir: PathBuf,
     msg_id: String,
@@ -303,7 +304,7 @@ struct Added {
 
 impl Added {
     /// Adds a check's message with `token` to `source`, in `dir`.
-    fn new(source: &Source, dir: &Path, token: &str) -> Result<Self> {
+    pub(crate) fn new(source: &Source, dir: &Path, token: &str) -> Result<Self> {
         let message = add_message(source, token)?;
         Ok(Self {
             sent: Sent {
@@ -316,12 +317,12 @@ impl Added {
         })
     }
 
-    fn token(&self) -> &str {
+    pub(crate) fn token(&self) -> &str {
         &self.sent.token
     }
 
     /// The message with its state now.
-    fn now(&self) -> Result<Sent> {
+    pub(crate) fn now(&self) -> Result<Sent> {
         let source = Source::open(&self.dir)?;
         Ok(Sent {
             state: source.state(&self.msg_id)?,
@@ -333,7 +334,7 @@ impl Added {
 impl Prepared {
     /// The session `name` of `agent` in `files`, ready to start with `args` in `env`, on `stub`
     /// unless the model is real; `channel` if it belongs to the Channels check.
-    fn new(
+    pub(crate) fn new(
         name: &str,
         agent: Agent,
         channel: bool,
@@ -361,7 +362,7 @@ impl Prepared {
     }
 
     /// Starts the CLI in a pseudo-terminal.
-    fn start(self) -> Result<Live> {
+    pub(crate) fn start(self) -> Result<Live> {
         let (master, slave) = open_pty()?;
         let mut command = self.agent.command();
         self.env.apply(&mut command);
@@ -413,7 +414,7 @@ impl Prepared {
 }
 
 /// A running session.
-struct Live {
+pub(crate) struct Live {
     prepared: Prepared,
     child: Child,
     writer: File,
@@ -494,6 +495,22 @@ impl Live {
         Ok(false)
     }
 
+    /// Reads the terminal for `limit`, or until the CLI exits; whether it still runs.
+    pub(crate) fn pump_for(&mut self, limit: Duration) -> Result<bool> {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if !self.pump()? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Whether the terminal showed `text`, white space aside.
+    pub(crate) fn showed(&self, text: &str) -> bool {
+        self.screen.showed(text)
+    }
+
     /// Reads the terminal for up to a tick, answers its dialogs and reads what the session did;
     /// whether the CLI still runs.
     fn pump(&mut self) -> Result<bool> {
@@ -535,7 +552,7 @@ impl Live {
     }
 
     /// Ends the session as a person does, with Ctrl-C twice, or kills it.
-    fn end(mut self) -> Result<PtySession> {
+    pub(crate) fn end(mut self) -> Result<PtySession> {
         for _ in 0..2 {
             let _ = self.writer.write_all(b"\x03");
             let pause = Instant::now() + Duration::from_millis(500);

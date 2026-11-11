@@ -72,6 +72,9 @@ fn wrong_arguments_print_the_usage() {
         &["queue"],
         &["queue", "claude"],
         &["queue", "codex", "--verbose"],
+        &["app-server"],
+        &["app-server", "claude"],
+        &["app-server", "codex", "--verbose"],
         &["timed-hook"],
         &["timed-hook", "log"],
     ] {
@@ -537,5 +540,36 @@ fn queue_sessions_get_only_their_environment_and_run_interactive_with_their_hook
                 );
             }
         }
+    }
+}
+
+#[test]
+fn app_server_sessions_get_only_their_environment_and_run_the_client_or_listen() {
+    for (flags, sessions) in runs(1, 3) {
+        let checked = checked_sessions(
+            Agent::Codex,
+            &["app-server", "codex"],
+            flags,
+            sessions,
+            |home, stub, path| Agent::Codex.environment(home, stub, path),
+        );
+        let at = &checked.at;
+        for session in &checked.sessions {
+            assert_eq!(session.args[0], "app-server", "{at}");
+            for option in ["plugins", "notify=[]", r#"model_reasoning_effort="low""#] {
+                assert!(
+                    session.args.iter().any(|arg| arg == option),
+                    "{at}: no {option}"
+                );
+            }
+        }
+        // The client runs the idle and busy threads' own app-servers; the check runs the one that
+        // listens.
+        let listening = checked
+            .sessions
+            .iter()
+            .filter(|session| session.args[1] == "--listen")
+            .count();
+        assert_eq!(listening, sessions / 3, "{at}");
     }
 }

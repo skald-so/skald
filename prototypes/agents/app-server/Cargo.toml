@@ -1,0 +1,17 @@
+[package]
+name = "agent-app-server"
+description = "A client of the Codex app-server that hands the waiting messages to a thread with `turn/start` and `turn/steer`."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+agent-inbox = { path = "../inbox" }
+agent-source = { path = "../source" }
+serde_json = "1"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+agent-testing = { path = "../testing" }
+tempfile = "3"
