@@ -56,7 +56,7 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 cd "$tmp"
 git init --quiet
 for file in api/openapi.json Cargo.toml Cargo.lock deny.toml crates/server/src/lib.rs \
-  web/package.json web/src/App.tsx web/README.md docs/dev/roadmap.md task.md \
+  web/package.json web/package-lock.json web/src/App.tsx web/README.md docs/dev/roadmap.md task.md \
   crates/server/Dockerfile .dockerignore \
   prototypes/mls/Cargo.toml prototypes/mls/openmls/src/lib.rs \
   script/test .github/workflows/ci.yml renovate.json .gitattributes; do
@@ -68,7 +68,9 @@ base=$(git rev-parse HEAD)
 
 expect web web/src/App.tsx
 expect web web/README.md
-expect web -web/package.json
+expect 'rust web' web/package.json
+expect 'rust web' web/package-lock.json
+expect 'rust web' -web/package.json
 expect web web/src/App.tsx docs/dev/roadmap.md task.md
 
 expect rust crates/server/src/lib.rs

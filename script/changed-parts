@@ -3,7 +3,8 @@
 # lines for $GITHUB_OUTPUT. CI checks only those parts; script/test alone checks all of them.
 #   rust     crates/ (with the skald-server image definition), Cargo.toml, Cargo.lock, deny.toml,
 #            prototypes/
-#   web      web/
+#   web      web/; its package.json and package-lock.json also rust: the server's sign-in tests
+#            drive Chrome with its playwright-core
 #   none     docs/, Markdown files in the root
 #   all      any other path: the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
 # Usage: script/changed-parts <base>, in the repository to check.
@@ -21,6 +22,8 @@ rust=false web=false tooling=false
 while IFS= read -r path; do
   if [[ -z $path ]]; then
     continue
+  elif [[ $path == web/package.json || $path == web/package-lock.json ]]; then
+    web=true rust=true
   elif [[ $path == web/* ]]; then
     web=true
   elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock || $path == deny.toml ||

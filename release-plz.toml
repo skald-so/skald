@@ -29,6 +29,7 @@ changelog_include = [
   "skald-adapters",
   "skald-client",
   "skald-crypto",
+  "skald-github-stand-in",
   "skald-mcp",
   "skald-proto",
   "skald-server",
