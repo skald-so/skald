@@ -11,13 +11,11 @@ use edit_overlap::exposure::{self, Exposed};
 use edit_overlap::replay::{self, REPOSITORIES};
 
 fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("exposure: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    let Err(error) = run() else {
+        return ExitCode::SUCCESS;
+    };
+    eprintln!("exposure: {error}");
+    ExitCode::FAILURE
 }
 
 fn run() -> Result<()> {

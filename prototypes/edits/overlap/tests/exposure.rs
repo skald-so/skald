@@ -65,30 +65,34 @@ fn texts(recovered: &Recovered) -> (BTreeSet<&str>, BTreeSet<String>) {
     (paths, symbols)
 }
 
+/// Asserts that `recover` with the key gives `paths` and the symbols of `src/main.rs` the fixed
+/// dictionary holds, and without the key or with another key nothing.
+fn assert_recovers(paths: &[&str], recover: impl Fn(Keying) -> Recovered) {
+    let key = key();
+    let symbols = [
+        "src/main.rs: function_item main",
+        "src/main.rs: impl_item Config > function_item new",
+    ];
+    let want = (
+        paths.iter().copied().collect(),
+        symbols.map(str::to_owned).into(),
+    );
+    assert_eq!(texts(&recover(Keying::Key(&key))), want);
+    let other = SpaceKey::from_bytes([1; 32]);
+    for keying in [Keying::WithoutKey, Keying::Key(&other)] {
+        assert_eq!(recover(keying), Recovered::default());
+    }
+}
+
 #[test]
 fn the_dictionary_recovers_a_fixture_path_and_symbol_name_with_the_key_only() {
     let tmp = TempDir::new().unwrap();
     let (_machine, scope, published) = published(&tmp, &[]);
-    let key = key();
     let fixed = Dictionary::fixed();
-    let recovered = dictionary::recover(Keying::Key(&key), &scope, &fixed, &published);
     // Not the guide, a path it lacks.
-    assert_eq!(
-        texts(&recovered),
-        (
-            ["src/main.rs"].into(),
-            [
-                "src/main.rs: function_item main".to_owned(),
-                "src/main.rs: impl_item Config > function_item new".to_owned(),
-            ]
-            .into()
-        )
-    );
-    let other = SpaceKey::from_bytes([1; 32]);
-    for keying in [Keying::WithoutKey, Keying::Key(&other)] {
-        let recovered = dictionary::recover(keying, &scope, &fixed, &published);
-        assert_eq!(recovered, Recovered::default());
-    }
+    assert_recovers(&["src/main.rs"], |keying| {
+        dictionary::recover(keying, &scope, &fixed, &published)
+    });
 }
 
 #[test]
@@ -98,27 +102,9 @@ fn a_clone_recovers_the_paths_and_symbols_it_holds() {
     let report = ("src/report.rs", "fn summary() -> u32 {\n    1\n}\n");
     let main = edited_main() + "\nfn helper() -> u32 {\n    3\n}\n";
     let (machine, scope, published) = published(&tmp, &[report, ("src/main.rs", &main)]);
-    let key = key();
-    let dir = machine.dir();
-    let recovered =
-        dictionary::recover_with_clone(Keying::Key(&key), &scope, dir, "HEAD", &published).unwrap();
     // Every path and symbol of the clone that the machine publishes: not `src/report.rs` and its
     // `summary`, nor `helper`, which the clone lacks.
-    assert_eq!(
-        texts(&recovered),
-        (
-            ["docs/guide.md", "src/main.rs"].into(),
-            [
-                "src/main.rs: function_item main".to_owned(),
-                "src/main.rs: impl_item Config > function_item new".to_owned(),
-            ]
-            .into()
-        )
-    );
-    let other = SpaceKey::from_bytes([1; 32]);
-    for keying in [Keying::WithoutKey, Keying::Key(&other)] {
-        let recovered =
-            dictionary::recover_with_clone(keying, &scope, dir, "HEAD", &published).unwrap();
-        assert_eq!(recovered, Recovered::default());
-    }
+    assert_recovers(&["docs/guide.md", "src/main.rs"], |keying| {
+        dictionary::recover_with_clone(keying, &scope, machine.dir(), "HEAD", &published).unwrap()
+    });
 }
