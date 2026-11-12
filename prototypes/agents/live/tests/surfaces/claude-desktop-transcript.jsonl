@@ -1,0 +1,3 @@
+{"type":"api-request-shape","version":"2.1.317","entrypoint":null}
+{"type":"assistant","version":"2.1.317","entrypoint":"claude-desktop"}
+{"type":"summary","summary":"Shell command execution"}
