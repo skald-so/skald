@@ -211,6 +211,7 @@ fi
 # its publishing step, the release notes, and the installers against a stand-in release.
 if checks tooling; then
   script/release-workflow-test
+  script/release-jobs-test
   script/release-step-test
   script/release-notes-test
   script/installers-test

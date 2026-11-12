@@ -42,8 +42,7 @@ if [[ $# -eq 3 ]]; then
 else
   # The stand-in release: an archive of each macOS and Linux target, laid out as dist lays it out,
   # with a skald that prints its target too, and the installers.
-  version=$(awk -F'"' '/^\[/ { section = $0 } section == "[workspace.package]" && /^version *=/ { print $2; exit }' \
-    "$root/Cargo.toml")
+  version=$("$root/script/release-version")
   tag=v$version
   case $(uname -s)/$(uname -m) in
     Darwin/arm64) target=aarch64-apple-darwin ;;

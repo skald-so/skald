@@ -14,11 +14,15 @@ on:
     paths:
       - .github/workflows/release.yml
       - dist-workspace.toml
+      # dist's settings in Cargo.toml: [profile.dist], and the package it releases.
+      - Cargo.toml
+      - crates/client/Cargo.toml
       - installers/**
       - script/installers-test
       - script/lib/serve.mjs
       - script/release-installers
       - script/release-notes
+      - script/release-version
   workflow_dispatch:
 
 permissions:
@@ -46,11 +50,10 @@ jobs:
       # The release tag of the workspace version; a pushed tag must be it.
       - id: tag
         run: |
-          version=$(awk -F'"' '/^\[/ { section = $0 }
-            section == "[workspace.package]" && /^version *=/ { print $2; exit }' Cargo.toml)
-          if [[ $GITHUB_EVENT_NAME == push && $GITHUB_REF_NAME != "v$version" ]]; then
-            echo "the tag $GITHUB_REF_NAME is not the workspace version's, v$version" >&2
-            exit 1
+          if [[ $GITHUB_EVENT_NAME == push ]]; then
+            version=$(script/release-version "$GITHUB_REF_NAME")
+          else
+            version=$(script/release-version)
           fi
           echo "tag=v$version" | tee -a "$GITHUB_OUTPUT"
 

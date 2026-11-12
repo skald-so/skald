@@ -24,7 +24,7 @@ A human takes one action per release: merging the Release PR.
 - `dev` — the main and default branch; PRs from people and agents go here.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
-  - `Windows`, the edit comparison prototype's job, and the jobs of the release dry run are not required: their workflows run only for PRs that change some files, and a required check whose workflow does not run keeps a PR waiting.
+  - `Windows`, the edit comparison prototype's job, and the jobs of the release dry run are not required.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest release; only CI moves it.
   - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.
@@ -42,14 +42,14 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, of the edge image workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-step-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, of the edge image workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test` and `script/release-tag-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
   - The release-plz workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
   - The App: installed only on `skald-so/skald`; contents and pull requests read-write, metadata read; webhook off; it bypasses no ruleset but the creation of `v*` tags ("Branches").
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
-- **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald` and installs it on every runner, as for a release, and publishes nothing. A PR that changes the workflow, `dist-workspace.toml`, `installers/` or the scripts the workflow runs starts it, and so does a manual run (`workflow_dispatch`).
+- **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald` and installs it on every runner, as for a release, and publishes nothing. A PR that changes the workflow, dist's settings (`dist-workspace.toml`, `Cargo.toml`, `crates/client/Cargo.toml`), `installers/` or the scripts the workflow runs starts it, and so does a manual run (`workflow_dispatch`).
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
@@ -67,8 +67,8 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
   - GitHub Releases hold `skald` only; `skald-server` ships as the image.
   - Linux binaries are built on Ubuntu 22.04: they need glibc 2.35 or later.
   - Only the job that creates the release writes, contents only.
-- **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture and install `skald` so a new shell runs it. dist's own installers are not used: they are named after the package, and its PowerShell one checks no checksum.
-  - `install.sh`: into `~/.local/bin`, added to `PATH` in `~/.profile`, `~/.bashrc`, `~/.bash_profile` if there is one, and `.zshenv` if zsh is installed.
+- **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture and install `skald` so a new shell runs it. dist's own installers are not used.
+  - `install.sh`: into `~/.local/bin`. Unless that directory is on the running shell's `PATH` already, it adds it to `PATH` in `~/.profile`, in `~/.bash_profile` if there is one, in `~/.bashrc` if bash is installed, and in `.zshenv` if zsh is installed.
   - `install.ps1`: into `%LOCALAPPDATA%\Programs\skald`, added to the user's `PATH`.
   - `SKALD_INSTALL_DIR` sets the directory; `SKALD_DOWNLOAD_URL`, where the release's files are instead of GitHub.
 - **One version for everything:** client, server, plugin; for the crates, `[workspace.package]` in `Cargo.toml`. Before 1.0: `0.x` versions.
@@ -97,7 +97,7 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 - Builds get **GitHub Artifact Attestations** (Sigstore); verify with `gh attestation verify`.
 - Images are signed with cosign, without stored keys.
 - Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums.
-- dist, which `taiki-e/install-action` does not offer, is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
+- dist is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
 - Releases are immutable, a repository setting: a published release's files and checksums never change.
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.
 - The installer verifies the checksum.

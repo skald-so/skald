@@ -22,6 +22,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0x3x0](https://github.com/skald-so/skald/compare/v0.2.0...v0x3x0) - 2026-12-10
+
+- *(client)* not a version ([#40](https://github.com/skald-so/skald/pull/40))
+
 ## [0.2.0](https://github.com/skald-so/skald/compare/v0.1.10...v0.2.0) - 2026-12-01
 
 ### Added
@@ -75,10 +79,12 @@ expect_notes() {
   fi
 }
 
-# expect_failure <case> <version> [<changelog>]: it fails and prints nothing to stdout.
+# expect_failure <case> <version> [<changelog>]: it fails and prints nothing to stdout; <changelog>
+# is the fixture by default.
 expect_failure() {
   local output
-  if output=$("$root/script/release-notes" "${@:2}" 2>/dev/null) || [[ -n $output ]]; then
+  if output=$("$root/script/release-notes" "$2" "${3:-$tmp/CHANGELOG.md}" 2>/dev/null) ||
+    [[ -n $output ]]; then
     fail "$1: it does not fail, and prints '$output'"
   fi
 }
@@ -88,9 +94,9 @@ expect_notes 0.2.0-beta.1 '### Added' '' '- *(client)* beta feature ([#20](https
 expect_notes 0.1.1 '### Fixed' '' '- *(server)* first fix ([#2](https://github.com/skald-so/skald/pull/2))'
 expect_notes 0.1.10 '### Fixed' '' '- *(server)* tenth fix ([#10](https://github.com/skald-so/skald/pull/10))'
 expect_notes 0.1.0 '### Added' '' '- *(server)* first feature ([#1](https://github.com/skald-so/skald/pull/1))'
-expect_failure 'a version without a section' 0.3.0
+expect_failure 'a version without a section' 0.4.0
 expect_failure 'a prefix of a version' 0.2
-expect_failure 'a version whose dots are any character' 0x1x0
+expect_failure 'a version whose dots match only other characters' 0.3.0
 expect_failure 'two sections of a version' 0.0.8
 expect_failure 'an empty section' 0.0.9
 expect_failure 'no CHANGELOG.md' 0.1.0 "$tmp/missing.md"

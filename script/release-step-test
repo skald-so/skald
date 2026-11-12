@@ -7,6 +7,9 @@
 #   - a beta's release, vX.Y.Z-beta.N, is a prerelease, and a stable release's is not;
 #   - without a CHANGELOG section for the version, or when gh fails, the step fails, and in the
 #     first case gh does not run.
+# Also runs the plan job's step that sets the release tag: a push of the tag of the workspace
+# version, a stable release's or a beta's, gets that tag; a push of any other tag fails the step
+# and sets none; a PR and a manual run, on a tag ref too, get the workspace version's tag.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,6 +29,13 @@ npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows
     | if length == 1 then .[0] else error("not one step runs gh release create") end' \
   >"$tmp/step.sh" || {
   echo "release-step-test: not one step of .github/workflows/release.yml runs gh release create" >&2
+  exit 1
+}
+
+# The plan job's step that sets the release tag.
+npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/release.yml" |
+  jq -r '.jobs.plan.steps[]? | select(.id == "tag") | .run // error("no run")' >"$tmp/plan.sh" || {
+  echo "release-step-test: the plan job of .github/workflows/release.yml has no step with the id tag" >&2
   exit 1
 }
 
@@ -112,6 +122,34 @@ expect_release() {
     fail "$1: the release's notes do not list '$3': $(cat "$tmp/gh.notes" 2>/dev/null)"
   ! grep -q '^## ' "$tmp/gh.notes" 2>/dev/null || fail "$1: the release's notes have a version's heading"
 }
+
+# expect_plan <workspace version> <event> <ref name> <tag, or failed>: the plan step for the event
+# sets that tag, or fails and sets none.
+expect_plan() {
+  local status=0 output
+  printf '[workspace.package]\nversion = "%s"\n' "$1" >"$tmp/work/Cargo.toml"
+  : >"$tmp/plan.output"
+  (cd "$tmp/work" && GITHUB_EVENT_NAME=$2 GITHUB_REF_NAME=$3 GITHUB_OUTPUT=$tmp/plan.output \
+    bash --noprofile --norc -eo pipefail "$tmp/plan.sh") >/dev/null 2>&1 || status=$?
+  output=$(<"$tmp/plan.output")
+  if [[ $4 == failed ]]; then
+    [[ $status != 0 ]] || fail "plan, $2 of $3 with the workspace at $1: the step passes"
+    [[ $output != *tag=* ]] || fail "plan, $2 of $3 with the workspace at $1: it sets $output"
+  else
+    [[ $status == 0 ]] || fail "plan, $2 of $3 with the workspace at $1: the step exits $status"
+    [[ $output == "tag=$4" ]] || fail "plan, $2 of $3 with the workspace at $1: it sets '$output', not tag=$4"
+  fi
+}
+
+expect_plan 1.2.3 push v1.2.3 v1.2.3
+expect_plan 1.2.4-beta.1 push v1.2.4-beta.1 v1.2.4-beta.1
+expect_plan 1.2.3 push v1.2.4 failed
+expect_plan 1.2.3 push v1.2.3-beta.1 failed
+expect_plan 1.2.3 push 1.2.3 failed
+expect_plan 1.2.3 push v-refused-test failed
+expect_plan 1.2.3 pull_request 7/merge v1.2.3
+expect_plan 1.2.3 workflow_dispatch dev v1.2.3
+expect_plan 1.2.3 workflow_dispatch v9.9.9 v1.2.3
 
 expect_release v1.2.3 no '*(server)* stable fix'
 expect_release v1.2.4-beta.1 yes '*(client)* beta feature'
