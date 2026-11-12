@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+# Tests script/staging-status on GitHub API responses recorded in script/testdata/staging-status,
+# trimmed to the fields it reads, served with a local stand-in for the health check by
+# script/lib/recorded-api-stub.mjs: they were recorded after the first deploy of the latest commit
+# on dev, which succeeded; jobs-publish-running.json holds that commit's jobs while its publish ran.
+# It passes for a succeeded deploy of the latest commit with the health check ok, and fails, naming
+# the cause, when the publish or the deploy failed, has not run or is still running, or the health
+# check fails; a deploy that succeeded after a newer merge counts as none; a failed call of the
+# GitHub API is an error; it sends no token, whatever the environment and curl's config hold. The
+# names it reads are those of .github/workflows/edge.yml.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+recorded=$root/script/testdata/staging-status
+tmp=$(mktemp -d)
+failures=0
+stub=''
+cleanup() {
+  if [[ -n $stub ]]; then
+    kill "$stub" 2>/dev/null || true
+    wait "$stub" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+fail() {
+  echo "staging-status-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+head=c126c91729fe1c8fe8b6d171a6591b45aea120dd
+head_run=43298557061
+# The run of the commit before: its deploy succeeded after $head was merged, so staging stayed.
+older=863311a2a6c1224bb0952fdc078d8f8d9fdac15d
+older_run=43298387447
+newer=$(printf 'a%.0s' {1..40})
+serve=$tmp/serve
+api=$serve/repos/skald-so/skald
+runs=$api/actions/workflows/edge.yml/runs.json
+jobs() { echo "$api/actions/runs/$1/jobs.json"; }
+
+node "$root/script/lib/recorded-api-stub.mjs" "$serve" "$tmp/port" &
+stub=$!
+for _ in $(seq 100); do
+  [[ ! -s $tmp/port ]] || break
+  sleep 0.1
+done
+[[ -s $tmp/port ]] || {
+  echo "staging-status-test: the stand-in for the GitHub API did not start" >&2
+  exit 1
+}
+url=http://127.0.0.1:$(cat "$tmp/port")
+
+# A curl config that would send a token, and tokens in the environment: the command uses none.
+mkdir "$tmp/home"
+echo 'header = "Authorization: Bearer recorded-test-token"' >"$tmp/home/.curlrc"
+
+# recorded: the stand-in serves the recorded responses and a health check that answers ok.
+recorded() {
+  rm -rf "$serve"
+  cp -R "$recorded" "$serve"
+  echo '{"status":"ok"}' >"$serve/health.json"
+}
+
+# edit <file> <jq filter>: applies the filter to a served response.
+edit() {
+  jq "$2" "$1" >"$tmp/edited"
+  mv "$tmp/edited" "$1"
+}
+
+# run [<args>...]: runs script/staging-status, setting $status and $output.
+run() {
+  status=0
+  output=$(HOME=$tmp/home GH_TOKEN=recorded-test-token GITHUB_TOKEN=recorded-test-token \
+    GITHUB_API_URL=$url STAGING_URL=${staging_url:-$url} "$root/script/staging-status" "$@" 2>&1) ||
+    status=$?
+}
+
+# expect <case> <status> <text>...: the last run exited with <status> and printed each <text>.
+expect() {
+  local case=$1 want=$2 text
+  shift 2
+  [[ $status -eq $want ]] || fail "$case: exit code $status, not $want; output: $output"
+  for text in "$@"; do
+    [[ $output == *"$text"* ]] || fail "$case: no '$text' in the output: $output"
+  done
+}
+
+# expect_failed <case> <cause>... [-- <text>...]: the last run failed, naming exactly these causes,
+# and printed each <text>.
+expect_failed() {
+  local case=$1 causes=() texts=()
+  shift
+  while [[ $# -gt 0 && $1 != -- ]]; do
+    causes+=("staging-status: FAILED: $1")
+    shift
+  done
+  [[ $# -eq 0 ]] || texts=("${@:2}")
+  expect "$case" 1 "${causes[@]}" ${texts[@]+"${texts[@]}"}
+  local named
+  named=$(grep -c 'FAILED' <<<"$output" || true)
+  [[ $named -eq ${#causes[@]} ]] || fail "$case: $named causes named, not ${#causes[@]}: $output"
+  [[ $output != *PASSED* ]] || fail "$case: printed PASSED: $output"
+}
+
+recorded
+run
+expect "succeeded deploy of the latest commit" 0 \
+  "staging-status: dev is $head, merged 2026-11-12T20:15:50Z" \
+  "staging-status: latest staging deploy: $head, succeeded, finished 2026-11-12T20:20:06Z, 4 min 16 s after its merge; https://github.com/skald-so/skald/actions/runs/$head_run" \
+  "staging-status: health check $url/health: ok" \
+  "staging-status: PASSED: staging runs $head"
+
+recorded
+edit "$api/commits/dev.json" ".sha = \"$newer\" | .commit.committer.date = \"2026-11-12T21:00:00Z\""
+run
+expect_failed "publish not run" "the publish has not run" -- \
+  "staging-status: dev is $newer, merged 2026-11-12T21:00:00Z" \
+  "staging-status: latest staging deploy: $head, succeeded, finished 2026-11-12T20:20:06Z"
+
+recorded
+edit "$runs" '.workflow_runs[0].status = "in_progress"'
+cp "$recorded/jobs-publish-running.json" "$(jobs $head_run)"
+run
+expect_failed "publish running" "the publish is still running" -- \
+  "staging-status: latest staging deploy: none in the newest 10 runs of edge.yml"
+
+recorded
+edit "$(jobs $head_run)" '.jobs[0].conclusion = "failure"
+  | .jobs[1] |= (.conclusion = "skipped" | .started_at = .completed_at | .steps = [])'
+run
+expect_failed "publish failed" "the publish failed (failure)" -- \
+  "staging-status: latest staging deploy: none in the newest 10 runs of edge.yml"
+
+recorded
+edit "$(jobs $head_run)" '.jobs[1].conclusion = "cancelled"'
+run
+expect_failed "deploy cancelled" "the deploy failed (cancelled)"
+
+recorded
+edit "$(jobs $head_run)" 'del(.jobs[1])'
+run
+expect_failed "deploy not run" "the deploy has not run" -- \
+  "staging-status: latest staging deploy: none in the newest 10 runs of edge.yml"
+
+recorded
+edit "$(jobs $head_run)" '.jobs[1] |= (.conclusion = "skipped" | .steps = [])'
+run
+expect_failed "deploy skipped" "the deploy has not run" -- \
+  "staging-status: latest staging deploy: none in the newest 10 runs of edge.yml"
+
+# The deploy of the commit before started before $head was merged: it is the latest staging deploy.
+recorded
+edit "$(jobs $head_run)" 'del(.jobs[1])'
+edit "$(jobs $older_run)" '(.jobs[1].steps[] | select(.name == "Deploy") | .started_at) =
+  "2026-11-12T20:15:49Z"'
+run
+expect_failed "deploy not run after a deploy of the commit before" "the deploy has not run" -- \
+  "staging-status: latest staging deploy: $older, succeeded, finished 2026-11-12T20:16:14Z, 1 min 21 s after its merge; https://github.com/skald-so/skald/actions/runs/$older_run"
+
+# Started in the second $head was merged: dev had moved on when it checked, so staging stayed.
+recorded
+edit "$(jobs $head_run)" 'del(.jobs[1])'
+edit "$(jobs $older_run)" '(.jobs[1].steps[] | select(.name == "Deploy") | .started_at) =
+  "2026-11-12T20:15:50Z"'
+run
+expect_failed "deploy not run after a deploy of the commit before at its merge" \
+  "the deploy has not run" -- \
+  "staging-status: latest staging deploy: none in the newest 10 runs of edge.yml"
+
+# A failed deploy is a deploy, whenever it ran.
+recorded
+edit "$(jobs $head_run)" 'del(.jobs[1])'
+edit "$(jobs $older_run)" '.jobs[1].conclusion = "failure"'
+run
+expect_failed "deploy not run after a failed deploy of the commit before" "the deploy has not run" -- \
+  "staging-status: latest staging deploy: $older, failed (failure), finished 2026-11-12T20:16:14Z"
+
+recorded
+edit "$runs" '.workflow_runs[0].status = "in_progress"'
+edit "$(jobs $head_run)" '.jobs[1] |= (.status = "in_progress" | .conclusion = null
+  | .completed_at = null)'
+run
+expect_failed "deploy running" "the deploy is still running" -- \
+  "staging-status: latest staging deploy: $head, still running; https://github.com/skald-so/skald/actions/runs/$head_run"
+
+recorded
+edit "$runs" '.workflow_runs[0].status = "in_progress"'
+edit "$(jobs $head_run)" '.jobs[1] |= (.status = "waiting" | .conclusion = null | .started_at = null
+  | .completed_at = null | .steps = [])'
+run
+expect_failed "deploy waiting" "the deploy is still running"
+
+recorded
+edit "$(jobs $head_run)" '.jobs[1].conclusion = "failure"'
+run
+expect_failed "deploy failed" "the deploy failed (failure)" -- \
+  "staging-status: latest staging deploy: $head, failed (failure), finished 2026-11-12T20:20:06Z, 4 min 16 s after its merge"
+
+# dev moved on to a newer commit, deployed, between the reads of dev and of the runs.
+recorded
+edit "$runs" ".workflow_runs = [.workflow_runs[0] | .id = 1 | .head_sha = \"$newer\"
+  | .created_at = \"2026-11-12T21:00:04Z\" | .head_commit.timestamp = \"2026-11-12T21:00:00Z\"
+  | .html_url = \"https://github.com/skald-so/skald/actions/runs/1\"] + .workflow_runs"
+mkdir "$api/actions/runs/1"
+jq '.jobs[].completed_at = "2026-11-12T21:04:00Z"' "$(jobs $head_run)" >"$(jobs 1)"
+run
+expect_failed "newer commit deployed" "the latest staging deploy is not of $head" -- \
+  "staging-status: latest staging deploy: $newer, succeeded, finished 2026-11-12T21:04:00Z, 4 min 0 s after its merge"
+
+recorded
+echo '{"status":"unavailable"}' >"$serve/health.json"
+echo 503 >"$serve/health.status"
+run
+expect_failed "health check unavailable" "the health check fails: HTTP 503" -- \
+  "staging-status: latest staging deploy: $head, succeeded"
+
+recorded
+echo '{"status":"starting"}' >"$serve/health.json"
+run
+expect_failed "health check not ok" "the health check fails: HTTP 200"
+
+recorded
+echo 202 >"$serve/health.status"
+run
+expect_failed "health check accepted, not ok" "the health check fails: HTTP 202"
+
+recorded
+rm "$serve/health.json"
+edit "$(jobs $head_run)" '.jobs[1].conclusion = "failure"'
+run
+expect_failed "deploy and health check failed" "the deploy failed (failure)" \
+  "the health check fails: HTTP 404"
+
+# A port nothing listens on: the stand-in's own, once it is stopped, is not known to be free.
+recorded
+staging_url=http://127.0.0.1:9
+run
+staging_url=''
+expect_failed "health check unreachable" "the health check fails: no answer: curl: (7)"
+
+recorded
+echo 500 >"$api/commits/dev.status"
+run
+expect "commit not served" 2 "the GitHub API did not answer commits/dev"
+
+recorded
+rm "$runs"
+run
+expect "runs not served" 2 "the GitHub API did not answer actions/workflows/edge.yml/runs"
+
+recorded
+echo '{"message":"rate limited"}' >"$(jobs $head_run)"
+run
+expect "unreadable jobs" 2 "the GitHub API sent an unreadable list of the jobs of run $head_run"
+
+recorded
+echo '{"message":"rate limited"}' >"$runs"
+run
+expect "unreadable runs" 2 "the GitHub API sent an unreadable list of runs"
+
+recorded
+echo '{"message":"rate limited"}' >"$api/commits/dev.json"
+run
+expect "unreadable commit" 2 "the GitHub API sent an unreadable commit"
+
+recorded
+run extra
+expect "an argument" 2 "usage:"
+
+# The names script/staging-status reads: the jobs of edge.yml and the deploy job's step that runs
+# script/deploy-staging. A pinned version, as in script/edge-workflow-test.
+workflow=$(npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/edge.yml")
+names=$(sed -n 's/^publish_job=\(.*\) deploy_job=\(.*\) deploy_step=\(.*\)$/\1|\2|\3/p' \
+  "$root/script/staging-status" | tr -d "'")
+IFS='|' read -r publish_job deploy_job deploy_step <<<"$names"
+jq --exit-status --arg publish "$publish_job" --arg deploy "$deploy_job" --arg step "$deploy_step" '
+  .jobs.publish.name == $publish and .jobs.deploy.name == $deploy
+  and ([.jobs.deploy.steps[] | select(.name == $step) | .run | startswith("script/deploy-staging ")]
+    == [true])' <<<"$workflow" >/dev/null ||
+  fail "the job and step names in script/staging-status, '$names', are not those of edge.yml"
+
+if [[ $failures -gt 0 ]]; then
+  echo "staging-status-test: $failures failed" >&2
+  exit 1
+fi
+echo "staging-status-test: all passed"
