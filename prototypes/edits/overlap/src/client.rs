@@ -209,6 +209,15 @@ impl Edits {
         [self.paths.len(), self.hunks.len(), self.symbols.len()]
     }
 
+    /// The fingerprints of paths, of hunk boundaries and of symbols.
+    pub fn levels(&self) -> [BTreeSet<Fingerprint>; 3] {
+        [
+            self.paths.keys().copied().collect(),
+            self.hunks.keys().copied().collect(),
+            self.symbols.keys().copied().collect(),
+        ]
+    }
+
     /// Each path of the edit set with the symbols its changed lines are in.
     pub fn symbols(&self) -> Symbols {
         by_path(self.symbols.values().flatten())
