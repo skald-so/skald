@@ -33,20 +33,22 @@ pub fn command(dir: &Path, args: &[&str]) -> Command {
     command
 }
 
-/// The `git` that `PATH` gives, the first file named `git` in its absolute directories, or `git`
-/// when there is none. Rust's standard library starts a program given by its path with `posix_spawn`, but
-/// forks to look a name up in a `PATH` the command sets; a fork of a process with many threads and
-/// a large heap holds up each of its threads that allocates.
+/// The `git` that `PATH` gives, as [`on_path`] finds it, or `git` when there is none. Rust's
+/// standard library starts a program given by its path with `posix_spawn`, but forks to look a name
+/// up in a `PATH` the command sets; a fork of a process with many threads and a large heap holds up
+/// each of its threads that allocates.
 fn program() -> &'static Path {
     static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
-    PROGRAM.get_or_init(|| {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        std::env::split_paths(&path)
-            .filter(|dir| dir.is_absolute())
-            .map(|dir| dir.join("git"))
-            .find(|git| git.is_file())
-            .unwrap_or_else(|| "git".into())
-    })
+    PROGRAM.get_or_init(|| on_path("git").unwrap_or_else(|| "git".into()))
+}
+
+/// The first file named `name` in the absolute directories of this process's `PATH`.
+pub fn on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(name))
+        .find(|program| program.is_file())
 }
 
 /// Runs `git` in `dir`, as [`command`] sets it up, and returns its standard output.

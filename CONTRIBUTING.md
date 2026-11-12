@@ -13,6 +13,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - Node.js 26 with npm.
 - git 2.40 or newer: the edit comparison prototype reads the conflicts of `git merge-tree` and the attributes of a commit with `git check-attr --source`.
 - `curl`, `jq` and `openssl`: the tests run them.
+- Python 3 with its `venv` module: the edit comparison prototype's tests install a package with `pip` in a virtual environment.
 - The MLS prototypes' WASM tests: the `wasm32-unknown-unknown` target, `rustup target add wasm32-unknown-unknown`, and `wasm-bindgen-cli` of the `wasm-bindgen` version in `prototypes/mls/Cargo.lock`: `cargo install wasm-bindgen-cli --version <version> --locked`. They run in Node.js.
 - Google Chrome: the web tests ([web/README.md](web/README.md)) and the server's sign-in tests run it headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
 

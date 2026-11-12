@@ -1,0 +1,5 @@
+{"client":{"method":"initialize","id":0,"params":{"clientInfo":{"name":"skald_prototype","title":"Skald prototype","version":"0.1.0"}}}}
+{"server":{"id":0,"result":{"userAgent":"skald_prototype/0.167.0-alpha.4.1 (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (skald_prototype; 0.1.0)","platformFamily":"unix","platformOs":"macos"}}}
+{"client":{"method":"initialized"}}
+{"client":{"method":"thread/list","id":1,"params":{"cwd":["/tmp/skald-live-x/project","/private/tmp/skald-live-x/project"]}}}
+{"server":{"id":1,"result":{"data":[{"id":"01a1ce22-0000-7000-8000-000000000001","preview":"Reply with only OK.","ephemeral":false,"modelProvider":"openai","status":{"type":"notLoaded"},"cwd":"/private/tmp/skald-live-x/project","cliVersion":"0.167.0-alpha.4.1","originator":"codex_work_desktop","source":"vscode","turns":[]},{"id":"01a1ce21-961d-7a10-b19d-afc3cbde7c0d","preview":"Run the shell command `sleep 20`. Then reply with only OK.","ephemeral":false,"modelProvider":"openai","status":{"type":"notLoaded"},"cwd":"/private/tmp/skald-live-x/project","cliVersion":"0.167.0-alpha.4.1","originator":"codex_work_desktop","source":"vscode","turns":[]}],"nextCursor":null}}}

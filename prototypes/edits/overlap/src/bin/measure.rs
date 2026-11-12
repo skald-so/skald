@@ -6,29 +6,7 @@
 use std::process::ExitCode;
 
 use edit_overlap::Result;
-use edit_overlap::replay::{self, Repository};
-
-/// The measured repositories, each fetched over HTTPS without an account.
-const REPOSITORIES: [Repository; 3] = [
-    Repository {
-        name: "diesel",
-        url: "https://github.com/diesel-rs/diesel",
-        commit: "31afd783aeddb2471bba2bece823816fe4925fed",
-        merges: 300,
-    },
-    Repository {
-        name: "drizzle-orm",
-        url: "https://github.com/drizzle-team/drizzle-orm",
-        commit: "bea7dd3623279ec2a12ca6c838cf5c8b17d3de42",
-        merges: 300,
-    },
-    Repository {
-        name: "netbox",
-        url: "https://github.com/netbox-community/netbox",
-        commit: "cf6d3f0319fade2fa0f1c51155f1c11330e58ff3",
-        merges: 300,
-    },
-];
+use edit_overlap::replay::{self, REPOSITORIES};
 
 fn main() -> ExitCode {
     match run() {

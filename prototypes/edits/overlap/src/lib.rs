@@ -8,7 +8,9 @@
 //! fingerprints on the merges of real repositories, and [`noise`] classes the files behind its
 //! warnings and conflicts. [`paths`] gives the one form of a path that fingerprints take and maps
 //! the paths an agent's tools give, and [`spellings`] checks git's spellings of paths and line
-//! endings on this machine's file system. Scenarios and findings: `docs/dev/edit-prototype.md`.
+//! endings on this machine's file system. [`sessions`] play scripted sessions with edit tool
+//! writes and shell commands, with the pinned [`tools`], and compare the sources of a machine's
+//! edits. Scenarios and findings: `docs/dev/edit-prototype.md`.
 
 pub mod check;
 pub mod client;
@@ -21,8 +23,10 @@ pub mod noise;
 pub mod paths;
 pub mod replay;
 pub mod server;
+pub mod sessions;
 pub mod spellings;
 pub mod symbols;
+pub mod tools;
 
 pub use check::{Check, Conflict};
 pub use client::{Client, Edits, Lines, Symbols};
