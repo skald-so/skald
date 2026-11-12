@@ -10,10 +10,14 @@
 //! the paths an agent's tools give, and [`spellings`] checks git's spellings of paths and line
 //! endings on this machine's file system. [`sessions`] play scripted sessions with edit tool
 //! writes and shell commands, with the pinned [`tools`], and compare the sources of a machine's
-//! edits. Scenarios and findings: `docs/dev/edit-prototype.md`.
+//! edits. [`exposure`] gives what the server learns from the fingerprints of the measured merges
+//! without the key, and what a holder of the key recovers from them with a fixed [`dictionary`].
+//! Scenarios and findings: `docs/dev/edit-prototype.md`.
 
 pub mod check;
 pub mod client;
+pub mod dictionary;
+pub mod exposure;
 pub mod fingerprint;
 pub mod git;
 pub mod harness;

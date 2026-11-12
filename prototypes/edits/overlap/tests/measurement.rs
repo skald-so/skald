@@ -8,10 +8,10 @@ use std::fs;
 use std::sync::Mutex;
 
 use common::Repo;
-use edit_overlap::git;
 use edit_overlap::harness::{DATE, Machine};
 use edit_overlap::noise::{self, Class, Signal};
 use edit_overlap::replay::{self, Counts, Level, Measured, Replay, Repository};
+use edit_overlap::{exposure, git};
 use tempfile::TempDir;
 
 /// `machine` replaces each `(path, line, text)` of `edits`, a 1-based line, with `text` on a new
@@ -1029,4 +1029,142 @@ fn attributes_of_the_given_commit_mark_files_generated() {
     // The commit without the attributes marks none.
     let marked = noise::marked_generated(machine.dir(), "HEAD", &paths).unwrap();
     assert!(marked.is_empty());
+}
+
+/// What fingerprints show of `replays`, merges of the repository of `maintainer`, as the fixture
+/// repository `name`.
+fn exposed<'r>(
+    maintainer: &Machine,
+    repository: &'r Repository,
+    replays: Vec<Replay>,
+) -> exposure::Exposed<'r> {
+    let scope = git::scope_of(maintainer.dir(), "HEAD").unwrap();
+    let recovered = exposure::recover(maintainer.dir(), &scope, &replays).unwrap();
+    exposure::Exposed {
+        repository,
+        replays,
+        recovered,
+    }
+}
+
+#[test]
+fn exposure_gives_what_the_server_learns_of_the_replays() {
+    let tmp = TempDir::new().unwrap();
+    let maintainer = fixture(&tmp);
+    let mut replays = replays(&maintainer);
+    // The fixture merges at one time; here they merge an hour apart, the oldest an hour after it.
+    let date: i64 = DATE.split_once(' ').unwrap().0.parse().unwrap();
+    let count = replays.len() as i64;
+    for (i, replay) in replays.iter_mut().enumerate() {
+        assert_eq!(replay.merged_at, date);
+        replay.merged_at = date + (count - i as i64) * 3600;
+    }
+    let repository = Repository {
+        name: "fixture",
+        url: "https://example.com/fixture",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: 12,
+    };
+    let report = exposure::report(&[exposed(&maintainer, &repository, replays)]);
+    let rows = |title: &str| rows(&report, title);
+    // 18 machines, one commit each: the second parents, and the first parents of Bob's merges.
+    // Their fingerprints: 3 for 7 of them, 4 for 8, 7 for the 3 of the different functions.
+    assert_eq!(
+        rows("What the server sees of each machine"),
+        ["| fixture | 18 | 18 | 1 | 4 | 7 | 7 |"]
+    );
+    // Bob's merges but the guide's: 2 shared fingerprints for distant lines and for different
+    // functions, 3 for the insertions and the empty line, 4 for the same line. The machines of the
+    // warehouse share only its path, all others the path of `src/inventory.rs`.
+    assert_eq!(
+        rows("Machines that share fingerprints"),
+        ["| fixture | 12 | 5 (41.6%) | 3 | 4 | 4 | 2 | 16 (88.8%) | 0 (0.0%) |"]
+    );
+    // The path of `src/inventory.rs` in 15 machines.
+    assert_eq!(
+        rows("How many machines publish each fingerprint"),
+        ["| fixture | 28 | 8 (28.5%) | 19 (67.8%) | 1 (3.5%) | 15 | 0 |"]
+    );
+    // Alice's 6 merges at 22:13 UTC, and the 12 branches 1 to 12 hours before.
+    assert_eq!(
+        rows("When the machines publish: their commits, each once, by hour of the day, UTC"),
+        ["| fixture | 18 | 15:00 to 23:00 | 13 (72.2%) |"]
+    );
+    // The clone at the warehouse's merge holds every file and symbol the machines change; the
+    // dictionary none.
+    assert_eq!(
+        rows(
+            "What a holder of the space key recovers: with the fixed dictionary, and with a clone \
+            at the oldest merge replayed"
+        ),
+        ["| fixture | 3 | 0 (0.0%) | 3 (100.0%) | 4 | 0 (0.0%) | 4 (100.0%) |"]
+    );
+    assert!(rows("What the fixed dictionary recovers").is_empty());
+    // At each merge, the machines of the newer merges publish again: 17 at the oldest, then 15,
+    // 14, 12, 11, 9, 8, 6, 5, 3, 2 and 0, with 70 fingerprints at most and 32 at the median; of
+    // the 5 merges whose machines share fingerprints, those newer.
+    assert_eq!(
+        rows("A change of the space key at the time of each merge replayed"),
+        ["| fixture | 12 | 8 | 17 | 1024 | 2240 | 3 | 5 |"]
+    );
+}
+
+#[test]
+fn exposure_gives_what_a_holder_of_the_key_recovers() {
+    let tmp = TempDir::new().unwrap();
+    let main = "fn main() {\n    let a = 0;\n}\n";
+    let [alice, bob, maintainer] = clones_with(&tmp, &[("src/main.rs", main)]);
+    let pair: [Branch; 2] = [
+        ("main-a", 2, &[("src/main.rs", 2, "    let a = 1;")]),
+        (
+            "main-b",
+            3,
+            &[
+                ("src/main.rs", 2, "    let a = 2;"),
+                ("README.md", 1, "# Fixture"),
+            ],
+        ),
+    ];
+    merge_pairs([&alice, &bob, &maintainer], &[pair]);
+    let repositories = ["fixture", "copy"].map(|name| Repository {
+        name,
+        url: "https://example.com/fixture",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: 2,
+    });
+    // The same merges as two repositories: each publishes every fingerprint of the other.
+    let exposed: Vec<_> = (repositories.iter())
+        .map(|repository| exposed(&maintainer, repository, replays(&maintainer)))
+        .collect();
+    let report = exposure::report(&exposed);
+    let rows = |title: &str| rows(&report, title);
+    assert_eq!(
+        rows("How many machines publish each fingerprint"),
+        [
+            "| fixture | 6 | 2 (33.3%) | 4 (66.6%) | 0 (0.0%) | 3 | 6 |",
+            "| copy | 6 | 2 (33.3%) | 4 (66.6%) | 0 (0.0%) | 3 | 6 |",
+        ]
+    );
+    // The clone at Alice's merge lacks the README, which Bob adds.
+    assert_eq!(
+        rows(
+            "What a holder of the space key recovers: with the fixed dictionary, and with a clone \
+            at the oldest merge replayed"
+        ),
+        [
+            "| fixture | 2 | 2 (100.0%) | 1 (50.0%) | 1 | 1 (100.0%) | 1 (100.0%) |",
+            "| copy | 2 | 2 (100.0%) | 1 (50.0%) | 1 | 1 (100.0%) | 1 (100.0%) |",
+        ]
+    );
+    assert_eq!(
+        rows("What the fixed dictionary recovers"),
+        [
+            "| fixture | `README.md` | - | 1 |",
+            "| fixture | `src/main.rs` | - | 3 |",
+            "| fixture | `src/main.rs` | `function_item main` | 3 |",
+            "| copy | `README.md` | - | 1 |",
+            "| copy | `src/main.rs` | - | 3 |",
+            "| copy | `src/main.rs` | `function_item main` | 3 |",
+        ]
+    );
 }

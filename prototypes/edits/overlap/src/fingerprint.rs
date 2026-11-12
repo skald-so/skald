@@ -34,6 +34,14 @@ impl Scope {
     }
 }
 
+/// What computes a fingerprint from its fields: HMAC-SHA256 with the space key, or, for a party
+/// without the key such as the server, SHA-256 over the same fields.
+#[derive(Clone, Copy)]
+pub enum Keying<'k> {
+    Key(&'k SpaceKey),
+    WithoutKey,
+}
+
 /// An HMAC fingerprint, all the server learns of a path, a hunk or a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Fingerprint(pub [u8; 32]);
@@ -45,8 +53,13 @@ pub const PATH_LABEL: &str = "skald edit path";
 /// HMAC-SHA256 with the space key over the label, the scope and the path's [normal
 /// form](paths::normalize), each prefixed with its length as a big-endian `u64`.
 pub fn path(key: &SpaceKey, scope: &Scope, path: &str) -> Fingerprint {
-    hmac(
-        key,
+    path_with(Keying::Key(key), scope, path)
+}
+
+/// The fingerprint [`path`] gives, computed with `keying`.
+pub fn path_with(keying: Keying, scope: &Scope, path: &str) -> Fingerprint {
+    digest(
+        keying,
         &[
             PATH_LABEL.as_bytes(),
             scope.as_str().as_bytes(),
@@ -72,7 +85,7 @@ pub fn hunk(key: &SpaceKey, scope: &Scope, path: &str, before: &[u8], after: &[u
         &lf_line(before),
         &lf_line(after),
     ];
-    hmac(key, &fields)
+    digest(Keying::Key(key), &fields)
 }
 
 /// `line` with LF in place of a CRLF that ends it.
@@ -91,31 +104,87 @@ pub const SYMBOL_LABEL: &str = "skald edit symbol";
 /// symbol, outermost first, a name that spans lines with LF in place of each CRLF, each prefixed
 /// with its length as a big-endian `u64`.
 pub fn symbol(key: &SpaceKey, scope: &Scope, path: &str, symbol: &Symbol) -> Fingerprint {
-    let path = paths::normalize(path);
-    let names: Vec<String> = symbol
-        .0
-        .iter()
-        .map(|(_, name)| name.replace("\r\n", "\n"))
-        .collect();
-    let mut fields = vec![
-        SYMBOL_LABEL.as_bytes(),
-        scope.as_str().as_bytes(),
-        path.as_bytes(),
-    ];
-    for ((kind, _), name) in symbol.0.iter().zip(&names) {
-        fields.extend([kind.as_bytes(), name.as_bytes()]);
-    }
-    hmac(key, &fields)
+    symbol_with(Keying::Key(key), scope, path, symbol)
 }
 
-/// HMAC-SHA256 with the space key over `fields`, each prefixed with its length.
-fn hmac(key: &SpaceKey, fields: &[&[u8]]) -> Fingerprint {
-    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&key.0).expect("HMAC takes any key");
-    for field in fields {
-        mac.update(&(field.len() as u64).to_be_bytes());
-        mac.update(field);
+/// The fingerprint [`symbol`] gives, computed with `keying`.
+pub fn symbol_with(keying: Keying, scope: &Scope, path: &str, symbol: &Symbol) -> Fingerprint {
+    Symbols::new(keying, scope, path).fingerprint(symbol)
+}
+
+/// The fingerprints of the symbols of one file, as [`symbol_with`] gives them, from one digest of
+/// the label, the scope and the path: for a party that tries many symbols of the file.
+#[derive(Clone)]
+pub struct Symbols(Digest);
+
+impl Symbols {
+    /// The digest of the label, the scope and the [normal form](paths::normalize) of `path`.
+    pub fn new(keying: Keying, scope: &Scope, path: &str) -> Self {
+        let mut digest = Digest::new(keying);
+        digest.field(SYMBOL_LABEL.as_bytes());
+        digest.field(scope.as_str().as_bytes());
+        digest.field(paths::normalize(path).as_bytes());
+        Self(digest)
     }
-    Fingerprint(mac.finalize().into_bytes().into())
+
+    /// The fingerprint of `symbol` of the file.
+    pub fn fingerprint(&self, symbol: &Symbol) -> Fingerprint {
+        let mut digest = self.0.clone();
+        for (kind, name) in &symbol.0 {
+            digest.field(kind.as_bytes());
+            digest.field(name.replace("\r\n", "\n").as_bytes());
+        }
+        digest.finish()
+    }
+}
+
+/// HMAC-SHA256 with the space key, or SHA-256 without it, over fields, each prefixed with its
+/// length.
+#[derive(Clone)]
+enum Digest {
+    Keyed(Hmac<Sha256>),
+    Unkeyed(Sha256),
+}
+
+impl Digest {
+    fn new(keying: Keying) -> Self {
+        match keying {
+            Keying::Key(key) => Self::Keyed(
+                <Hmac<Sha256> as KeyInit>::new_from_slice(&key.0).expect("HMAC takes any key"),
+            ),
+            Keying::WithoutKey => Self::Unkeyed(<Sha256 as sha2::Digest>::new()),
+        }
+    }
+
+    fn field(&mut self, field: &[u8]) {
+        let length = (field.len() as u64).to_be_bytes();
+        match self {
+            Self::Keyed(mac) => {
+                mac.update(&length);
+                mac.update(field);
+            }
+            Self::Unkeyed(hash) => {
+                sha2::Digest::update(hash, length);
+                sha2::Digest::update(hash, field);
+            }
+        }
+    }
+
+    fn finish(self) -> Fingerprint {
+        match self {
+            Self::Keyed(mac) => Fingerprint(mac.finalize().into_bytes().into()),
+            Self::Unkeyed(hash) => Fingerprint(sha2::Digest::finalize(hash).into()),
+        }
+    }
+}
+
+/// [`Digest`] over `fields`, computed with `keying`.
+fn digest(keying: Keying, fields: &[&[u8]]) -> Fingerprint {
+    let mut digest = Digest::new(keying);
+    for field in fields {
+        digest.field(field);
+    }
+    digest.finish()
 }
 
 #[cfg(test)]
@@ -183,6 +252,29 @@ mod tests {
         assert_eq!(
             symbol(&key(), &scope(), "src/LIB.RS", &reserve),
             want(&[label, SCOPE_AND_PATH, outer, inner])
+        );
+    }
+
+    #[test]
+    fn without_the_key_a_fingerprint_is_sha256_over_the_same_fields() {
+        let unkeyed =
+            |input: &[&[u8]]| Fingerprint(<Sha256 as sha2::Digest>::digest(input.concat()).into());
+        let label = b"\0\0\0\0\0\0\0\x0fskald edit path";
+        assert_eq!(
+            path_with(Keying::WithoutKey, &scope(), "SRC/lib.rs"),
+            unkeyed(&[label, SCOPE_AND_PATH])
+        );
+        let label = b"\0\0\0\0\0\0\0\x11skald edit symbol";
+        let main = b"\0\0\0\0\0\0\0\x0dfunction_item\0\0\0\0\0\0\0\x04main";
+        let symbol = Symbol(vec![("function_item".into(), "main".into())]);
+        assert_eq!(
+            symbol_with(Keying::WithoutKey, &scope(), "src/lib.rs", &symbol),
+            unkeyed(&[label, SCOPE_AND_PATH, main])
+        );
+        let key = key();
+        assert_eq!(
+            symbol_with(Keying::Key(&key), &scope(), "src/lib.rs", &symbol),
+            want(&[label, SCOPE_AND_PATH, main])
         );
     }
 
