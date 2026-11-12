@@ -367,7 +367,7 @@ Open questions:
 - In D the client resumes a thread with the terminal UI's settings, `approvalPolicy: "on-request"`, and declines every request of the app-server. Whether an approval in a turn the client started goes to the client or to the terminal UI was not checked.
 
 ## Subscription limits
-Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. On Claude Code the limits exist and a local program can read them so. Codex has them only on a ChatGPT sign-in: on the API key it runs on, it gives none. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
+Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. On Claude Code the limits exist and a local program can read them so. Codex has them only on a ChatGPT sign-in. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
 
 | Agent | Source | What it shows | Needs a model turn | Sign-in with limits | Local program reads it | Prototype |
 |---|---|---|---|---|---|---|
@@ -413,7 +413,7 @@ Findings:
 - After a model response, the Codex app-server also sends `account/rateLimits/updated` with the windows of the response's rate limit headers, even on another model provider: checked by hand on the stub, which sent `x-codex-primary-*` and `x-codex-secondary-*` headers. `/status` still showed "data not available yet", and `account/rateLimits/read` refused, "codex account authentication required".
 
 ### Open questions
-- Whether reading the limits through Codex's app-server counts as the programmatic extraction the OpenAI terms forbid. On the API key Codex runs on, the app-server gives none.
+- Whether reading the limits through Codex's app-server counts as the programmatic extraction the OpenAI terms forbid.
 - How often `/usage` may run before Anthropic's usage endpoint limits it.
 - `live-check limits codex` reads an MCP server's name from a table header and does not quote it: a name with a dot does not turn the server off.
 
