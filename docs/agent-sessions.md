@@ -26,9 +26,9 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - **A task** always arrives as a signal, and the agent takes it from the queue itself.
 
 ## How Skald knows a message was read
-The Skald client sees the message in the agent's session file, followed by the model's response; an API error is not a response. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and keeps nothing. Without a confirmation, the message goes again by a fallback, and repeats are dropped.
+The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and keeps nothing. Without a confirmation, the message goes again by a fallback, and repeats are dropped.
 
 ## What you need to do
 - Only `skald connect`: it sets up Claude Code and Codex itself.
-- In Codex, approve Skald's hooks once, in Review hooks.
+- In Codex, approve Skald's hooks in Review hooks in the app and VS Code, or with `/hooks` in the terminal, and again after an update changes them.
 - In Claude Code's bypass mode, nothing: Skald passes the socket token itself.
