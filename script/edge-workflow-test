@@ -3,12 +3,17 @@
 # its token writes packages and nothing else; on a linux/amd64 runner it checks out the pushed
 # commit, logs in to GHCR with its token, builds crates/server/Dockerfile, the image definition
 # script/image-test tests, from that commit with the layer cache of earlier runs, pushes it to GHCR
-# tagged with the commit and moves :edge with script/tag-edge.
+# tagged with the commit and moves :edge with script/tag-edge. Then a deploy job, whose token only
+# reads contents, deploys the published digest of the pushed commit with script/deploy-staging in
+# the environment staging, with its secrets, the only job of any workflow that uses them; the
+# workflow names no connection detail.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 workflow=$root/.github/workflows/edge.yml
 image=ghcr.io/skald-so/skald-server
+environment=staging
+staging_secrets='["secrets.STAGING_SSH_DESTINATION", "secrets.STAGING_SSH_HOST_KEY", "secrets.STAGING_SSH_KEY"]'
 failures=0
 
 fail() {
@@ -16,8 +21,12 @@ fail() {
   failures=$((failures + 1))
 }
 
-# A pinned version: the YAML 1.2 parser keeps the `on` key a string.
-json=$(npx --yes --package yaml@2.9.1 -- yaml --json --single <"$workflow")
+# to_json <file>: a workflow as JSON. A pinned version: the YAML 1.2 parser keeps the `on` key a
+# string.
+to_json() {
+  npx --yes --package yaml@2.9.1 -- yaml --json --single <"$1"
+}
+json=$(to_json "$workflow")
 
 # expect <what> <jq filter>: the filter is true for the workflow.
 expect() {
@@ -34,7 +43,8 @@ expect "it sets nothing but its name, trigger, permissions, concurrency and jobs
 expect "runs on pushes to dev and on nothing else" '.on == {"push": {"branches": ["dev"]}}'
 expect "its token reads contents and writes packages, nothing else" \
   '.permissions == {"contents": "read", "packages": "write"}'
-expect "no job changes the token's permissions" '[.jobs[] | has("permissions")] | any | not'
+expect "the publish job keeps the workflow's token; the deploy job's only reads contents" \
+  '(.jobs.publish | has("permissions") | not) and .jobs.deploy.permissions == {"contents": "read"}'
 expect "one run at a time, without cancelling a running one" \
   '.concurrency == {"group": "${{ github.workflow }}", "cancel-in-progress": false}'
 expect "every action is pinned to a commit" \
@@ -45,23 +55,33 @@ expect "the checkout keeps no credentials" \
 expect "the checkout takes the pushed commit: it sets nothing but persist-credentials" \
   '[.jobs[].steps[] | select(.uses // "" | startswith("actions/checkout@"))
     | .with == {"persist-credentials": false}] | length > 0 and all'
-expect "it uses no secret but its token" \
-  '[.. | strings | scan("secrets\\.[A-Za-z_]+")] | unique | . == [] or . == ["secrets.GITHUB_TOKEN"]'
+# secrets <job>: the secrets the job names.
+secrets='def secrets($job): [$job | .. | strings | scan("secrets\\.[A-Za-z0-9_]+")] | unique;'
+expect "the publish job uses no secret but its token" \
+  "$secrets secrets(.jobs.publish) == [\"secrets.GITHUB_TOKEN\"]"
+expect "the deploy job uses no secret but those of the environment $environment" \
+  "$secrets secrets(.jobs.deploy) == $staging_secrets"
+expect "the workflow names no connection detail: no SSH URL, account at a host, address or host key" \
+  '[.. | objects | to_entries[] | select(.key != "uses") | .value | strings
+    | select(test("ssh://|ssh-[a-z0-9]+ |[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+"))]
+    == []'
+expect "two jobs: publish, then deploy" '.jobs | keys == ["deploy", "publish"]'
 
 # The publish job: the checkout, Buildx, the login, the build, then the move of :edge.
-expect "one job" '.jobs | length == 1'
-job='.jobs[]'
-expect "the job runs on every push: it has no condition" "$job | has(\"if\") | not"
-expect "the job sets nothing but its name, runner and steps" \
-  "$job | keys == [\"name\", \"runs-on\", \"steps\"]"
-expect "the job runs on ubuntu-latest, so the image is linux/amd64 like staging" \
+job='.jobs.publish'
+expect "the publish job runs on every push: it has no condition" "$job | has(\"if\") | not"
+expect "the publish job sets nothing but its name, runner, outputs and steps" \
+  "$job | keys == [\"name\", \"outputs\", \"runs-on\", \"steps\"]"
+expect "the publish job's output is the built digest" \
+  "$job.outputs == {\"digest\": \"\${{ steps.build.outputs.digest }}\"}"
+expect "the publish job runs on ubuntu-latest, so the image is linux/amd64 like staging" \
   "$job[\"runs-on\"] == \"ubuntu-latest\""
 expect "the steps: checkout, Buildx, the login, the build, the move of :edge" \
   "[$job.steps[] | .uses // .name | sub(\"@.*\"; \"\")] == [\"actions/checkout\",
     \"docker/setup-buildx-action\", \"docker/login-action\", \"docker/build-push-action\",
     \"Move :edge\"]"
 expect "no step has a condition or may fail" \
-  "[$job.steps[] | keys - [\"env\", \"id\", \"name\", \"run\", \"uses\", \"with\"]] | add == []"
+  "[.jobs[].steps[] | keys - [\"env\", \"id\", \"name\", \"run\", \"uses\", \"with\"]] | add == []"
 expect "Buildx runs with its defaults: its docker-container driver exports the layer cache" \
   "$job.steps[1] | keys == [\"uses\"]"
 expect "the login before the build is to GHCR with the token" \
@@ -87,6 +107,43 @@ expect "the step after the build moves :edge to the built digest of the pushed c
       \"env\": {\"DIGEST\": \"\${{ steps.build.outputs.digest }}\"},
       \"run\": \"script/tag-edge $image \\\"\$GITHUB_SHA\\\" \\\"\$DIGEST\\\"\"
     }"
+
+# The deploy job: after the publish, the checkout of the pushed commit, then script/deploy-staging.
+job='.jobs.deploy'
+expect "the deploy job runs after the publish, on every push: it has no condition" \
+  "$job.needs == \"publish\" and ($job | has(\"if\") | not)"
+expect "the deploy job sets nothing but its name, needs, runner, permissions, environment, timeout and
+    steps" \
+  "$job | keys == [\"environment\", \"name\", \"needs\", \"permissions\", \"runs-on\", \"steps\",
+    \"timeout-minutes\"]"
+expect "the deploy job runs in the environment $environment" "$job.environment == \"$environment\""
+expect "the deploy job runs on ubuntu-latest" "$job[\"runs-on\"] == \"ubuntu-latest\""
+expect "the deploy job: the checkout, then the deploy" \
+  "[$job.steps[] | .uses // .name | sub(\"@.*\"; \"\")] == [\"actions/checkout\", \"Deploy\"]"
+expect "the deploy deploys the published digest of the pushed commit with the environment's secrets" \
+  "$job.steps[1] == {
+    \"name\": \"Deploy\",
+    \"env\": {
+      \"DIGEST\": \"\${{ needs.publish.outputs.digest }}\",
+      \"STAGING_SSH_KEY\": \"\${{ secrets.STAGING_SSH_KEY }}\",
+      \"STAGING_SSH_HOST_KEY\": \"\${{ secrets.STAGING_SSH_HOST_KEY }}\",
+      \"STAGING_SSH_DESTINATION\": \"\${{ secrets.STAGING_SSH_DESTINATION }}\"
+    },
+    \"run\": \"script/deploy-staging \\\"\$GITHUB_SHA\\\" \\\"\$DIGEST\\\"\"
+  }"
+
+# No other workflow uses the environment or its secrets.
+for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
+  [[ -f $file && $file != "$workflow" ]] || continue
+  if ! jq --exit-status --arg env "$environment" '[.jobs[]? | .environment
+    | if type == "object" then .name else . end] | all(. != $env)' <<<"$(to_json "$file")" \
+    >/dev/null; then
+    fail "${file#"$root"/} uses the environment $environment"
+  fi
+  if grep -qE 'secrets\.STAGING_' "$file"; then
+    fail "${file#"$root"/} reads the secrets of the environment $environment"
+  fi
+done
 
 if [[ $failures -ne 0 ]]; then
   echo "edge-workflow-test: $failures case(s) failed" >&2

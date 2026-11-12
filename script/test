@@ -2,13 +2,15 @@
 # Builds the workspace and runs every check. Exits 0 only if all of them pass.
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     copied code in crates/ and prototypes/ (script/duplicates); build, fmt, clippy, tests
-#            with PostgreSQL and, for the server's GitHub sign-in, headless Chrome; cargo-deny; the MLS
-#            prototypes in prototypes/mls and their benchmarks' smoke run, natively and in WASM; the
-#            delivery prototypes in prototypes/agents; the edit comparison prototype in prototypes/edits;
+#            with PostgreSQL and, for the server's GitHub sign-in and the client's sign-in, headless
+#            Chrome; cargo-deny; the MLS prototypes in prototypes/mls and their benchmarks' smoke
+#            run, natively and in WASM; the delivery prototypes in prototypes/agents; the edit
+#            comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
-#   tooling  copied code in script/; tests of the scripts in script/, of the edge image workflow, of
-#            the Release PR workflow and its release tags, of the release workflow and its release
-#            notes, and of the installers in installers/ on this machine; Renovate config validation
+#   tooling  copied code in script/; tests of the scripts in script/, the staging deploy's against a
+#            local sshd, of the edge image and staging deploy workflow, of the Release PR workflow and
+#            its release tags, of the release workflow and its release notes, and of the installers in
+#            installers/ on this machine; Renovate config validation
 #   rust and tooling both: the Release PR and the release tags on fixture repositories, with
 #            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
@@ -77,6 +79,15 @@ if checks rust; then
     exit 1
   fi
 fi
+if checks tooling; then
+  for tool in ssh ssh-add ssh-agent ssh-keygen sshd; do
+    if ! command -v "$tool" >/dev/null && [[ ! -x /usr/sbin/$tool ]]; then
+      echo "script/test: $tool is missing; the staging deploy's test runs a local sshd: https://www.openssh.com" \
+        "(Debian and Ubuntu: the openssh-client and openssh-server packages)" >&2
+      exit 1
+    fi
+  done
+fi
 if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
   exit 1
@@ -103,7 +114,7 @@ if checks rust && ! command -v openssl >/dev/null; then
 fi
 
 # web_packages: installs the packages of web/ from its lockfile, once per run. The web UI needs them,
-# and so do the server's sign-in tests, which drive Chrome with its playwright-core.
+# and so do the server's and the client's sign-in tests, which drive Chrome with its playwright-core.
 web_packages() {
   if [[ -z ${web_installed:-} ]]; then
     (cd web && npm ci --no-audit --no-fund)
@@ -171,6 +182,7 @@ if checks tooling; then
   script/changed-parts-test
   script/mutants-test
   script/tag-edge-test
+  script/deploy-staging-test
   script/edge-workflow-test
   script/release-plz-workflow-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.

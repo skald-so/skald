@@ -5,6 +5,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/dev-origin.sh"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 failures=0
@@ -43,23 +44,7 @@ expect_refused() {
   [[ -z $docker ]] || fail "$1: docker ran: $docker"
 }
 
-# A scratch origin, isolated from the user's git config, with two commits on dev.
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
-export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
-git init --quiet --bare "$tmp/origin.git"
-git clone --quiet "$tmp/origin.git" "$tmp/clone" 2>/dev/null
-cd "$tmp/clone"
-git checkout --quiet -b dev
-git commit --quiet --allow-empty --message older
-older=$(git rev-parse HEAD)
-git commit --quiet --allow-empty --message head
-head=$(git rev-parse HEAD)
-git push --quiet origin dev
-cd "$tmp"
-
-# Another branch named like dev, at the older commit: only the head of dev counts.
-git -C "$tmp/clone" push --quiet origin "$older:refs/heads/feature/dev"
+dev_origin "$tmp"
 
 run "$image" "$head" "$digest"
 [[ $status -eq 0 ]] || fail "head of dev: exit code $status, output: $output"

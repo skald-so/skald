@@ -63,8 +63,8 @@ jobs:
         with:
           tool: >-
             cargo-deny@0.20.2,wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }},release-plz@0.4.3
-      # The MLS prototypes' WASM tests run in Node.js; the server's sign-in tests drive the runner's
-      # Google Chrome with the playwright-core of web/.
+      # The MLS prototypes' WASM tests run in Node.js; the server's and the client's sign-in tests
+      # drive the runner's Google Chrome with the playwright-core of web/.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26

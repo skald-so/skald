@@ -4,7 +4,7 @@
 # no other crate has a normal or build dependency on the AGPL skald-server;
 # no workspace crate depends on the prototypes in prototypes/, which never ship;
 # cargo-deny with deny.toml accepts permissive dependencies and rejects disallowed licenses,
-# unlicensed crates and known vulnerabilities.
+# unlicensed crates and known vulnerabilities; deny.toml rejects a license exception no crate uses.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -89,12 +89,19 @@ local_fixture() {
   } >"$tmp/$case/dep/Cargo.toml"
 }
 
+# The policy of deny.toml for the fixtures: they lack the crates its exceptions name, which the
+# workspace's own check requires to be in its graph.
+config=$tmp/deny.toml
+sed 's/^unused-license-exception = "deny"$/unused-license-exception = "allow"/' "$root/deny.toml" >"$config"
+grep -qx 'unused-license-exception = "deny"' "$root/deny.toml" ||
+  fail 'deny.toml: no unused-license-exception = "deny" in [licenses]'
+
 # expect <case> <pass|code> <check>...: runs cargo-deny on the fixture <case>;
 # expects it to pass or to fail with error[<code>].
 expect() {
   local case=$1 want=$2 output
   shift 2
-  if output=$(cargo deny --manifest-path "$tmp/$case/Cargo.toml" --config "$root/deny.toml" \
+  if output=$(cargo deny --manifest-path "$tmp/$case/Cargo.toml" --config "$config" \
     --color never check "$@" 2>&1); then
     [[ $want == pass ]] || fail "$case: expected error[$want], cargo-deny passed"
   elif [[ $want == pass ]]; then

@@ -2,7 +2,7 @@
 //! database, or against a stub that gives canned answers.
 
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -83,6 +83,14 @@ impl Server {
             Some(versions) => versions.parse().expect("a protocol version range"),
             None => Default::default(),
         };
+        Self::start_with(|_| skald_server::Settings {
+            versions,
+            sign_in: None,
+        })
+    }
+
+    /// Starts the server with the settings `settings` gives for the address it listens on.
+    pub fn start_with(settings: impl FnOnce(SocketAddr) -> skald_server::Settings) -> Self {
         let runtime = Runtime::new().expect("start a tokio runtime");
         let db = TestDb::create(&runtime);
         let url = db.url();
@@ -100,11 +108,8 @@ impl Server {
             (listener, pool)
         });
         let addr = listener.local_addr().expect("the server's address");
+        let settings = settings(addr);
         runtime.spawn(async move {
-            let settings = skald_server::Settings {
-                versions,
-                sign_in: None,
-            };
             axum::serve(listener, skald_server::app(pool, settings))
                 .await
                 .expect("serve the API");
@@ -114,6 +119,34 @@ impl Server {
             runtime: Some(runtime),
             db,
         }
+    }
+}
+
+impl Server {
+    /// What every table but `_sqlx_migrations` holds, one XML document per table, whatever its
+    /// schema; byte strings in hex, which, unlike base64 there, has no line breaks.
+    pub fn rows(&self) -> Vec<String> {
+        let runtime = Runtime::new().expect("start a tokio runtime");
+        runtime
+            .block_on(async {
+                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                sqlx::raw_sql("SET xmlbinary = hex")
+                    .execute(&mut conn)
+                    .await?;
+                let tables: Vec<(String,)> = sqlx::query_as(
+                    "SELECT query_to_xml(format('SELECT * FROM %I.%I', table_schema, table_name),
+                                         true, false, '')::text
+                     FROM information_schema.tables
+                     WHERE table_type = 'BASE TABLE'
+                       AND table_schema NOT IN ('pg_catalog', 'information_schema')
+                       AND table_name <> '_sqlx_migrations'",
+                )
+                .fetch_all(&mut conn)
+                .await?;
+                conn.close().await?;
+                Ok::<_, sqlx::Error>(tables.into_iter().map(|(table,)| table).collect())
+            })
+            .expect("read the database's rows")
     }
 }
 
@@ -209,6 +242,16 @@ impl Stub {
                     }
                     head.push_str(&line);
                 }
+                // The body too: a connection closed with unread bytes resets, and the answer with it.
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                let _ = reader.read_exact(&mut vec![0; length]);
                 let path = head.split(' ').nth(1).unwrap_or_default().to_owned();
                 recorded.lock().unwrap().push(head);
                 let answer = answer(&path);
