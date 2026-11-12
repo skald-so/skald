@@ -12,6 +12,8 @@
 #   $GITHUB_API_URL with the token $GH_TOKEN.
 #   - The merge of a Release PR with a version change gets one tag, v<version>, on its commit; a beta
 #     its beta tag, vX.Y.Z-beta.N. release-plz creates no GitHub Release and publishes no crate.
+#   - The GitHub API may list a commit's PRs late: on an empty list script/release-pr-merged asks
+#     again, 6 times in all, before it exits 1.
 #   - An already tagged version gets no tag: a run again on a tagged commit, and a Release PR that
 #     keeps a released beta's version.
 #   - A version change from any other PR gets no tag, whatever its branch is named: a person's PR,
@@ -166,6 +168,9 @@ tag() {
     export GITHUB_API_URL=http://127.0.0.1:$port/api/v3 GITHUB_SERVER_URL=http://127.0.0.1:$port
     export GITHUB_REPOSITORY=skald-so/skald GITHUB_SHA=$head GITHUB_REF=refs/heads/dev
     export GH_TOKEN=fixture-token GITHUB_TOKEN=fixture-token
+    # Its default number of calls on an empty list, a short pause between them.
+    export RELEASE_PR_MERGED_PAUSE=0.1
+    unset RELEASE_PR_MERGED_ATTEMPTS
     script/release-pr-merged
   ) >"$tmp/gate.log" 2>&1 || gate=$?
   if [[ $gate == 0 ]] && ! (cd "$dir" && release-plz release --forge github \
@@ -219,6 +224,14 @@ git -C "$dir" tag v0.40.6
 case="the merge of a Release PR whose version is tagged on its commit"
 tag "$case"
 expect_no_tag "$case" 0
+
+# The list of the commit's PRs, empty on the first 5 calls, has the Release PR on the 6th.
+fixture late-list
+commit "chore: release v0.40.6 (#$((++pr)))" 0.40.6
+associate "$head" "{\"empty\": 5, \"pulls\": [$(release_pull "$head")]}"
+case="the merge of a Release PR the GitHub API lists on its 6th call"
+tag "$case"
+expect_tag "$case" 0.40.6
 
 # Betas: a person's PR sets the version, the Release PR's merge gets the tag.
 fixture beta

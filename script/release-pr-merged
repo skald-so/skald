@@ -3,11 +3,16 @@
 # is not, 2 on an error, a failed call of the GitHub API among them. A Release PR is one the GitHub
 # App skald-release, skald-release[bot], opened from a branch of $GITHUB_REPOSITORY and that GitHub
 # merged into dev as this commit. It reads the commit's PRs from the GitHub API at $GITHUB_API_URL
-# with the token $GH_TOKEN. .github/workflows/release-plz.yml tags a commit only after it exits 0;
-# script/release-tag-test tests it.
+# with the token $GH_TOKEN. Every push to dev is a PR's merge, so an empty list is one GitHub has
+# not filled yet: it asks again, $RELEASE_PR_MERGED_ATTEMPTS times in all (6 by default),
+# $RELEASE_PR_MERGED_PAUSE seconds apart (10), before it exits 1.
+# .github/workflows/release-plz.yml tags a commit only after it exits 0; script/release-tag-test
+# tests it.
 set -euo pipefail
 
 app='skald-release[bot]'
+attempts=${RELEASE_PR_MERGED_ATTEMPTS:-6}
+pause=${RELEASE_PR_MERGED_PAUSE:-10}
 
 error() {
   echo "release-pr-merged: $*" >&2
@@ -19,15 +24,21 @@ for name in GITHUB_API_URL GITHUB_REPOSITORY GH_TOKEN; do
 done
 commit=$(git rev-parse --verify --quiet 'HEAD^{commit}') || error "no commit is checked out"
 
-prs=$(curl --fail --silent --show-error --max-time 60 --retry 3 \
-  --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' \
-  --header 'X-GitHub-Api-Version: 2022-11-28' \
-  "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$commit/pulls?per_page=100") ||
-  error "the GitHub API did not list the PRs of $commit"
+for ((attempt = 1; ; attempt++)); do
+  prs=$(curl --fail --silent --show-error --max-time 60 --retry 3 \
+    --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' \
+    --header 'X-GitHub-Api-Version: 2022-11-28' \
+    "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$commit/pulls?per_page=100") ||
+    error "the GitHub API did not list the PRs of $commit"
+  count=$(jq 'if type == "array" then length else error("not a list of PRs") end' <<<"$prs") ||
+    error "the GitHub API sent an unreadable list of the PRs of $commit"
+  ((count == 0 && attempt < attempts)) || break
+  echo "release-pr-merged: no PR lists $commit yet; asking again in $pause s" >&2
+  sleep "$pause"
+done
 
 merged=$(jq -r --arg app "$app" --arg repo "$GITHUB_REPOSITORY" --arg commit "$commit" '
-  if type != "array" then error("not a list of PRs") else . end
-  | any(.[]; .user.login == $app and .user.type == "Bot"
+  any(.[]; .user.login == $app and .user.type == "Bot"
     and .head.repo.full_name == $repo
     and .base.ref == "dev" and .base.repo.full_name == $repo
     and .merged_at != null and .merge_commit_sha == $commit)' <<<"$prs") ||

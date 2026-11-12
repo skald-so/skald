@@ -200,6 +200,7 @@ fi
 # The release tags: the tagging workflow, and the tags on fixture repositories, with release-plz.
 if checks tooling; then
   script/release-tag-workflow-test
+  script/release-tag-step-test
 fi
 if checks rust || checks tooling; then
   script/release-tag-test

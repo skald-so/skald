@@ -42,7 +42,7 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, of the edge image workflow and of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`); Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, of the edge image workflow and of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test` and `script/release-tag-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.

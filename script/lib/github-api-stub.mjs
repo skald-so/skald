@@ -5,7 +5,8 @@
 // associated with a commit, tag objects and refs. Every request goes to <log> as a JSON line; after
 // each request <pulls> holds the PRs as JSON.
 // <associated>, optional, is read on each request: a JSON object from a commit's SHA to the PRs
-// `GET /repos/{owner}/{repo}/commits/{sha}/pulls` lists for it, or to an HTTP status it fails with;
+// `GET /repos/{owner}/{repo}/commits/{sha}/pulls` lists for it, or to an HTTP status it fails with,
+// or to {"empty": <n>, "pulls": <PRs>}: an empty list for the first <n> calls, then the PRs;
 // `GET /repos/{owner}/{repo}/pulls/{number}` serves those PRs too. After each request <refs>, also
 // optional, holds the refs written through the API as a JSON array of {method, ref, commit}, a tag
 // object resolved to its commit; creating a tag that exists fails with 422, as on GitHub.
@@ -19,6 +20,8 @@ const pulls = [];
 // The refs written, and the commit of each tag object created.
 const refs = [];
 const tagObjects = new Map();
+// The calls that listed the PRs of each commit.
+const listCalls = new Map();
 const associated = () =>
   associatedFile && fs.existsSync(associatedFile)
     ? JSON.parse(fs.readFileSync(associatedFile, 'utf8') || '{}')
@@ -57,7 +60,11 @@ function reply(req, body) {
   if (repo === undefined) return [404, { message: 'Not Found' }];
   if ((match = repo.match(/^\/commits\/([0-9a-f]+)\/pulls$/)) && req.method === 'GET') {
     const found = associated()[match[1]] ?? [];
-    return typeof found === 'number' ? [found, { message: 'Server Error' }] : [200, found];
+    if (typeof found === 'number') return [found, { message: 'Server Error' }];
+    if (Array.isArray(found)) return [200, found];
+    const calls = (listCalls.get(match[1]) ?? 0) + 1;
+    listCalls.set(match[1], calls);
+    return [200, calls > found.empty ? found.pulls : []];
   }
   if (repo === '/git/tags' && req.method === 'POST') {
     const sha = oid();
@@ -76,7 +83,7 @@ function reply(req, body) {
     const found =
       pulls.find((p) => p.number === Number(match[1])) ??
       Object.values(associated())
-        .flatMap((listed) => (Array.isArray(listed) ? listed : []))
+        .flatMap((listed) => (Array.isArray(listed) ? listed : (listed.pulls ?? [])))
         .find((p) => p.number === Number(match[1]));
     if (!found) return [404, { message: 'Not Found' }];
     if (req.method === 'PATCH') Object.assign(found, json);

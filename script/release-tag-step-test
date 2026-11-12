@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Runs the step of .github/workflows/release-plz.yml that runs release-plz release, in the shell
+# GitHub runs it in, with stand-ins for script/release-pr-merged and release-plz:
+#   - script/release-pr-merged exits 0: release-plz release runs, and its failure fails the step;
+#   - it exits 1, not the merge of a Release PR: release-plz does not run, and the step passes;
+#   - it exits with any other code, an error: release-plz does not run, and the step fails.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+failures=0
+
+fail() {
+  echo "release-tag-step-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# The step's script. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
+npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/$release_workflow" |
+  jq -r '[.jobs[].steps[]? | select(.run // "" | test("release-plz\\s+release($|[^-A-Za-z0-9_])"))
+    | .run] | if length == 1 then .[0] else error("not one step runs release-plz release") end' \
+  >"$tmp/step.sh" || {
+  echo "release-tag-step-test: not one step of $release_workflow runs release-plz release" >&2
+  exit 1
+}
+
+# The stand-ins exit with $GATE and $RELEASE; release-plz logs that it ran.
+mkdir -p "$tmp/work/script" "$tmp/bin"
+cat >"$tmp/work/script/release-pr-merged" <<'EOF'
+#!/usr/bin/env bash
+exit "$GATE"
+EOF
+cat >"$tmp/bin/release-plz" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$tmp/release-plz.log"
+exit "\$RELEASE"
+EOF
+chmod +x "$tmp/work/script/release-pr-merged" "$tmp/bin/release-plz"
+
+# expect <gate> <release> <step exit: 0 or failed> <release-plz runs: yes or no>
+expect() {
+  local status=0 ran=no
+  rm -f "$tmp/release-plz.log"
+  (cd "$tmp/work" && GATE=$1 RELEASE=$2 PATH="$tmp/bin:$PATH" \
+    bash --noprofile --norc -eo pipefail "$tmp/step.sh") >/dev/null 2>&1 || status=$?
+  [[ ! -f $tmp/release-plz.log ]] || ran=yes
+  [[ $ran == "$4" ]] ||
+    fail "script/release-pr-merged exits $1: release-plz runs: $ran, not $4"
+  if [[ $3 == 0 && $status != 0 ]] || [[ $3 == failed && $status == 0 ]]; then
+    fail "script/release-pr-merged exits $1, release-plz $2: the step exits $status, not $3"
+  fi
+}
+
+expect 0 0 0 yes
+expect 0 1 failed yes
+expect 1 0 0 no
+expect 2 0 failed no
+expect 3 0 failed no
+expect 127 0 failed no
+
+if ((failures > 0)); then
+  echo "release-tag-step-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "release-tag-step-test: all cases passed"
