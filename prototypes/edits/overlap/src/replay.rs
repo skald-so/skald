@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::noise::{self, Class, Signal};
-use crate::{Client, Conflict, Edits, Result, Scope, Server, SpaceKey, check, git};
+use crate::{Client, Conflict, Edits, Result, Scope, Server, SpaceKey, check, git, paths};
 
 /// A level of fingerprints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,16 +263,25 @@ pub fn cost(dir: &Path, scope: &Scope, replays: &[Replay]) -> Result<Vec<Duratio
         .collect()
 }
 
-/// A measured repository with its replays and the [`cost`] of their largest sides.
+/// A measured repository with its replays, the [`cost`] of their largest sides, and the paths of
+/// the tree at its commit.
 pub struct Measured<'r> {
     pub repository: &'r Repository,
     pub replays: Vec<Replay>,
     pub times: Vec<Duration>,
+    pub tree: BTreeSet<String>,
+}
+
+/// The paths of the files of the tree of `commit` in the repository at `dir`.
+pub fn tree(dir: &Path, commit: &str) -> Result<BTreeSet<String>> {
+    let paths = git::run(dir, &["ls-tree", "-r", "-z", "--name-only", commit])?;
+    git::nul_separated(&paths)
 }
 
 /// Fetches `repository` at its commit into a bare repository in `tmp`, replays its merges on
 /// `jobs` threads, calling `progress` as [`replay_all`] does, then times its largest sides one
-/// after another. Fails when the repository has fewer merges than `repository` says.
+/// after another and lists its [`tree`]. Fails when the repository has fewer merges than
+/// `repository` says.
 pub fn measure<'r>(
     tmp: &Path,
     repository: &'r Repository,
@@ -297,10 +306,12 @@ pub fn measure<'r>(
     }
     let replays = replay_all(&dir, &scope, &merges, jobs, progress)?;
     let times = cost(&dir, &scope, &replays)?;
+    let tree = tree(&dir, commit)?;
     Ok(Measured {
         repository,
         replays,
         times,
+        tree,
     })
 }
 
@@ -430,8 +441,8 @@ pub const LARGEST: usize = 3;
 /// The bytes of a fingerprint.
 const FINGERPRINT_BYTES: usize = 32;
 
-/// The findings on `measured` as Markdown tables, those of [`noise::report`] last. All but the
-/// times are the same on every run.
+/// The findings on `measured` as Markdown tables, those of [`noise::report`] and then of
+/// [`paths::report`] last. All but the times are the same on every run.
 pub fn report(measured: &[Measured]) -> String {
     let mut out = String::new();
     let hours = |seconds: i64| format!("{:.1}", seconds as f64 / 3600.0);
@@ -589,6 +600,7 @@ pub fn report(measured: &[Measured]) -> String {
         repository,
         replays,
         times,
+        ..
     } in measured
     {
         for ((replay, parent), time) in largest(replays, LARGEST).into_iter().zip(times) {
@@ -606,5 +618,6 @@ pub fn report(measured: &[Measured]) -> String {
         }
     }
     out += &noise::report(measured);
+    out += &paths::report(measured);
     out
 }

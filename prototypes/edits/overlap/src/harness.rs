@@ -80,7 +80,17 @@ impl Upstream {
 
     /// Clones the upstream as the machine `name`, in a directory of that name next to it.
     pub fn clone_as(&self, name: &str) -> Result<Machine> {
-        run(&self.dir, &["clone", "--quiet", &self.url(), name])?;
+        self.clone_with(name, &[])
+    }
+
+    /// Clones the upstream as [`Upstream::clone_as`] does, with `options` for `git clone`, such as
+    /// `--config=core.autocrlf=true` to set the clone's config before its checkout.
+    pub fn clone_with(&self, name: &str, options: &[&str]) -> Result<Machine> {
+        let url = self.url();
+        let mut clone = vec!["clone", "--quiet"];
+        clone.extend(options);
+        clone.extend([url.as_str(), name]);
+        run(&self.dir, &clone)?;
         Ok(Machine {
             dir: self.dir.join(name),
         })

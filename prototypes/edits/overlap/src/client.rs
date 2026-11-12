@@ -20,18 +20,18 @@ pub struct Client {
     pub key: SpaceKey,
 }
 
-/// A machine's edit set: what it publishes, the path behind each of its path fingerprints, the
-/// changed lines behind each of its hunk fingerprints, and the symbol behind each of its symbol
-/// fingerprints.
+/// A machine's edit set: what it publishes, the paths behind each of its path fingerprints, the
+/// changed lines behind each of its hunk fingerprints, and the symbols behind each of its symbol
+/// fingerprints. Paths that differ only in case or in Unicode normalization share fingerprints.
 #[derive(Debug, Clone)]
 pub struct Edits {
     pub publication: Publication,
-    paths: BTreeMap<Fingerprint, String>,
+    paths: BTreeMap<Fingerprint, BTreeSet<String>>,
     /// The changed lines behind each hunk fingerprint, each a path and a range; one fingerprint
     /// can stand for several.
     hunks: BTreeMap<Fingerprint, Vec<(String, Range<usize>)>>,
-    /// The symbol behind each symbol fingerprint, with its path.
-    symbols: BTreeMap<Fingerprint, (String, Symbol)>,
+    /// The symbols behind each symbol fingerprint, each with its path.
+    symbols: BTreeMap<Fingerprint, BTreeSet<(String, Symbol)>>,
     /// The paths whose changes delete or replace no line of the merge base.
     adding: BTreeSet<String>,
 }
@@ -73,14 +73,18 @@ impl Client {
         commit: &str,
         paths: BTreeSet<String>,
     ) -> Result<Edits> {
-        let paths: BTreeMap<_, _> = paths
-            .into_iter()
-            .map(|path| (fingerprint::path(&self.key, scope, &path), path))
-            .collect();
+        let mut by_fingerprint = BTreeMap::<Fingerprint, BTreeSet<String>>::new();
+        for path in &paths {
+            let fingerprint = fingerprint::path(&self.key, scope, path);
+            by_fingerprint
+                .entry(fingerprint)
+                .or_default()
+                .insert(path.clone());
+        }
         let mut changed = BTreeMap::<Fingerprint, Vec<(String, Range<usize>)>>::new();
-        let mut symbols = BTreeMap::new();
+        let mut symbols = BTreeMap::<Fingerprint, BTreeSet<(String, Symbol)>>::new();
         let mut adding = BTreeSet::new();
-        for path in paths.values() {
+        for path in &paths {
             let changes = hunks::changes(dir, base, commit, path)?;
             if changes.iter().all(|change| change.old.is_empty()) {
                 adding.insert(path.clone());
@@ -106,21 +110,24 @@ impl Client {
                 let source = git::blob(dir, commit, path)?;
                 for symbol in symbols::enclosing(language, &source, lines)? {
                     let fingerprint = fingerprint::symbol(&self.key, scope, path, &symbol);
-                    symbols.insert(fingerprint, (path.clone(), symbol));
+                    symbols
+                        .entry(fingerprint)
+                        .or_default()
+                        .insert((path.clone(), symbol));
                 }
             }
         }
         Ok(Edits {
             publication: Publication {
                 machine: self.machine.clone(),
-                fingerprints: paths
+                fingerprints: by_fingerprint
                     .keys()
                     .chain(changed.keys())
                     .chain(symbols.keys())
                     .copied()
                     .collect(),
             },
-            paths,
+            paths: by_fingerprint,
             hunks: changed,
             symbols,
             adding,
@@ -171,7 +178,7 @@ impl Client {
 impl Edits {
     /// The paths of the edit set, sorted.
     pub fn paths(&self) -> BTreeSet<&str> {
-        self.paths.values().map(String::as_str).collect()
+        self.paths.values().flatten().map(String::as_str).collect()
     }
 
     /// For each overlapping machine, the paths of this edit set that it edits too.
@@ -182,7 +189,9 @@ impl Edits {
                 let paths = overlap
                     .fingerprints
                     .iter()
-                    .filter_map(|fingerprint| self.paths.get(fingerprint).cloned())
+                    .filter_map(|fingerprint| self.paths.get(fingerprint))
+                    .flatten()
+                    .cloned()
                     .collect();
                 (overlap.machine.clone(), paths)
             })
@@ -202,7 +211,7 @@ impl Edits {
 
     /// Each path of the edit set with the symbols its changed lines are in.
     pub fn symbols(&self) -> Symbols {
-        by_path(self.symbols.values())
+        by_path(self.symbols.values().flatten())
     }
 
     /// For each machine that overlaps at symbol level, this machine's symbols that it changes
@@ -212,8 +221,11 @@ impl Edits {
             .iter()
             .filter_map(|overlap| {
                 let shared = overlap.fingerprints.iter();
-                let symbols =
-                    by_path(shared.filter_map(|fingerprint| self.symbols.get(fingerprint)));
+                let symbols = by_path(
+                    shared
+                        .filter_map(|fingerprint| self.symbols.get(fingerprint))
+                        .flatten(),
+                );
                 (!symbols.is_empty()).then(|| (overlap.machine.clone(), symbols))
             })
             .collect()

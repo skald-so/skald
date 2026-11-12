@@ -262,7 +262,7 @@ fn changed_paths(dir: &Path, commits: &[&str]) -> Result<BTreeSet<String>> {
 }
 
 /// The paths of `output`, each ended by a NUL.
-fn nul_separated(output: &[u8]) -> Result<BTreeSet<String>> {
+pub fn nul_separated(output: &[u8]) -> Result<BTreeSet<String>> {
     output
         .split(|&byte| byte == 0)
         .filter(|path| !path.is_empty())
