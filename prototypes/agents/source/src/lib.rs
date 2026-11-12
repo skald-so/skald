@@ -7,6 +7,10 @@
 //! - `taken/<claim>/<msg_id>.json`: messages a path took and is handing over;
 //! - `claims/<claim>.lock`: locked by the [`Source`] that owns the claim while it lives;
 //! - `handed/<msg_id>.json`: messages handed over, with the time of the handover;
+//! - `records/<msg_id>/<signal>.json`: what is known of a message after its handover, each signal
+//!   once: a read confirmation or a vendor's signal ([`Record`]);
+//! - `session.json`: the session the source's messages go to, as its `SessionStart` hook told it
+//!   ([`Registration`]), readable only by the user: it may hold the session's messaging token;
 //! - `recovery.lock`: locked while a handle recovers abandoned claims or removes its own.
 //!
 //! Moving a file is atomic, so a message is taken by one path only. A path that dies between taking
@@ -34,8 +38,73 @@ pub struct Message {
     /// When a path marked the message handed over, in milliseconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handed_over_at_ms: Option<u64>,
+    /// A secret the message carries to the agent, which only a session that saw the message can
+    /// give back to acknowledge it ([`Source::check_ack`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ack: Option<String>,
 }
 
+/// What is known of a handed-over message beyond its handover, such as a read confirmation
+/// (`transcript`, `ack`) or a vendor's signal (`socket-held`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    pub signal: String,
+    /// When it was recorded, in milliseconds since the Unix epoch.
+    pub at_ms: u64,
+    /// What else it says, such as a reply's text or a receipt's reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// A UUIDv7 that orders the records of one millisecond.
+    #[serde(default)]
+    pub seq: String,
+}
+
+/// The session a source's messages go to, as its `SessionStart` hook tells it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Registration {
+    /// Claude Code's session ID or Codex's thread.
+    pub session_id: String,
+    /// The session's own file, if the CLI keeps one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Claude Code's inbox socket of the session, `CLAUDE_CODE_MESSAGING_SOCKET`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
+    /// The session's token for that socket, `CLAUDE_CODE_MESSAGING_TOKEN`: a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// When the hook registered it, in milliseconds since the Unix epoch.
+    pub at_ms: u64,
+}
+
+/// Why [`Source::check_ack`] refused an acknowledgement, or that it accepted it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ack {
+    Accepted,
+    /// No message has the ID, or the ID is not one the source makes.
+    Unknown,
+    /// The message waits or is being handed over: no session has seen it.
+    NotHandedOver,
+    /// The acknowledgement carries no secret.
+    Missing,
+    /// The secret is not the message's.
+    Wrong,
+}
+
+impl Ack {
+    /// Why the acknowledgement was refused, for the agent; `None` if it was accepted.
+    pub fn refusal(self) -> Option<&'static str> {
+        match self {
+            Self::Accepted => None,
+            Self::Unknown => Some("no such message"),
+            Self::NotHandedOver => Some("the message was not handed over"),
+            Self::Missing => Some("no ack given"),
+            Self::Wrong => Some("the ack is not the message's"),
+        }
+    }
+}
 /// Where a message is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -60,14 +129,16 @@ const WAITING: &str = "waiting";
 const TAKEN: &str = "taken";
 const CLAIMS: &str = "claims";
 const HANDED: &str = "handed";
+const RECORDS: &str = "records";
 const TMP: &str = "tmp";
 const RECOVERY: &str = "recovery.lock";
+const SESSION: &str = "session.json";
 
 impl Source {
     /// Opens the source in `dir`, creating it if needed.
     pub fn open(dir: impl AsRef<Path>) -> io::Result<Self> {
         let dir = dir.as_ref().to_path_buf();
-        for sub in [WAITING, TAKEN, CLAIMS, HANDED, TMP] {
+        for sub in [WAITING, TAKEN, CLAIMS, HANDED, RECORDS, TMP] {
             fs::create_dir_all(dir.join(sub))?;
         }
         let claim = Uuid::now_v7().simple().to_string();
@@ -84,14 +155,30 @@ impl Source {
         })
     }
 
+    /// The source's directory.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Adds a message from `sender` and returns it.
     pub fn add(&self, sender: &str, text: &str) -> io::Result<Message> {
+        self.add_message(sender, text, None)
+    }
+
+    /// Adds a message from `sender` with a fresh random secret for its acknowledgement, and
+    /// returns it.
+    pub fn add_with_ack(&self, sender: &str, text: &str) -> io::Result<Message> {
+        self.add_message(sender, text, Some(Uuid::new_v4().simple().to_string()))
+    }
+
+    fn add_message(&self, sender: &str, text: &str, ack: Option<String>) -> io::Result<Message> {
         let message = Message {
             msg_id: Uuid::now_v7().to_string(),
             sender: sender.to_owned(),
             text: text.to_owned(),
             added_at_ms: now_ms(),
             handed_over_at_ms: None,
+            ack,
         };
         self.write(&self.dir.join(WAITING), &message)?;
         Ok(message)
@@ -176,9 +263,141 @@ impl Source {
         Ok(None)
     }
 
+    /// Records the session the source's messages go to, replacing an earlier one, in a file only the
+    /// user can read.
+    pub fn register(&self, registration: &Registration) -> io::Result<()> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let tmp = self.dir.join(TMP).join(Uuid::now_v7().simple().to_string());
+        let mut file = File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        io::Write::write_all(&mut file, &serde_json::to_vec(registration)?)?;
+        fs::rename(tmp, self.dir.join(SESSION))
+    }
+
+    /// The session the source's messages go to, if a hook registered one.
+    pub fn registration(&self) -> io::Result<Option<Registration>> {
+        match fs::read(self.dir.join(SESSION)) {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// How many messages wait.
+    pub fn waiting_count(&self) -> io::Result<usize> {
+        Ok(sorted_names(&self.dir.join(WAITING))?.len())
+    }
+
     /// The handed-over message `msg_id`, with the time of its handover.
     pub fn handed(&self, msg_id: &str) -> io::Result<Message> {
         read(&self.dir.join(HANDED).join(file_name(msg_id)))
+    }
+
+    /// Every handed-over message, oldest first.
+    pub fn handed_messages(&self) -> io::Result<Vec<Message>> {
+        sorted_names(&self.dir.join(HANDED))?
+            .iter()
+            .map(|name| read(&self.dir.join(HANDED).join(name)))
+            .collect()
+    }
+
+    /// Puts handed-over messages back to waiting: the handover turned out to fail after it was
+    /// marked, such as a prompt the CLI dropped from its queue.
+    pub fn requeue(&self, msg_ids: &[String]) -> io::Result<()> {
+        for msg_id in msg_ids {
+            let from = self.dir.join(HANDED).join(file_name(msg_id));
+            let message = read(&from)?;
+            let waiting = Message {
+                handed_over_at_ms: None,
+                ..message
+            };
+            self.write(&self.dir.join(WAITING), &waiting)?;
+            fs::remove_file(from)?;
+        }
+        Ok(())
+    }
+
+    /// Adds the handed-over message `msg_id`, with its ID, sender, text and secret, to `to` as a
+    /// waiting message: the next path sends it again. Returns the message as `to` has it.
+    pub fn resend(&self, msg_id: &str, to: &Source) -> io::Result<Message> {
+        let message = Message {
+            handed_over_at_ms: None,
+            ..self.handed(msg_id)?
+        };
+        to.write(&to.dir.join(WAITING), &message)?;
+        Ok(message)
+    }
+
+    /// Records `signal` for the message `msg_id`, with `detail` if given, unless it is recorded
+    /// already; returns whether it was new. `signal` is lowercase letters, digits and `-`.
+    pub fn record(&self, msg_id: &str, signal: &str, detail: Option<&str>) -> io::Result<bool> {
+        if !signal
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            || signal.is_empty()
+        {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                format!("{signal:?} is not a signal name"),
+            ));
+        }
+        let dir = self.dir.join(RECORDS).join(checked_id(msg_id)?);
+        fs::create_dir_all(&dir)?;
+        let seq = Uuid::now_v7().simple().to_string();
+        let record = Record {
+            signal: signal.to_owned(),
+            at_ms: now_ms(),
+            detail: detail.map(String::from),
+            seq: seq.clone(),
+        };
+        let tmp = self.dir.join(TMP).join(seq);
+        fs::write(&tmp, serde_json::to_vec(&record)?)?;
+        // A link fails if the record exists: the first one stays.
+        let linked = fs::hard_link(&tmp, dir.join(format!("{signal}.json")));
+        fs::remove_file(&tmp)?;
+        match linked {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The records of the message `msg_id`, in the order they were recorded.
+    pub fn records(&self, msg_id: &str) -> io::Result<Vec<Record>> {
+        let dir = self.dir.join(RECORDS).join(checked_id(msg_id)?);
+        let Ok(names) = sorted_names(&dir) else {
+            return Ok(Vec::new());
+        };
+        let mut records = names
+            .iter()
+            .map(|name| Ok(serde_json::from_slice(&fs::read(dir.join(name))?)?))
+            .collect::<io::Result<Vec<Record>>>()?;
+        records.sort_by(|a, b| (a.at_ms, &a.seq).cmp(&(b.at_ms, &b.seq)));
+        Ok(records)
+    }
+
+    /// Checks an acknowledgement of the message `msg_id` with the secret `ack`, as an agent gives
+    /// it: accepted only for a handed-over message whose secret it is. `msg_id` may be anything an
+    /// agent sends.
+    pub fn check_ack(&self, msg_id: &str, ack: Option<&str>) -> io::Result<Ack> {
+        let Ok(msg_id) = checked_id(msg_id) else {
+            return Ok(Ack::Unknown);
+        };
+        let message = match self.state(msg_id)? {
+            None => return Ok(Ack::Unknown),
+            Some(State::Waiting | State::Taken) => return Ok(Ack::NotHandedOver),
+            Some(State::HandedOver { .. }) => self.handed(msg_id)?,
+        };
+        Ok(match (ack, message.ack) {
+            (None, _) => Ack::Missing,
+            (Some(given), Some(secret)) if same(given.as_bytes(), secret.as_bytes()) => {
+                Ack::Accepted
+            }
+            (Some(_), _) => Ack::Wrong,
+        })
     }
 
     fn claimed(&self, name: &str) -> PathBuf {
@@ -245,6 +464,26 @@ impl Drop for Source {
 
 fn file_name(msg_id: &str) -> String {
     format!("{msg_id}.json")
+}
+
+/// `msg_id` if it can be one the source makes: letters, digits and `-`, so it names no other path.
+fn checked_id(msg_id: &str) -> io::Result<&str> {
+    if !msg_id.is_empty()
+        && msg_id.len() <= 64
+        && msg_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        Ok(msg_id)
+    } else {
+        Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "not a message ID".to_owned(),
+        ))
+    }
+}
+
+/// Whether `a` and `b` are equal, in a time that does not depend on where they differ.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 fn read(path: &Path) -> io::Result<Message> {
@@ -397,6 +636,175 @@ mod tests {
             ));
         }
         assert!(source.hand_over(|_| unreachable!()).unwrap().is_empty());
+    }
+
+    /// A source in a temporary directory.
+    fn opened() -> (tempfile::TempDir, Source) {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Source::open(dir.path()).unwrap();
+        (dir, source)
+    }
+
+    #[test]
+    fn a_message_with_an_ack_carries_a_fresh_secret() {
+        let (_dir, source) = opened();
+        let plain = source.add("alice", "one").unwrap();
+        assert_eq!(plain.ack, None);
+        let first = source.add_with_ack("alice", "two").unwrap();
+        let second = source.add_with_ack("alice", "three").unwrap();
+        let secret = first.ack.clone().unwrap();
+        assert_eq!(secret.len(), 32, "{secret}");
+        assert!(secret.bytes().all(|b| b.is_ascii_hexdigit()), "{secret}");
+        assert_ne!(first.ack, second.ack);
+        assert_eq!(source.take().unwrap(), vec![plain, first, second]);
+    }
+
+    #[test]
+    fn accepts_only_the_secret_of_a_handed_over_message() {
+        let (_dir, source) = opened();
+        let message = source.add_with_ack("alice", "one").unwrap();
+        let secret = message.ack.clone().unwrap();
+        let id = message.msg_id.as_str();
+        assert_eq!(
+            source.check_ack(id, Some(&secret)).unwrap(),
+            Ack::NotHandedOver
+        );
+        let taken = source.take().unwrap();
+        assert_eq!(
+            source.check_ack(id, Some(&secret)).unwrap(),
+            Ack::NotHandedOver
+        );
+        source.handed_over(&ids(&taken)).unwrap();
+        assert_eq!(source.check_ack(id, Some(&secret)).unwrap(), Ack::Accepted);
+        assert_eq!(source.check_ack(id, None).unwrap(), Ack::Missing);
+        assert_eq!(source.check_ack(id, Some("")).unwrap(), Ack::Wrong);
+        let mut other = secret.clone().into_bytes();
+        other[31] = if other[31] == b'0' { b'1' } else { b'0' };
+        let other = String::from_utf8(other).unwrap();
+        assert_eq!(source.check_ack(id, Some(&other)).unwrap(), Ack::Wrong);
+        assert_eq!(
+            source.check_ack(id, Some(&secret[..31])).unwrap(),
+            Ack::Wrong
+        );
+        // A message without a secret takes none.
+        let plain = source.add("bob", "two").unwrap();
+        source.handed_over(&ids(&source.take().unwrap())).unwrap();
+        assert_eq!(
+            source.check_ack(&plain.msg_id, Some(&secret)).unwrap(),
+            Ack::Wrong
+        );
+        // An ID the source does not make names no file.
+        for id in ["nope", "../handed/x", "", &"a".repeat(65)] {
+            assert_eq!(source.check_ack(id, Some(&secret)).unwrap(), Ack::Unknown);
+        }
+        assert_eq!(Ack::Accepted.refusal(), None);
+        for refused in [Ack::Unknown, Ack::NotHandedOver, Ack::Missing, Ack::Wrong] {
+            assert!(refused.refusal().is_some(), "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn records_each_signal_once_in_order() {
+        let (dir, source) = opened();
+        let message = source.add("alice", "one").unwrap();
+        let id = message.msg_id.as_str();
+        assert!(source.records(id).unwrap().is_empty());
+        let before = since_epoch_ms();
+        assert!(source.record(id, "transcript", None).unwrap());
+        assert!(source.record(id, "reply", Some("tok-1")).unwrap());
+        // The first record of a signal stays.
+        assert!(!source.record(id, "transcript", Some("later")).unwrap());
+        let records = source.records(id).unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| (r.signal.as_str(), r.detail.as_deref()))
+                .collect::<Vec<_>>(),
+            [("transcript", None), ("reply", Some("tok-1"))]
+        );
+        assert!(records[0].at_ms >= before && records[1].at_ms >= records[0].at_ms);
+        for signal in ["", "Transcript", "a/b", "a.b"] {
+            assert_eq!(
+                source.record(id, signal, None).unwrap_err().kind(),
+                ErrorKind::InvalidInput,
+                "{signal}"
+            );
+        }
+        assert!(source.record("../x", "ack", None).is_err());
+        assert!(source.records("../x").is_err());
+        assert_eq!(fs::read_dir(dir.path().join(TMP)).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn lists_requeues_and_resends_handed_over_messages() {
+        let (_dir, source) = opened();
+        let (_next, fallback) = opened();
+        let first = source.add_with_ack("alice", "one").unwrap();
+        let second = source.add("bob", "two").unwrap();
+        assert!(source.handed_messages().unwrap().is_empty());
+        source.handed_over(&ids(&source.take().unwrap())).unwrap();
+        let handed = source.handed_messages().unwrap();
+        assert_eq!(ids(&handed), ids(&[first.clone(), second.clone()]));
+        assert!(handed.iter().all(|m| m.handed_over_at_ms.is_some()));
+
+        // Resent by the next path: the same message, waiting there; still handed over here.
+        let resent = source.resend(&first.msg_id, &fallback).unwrap();
+        assert_eq!(resent, first);
+        assert_eq!(fallback.take().unwrap(), vec![first.clone()]);
+        assert!(matches!(
+            source.state(&first.msg_id).unwrap(),
+            Some(State::HandedOver { .. })
+        ));
+        assert!(source.resend("nope", &fallback).is_err());
+
+        source.requeue(std::slice::from_ref(&second.msg_id)).unwrap();
+        assert_eq!(source.state(&second.msg_id).unwrap(), Some(State::Waiting));
+        assert_eq!(source.take().unwrap(), vec![second]);
+        assert!(source.requeue(&["nope".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn registers_the_session_for_the_user_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, source) = opened();
+        assert_eq!(source.registration().unwrap(), None);
+        let first = Registration {
+            session_id: "s1".to_owned(),
+            socket: Some("/tmp/cc-socks/1.sock".to_owned()),
+            token: Some("secret".to_owned()),
+            at_ms: 5,
+            ..Registration::default()
+        };
+        source.register(&first).unwrap();
+        let second = Registration {
+            session_id: "s2".to_owned(),
+            transcript_path: Some("/t.jsonl".to_owned()),
+            cwd: Some("/p".to_owned()),
+            at_ms: 6,
+            ..Registration::default()
+        };
+        source.register(&second).unwrap();
+        let other = Source::open(dir.path()).unwrap();
+        assert_eq!(other.registration().unwrap(), Some(second));
+        let mode = fs::metadata(dir.path().join(SESSION))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(fs::read_dir(dir.path().join(TMP)).unwrap().count(), 0);
+        fs::write(dir.path().join(SESSION), "{").unwrap();
+        assert!(source.registration().is_err());
+    }
+
+    #[test]
+    fn counts_the_waiting_messages() {
+        let (_dir, source) = opened();
+        assert_eq!(source.waiting_count().unwrap(), 0);
+        source.add("alice", "one").unwrap();
+        source.add("bob", "two").unwrap();
+        assert_eq!(source.waiting_count().unwrap(), 2);
+        source.take().unwrap();
+        assert_eq!(source.waiting_count().unwrap(), 0);
     }
 
     #[test]

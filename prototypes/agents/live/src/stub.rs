@@ -40,16 +40,112 @@ pub enum Call {
     Shell,
     /// Runs `QUICK`.
     Quick,
+    /// Calls the server's `ack` tool for each message the conversation holds, with its secret as
+    /// `AckWith` says.
+    Ack(AckWith),
+    /// Calls `inbox` with each message the conversation holds as seen.
+    InboxSeen,
+    /// Calls the server's `reply` tool for the conversation's last message, with its secret and
+    /// each other message as seen.
+    Reply,
+}
+
+/// What an `ack` call of the stub gives for each message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckWith {
+    /// The message's secret.
+    Right,
+    /// Another secret of the same form.
+    Wrong,
+    /// No secret.
+    Missing,
 }
 
 impl Call {
     /// The shell command the call runs, if it runs one.
     fn command(self) -> Option<&'static str> {
         match self {
-            Self::Inbox => None,
             Self::Shell => Some(SHELL),
             Self::Quick => Some(QUICK),
+            Self::Inbox | Self::Ack(_) | Self::InboxSeen | Self::Reply => None,
         }
+    }
+
+    /// The tool of the server `SERVER` the call calls and its input, for the conversation in
+    /// `body`; `None` for a shell command.
+    fn server_tool(self, body: &Value) -> Option<(&'static str, Value)> {
+        let held = held(body);
+        let seen = |messages: &[(String, Option<String>)]| -> Value {
+            messages
+                .iter()
+                .map(|(msg_id, ack)| json!({ "msg_id": msg_id, "ack": ack }))
+                .collect()
+        };
+        match self {
+            Self::Shell | Self::Quick => None,
+            Self::Inbox => Some((INBOX, json!({}))),
+            Self::InboxSeen => Some((INBOX, json!({ "seen": seen(&held) }))),
+            Self::Ack(with) => {
+                let acks: Vec<Value> = held
+                    .iter()
+                    .map(|(msg_id, ack)| match with {
+                        AckWith::Right => json!({ "msg_id": msg_id, "ack": ack }),
+                        AckWith::Wrong => json!({ "msg_id": msg_id, "ack": "0".repeat(32) }),
+                        AckWith::Missing => json!({ "msg_id": msg_id }),
+                    })
+                    .collect();
+                Some(("ack", json!({ "acks": acks })))
+            }
+            Self::Reply => {
+                let (last, others) = held.split_last().map_or((None, &[][..]), |(l, o)| (Some(l), o));
+                let (reply_to, ack) = last.cloned().unwrap_or_default();
+                Some((
+                    "reply",
+                    json!({ "reply_to": reply_to, "ack": ack, "text": DONE, "seen": seen(others) }),
+                ))
+            }
+        }
+    }
+}
+
+/// The messages the conversation in `body` holds, in the order they first appear, each with its
+/// secret if it has one: the `msg_id` and `ack` attributes of each `<message>` element in its text,
+/// whether a CLI escaped the element's brackets or not.
+pub fn held(body: &Value) -> Vec<(String, Option<String>)> {
+    let mut texts = Vec::new();
+    strings(body, &mut texts);
+    let mut held: Vec<(String, Option<String>)> = Vec::new();
+    for text in texts {
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("msg_id=\"") {
+            rest = &rest[at + 8..];
+            let Some(end) = rest.find('"') else { break };
+            let msg_id = rest[..end].to_owned();
+            let tag_end = [rest.find('>'), rest.find("&gt;")]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(rest.len());
+            let ack = rest[..tag_end]
+                .split_once("ack=\"")
+                .and_then(|(_, value)| value.split_once('"'))
+                .map(|(value, _)| value.to_owned());
+            if !held.iter().any(|(seen, _)| *seen == msg_id) {
+                held.push((msg_id, ack));
+            }
+            rest = &rest[end..];
+        }
+    }
+    held
+}
+
+/// Every string in `value`, in order.
+fn strings(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(text) => out.push(text.clone()),
+        Value::Array(items) => items.iter().for_each(|item| strings(item, out)),
+        Value::Object(map) => map.values().for_each(|item| strings(item, out)),
+        _ => {}
     }
 }
 
@@ -299,9 +395,10 @@ fn messages(script: &[Call], body: &Value) -> Response {
     });
     let (block, delta, stop_reason) = match script.get(step) {
         Some(call) => {
-            let (name, input) = match call.command() {
-                None => (format!("mcp__{SERVER}__{INBOX}"), json!({})),
-                Some(command) => ("Bash".to_owned(), json!({ "command": command })),
+            let (name, input) = match (call.command(), call.server_tool(body)) {
+                (Some(command), _) => ("Bash".to_owned(), json!({ "command": command })),
+                (None, Some((tool, input))) => (format!("mcp__{SERVER}__{tool}"), input),
+                (None, None) => unreachable!("a call runs a command or a tool"),
             };
             let id = format!("toolu_stub_{step}");
             (
@@ -378,16 +475,18 @@ fn responses(script: &[Call], body: &Value) -> Response {
         Some(call) => {
             let call_id = format!("call_stub_{step}");
             let id = format!("fc_stub_{step}");
-            match call.command() {
-                None => json!({
-                    "type": "function_call", "id": id, "call_id": call_id,
-                    "namespace": format!("mcp__{SERVER}"), "name": INBOX, "arguments": "{}",
-                }),
+            match (call.command(), call.server_tool(body)) {
                 // Codex waits for the command up to `yield_time_ms`, 10 s by default.
-                Some(command) => json!({
+                (Some(command), _) => json!({
                     "type": "function_call", "id": id, "call_id": call_id, "name": "exec_command",
                     "arguments": json!({ "cmd": command, "yield_time_ms": 30_000 }).to_string(),
                 }),
+                (None, Some((tool, input))) => json!({
+                    "type": "function_call", "id": id, "call_id": call_id,
+                    "namespace": format!("mcp__{SERVER}"), "name": tool,
+                    "arguments": input.to_string(),
+                }),
+                (None, None) => unreachable!("a call runs a command or a tool"),
             }
         }
         None => json!({
@@ -884,5 +983,98 @@ mod tests {
         if let Ok(stream) = TcpStream::connect(addr) {
             assert_eq!(send(stream, request).unwrap_or_default(), "");
         }
+    }
+
+    /// A conversation that holds two messages, the second only in a tool's result whose brackets
+    /// a CLI escaped.
+    fn holding() -> Value {
+        json!({
+            "model": "m",
+            "stream": true,
+            "messages": [
+                { "role": "user", "content": "<message msg_id=\"m1\" from=\"a\" ack=\"s1\">\nhi\n</message>" },
+                { "role": "assistant", "content": [{ "type": "tool_use", "id": 0 }] },
+                { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": 0, "content":
+                    "&lt;message msg_id=\"m2\" from=\"b\" ack=\"s2\"&gt;x&lt;/message&gt; and <message msg_id=\"m1\" ack=\"s1\">" }] },
+            ],
+        })
+    }
+
+    #[test]
+    fn finds_the_messages_a_conversation_holds_with_their_secrets() {
+        assert_eq!(
+            held(&holding()),
+            [("m1".to_owned(), Some("s1".to_owned())), ("m2".to_owned(), Some("s2".to_owned()))]
+        );
+        // An element without a secret, and one whose secret belongs to the next element.
+        let body = json!(["<message msg_id=\"m3\" from=\"c\">\nx\n</message> <message msg_id=\"m4\" ack=\"s4\">", 5]);
+        assert_eq!(
+            held(&body),
+            [("m3".to_owned(), None), ("m4".to_owned(), Some("s4".to_owned()))]
+        );
+        assert!(held(&json!({ "text": "msg_id=\"unended" })).is_empty());
+    }
+
+    #[test]
+    fn acks_and_replies_with_the_secrets_the_conversation_holds() {
+        let body = holding();
+        let tool = |call: Call| call.server_tool(&body).unwrap();
+        assert_eq!(
+            tool(Call::Ack(AckWith::Right)),
+            ("ack", json!({ "acks": [{ "msg_id": "m1", "ack": "s1" }, { "msg_id": "m2", "ack": "s2" }] }))
+        );
+        let wrong = "0".repeat(32);
+        assert_eq!(
+            tool(Call::Ack(AckWith::Wrong)),
+            ("ack", json!({ "acks": [{ "msg_id": "m1", "ack": wrong }, { "msg_id": "m2", "ack": wrong }] }))
+        );
+        assert_eq!(
+            tool(Call::Ack(AckWith::Missing)),
+            ("ack", json!({ "acks": [{ "msg_id": "m1" }, { "msg_id": "m2" }] }))
+        );
+        assert_eq!(
+            tool(Call::InboxSeen),
+            ("inbox", json!({ "seen": [{ "msg_id": "m1", "ack": "s1" }, { "msg_id": "m2", "ack": "s2" }] }))
+        );
+        assert_eq!(
+            tool(Call::Reply),
+            ("reply", json!({ "reply_to": "m2", "ack": "s2", "text": DONE, "seen": [{ "msg_id": "m1", "ack": "s1" }] }))
+        );
+        assert_eq!(tool(Call::Inbox), ("inbox", json!({})));
+        assert_eq!(Call::Shell.server_tool(&body), None);
+        assert_eq!(Call::Quick.server_tool(&body), None);
+        // Without messages, a reply names none.
+        assert_eq!(
+            Call::Reply.server_tool(&json!({})).unwrap(),
+            ("reply", json!({ "reply_to": "", "ack": null, "text": DONE, "seen": [] }))
+        );
+    }
+
+    #[test]
+    fn calls_the_servers_tools_on_both_apis() {
+        // The held messages' tool result is the script's first step: the reply is its second.
+        let script = [Call::Inbox, Call::Reply];
+        let messages = request("/v1/messages", &[("x-api-key", PLACEHOLDER)], &holding());
+        let (block, stop) = streamed_block(&answer(&script, &messages, &mut StubLog::default()));
+        assert_eq!(block["name"], "mcp__skald__reply");
+        assert_eq!(block["input"]["reply_to"], "m2");
+        assert_eq!(stop, "tool_use");
+
+        let responses = request(
+            "/v1/responses",
+            &[("authorization", &format!("Bearer {PLACEHOLDER}"))],
+            &json!({ "model": "m", "stream": true, "input": [
+                { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": "<message msg_id=\"m1\" ack=\"s1\">" }] },
+            ] }),
+        );
+        let item = responded_item(&answer(
+            &[Call::Ack(AckWith::Right)],
+            &responses,
+            &mut StubLog::default(),
+        ));
+        assert_eq!(item["namespace"], "mcp__skald");
+        assert_eq!(item["name"], "ack");
+        let arguments: Value = serde_json::from_str(item["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments, json!({ "acks": [{ "msg_id": "m1", "ack": "s1" }] }));
     }
 }

@@ -23,7 +23,7 @@ use agent_inbox::INBOX;
 use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
-pub use stub::{Call, DONE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub, StubLog};
+pub use stub::{AckWith, Call, DONE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub, StubLog, held};
 
 /// The name of the MCP server in each session's config.
 pub const SERVER: &str = "skald";

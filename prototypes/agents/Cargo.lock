@@ -33,6 +33,7 @@ dependencies = [
  "agent-inbox",
  "agent-source",
  "agent-testing",
+ "agent-transcript",
  "serde_json",
  "tempfile",
 ]
@@ -86,6 +87,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-socket"
+version = "0.0.0"
+dependencies = [
+ "agent-inbox",
+ "agent-source",
+ "agent-testing",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "agent-source"
 version = "0.0.0"
 dependencies = [
@@ -101,6 +113,14 @@ version = "0.0.0"
 dependencies = [
  "agent-source",
  "serde_json",
+]
+
+[[package]]
+name = "agent-transcript"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

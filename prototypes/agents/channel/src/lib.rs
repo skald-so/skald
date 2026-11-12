@@ -307,6 +307,7 @@ mod tests {
             text: "Tests pass.".to_owned(),
             added_at_ms: 0,
             handed_over_at_ms: None,
+            ack: None,
         };
         let event = event(&message);
         assert_eq!(event.method, "notifications/claude/channel");
