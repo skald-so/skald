@@ -66,6 +66,7 @@ dependencies = [
  "agent-app-server",
  "agent-inbox",
  "agent-limits",
+ "agent-queue",
  "agent-source",
  "agent-testing",
  "libc",
