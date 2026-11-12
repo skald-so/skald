@@ -166,18 +166,11 @@ fn migrate(db: &mut Connection) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("skald-client-state-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        create_dir(&dir).expect("create a state directory");
-        dir
-    }
+    use crate::test_dir::TestDir;
 
     #[test]
     fn new_state_has_the_latest_schema_and_no_session() {
-        let dir = temp_dir("new");
+        let dir = TestDir::new("state-new");
         let state = State::open(&dir).expect("open");
         let version: u32 = state
             .db
@@ -185,12 +178,11 @@ mod tests {
             .unwrap();
         assert_eq!(version as usize, MIGRATIONS.len());
         assert_eq!(state.session().unwrap(), None);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn session_is_kept_across_opens() {
-        let dir = temp_dir("kept");
+        let dir = TestDir::new("state-kept");
         let state = State::open(&dir).unwrap();
         state.start_session("http://one.test").unwrap();
         assert_eq!(
@@ -221,12 +213,11 @@ mod tests {
         );
         state.end_session().unwrap();
         assert_eq!(state.session().unwrap(), None);
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn state_of_a_newer_client_is_refused() {
-        let dir = temp_dir("newer");
+        let dir = TestDir::new("state-newer");
         let newer = MIGRATIONS.len() as u32 + 1;
         Connection::open(dir.join(FILE))
             .unwrap()
@@ -237,7 +228,6 @@ mod tests {
             matches!(error, Error::Newer(version) if version == newer),
             "{error:?}"
         );
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

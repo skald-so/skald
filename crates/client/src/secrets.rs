@@ -210,6 +210,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::test_dir::TestDir;
 
     /// A stand-in key storage: its entry's value, or its answer to every call.
     #[derive(Clone)]
@@ -246,23 +247,13 @@ mod tests {
         }
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "skald-client-secrets-{name}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     fn token(value: &str) -> Map {
         Map::from([("session_token".to_owned(), value.to_owned())])
     }
 
     #[test]
     fn nothing_stored_loads_empty() {
-        let dir = temp_dir("empty");
+        let dir = TestDir::new("secrets-empty");
         assert_eq!(
             Secrets::new(&dir, Storage::File).load().unwrap(),
             Map::new()
@@ -270,7 +261,6 @@ mod tests {
         let keyring = StandIn::new(None);
         let secrets = Secrets::with(&dir, Some(Box::new(keyring)));
         assert_eq!(secrets.load().unwrap(), Map::new());
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]
@@ -278,7 +268,7 @@ mod tests {
     fn file_has_0600_permissions_and_holds_the_secrets() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = temp_dir("file");
+        let dir = TestDir::new("secrets-file");
         // A file left with other permissions gets 0600 too.
         fs::write(dir.join(FILE), "{}").unwrap();
         fs::set_permissions(dir.join(FILE), fs::Permissions::from_mode(0o644)).unwrap();
@@ -300,12 +290,11 @@ mod tests {
             Secrets::new(&dir, Storage::File).load().unwrap(),
             token("two")
         );
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn key_storage_holds_the_secrets_and_the_file_goes() {
-        let dir = temp_dir("keyring");
+        let dir = TestDir::new("secrets-keyring");
         Secrets::new(&dir, Storage::File)
             .save(&token("old"))
             .unwrap();
@@ -322,12 +311,11 @@ mod tests {
             Some(r#"{"session_token":"new"}"#)
         );
         assert_eq!(secrets.load().unwrap(), token("new"));
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn without_a_key_storage_the_file_holds_them() {
-        let dir = temp_dir("unavailable");
+        let dir = TestDir::new("secrets-unavailable");
         let keyring = StandIn::new(Some(|| KeyringError::Unavailable));
         let secrets = Secrets::with(&dir, Some(Box::new(keyring)));
 
@@ -338,12 +326,11 @@ mod tests {
             token("one")
         );
         assert_eq!(secrets.load().unwrap(), token("one"));
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn failing_key_storage_is_an_error_and_nothing_goes_to_the_file() {
-        let dir = temp_dir("failed");
+        let dir = TestDir::new("secrets-failed");
         let keyring = StandIn::new(Some(|| KeyringError::Failed("locked".to_owned())));
         let secrets = Secrets::with(&dir, Some(Box::new(keyring)));
 
@@ -358,12 +345,11 @@ mod tests {
             matches!(&error, Error::Keyring(err) if err == "locked"),
             "{error:?}"
         );
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn malformed_secrets_are_an_error() {
-        let dir = temp_dir("malformed");
+        let dir = TestDir::new("secrets-malformed");
         fs::write(dir.join(FILE), "not json").unwrap();
         let error = Secrets::new(&dir, Storage::File)
             .load()
@@ -376,30 +362,27 @@ mod tests {
             .load()
             .expect_err("malformed");
         assert!(matches!(error, Error::Malformed(_)), "{error:?}");
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn unreadable_file_is_an_error() {
-        let dir = temp_dir("unreadable");
+        let dir = TestDir::new("secrets-unreadable");
         fs::create_dir(dir.join(FILE)).unwrap();
         let error = Secrets::new(&dir, Storage::File)
             .load()
             .expect_err("a directory");
         assert!(matches!(error, Error::File(..)), "{error:?}");
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn key_storage_takes_the_secrets_with_or_without_a_file_and_fails_on_one_it_cannot_remove() {
-        let dir = temp_dir("remove");
+        let dir = TestDir::new("secrets-remove");
         let secrets = Secrets::with(&dir, Some(Box::new(StandIn::new(None))));
         secrets.save(&token("one")).unwrap();
 
         fs::create_dir(dir.join(FILE)).unwrap();
         let error = secrets.save(&token("two")).expect_err("the file stays");
         assert!(matches!(error, Error::File(..)), "{error:?}");
-        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

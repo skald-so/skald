@@ -4,6 +4,8 @@ mod connection;
 mod secrets;
 mod sign_in;
 mod state;
+#[cfg(test)]
+mod test_dir;
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
