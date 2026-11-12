@@ -34,6 +34,8 @@ head_run=43298557061
 # The run of the commit before: its deploy succeeded after $head was merged, so staging stayed.
 older=863311a2a6c1224bb0952fdc078d8f8d9fdac15d
 older_run=43298387447
+# The run before it, from before the deploy job existed.
+before_older_run=43284772594
 newer=$(printf 'a%.0s' {1..40})
 serve=$tmp/serve
 api=$serve/repos/skald-so/skald
@@ -167,6 +169,19 @@ edit "$(jobs $older_run)" '(.jobs[1].steps[] | select(.name == "Deploy") | .star
 run
 expect_failed "deploy not run after a deploy of the commit before at its merge" \
   "the deploy has not run" -- \
+  "staging-status: latest staging deploy: none in the newest 10 runs of edge.yml"
+
+# Two no-op deploys in a row: the run before $older_run deployed after $older was merged, though
+# before $head was. Each counts against the merge just after its commit.
+recorded
+edit "$(jobs $head_run)" 'del(.jobs[1])'
+deploy_job=$(jq '.jobs[1]
+  | .started_at = "2026-11-12T20:14:58Z" | .completed_at = "2026-11-12T20:15:10Z"
+  | (.steps[] | select(.name == "Deploy") | .started_at) = "2026-11-12T20:15:00Z"' \
+  "$(jobs $older_run)")
+edit "$(jobs $before_older_run)" ".jobs += [$deploy_job]"
+run
+expect_failed "deploy not run after two no-op deploys" "the deploy has not run" -- \
   "staging-status: latest staging deploy: none in the newest 10 runs of edge.yml"
 
 # A failed deploy is a deploy, whenever it ran.

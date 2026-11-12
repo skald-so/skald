@@ -2,12 +2,13 @@
 # Reports whether staging runs the latest commit on dev of skald-so/skald: the commit and its merge
 # time; the latest staging deploy, the deploy job of .github/workflows/edge.yml, with its commit,
 # result and how long after that commit's merge it finished; the health check over $STAGING_URL
-# (https://dev.skald.so by default), with curl's check of the certificate. Exits 0 only when the latest staging deploy is of that commit
-# and succeeded and the health check answers ok; 1 otherwise, naming each cause: the publish or the
-# deploy of that commit failed, has not run or is still running, or the health check fails; 2 on an
-# error, a failed call of the GitHub API among them.
-# Reads only public data, without a token: the repository's CI runs from the GitHub API at
-# $GITHUB_API_URL (https://api.github.com by default) and the health check.
+# (https://dev.skald.so by default), with curl's check of the certificate. Exits 0 only when the
+# latest staging deploy is of that commit and succeeded and the health check answers ok; 1
+# otherwise, naming each cause: the publish or the deploy of that commit failed, has not run or is
+# still running, or the health check fails; 2 on an error, a failed call of the GitHub API among
+# them.
+# Reads only public data, without a token: the head of dev and its CI runs from the GitHub API at
+# $GITHUB_API_URL (https://api.github.com by default), and the health check.
 # A deploy job that succeeded after a newer commit reached dev left staging as it was
 # (script/deploy-staging), so it is no deploy. It reads the newest 10 runs of edge.yml.
 # script/staging-status-test tests it.
