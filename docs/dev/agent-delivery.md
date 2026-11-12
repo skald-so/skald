@@ -465,7 +465,7 @@ Surfaces, each running its own copy of the agent; the apps and extensions update
 
 The surfaces take no CLI flags, so a check attaches a path only with files in the project:
 - Claude Code reads the project's `.mcp.json` and `.claude/settings.local.json`, as the CLI does ([docs](https://code.claude.com/docs/en/desktop.md#shared-configuration)). The check writes the server to `.mcp.json` and, to settings, `enabledMcpjsonServers` and `permissions.allow` with `mcp__skald__inbox` for `inbox`; `enabledMcpjsonServers` for Channels; for a hook, the hook in the shell form and `permissions.allow` with `Bash(true)`. `permissions.allow` also holds `Bash(sleep:*)` for the busy case. Each settings file has `maxEffortLevel: "low"`, which caps the effort, the lowest across settings files winning: both surfaces showed Opus 5.5 at Low, the desktop app in `/status` and VS Code in its prompt box.
-- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and the `inbox` server with `default_tools_approval_mode = "approve"`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`; a turn runs only on a model the sign-in can use. The check picks no model.
+- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and the `inbox` server with `default_tools_approval_mode = "approve"`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use. The check picks no model.
 
 ### GUI live check
 `live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`, `<path>` `inbox` on each, and `channel`, `post-tool-use` or `stop` on the Claude Code ones:
@@ -489,7 +489,8 @@ The runs leave on the user's Mac:
 - the Claude Code sessions in the Claude app's Code list, under each `skald-live-*` project;
 - the Codex chats in the history the Codex app and extension share, and a `project` entry for each folder in the app's Projects;
 - for Codex for VS Code, the project in VS Code's recent list and its workspace trust, in the user's profile;
-- the extensions' updates: VS Code updated Codex for VS Code from 26.1021.22027 to 26.1106.51428 during the runs.
+- the extensions' updates: VS Code updated Codex for VS Code from 26.1021.22027 to 26.1106.51428 during the runs;
+- the model and effort picked in a Codex for VS Code session, which the extension saved at the top level of the user's `~/.codex/config.toml` at 10:21 (UTC+7) on 2026-11-12: `model = "gpt-5.5"` and `model_reasoning_effort = "low"`, before `"gpt-6-astra"` and `"high"`.
 
 ### Results
 On 2026-11-12, one run of each case. A is the idle case; B the same in a second project, run after A; C the busy case:
@@ -517,21 +518,25 @@ Not run:
 | Check | `inbox`, Claude Code | `PostToolUse` and `Stop` | Channels | `inbox`, Codex |
 |---|---|---|---|---|
 | Idle session | As on the CLI: the prompt made the agent call it | As on the CLI: in a turn only | No, on either Claude Code surface | As on the CLI |
-| Busy session | Yes: at the agent's call after the running command (C) | Yes: `PostToolUse` once the running command ends, `Stop` at the end of the turn (C) | No: the events are dropped | Not run |
+| Busy session | Yes: at the agent's call after the running command (C) | Yes: `PostToolUse` once the running command ends, `Stop` at the end of the turn (C) | No: the events are dropped | Not run: the GUI check has no busy case on the Codex surfaces; see the open questions |
 | Delay | Until the agent's call: see C | Until the tool call or the turn ends: see C | Never | Until the agent's call |
 | In context | The tool result. VS Code shows the call with its result; the desktop app folds it into "Loaded tools, used skald" | Neither surface shows the hook's text; `Stop` shows the second reply | — | The tool result; both surfaces fold the turn into "Worked for <n>s" |
 | Handover known | As on the CLI: the same server | As on the CLI: the same handler | The server learns only that the event is written; the event is lost | As on the CLI |
-| One of two sessions | Yes: B, in a project of its own, got only its own message. On the desktop app A's session stayed open meanwhile; on VS Code A's window was closed first | The same | — | Not run |
+| One of two sessions | Yes: B, in a project of its own, got only its own message. On the desktop app A's session stayed open meanwhile; on VS Code A's window was closed first | The same | — | Not run: each Codex surface ran A only, in one project; see the open questions |
 | Needs | `.mcp.json`; `enabledMcpjsonServers` and the allow rule in settings; workspace trust; a Claude account | The hook in settings; `Bash(true)` allowed for `PostToolUse`; workspace trust; a Claude account | No way on either surface: [Channels on the surfaces](#channels-on-the-surfaces) | `.codex/config.toml` with the server and its approval mode; folder trust; a model the sign-in can use as the composer's model; an OpenAI API key |
 
 Findings:
 - On both Claude Code surfaces `inbox` and the hooks work from project files alone, idle and busy; Channels do not, so nothing there reaches an idle session without a prompt.
 - On the Codex surfaces `inbox` works from project files, on a model the sign-in can use; no path checked there reaches an idle session without a prompt.
 
+Open questions:
+- `inbox` on the Codex surfaces in a busy session: whether the agent's `inbox` call after a running command gets a message added while it runs.
+- `inbox` on the Codex surfaces with a second session in a project of its own: whether each session gets only its own message.
+
 #### Channels on the surfaces
-A session loads a channel only with `--channels` or `--dangerously-load-development-channels` and only when interactive ([Channels](#channels)). Neither surface offers that:
+A session loads a channel only with `--channels` or `--dangerously-load-development-channels` and only when interactive ([Channels](#channels)). Neither surface was found to offer that:
 - **Claude Code for VS Code** 2.1.322 runs Claude Code through the Agent SDK, `--input-format stream-json`; its debug log shows `nonInteractive=true`. None of its settings (`package.json`) passes CLI arguments; `claudeCode.claudeProcessWrapper`, the path of an executable that launches Claude Code, can add them. Checked in a VS Code with its own profile (`--user-data-dir`), with the wrapper adding `--dangerously-load-development-channels server:skald`: the session started with the flag and showed no development channel warning; `gui channel claude-vscode` failed as without it, the message handed over and the agent replying `NONE`. The busy case was not run. `claudeCode.useTerminal` runs the CLI in VS Code's terminal instead of the extension's panel.
-- **Claude desktop app** 5.1231.2, read from its code (`app.asar`): it launches Claude Code with a fixed list of options, refuses any option the list does not name, and marks `--channels`, `--mcp-config` and `--plugin-dir` as never sent; `--dangerously-load-development-channels` appears nowhere. The one launch wrapper found in it is `processWrapper` in managed settings, described as a corporate launcher prefix for the sessions and background processes it starts; the app uses it only once the organization's configuration turns on `claudeCodeProcessWrapperEnabled`. No project file or session option loads a channel.
+- **Claude desktop app** 5.1231.2, read from its code (`app.asar`): its contract for the arguments it sends a host's launcher lists each option as required or never sent, with `--channels`, `--mcp-config` and `--plugin-dir` never sent; `--dangerously-load-development-channels` appears nowhere. The one launch wrapper found in it is `processWrapper` in managed settings, described as a corporate launcher prefix for the sessions and background processes it starts; the app uses it only once the organization's configuration turns on `claudeCodeProcessWrapperEnabled`. No project file or session option that loads a channel was found in it.
 
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
