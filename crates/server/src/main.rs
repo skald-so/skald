@@ -66,6 +66,26 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=86_400)
     )]
     sign_in_state_lifetime: u64,
+
+    /// How long a device flow's codes work, from device authorization to the machine's last poll.
+    #[arg(
+        long,
+        env = "SKALD_DEVICE_CODE_LIFETIME",
+        value_name = "SECONDS",
+        default_value_t = 600,
+        value_parser = clap::value_parser!(u64).range(1..=3_600)
+    )]
+    device_code_lifetime: u64,
+
+    /// The least time between a device flow's polls; a poll sooner answers slow_down.
+    #[arg(
+        long,
+        env = "SKALD_DEVICE_POLL_INTERVAL",
+        value_name = "SECONDS",
+        default_value_t = 5,
+        value_parser = clap::value_parser!(u64).range(1..=60)
+    )]
+    device_poll_interval: u64,
 }
 
 impl Cli {
@@ -90,6 +110,8 @@ impl Cli {
                     api_url: self.github_api_url,
                 },
                 state_lifetime: Duration::from_secs(self.sign_in_state_lifetime),
+                device_code_lifetime: Duration::from_secs(self.device_code_lifetime),
+                device_poll_interval: Duration::from_secs(self.device_poll_interval),
             }),
             (Some(_), None) => {
                 return Err(format!(

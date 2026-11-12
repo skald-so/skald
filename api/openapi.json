@@ -5,6 +5,98 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/auth/device": {
+      "post": {
+        "operationId": "authorizeDevice",
+        "summary": "Start a device flow sign-in",
+        "description": "Device authorization (RFC 8628, §3.1): a machine without a browser asks for a device code and a user code. Its person approves the user code on the verification page, `GET /device`, within `expires_in` seconds, the server setting `--device-code-lifetime`; the machine meanwhile polls `POST /auth/token` every `interval` seconds, the server setting `--device-poll-interval`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceAuthorizationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A new device code and its user code.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceAuthorization"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`application/problem+json`), or the request (`application/json`, RFC 6749, §5.2): `invalid_request` without a `client_id` or with one twice, `invalid_client` with another `client_id`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthError"
+                }
+              },
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub sign-in is off: the server has no GitHub settings.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/github": {
       "get": {
         "operationId": "startGitHubSignIn",
@@ -184,6 +276,260 @@
         }
       }
     },
+    "/auth/token": {
+      "post": {
+        "operationId": "requestDeviceToken",
+        "summary": "Poll for a device flow's session token",
+        "description": "The token endpoint (RFC 8628, §3.4): the machine polls with its device code, at most once per `interval` seconds, until its person approves or denies the user code or the codes expire. An approved code gives a session token once; every later poll for it answers `invalid_grant`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The person approved the user code: the session token for their account.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`application/problem+json`), or gives no token (`application/json`, RFC 8628, §3.5): `authorization_pending` until the person decides; `slow_down` to a poll less than `interval` seconds after the previous one; `access_denied` once the person denied the code; `expired_token` once the codes expired; `invalid_grant` for an unknown device code or one that already gave its token; `invalid_request`, `invalid_client` or `unsupported_grant_type` for a malformed request.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthError"
+                }
+              },
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub sign-in is off: the server has no GitHub settings.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/device": {
+      "get": {
+        "operationId": "getDeviceVerificationPage",
+        "summary": "The device flow's verification page",
+        "description": "Opened by the person's browser at `verification_uri` or `verification_uri_complete`. With a web session, it names the account's GitHub login, says that approving signs a machine in to that account and asks for the user code, filled in from `user_code`, with the buttons Approve and Deny, which submit `POST /device`. Opening it decides nothing.",
+        "parameters": [
+          {
+            "name": "user_code",
+            "in": "query",
+            "required": false,
+            "description": "The user code to fill in.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The page that asks for the code; without a web session, a link to sign in with GitHub that returns to this page.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub sign-in is off: the server has no GitHub settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "decideDeviceCode",
+        "summary": "Approve or deny a user code",
+        "description": "Submitted by the verification page's form, with the web session's cookie, from a page of this server: a request whose `Origin` is another site's, or that has none, decides nothing. Approving binds the code to the session's account; a user code works once, for one account. After 10 wrong, used or expired codes within 15 minutes, the account's codes, right ones included, are refused until fewer remain in that window.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Approved or denied.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The code is wrong, used or expired, or the form has no decision.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request has no web session, or comes from another site.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub sign-in is off: the server has no GitHub settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong codes: the account's codes are refused for a while.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "getHealth",
@@ -286,11 +632,14 @@
         "security": [
           {
             "session": []
+          },
+          {
+            "bearer": []
           }
         ],
         "responses": {
           "200": {
-            "description": "The account of the session in the request's cookie.",
+            "description": "The account of the session: the web session in the request's cookie or, with an `Authorization` header, the device flow's session token in it.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -320,7 +669,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -432,7 +781,7 @@
         }
       },
       "NoStore": {
-        "description": "`no-store`: the page holds a sign-in's outcome.",
+        "description": "`no-store`: the response holds a sign-in's codes, token or outcome.",
         "required": true,
         "schema": {
           "type": "string",
@@ -446,6 +795,11 @@
         "in": "cookie",
         "name": "skald_session",
         "description": "The web session that a GitHub sign-in gives."
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The session token that the device flow gives: `Authorization: Bearer <token>`."
       }
     },
     "schemas": {
@@ -453,6 +807,110 @@
         "description": "An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "DeviceAuthorization": {
+        "description": "Device authorization's answer (RFC 8628, §3.2).",
+        "type": "object",
+        "required": [
+          "device_code",
+          "user_code",
+          "verification_uri",
+          "verification_uri_complete",
+          "expires_in",
+          "interval"
+        ],
+        "properties": {
+          "device_code": {
+            "description": "The secret the machine polls with.",
+            "type": "string",
+            "minLength": 22
+          },
+          "user_code": {
+            "description": "The code the person types: 8 letters from `BCDFGHJKLMNPQRSTVWXZ` as `XXXX-XXXX`. The verification page ignores case and every character but letters and digits.",
+            "type": "string",
+            "pattern": "^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$"
+          },
+          "verification_uri": {
+            "description": "The verification page: `<public URL>/device`.",
+            "type": "string",
+            "format": "uri"
+          },
+          "verification_uri_complete": {
+            "description": "The verification page with the user code filled in: `<public URL>/device?user_code=<user code>`.",
+            "type": "string",
+            "format": "uri"
+          },
+          "expires_in": {
+            "description": "Seconds until both codes expire.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "interval": {
+            "description": "The least number of seconds between polls.",
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceAuthorizationRequest": {
+        "type": "object",
+        "required": ["client_id"],
+        "properties": {
+          "client_id": {
+            "description": "`skald`, the CLI.",
+            "type": "string",
+            "enum": ["skald"]
+          }
+        }
+      },
+      "DeviceDecision": {
+        "type": "object",
+        "required": ["user_code", "decision"],
+        "properties": {
+          "user_code": {
+            "description": "The user code as the person typed it.",
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": ["approve", "deny"]
+          }
+        }
+      },
+      "DeviceToken": {
+        "description": "The token endpoint's answer (RFC 6749, §5.1).",
+        "type": "object",
+        "required": ["access_token", "token_type"],
+        "properties": {
+          "access_token": {
+            "description": "The session token, sent as `Authorization: Bearer <token>`.",
+            "type": "string",
+            "minLength": 22
+          },
+          "token_type": {
+            "type": "string",
+            "enum": ["Bearer"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceTokenRequest": {
+        "type": "object",
+        "required": ["grant_type", "device_code", "client_id"],
+        "properties": {
+          "grant_type": {
+            "type": "string",
+            "enum": ["urn:ietf:params:oauth:grant-type:device_code"]
+          },
+          "device_code": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string",
+            "enum": ["skald"]
+          }
+        }
       },
       "Health": {
         "type": "object",
@@ -472,6 +930,30 @@
           "status": {
             "type": "string",
             "enum": ["unavailable"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OAuthError": {
+        "description": "An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5).",
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "invalid_request",
+              "invalid_client",
+              "invalid_grant",
+              "unsupported_grant_type",
+              "authorization_pending",
+              "slow_down",
+              "access_denied",
+              "expired_token"
+            ]
+          },
+          "error_description": {
+            "type": "string"
           }
         },
         "additionalProperties": false

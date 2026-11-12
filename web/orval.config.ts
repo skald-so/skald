@@ -1,7 +1,8 @@
 import { defineConfig } from "orval";
 
 // The API client and its MSW mocks, generated from the spec into src/api/. Left out are what a
-// browser opens itself, not with fetch: the WebSocket, and the GitHub sign-in it navigates to.
+// browser opens itself, not with fetch: the WebSocket, the GitHub sign-in it navigates to and the
+// device flow's verification page; and what only a machine calls: the device flow's endpoints.
 export default defineConfig({
   skald: {
     input: {
@@ -12,6 +13,10 @@ export default defineConfig({
           "openWebSocket",
           "startGitHubSignIn",
           "finishGitHubSignIn",
+          "authorizeDevice",
+          "requestDeviceToken",
+          "getDeviceVerificationPage",
+          "decideDeviceCode",
         ],
       },
     },

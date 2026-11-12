@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod browser;
+pub mod device_flow;
 pub mod sign_in;
 pub mod spec;
 
@@ -189,22 +190,61 @@ impl Server {
 
 /// `GET <url>` with the request headers `headers`; a redirect is returned, not followed.
 pub fn get_url(url: &str, headers: &[(&str, &str)]) -> Response {
-    let agent = ureq::Agent::config_builder()
+    let mut request = agent().get(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.call();
+    read(response.unwrap_or_else(|err| panic!("GET {url}: {err}")))
+}
+
+/// `POST <url>` of the form `fields`, `application/x-www-form-urlencoded`, with the request headers
+/// `headers`; a redirect is returned, not followed.
+pub fn post_form(url: &str, headers: &[(&str, &str)], fields: &[(&str, &str)]) -> Response {
+    let mut request = agent().post(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send_form(fields.iter().copied());
+    read(response.unwrap_or_else(|err| panic!("POST {url}: {err}")))
+}
+
+/// An HTTP client that answers any status and follows no redirect.
+fn agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
         .proxy(None)
         .http_status_as_error(false)
         .max_redirects(0)
         .max_redirects_will_error(false)
-        .build()
-        .new_agent();
-    let mut request = agent.get(url);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let mut response = request
-        .call()
-        .unwrap_or_else(|err| panic!("GET {url}: {err}"));
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
+fn read(mut response: ureq::http::Response<ureq::Body>) -> Response {
     let body = response.body_mut().read_to_vec().expect("read body");
     Response::new(response.status().as_u16(), response.headers(), body)
+}
+
+/// The forms in which a database could hold `secret` in the clear: as it is, in lowercase, and the
+/// bytes it encodes, if it is Base64, in the hex of PostgreSQL's text form of `bytea`.
+pub fn stored_forms(secret: &str) -> Vec<String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut forms = vec![
+        secret.to_owned(),
+        secret.to_lowercase(),
+        hex(secret.as_bytes()),
+    ];
+    for engine in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
+        if let Ok(bytes) = engine.decode(secret)
+            && bytes.len() >= 8
+        {
+            forms.push(hex(&bytes));
+        }
+    }
+    forms
 }
 
 /// Appends what `pipe` gives to `output` until it closes.

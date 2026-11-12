@@ -16,8 +16,10 @@ use sqlx::PgPool;
 use url::Url;
 
 use crate::github::{GitHubApp, Refusal, http_url};
-use crate::{AppState, problem};
+use crate::{AppState, database_failed, problem};
 
+/// The sign-in start's path under the public address.
+pub(crate) const START_PATH: &str = "/auth/github";
 /// The callback's path under the public address.
 pub const CALLBACK_PATH: &str = "/auth/github/callback";
 /// The cookie that binds a sign-in's `state` to the browser that started it.
@@ -42,8 +44,13 @@ impl PublicUrl {
     }
 
     /// The address of `path`, which starts with `/`.
-    fn at(&self, path: &str) -> String {
-        format!("{}{path}", self.0.origin().ascii_serialization())
+    pub(crate) fn at(&self, path: &str) -> String {
+        format!("{}{path}", self.origin())
+    }
+
+    /// The origin, as a browser's `Origin` header gives it, such as `https://skald.example`.
+    pub(crate) fn origin(&self) -> String {
+        self.0.origin().ascii_serialization()
     }
 }
 
@@ -70,6 +77,10 @@ pub struct SignInSettings {
     pub github: GitHubApp,
     /// How long a sign-in's `state` works.
     pub state_lifetime: Duration,
+    /// How long a device flow's codes work.
+    pub device_code_lifetime: Duration,
+    /// The least time between a device flow's polls.
+    pub device_poll_interval: Duration,
 }
 
 impl SignInSettings {
@@ -105,19 +116,19 @@ impl SignInSettings {
 
 /// A token of 256 random bits from the operating system's cryptographically secure generator, in
 /// unpadded base64url.
-fn random_token() -> String {
+pub(crate) fn random_token() -> String {
     let mut bytes = [0; 32];
     getrandom::fill(&mut bytes).expect("the operating system's random generator failed");
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// The SHA-256 of `token`: how the database holds tokens.
-fn digest(token: &str) -> Vec<u8> {
+pub(crate) fn digest(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
 
 /// The first value of the query parameter `name`.
-fn param(query: Option<&str>, name: &str) -> Option<String> {
+pub(crate) fn param(query: Option<&str>, name: &str) -> Option<String> {
     url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
         .find(|(key, _)| key == name)
         .map(|(_, value)| value.into_owned())
@@ -137,7 +148,7 @@ fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'
 }
 
 /// The answer while the server has no GitHub settings.
-fn off() -> Response {
+pub(crate) fn off() -> Response {
     problem(
         StatusCode::NOT_FOUND,
         "github-sign-in-off",
@@ -224,7 +235,7 @@ impl Failure {
 }
 
 /// A page of `status` with `title` and `body`: no scripts, no caching, no referrer.
-fn page(status: StatusCode, title: &str, body: &str) -> Response {
+pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
     let html = format!(
         "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>{title}</title>{body}</html>"
     );
@@ -242,7 +253,7 @@ fn page(status: StatusCode, title: &str, body: &str) -> Response {
 }
 
 /// `text` safe in HTML text and attributes.
-fn escape(text: &str) -> String {
+pub(crate) fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
@@ -330,7 +341,7 @@ async fn finish(
              ON CONFLICT (github_id) DO UPDATE SET github_login = EXCLUDED.github_login
              RETURNING id
          )
-         INSERT INTO sessions (token_hash, account_id) SELECT $4, id FROM account",
+         INSERT INTO sessions (token_hash, account_id, kind) SELECT $4, id, 'web' FROM account",
     )
     .bind(AccountId::generate().to_string())
     .bind(github_id)
@@ -342,44 +353,77 @@ async fn finish(
     Ok((session, return_to))
 }
 
-/// `Session` in the spec.
+/// `Session` in the spec: a session's account.
 #[derive(Serialize)]
-struct Session {
-    account: String,
-    github_login: String,
+pub(crate) struct Session {
+    pub account: String,
+    pub github_login: String,
 }
 
-/// `GET /session`: the account of the request's session.
-pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let hashes: Vec<Vec<u8>> = cookies(&headers, SESSION_COOKIE).map(digest).collect();
-    let found: Result<Option<(String, String)>, _> = sqlx::query_as(
+/// The account of the session of `kind`, `web` or `device`, whose token has one of `hashes`.
+async fn find(
+    db: &PgPool,
+    kind: &str,
+    hashes: Vec<Vec<u8>>,
+) -> Result<Option<Session>, sqlx::Error> {
+    let found: Option<(String, String)> = sqlx::query_as(
         "SELECT a.id::text, a.github_login FROM sessions s JOIN accounts a ON a.id = s.account_id
-         WHERE s.token_hash = ANY($1) LIMIT 1",
+         WHERE s.kind = $1 AND s.token_hash = ANY($2) LIMIT 1",
     )
+    .bind(kind)
     .bind(hashes)
-    .fetch_optional(&state.db)
-    .await;
+    .fetch_optional(db)
+    .await?;
+    Ok(found.map(|(account, github_login)| Session {
+        account,
+        github_login,
+    }))
+}
+
+/// The account of the web session in the request's cookie.
+pub(crate) async fn web_session(
+    db: &PgPool,
+    headers: &HeaderMap,
+) -> Result<Option<Session>, sqlx::Error> {
+    find(
+        db,
+        "web",
+        cookies(headers, SESSION_COOKIE).map(digest).collect(),
+    )
+    .await
+}
+
+/// The token of the request's only `Authorization` header, `Bearer <token>`; `None` without one,
+/// `Some(None)` for any other.
+fn bearer(headers: &HeaderMap) -> Option<Option<&str>> {
+    let mut values = headers.get_all(header::AUTHORIZATION).iter();
+    let first = values.next()?;
+    if values.next().is_some() {
+        return Some(None);
+    }
+    Some(first.to_str().ok().and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        scheme.eq_ignore_ascii_case("bearer").then_some(token)
+    }))
+}
+
+/// `GET /session`: the account of the request's session: the device session of its bearer token if
+/// it has an `Authorization` header, else the web session of its cookie.
+pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let found = match bearer(&headers) {
+        Some(Some(token)) => find(&state.db, "device", vec![digest(token)]).await,
+        Some(None) => Ok(None),
+        None => web_session(&state.db, &headers).await,
+    };
     match found {
-        Ok(Some((account, github_login))) => axum::Json(Session {
-            account,
-            github_login,
-        })
-        .into_response(),
+        Ok(Some(session)) => axum::Json(session).into_response(),
         Ok(None) => problem(
             StatusCode::UNAUTHORIZED,
             "not-signed-in",
             "Not signed in",
             "The request has no session, or an unknown one: sign in at /auth/github.",
         ),
-        Err(err) => {
-            eprintln!("skald-server: cannot read a session: {err}");
-            problem(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server-error",
-                "The server failed",
-                "The database failed.",
-            )
-        }
+        Err(err) => database_failed("read a session", err),
     }
 }
 

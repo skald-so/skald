@@ -106,6 +106,49 @@ function page(id) {
   return found;
 }
 
+/**
+ * Runs `navigate`, which navigates `tab` and resolves to the last response, if any; gives the final
+ * URL, the status of that response, the URLs the main frame requested on the way, redirects
+ * included, and the navigation error, if any.
+ */
+async function navigation(tab, navigate) {
+  const navigations = [];
+  const record = (request) => {
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
+      navigations.push(request.url());
+  };
+  const failures = [];
+  const fail = (request) => {
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
+      failures.push(`${request.url()}: ${request.failure()?.errorText}`);
+  };
+  tab.on("request", record);
+  tab.on("requestfailed", fail);
+  let status = null;
+  let error = null;
+  try {
+    const response = await navigate();
+    status = response?.status() ?? null;
+  } catch (caught) {
+    error = [String(caught.message ?? caught), ...failures].join("\n");
+  } finally {
+    tab.off("request", record);
+    tab.off("requestfailed", fail);
+  }
+  return { url: tab.url(), status, navigations, error };
+}
+
+/** Clicks what `selector` finds in `tab` and waits for the navigation it starts to load. */
+function click(tab, selector) {
+  return navigation(tab, async () => {
+    const [response] = await Promise.all([
+      tab.waitForNavigation({ waitUntil: "load" }),
+      tab.locator(selector).click(),
+    ]);
+    return response;
+  });
+}
+
 const ops = {
   /** Opens a page in a new browser context: a browser with no cookies. */
   async newPage() {
@@ -128,30 +171,91 @@ const ops = {
     const tab = await found.context.newPage();
     found.page.close().catch(() => {});
     found.page = tab;
-    const navigations = [];
-    const record = (request) => {
-      if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
-        navigations.push(request.url());
-    };
-    const failures = [];
-    const fail = (request) => {
-      if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
-        failures.push(`${request.url()}: ${request.failure()?.errorText}`);
-    };
-    tab.on("request", record);
-    tab.on("requestfailed", fail);
-    let status = null;
-    let error = null;
-    try {
-      const response = await tab.goto(url, { waitUntil });
-      status = response?.status() ?? null;
-    } catch (caught) {
-      error = [String(caught.message ?? caught), ...failures].join("\n");
-    } finally {
-      tab.off("request", record);
-      tab.off("requestfailed", fail);
-    }
-    return { url: tab.url(), status, navigations, error };
+    return navigation(tab, () => tab.goto(url, { waitUntil }));
+  },
+
+  /**
+   * Clicks the element `selector` finds, a playwright-core selector such as
+   * `role=button[name=/approve/i]`, as a person does, and waits for the navigation it starts to
+   * load. Gives what `goto` gives.
+   */
+  async click({ page: id, selector }) {
+    return click(page(id).page, selector);
+  },
+
+  /** Clicks each `{page, selector}` of `clicks` at once, as `click` does; gives their visits. */
+  async clickAll({ clicks }) {
+    const tabs = clicks.map(({ page: id }) => page(id).page);
+    // Each element first, so that the clicks themselves go out together.
+    await Promise.all(
+      clicks.map(({ selector }, at) =>
+        tabs[at].locator(selector).waitFor({ state: "visible" }),
+      ),
+    );
+    return Promise.all(
+      clicks.map(({ selector }, at) => click(tabs[at], selector)),
+    );
+  },
+
+  /**
+   * Evaluates the script `expression`, which starts a navigation of the page, and waits until the
+   * network has been idle for 0.5 s. Gives what `goto` gives.
+   */
+  async navigateBy({ page: id, expression }) {
+    const tab = page(id).page;
+    return navigation(tab, async () => {
+      const [response] = await Promise.all([
+        tab.waitForNavigation({ waitUntil: "load" }),
+        tab.evaluate(expression),
+      ]);
+      await tab.waitForLoadState("networkidle");
+      return response;
+    });
+  },
+
+  /** Types `value` into the element `selector` finds, replacing what it holds. */
+  async fill({ page: id, selector, value }) {
+    await page(id).page.locator(selector).fill(value);
+    return null;
+  },
+
+  /** How many elements `selector` finds. */
+  async count({ page: id, selector }) {
+    return page(id).page.locator(selector).count();
+  },
+
+  /** The value of each form field `selector` finds. */
+  async values({ page: id, selector }) {
+    const fields = page(id).page.locator(selector);
+    return fields.evaluateAll((all) => all.map((field) => field.value));
+  },
+
+  /** The page's text as a person sees it. */
+  async text({ page: id }) {
+    return page(id).page.locator("body").innerText();
+  },
+
+  /**
+   * What the button `selector` finds submits: its form's action and method, its own if it
+   * overrides them, and the form's fields with the button's own, as `[name, value]` pairs.
+   */
+  async submission({ page: id, selector }) {
+    return page(id)
+      .page.locator(selector)
+      .evaluate((button) => {
+        const form = button.form;
+        return {
+          action: button.hasAttribute("formaction")
+            ? button.formAction
+            : form.action,
+          method: button.hasAttribute("formmethod")
+            ? button.formMethod
+            : form.method,
+          fields: [...new FormData(form, button).entries()].map(
+            ([name, value]) => [name, String(value)],
+          ),
+        };
+      });
   },
 
   /** Evaluates the script `expression` in the page; a promise is awaited. */

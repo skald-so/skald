@@ -210,6 +210,26 @@ fn github_settings_that_do_not_fit_together_stop_the_start() {
             None,
             "--sign-in-state-lifetime",
         ),
+        (
+            vec!["--device-code-lifetime", "0"],
+            None,
+            "--device-code-lifetime",
+        ),
+        (
+            vec!["--device-code-lifetime", "3601"],
+            None,
+            "--device-code-lifetime",
+        ),
+        (
+            vec!["--device-poll-interval", "0"],
+            None,
+            "--device-poll-interval",
+        ),
+        (
+            vec!["--device-poll-interval", "61"],
+            None,
+            "--device-poll-interval",
+        ),
     ] {
         let mut command = Command::new(SERVER);
         command
