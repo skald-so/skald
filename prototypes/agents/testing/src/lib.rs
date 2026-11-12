@@ -1,4 +1,4 @@
-//! Assertions and recorded exchanges the delivery prototypes' tests share.
+//! Fixtures, assertions and recorded exchanges the delivery prototypes' tests share.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -8,7 +8,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_source::{Message, Source, State};
+use rmcp::model::CustomNotification;
+use rmcp::service::NotificationContext;
+use rmcp::{ClientHandler, RoleClient};
 use serde_json::Value;
+use tempfile::TempDir;
+use tokio::sync::mpsc;
 
 /// A message `msg_id` from `alice` saying `hi`, never added to a source.
 pub fn message(msg_id: &str) -> Message {
@@ -22,11 +27,56 @@ pub fn message(msg_id: &str) -> Message {
     }
 }
 
+/// A source in a temporary directory.
+pub fn opened() -> (TempDir, Source) {
+    let dir = tempfile::tempdir().unwrap();
+    let source = Source::open(dir.path()).unwrap();
+    (dir, source)
+}
+
 /// Opens the source in `dir` and adds a message from `alice` saying `hi`.
 pub fn one_waiting(dir: &Path) -> (Source, Message) {
     let source = Source::open(dir).unwrap();
     let message = source.add("alice", "hi").unwrap();
     (source, message)
+}
+
+/// Adds `count` messages from `alice`, `message 0` and on, to `source`; returns their `msg_id`s.
+pub fn add_many(source: &Source, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| source.add("alice", &format!("message {i}")).unwrap().msg_id)
+        .collect()
+}
+
+/// Adds a message from `alice` saying `hi` to `source`, in `dir`, that a server took and died with
+/// before handing it over: its claim stays.
+pub fn taken_by_a_dead_server(dir: &Path, source: &Source) -> Message {
+    let crashed = Source::open(dir).unwrap();
+    let message = source.add("alice", "hi").unwrap();
+    assert_eq!(crashed.take().unwrap(), vec![message.clone()]);
+    drop(crashed);
+    message
+}
+
+/// An MCP client that passes on each custom notification it gets, such as a channel's events.
+pub struct Events(pub mpsc::UnboundedSender<CustomNotification>);
+
+impl ClientHandler for Events {
+    async fn on_custom_notification(
+        &self,
+        notification: CustomNotification,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let _ = self.0.send(notification);
+    }
+}
+
+/// `pairs` as owned strings, such as variables or headers.
+pub fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect()
 }
 
 /// Writes `script` to `path` as an executable file, such as a stand-in for a CLI.

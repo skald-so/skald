@@ -32,14 +32,14 @@ use crate::Result;
 use crate::run::{finish, side_by_side, start, start_with};
 use crate::subscription::user_codex_config;
 
-/// The longest wait for a turn.
-const TURN: Duration = Duration::from_secs(120);
+/// The longest wait for a session's turn, or for the session to register.
+pub(crate) const TURN: Duration = Duration::from_secs(120);
 
 /// How long the session without the channel flag runs.
 const QUIET: Duration = Duration::from_secs(20);
 
-/// How long a read of the terminal waits.
-const TICK: Duration = Duration::from_millis(100);
+/// How long a read of a session's output waits before the check looks at its state again.
+pub(crate) const TICK: Duration = Duration::from_millis(100);
 
 /// The Channels path's live check: an idle session; with `--all`, also messages in a row, the
 /// other of two idle sessions, a busy session and a session without the channel flag.

@@ -194,17 +194,7 @@ pub fn handle(
 /// Records the `transcript` signal of each handed-over message of `source` that the session file
 /// `transcript` shows reached the model; returns how many it found.
 pub fn confirm(agent: Agent, transcript: &Path, source: &Source) -> io::Result<usize> {
-    let handed: Vec<String> = source
-        .handed_messages()?
-        .into_iter()
-        .map(|message| message.msg_id)
-        .collect();
-    let seen = read_seen(agent.transcript(), transcript, &handed)?;
-    for found in &seen {
-        let detail = found.at_ms.map(|at| format!("entry at {at}"));
-        source.record(&found.msg_id, "transcript", detail.as_deref())?;
-    }
-    Ok(seen.len())
+    agent_transcript::record_seen(agent.transcript(), transcript, source, "transcript")
 }
 
 /// What `--take` prints for `messages`, at least one: their IDs and the text that hands them over.
@@ -216,7 +206,7 @@ pub fn taken(messages: &[Message]) -> Value {
 #[cfg(test)]
 mod tests {
     use agent_source::State;
-    use agent_testing::message;
+    use agent_testing::{message, opened};
 
     use super::*;
 
@@ -296,8 +286,7 @@ mod tests {
 
     #[test]
     fn a_failed_write_puts_the_messages_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let added = source.add("alice", "hi").unwrap();
         let input = br#"{"hook_event_name":"Stop"}"#;
         for agent in [Agent::Claude, Agent::Codex] {
@@ -318,8 +307,7 @@ mod tests {
 
     #[test]
     fn input_that_is_not_json_is_an_error_and_takes_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let added = source.add("alice", "hi").unwrap();
         let mut out = Vec::new();
         let error =

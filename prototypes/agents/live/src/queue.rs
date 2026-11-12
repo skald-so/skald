@@ -10,10 +10,13 @@ use std::time::{Duration, Instant};
 use agent_app_server::{Client, Transport};
 use agent_source::Source;
 
-use serde_json::{Value, json};
+use serde_json::json;
 
-use crate::channel::{Files, PtySession, Sent, TERM};
-use crate::{Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config, codex_hook};
+use crate::channel::{Files, PtySession, Sent, TERM, hook_inputs};
+use crate::{
+    Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config_flags, codex_hook,
+    codex_trusted, model_flag,
+};
 
 /// The prototype's binary, next to `live-check`.
 pub const QUEUE_BIN: &str = "agent-queue";
@@ -55,23 +58,15 @@ pub fn session(files: &Files, kind: Kind, model: Option<&str>, stub: Option<&str
     ]
     .map(String::from)
     .to_vec();
-    let mut config = vec![
+    let config = vec![
         codex_hook("Stop", &files.record()),
         codex_hook("PreToolUse", &files.record()),
-        format!(
-            "projects={{{}={{trust_level=\"trusted\"}}}}",
-            json!(project)
-        ),
+        codex_trusted(&project),
         "check_for_update_on_startup=false".to_owned(),
         "notify=[]".to_owned(),
     ];
-    config.extend(codex_config(stub));
-    for value in config {
-        args.extend(["-c".to_owned(), value]);
-    }
-    if let Some(model) = model {
-        args.extend(["-m".to_owned(), model.to_owned()]);
-    }
+    args.extend(codex_config_flags(config, stub));
+    args.extend(model_flag("-m", model));
     args.push(prompt(kind));
     args
 }
@@ -87,10 +82,7 @@ pub fn stub_environment(home: &Path, stub: &str, path: &str) -> io::Result<Vec<(
 /// The session's thread, which `codex queue` takes: the `session_id` of the first hook input in the
 /// hooks file's `text`.
 pub fn thread(text: &str) -> Option<String> {
-    serde_json::Deserializer::from_str(text)
-        .into_iter::<Value>()
-        .map_while(Result::ok)
-        .find_map(|input| input["session_id"].as_str().map(String::from))
+    hook_inputs(text).find_map(|input| input["session_id"].as_str().map(String::from))
 }
 
 /// Polls `thread/queue/list` of `client`, an app-server on the session's config home that offers
@@ -202,6 +194,7 @@ impl QueueCheck {
 #[cfg(test)]
 mod tests {
     use agent_source::State;
+    use agent_testing::opened;
 
     use crate::channel::tests::{on_stub, real};
     use crate::{StubLog, shell_quote};
@@ -455,8 +448,7 @@ mod tests {
 
     #[test]
     fn taken_records_the_queue_emptied_or_gives_up_at_the_limit() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let message = source.add("alice", "hi").unwrap();
         let client = |queues: &[usize]| {
             agent_app_server::Client::new(

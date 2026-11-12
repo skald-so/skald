@@ -114,13 +114,17 @@ name = "agent-testing"
 version = "0.0.0"
 dependencies = [
  "agent-source",
+ "rmcp",
  "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
 name = "agent-transcript"
 version = "0.0.0"
 dependencies = [
+ "agent-source",
  "serde_json",
  "tempfile",
 ]

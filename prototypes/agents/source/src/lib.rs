@@ -20,6 +20,7 @@
 use std::fs::{self, File, TryLockError};
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -500,6 +501,20 @@ fn sorted_names(dir: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
+/// The source of the command line `<bin> <source-dir>`, that of a server over stdio. On another
+/// command line, or a source it cannot open, prints why and returns the exit code.
+pub fn from_args(bin: &str) -> Result<Source, ExitCode> {
+    let mut args = std::env::args_os().skip(1);
+    let (Some(dir), None) = (args.next(), args.next()) else {
+        eprintln!("usage: {bin} <source-dir>");
+        return Err(ExitCode::from(2));
+    };
+    Source::open(&dir).map_err(|error| {
+        eprintln!("{bin}: cannot open the source {}: {error}", dir.display());
+        ExitCode::FAILURE
+    })
+}
+
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> u64 {
     let since_epoch = SystemTime::now()
@@ -534,8 +549,7 @@ mod tests {
     fn failing_take_is_an_error() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (dir, source) = opened();
         let message = source.add("alice", "one").unwrap();
         let claim = dir.path().join(TAKEN).join(&source.claim);
         fs::set_permissions(&claim, fs::Permissions::from_mode(0o555)).unwrap();
@@ -546,8 +560,7 @@ mod tests {
 
     #[test]
     fn takes_waiting_messages_once_in_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let before = since_epoch_ms();
         let first = source.add("alice", "one").unwrap();
         assert!((before..=since_epoch_ms()).contains(&first.added_at_ms));
@@ -583,8 +596,7 @@ mod tests {
 
     #[test]
     fn released_message_is_taken_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let message = source.add("alice", "one").unwrap();
         let taken = source.take().unwrap();
         source.release(&ids(&taken)).unwrap();
@@ -594,8 +606,7 @@ mod tests {
 
     #[test]
     fn hands_over_the_waiting_messages_or_puts_them_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let mut calls = 0;
         let none = source.hand_over(|_| {
             calls += 1;
@@ -640,7 +651,8 @@ mod tests {
         assert!(source.hand_over(|_| unreachable!()).unwrap().is_empty());
     }
 
-    /// A source in a temporary directory.
+    /// A source in a temporary directory, as `agent_testing::opened` makes one: that crate depends
+    /// on this one, so its tests cannot use it.
     fn opened() -> (tempfile::TempDir, Source) {
         let dir = tempfile::tempdir().unwrap();
         let source = Source::open(dir.path()).unwrap();
@@ -833,8 +845,7 @@ mod tests {
 
     #[test]
     fn unknown_message_has_no_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         assert_eq!(source.state("nope").unwrap(), None);
     }
 
@@ -887,8 +898,7 @@ mod tests {
 
     #[test]
     fn handle_without_messages_removes_its_claim() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (dir, source) = opened();
         source.add("alice", "one").unwrap();
         drop(source);
         for sub in [CLAIMS, TAKEN] {

@@ -21,6 +21,7 @@ use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+use agent_source::Source;
 use serde_json::Value;
 
 /// The CLI whose session file it reads.
@@ -45,6 +46,22 @@ pub fn read_seen(agent: Agent, path: &Path, msg_ids: &[String]) -> io::Result<Ve
     let (mut written, answered) = scan(agent, path, msg_ids)?;
     written.truncate(answered);
     Ok(written)
+}
+
+/// Records `signal` for each handed-over message of `source` that the session file `path` shows
+/// reached the model ([`read_seen`]), with the entry's time; returns how many it found.
+pub fn record_seen(agent: Agent, path: &Path, source: &Source, signal: &str) -> io::Result<usize> {
+    let handed: Vec<String> = source
+        .handed_messages()?
+        .into_iter()
+        .map(|message| message.msg_id)
+        .collect();
+    let seen = read_seen(agent, path, &handed)?;
+    for found in &seen {
+        let detail = found.at_ms.map(|at| format!("entry at {at}"));
+        source.record(&found.msg_id, signal, detail.as_deref())?;
+    }
+    Ok(seen.len())
 }
 
 /// The messages of `msg_ids` that the session file `path` holds in an entry that went to the model,

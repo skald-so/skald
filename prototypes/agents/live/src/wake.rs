@@ -14,7 +14,9 @@ use crate::channel::{Files, PtySession, Sent, turn_of};
 use crate::hook::Hook;
 use agent_inbox::INBOX;
 
-use crate::{Agent, Checks, Kind, LOOP_PROMPT, Options, SERVER, pretty};
+use crate::{
+    Agent, Checks, Kind, LOOP_PROMPT, Options, SERVER, claude_flags, mcp_config, model_flag, pretty,
+};
 
 /// A path that wakes an idle session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,10 +125,9 @@ pub fn write_mod_config(project: &Path, hook: &Path, source: &Path) -> io::Resul
 }
 
 /// Writes the settings of an interactive `kind` session of `wake` into `files.dir` and returns
-/// its arguments. Only these files and the arguments change Claude Code's config: no project or
-/// user settings, no MCP server, no skills, the lowest effort, and no tool but the busy session's
-/// `sleep`, without asking; `Stop` and `PreToolUse` hooks record the agent's turns. A mod session
-/// also loads the mod's plugin directory, with its config in the project.
+/// its arguments, which only they configure ([`claude_flags`]): no MCP server, and no tool but the
+/// busy session's `sleep`, without asking; `Stop` and `PreToolUse` hooks record the agent's turns.
+/// A mod session also loads the mod's plugin directory, with its config in the project.
 pub fn session(
     files: &Files,
     wake: Wake,
@@ -154,40 +155,22 @@ pub fn session(
         })),
     )?;
     let mut args: Vec<String> = wake.prompt(kind).into_iter().collect();
-    let settings = settings.to_string_lossy();
-    let mut flags = vec![
-        "--setting-sources",
-        "local",
-        "--strict-mcp-config",
-        "--settings",
-        &settings,
-    ];
-    // `/loop` is a bundled skill: the loop's session keeps slash commands.
-    if wake != Wake::Loop {
-        flags.push("--disable-slash-commands");
-    }
     let tools = match (wake, kind) {
         (Wake::Loop, _) => "CronCreate",
         (_, Kind::Busy) => "Bash",
         (_, Kind::Idle) => "",
     };
-    flags.extend([
-        "--tools",
+    // `/loop` is a bundled skill: the loop's session keeps slash commands.
+    args.extend(claude_flags(
+        &["--settings", &settings.to_string_lossy()],
+        wake == Wake::Loop,
         tools,
-        "--permission-mode",
-        "dontAsk",
-        "--effort",
-        "low",
-    ]);
-    args.extend(flags.into_iter().map(String::from));
+        true,
+    ));
     if wake == Wake::Loop {
         // The scheduled prompt calls inbox.
         let servers = files.dir.join("mcp.json");
-        let server = json!({ "command": bins.inbox, "args": [files.source] });
-        fs::write(
-            &servers,
-            pretty(&json!({ "mcpServers": { SERVER: server } })),
-        )?;
+        fs::write(&servers, pretty(&mcp_config(&bins.inbox, &files.source)))?;
         args.extend([
             "--mcp-config".to_owned(),
             servers.to_string_lossy().into_owned(),
@@ -204,9 +187,7 @@ pub fn session(
             bins.plugin.to_string_lossy().into_owned(),
         ]);
     }
-    if let Some(model) = model {
-        args.extend(["--model".to_owned(), model.to_owned()]);
-    }
+    args.extend(model_flag("--model", model));
     Ok(args)
 }
 
@@ -234,26 +215,25 @@ pub fn bypass_session(
         "--output-format",
         "stream-json",
         "--verbose",
-        "--setting-sources",
-        "local",
-        "--strict-mcp-config",
-        "--settings",
-        &settings.to_string_lossy(),
-        "--disable-slash-commands",
-        "--tools",
-        "",
-        "--effort",
-        "low",
-        "--no-session-persistence",
-        "--permission-mode",
-        "bypassPermissions",
-        "--allow-dangerously-skip-permissions",
     ]
     .map(String::from)
     .to_vec();
-    if let Some(model) = model {
-        args.extend(["--model".to_owned(), model.to_owned()]);
-    }
+    args.extend(claude_flags(
+        &["--settings", &settings.to_string_lossy()],
+        false,
+        "",
+        false,
+    ));
+    args.extend(
+        [
+            "--no-session-persistence",
+            "--permission-mode",
+            "bypassPermissions",
+            "--allow-dangerously-skip-permissions",
+        ]
+        .map(String::from),
+    );
+    args.extend(model_flag("--model", model));
     Ok(args)
 }
 

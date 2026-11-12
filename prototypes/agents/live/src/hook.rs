@@ -195,21 +195,21 @@ impl Setup<'_> {
     /// Prepares the `kind` session `name` in `work/<name>`: an empty project, the hook's config
     /// and source and, on `stub`, a home of its own.
     pub fn run(&self, name: &str, kind: Kind, stub: Option<&Stub>) -> io::Result<Run> {
-        let url = stub.map(Stub::url);
-        let session = |dir: &Path, project: &Path, source: &Path| match self.agent {
-            Agent::Claude => session(dir, self.handler, source, self.hook, kind, self.model),
-            Agent::Codex => Ok(codex_session(
-                dir,
-                project,
-                self.live_check,
-                self.handler,
-                source,
-                self.hook,
-                kind,
-                self.model,
-                url.as_deref(),
-            )),
-        };
+        let session =
+            |dir: &Path, project: &Path, source: &Path, url: Option<&str>| match self.agent {
+                Agent::Claude => session(dir, self.handler, source, self.hook, kind, self.model),
+                Agent::Codex => Ok(codex_session(
+                    dir,
+                    project,
+                    self.live_check,
+                    self.handler,
+                    source,
+                    self.hook,
+                    kind,
+                    self.model,
+                    url,
+                )),
+            };
         prepare(self.work, name, self.agent, self.path, stub, session)
     }
 }

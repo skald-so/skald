@@ -23,14 +23,8 @@ use agent_source::{Source, now_ms};
 use serde_json::json;
 
 use crate::Result;
-use crate::pty::{Added, Env, Prepared};
+use crate::pty::{Added, Env, Prepared, TICK, TURN};
 use crate::run::{finish, read_lines, side_by_side, start};
-
-/// The longest wait for a turn.
-const TURN: Duration = Duration::from_secs(120);
-
-/// How long the client's output is read before the check looks at its state again.
-const TICK: Duration = Duration::from_millis(100);
 
 /// The app-server path's live check: an idle thread; with `--all`, also a busy thread, and, on one
 /// app-server, another thread next to the session a person works in.

@@ -149,12 +149,7 @@ impl Agent {
         let args = match self {
             Self::Claude => {
                 let servers = project.join(".mcp.json");
-                fs::write(
-                    &servers,
-                    pretty(
-                        &json!({ "mcpServers": { SERVER: { "command": inbox, "args": [source] } } }),
-                    ),
-                )?;
+                fs::write(&servers, pretty(&mcp_config(server.inbox, server.source)))?;
                 // Without it, Claude Code asks a person to approve each call.
                 let mut allow = server_tools();
                 allow.push("Bash(sleep:*)".to_owned());
@@ -315,38 +310,51 @@ impl Agent {
 }
 
 /// The arguments of a non-interactive Claude Code session with `prompt` that prints its events as
-/// stream-json. It loads only the project's local settings and what `config` adds, no other MCP
-/// server, no skills, only the built-in `tools` (MCP tools load at the start), at the lowest effort,
-/// and saves no session.
+/// stream-json, with `config` and the built-in `tools` ([`claude_flags`]; MCP tools load at the
+/// start), that saves no session.
 fn claude_print(prompt: &str, config: &[&str], tools: &str, model: Option<&str>) -> Vec<String> {
-    let head = [
-        "-p",
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--setting-sources",
-        "local",
-        "--strict-mcp-config",
-    ];
-    let tail = [
-        "--disable-slash-commands",
-        "--tools",
-        tools,
-        "--effort",
-        "low",
-        "--no-session-persistence",
-    ];
-    let mut args: Vec<String> = head
-        .into_iter()
-        .chain(config.iter().copied())
-        .chain(tail)
+    let mut args: Vec<String> = ["-p", prompt, "--output-format", "stream-json", "--verbose"]
         .map(String::from)
-        .collect();
-    if let Some(model) = model {
-        args.extend(["--model".to_owned(), model.to_owned()]);
-    }
+        .to_vec();
+    args.extend(claude_flags(config, false, tools, false));
+    args.push("--no-session-persistence".to_owned());
+    args.extend(model_flag("--model", model));
     args
+}
+
+/// The flags that leave a Claude Code session only the config its own files and flags give: the
+/// project's local settings and what `config` adds, no other MCP server, no slash commands and so
+/// no skills unless `slash_commands`, only the built-in `tools`, without asking if `dont_ask`, and
+/// the lowest effort.
+pub(crate) fn claude_flags(
+    config: &[&str],
+    slash_commands: bool,
+    tools: &str,
+    dont_ask: bool,
+) -> Vec<String> {
+    let mut flags = vec!["--setting-sources", "local", "--strict-mcp-config"];
+    flags.extend(config);
+    if !slash_commands {
+        flags.push("--disable-slash-commands");
+    }
+    flags.extend(["--tools", tools]);
+    if dont_ask {
+        flags.extend(["--permission-mode", "dontAsk"]);
+    }
+    flags.extend(["--effort", "low"]);
+    flags.into_iter().map(String::from).collect()
+}
+
+/// The MCP config whose one server, [`SERVER`], is `command <source>`.
+pub(crate) fn mcp_config(command: &Path, source: &Path) -> Value {
+    json!({ "mcpServers": { SERVER: { "command": command, "args": [source] } } })
+}
+
+/// The arguments `<flag> <model>` that pick `model`, if given.
+pub(crate) fn model_flag(flag: &str, model: Option<&str>) -> Vec<String> {
+    model
+        .map(|model| vec![flag.to_owned(), model.to_owned()])
+        .unwrap_or_default()
 }
 
 /// The arguments of a non-interactive Codex session in `project` with `prompt` that prints its
@@ -376,16 +384,28 @@ fn codex_exec(
     .map(|arg| (*arg).to_owned())
     .collect();
     args.extend(["-C".to_owned(), project.to_string_lossy().into_owned()]);
-    let mut config = config.to_vec();
-    config.extend(codex_config(stub));
-    for value in config {
-        args.extend(["-c".to_owned(), value]);
-    }
-    if let Some(model) = model {
-        args.extend(["-m".to_owned(), model.to_owned()]);
-    }
+    args.extend(codex_config_flags(config.to_vec(), stub));
+    args.extend(model_flag("-m", model));
     args.push(prompt.to_owned());
     args
+}
+
+/// The `-c` flags of the config values `config` and of those every Codex session gets
+/// ([`codex_config`]) on the model stub at `stub`.
+pub(crate) fn codex_config_flags(config: Vec<String>, stub: Option<&str>) -> Vec<String> {
+    config
+        .into_iter()
+        .chain(codex_config(stub))
+        .flat_map(|value| ["-c".to_owned(), value])
+        .collect()
+}
+
+/// The `-c` value that makes Codex trust `project`, so it opens no trust dialog there.
+pub(crate) fn codex_trusted(project: &str) -> String {
+    format!(
+        "projects={{{}={{trust_level=\"trusted\"}}}}",
+        json!(project)
+    )
 }
 
 /// The config values every Codex session gets: no skills' instructions, the lowest effort, and on
@@ -626,37 +646,32 @@ impl Setup<'_> {
     /// Prepares the `kind` session `name` in `work/<name>`: a project with the `inbox` server
     /// attached and, on `stub`, a home of its own.
     pub fn run(&self, name: &str, kind: Kind, stub: Option<&Stub>) -> io::Result<Run> {
-        let url = stub.map(Stub::url);
-        let session = |_: &Path, project: &Path, source: &Path| {
-            self.agent.session(
-                project,
-                self.inbox,
-                source,
-                kind,
-                self.model,
-                url.as_deref(),
-            )
+        let session = |_: &Path, project: &Path, source: &Path, url: Option<&str>| {
+            self.agent
+                .session(project, self.inbox, source, kind, self.model, url)
         };
         prepare(self.work, name, self.agent, self.path, stub, session)
     }
 }
 
 /// Prepares `agent`'s session `name` in `work/<name>`: an empty project, the source's directory
-/// and the logs there, the arguments `args` gives for the session's directory, project and source,
-/// and, on `stub`, the CLI's environment with a home of its own and `path` as `PATH`.
+/// and the logs there, the arguments `args` gives for the session's directory, project, source and
+/// model stub's URL, and, on `stub`, the CLI's environment with a home of its own and `path` as
+/// `PATH`.
 pub fn prepare(
     work: &Path,
     name: &str,
     agent: Agent,
     path: &str,
     stub: Option<&Stub>,
-    args: impl FnOnce(&Path, &Path, &Path) -> io::Result<Vec<String>>,
+    args: impl FnOnce(&Path, &Path, &Path, Option<&str>) -> io::Result<Vec<String>>,
 ) -> io::Result<Run> {
     let dir = work.join(name);
     let project = dir.join("project");
     let source = dir.join("source");
     fs::create_dir_all(&project)?;
-    let args = args(&dir, &project, &source)?;
+    let url = stub.map(Stub::url);
+    let args = args(&dir, &project, &source, url.as_deref())?;
     let env = match stub {
         Some(stub) => Some(agent.environment(&dir.join("home"), &stub.url(), path)?),
         None => None,
@@ -791,17 +806,12 @@ impl Session {
 
     /// Whether `token` reached the model: in a request to the stub, or in the real model's reply.
     fn got(&self, token: &str) -> bool {
-        match &self.stub {
-            Some(stub) => stub.saw(token),
-            None => self.reply.contains(token),
-        }
+        StubLog::reached(self.stub.as_ref(), token, || self.reply.contains(token))
     }
 
     /// Whether the stub got no credential but the placeholder.
     fn clean(&self) -> bool {
-        self.stub
-            .as_ref()
-            .is_none_or(|stub| stub.failure().is_none())
+        StubLog::clean(self.stub.as_ref())
     }
 
     /// The idle and busy checks: the session called `inbox`, `token` reached the model and the
@@ -1014,6 +1024,8 @@ pub fn exit_code(pass: bool) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use agent_testing::{opened, owned};
+
     use super::*;
 
     /// The JSON in the file at `path`.
@@ -1397,12 +1409,6 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let home = home.path().join("home");
         let at = |dir: &str| home.join(dir).to_string_lossy().into_owned();
-        let owned = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
-            pairs
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect()
-        };
         let home_str = home.to_string_lossy().into_owned();
         assert_eq!(
             Agent::Claude
@@ -1837,8 +1843,7 @@ mod tests {
 
     #[test]
     fn adds_a_message_with_the_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let message = add_message(&source, "tok-1").unwrap();
         assert_eq!(message.sender, "live-check of skald");
         assert_eq!(message.text, "The check token is tok-1.");

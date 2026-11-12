@@ -16,11 +16,8 @@ use agent_socket::{FROM, Receipts, hand_over};
 use agent_source::Source;
 
 use crate::Result;
-use crate::pty::{Added, Env, Live, Prepared, turn_ended};
+use crate::pty::{Added, Env, Live, Prepared, TURN, turn_ended};
 use crate::run::{finish, read_lines, side_by_side, start_with};
-
-/// The longest wait for a turn or for the session to register.
-const TURN: Duration = Duration::from_secs(120);
 
 /// The longest wait for the loop's scheduled prompt to get the message.
 const LOOP: Duration = Duration::from_secs(200);

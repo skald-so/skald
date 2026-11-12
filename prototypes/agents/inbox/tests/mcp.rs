@@ -3,7 +3,9 @@
 use std::path::Path;
 
 use agent_source::Source;
-use agent_testing::{assert_carries_once, wait_handed_over};
+use agent_testing::{
+    add_many, assert_carries_once, opened, taken_by_a_dead_server, wait_handed_over,
+};
 use rmcp::model::CallToolRequestParams;
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
@@ -23,8 +25,7 @@ async fn start(source: &Path) -> Client {
 
 /// A source in a temporary directory and a server started on it.
 async fn started() -> (tempfile::TempDir, Source, Client) {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     let client = start(dir.path()).await;
     (dir, source, client)
 }
@@ -91,12 +92,9 @@ async fn inbox_returns_each_waiting_message_once() {
 
 #[tokio::test]
 async fn two_sessions_on_one_source_get_each_message_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     let sessions = [start(dir.path()).await, start(dir.path()).await];
-    let added: Vec<_> = (0..20)
-        .map(|i| source.add("alice", &format!("message {i}")).unwrap().msg_id)
-        .collect();
+    let added = add_many(&source, 20);
 
     let (a, b) = tokio::join!(inbox(&sessions[0]), inbox(&sessions[1]));
     for msg_id in &added {
@@ -111,13 +109,9 @@ async fn two_sessions_on_one_source_get_each_message_once() {
 
 #[tokio::test]
 async fn messages_of_a_server_that_died_are_handed_over_again() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     // A server that took a message and died before writing its result leaves its claim.
-    let crashed = Source::open(dir.path()).unwrap();
-    let message = source.add("alice", "hi").unwrap();
-    assert_eq!(crashed.take().unwrap(), vec![message.clone()]);
-    drop(crashed);
+    let message = taken_by_a_dead_server(dir.path(), &source);
 
     let client = start(dir.path()).await;
     let text = inbox(&client).await;

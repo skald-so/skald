@@ -35,14 +35,13 @@ pub fn ack(agent: Agent, options: &Options) -> Result<bool> {
     let mut check = ReadCheck::new("ack");
     let run_case = |name: &str, piggyback: bool, count: usize| -> Result<_> {
         let stub = options.stub(ack_script(piggyback))?;
-        let url = stub.as_ref().map(Stub::url);
         let run = prepare(
             work.path(),
             name,
             agent,
             &path,
             stub.as_ref(),
-            |_, project, source| {
+            |_, project, source, url| {
                 let server = Server {
                     inbox: &inbox,
                     source,
@@ -53,7 +52,7 @@ pub fn ack(agent: Agent, options: &Options) -> Result<bool> {
                     &ack_prompt(piggyback),
                     "",
                     options.model,
-                    url.as_deref(),
+                    url,
                 )
             },
         )?;
@@ -94,14 +93,13 @@ pub fn ack(agent: Agent, options: &Options) -> Result<bool> {
 pub fn transcript(agent: Agent, options: &Options) -> Result<bool> {
     let (work, handler, path) = start_with(agent, HOOK_BIN)?;
     let stub = options.stub(read::TRANSCRIPT_SCRIPT)?;
-    let url = stub.as_ref().map(Stub::url);
     let run = prepare(
         work.path(),
         "a",
         agent,
         &path,
         stub.as_ref(),
-        |dir, project, source| {
+        |dir, project, source, url| {
             transcript_session(
                 agent,
                 dir,
@@ -110,7 +108,7 @@ pub fn transcript(agent: Agent, options: &Options) -> Result<bool> {
                 source,
                 &transcript_prompt(),
                 options.model,
-                url.as_deref(),
+                url,
             )
         },
     )?;
@@ -158,7 +156,6 @@ fn failed_request(
     check: &mut ReadCheck,
 ) -> Result<String> {
     let stub = Stub::start(read::FAILED_SCRIPT)?;
-    let url = stub.url();
     let token = token();
     let mut message = None;
     let run = prepare(
@@ -167,7 +164,7 @@ fn failed_request(
         agent,
         path,
         Some(&stub),
-        |dir, project, source| {
+        |dir, project, source, url| {
             let opened = Source::open(source)?;
             let added = channel::add_message(&opened, &token)?;
             let taken = opened.take()?;
@@ -181,7 +178,7 @@ fn failed_request(
                 source,
                 &failed_prompt(&taken),
                 options.model,
-                Some(&url),
+                url,
             )
         },
     )?;
@@ -237,7 +234,7 @@ pub fn resend(options: &Options) -> Result<bool> {
         Agent::Claude,
         &path,
         stub.as_ref(),
-        |dir, _, source| {
+        |dir, _, source, _| {
             resend_session(dir, &handler, source, &dir.join("fallback"), options.model)
         },
     )?;

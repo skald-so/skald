@@ -12,15 +12,12 @@ use agent_live::limits::{
     self, LIMITS_BIN, LimitsCheck, Read, codex_config_file, shown, status_line_limits,
     status_line_log, status_line_session, status_line_usage, usage_text,
 };
-use agent_live::{Agent, Options, binary};
+use agent_live::{Agent, Options};
 use agent_source::now_ms;
 
 use crate::Result;
-use crate::pty::{Env, Prepared, turn_ended};
-use crate::run::{finish, start};
-
-/// The longest wait for the status line session's turn.
-const TURN: Duration = Duration::from_secs(120);
+use crate::pty::{Env, Prepared, TURN, turn_ended};
+use crate::run::{finish, start_with};
 
 /// How long after the turn the status line may take to get the limits.
 const LATE: Duration = Duration::from_secs(10);
@@ -32,8 +29,7 @@ fn now_s() -> i64 {
 
 /// The live check of Claude Code's `/usage`: `agent-limits claude` reads each limit it shows.
 pub fn usage(options: &Options) -> Result<bool> {
-    let work = start(Agent::Claude)?;
-    let agent_limits = binary(&std::env::current_exe()?, LIMITS_BIN)?;
+    let (work, agent_limits, _) = start_with(Agent::Claude, LIMITS_BIN)?;
     let mut check = LimitsCheck::default();
     let (read, output) = read_claude(&work.path().join("usage"), &agent_limits)?;
     println!(
@@ -47,8 +43,7 @@ pub fn usage(options: &Options) -> Result<bool> {
 /// The live check of Claude Code's status line: after one short turn, the limits of its input are
 /// those `/usage` then shows.
 pub fn status_line(options: &Options) -> Result<bool> {
-    let work = start(Agent::Claude)?;
-    let agent_limits = binary(&std::env::current_exe()?, LIMITS_BIN)?;
+    let (work, agent_limits, _) = start_with(Agent::Claude, LIMITS_BIN)?;
     let files = Files::new(&work.path().join("status-line"));
     let log = status_line_log(&files);
     let args = status_line_session(&files, &agent_limits, options.model)?;
@@ -85,8 +80,7 @@ pub(crate) fn user_codex_config() -> String {
 
 /// The live check of the Codex app-server: `agent-limits codex` reads limits, each with its reset.
 pub fn codex(options: &Options) -> Result<bool> {
-    let work = start(Agent::Codex)?;
-    let agent_limits = binary(&std::env::current_exe()?, LIMITS_BIN)?;
+    let (work, agent_limits, _) = start_with(Agent::Codex, LIMITS_BIN)?;
     let config = user_codex_config();
     let dir = work.path().join("app-server");
     let args = limits::codex(&dir.join("exchange.jsonl"), &config);

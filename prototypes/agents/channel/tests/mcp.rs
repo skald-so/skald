@@ -4,26 +4,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use agent_source::{Message, Source};
-use agent_testing::wait_handed_over;
+use agent_testing::{Events, add_many, opened, taken_by_a_dead_server, wait_handed_over};
 use rmcp::model::{CustomNotification, ProtocolVersion};
-use rmcp::service::{NotificationContext, RunningService};
+use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
-use rmcp::{ClientHandler, RoleClient, ServiceExt};
+use rmcp::{RoleClient, ServiceExt};
 use serde_json::json;
 use tokio::sync::mpsc;
-
-/// A client that passes on each custom notification it gets.
-struct Events(mpsc::UnboundedSender<CustomNotification>);
-
-impl ClientHandler for Events {
-    async fn on_custom_notification(
-        &self,
-        notification: CustomNotification,
-        _context: NotificationContext<RoleClient>,
-    ) {
-        let _ = self.0.send(notification);
-    }
-}
 
 type Client = RunningService<RoleClient, Events>;
 
@@ -81,8 +68,7 @@ async fn declares_a_channel_on_a_revision_with_a_handshake() {
 
 #[tokio::test]
 async fn pushes_one_event_per_waiting_message_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     let first = source.add("reviewer of alice", "Tests pass.").unwrap();
     let second = source.add("planner of bob", "Take 4.3 next.").unwrap();
     let (client, mut received) = start(dir.path()).await;
@@ -105,13 +91,10 @@ async fn pushes_one_event_per_waiting_message_once() {
 
 #[tokio::test]
 async fn two_sessions_on_one_source_get_each_message_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     let (a, mut received_a) = start(dir.path()).await;
     let (b, mut received_b) = start(dir.path()).await;
-    let added: Vec<_> = (0..20)
-        .map(|i| source.add("alice", &format!("message {i}")).unwrap().msg_id)
-        .collect();
+    let added = add_many(&source, 20);
     let mut got = Vec::new();
     while got.len() < added.len() {
         let event = tokio::select! {
@@ -138,24 +121,15 @@ async fn two_sessions_on_one_source_get_each_message_once() {
 
 #[tokio::test]
 async fn messages_of_a_server_that_died_are_pushed_again() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     // A server that took a message and died before writing its event leaves its claim.
-    let crashed = Source::open(dir.path()).unwrap();
-    let message = source.add("alice", "hi").unwrap();
-    assert_eq!(crashed.take().unwrap(), vec![message.clone()]);
-    drop(crashed);
-
-    let (client, mut received) = start(dir.path()).await;
-    assert_carries(&next(&mut received).await, &message);
-    wait_handed_over(&source, &message.msg_id);
-    client.cancel().await.unwrap();
+    let message = taken_by_a_dead_server(dir.path(), &source);
+    assert_pushed_again(&source, &message).await;
 }
 
 #[tokio::test]
 async fn a_server_whose_source_fails_ends_and_its_messages_are_pushed_again() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     let (client, mut received) = start(dir.path()).await;
     // The server cannot mark a message handed over: it writes it into `handed`.
     let handed = dir.path().join("handed");
@@ -169,8 +143,13 @@ async fn a_server_whose_source_fails_ends_and_its_messages_are_pushed_again() {
 
     // Its claim is free, so the next session gets the message again.
     std::fs::create_dir(&handed).unwrap();
-    let (client, mut received) = start(dir.path()).await;
-    assert_carries(&next(&mut received).await, &message);
-    wait_handed_over(&source, &message.msg_id);
+    assert_pushed_again(&source, &message).await;
+}
+
+/// Asserts that a server started on `source` pushes `message` and marks it handed over.
+async fn assert_pushed_again(source: &Source, message: &Message) {
+    let (client, mut received) = start(source.dir()).await;
+    assert_carries(&next(&mut received).await, message);
+    wait_handed_over(source, &message.msg_id);
     client.cancel().await.unwrap();
 }
