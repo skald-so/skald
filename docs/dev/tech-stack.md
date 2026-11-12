@@ -12,6 +12,7 @@ Versions as of 2026-11-09.
 | Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage) |
 | MLS | mls-rs 0.57 with mls-rs-crypto-rustcrypto 0.23: [choice](mls-prototypes.md#choice) |
 | HPKE, signatures | hpke 0.15, ed25519-dalek 3, x25519-dalek 3 |
+| PAKE | CPace, suite CPACE-RISTR255-SHA512 (draft-irtf-cfrg-cpace-21), in `crypto` on curve25519-dalek 5 and sha2 0.11, checked against the draft's test vectors: [link code](../protocol/membership.md#link-code) |
 | Hashes, random IDs | sha2 0.11; getrandom 0.4 for the random bits of UUIDv7 IDs |
 | Keys | keyring 4, fallback: a 0600 file |
 | Local state | SQLite |

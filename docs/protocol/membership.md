@@ -34,6 +34,7 @@ signed<body> = [
 - The signer is a device, with the signing key of its certificate, or the account's master key where this document says so.
 - A [certificate](#device-certificate) also carries a second signature, its device's `proof`.
 - Labels: `skald account`, `skald cert`, `skald proof`, `skald link`, `skald anchors`, `skald revocation`, `skald roster`, `skald invite`, `skald acceptance`, `skald wrap`, `skald history`. The [SSH signature](#device-certificate) has its own form, with the label `skald ssh`.
+- [Link code](#link-code) labels: `skald link code` in the CPace channel identifier; `skald link request` and `skald link grant` in key derivation.
 
 ## Account
 Each account has two keys, both created on its first device:
@@ -101,18 +102,25 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
-A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it already has. It then gets a certificate:
-- **From a linked device:** the user confirms the link on a `client` device of the account, which issues the certificate.
-  - Both devices show the link fingerprint: the first 10 bytes of SHA-256 over the encoded `["skald fingerprint", master, signing, hpke, name]`, in base32 as above. The new device computes it with its keys, its `name` and the master key the server gave it; the issuing device with the keys and `name` it received and its own master key, and certifies that `name`. The user confirms they match, by eye or by scanning a QR code that carries it.
-  - The issuing device stores the certificate's `body` and `signature`; the new device checks that `body` holds its account, ID, keys and `name`, signs `proof` and stores the complete certificate.
-  - A `browser` is linked only this way.
-  - With the certificate, the issuing device stores a link object for the new device: the [roster](#roster) revisions it starts from.
+A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it already has. It then gets a certificate: as the account's first device, from a linked device, or with the recovery key.
+
+A new `client` device first asks its user whether it is the account's first device, before it learns from the server whether the account has a master key:
+
+| The user says | The server reports | The device |
+|---|---|---|
+| First | No master key | Creates the master key, the recovery key, the account record and the master backup, issues its own certificate with the master key, then deletes the master private key |
+| First | A master key | MUST NOT link: warns its user that someone else may have created the account's master key, and stops |
+| Not first | No master key | MUST NOT create a master key: warns its user that the server reports none, and stops |
+| Not first | A master key | Links from a linked device or with the recovery key |
+
+- **From a linked device:** the new device shows a [link code](#link-code), and its user enters it on a `client` device of the account, which issues the certificate. The new device takes a certificate and the master key only through a link code or the recovery key, never from a device the server names.
+  - A `browser` is linked only this way: it shows the code, and its user enters it on a linked `client` device.
+  - With the certificate, the issuing device sends a link object for the new device: the [roster](#roster) revisions it starts from.
 - **With the recovery key**, entered only in the CLI: the new device unlocks the master key and issues its own certificate with it. It MUST reject a [master backup](#account) that does not open in PSK mode with that recovery key, and pins `master` only from one that does. It shows its user the account's devices, revoked or not, and in this order:
   1. revokes with the master key each device its user names as stolen ([Revocation](#revocation));
   2. takes its [anchors](#anchors);
   3. revokes with its own key each device its user names as lost or wiped;
   4. deletes the master private key.
-- The first device creates the master key, the recovery key, the account record and the master backup, issues its own certificate with the master key, then deletes the master private key.
 
 ```cddl
 link = signed<link-body>         ; label "skald link", by `issuer`
@@ -127,6 +135,59 @@ link-body = {
 
 - The new device MUST reject a link object unless `device` is itself and the signature verifies with the certificate of `issuer`, a valid `client` device of its account. Each anchor is a revision it starts from: [Roster](#roster).
 - A device linked with the recovery key has no link object: it starts from [anchors](#anchors).
+
+### Link code
+A one-time code the new device shows keys a run of CPace [[draft-irtf-cfrg-cpace-21](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/21/)], a balanced PAKE, between the new device and the issuing device. The server relays the run and never sees the code. The issuing device takes the new device's keys only from the run, and the new device takes its certificate and the master key only from it.
+
+- **Code:** 6 characters of the base32 alphabet [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §6], from a cryptographically secure generator: 30 bits. Shown in two groups of three joined by `-`, e.g. `K7Q-M2X`; entry ignores case and `-`.
+- **Attempts:** a run is one attempt. The new device keeps the count: it runs a code at most 3 times, each time with a fresh `session` and scalar, and spends an attempt when it takes a reply. After the third failed run the code ends: the new device shows a fresh code by itself and tells its user that the earlier code failed 3 times, and that someone else may have tried if its user did not.
+- **Expiry:** a code ends 5 minutes after the new device shows it, and once a run with it succeeds. A run still open then fails. After an expiry the new device shows a fresh code only when its user asks.
+- The issuing device MUST reject an entry that is not 6 characters of the alphabet, ignoring case and `-`, without a run. It runs each entry once.
+
+```cddl
+link-message = link-hello / link-reply / link-request / link-grant / link-abort
+
+link-hello = [1, session, share]     ; new device → issuing device
+link-reply = [2, session, share]     ; issuing device → new device
+link-request = [3, session, sealed]  ; new device → issuing device: link-request-body
+link-grant = [4, session, sealed]    ; issuing device → new device: link-grant-body
+link-abort = [5, session]            ; either way: the run failed
+
+session = bstr .size 16    ; random, from the new device: the run's CPace sid
+share = bstr .size 32      ; CPace Ya or Yb: an encoded ristretto255 element
+sealed = bstr              ; AES-128-GCM ciphertext followed by its 16-byte tag
+
+link-request-body = [
+  kind: device-kind,
+  signing: bstr .size 32,
+  hpke: bstr .size 32,
+  name: tstr .size (1..64),
+]
+
+link-grant-body = [
+  master: bstr .size 32,           ; the master key the issuing device pinned
+  cert: bstr .cbor cert-body,      ; the new device's certificate body
+  signature: bstr .size 64,        ; by the issuing device, over ["skald cert", cert]
+  link: link,
+]
+```
+
+- **Relay:** each message is a CBOR item carried as [Encoding](README.md#encoding) says. The new device sends a hello for each run; a `client` device of the account takes the account's latest hello, and the server relays the run's later messages by `session`. Paths: [api/openapi.json](../../api/openapi.json).
+- **CPace:** cipher suite CPACE-RISTR255-SHA512, initiator-responder: the new device is A, the issuing device B. PRS is the code's 6 characters in uppercase ASCII, without `-`; CI the encoded `["skald link code", account]`, the account ID as a byte string; sid `session`; ADa and ADb empty. A side MUST fail the run on a share that does not decode or a K that is the identity, and MUST NOT reuse a scalar.
+- **Keys:** `HKDF-SHA256(salt = "", IKM = ISK, info = label, L = 16)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)] over the run's ISK, with the label `skald link request` for the request and `skald link grant` for the grant. Each key seals one message with AEAD_AES_128_GCM [[RFC 5116](https://www.rfc-editor.org/rfc/rfc5116)], a nonce of 12 zero bytes and empty associated data.
+
+The new device:
+1. sends a hello and takes the first reply with its `session`;
+2. sends the request: its kind, keys and `name`;
+3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check;
+4. then pins `master`, signs `proof` and stores the complete certificate on the server.
+
+The issuing device:
+1. takes the account's latest hello and sends a reply;
+2. MUST fail the run unless the request opens, and takes the new device's kind, keys and `name` only from it, never from the server;
+3. shows its user that `name` and kind, and once its user confirms, issues the certificate for them and sends the grant.
+
+- A side whose run fails sends a `link-abort` and tells its user. A `link-abort` is not authenticated: it only ends the run, and the new device spent the attempt when it took the reply.
 
 ### Anchors
 Each `client` device keeps on the server an anchors object: the roster revisions a device linked with the recovery key starts from.
@@ -499,9 +560,11 @@ A reader MUST drop an entry unless:
 - A stolen device can revoke the account's other devices and certify new ones, but not under an existing device's ID, and its revocations count even after another device revokes it. The recovery key restores the account: a device linked with it revokes the stolen one with the master key. That one object voids every revocation the stolen device and the devices it certified signed, and lists in `also` the devices that stay revoked, so the server cannot restore them by withholding a second object.
 - The master key cannot be rotated. A leaked recovery key, current or old, with any copy of a master backup it opens, gives away the master key for good: its holder can certify and revoke devices and sign an account record with its own `recovery`, so member devices wrap history keys to it. A new recovery key does not lock it out: the holder signs a record with a higher `revision` again. Clients warn when `recovery` changes.
 - Only a holder of the recovery key seals a master backup that opens in PSK mode, so the server cannot give a device linked with the recovery key another master key. It can withhold the backup: the device then cannot link with the recovery key.
-- A device learns that it is its account's first only from the server, which reports no master key. Whoever signs in before the user's first device, such as the IdP or a thief of the user's sign-in, creates the master key and the recovery key on its own device and holds the account's root of trust for good. The user's first device then finds a master key and waits for a certificate. A new device takes one from any valid `client` device of its account, and its user confirms nothing on it, so the holder can certify the user's devices too; they then trust the holder's devices as their account's.
-- Members pin an account's master key from the roster, which takes it from the account's device that created the space or accepted the invite. So members trust the holder's devices as the account's, and get no key change warning: no other master key came first. Only the link fingerprint compares master keys, and only between devices of one account. The `ssh` signature is optional, so its absence shows nothing.
-- A server that tells a new device of an existing account that the account has no master key makes it create a second one. The account splits into two sets of devices that do not trust each other: devices and members that pinned the first master key reject certificates chained to the second, and the new device rejects those chained to the first. The server gains no signing power: the new device deletes the second master private key, and only its user sees the second recovery key. The account's other devices do not count the new device as theirs, so no device set change warns of it.
+- A link code holds 30 bits, and a CPace run gives a server or network attacker one online guess at it and no offline test. The new device runs a code at most 3 times, whoever answers: an attacker that answers its hellos gives it a certificate, a master key and a link object of its choice with a chance of 3 in 2^30, about 3 in a billion. After the third failed run the device shows a fresh code by itself and warns its user, so an attacker can go on guessing, 3 times per code, while the device waits.
+- The new device does not count the issuing device's runs: an attacker that answers an entry with a hello of its own gets its keys certified with a chance of 1 in 2^30 per entry. The issuing device runs each entry once and tells its user when a run fails.
+- A device learns whether its account has a master key only from the server. Whoever signs in before the user's first device, such as the IdP or a thief of the user's sign-in, creates the master key and holds the account's root of trust for good: the master key cannot be rotated. The user's first device, whose user says it is the first, warns and stops. The holder links none of the user's devices: that takes a code the user enters on the holder's device.
+- Members pin an account's master key from the roster, which takes it from the account's device that created the space or accepted the invite. So members of a space the holder created or joined trust the holder's devices as the account's, and get no key change warning: no other master key came first. The `ssh` signature is optional, so its absence shows nothing.
+- A server that reports no master key for an existing account stops a new device whose user says it is not the first. If its user wrongly says it is the first, the device creates a second master key, and the account splits into two sets of devices that do not trust each other: devices and members that pinned the first master key reject certificates chained to the second, and the device rejects those chained to the first. The server gains no signing power: the device deletes the second master private key, and only its user sees the second recovery key. No device set change warns of the device: the account's other devices do not count it as theirs.
 - A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
 - A channel member whose `history` is false holds its join epoch's key, which opens the links to the epochs before it: only the server withholding those links keeps it from earlier history.

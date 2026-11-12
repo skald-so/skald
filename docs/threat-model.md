@@ -41,15 +41,16 @@ Also whoever takes over the server or its database.
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
 - Drop an ephemeral agent's message unnoticed: content without `counter` has no gap detection ([Gap detection](protocol/delivery.md#gap-detection)).
 - Serve a linked browser a modified web app: the browser trusts the build it is served ([Trade-offs](#trade-offs)).
-- Tell a new device of an existing account that the account has no master key, so the device creates a second one and the account splits into two sets of devices that do not trust each other ([membership.md](protocol/membership.md#security-considerations)).
+- Guess a link code online: 3 guesses per code shown on a new device, and one per entry on an issuing device, each with a chance of 1 in 2^30 ([membership.md](protocol/membership.md#security-considerations)).
+- Report no master key for an existing account: a new device whose user wrongly says it is the first then creates a second one, and the account splits into two sets of devices that do not trust each other ([membership.md](protocol/membership.md#security-considerations)).
 
 **Defenses:**
 - Content, tasks, presence values and history are encrypted end to end ([Envelope](protocol/README.md#envelope), [Queue key](protocol/queues.md#queue-key), [Presence](protocol/agents.md#presence), [History](protocol/membership.md#history)).
 - A server signature alone never admits a device: a client trusts a device only through its certificate chain to the account's master key ([Device checks](protocol/membership.md#device-checks)).
 - Certificates, revocations, revisions, invites and grants are signed by devices or a master key, so the server cannot forge them ([Signed objects](protocol/membership.md#signed-objects), [Service grant](protocol/README.md#service-grant)).
-- The link fingerprint covers the master key, so the server cannot give a device linked from a linked device another one ([Linking a device](protocol/membership.md#linking-a-device)).
+- A new device takes its certificate, the master key and its link object only from a CPace run keyed by the link code its user enters on the issuing device, and that device takes the new device's keys only from the run. Short of a lucky guess at the code, the server cannot join the run, so it cannot certify a new device itself, give it another master key or have its own keys certified ([Link code](protocol/membership.md#link-code)).
 - The master backup is sealed in HPKE PSK mode with a key derived from the recovery key, so the server cannot give a device linked with the recovery key another master key ([Account](protocol/membership.md#account)).
-- A second master key gives the server no signing power: the device that creates it deletes its private key, and devices and members that pinned the first reject certificates chained to the second ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
+- A new `client` device whose user says it is not the account's first creates no master key: told there is none, it warns its user and stops ([Linking a device](protocol/membership.md#linking-a-device)). A second master key gives the server no signing power, and devices and members that pinned the first reject certificates chained to the second ([Device checks](protocol/membership.md#device-checks)).
 - Two valid revisions with the same number show a forked roster; the client keeps the one it accepted and warns its user ([Roster](protocol/membership.md#roster)).
 - A device the server joins to a channel is not admitted: members commit its Remove and send nothing until it is gone, and its epoch is not clean, so member devices upload no link, wrap or entry of it ([Admitted devices](protocol/membership.md#admitted-devices), [Clean epochs](protocol/membership.md#clean-epochs)).
 - A browser writes history only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose that key ([Wraps](protocol/membership.md#wraps)).
@@ -67,6 +68,7 @@ Watches or alters traffic between devices and the server, or the channel an invi
 **Can:**
 - See the IP addresses, times and sizes of each device's connections.
 - Behind a TLS-intercepting proxy the device trusts, see what the server sees of the device's traffic, and take the device's credentials to the server. With those, it gets an `at-most-once` task the device started run again, as a restart does ([queues.md](protocol/queues.md#security-considerations)).
+- Behind such a proxy, guess a link code online as the server does ([The server or its operator](#the-server-or-its-operator)).
 - Read an invite link on its way and accept the invite first: holding the link's secret is what proves the newcomer ([Invite](protocol/membership.md#invite)).
 - Alter an invite link on its way: the newcomer trusts the roster revision the link names ([membership.md](protocol/membership.md#security-considerations)).
 
@@ -79,7 +81,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 
 **Can:**
 - Sign in as a user and do what the server allows without the user's keys: register devices no linked device certifies, see the web UI's non-secret sections, and revoke the user's invites, sessions and tokens.
-- Sign in before the user's first device, as can whoever holds the user's sign-in: its device creates the account's master key and holds the account's root of trust for good. It can certify the user's devices, which then trust its devices as `own` ([Trust levels](protocol/membership.md#trust-levels)), and members trust its devices as the account's. No client warns the user or members ([membership.md](protocol/membership.md#security-considerations)).
+- Sign in before the user's first device, as can whoever holds the user's sign-in: its device creates the account's master key and holds the account's root of trust for good, so the account stays unusable for its user. Members of a space it creates or joins as the account trust its devices as the account's, with no warning ([membership.md](protocol/membership.md#security-considerations)).
 - GitHub: list an SSH key of its choice as the user's, so a device key signed with it passes the SSH signature check, or a genuine one fails it as a key change ([Device certificate](protocol/membership.md#device-certificate)).
 - GitHub: read the CI secrets it stores: [A leaked CI secret](#a-leaked-ci-secret).
 - GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([architecture.md, "Components"](dev/architecture.md#components)).
@@ -87,7 +89,8 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 **Defenses:**
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
-- The user's first device finds the attacker's master key and waits for a certificate instead of creating one; unless the attacker certifies it, it links to nothing ([Linking a device](protocol/membership.md#linking-a-device)).
+- The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
+- The attacker links none of the user's devices: a new device takes a certificate only through the link code its user enters on the issuing device ([Link code](protocol/membership.md#link-code)).
 - The web UI's non-secret sections list the account's devices and sign-in sessions, the attacker's included ([roadmap.md, "MVP"](dev/roadmap.md#mvp)).
 - Sign-in methods are linked explicitly; accounts are never merged by email.
 - A task from a comment runs at the `service` trust level, in its restricted mode ([Trust levels](protocol/membership.md#trust-levels), [Policy](protocol/membership.md#policy)).
