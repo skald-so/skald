@@ -1,0 +1,23 @@
+[package]
+name = "skald-github-stand-in"
+description = "A local stand-in for GitHub's OAuth and user endpoints, for tests."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "skald-github-stand-in"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.9"
+base64 = "0.23"
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_urlencoded = "0.7"
+tokio = { version = "1.54", features = ["macros", "net", "rt", "sync"] }
+
+[dev-dependencies]
+ureq = { version = "3.5", default-features = false }

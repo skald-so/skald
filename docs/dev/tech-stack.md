@@ -13,11 +13,12 @@ Versions as of 2026-11-09.
 | MLS | mls-rs 0.57 with mls-rs-crypto-rustcrypto 0.23: [choice](mls-prototypes.md#choice) |
 | HPKE, signatures | hpke 0.15, ed25519-dalek 3, x25519-dalek 3 |
 | PAKE | CPace in `crypto` on curve25519-dalek 5 and sha2 0.11, checked against its draft's test vectors: [link code](../protocol/membership.md#link-code) |
-| Hashes, randomness | sha2 0.11; getrandom 0.4 for the random bits of UUIDv7 IDs and for signing-key seeds; zeroize 1 clears the seeds |
+| Hashes, randomness | sha2 0.11; getrandom 0.4 for the random bits of UUIDv7 IDs, for signing-key seeds, for session tokens and for sign-in `state`; zeroize 1 clears the seeds |
 | Keys | keyring 4, fallback: a 0600 file |
 | Local state | SQLite |
 | MCP | rmcp 3.9, stdio |
-| Authentication | openidconnect 4, GitHub OAuth, device flow (RFC 8628) |
+| Authentication | GitHub OAuth over the server's HTTP client; OIDC with openidconnect 4; device flow (RFC 8628) |
+| Server HTTP client | ureq 3 with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8), blocking, in tokio's blocking threads |
 | API | HTTPS + JSON, OpenAPI spec |
 | Envelopes | Deterministic CBOR (RFC 8949, §4.2) with a CDDL schema, over WebSocket, HTTPS and SSE: [protocol spec](../protocol/README.md#encoding). ciborium-ll 0.2 reads and writes CBOR heads; `proto` checks the spec's encoding rules on decoding |
 | Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |

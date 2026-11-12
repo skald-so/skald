@@ -1,12 +1,19 @@
 import { defineConfig } from "orval";
 
-// The API client and its MSW mocks, generated from the spec into src/api/. The WebSocket opening
-// request is left out: a browser opens a WebSocket with its WebSocket API, not with fetch.
+// The API client and its MSW mocks, generated from the spec into src/api/. Left out are what a
+// browser opens itself, not with fetch: the WebSocket, and the GitHub sign-in it navigates to.
 export default defineConfig({
   skald: {
     input: {
       target: "../api/openapi.json",
-      filters: { mode: "exclude", operationIds: ["openWebSocket"] },
+      filters: {
+        mode: "exclude",
+        operationIds: [
+          "openWebSocket",
+          "startGitHubSignIn",
+          "finishGitHubSignIn",
+        ],
+      },
     },
     output: {
       target: "src/api/skald.ts",
