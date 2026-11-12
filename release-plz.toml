@@ -12,8 +12,9 @@ semver_check = false
 # One CHANGELOG.md, the root package's.
 changelog_update = false
 
-# The root package, skald-repository, has every file outside the crates; it also lists the PRs that
-# change only the crates. Every crate of the workspace goes into changelog_include.
+# The root package, skald-repository, has every file outside crates/ and prototypes/; it also lists
+# the PRs that change only the crates. Every crate of the workspace goes into changelog_include. A PR
+# that changes only prototypes/ belongs to no package: it bumps nothing and is not listed.
 [[package]]
 name = "skald-repository"
 changelog_update = true

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests the workflow that keeps the Release PR open, named in script/lib/release.sh: it runs only on
-# pushes to dev, one run at a time per branch, so the Release PR ends up on the latest dev; release-plz
-# runs `release-pr` only, so it tags and publishes nothing, with a token of the GitHub App narrowed
-# to contents and pull requests, so the PR checks run on the Release PR; only the release-plz jobs use
+# pushes to dev, one run at a time per branch, so the Release PR ends up on the latest dev; no step up
+# to release-plz has a condition; release-plz runs `release-pr` only, so it tags and publishes
+# nothing, with a token of the GitHub App narrowed to contents and pull requests, so the PR checks
+# run on the Release PR; only the release-plz jobs use
 # the App's environment and secrets, in this workflow and in all others; every job's own token reads
 # contents at most and no job requests an OIDC token; actions are pinned to commits, and tools are
 # installed by taiki-e/install-action at exact versions it checks against checksums, release-plz at
@@ -59,8 +60,11 @@ check() {
 check "it runs on pushes to dev and on nothing else" '.on == {"push": {"branches": ["dev"]}}'
 check "one job runs release-plz release-pr" 'opener | type == "object"'
 check "the job that opens the Release PR runs on every push to dev, in skald-so/skald" \
-  'opener | has("if") | not or (.if | test(
-    "^(\\$\\{\\{ *)?github\\.repository *== *'skald-so/skald'( *\\}\\})?$"))'
+  'opener | (has("if") | not) or (.if | test(
+    "^(\\$\\{\\{ *)?github\\.repository *== *'\''skald-so/skald'\''( *\\}\\})?$"))'
+check "no step up to release-plz release-pr has a condition, so each runs on every push" \
+  'opener.steps | .[:index_of(.run // "" | test("release-plz\\s+release-pr")) + 1]
+    | all(has("if") | not)'
 check "runs wait for each other, so the Release PR ends up on the latest dev: a concurrency group
     that names no commit or run" \
   '(opener.concurrency // .concurrency) as $c | $c != null

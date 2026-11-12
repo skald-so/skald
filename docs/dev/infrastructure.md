@@ -39,9 +39,9 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
-- **`cargo-deny`:** dependency licenses and vulnerabilities.
-- **Tooling:** tests of the scripts in `script/`, of the edge image workflow and of the Release PR workflow (`script/release-plz-workflow-test`); the Release PR on fixture repositories, with release-plz (`script/release-plz-test`); Renovate config validation.
-- **Release config:** `script/release-plz-config-test`, in the Rust part: `release-plz.toml` lists every crate of the workspace.
+- **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
+- **Tooling:** tests of the scripts in `script/`, of the edge image workflow and of the Release PR workflow (`script/release-plz-workflow-test`); Renovate config validation.
+- **Release PR:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
   - The Release PR workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
@@ -55,10 +55,10 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (build, installers, publishing).
 - **Release PR:** on every push to `dev`, `.github/workflows/release-plz.yml` runs release-plz with `release-plz.toml`; it opens the Release PR or updates the open one. Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
 - **One version for everything:** client, server, plugin; for the crates, `[workspace.package]` in `Cargo.toml`. Before 1.0: `0.x` versions.
-- **Bumps in `0.x`:** a PR whose title has `!` bumps the minor version; any other PR, of any type, the patch version.
+- **Bumps in `0.x`:** a PR whose title has `!` bumps the minor version; any other PR, of any type, the patch version. A PR that changes only `prototypes/` bumps nothing: the prototypes never ship, and release-plz counts only the files of the workspace's packages.
 - **Last release:** the last `vX.Y.Z` tag, not crates.io; beta tags do not count.
-- **CHANGELOG:** `CHANGELOG.md` in the root lists the title of every PR merged since the last release, whatever it changes.
-- **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far.
+- **CHANGELOG:** `CHANGELOG.md` in the root lists the title of every PR merged since the last release, except those that change only `prototypes/`.
+- **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far. The exception for `prototypes/` starts with `release-plz.toml`: release-plz counts every commit before it, where the root package is missing.
 - **The protocol** has its own version number: [protocol spec](../protocol/README.md#protocol-version).
 - **Cadence:** we release when ready, aiming for every 1–2 weeks. Fixes ship at any time.
 - **Betas:** `vX.Y.Z-beta.N`, on npm with the `next` tag.
@@ -79,7 +79,7 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 ## Trust in builds
 - Builds get **GitHub Artifact Attestations** (Sigstore); verify with `gh attestation verify`.
 - Images are signed with cosign, without stored keys.
-- Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools their jobs download are installed at exact versions, checked against checksums.
+- Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums.
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.
 - The installer verifies the checksum.
 - The repository has `SECURITY.md`; private vulnerability reporting is enabled on GitHub.

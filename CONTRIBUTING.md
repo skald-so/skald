@@ -18,6 +18,8 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - Google Chrome: the web tests run it headless ([web/README.md](web/README.md)).
 
 ## Running locally
+The root `Cargo.toml` is a package too, for release-plz: in the root, `cargo build`, `cargo test` and `cargo clippy` cover the crates only with `--workspace` or `-p <crate>`.
+
 PostgreSQL 19 in a container:
 ```sh
 docker run --detach --name skald-postgres --env POSTGRES_PASSWORD=skald \

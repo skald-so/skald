@@ -8,8 +8,9 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 # The repository as a package, for release-plz: it counts a PR toward a package only when the PR
-# changes the package's files, and this package has every file outside the crates. Its CHANGELOG.md
-# is the one of the release: release-plz.toml.
+# changes the package's files. This package has every file outside crates/ and prototypes/: cargo
+# leaves out each directory with a Cargo.toml of its own, and the prototypes are workspaces of their
+# own. Its CHANGELOG.md is the one of the release: release-plz.toml.
 [package]
 name = "skald-repository"
 version.workspace = true
