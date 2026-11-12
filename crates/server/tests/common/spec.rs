@@ -19,18 +19,31 @@ pub fn spec() -> Value {
     serde_json::from_slice(&spec_bytes()).expect("api/openapi.json is JSON")
 }
 
-/// Returns how `response` to `GET <path>` deviates from `spec`: a status or a content type
-/// the spec does not list for the operation, a missing or invalid response header the spec lists,
-/// a body that does not match the response schema, or a body where the spec lists no content.
+/// Returns how `response` to `GET <path>` deviates from `spec`, as [`operation_violations`] does.
 pub fn spec_violations(spec: &Value, path: &str, response: &Response) -> Vec<String> {
+    operation_violations(spec, "get", path, response)
+}
+
+/// Returns how `response` to `<method> <path>`, `method` in lowercase, deviates from `spec`: a
+/// status or a content type the spec does not list for the operation, a missing or invalid response
+/// header the spec lists, a body that does not match the response schema, or a body where the spec
+/// lists no content.
+pub fn operation_violations(
+    spec: &Value,
+    method: &str,
+    path: &str,
+    response: &Response,
+) -> Vec<String> {
     let documented = format!(
-        "/paths/{}/get/responses/{}",
+        "/paths/{}/{method}/responses/{}",
         pointer_token(path),
         response.status
     );
+    // How the messages name the operation, e.g. `GET /session`.
+    let path = &format!("{} {path}", method.to_ascii_uppercase());
     if spec.pointer(&documented).is_none() {
         return vec![format!(
-            "GET {path}: status {} is not in the spec",
+            "{path}: status {} is not in the spec",
             response.status
         )];
     }
@@ -38,7 +51,7 @@ pub fn spec_violations(spec: &Value, path: &str, response: &Response) -> Vec<Str
     if spec.pointer(&format!("{documented}/content")).is_none() {
         if !response.body.is_empty() || !response.content_type.is_empty() {
             violations.push(format!(
-                "GET {path} {}: a body where the spec lists no content",
+                "{path} {}: a body where the spec lists no content",
                 response.status
             ));
         }
@@ -48,7 +61,7 @@ pub fn spec_violations(spec: &Value, path: &str, response: &Response) -> Vec<Str
     let schema = format!("{documented}/content/{}/schema", pointer_token(media_type));
     if spec.pointer(&schema).is_none() {
         violations.push(format!(
-            "GET {path} {}: content type {media_type:?} is not in the spec",
+            "{path} {}: content type {media_type:?} is not in the spec",
             response.status
         ));
         return violations;
@@ -57,7 +70,7 @@ pub fn spec_violations(spec: &Value, path: &str, response: &Response) -> Vec<Str
         match serde_json::from_slice(&response.body) {
             Ok(body) => body,
             Err(err) => {
-                violations.push(format!("GET {path}: body is not JSON: {err}"));
+                violations.push(format!("{path}: body is not JSON: {err}"));
                 return violations;
             }
         }
@@ -67,12 +80,13 @@ pub fn spec_violations(spec: &Value, path: &str, response: &Response) -> Vec<Str
     violations.extend(
         schema_violations(spec, &schema, &body)
             .into_iter()
-            .map(|err| format!("GET {path}: {err}")),
+            .map(|err| format!("{path}: {err}")),
     );
     violations
 }
 
-/// The headers of `response` that break the `headers` of the documented response at `documented`.
+/// The headers of `response` that break the `headers` of the documented response at `documented`;
+/// `path` names the operation, e.g. `GET /session`.
 fn header_violations(
     spec: &Value,
     path: &str,
@@ -96,7 +110,7 @@ fn header_violations(
         let header = spec.pointer(&at).expect("the $ref resolves");
         let Some(value) = response.header(&name.to_ascii_lowercase()) else {
             if header["required"] == true {
-                violations.push(format!("GET {path} {}: no {name} header", response.status));
+                violations.push(format!("{path} {}: no {name} header", response.status));
             }
             continue;
         };
@@ -111,7 +125,7 @@ fn header_violations(
         violations.extend(
             schema_violations(spec, &format!("{at}/schema"), &instance)
                 .into_iter()
-                .map(|err| format!("GET {path} {}: header {name}: {err}", response.status)),
+                .map(|err| format!("{path} {}: header {name}: {err}", response.status)),
         );
     }
     violations

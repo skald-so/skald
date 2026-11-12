@@ -8,12 +8,10 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use common::browser::{Browser, Cookie, Page};
 use common::sign_in::{Account, CALLBACK, CLIENT_ID, CLIENT_SECRET, SESSION, START, SignIn};
 use common::spec::{spec, spec_violations};
-use common::{Response, SERVER, Server, TestDb, get_url};
+use common::{Response, SERVER, Server, TestDb, get_url, stored_forms};
 use skald_github_stand_in::{Endpoint, Fault, User};
 
 /// The host of the server's public address in the browser tests.
@@ -722,25 +720,6 @@ fn session_cookies(stand: &SignIn, page: &Page, user: &User) -> Vec<Cookie> {
     assert!(!set.is_empty(), "the callback sets the session's cookie");
     assert_eq!(stand.account(page).github_login, user.login);
     set
-}
-
-/// The forms in which a database could hold `secret` in the clear: as it is, in lowercase, and the
-/// bytes it encodes, if it is Base64, in the hex of PostgreSQL's text form of `bytea`.
-fn stored_forms(secret: &str) -> Vec<String> {
-    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let mut forms = vec![
-        secret.to_owned(),
-        secret.to_lowercase(),
-        hex(secret.as_bytes()),
-    ];
-    for engine in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
-        if let Ok(bytes) = engine.decode(secret)
-            && bytes.len() >= 8
-        {
-            forms.push(hex(&bytes));
-        }
-    }
-    forms
 }
 
 /// The value of the query parameter `name` of `url`.
