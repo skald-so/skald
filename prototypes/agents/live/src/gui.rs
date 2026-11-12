@@ -88,10 +88,15 @@ impl Surface {
         Ok(format!("{}: {version}", self.name()))
     }
 
-    /// The Codex CLI that a Codex surface bundles: `bin/codex` in the directory of its
-    /// `codex-package.json`.
+    /// The Codex CLI that a Codex surface bundles, in the directory of its `codex-package.json`:
+    /// `bin/codex` in the app, `codex` in the extension.
     pub fn codex(self, installed: &Installed) -> io::Result<PathBuf> {
-        Ok(self.codex_dir(installed)?.join("bin/codex"))
+        let dir = self.codex_dir(installed)?;
+        ["bin/codex", "codex"]
+            .map(|name| dir.join(name))
+            .into_iter()
+            .find(|path| path.is_file())
+            .ok_or_else(|| invalid(format!("{} has no bin/codex or codex", dir.display())))
     }
 
     /// The directory of the Codex CLI that a Codex surface bundles.
@@ -322,12 +327,15 @@ impl GuiPath {
     }
 }
 
-/// The binaries a project's config runs, next to `live-check`.
+/// The binaries a project's config runs, next to `live-check`, and what else it needs from the
+/// user's config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binaries {
     pub inbox: PathBuf,
     pub channel: PathBuf,
     pub hook: PathBuf,
+    /// The MCP servers of the user's Codex config, which a Codex project turns off.
+    pub user_mcp_servers: Vec<String>,
 }
 
 impl Binaries {
@@ -435,6 +443,17 @@ pub fn write_config(
                 // The message comes from outside the session.
                 GuiPath::Queue => {}
                 GuiPath::Channel => unreachable!("checked above"),
+            }
+            // The session starts none of the user's MCP servers and plugins: one of them asked
+            // macOS for automation access in Codex for VS Code.
+            config.push_str("\n[features]\nplugins = false\n");
+            for name in &binaries.user_mcp_servers {
+                if name != SERVER {
+                    config.push_str(&format!(
+                        "\n[mcp_servers.{}]\nenabled = false\n",
+                        json!(name)
+                    ));
+                }
             }
             fs::create_dir_all(project.join(".codex"))?;
             fs::write(project.join(".codex/config.toml"), config)
@@ -784,6 +803,11 @@ mod tests {
             inbox: PathBuf::from("/bin/agent-inbox"),
             channel: PathBuf::from("/bin/agent-channel"),
             hook: PathBuf::from("/bin/agent-hook"),
+            user_mcp_servers: vec![
+                "alpha".to_owned(),
+                "skald".to_owned(),
+                "beta-two".to_owned(),
+            ],
         }
     }
 
@@ -822,17 +846,20 @@ mod tests {
             }))
         };
         let codex_model = "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"low\"\n";
+        // The user's MCP servers and plugins turned off, but for a server named as the check's.
+        let codex_off = "\n[features]\nplugins = false\n\n[mcp_servers.\"alpha\"]\nenabled = false\n\n\
+                         [mcp_servers.\"beta-two\"]\nenabled = false\n";
         let codex_inbox = format!(
             "{codex_model}\n[mcp_servers.skald]\ncommand = \"/bin/agent-inbox\"\n\
              args = [\"/work/source\"]\n\
              # Without it, Codex asks a person to approve each call.\n\
-             default_tools_approval_mode = \"approve\"\n"
+             default_tools_approval_mode = \"approve\"\n{codex_off}"
         );
         // A dotted key at the top level, before any table.
         let codex_hook = |event: &str| {
             format!(
                 "{codex_model}hooks.{event}=[{{hooks=[{{type=\"command\",\
-                 command=\"'/bin/agent-hook' '--codex' '/work/source'\"}}]}}]\n"
+                 command=\"'/bin/agent-hook' '--codex' '/work/source'\"}}]}}]\n{codex_off}"
             )
         };
         for surface in SURFACES {
@@ -847,7 +874,9 @@ mod tests {
                     (Agent::Codex, GuiPath::Hook(hook)) => {
                         vec![(".codex/config.toml", codex_hook(hook.event()))]
                     }
-                    (Agent::Codex, _) => vec![(".codex/config.toml", codex_model.to_owned())],
+                    (Agent::Codex, _) => {
+                        vec![(".codex/config.toml", format!("{codex_model}{codex_off}"))]
+                    }
                     (Agent::Claude, GuiPath::Inbox) => vec![
                         (".mcp.json", server("/bin/agent-inbox")),
                         (
@@ -1116,17 +1145,36 @@ mod tests {
     #[test]
     fn finds_the_codex_cli_each_codex_surface_bundles() {
         let (_root, installed) = recorded();
+        let app = installed
+            .applications
+            .join("ChatGPT.app/Contents/Resources/codex-cli");
+        let extension = installed
+            .home
+            .join(".vscode/extensions/openai.chatgpt-26.1021.22027-darwin-arm64/bin/macos-aarch64");
+        for surface in [Surface::CodexDesktop, Surface::CodexVsCode] {
+            let error = surface.codex(&installed).unwrap_err();
+            assert!(
+                error.to_string().contains("has no bin/codex or codex"),
+                "{error}"
+            );
+        }
+        // As the surfaces lay them out: the app's under `bin`, the extension's next to its package.
+        fs::create_dir_all(app.join("bin")).unwrap();
+        fs::write(app.join("bin/codex"), "").unwrap();
+        fs::write(extension.join("codex"), "").unwrap();
         assert_eq!(
             Surface::CodexDesktop.codex(&installed).unwrap(),
-            installed
-                .applications
-                .join("ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+            app.join("bin/codex")
         );
         assert_eq!(
             Surface::CodexVsCode.codex(&installed).unwrap(),
-            installed.home.join(
-                ".vscode/extensions/openai.chatgpt-26.1021.22027-darwin-arm64/bin/macos-aarch64/bin/codex"
-            )
+            extension.join("codex")
+        );
+        fs::create_dir_all(extension.join("bin")).unwrap();
+        fs::write(extension.join("bin/codex"), "").unwrap();
+        assert_eq!(
+            Surface::CodexVsCode.codex(&installed).unwrap(),
+            extension.join("bin/codex")
         );
         for surface in [Surface::ClaudeDesktop, Surface::ClaudeVsCode] {
             let error = surface.codex(&installed).unwrap_err();

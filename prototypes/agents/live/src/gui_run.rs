@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use agent_app_server::{Client, Stdio};
 use agent_live::gui::{self, Binaries, GuiPath, Installed, Surface};
 use agent_live::hook::HOOK_BIN;
-use agent_live::limits::quiet_app_server;
+use agent_live::limits::{mcp_servers, quiet_app_server};
 use agent_live::{Agent, INBOX_BIN, binary, channel::CHANNEL_BIN, token};
 use agent_source::Source;
 use serde_json::json;
@@ -31,6 +31,7 @@ pub fn prepare(path: GuiPath, surface: Surface, busy: bool) -> Result<bool> {
         inbox: binary(&exe, INBOX_BIN)?,
         channel: binary(&exe, CHANNEL_BIN)?,
         hook: binary(&exe, HOOK_BIN)?,
+        user_mcp_servers: mcp_servers(&user_codex_config()),
     };
     let work = tempfile::Builder::new()
         .prefix("skald-live-")
