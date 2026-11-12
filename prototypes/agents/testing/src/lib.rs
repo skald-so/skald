@@ -3,7 +3,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Output;
+use std::process::{Child, ExitStatus, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -147,6 +147,48 @@ pub fn wait_handed_over(source: &Source, msg_id: &str) {
             source.state(msg_id).unwrap()
         );
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits for `child` to exit and returns its status. It has 10 s from the start, and again from
+/// each new step that `step` names, such as a line a stand-in received. Past that, it kills
+/// `child` and returns the last step.
+pub fn wait_exit(child: &mut Child, step: impl Fn() -> String) -> Result<ExitStatus, String> {
+    let mut last = step();
+    let mut deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Ok(status);
+        }
+        let now = step();
+        if now != last {
+            last = now;
+            deadline = Instant::now() + Duration::from_secs(10);
+        } else if Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            return Err(last);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// How far the stand-in of [`Exchange::stand_in`] in `dir` got, as a step of [`wait_exit`]: the
+/// last line it received, then its end, once its `on_line` or `at_end` wrote `dir/ended`.
+pub fn stand_in_step(dir: &Path) -> String {
+    if dir.join("ended").exists() {
+        return "the stand-in ended".to_owned();
+    }
+    let lines = fs::read_dir(dir.join("received"))
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_string_lossy().parse::<usize>().is_ok()
+        })
+        .count();
+    match lines {
+        0 => "the start".to_owned(),
+        n => format!("the stand-in received line {}", n - 1),
     }
 }
 

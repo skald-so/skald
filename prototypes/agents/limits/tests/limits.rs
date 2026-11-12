@@ -15,10 +15,10 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
 use agent_limits::{Limit, claude_status_line};
-use agent_testing::{Exchange, assert_failed, stderr, write_executable};
+use agent_testing::{Exchange, assert_failed, stand_in_step, stderr, wait_exit, write_executable};
 use serde_json::{Value, json};
 
 fn output_file(name: &str) -> PathBuf {
@@ -32,6 +32,11 @@ fn recorded(name: &str) -> String {
 /// Runs `agent-limits <args>` with `stdin` and only `PATH`: `bin`, then the system's for the
 /// stand-ins' shell.
 fn agent_limits(args: &[&str], bin: &Path, stdin: &str) -> Output {
+    start(args, bin, stdin).wait_with_output().unwrap()
+}
+
+/// Starts `agent-limits <args>` as [`agent_limits`] runs it, its `stdin` written and closed.
+fn start(args: &[&str], bin: &Path, stdin: &str) -> Child {
     let mut child = Command::new(env!("CARGO_BIN_EXE_agent-limits"))
         .args(args)
         .env_clear()
@@ -47,7 +52,7 @@ fn agent_limits(args: &[&str], bin: &Path, stdin: &str) -> Output {
         .unwrap()
         .write_all(stdin.as_bytes())
         .unwrap();
-    child.wait_with_output().unwrap()
+    child
 }
 
 /// The JSON lines a successful run printed.
@@ -235,13 +240,15 @@ fn codex_writes_the_exchange_to_the_log() {
 
 #[test]
 fn codex_fails_when_the_app_server_closes() {
-    let bin = tempfile::tempdir().unwrap();
-    // It reads the client's first line, so the client's write never meets a closed pipe.
-    write_executable(
-        &bin.path().join("codex"),
-        "#!/bin/sh\nread -r line\nexit 0\n",
-    );
-    let output = agent_limits(&["codex"], bin.path(), "");
+    let dir = tempfile::tempdir().unwrap();
+    // A stand-in `codex` that ends once it read the client's first line, unanswered, so the
+    // client's write never meets a closed pipe.
+    Exchange(Vec::new()).stand_in(dir.path(), "touch \"$dir/ended\"\nexit 0", ":");
+    let mut child = start(&["codex"], &dir.path().join("bin"), "");
+    if let Err(step) = wait_exit(&mut child, || stand_in_step(dir.path())) {
+        panic!("agent-limits did not exit within 10 s after {step}");
+    }
+    let output = child.wait_with_output().unwrap();
     assert_failed(
         &output,
         "agent-limits: the app-server closed the connection",
