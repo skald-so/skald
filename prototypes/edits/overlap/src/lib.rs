@@ -16,8 +16,10 @@ pub mod harness;
 pub mod hunks;
 pub mod messages;
 pub mod noise;
+pub mod paths;
 pub mod replay;
 pub mod server;
+pub mod spellings;
 pub mod symbols;
 
 pub use check::{Check, Conflict};

@@ -1,0 +1,40 @@
+name: Edit prototype on Windows
+
+# The path normalization check of the edit comparison prototype on Windows: the tests of
+# prototypes/edits/overlap/tests/spellings.rs and the spellings command, whose output
+# docs/dev/edit-prototype.md, "Path normalization", records. Outside script/test: runs when a PR
+# changes the prototype or this file, and on demand.
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - prototypes/edits/**
+      - .github/workflows/edits-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: prototypes/edits -> target
+      - name: Tests of path normalization
+        run: cargo test --manifest-path prototypes/edits/Cargo.toml --locked --test spellings
+      - name: Check of spellings
+        run: cargo run --manifest-path prototypes/edits/Cargo.toml --locked --bin spellings

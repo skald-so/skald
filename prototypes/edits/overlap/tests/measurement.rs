@@ -387,6 +387,7 @@ fn report_gives_the_tables_of_the_replays() {
         repository: &repository,
         replays,
         times: times.clone(),
+        tree: Default::default(),
     }]);
     let rows = |title: &str| rows(&report, title);
     assert_eq!(
@@ -494,6 +495,7 @@ fn merges_with_several_merge_bases_are_counted() {
         repository: &repository,
         replays,
         times: Vec::new(),
+        tree: Default::default(),
     }]);
     let row = &rows(&report, "Repositories")[0];
     assert!(row.ends_with(" | 1 |"), "{row}");
@@ -511,6 +513,7 @@ fn report_gives_a_repository_without_merges_and_lifetimes() {
         repository: &repository,
         replays: Vec::new(),
         times: Vec::new(),
+        tree: Default::default(),
     }]);
     assert_eq!(
         rows(&report, "Repositories"),
@@ -578,6 +581,7 @@ fn a_conflict_in_a_renamed_file_has_no_file_level_warning() {
         repository: &repository,
         replays,
         times: Vec::new(),
+        tree: Default::default(),
     }]);
     assert_eq!(
         rows(&report, "Conflicts without a file-level warning"),
@@ -635,8 +639,56 @@ fn measure_fetches_a_repository_at_its_commit_and_replays_its_merges() {
     let replayed: Vec<&str> = measured.replays.iter().map(|r| r.merge.as_str()).collect();
     assert_eq!(replayed, replay::merges(dir, &commit, 100).unwrap());
     assert_eq!(measured.times.len(), replay::LARGEST);
+    let tree = git::run(dir, &["ls-tree", "-r", "-z", "--name-only", &commit]).unwrap();
+    assert_eq!(measured.tree, git::nul_separated(&tree).unwrap());
+    assert!(measured.tree.contains("src/inventory.rs"));
     let other = TempDir::new().unwrap();
     assert!(replay::measure(other.path(), &repository(12), 2, |_| ()).is_err());
+}
+
+#[test]
+fn report_gives_the_paths_that_share_a_fingerprint() {
+    let tmp = TempDir::new().unwrap();
+    let maintainer = fixture(&tmp);
+    let dir = maintainer.dir();
+    let mut replays = replays(&maintainer);
+    // A side that changes `docs/guide.md` in two spellings of its case, and `docs/café.md` in NFD
+    // and NFC; the tree at the commit holds `README.md` in two.
+    let (nfd, nfc) = ("docs/cafe\u{301}.md", "docs/caf\u{e9}.md");
+    let paths = ["docs/guide.md", "Docs/Guide.md", nfd, nfc, "src/lib.rs"];
+    let replay = &mut replays[0];
+    let scope = git::scope_of(dir, "HEAD").unwrap();
+    let client = edit_overlap::Client::new("first-parent", replay::key());
+    let paths = paths.map(str::to_owned).into();
+    replay.sides[0].edits = client
+        .edits_between(dir, &scope, &replay.base, &replay.parents[0], paths)
+        .unwrap();
+    let tree = ["README.md", "Readme.md", "src/lib.rs"]
+        .map(str::to_owned)
+        .into();
+    let repository = Repository {
+        name: "fixture",
+        url: "https://example.com/fixture",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: 12,
+    };
+    let report = replay::report(&[Measured {
+        repository: &repository,
+        replays,
+        times: Vec::new(),
+        tree,
+    }]);
+    assert_eq!(
+        rows(
+            &report,
+            "Paths that share a fingerprint once case is folded and Unicode normalized"
+        ),
+        [
+            "| fixture | the tree at the commit | case | `README.md`, `Readme.md` |".to_owned(),
+            format!("| fixture | the replayed sides | Unicode normalization | `{nfd}`, `{nfc}` |"),
+            "| fixture | the replayed sides | case | `Docs/Guide.md`, `docs/guide.md` |".to_owned(),
+        ]
+    );
 }
 
 #[test]
@@ -907,6 +959,7 @@ fn each_way_of_handling_a_class_gives_the_expected_counts() {
         repository: &repository,
         replays,
         times: Vec::new(),
+        tree: Default::default(),
     }]);
     let rows = |title: &str| rows(&report, title);
     // Warned files: the lockfile in its two pairs; the script, the snapshot and the schema, then

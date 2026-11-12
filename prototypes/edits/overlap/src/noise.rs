@@ -573,7 +573,7 @@ pub fn report(measured: &[Measured]) -> String {
 
 /// Appends to `out` the Markdown table `title` with `header`, after an empty line, and the rows
 /// `rows` passes to the function it takes, each a list of cells.
-fn table(
+pub(crate) fn table(
     out: &mut String,
     title: &str,
     header: &[String],
