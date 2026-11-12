@@ -695,7 +695,7 @@ const MIGRATION: &str = "operations = []";
 
 /// The merges of the noise fixture, as [`PAIRS`] are merged; a rename of `src/schema.rs` and an
 /// edit of it follow them.
-const CLASSED_PAIRS: [[Branch; 2]; 8] = [
+const CLASSED_PAIRS: [[Branch; 2]; 9] = [
     // The same line of the lockfile: a conflict.
     [
         (
@@ -793,6 +793,19 @@ const CLASSED_PAIRS: [[Branch; 2]; 8] = [
             "same-migration-b",
             2,
             &[("app/migrations/0006_same.py", 1, MIGRATION)],
+        ),
+    ],
+    // Edits of different migrations of one number in one directory: none added.
+    [
+        (
+            "edited-migrations-a",
+            1,
+            &[("app/migrations/0002_alice.py", 1, "operations = [1]")],
+        ),
+        (
+            "edited-migrations-b",
+            2,
+            &[("app/migrations/0002_bob.py", 1, "operations = [2]")],
         ),
     ],
     // Distant lines of the guide, and the same line of `reserve()`: a conflict.
@@ -935,6 +948,7 @@ fn each_way_of_handling_a_class_gives_the_expected_counts() {
     );
     // Both sides add migrations to one directory in three merges: different ones of one number,
     // without a warning; different numbers next to a conflict on another migration; the same one.
+    // Edits of existing migrations add none.
     assert_eq!(
         rows("Migrations both sides add, in merges"),
         ["| classed | 3 | 1 | 1 | 1 |"]
