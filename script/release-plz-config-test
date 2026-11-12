@@ -47,17 +47,24 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
-# The fixture: the workspace, one prototype and one doc, from the working tree; released as the
-# version in Cargo.toml.
+# The fixture: the workspace, one prototype and one doc, from the working tree; released as 0.40.5,
+# a stable version whatever Cargo.toml has, a beta's included.
 git -C "$root" ls-files -z --cached --others --exclude-standard -- Cargo.toml Cargo.lock \
   repository.rs release-plz.toml crates prototypes/edits docs/threat-model.md |
   tar -C "$root" --null -T - -cf - | tar -C "$dir" -xf -
-version=$(cargo metadata --no-deps --offline --format-version 1 --manifest-path "$dir/Cargo.toml" |
-  jq -r '.packages[0].version')
+perl -0pi -e 's/(\[workspace\.package\]\nversion = )"[^"]*"/$1"0.40.5"/' "$dir/Cargo.toml"
+# cargo metadata moves the workspace crates in Cargo.lock to that version, and only them.
+versions=$(cargo metadata --format-version 1 --manifest-path "$dir/Cargo.toml" |
+  jq -r '[.workspace_members as $members | .packages[] | select(.id | IN($members[]))
+    | .version] | unique | join(" ")')
+if [[ $versions != 0.40.5 ]]; then
+  echo "release-plz-config-test: the fixture's crates are not all at 0.40.5: $versions" >&2
+  exit 1
+fi
 git -C "$dir" init --quiet --initial-branch dev
 git -C "$dir" add --all
-git -C "$dir" commit --quiet --message "chore: release v$version (#1)"
-git -C "$dir" tag "v$version"
+git -C "$dir" commit --quiet --message "chore: release v0.40.5 (#1)"
+git -C "$dir" tag v0.40.5
 
 # commit <title> <file>: squash-merges a PR titled <title> that changes <file>.
 commit() {
@@ -80,9 +87,8 @@ if update; then
 fi
 commit "docs: change the docs (#3)" docs/threat-model.md
 if update; then
-  IFS=. read -r major minor patch <<<"$version"
-  grep -qx "version = \"$major.$minor.$((patch + 1))\"" "$dir/Cargo.toml" ||
-    fail "a docs PR after a prototypes PR does not bump $version to the next patch version"
+  grep -qx 'version = "0.40.6"' "$dir/Cargo.toml" ||
+    fail "a docs PR after a prototypes PR does not bump 0.40.5 to 0.40.6"
   grep -qF "change the docs" "$dir/CHANGELOG.md" 2>/dev/null ||
     fail "CHANGELOG.md does not list the docs PR"
   ! grep -qF "change only the prototypes" "$dir/CHANGELOG.md" 2>/dev/null ||
