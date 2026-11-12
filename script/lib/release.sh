@@ -1,9 +1,9 @@
-# The names the Release PR workflow and its tests share, sourced by script/release-plz-test,
+# The names the release-plz workflow and its tests share, sourced by script/release-plz-test,
 # script/release-plz-workflow-test and the release tag tests. The GitHub App skald-release, its
 # environment and its secrets are set up on GitHub under these names; a rename changes them here and
 # in the workflow.
 
-# The workflow that keeps the Release PR open.
+# The workflow that tags the merge of a Release PR and keeps the Release PR open.
 release_workflow=.github/workflows/release-plz.yml
 # The GitHub environment with the App's secrets; only dev deploys from it, only the release-plz
 # jobs use it.

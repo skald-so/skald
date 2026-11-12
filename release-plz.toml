@@ -11,7 +11,8 @@ git_tag_name = "v{{ version }}"
 semver_check = false
 # One CHANGELOG.md, the root package's.
 changelog_update = false
-# `release-plz release` tags only the merge of a Release PR, with one tag, the root package's. It
+# `release-plz release` tags only the merge of a PR from a release-plz-* branch, with one tag, the
+# root package's; the workflow runs it only for a PR the App opened (script/release-pr-merged). It
 # publishes no crate and creates no GitHub Release.
 release_always = false
 git_tag_enable = false

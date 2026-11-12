@@ -15,10 +15,10 @@
 #   - An already tagged version gets no tag: a run again on a tagged commit, and a Release PR that
 #     keeps a released beta's version.
 #   - A version change from any other PR gets no tag, whatever its branch is named: a person's PR,
-#     from this repository or a fork; a fork's PR; one by a user named like the App; one whose head
-#     repository is gone; a commit merged by no PR; a commit whose PR is a person's, though the
-#     App's open Release PR has it too; the commit after a Release PR's merge. A failed API call
-#     tags nothing.
+#     from this repository or a fork; a fork's PR; one by a user named like the App; one by another
+#     App; one whose head repository is gone; a commit merged by no PR; a commit whose PR is a
+#     person's, though the App's open Release PR has it too; the commit after a Release PR's merge.
+#     A failed API call tags nothing.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -253,6 +253,8 @@ others=(
   "[$(pull "$pr" "$app" Bot someone/skald "$branch" "$head")]"
   "a PR by a user named like the App, without [bot]"
   "[$(pull "$pr" skald-release User skald-so/skald "$branch" "$head")]"
+  "a PR another App opened from a branch of this repository named like the Release PR's"
+  "[$(pull "$pr" renovate[bot] Bot skald-so/skald "$branch" "$head")]"
   "a PR by the App's login whose head repository is gone"
   "[$(pull "$pr" "$app" Bot null "$branch" "$head")]"
   "a commit no PR merged, pushed to dev"
