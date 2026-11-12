@@ -6,7 +6,9 @@
 //! repository. On an overlap, a client gets the other machine's changes over [`messages`], which
 //! bypass the server, and checks them with `git merge-tree` ([`check`]). [`replay`] measures the
 //! fingerprints on the merges of real repositories, and [`noise`] classes the files behind its
-//! warnings and conflicts. Scenarios and findings: `docs/dev/edit-prototype.md`.
+//! warnings and conflicts. [`paths`] gives the one form of a path that fingerprints take and maps
+//! the paths an agent's tools give, and [`spellings`] checks git's spellings of paths and line
+//! endings on this machine's file system. Scenarios and findings: `docs/dev/edit-prototype.md`.
 
 pub mod check;
 pub mod client;
