@@ -6,7 +6,14 @@ all-features = true
 
 [advisories]
 # Defaults: vulnerabilities and unmaintained crates fail. An entry here needs a reason.
-ignore = []
+ignore = [
+    # SQLite before 3.54 can return stale memory for a database opened with a crafted `-wal` file.
+    # The client's state lives in the user's own 0700 directory, so the attacker would need the
+    # user's rights already. rusqlite takes the fixed libsqlite3-sys 0.39 only from 0.41, and sqlx
+    # 0.9 keeps libsqlite3-sys below 0.38: its unused SQLite driver is in Cargo.lock too. Drop this
+    # once sqlx allows 0.39.
+    { id = "RUSTSEC-2026-0459", reason = "local only; sqlx 0.9 holds libsqlite3-sys below the fix" },
+]
 
 [licenses]
 # Permissive licenses only: compatible with the `MIT OR Apache-2.0` crates and with the AGPL-3.0 server.

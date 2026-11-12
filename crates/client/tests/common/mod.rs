@@ -2,7 +2,7 @@
 //! database, or against a stub that gives canned answers.
 
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -214,6 +214,16 @@ impl Stub {
                     }
                     head.push_str(&line);
                 }
+                // The body too: a connection closed with unread bytes resets, and the answer with it.
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0);
+                let _ = reader.read_exact(&mut vec![0; length]);
                 let path = head.split(' ').nth(1).unwrap_or_default().to_owned();
                 recorded.lock().unwrap().push(head);
                 let answer = answer(&path);
