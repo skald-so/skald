@@ -444,8 +444,9 @@ pub fn write_config(
                 GuiPath::Queue => {}
                 GuiPath::Channel => unreachable!("checked above"),
             }
-            // The session starts none of the user's MCP servers and plugins: one of them asked
-            // macOS for automation access in Codex for VS Code.
+            // The session gets no tools of the user's MCP servers and plugins: one of the servers
+            // asked macOS for automation access in Codex for VS Code. That extension still starts
+            // the servers to list their status, which ignores `enabled = false`.
             config.push_str("\n[features]\nplugins = false\n");
             for name in &binaries.user_mcp_servers {
                 if name != SERVER {

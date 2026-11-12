@@ -434,7 +434,7 @@ The owner's decision on Anthropic's terms: Skald provides no service through `cl
 They run off the model stub, which has no subscription, in the environment of [Session config](#session-config) with `--real`:
 - `live-check limits claude`: runs `agent-limits claude` in an empty temporary project. It passes when the prototype read each limit line of the `/usage` text, `<label>: <n>% used · resets <time>`, in its order, with the same percent and a reset time.
 - `live-check status-line claude`: runs Claude Code's terminal UI in a pseudo-terminal, as the [Channels](#channels) check does with `--real`, with the prompt "Reply with only OK.", `agent-limits status-line` as the status line command and a `Stop` hook, then `agent-limits claude`. It passes when the last status line input with `rate_limits` gave limits, and each matches the `/usage` row of its window, `five_hour` the session and `seven_day` the week of all models: the percent within a point, the reset within a minute. Session flags: `<prompt> --setting-sources local --strict-mcp-config --settings <dir>/settings.json --disable-slash-commands --tools "" --effort low`; the settings file holds the status line, the hook and `promptSuggestionEnabled: false`. It prints the tokens the status line input gives. The session still loads what [Session config](#session-config) lists for Claude Code; skills are off.
-- `live-check limits codex`: runs `agent-limits codex` with the [app-server](#codex-app-server) options and `-c mcp_servers.<name>.enabled=false` for each `[mcp_servers.<name>]` table of the user's `config.toml`, whose headers alone it reads. It passes when the app-server gave limits, each with a reset time. It starts no thread.
+- `live-check limits codex`: runs `agent-limits codex` with the [app-server](#codex-app-server) options and `-c mcp_servers.<name>.enabled=false` for each `[mcp_servers.<name>]` table of the user's `config.toml`: it reads the file and keeps only the table headers' names. It passes when the app-server gave limits, each with a reset time. It starts no thread.
 
 Results on 2026-11-12, on Claude Code 2.1.322 and Codex 0.162.1, each run as `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check <command>`:
 
@@ -467,7 +467,7 @@ Surfaces, each running its own copy of the agent; the apps and extensions update
 
 The surfaces take no CLI flags, so a check attaches a path only with files in the project:
 - Claude Code reads the project's `.mcp.json` and `.claude/settings.local.json`, as the CLI does ([docs](https://code.claude.com/docs/en/desktop.md#shared-configuration)). The check writes the server to `.mcp.json` and, to settings, `enabledMcpjsonServers` and `permissions.allow` with `mcp__skald__inbox` for `inbox`; `enabledMcpjsonServers` for Channels; for a hook, the hook in the shell form and `permissions.allow` with `Bash(true)`. `permissions.allow` also holds `Bash(sleep:*)` for the busy case. Each settings file has `maxEffortLevel: "low"`, which caps the effort, the lowest across settings files winning: both surfaces showed Opus 5.5 at Low, the desktop app in `/status` and VS Code in its prompt box.
-- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and, for `inbox`, the server with `default_tools_approval_mode = "approve"`; for a hook, the hook as a top-level dotted key, `hooks.<event>=[{hooks=[{type="command",command="<handler> --codex <source>"}]}]`; for `codex queue`, nothing more. For each path it also turns off plugins, `[features] plugins = false`, and each MCP server of the user's `~/.codex/config.toml`, `[mcp_servers."<name>"] enabled = false`, whose table headers alone it reads. Without them, a Codex for VS Code session started the user's servers, and one asked macOS for automation access; with them, it started none. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use. The check picks no model.
+- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and, for `inbox`, the server with `default_tools_approval_mode = "approve"`; for a hook, the hook as a top-level dotted key, `hooks.<event>=[{hooks=[{type="command",command="<handler> --codex <source>"}]}]`; for `codex queue`, nothing more. For each path it also turns off plugins, `[features] plugins = false`, and each MCP server of the user's `~/.codex/config.toml`, `[mcp_servers."<name>"] enabled = false`: it reads that file and keeps only the table headers' names. Without them, a Codex for VS Code session started the user's servers, and one asked macOS for automation access. With them, the session gets none of their tools and the desktop app starts none; Codex for VS Code still starts the user's servers right after `thread/start`, as the panel asks for their status with `mcpServerStatus/list`, which ignores the project's `enabled = false`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use. The check picks no model.
 
 ### GUI live check
 `live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel` on the Claude Code ones, `user-prompt-submit` or `queue` on the Codex ones:
@@ -510,14 +510,14 @@ On 2026-11-12, one run of each case. A is the idle case; B the same in a second 
 | | Channels | fail | As on the desktop app; the message was handed over when the panel opened, before the prompt |
 | `codex-desktop: ChatGPT 26.1106.51428, codex 0.167.0-alpha.4.1` | `inbox` | pass: A, in the [rerun](#reruns); B and C not run | The composer's model, 5.5 at Light, from the user's config |
 | | `PostToolUse` | pass: A, C | Each after Review hooks. C: 17.5 s, once `sleep 20` ended |
-| | `Stop` | pass: A, C | The window shows the continuation as the user's message, marked "Hook feedback". A: the agent read files in its first reply and found the token before the hook gave it. C: the agent replied `NONE`, then the token; 19.7 s |
+| | `Stop` | pass: A, C | The window shows the continuation as the user's message, marked "Hook feedback". C: the agent replied `NONE`, then the token; 19.7 s |
 | | `UserPromptSubmit` | pass: A | With the prompt |
-| | `codex queue` | pass: A, C | A, idle: the message started a turn without a prompt and the window showed it as the user's message with the reply; queued with the bundled codex, answered within 25 s, and with the CLI's codex 0.162.1, within 5 s. C: queued during `sleep 20`; the window showed it above the composer, with Steer and delete buttons, until the turn ended, then ran it in a turn of its own, answered within 20 s |
+| | `codex queue` | pass: A, C | A, idle: the message started a turn without a prompt and the window showed it as the user's message with the reply; queued with the bundled codex, answered within 25 s, and in one run with the CLI's codex 0.162.1, within 5 s. C: queued during `sleep 20`; it ran in a turn of its own once that turn ended, answered within 20 s |
 | `codex-vscode: Codex for VS Code 26.1106.51428, codex 0.167.0-alpha.4.1` | `inbox` | pass: A, as on the desktop app | As on the desktop app |
 | | `PostToolUse` | pass: A, C | Each after Review hooks. C: 14.5 s |
-| | `Stop` | pass: A, C | As on the desktop app, "Hook feedback" too. A: the agent read files and found the token first, as there. C: `NONE`, then the token; 15.1 s |
+| | `Stop` | pass: A, C | As on the desktop app, "Hook feedback" too. C: `NONE`, then the token; 15.1 s |
 | | `UserPromptSubmit` | pass: A | With the prompt |
-| | `codex queue` | pass: A, C | As on the desktop app, with the bundled codex: A answered within 30 s; C showed the queued message above the composer with Steer and delete buttons, then ran it once the turn ended, answered within 20 s |
+| | `codex queue` | pass: A, C | As on the desktop app, with the bundled codex: A answered within 30 s; C ran it once the turn ended, answered within 20 s |
 
 `codex login status` of the bundled CLI of each Codex surface, on the user's config home, shows the API key sign-in.
 
@@ -541,6 +541,7 @@ Findings:
 Security points, Codex surfaces:
 - A queued message comes as the user's prompt, with the user's authority; only its text says who sent it. Any process of the user that reaches the config home can queue a message into any thread.
 - A busy session shows a queued message above the composer with Steer and delete buttons until its turn starts: the user can drop it.
+- `codex queue` keeps the message text in `queue_1.sqlite` and its WAL, mode 644 in a config home of mode 755, under a macOS home that group `staff` can enter: other local accounts can read a queued message until its turn runs.
 - Folder trust lets the project's `.codex/config.toml` set the model and MCP servers; the trust dialog warns that folder settings can run code. Hooks there still need Review hooks, which shows each hook's command.
 - The agent may read the message source itself: its path is in the project's config. In `Stop`'s A the agent read files and found the token before the hook gave it, while the message still waited.
 
@@ -548,6 +549,7 @@ Open questions:
 - `inbox` on the Codex surfaces in a busy session: whether the agent's `inbox` call after a running command gets a message added while it runs.
 - `inbox` on the Codex surfaces with a second session in a project of its own: whether each session gets only its own message.
 - `codex queue` for a thread the app has not loaded, such as with the app closed: whether the message waits for it.
+- `codex queue` with the CLI's codex 0.162.1 on the desktop app, idle: in a second run the message started a turn without a prompt in about 6 s and reached the model as in the bundled run, but the agent replied `OK`, not the token. Whether the model acts on a queued message reliably.
 
 #### Channels on the surfaces
 A session loads a channel only with `--channels` or `--dangerously-load-development-channels` and only when interactive ([Channels](#channels)). Neither surface was found to offer that:
