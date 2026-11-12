@@ -709,3 +709,4 @@ When each source learns of a changed file, from its first change, in files
   - A hook on the shell tool could take the files its command line names, as the declarations here do, at the edit.
   - Edits outside an agent's tool calls, such as a file watcher or a build script that writes files, are not in the sessions.
   - The declarations follow a rule, the files each step names; what an agent declares before it edits is not measured.
+  - The npm installs pin the tools, not their dependencies: drizzle-kit's, such as `tsx`, `esbuild` and `@drizzle-team/brocli`, resolve to the newest matching versions on each run, so a later rerun may run other code.
