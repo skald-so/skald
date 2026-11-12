@@ -65,6 +65,32 @@ export interface ProtocolProblem {
 }
 
 /**
+ * An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+ */
+export type AccountId = string;
+
+export interface Session {
+  account: AccountId;
+  /** The GitHub login of the account's user as of its latest sign-in, for display. */
+  github_login: string;
+}
+
+/**
+ * A problem details object (RFC 9457).
+ */
+export interface Problem {
+  type: string;
+  title: string;
+  /**
+   * @minimum 400
+   * @maximum 599
+   */
+  status: number;
+  detail: string;
+}
+
+/**
  * The protocol version the request states.
  */
 export type ProtocolVersionParameter = number;

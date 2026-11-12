@@ -5,8 +5,10 @@ import type {
   GetOpenApiSpec200,
   Health,
   HealthUnavailable,
+  Problem,
   Protocol,
   ProtocolProblem,
+  Session,
 } from "./skald.schemas";
 
 export type getHealthResponse200 = {
@@ -133,4 +135,61 @@ export const getProtocol = async (
     status: res.status,
     headers: res.headers,
   } as getProtocolResponse;
+};
+
+export type getSessionResponse200 = {
+  data: Session;
+  status: 200;
+};
+
+export type getSessionResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getSessionResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getSessionResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getSessionResponseSuccess = getSessionResponse200 & {
+  headers: Headers;
+};
+export type getSessionResponseError = (
+  getSessionResponse400 | getSessionResponse401 | getSessionResponse500
+) & {
+  headers: Headers;
+};
+
+export type getSessionResponse =
+  getSessionResponseSuccess | getSessionResponseError;
+
+export const getGetSessionUrl = () => {
+  return `/session`;
+};
+
+/**
+ * @summary The session's account
+ */
+export const getSession = async (
+  options?: RequestInit,
+): Promise<getSessionResponse> => {
+  const res = await fetch(getGetSessionUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getSessionResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getSessionResponse;
 };

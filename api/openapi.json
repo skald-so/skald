@@ -5,6 +5,185 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/auth/github": {
+      "get": {
+        "operationId": "startGitHubSignIn",
+        "summary": "Start a GitHub sign-in",
+        "description": "Opened by the browser. Sends it to GitHub's authorization page, asking for no scope, with a `state` that the cookie this response sets binds to this browser. The `state` works once, until it expires; its lifetime is the server setting `--sign-in-state-lifetime`.",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "required": false,
+            "description": "The page of this server to return to once signed in: a path such as `/settings?tab=devices`. Anything else, such as another site's address, returns to `/`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To GitHub's authorization page.",
+            "headers": {
+              "Location": {
+                "description": "GitHub's authorization page with the app's client ID, the callback `<public URL>/auth/github/callback` and `state`.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "The cookie that binds `state` to this browser: `HttpOnly`, `SameSite=Lax`, `Secure` under an https public URL, for the callback's path only.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub sign-in is off: the server has no GitHub settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/github/callback": {
+      "get": {
+        "operationId": "finishGitHubSignIn",
+        "summary": "GitHub's callback",
+        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and reads the GitHub user. The first sign-in of a GitHub user creates its account, bound to the user's GitHub ID; later ones reach it and update its GitHub login. Keeps no GitHub token.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "description": "The code GitHub gives.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "The `state` of the sign-in start.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "description": "GitHub's error, such as `access_denied`, instead of a code.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed in: a page that sends the browser to the sign-in's return page.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "The session cookie `skald_session`: `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; and the removal of the cookie that bound `state`.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No one is signed in: `state` is missing, wrong, from another browser, expired or used, or GitHub gave no code or refused it.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub sign-in is off: the server has no GitHub settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "No one is signed in: the database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "No one is signed in: GitHub failed or refused the app's client ID and secret.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "getHealth",
@@ -95,6 +274,84 @@
         }
       }
     },
+    "/session": {
+      "get": {
+        "operationId": "getSession",
+        "summary": "The session's account",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account of the session in the request's cookie.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ws": {
       "get": {
         "operationId": "openWebSocket",
@@ -173,9 +430,30 @@
           "type": "integer",
           "minimum": 1
         }
+      },
+      "NoStore": {
+        "description": "`no-store`: the page holds a sign-in's outcome.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": ["no-store"]
+        }
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "skald_session",
+        "description": "The web session that a GitHub sign-in gives."
       }
     },
     "schemas": {
+      "AccountId": {
+        "description": "An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
       "Health": {
         "type": "object",
         "required": ["status"],
@@ -194,6 +472,29 @@
           "status": {
             "type": "string",
             "enum": ["unavailable"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "Problem": {
+        "description": "A problem details object (RFC 9457).",
+        "type": "object",
+        "required": ["type", "title", "status", "detail"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -233,6 +534,20 @@
           },
           "supported": {
             "$ref": "#/components/schemas/SupportedVersions"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Session": {
+        "type": "object",
+        "required": ["account", "github_login"],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/AccountId"
+          },
+          "github_login": {
+            "description": "The GitHub login of the account's user as of its latest sign-in, for display.",
+            "type": "string"
           }
         },
         "additionalProperties": false

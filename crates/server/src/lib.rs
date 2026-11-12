@@ -1,6 +1,7 @@
 //! Skald server.
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
@@ -14,10 +15,14 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
+mod github;
 mod protocol;
+mod sign_in;
 
+pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 pub use protocol::Versions;
 use protocol::{Stated, Statement};
+pub use sign_in::{CALLBACK_PATH, PublicUrl, SignInSettings};
 
 /// The OpenAPI spec the server implements: `api/openapi.json`, served at `GET /openapi.json`.
 pub const OPENAPI_SPEC: &str = include_str!("../../../api/openapi.json");
@@ -46,27 +51,63 @@ pub async fn connect(url: &str) -> Result<PgPool, sqlx::Error> {
         .connect_lazy_with(options))
 }
 
+/// The server's settings.
+#[derive(Debug, Clone, Default)]
+pub struct Settings {
+    /// The protocol versions it accepts.
+    pub versions: Versions,
+    /// GitHub sign-in; off without it.
+    pub sign_in: Option<SignInSettings>,
+}
+
 /// The state the handlers share.
 #[derive(Clone)]
 struct AppState {
     db: PgPool,
     versions: Versions,
+    sign_in: Option<Arc<SignInSettings>>,
 }
 
-/// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`, accepting the
-/// protocol versions `versions`.
-pub fn app(db: PgPool, versions: Versions) -> Router {
+/// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
+pub fn app(db: PgPool, settings: Settings) -> Router {
+    let versions = settings.versions;
     let checked =
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
+        .route("/auth/github", get(sign_in::start))
+        .route(CALLBACK_PATH, get(sign_in::callback))
         .route("/health", get(health))
         .route("/openapi.json", get(openapi_spec))
         .route(
             "/protocol",
             get(protocol_versions).layer(checked(Statement::Header)),
         )
+        .route(
+            "/session",
+            get(sign_in::session).layer(checked(Statement::Header)),
+        )
         .route("/ws", get(websocket).layer(checked(Statement::Subprotocol)))
-        .with_state(AppState { db, versions })
+        .with_state(AppState {
+            db,
+            versions,
+            sign_in: settings.sign_in.map(Arc::new),
+        })
+}
+
+/// `Problem` in the spec, of the type `https://skald.so/problems/<kind>`.
+fn problem(status: StatusCode, kind: &str, title: &str, detail: &str) -> Response {
+    let body = serde_json::json!({
+        "type": format!("https://skald.so/problems/{kind}"),
+        "title": title,
+        "status": status.as_u16(),
+        "detail": detail,
+    });
+    (
+        status,
+        [(header::CONTENT_TYPE, "application/problem+json")],
+        body.to_string(),
+    )
+        .into_response()
 }
 
 /// `Health` and `HealthUnavailable` in the spec.
