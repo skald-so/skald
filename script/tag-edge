@@ -1,30 +1,18 @@
 #!/usr/bin/env bash
 # Points <image>:edge at <image>@<digest>, the image built from <commit>, only while <commit> is the
-# head of dev on origin. A run for an older commit, such as one that waited for another or a rerun,
-# leaves :edge as it is, so :edge never moves back. .github/workflows/edge.yml runs one publish at a
-# time, so no newer run moves :edge between the check and the move.
+# head of dev on origin, so :edge never moves back: script/lib/dev-head.sh.
 # Usage: script/tag-edge <image> <commit> <digest>, in a clone of the repository, logged in to the
 # image's registry.
 set -euo pipefail
+source "$(dirname "$0")/lib/dev-head.sh"
 
 if [[ $# -ne 3 ]]; then
   echo "usage: $0 <image> <commit> <digest>" >&2
   exit 2
 fi
 image=$1 commit=$2 digest=$3
-if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
-  echo "tag-edge: '$commit' is not a full commit hash" >&2
-  exit 2
-fi
-if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo "tag-edge: '$digest' is not an image digest" >&2
-  exit 2
-fi
+check_commit_and_digest tag-edge "$commit" "$digest"
 
-head=$(git ls-remote --exit-code origin refs/heads/dev | cut -f 1)
-if [[ $head != "$commit" ]]; then
-  echo "tag-edge: dev has moved on to $head; $image:edge stays"
-  exit 0
-fi
+exit_unless_dev_head tag-edge "$commit" "$image:edge"
 docker buildx imagetools create --tag "$image:edge" "$image@$digest"
 echo "tag-edge: $image:edge is $commit, $digest"

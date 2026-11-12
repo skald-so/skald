@@ -21,8 +21,6 @@ fail() {
   failures=$((failures + 1))
 }
 
-digest=sha256:$(printf '%064d' 1)
-
 # The keys: the host's, another host's, the deploy key and a key the host does not authorize.
 for key in host other-host client stranger; do
   ssh-keygen -q -t ed25519 -N '' -C "$key" -f "$tmp/$key"
@@ -199,14 +197,7 @@ run "$head"
 expect_refused "one argument"
 run "$head" "$digest" extra
 expect_refused "three arguments"
-run "${head:0:7}" "$digest"
-expect_refused "short commit"
-run "$head" "${digest#sha256:}"
-expect_refused "digest without algorithm"
-run "$head" "sha256:${digest: -63}"
-expect_refused "short digest"
-run "$head" "$digest; echo injected"
-expect_refused "digest with a command"
+expect_malformed_refused
 
 for secret in key host_key destination; do
   right=${!secret}

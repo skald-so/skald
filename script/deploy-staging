@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Deploys <digest>, the skald-server image built from <commit>, to staging, only while <commit> is the
-# head of dev on origin. A run for an older commit, such as a rerun, leaves staging as it is, so
-# staging never moves back. .github/workflows/edge.yml runs one deploy at a time, so no newer run
-# deploys between the check and the deploy.
+# head of dev on origin, so staging never moves back: script/lib/dev-head.sh.
 #
 # Connects over SSH as the deploy key's account and runs `deploy <digest>` there, which passes only
 # when the server runs the image and its health check answers ok; exits 0 only then. The connection
@@ -14,20 +12,14 @@
 # never these values: SSH's own messages, which name the address, are off.
 # Usage: script/deploy-staging <commit> <digest>, in a clone of the repository.
 set -euo pipefail
+source "$(dirname "$0")/lib/dev-head.sh"
 
 if [[ $# -ne 2 ]]; then
   echo "usage: $0 <commit> <digest>" >&2
   exit 2
 fi
 commit=$1 digest=$2
-if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
-  echo "deploy-staging: '$commit' is not a full commit hash" >&2
-  exit 2
-fi
-if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
-  echo "deploy-staging: '$digest' is not an image digest" >&2
-  exit 2
-fi
+check_commit_and_digest deploy-staging "$commit" "$digest"
 for name in STAGING_SSH_KEY STAGING_SSH_HOST_KEY STAGING_SSH_DESTINATION; do
   if [[ -z ${!name:-} ]]; then
     echo "deploy-staging: $name is not set" >&2
@@ -43,11 +35,7 @@ if [[ ! $STAGING_SSH_DESTINATION =~ ^ssh://[^[:space:]]+$ ]]; then
   exit 2
 fi
 
-dev_head=$(git ls-remote --exit-code origin refs/heads/dev | cut -f 1)
-if [[ $dev_head != "$commit" ]]; then
-  echo "deploy-staging: dev has moved on to $dev_head; staging stays"
-  exit 0
-fi
+exit_unless_dev_head deploy-staging "$commit" staging
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/deploy-staging.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT

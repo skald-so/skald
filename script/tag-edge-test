@@ -16,7 +16,6 @@ fail() {
 }
 
 image=ghcr.io/skald-so/skald-server
-digest=sha256:$(printf '%064d' 1)
 
 # The stand-in for docker records its arguments in $tmp/docker.log and fails if
 # $tmp/docker-fails exists.
@@ -65,14 +64,7 @@ run "$image" "$head"
 expect_refused "two arguments"
 run "$image" "$head" "$digest" extra
 expect_refused "four arguments"
-run "$image" "${head:0:7}" "$digest"
-expect_refused "short commit"
-run "$image" "$head" "${digest#sha256:}"
-expect_refused "digest without algorithm"
-run "$image" "$head" "sha256:${digest: -63}"
-expect_refused "short digest"
-run "$image" "$head" "$digest; echo injected"
-expect_refused "digest with a command"
+expect_malformed_refused "$image"
 
 git -C "$tmp/clone" push --quiet origin --delete dev
 run "$image" "$head" "$digest"

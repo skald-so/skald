@@ -10,6 +10,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/yaml.sh"
 workflow=$root/.github/workflows/edge.yml
 image=ghcr.io/skald-so/skald-server
 environment=staging
@@ -21,11 +22,6 @@ fail() {
   failures=$((failures + 1))
 }
 
-# to_json <file>: a workflow as JSON. A pinned version: the YAML 1.2 parser keeps the `on` key a
-# string.
-to_json() {
-  npx --yes --package yaml@2.9.1 -- yaml --json --single <"$1"
-}
 json=$(to_json "$workflow")
 
 # expect <what> <jq filter>: the filter is true for the workflow.

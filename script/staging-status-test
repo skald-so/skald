@@ -11,6 +11,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/yaml.sh"
 recorded=$root/script/testdata/staging-status
 tmp=$(mktemp -d)
 failures=0
@@ -285,8 +286,8 @@ run extra
 expect "an argument" 2 "usage:"
 
 # The names script/staging-status reads: the jobs of edge.yml and the deploy job's step that runs
-# script/deploy-staging. A pinned version, as in script/edge-workflow-test.
-workflow=$(npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/edge.yml")
+# script/deploy-staging.
+workflow=$(to_json "$root/.github/workflows/edge.yml")
 names=$(sed -n 's/^publish_job=\(.*\) deploy_job=\(.*\) deploy_step=\(.*\)$/\1|\2|\3/p' \
   "$root/script/staging-status" | tr -d "'")
 IFS='|' read -r publish_job deploy_job deploy_step <<<"$names"
