@@ -1,0 +1,86 @@
+{
+  "jobs": [
+    {
+      "name": "Publish",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-12T20:15:00Z",
+      "completed_at": "2026-11-12T20:16:01Z",
+      "steps": [
+        {
+          "name": "Set up job",
+          "started_at": "2026-11-12T20:15:01Z"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "started_at": "2026-11-12T20:15:02Z"
+        },
+        {
+          "name": "Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+          "started_at": "2026-11-12T20:15:04Z"
+        },
+        {
+          "name": "Run docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550",
+          "started_at": "2026-11-12T20:15:12Z"
+        },
+        {
+          "name": "Run docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc",
+          "started_at": "2026-11-12T20:15:13Z"
+        },
+        {
+          "name": "Move :edge",
+          "started_at": "2026-11-12T20:15:54Z"
+        },
+        {
+          "name": "Post Run docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc",
+          "started_at": "2026-11-12T20:15:54Z"
+        },
+        {
+          "name": "Post Run docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550",
+          "started_at": "2026-11-12T20:15:57Z"
+        },
+        {
+          "name": "Post Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+          "started_at": "2026-11-12T20:15:57Z"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "started_at": "2026-11-12T20:15:59Z"
+        },
+        {
+          "name": "Complete job",
+          "started_at": "2026-11-12T20:15:59Z"
+        }
+      ]
+    },
+    {
+      "name": "Deploy to staging",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-12T20:16:09Z",
+      "completed_at": "2026-11-12T20:16:14Z",
+      "steps": [
+        {
+          "name": "Set up job",
+          "started_at": "2026-11-12T20:16:09Z"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "started_at": "2026-11-12T20:16:10Z"
+        },
+        {
+          "name": "Deploy",
+          "started_at": "2026-11-12T20:16:12Z"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "started_at": "2026-11-12T20:16:13Z"
+        },
+        {
+          "name": "Complete job",
+          "started_at": "2026-11-12T20:16:13Z"
+        }
+      ]
+    }
+  ]
+}
