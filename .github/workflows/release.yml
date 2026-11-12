@@ -5,7 +5,7 @@ name: Release
 # with its installer from the release's files, then one step creates the release with all of them.
 # Any other run is the dry run: it builds and checks everything and publishes nothing; a PR that
 # changes the release config or this workflow starts it, and so does a manual run.
-# script/release-workflow-test tests this file.
+# Its tests: docs/dev/infrastructure.md, "PR checks", "Tooling".
 on:
   push:
     tags: ['v*']
