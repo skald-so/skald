@@ -7,8 +7,9 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use agent_source::{Ack, Record, Registration, Source, State};
-use agent_transcript::read_seen;
+use agent_inbox::render;
+use agent_source::{Ack, Message, Record, Source, State};
+use agent_transcript::{read_seen, read_written};
 use serde_json::json;
 
 use crate::{
@@ -17,13 +18,7 @@ use crate::{
 };
 
 /// The signals of a message's records that confirm the model got it.
-pub const READ: [&str; 5] = [
-    "transcript",
-    "session-file",
-    "ack",
-    "reply",
-    "app-server-turn",
-];
+pub const READ: [&str; 4] = ["transcript", "session-file", "ack", "reply"];
 
 /// Whether `records` hold a read confirmation.
 pub fn confirmed(records: &[Record]) -> bool {
@@ -102,17 +97,31 @@ pub fn transcript_prompt() -> String {
 /// The model stub's tool calls in the transcript check.
 pub const TRANSCRIPT_SCRIPT: &[Call] = &[Call::Quick, Call::Pause];
 
-/// Returns the arguments of a non-interactive session of `agent` whose `SessionStart`,
+/// The prompt of the transcript check's failed request: `messages`, which it hands over itself.
+pub fn failed_prompt(messages: &[Message]) -> String {
+    format!(
+        "Reply with only the check token from the {SERVER} message below, or NONE if there is \
+         none.\n\n{}",
+        render(messages)
+    )
+}
+
+/// The model stub's script in the transcript check's failed request: each request fails.
+pub const FAILED_SCRIPT: &[Call] = &[Call::Fail];
+
+/// Returns the arguments of a non-interactive session of `agent` with `prompt` whose `SessionStart`,
 /// `PostToolUse` and `Stop` hooks run `handler` on `source`, and which keeps its session file:
 /// Claude Code's transcript in its config home, Codex's rollout in its `sessions/`. Otherwise as
 /// the hook check's sessions: on the model stub at `stub` if given; Claude Code's settings file in
 /// `dir`.
+#[allow(clippy::too_many_arguments, reason = "the parts of a session")]
 pub fn transcript_session(
     agent: Agent,
     dir: &Path,
     project: &Path,
     handler: &Path,
     source: &Path,
+    prompt: &str,
     model: Option<&str>,
     stub: Option<&str>,
 ) -> io::Result<Vec<String>> {
@@ -134,7 +143,7 @@ pub fn transcript_session(
                 })),
             )?;
             claude_print(
-                &transcript_prompt(),
+                prompt,
                 &[
                     "--include-hook-events",
                     "--settings",
@@ -158,7 +167,7 @@ pub fn transcript_session(
                 &hooks,
                 model,
                 stub,
-                &transcript_prompt(),
+                prompt,
             )
         }
     };
@@ -172,11 +181,7 @@ pub fn transcript_session(
 /// entry's time; returns how many it found. Only that file is read, and only its entries' kinds
 /// and the messages' IDs are kept.
 pub fn read_session_file(agent: Agent, source: &Source) -> io::Result<usize> {
-    let Some(Registration {
-        transcript_path: Some(path),
-        ..
-    }) = source.registration()?
-    else {
+    let Some(path) = session_file(source)? else {
         return Ok(0);
     };
     let handed: Vec<String> = source
@@ -184,16 +189,39 @@ pub fn read_session_file(agent: Agent, source: &Source) -> io::Result<usize> {
         .into_iter()
         .map(|message| message.msg_id)
         .collect();
-    let kind = match agent {
-        Agent::Claude => agent_transcript::Agent::Claude,
-        Agent::Codex => agent_transcript::Agent::Codex,
-    };
-    let seen = read_seen(kind, Path::new(&path), &handed)?;
+    let seen = read_seen(agent.session_file(), Path::new(&path), &handed)?;
     for found in &seen {
         let detail = found.at_ms.map(|at| format!("entry at {at}"));
         source.record(&found.msg_id, "session-file", detail.as_deref())?;
     }
     Ok(seen.len())
+}
+
+/// Whether the session file that `source`'s registration names holds `msg_id` in an entry that
+/// went to the model, whether or not the model got it.
+pub fn written_to_session_file(agent: Agent, source: &Source, msg_id: &str) -> io::Result<bool> {
+    let Some(path) = session_file(source)? else {
+        return Ok(false);
+    };
+    let written = read_written(agent.session_file(), Path::new(&path), &[msg_id.to_owned()])?;
+    Ok(!written.is_empty())
+}
+
+/// The session file that `source`'s registration names.
+fn session_file(source: &Source) -> io::Result<Option<String>> {
+    Ok(source
+        .registration()?
+        .and_then(|registration| registration.transcript_path))
+}
+
+impl Agent {
+    /// The kind of `agent`'s session file.
+    fn session_file(self) -> agent_transcript::Agent {
+        match self {
+            Agent::Claude => agent_transcript::Agent::Claude,
+            Agent::Codex => agent_transcript::Agent::Codex,
+        }
+    }
 }
 
 /// The prompt of the resend check's session: the messages come while it runs `sleep 20`; a second
@@ -434,6 +462,30 @@ impl ReadCheck {
             .report("message handed over by PostToolUse", pass, &details)
     }
 
+    /// The transcript check's failed request: the message was handed over and its request reached
+    /// the stub, which failed it; the session file holds it, `written`, but neither the hook nor
+    /// the client counted it.
+    pub fn failed(&mut self, session: &Session, message: &Confirmed, written: bool) -> String {
+        let pass = session.clean()
+            && session.got(&message.token)
+            && handed_over(message.state)
+            && written
+            && !has(&message.records, "transcript", None)
+            && !has(&message.records, "session-file", None);
+        let details = format!(
+            "{}{}; in the session file: {}; signals after the handover: {}",
+            session.head(),
+            session.tail(&message.token),
+            if written { "yes" } else { "no" },
+            signals(&message.records, handed_at(message.state))
+        );
+        self.checks.report(
+            "failed request, the message in the session file",
+            pass,
+            &details,
+        )
+    }
+
     /// The resend check's message that the socket's session held: no layer confirmed it, so the
     /// next path sent it again, and the session's file then confirmed it.
     pub fn lost(&mut self, primary: &Confirmed, fallback: &Confirmed, reached: usize) -> String {
@@ -481,6 +533,8 @@ impl ReadCheck {
 
 #[cfg(test)]
 mod tests {
+    use agent_source::Registration;
+
     use crate::tests::{read_json, replied, stubbed};
     use crate::{DONE, Event};
 
@@ -534,6 +588,21 @@ mod tests {
                 .starts_with("Run the shell command `true`, then the shell command `sleep 2`.")
         );
         assert_eq!(TRANSCRIPT_SCRIPT, [Call::Quick, Call::Pause]);
+        let message = Message {
+            msg_id: "01a1cebe-27a9-7240-b4fa-5a2184ce744f".to_owned(),
+            sender: "alice".to_owned(),
+            text: "The check token is tok-1.".to_owned(),
+            added_at_ms: 0,
+            handed_over_at_ms: None,
+            ack: None,
+        };
+        let failed = failed_prompt(std::slice::from_ref(&message));
+        assert!(
+            failed.starts_with("Reply with only the check token from the skald message below")
+                && failed.ends_with(&format!("\n\n{}", render(&[message]))),
+            "{failed}"
+        );
+        assert_eq!(FAILED_SCRIPT, [Call::Fail]);
         assert!(resend_prompt().starts_with("Run the shell command `sleep 20`, then"));
         assert_eq!(RESEND_SCRIPT, [Call::Shell, Call::Pause]);
     }
@@ -569,6 +638,7 @@ mod tests {
             dir.path(),
             handler,
             source,
+            "the prompt",
             None,
             None,
         )
@@ -577,6 +647,7 @@ mod tests {
             !claude.iter().any(|arg| arg == "--no-session-persistence"),
             "{claude:?}"
         );
+        assert!(claude.contains(&"the prompt".to_owned()), "{claude:?}");
         let settings = read_json(dir.path().join("settings.json"));
         for event in ["SessionStart", "PostToolUse", "Stop"] {
             assert_eq!(
@@ -595,11 +666,13 @@ mod tests {
             dir.path(),
             handler,
             source,
+            "the prompt",
             None,
             Some("http://s"),
         )
         .unwrap();
         assert!(!codex.iter().any(|arg| arg == "--ephemeral"), "{codex:?}");
+        assert!(codex.contains(&"the prompt".to_owned()), "{codex:?}");
         for event in ["SessionStart", "PostToolUse", "Stop"] {
             assert!(
                 codex.contains(&codex_hook(
@@ -644,15 +717,15 @@ mod tests {
         source
             .handed_over(&[source.take().unwrap()[0].msg_id.clone()])
             .unwrap();
+        assert!(!written_to_session_file(Agent::Claude, &source, &message.msg_id).unwrap());
         let file = dir.path().join("t.jsonl");
-        fs::write(
-            &file,
-            format!(
-                r#"{{"type":"user","timestamp":"1970-01-01T00:00:02Z","message":{{"content":"{}"}}}}"#,
-                message.msg_id
-            ),
-        )
-        .unwrap();
+        let entry = format!(
+            r#"{{"type":"user","timestamp":"1970-01-01T00:00:02Z","message":{{"content":"{}"}}}}"#,
+            message.msg_id
+        );
+        let error =
+            r#"{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>"}}"#;
+        fs::write(&file, format!("{entry}\n{error}")).unwrap();
         source
             .register(&Registration {
                 session_id: "s".to_owned(),
@@ -660,6 +733,14 @@ mod tests {
                 ..Registration::default()
             })
             .unwrap();
+        // Only an API error followed it: written, but the model never got it.
+        assert_eq!(read_session_file(Agent::Claude, &source).unwrap(), 0);
+        assert!(written_to_session_file(Agent::Claude, &source, &message.msg_id).unwrap());
+        assert!(!written_to_session_file(Agent::Codex, &source, &message.msg_id).unwrap());
+        assert!(!written_to_session_file(Agent::Claude, &source, "other").unwrap());
+        assert!(source.records(&message.msg_id).unwrap().is_empty());
+        let reply = r#"{"type":"assistant","message":{"model":"claude-opus-5-5"}}"#;
+        fs::write(&file, format!("{entry}\n{error}\n{reply}")).unwrap();
         assert_eq!(read_session_file(Agent::Codex, &source).unwrap(), 0);
         assert_eq!(read_session_file(Agent::Claude, &source).unwrap(), 1);
         let records = source.records(&message.msg_id).unwrap();
@@ -837,6 +918,46 @@ mod tests {
         ] {
             let mut check = ReadCheck::new("transcript");
             assert!(check.transcript(&session, &missing).contains(": fail — "));
+        }
+
+        let failed = stubbed(Some("tok-1"), &[]);
+        let mut check = ReadCheck::new("transcript");
+        let line = check.failed(&failed, &confirmed_with(&[]), true);
+        assert!(
+            line.ends_with(
+                "the token reached it; in the session file: yes; signals after the handover: no \
+                 signal"
+            ),
+            "{line}"
+        );
+        assert!(check.pass());
+        let unsent = Confirmed {
+            state: None,
+            ..confirmed_with(&[])
+        };
+        for (session, message, written) in [
+            (
+                failed.clone(),
+                confirmed_with(&[("transcript", None)]),
+                true,
+            ),
+            (
+                failed.clone(),
+                confirmed_with(&[("session-file", None)]),
+                true,
+            ),
+            (failed.clone(), confirmed_with(&[]), false),
+            (failed.clone(), unsent, true),
+            (stubbed(None, &[]), confirmed_with(&[]), true),
+            (
+                stubbed(Some("tok-1"), &["x-api-key"]),
+                confirmed_with(&[]),
+                true,
+            ),
+        ] {
+            let mut check = ReadCheck::new("transcript");
+            let line = check.failed(&session, &message, written);
+            assert!(line.contains(": fail — "), "{line}");
         }
 
         let held = confirmed_with(&[("socket-held", None), ("resent", None)]);

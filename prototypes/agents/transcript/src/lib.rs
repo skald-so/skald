@@ -2,13 +2,20 @@
 //! went to the model, and finds there the `msg_id`s of handed-over messages: a read confirmation
 //! that needs no help from the model. It keeps no line it reads.
 //!
+//! Both CLIs write a message to the file before they call the model, and the entry stays when the
+//! call fails. So an entry counts only once a later entry is the model's own: a reply, a tool call
+//! or reasoning, not an API error.
+//!
 //! Only these entries count, as the CLIs write them (Claude Code 2.1.322, Codex 0.162.1):
 //! - Claude Code: a `user` entry (a prompt, a cross-session message, a tool result), a
 //!   `hook_additional_context` attachment, and an `api-request-blob`, the part of a request to the
 //!   model it holds. A `queue-operation` entry is a prompt still queued, and a `hook_success`
-//!   attachment only a hook's output: neither reached the model.
+//!   attachment only a hook's output: neither reached the model. The model's own is an `assistant`
+//!   entry; on a failed call Claude Code writes one with `isApiErrorMessage` and the model
+//!   `<synthetic>`.
 //! - Codex: a `response_item` other than the model's own: a user or developer message, or a tool's
-//!   output.
+//!   output. The model's own is an assistant message, reasoning or a call; a failed call writes no
+//!   `response_item`.
 
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
@@ -32,33 +39,74 @@ pub struct Seen {
 }
 
 /// The messages of `msg_ids` that the session file `path` shows reached the model, each once, in
-/// the order of its first entry. A file that does not exist yet shows none.
+/// the order of its first entry: an entry that went to the model, followed later by the model's
+/// own. A file that does not exist yet shows none.
 pub fn read_seen(agent: Agent, path: &Path, msg_ids: &[String]) -> io::Result<Vec<Seen>> {
+    let (mut written, answered) = scan(agent, path, msg_ids)?;
+    written.truncate(answered);
+    Ok(written)
+}
+
+/// The messages of `msg_ids` that the session file `path` holds in an entry that went to the model,
+/// whether or not the model's own followed, each once, in the order of its first entry.
+pub fn read_written(agent: Agent, path: &Path, msg_ids: &[String]) -> io::Result<Vec<Seen>> {
+    Ok(scan(agent, path, msg_ids)?.0)
+}
+
+/// The messages of `msg_ids` that `path` holds in an entry that went to the model, and how many of
+/// the first of them the model's own entries followed.
+fn scan(agent: Agent, path: &Path, msg_ids: &[String]) -> io::Result<(Vec<Seen>, usize)> {
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
         Err(error) => return Err(error),
     };
-    let mut seen: Vec<Seen> = Vec::new();
+    let mut written: Vec<Seen> = Vec::new();
+    let mut answered = 0;
     for line in BufReader::new(file).lines() {
         // A line still being written is not an entry yet.
         let Ok(entry) = serde_json::from_str::<Value>(&line?) else {
             continue;
         };
+        if from_model(agent, &entry) {
+            answered = written.len();
+            continue;
+        }
         if !went_to_model(agent, &entry) {
             continue;
         }
         let text = entry.to_string();
         for msg_id in msg_ids {
-            if text.contains(msg_id.as_str()) && !seen.iter().any(|s| s.msg_id == *msg_id) {
-                seen.push(Seen {
+            if text.contains(msg_id.as_str()) && !written.iter().any(|s| s.msg_id == *msg_id) {
+                written.push(Seen {
                     msg_id: msg_id.clone(),
                     at_ms: entry["timestamp"].as_str().and_then(timestamp_ms),
                 });
             }
         }
     }
-    Ok(seen)
+    Ok((written, answered))
+}
+
+/// Whether `entry` of a session file is the model's own: a reply, a tool call or reasoning, but
+/// not an API error that stands in for one.
+pub fn from_model(agent: Agent, entry: &Value) -> bool {
+    match agent {
+        Agent::Claude => {
+            entry["type"] == "assistant"
+                && entry["isApiErrorMessage"] != true
+                && entry["message"]["model"] != "<synthetic>"
+        }
+        Agent::Codex => {
+            let payload = &entry["payload"];
+            entry["type"] == "response_item"
+                && match payload["type"].as_str() {
+                    Some("message") => payload["role"] == "assistant",
+                    Some(kind) => kind == "reasoning" || kind.ends_with("_call"),
+                    None => false,
+                }
+        }
+    }
 }
 
 /// Whether `entry` of a session file went to the model.
@@ -223,7 +271,8 @@ mod tests {
                 at_ms: timestamp_ms("2026-11-12T07:52:11.632Z"),
             }]
         );
-        let output = r#"{"type":"response_item","payload":{"type":"function_call_output","output":"01a1cebe-27a9-7240-b4fa-000000000002"}}"#;
+        let output = r#"{"type":"response_item","payload":{"type":"function_call_output","output":"01a1cebe-27a9-7240-b4fa-000000000002"}}
+{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{}"}}"#;
         let (_dir, path) = written(output);
         assert_eq!(
             read_seen(Agent::Codex, &path, &ids()).unwrap(),
@@ -238,6 +287,121 @@ mod tests {
         assert!(read_seen(Agent::Codex, &path, &ids()).unwrap().is_empty());
     }
 
+    // A failed request, recorded from Claude Code 2.1.322 on a model stub that fails each request,
+    // shortened: the prompt, the request's part, and the API error Claude Code writes for the reply.
+    const CLAUDE_FAILED: &str = r#"{"type":"user","timestamp":"2026-11-12T13:02:10.484Z","message":{"role":"user","content":"<message msg_id=\"01a1cebe-27a9-7240-b4fa-5a2184ce744f\">x</message>"}}
+{"type":"api-request-blob","message":{"role":"user","content":[{"type":"text","text":"<message msg_id=\"01a1cebe-27a9-7240-b4fa-5a2184ce744f\">x</message>"}]}}
+{"type":"api-request","timestamp":"2026-11-12T13:02:10.542Z"}
+{"type":"assistant","timestamp":"2026-11-12T13:02:10.601Z","isApiErrorMessage":true,"apiErrorStatus":400,"error":"unknown","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"API Error: 400 the model stub fails each request"}]}}
+{"type":"last-prompt"}"#;
+
+    // The same from Codex 0.162.1: the prompt, then the turn's end with the error.
+    const CODEX_FAILED: &str = r#"{"timestamp":"2026-11-12T13:02:46.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<message msg_id=\"01a1cebe-27a9-7240-b4fa-5a2184ce744f\">x</message>"}]}}
+{"timestamp":"2026-11-12T13:02:46.400Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage"}}}
+{"timestamp":"2026-11-12T13:02:46.500Z","type":"event_msg","payload":{"type":"task_complete","last_agent_message":null,"error":{"message":"the model stub fails each request"}}}"#;
+
+    // The model's own entries, shortened.
+    const CLAUDE_REPLY: &str = r#"{"type":"assistant","timestamp":"2026-11-12T13:02:11.000Z","message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"OK"}]}}"#;
+    const CODEX_REPLY: &str = r#"{"timestamp":"2026-11-12T13:02:47.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"OK"}]}}"#;
+
+    #[test]
+    fn counts_a_message_only_once_the_models_own_entry_follows() {
+        let id = [ID.to_owned()];
+        for (agent, failed, reply, at) in [
+            (
+                Agent::Claude,
+                CLAUDE_FAILED,
+                CLAUDE_REPLY,
+                "2026-11-12T13:02:10.484Z",
+            ),
+            (
+                Agent::Codex,
+                CODEX_FAILED,
+                CODEX_REPLY,
+                "2026-11-12T13:02:46.300Z",
+            ),
+        ] {
+            let message = Seen {
+                msg_id: ID.to_owned(),
+                at_ms: timestamp_ms(at),
+            };
+            // Followed by nothing or only by an API error: in the file, but not seen.
+            let first = failed.lines().next().unwrap();
+            for text in [first, failed] {
+                let (_dir, path) = written(text);
+                assert!(
+                    read_seen(agent, &path, &id).unwrap().is_empty(),
+                    "{agent:?}"
+                );
+                assert_eq!(
+                    read_written(agent, &path, &id).unwrap(),
+                    std::slice::from_ref(&message),
+                    "{agent:?}"
+                );
+            }
+            // Followed by the model's reply, at once or after the error: seen, at its entry.
+            for text in [format!("{first}\n{reply}"), format!("{failed}\n{reply}")] {
+                let (_dir, path) = written(&text);
+                assert_eq!(
+                    read_seen(agent, &path, &id).unwrap(),
+                    std::slice::from_ref(&message),
+                    "{agent:?}"
+                );
+            }
+            // A reply before the message is not the model's to it.
+            let (_dir, path) = written(&format!("{reply}\n{failed}"));
+            assert!(
+                read_seen(agent, &path, &id).unwrap().is_empty(),
+                "{agent:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tells_the_models_own_entries() {
+        let entry = |text: &str| -> Value { serde_json::from_str(text).unwrap() };
+        assert!(from_model(Agent::Claude, &entry(CLAUDE_REPLY)));
+        assert!(from_model(Agent::Codex, &entry(CODEX_REPLY)));
+        assert!(!from_model(Agent::Claude, &entry(CODEX_REPLY)));
+        assert!(!from_model(Agent::Codex, &entry(CLAUDE_REPLY)));
+        let error = CLAUDE_FAILED.lines().nth(3).unwrap();
+        assert!(!from_model(Agent::Claude, &entry(error)));
+        // Either mark of an API error is enough.
+        assert!(!from_model(
+            Agent::Claude,
+            &entry(&error.replace(r#""isApiErrorMessage":true,"#, ""))
+        ));
+        assert!(!from_model(
+            Agent::Claude,
+            &entry(&error.replace("<synthetic>", "claude-opus-5-5"))
+        ));
+        assert!(from_model(
+            Agent::Claude,
+            &entry(
+                &error
+                    .replace(r#""isApiErrorMessage":true,"#, "")
+                    .replace("<synthetic>", "claude-opus-5-5")
+            )
+        ));
+        for codex in [
+            r#"{"type":"response_item","payload":{"type":"reasoning","summary":[]}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command"}}"#,
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch"}}"#,
+        ] {
+            assert!(from_model(Agent::Codex, &entry(codex)), "{codex}");
+            let other = codex.replace("response_item", "event_msg");
+            assert!(!from_model(Agent::Codex, &entry(&other)), "{other}");
+        }
+        for codex in [
+            r#"{"type":"response_item","payload":{"type":"message","role":"user"}}"#,
+            r#"{"type":"response_item","payload":{"type":"function_call_output"}}"#,
+            r#"{"type":"response_item","payload":{"type":"additional_tools","role":"developer"}}"#,
+            r#"{"type":"response_item","payload":{}}"#,
+        ] {
+            assert!(!from_model(Agent::Codex, &entry(codex)), "{codex}");
+        }
+    }
+
     #[test]
     fn a_missing_file_shows_nothing_and_an_unreadable_one_fails() {
         let dir = tempfile::tempdir().unwrap();
@@ -248,6 +412,12 @@ mod tests {
                 .is_empty()
         );
         assert!(read_seen(Agent::Codex, dir.path(), &ids()).is_err());
+        assert!(
+            read_written(Agent::Codex, &missing, &ids())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(read_written(Agent::Codex, dir.path(), &ids()).is_err());
     }
 
     #[test]

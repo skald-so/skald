@@ -56,6 +56,10 @@ pub enum Call {
     /// Schedules [`LOOP_PROMPT`] every minute with Claude Code's `CronCreate`, as `/loop 1m` does.
     /// Once the script ends, each turn a scheduled prompt starts calls `inbox`.
     Cron,
+    /// Answers each request to the model with an API error, as a model that cannot be reached or
+    /// refuses the request does: the model never gets it. A script that starts with it plays
+    /// nothing else.
+    Fail,
 }
 
 /// The prompt a [`Call::Cron`] schedules.
@@ -80,7 +84,12 @@ impl Call {
             Self::Shell => Some(SHELL),
             Self::Quick => Some(QUICK),
             Self::Pause => Some(PAUSE),
-            Self::Inbox | Self::Ack(_) | Self::InboxSeen | Self::Reply | Self::Cron => None,
+            Self::Inbox
+            | Self::Ack(_)
+            | Self::InboxSeen
+            | Self::Reply
+            | Self::Cron
+            | Self::Fail => None,
         }
     }
 
@@ -95,7 +104,7 @@ impl Call {
                 .collect()
         };
         match self {
-            Self::Shell | Self::Quick | Self::Pause | Self::Cron => None,
+            Self::Shell | Self::Quick | Self::Pause | Self::Cron | Self::Fail => None,
             Self::Inbox => Some((INBOX, json!({}))),
             Self::InboxSeen => Some((INBOX, json!({ "seen": seen(&held) }))),
             Self::Ack(with) => {
@@ -379,7 +388,12 @@ pub fn answer(script: &[Call], request: &Request, log: &mut StubLog) -> Response
     log.requests
         .push(String::from_utf8_lossy(&request.body).into_owned());
     let body: Value = serde_json::from_slice(&request.body).unwrap_or_default();
-    match request.path.split('?').next().unwrap_or_default() {
+    let path = request.path.split('?').next().unwrap_or_default();
+    if script.first() == Some(&Call::Fail) && matches!(path, "/v1/messages" | "/v1/responses") {
+        // A client error, which neither CLI retries.
+        return Response::json(400, &error_of("invalid_request_error", FAILED));
+    }
+    match path {
         "/v1/messages" => messages(script, &body),
         "/v1/messages/count_tokens" => Response::json(200, &json!({ "input_tokens": 0 })),
         "/v1/responses" => responses(script, &body),
@@ -387,8 +401,15 @@ pub fn answer(script: &[Call], request: &Request, log: &mut StubLog) -> Response
     }
 }
 
+/// The text of the error a [`Call::Fail`] script answers with.
+pub const FAILED: &str = "the model stub fails each request";
+
 fn error(message: &str) -> Value {
-    json!({ "type": "error", "error": { "type": "stub_error", "message": message } })
+    error_of("stub_error", message)
+}
+
+fn error_of(kind: &str, message: &str) -> Value {
+    json!({ "type": "error", "error": { "type": kind, "message": message } })
 }
 
 /// How many tool results the conversation in `items` holds: the turns of the script it has played.
@@ -790,6 +811,42 @@ mod tests {
             )
         );
         assert_eq!(log.requests.len(), 2);
+    }
+
+    #[test]
+    fn fails_each_model_request_of_a_failing_script() {
+        let mut log = StubLog::default();
+        let failed = Response::json(
+            400,
+            &json!({ "type": "error", "error": {
+                "type": "invalid_request_error", "message": "the model stub fails each request"
+            } }),
+        );
+        for path in ["/v1/messages", "/v1/messages?beta=true", "/v1/responses"] {
+            let body = json!({ "messages": [], "input": [] });
+            assert_eq!(
+                answer(&[Call::Fail], &request(path, &[], &body), &mut log),
+                failed,
+                "{path}"
+            );
+        }
+        // Each request is recorded, and the other paths answer as they do.
+        assert_eq!(log.requests.len(), 3);
+        let tokens = answer(
+            &[Call::Fail],
+            &request("/v1/messages/count_tokens", &[], &json!({})),
+            &mut log,
+        );
+        assert_eq!(tokens.status, 200);
+        // Only a script that starts with it fails.
+        let played = answer(
+            &[Call::Quick, Call::Fail],
+            &request("/v1/responses", &[], &json!({ "input": [] })),
+            &mut log,
+        );
+        assert_eq!(played.status, 200);
+        assert_eq!(Call::Fail.command(), None);
+        assert_eq!(Call::Fail.server_tool(&json!({})), None);
     }
 
     #[test]

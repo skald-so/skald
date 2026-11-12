@@ -759,7 +759,7 @@ fn gui_turns_off_the_users_claude_plugins_and_servers() {
     .unwrap();
     fs::write(
         home.path().join(".claude.json"),
-        r#"{"mcpServers":{"search":{"command":"secret-command"}}}"#,
+        r#"{"mcpServers":{"search":{"command":"secret-command"},"my.search":{}}}"#,
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -778,8 +778,9 @@ fn gui_turns_off_the_users_claude_plugins_and_servers() {
     );
     assert_eq!(
         settings["permissions"]["deny"],
-        serde_json::json!(["mcp__search"])
+        serde_json::json!(["mcp__my_search", "mcp__search"])
     );
+    assert_eq!(settings["disableClaudeAiConnectors"], true);
     assert!(!settings.to_string().contains("secret-command"));
 }
 
@@ -1196,7 +1197,14 @@ fn read_sessions_get_only_their_environment() {
                 assert!(prompt, "{}: {:?}", checked.at, session.args);
             }
         }
-        for (flags, sessions) in runs(1, 1) {
+        // With `--all` on the stub, also the failed request, whose prompt hands the message over.
+        let transcript_runs: [(&[&str], usize); 4] = [
+            (&[], 1),
+            (&["--all"], 2),
+            (&["--real"], 1),
+            (&["--real", "--all"], 1),
+        ];
+        for (flags, sessions) in transcript_runs {
             let checked = checked_sessions(
                 agent,
                 &["transcript", agent.cli()],
@@ -1204,12 +1212,20 @@ fn read_sessions_get_only_their_environment() {
                 sessions,
                 |h, s, p| agent.environment(h, s, p),
             );
+            let mut handed = 0;
             for session in &checked.sessions {
                 // The session keeps its file, which the check reads.
                 for kept in ["--no-session-persistence", "--ephemeral"] {
                     assert!(!session.args.contains(&kept.to_owned()), "{}", checked.at);
                 }
+                handed += usize::from(
+                    session
+                        .args
+                        .iter()
+                        .any(|arg| arg.contains("<message msg_id=")),
+                );
             }
+            assert_eq!(handed, sessions - 1, "{}", checked.at);
         }
     }
     for flags in [&[][..], &["--all"]] {

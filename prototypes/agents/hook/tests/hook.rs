@@ -330,6 +330,33 @@ fn transcript_line(cli: &Cli, msg_id: &str) -> String {
     }
 }
 
+/// An entry of `cli`'s session file that is the model's own; with `failed`, the API error a CLI
+/// writes in its place, or the turn's end with the error.
+fn model_line(cli: &Cli, failed: bool) -> &'static str {
+    match (cli.is_codex(), failed) {
+        (true, false) => {
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#
+        }
+        (true, true) => {
+            r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"x"}}}"#
+        }
+        (false, false) => r#"{"type":"assistant","message":{"model":"claude-opus-5-5"}}"#,
+        (false, true) => {
+            r#"{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>"}}"#
+        }
+    }
+}
+
+/// Writes `cli`'s session file `path`: the entries of `answered`, followed by the model's own, then
+/// the entry of `failed`, followed only by an API error.
+fn write_answered(cli: &Cli, path: &Path, answered: [&str; 2], failed: &str) {
+    let mut lines: Vec<String> = answered.map(|id| transcript_line(cli, id)).to_vec();
+    lines.push(model_line(cli, false).to_owned());
+    lines.push(transcript_line(cli, failed));
+    lines.push(model_line(cli, true).to_owned());
+    fs::write(path, lines.join("\n")).unwrap();
+}
+
 fn signals(source: &Source, msg_id: &str) -> Vec<String> {
     source
         .records(msg_id)
@@ -356,22 +383,24 @@ fn confirms_the_messages_the_session_file_shows_and_drops_their_repeats() {
         let repeat = source.add("carol", "repeat").unwrap();
         // Waiting and new: handed over.
         let fresh = source.add("dave", "fresh").unwrap();
-        fs::write(
+        // Waiting again, but its request failed: handed over, not a repeat.
+        let failed = source.add("frank", "failed").unwrap();
+        write_answered(
+            cli,
             &transcript,
-            [&shown.msg_id, &repeat.msg_id]
-                .map(|id| transcript_line(cli, id))
-                .join("\n"),
-        )
-        .unwrap();
+            [&shown.msg_id, &repeat.msg_id],
+            &failed.msg_id,
+        );
         let input = with_transcript(cli.post_tool_use, &transcript);
         let context = given(
             cli,
             &hook(cli, &dir.path().join("source"), &input),
             "PostToolUse",
         );
-        assert_carries_once(&context, std::slice::from_ref(&fresh));
+        assert_carries_once(&context, &[fresh.clone(), failed.clone()]);
         assert!(!context.contains(&repeat.msg_id), "{context}");
-        assert_handed_over(&source, &[fresh.clone(), repeat.clone()]);
+        assert_handed_over(&source, &[fresh.clone(), repeat.clone(), failed.clone()]);
+        assert!(signals(&source, &failed.msg_id).is_empty());
         assert_eq!(signals(&source, &shown.msg_id), ["transcript"]);
         assert!(signals(&source, &unseen.msg_id).is_empty());
         assert_eq!(
@@ -386,7 +415,13 @@ fn confirms_the_messages_the_session_file_shows_and_drops_their_repeats() {
             .append(true)
             .open(&transcript)
             .unwrap();
-        writeln!(file, "\n{}", transcript_line(cli, &again.msg_id)).unwrap();
+        writeln!(
+            file,
+            "\n{}\n{}",
+            transcript_line(cli, &again.msg_id),
+            model_line(cli, false)
+        )
+        .unwrap();
         let input = with_transcript(cli.stop, &transcript);
         quiet(&hook(cli, &dir.path().join("source"), &input));
         assert_handed_over(&source, &[again]);
@@ -408,20 +443,25 @@ fn confirm_only_records_what_the_session_file_shows_and_hands_nothing_over() {
         source
             .handed_over(&[source.take().unwrap()[0].msg_id.clone()])
             .unwrap();
+        // Handed over, but only an API error followed its entry.
+        let failed = source.add("carol", "failed").unwrap();
+        source
+            .handed_over(&[source.take().unwrap()[0].msg_id.clone()])
+            .unwrap();
         let waiting = source.add("bob", "waiting").unwrap();
         let transcript = dir.path().join("session.jsonl");
-        fs::write(
+        write_answered(
+            cli,
             &transcript,
-            [&shown.msg_id, &waiting.msg_id]
-                .map(|id| transcript_line(cli, id))
-                .join("\n"),
-        )
-        .unwrap();
+            [&shown.msg_id, &waiting.msg_id],
+            &failed.msg_id,
+        );
         let mut args = vec!["--confirm"];
         args.extend(cli.flags);
         args.push(&path);
         quiet(&run(&args, &with_transcript(cli.stop, &transcript), &[]));
         assert_eq!(signals(&source, &shown.msg_id), ["transcript"]);
+        assert!(signals(&source, &failed.msg_id).is_empty());
         // A waiting message is neither handed over nor confirmed.
         assert_waiting(&source, std::slice::from_ref(&waiting));
         assert!(signals(&source, &waiting.msg_id).is_empty());

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use agent_live::channel::{Files, PtySession, Sent, extra_environment, stub_environment};
 use agent_live::hook::HOOK_BIN;
-use agent_live::wake::{self, Bypass, Wake, WakeBinaries, WakeCheck, held_notice};
+use agent_live::wake::{self, Bypass, Wake, WakeBinaries, WakeCheck, held_notice, token_of};
 use agent_live::{Agent, Call, INBOX_BIN, Kind, Options, binary, channel, model_use, token};
 use agent_socket::{FROM, Receipts, hand_over};
 use agent_source::Source;
@@ -294,27 +294,9 @@ impl Output {
     }
 }
 
-/// The check token in a check message's `text`.
-fn token_of(text: &str) -> String {
-    text.split_whitespace()
-        .find(|word| word.starts_with("tok-"))
-        .unwrap_or_default()
-        .trim_end_matches('.')
-        .to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn finds_the_token_of_a_check_message() {
-        assert_eq!(
-            token_of("The check token is tok-14a6985c7745. Reply with only the check token."),
-            "tok-14a6985c7745"
-        );
-        assert_eq!(token_of("none"), "");
-    }
 
     #[test]
     fn finds_the_mod_in_the_repository() {

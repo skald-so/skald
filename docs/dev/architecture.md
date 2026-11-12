@@ -101,7 +101,7 @@ Paths of Claude Code and Codex as [agent-delivery.md](agent-delivery.md#summary)
 
 Adapters are separate modules with e2e tests against real CLIs.
 
-`read` is issued once the agent's session file shows the message in an entry that went to the model, then on weaker signals; an unconfirmed message goes again by the next path: [agent-delivery.md, "Read confirmations"](agent-delivery.md#read-confirmations).
+`read` is issued once the agent's session file shows the message in an entry that went to the model, followed by the model's own entry, then on weaker signals; an unconfirmed message goes again by the next path: [agent-delivery.md, "Read confirmations"](agent-delivery.md#read-confirmations).
 
 ## Notifications
 - To Telegram, Slack or a webhook.

@@ -378,6 +378,15 @@ pub struct Bypass {
     pub model_use: String,
 }
 
+/// The check token in a check message's `text`.
+pub fn token_of(text: &str) -> String {
+    text.split_whitespace()
+        .find(|word| word.starts_with("tok-"))
+        .unwrap_or_default()
+        .trim_end_matches('.')
+        .to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::channel::HookEvent;
@@ -392,6 +401,16 @@ mod tests {
             plugin: "/p/mod".into(),
             inbox: "/bin/agent-inbox".into(),
         }
+    }
+
+    #[test]
+    fn finds_the_token_of_a_check_message() {
+        assert_eq!(
+            token_of("The check token is tok-14a6985c7745. Reply with only the check token."),
+            "tok-14a6985c7745"
+        );
+        assert_eq!(token_of("Not tok-1, but tok-2."), "tok-1,");
+        assert_eq!(token_of("none"), "");
     }
 
     #[test]

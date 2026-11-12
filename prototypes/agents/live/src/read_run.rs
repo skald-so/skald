@@ -8,8 +8,9 @@ use std::time::{Duration, Instant};
 
 use agent_live::hook::HOOK_BIN;
 use agent_live::read::{
-    self, Confirmed, RESEND_AFTER_MS, ReadCheck, ack_prompt, ack_script, read_session_file,
-    resend_session, resend_unconfirmed, transcript_session,
+    self, Confirmed, RESEND_AFTER_MS, ReadCheck, ack_prompt, ack_script, failed_prompt,
+    read_session_file, resend_session, resend_unconfirmed, transcript_prompt, transcript_session,
+    written_to_session_file,
 };
 use agent_live::{Agent, Event, INBOX_BIN, Options, SENDER, Server, Stub, channel, prepare, token};
 use agent_socket::{FROM, Receipts, hand_over};
@@ -88,7 +89,8 @@ pub fn ack(agent: Agent, options: &Options) -> Result<bool> {
 }
 
 /// The session file's live check: the `PostToolUse` hook hands a message over, the `Stop` hook
-/// finds it in the session's file, and so does the client after the session.
+/// finds it in the session's file, and so does the client after the session. With `--all` on the
+/// stub, also a failed request: the session file holds its message, and neither counts it.
 pub fn transcript(agent: Agent, options: &Options) -> Result<bool> {
     let (work, handler, path) = start_with(agent, HOOK_BIN)?;
     let stub = options.stub(read::TRANSCRIPT_SCRIPT)?;
@@ -106,6 +108,7 @@ pub fn transcript(agent: Agent, options: &Options) -> Result<bool> {
                 project,
                 &handler,
                 source,
+                &transcript_prompt(),
                 options.model,
                 url.as_deref(),
             )
@@ -135,8 +138,89 @@ pub fn transcript(agent: Agent, options: &Options) -> Result<bool> {
         "{}",
         check.transcript(&session, &confirmed(&source, &message, &token)?)
     );
+    if options.all && !options.real {
+        let line = failed_request(agent, options, work.path(), &handler, &path, &mut check)?;
+        println!("{line}");
+    }
     let verdict = check.verdict(agent, options);
     Ok(finish(work, options, &verdict, check.pass()))
+}
+
+/// The transcript check's failed request, on a stub that fails each request: the prompt hands the
+/// message over. After the session, the client reads the session file, and so does the hook as at
+/// a turn's end: neither must count the message. Returns the check's line.
+fn failed_request(
+    agent: Agent,
+    options: &Options,
+    work: &Path,
+    handler: &Path,
+    path: &str,
+    check: &mut ReadCheck,
+) -> Result<String> {
+    let stub = Stub::start(read::FAILED_SCRIPT)?;
+    let url = stub.url();
+    let token = token();
+    let mut message = None;
+    let run = prepare(
+        work,
+        "b",
+        agent,
+        path,
+        Some(&stub),
+        |dir, project, source| {
+            let opened = Source::open(source)?;
+            let added = channel::add_message(&opened, &token)?;
+            let taken = opened.take()?;
+            opened.handed_over(std::slice::from_ref(&added.msg_id))?;
+            message = Some(added);
+            transcript_session(
+                agent,
+                dir,
+                project,
+                handler,
+                source,
+                &failed_prompt(&taken),
+                options.model,
+                Some(&url),
+            )
+        },
+    )?;
+    let message = message.expect("the message was added");
+    let source = Source::open(&run.source)?;
+    let session = run_session(&run, Some(&stub), |_| {})?;
+    read_session_file(agent, &source)?;
+    if let Some(file) = source.registration()?.and_then(|r| r.transcript_path) {
+        run_stop_hook(agent, handler, &run.source, &file)?;
+    }
+    let written = written_to_session_file(agent, &source, &message.msg_id)?;
+    Ok(check.failed(&session, &confirmed(&source, &message, &token)?, written))
+}
+
+/// Runs `handler` on `source` as `agent`'s `Stop` hook with the session file `file`.
+fn run_stop_hook(agent: Agent, handler: &Path, source: &Path, file: &str) -> Result<()> {
+    let mut command = std::process::Command::new(handler);
+    if agent == Agent::Codex {
+        command.arg("--codex");
+    }
+    let mut child = command
+        .arg(source)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()?;
+    let input = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "failed-request",
+        "transcript_path": file,
+    });
+    std::io::Write::write_all(
+        &mut child.stdin.take().expect("stdin is piped"),
+        input.to_string().as_bytes(),
+    )?;
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(format!("the Stop hook failed: {status}").into());
+    }
+    Ok(())
 }
 
 /// The resend live check, on the model stub only: while a bypass session runs `sleep 20`, one

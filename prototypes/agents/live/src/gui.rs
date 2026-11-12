@@ -393,10 +393,13 @@ impl UserClaude {
         }
     }
 
-    /// Turns them off in a Claude Code project's `settings`: each plugin in `enabledPlugins`, and
-    /// each server's tools, but those of a server named as the check's, by a deny rule. Claude Code
-    /// still starts the servers; the session gets none of their tools.
+    /// Turns them off in a Claude Code project's `settings`: each plugin in `enabledPlugins`; the
+    /// claude.ai connectors, whose names only the account knows, by `disableClaudeAiConnectors`;
+    /// and each server's tools, but those of a server named as the check's, by a deny rule on the
+    /// name Claude Code gives its tools. Claude Code still starts the servers; the session gets
+    /// none of their tools.
     fn turn_off(&self, settings: &mut Value) {
+        settings["disableClaudeAiConnectors"] = true.into();
         if !self.plugins.is_empty() {
             let off: serde_json::Map<String, Value> = self
                 .plugins
@@ -408,13 +411,28 @@ impl UserClaude {
         let deny: Vec<String> = self
             .mcp_servers
             .iter()
-            .filter(|name| *name != SERVER)
+            .map(|name| tools_of(name))
+            .filter(|name| name != SERVER)
             .map(|name| format!("mcp__{name}"))
             .collect();
         if !deny.is_empty() {
             settings["permissions"]["deny"] = deny.into();
         }
     }
+}
+
+/// The name of the MCP server `name` in its tools' names, `mcp__<name>__<tool>`: Claude Code
+/// 2.1.322 writes each character but a letter, a digit, `_` and `-` as `_`.
+fn tools_of(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 impl Binaries {
@@ -1127,6 +1145,7 @@ mod tests {
 
     /// `settings` with the user's Claude Code plugins and servers of [`binaries`] turned off.
     fn claude_off(mut settings: Value) -> String {
+        settings["disableClaudeAiConnectors"] = true.into();
         settings["enabledPlugins"] = json!({ "one@market": false, "two@market": false });
         settings["permissions"]["deny"] = json!(["mcp__gamma"]);
         pretty(&settings)
@@ -1150,17 +1169,33 @@ mod tests {
             UserClaude::read(&json!({}), &json!(null)),
             UserClaude::default()
         );
-        // With nothing to turn off, the settings stay as they are.
+        // With nothing else to turn off, only the claude.ai connectors are.
+        let connectors = json!({ "maxEffortLevel": "low", "disableClaudeAiConnectors": true });
         let mut settings = json!({ "maxEffortLevel": "low" });
         UserClaude::default().turn_off(&mut settings);
-        assert_eq!(settings, json!({ "maxEffortLevel": "low" }));
-        let mut settings = json!({});
+        assert_eq!(settings, connectors);
+        let mut settings = json!({ "maxEffortLevel": "low" });
         UserClaude {
             plugins: Vec::new(),
             mcp_servers: vec!["skald".to_owned()],
         }
         .turn_off(&mut settings);
-        assert_eq!(settings, json!({}));
+        assert_eq!(settings, connectors);
+        // A rule names a server as its tools do.
+        let mut settings = json!({});
+        UserClaude {
+            plugins: Vec::new(),
+            mcp_servers: vec![
+                "my server.v2".to_owned(),
+                "a_b-c9".to_owned(),
+                "sk.ald".to_owned(),
+            ],
+        }
+        .turn_off(&mut settings);
+        assert_eq!(
+            settings["permissions"]["deny"],
+            json!(["mcp__my_server_v2", "mcp__a_b-c9", "mcp__sk_ald"])
+        );
     }
 
     /// The files under `dir`, as paths relative to it, sorted.
@@ -1441,8 +1476,12 @@ mod tests {
         fs::write(
             day.join(format!("rollout-2026-11-12T14-52-10-{thread}.jsonl")),
             format!(
-                r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"text":"{}"}}]}}}}"#,
-                message.msg_id
+                "{}\n{}",
+                format_args!(
+                    r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"text":"{}"}}]}}}}"#,
+                    message.msg_id
+                ),
+                r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#
             ),
         )
         .unwrap();
