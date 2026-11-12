@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Tests the Release PR release-plz keeps open and the tag it gives a Release PR's merge, on fixture
-# repositories: copies of this working tree, released as 0.40.5 and tagged v0.40.5, with PRs
-# squash-merged after the tag, their titles their commits. release-plz runs with the repository's
-# own config and without GitHub: the Release PR and the tag go to a stand-in for the GitHub API,
-# script/lib/github-api-stub.mjs.
+# Tests the Release PR release-plz keeps open, on fixture repositories: copies of this working tree,
+# released as 0.40.5 and tagged v0.40.5, with PRs squash-merged after the tag, their titles their
+# commits. release-plz runs with the repository's own config and without GitHub: the Release PR goes
+# to a stand-in for the GitHub API, script/lib/github-api-stub.mjs.
 #   - The Release PR sets one version for every crate of the workspace, in Cargo.toml and
 #     Cargo.lock, and adds the titles of the PRs merged since the last release tag, whatever they
 #     change, to one CHANGELOG.md in the root, once each.
@@ -12,9 +11,6 @@
 #     Release PR keeps it.
 #   - The Release PR targets dev and its title passes script/check-pr-title; a later push updates the
 #     open Release PR and opens no other.
-#   - The merge of a Release PR gets one tag, vX.Y.Z or vX.Y.Z-beta.N, on its commit; a push of any
-#     other PR, one that sets a version among them, and a version already tagged get none. No GitHub
-#     Release is created.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -41,14 +37,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
-# The working tree as script/test sees it: tracked and new files, without ignored ones.
-mkdir "$tmp/tree"
-(
-  cd "$root"
-  git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d '' path; do
-    if [[ -e $path || -L $path ]]; then printf '%s\0' "$path"; fi
-  done | tar --null -T - -cf -
-) | tar -C "$tmp/tree" -xf -
+copy_tree "$root" "$tmp/tree"
 
 # The workspace's crates, one name per line.
 crates() {
@@ -88,17 +77,10 @@ merge() {
   git -C "$1" commit --quiet --message "$2"
 }
 
-# merge_release <dir> <version>: squash-merges the Release PR of <version> in <dir>, from a branch
-# of release-plz, as the stand-in for the GitHub API tells.
-merge_release() {
-  git -C "$1" add --all
-  git -C "$1" commit --quiet --allow-empty --message "chore: release v$2 (#$((++pr)))"
-  echo "$(git -C "$1" rev-parse HEAD) release-plz-2026-01-01T00-00-00Z" >>"$tmp/merges"
-}
-
 # release <dir> <version>: merges the Release PR in <dir> and tags it v<version>.
 release() {
-  merge_release "$1" "$2"
+  git -C "$1" add --all
+  git -C "$1" commit --quiet --allow-empty --message "chore: release v$2 (#$((++pr)))"
   git -C "$1" tag "v$2"
 }
 
@@ -262,8 +244,7 @@ fi
 
 # The Release PR through the stand-in for the GitHub API: opened, then updated by a later push.
 : >"$tmp/requests.log"
-node "$root/script/lib/github-api-stub.mjs" "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" \
-  "$tmp/merges" &
+node "$root/script/lib/github-api-stub.mjs" "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" &
 stub=$!
 for _ in $(seq 100); do
   [[ ! -s $tmp/port ]] || break
@@ -330,80 +311,6 @@ if release_pr "$case"; then
       fail "$case: the branch of the open Release PR, $head, did not move"
   fi
 fi
-
-# tag <case>: runs release-plz release in $dir against the stand-in, as the workflow does on a push
-# to dev, with a new request log.
-tag() {
-  : >"$tmp/requests.log"
-  if ! (cd "$dir" && release-plz release --forge github --repo-url "$api/skald-so/skald" \
-    --git-token fixture-token) >"$tmp/release-plz.log" 2>&1; then
-    fail "$1: release-plz release failed: $(tail -n 20 "$tmp/release-plz.log")"
-    return 1
-  fi
-}
-
-# writes: the requests to the stand-in that change something, one per line.
-writes() {
-  jq -c 'select(.method != "GET") | {method, url, body}' "$tmp/requests.log"
-}
-
-# expect_tag <case> <tag>: release-plz changed nothing on GitHub but creating the annotated tag
-# <tag> on the last commit of $dir and its ref: no other tag, no GitHub Release.
-expect_tag() {
-  jq -se --arg tag "$2" --arg head "$(git -C "$dir" rev-parse HEAD)" '
-    map(select(.method != "GET")) | length == 2
-    and (.[0] | .method == "POST" and .url == "/api/v3/repos/skald-so/skald/git/tags"
-      and (.body | fromjson | .tag == $tag and .object == $head and .type == "commit"))
-    and (.[0].response.sha as $object | .[1] | .method == "POST"
-      and .url == "/api/v3/repos/skald-so/skald/git/refs"
-      and (.body | fromjson | .ref == "refs/tags/\($tag)" and .sha == $object))' \
-    "$tmp/requests.log" >/dev/null ||
-    fail "$1: not just the tag $2 on the last commit; the changes: $(writes | tr '\n' ' ')"
-}
-
-# expect_no_tag <case>: release-plz changed nothing on GitHub.
-expect_no_tag() {
-  [[ -z $(writes) ]] || fail "$1: release-plz tagged or changed: $(writes | tr '\n' ' ')"
-}
-
-# A Release PR merged: its tag. Run again once the tag is fetched, as a rerun of the workflow: none.
-fixture tag
-merge "$dir" "fix(client): fix the change uniform (#$((++pr)))" crates/client/src/main.rs
-case="the merge of the Release PR of 0.40.6"
-if update "$case"; then
-  merge_release "$dir" 0.40.6
-  tag "$case" && expect_tag "$case" v0.40.6
-  git -C "$dir" tag v0.40.6
-  case="the merge of the Release PR of 0.40.6, tagged already"
-  tag "$case" && expect_no_tag "$case"
-fi
-# Pushes that are no Release PR merge: none, also when the PR sets a version.
-merge "$dir" "fix(server): fix the change victor (#$((++pr)))" crates/server/src/main.rs
-echo "$(git -C "$dir" rev-parse HEAD) fix-the-change-victor" >>"$tmp/merges"
-case="the merge of a PR that is no Release PR"
-tag "$case" && expect_no_tag "$case"
-merge "$dir" "fix(proto): fix the change whiskey (#$((++pr)))" crates/proto/src/lib.rs
-case="a push of a commit that no PR merged"
-tag "$case" && expect_no_tag "$case"
-set_version "$dir" 0.41.0-beta.1
-git -C "$dir" commit --quiet --all --message "chore: set the version of a beta (#$((++pr)))"
-echo "$(git -C "$dir" rev-parse HEAD) set-the-version-of-a-beta" >>"$tmp/merges"
-case="the merge of a PR that sets a beta's version"
-tag "$case" && expect_no_tag "$case"
-# The beta's Release PR merged: its beta tag.
-case="the merge of the Release PR of 0.41.0-beta.1"
-if update "$case"; then
-  merge_release "$dir" 0.41.0-beta.1
-  tag "$case" && expect_tag "$case" v0.41.0-beta.1
-fi
-
-# Before the first release, with no tag yet: a push that is no Release PR merge gets none.
-fixture first-release
-git -C "$dir" tag -d v0.40.5 >/dev/null
-merge "$dir" "fix(client): fix the change xray (#$((++pr)))" crates/client/src/main.rs
-echo "$(git -C "$dir" rev-parse HEAD) fix-the-change-xray" >>"$tmp/merges"
-case="the merge of a PR that is no Release PR, before the first release"
-tag "$case" && expect_no_tag "$case"
 
 if [[ $failures -ne 0 ]]; then
   echo "release-plz-test: $failures case(s) failed" >&2

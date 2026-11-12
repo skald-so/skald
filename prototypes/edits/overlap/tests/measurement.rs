@@ -8,10 +8,10 @@ use std::fs;
 use std::sync::Mutex;
 
 use common::Repo;
-use edit_overlap::git;
 use edit_overlap::harness::{DATE, Machine};
 use edit_overlap::noise::{self, Class, Signal};
 use edit_overlap::replay::{self, Counts, Level, Measured, Replay, Repository};
+use edit_overlap::{exposure, git};
 use tempfile::TempDir;
 
 /// `machine` replaces each `(path, line, text)` of `edits`, a 1-based line, with `text` on a new
@@ -1029,4 +1029,234 @@ fn attributes_of_the_given_commit_mark_files_generated() {
     // The commit without the attributes marks none.
     let marked = noise::marked_generated(machine.dir(), "HEAD", &paths).unwrap();
     assert!(marked.is_empty());
+}
+
+/// What fingerprints show of `replays`, merges of the repository of `maintainer`, as the fixture
+/// repository `name`.
+fn exposed<'r>(
+    maintainer: &Machine,
+    repository: &'r Repository,
+    replays: Vec<Replay>,
+) -> exposure::Exposed<'r> {
+    let scope = git::scope_of(maintainer.dir(), "HEAD").unwrap();
+    let recovered = exposure::recover(maintainer.dir(), &scope, &replays).unwrap();
+    exposure::Exposed {
+        repository,
+        replays,
+        recovered,
+    }
+}
+
+#[test]
+fn exposure_gives_what_the_server_learns_of_the_replays() {
+    let tmp = TempDir::new().unwrap();
+    let maintainer = fixture(&tmp);
+    let mut replays = replays(&maintainer);
+    // The fixture merges at one time; here they merge an hour apart, the oldest an hour after it.
+    let date: i64 = DATE.split_once(' ').unwrap().0.parse().unwrap();
+    let count = replays.len() as i64;
+    for (i, replay) in replays.iter_mut().enumerate() {
+        assert_eq!(replay.merged_at, date);
+        replay.merged_at = date + (count - i as i64) * 3600;
+    }
+    let repository = Repository {
+        name: "fixture",
+        url: "https://example.com/fixture",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: 12,
+    };
+    let report = exposure::report(&[exposed(&maintainer, &repository, replays)]);
+    let rows = |title: &str| rows(&report, title);
+    // 18 machines, one commit each: the second parents, and the first parents of Bob's merges.
+    // Their fingerprints: 3 for 7 of them, 4 for 8, 7 for the 3 of the different functions.
+    assert_eq!(
+        rows("What the server sees of each machine"),
+        ["| fixture | 18 | 18 | 1 | 4 | 7 | 7 |"]
+    );
+    // Bob's merges but the guide's: 2 shared fingerprints for distant lines and for different
+    // functions, 3 for the insertions and the empty line, 4 for the same line. The machines of the
+    // warehouse share only its path, all others the path of `src/inventory.rs`.
+    assert_eq!(
+        rows("Machines that share fingerprints"),
+        ["| fixture | 12 | 5 (41.6%) | 3 | 4 | 4 | 2 | 16 (88.8%) | 0 (0.0%) |"]
+    );
+    // The path of `src/inventory.rs` in 15 machines.
+    assert_eq!(
+        rows("How many machines publish each fingerprint"),
+        ["| fixture | 28 | 8 (28.5%) | 19 (67.8%) | 1 (3.5%) | 15 | 0 |"]
+    );
+    // Alice's 6 merges at 22:13 UTC, and the 12 branches 1 to 12 hours before.
+    assert_eq!(
+        rows("When the machines publish: their commits, each once, by hour of the day, UTC"),
+        ["| fixture | 18 | 15:00 to 23:00 | 13 (72.2%) |"]
+    );
+    // The clone at the warehouse's merge holds every file and symbol the machines change; the
+    // dictionary none.
+    assert_eq!(
+        rows(
+            "What a holder of the space key recovers: with the fixed dictionary, and with a clone \
+            at the oldest merge replayed"
+        ),
+        ["| fixture | 3 | 0 (0.0%) | 3 (100.0%) | 4 | 0 (0.0%) | 4 (100.0%) |"]
+    );
+    assert!(rows("What the fixed dictionary recovers").is_empty());
+    // At each merge, the machines of the newer merges publish again: 17 at the oldest, then 15,
+    // 14, 12, 11, 9, 8, 6, 5, 3, 2 and 0, with 70 fingerprints at most and 32 at the median; of
+    // the 5 merges whose machines share fingerprints, those newer.
+    assert_eq!(
+        rows("A change of the space key at the time of each merge replayed"),
+        ["| fixture | 12 | 8 | 17 | 1024 | 2240 | 3 | 5 |"]
+    );
+}
+
+#[test]
+fn exposure_gives_what_a_holder_of_the_key_recovers() {
+    let tmp = TempDir::new().unwrap();
+    let main = "fn main() {\n    let a = 0;\n}\n";
+    let [alice, bob, maintainer] = clones_with(&tmp, &[("src/main.rs", main)]);
+    let pair: [Branch; 2] = [
+        ("main-a", 2, &[("src/main.rs", 2, "    let a = 1;")]),
+        (
+            "main-b",
+            3,
+            &[
+                ("src/main.rs", 2, "    let a = 2;"),
+                ("README.md", 1, "# Fixture"),
+            ],
+        ),
+    ];
+    merge_pairs([&alice, &bob, &maintainer], &[pair]);
+    let repositories = ["fixture", "copy"].map(|name| Repository {
+        name,
+        url: "https://example.com/fixture",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: 2,
+    });
+    // The same merges as two repositories: each publishes every fingerprint of the other.
+    let exposed: Vec<_> = (repositories.iter())
+        .map(|repository| exposed(&maintainer, repository, replays(&maintainer)))
+        .collect();
+    let report = exposure::report(&exposed);
+    let rows = |title: &str| rows(&report, title);
+    assert_eq!(
+        rows("How many machines publish each fingerprint"),
+        [
+            "| fixture | 6 | 2 (33.3%) | 4 (66.6%) | 0 (0.0%) | 3 | 6 |",
+            "| copy | 6 | 2 (33.3%) | 4 (66.6%) | 0 (0.0%) | 3 | 6 |",
+        ]
+    );
+    // The clone at Alice's merge lacks the README, which Bob adds.
+    assert_eq!(
+        rows(
+            "What a holder of the space key recovers: with the fixed dictionary, and with a clone \
+            at the oldest merge replayed"
+        ),
+        [
+            "| fixture | 2 | 2 (100.0%) | 1 (50.0%) | 1 | 1 (100.0%) | 1 (100.0%) |",
+            "| copy | 2 | 2 (100.0%) | 1 (50.0%) | 1 | 1 (100.0%) | 1 (100.0%) |",
+        ]
+    );
+    assert_eq!(
+        rows("What the fixed dictionary recovers"),
+        [
+            "| fixture | `README.md` | - | 1 |",
+            "| fixture | `src/main.rs` | - | 3 |",
+            "| fixture | `src/main.rs` | `function_item main` | 3 |",
+            "| copy | `README.md` | - | 1 |",
+            "| copy | `src/main.rs` | - | 3 |",
+            "| copy | `src/main.rs` | `function_item main` | 3 |",
+        ]
+    );
+}
+
+#[test]
+fn exposure_counts_each_commit_of_a_side_and_a_side_of_two_merges_once() {
+    let tmp = TempDir::new().unwrap();
+    let [alice, bob, maintainer] = clones(&tmp);
+    // Alice's topic: two commits, 5 and 2 hours before the fixture's date.
+    branch(
+        &alice,
+        "topic",
+        5,
+        &[("src/warehouse.rs", 1, "pub struct Warehouse(u8);")],
+    );
+    alice
+        .write("src/warehouse.rs", "pub struct Warehouse(u16);\n")
+        .unwrap();
+    alice.git(&["add", "--all"]).unwrap();
+    let (seconds, zone) = DATE.split_once(' ').unwrap();
+    let date: i64 = seconds.parse().unwrap();
+    let two_hours_before = format!("{} {zone}", date - 2 * 3600);
+    let commit = ["commit", "--quiet", "--message", "topic 2", "--date"];
+    alice
+        .git(&[&commit[..], &[&two_hours_before]].concat())
+        .unwrap();
+    alice.push("topic").unwrap();
+    // Bob's release branch, 4 hours before, from the same commit of the default branch.
+    branch(
+        &bob,
+        "release",
+        4,
+        &[("docs/guide.md", 3, "Read the release notes.")],
+    );
+    // The maintainer merges the topic into the release branch, then into the default branch, and
+    // then the release branch: the topic is the same side, with one merge base, of two merges.
+    maintainer.git(&["fetch", "--quiet", "origin"]).unwrap();
+    maintainer
+        .git(&["checkout", "--quiet", "-B", "release", "origin/release"])
+        .unwrap();
+    let merge = ["merge", "--quiet", "--no-ff", "--message"];
+    (maintainer.git(&[&merge[..], &["release-topic", "origin/topic"]].concat())).unwrap();
+    maintainer.push("release").unwrap();
+    maintainer.git(&["checkout", "--quiet", "main"]).unwrap();
+    maintainer.merge("topic").unwrap();
+    maintainer.merge("release").unwrap();
+    let mut replays = replays(&maintainer);
+    let messages: Vec<String> = (replays.iter())
+        .map(|replay| message(&maintainer, &replay.merge))
+        .collect();
+    assert_eq!(messages, ["release", "topic", "release-topic"]);
+    // The topic's side, in both merges of it, lives from its first commit.
+    for replay in &replays[1..] {
+        assert_eq!(replay.sides[1].lifetime, Some(5 * 3600));
+        let dates: Vec<i64> = replay.sides[1].commits.iter().map(|c| c.1).collect();
+        assert_eq!(dates, [date - 2 * 3600, date - 5 * 3600]);
+    }
+    // The topic merges into the release branch 1 hour after the date, into the default branch 3
+    // hours after it, and the release branch merges 5 hours after it.
+    for (replay, hours) in replays.iter_mut().zip([5, 3, 1]) {
+        replay.merged_at = date + hours * 3600;
+    }
+    // Machines, the newest merge's first: the release branch with the topic merged, whose commits
+    // are the merge and Bob's; the topic, once for its two merges, until the later; Bob's release.
+    // The default branch's sides of the topic's merge and of the release's change nothing.
+    let view = exposure::View::of(&replays);
+    let machines: Vec<(usize, i64)> = (view.machines.iter())
+        .map(|machine| (machine.commits.len(), (machine.until - date) / 3600))
+        .collect();
+    assert_eq!(machines, [(2, 5), (2, 3), (1, 1)]);
+    // 2 hours after the date, between the topic's two merges: the topic and the release branch
+    // with it publish again.
+    assert_eq!(view.change(date + 2 * 3600).machines, 2);
+    let repository = Repository {
+        name: "fixture",
+        url: "https://example.com/fixture",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: 3,
+    };
+    let report = exposure::report(&[exposed(&maintainer, &repository, replays)]);
+    let rows = |title: &str| rows(&report, title);
+    assert_eq!(
+        rows("What the server sees of each machine")[0][..21].to_owned(),
+        "| fixture | 3 | 5 | 2"
+    );
+    // The merge at 22:13 UTC, Alice's commits at 17:13 and 20:13, Bob's at 18:13.
+    assert_eq!(
+        rows("When the machines publish: their commits, each once, by hour of the day, UTC"),
+        ["| fixture | 4 | 15:00 to 23:00 | 4 (100.0%) |"]
+    );
+    // At the release branch's merge of the topic, the topic and the release branch with it
+    // publish again; at the topic's merge into the default branch, the release branch with it.
+    let change = &rows("A change of the space key at the time of each merge replayed")[0];
+    assert!(change.starts_with("| fixture | 3 | 1 | 2 |"), "{change}");
 }

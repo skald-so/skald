@@ -1,17 +1,28 @@
 // A stand-in for the GitHub API that release-plz opens and updates a Release PR and tags a release
-// through, for script/release-plz-test. It keeps the PRs in memory and serves the calls release-plz
-// makes for a Release PR: its PRs, their commits and labels, branch refs, and commits made with the
-// GraphQL mutation createCommitOnBranch; and for a release: the PRs merged as a commit, tag objects
-// and tag refs. Every request goes to <log> as a JSON line, with the status and the body of its
-// reply; after each request <pulls> holds the PRs as JSON. <merges> has a line `<commit> <branch>`
-// for each PR merged as <commit> from <branch>; it is read on each request.
-// Usage: node github-api-stub.mjs <log> <pulls> <port file> <merges>; it listens on 127.0.0.1 and
-// writes its port to <port file> once it accepts connections.
+// through, for script/release-plz-test and script/release-tag-test. It keeps the PRs in memory and
+// serves the calls release-plz makes for a Release PR: its PRs, their commits and labels, branch
+// refs, and commits made with the GraphQL mutation createCommitOnBranch; and for a tag: the PRs
+// associated with a commit, tag objects and refs. Every request goes to <log> as a JSON line; after
+// each request <pulls> holds the PRs as JSON.
+// <associated>, optional, is read on each request: a JSON object from a commit's SHA to the PRs
+// `GET /repos/{owner}/{repo}/commits/{sha}/pulls` lists for it, or to an HTTP status it fails with;
+// `GET /repos/{owner}/{repo}/pulls/{number}` serves those PRs too. After each request <refs>, also
+// optional, holds the refs written through the API as a JSON array of {method, ref, commit}, a tag
+// object resolved to its commit; creating a tag that exists fails with 422, as on GitHub.
+// Usage: node github-api-stub.mjs <log> <pulls> <port file> [<associated> <refs>]; it listens on
+// 127.0.0.1 and writes its port to <port file> once it accepts connections.
 import fs from 'node:fs';
 import http from 'node:http';
 
-const [log, pullsFile, portFile, mergesFile] = process.argv.slice(2);
+const [log, pullsFile, portFile, associatedFile, refsFile] = process.argv.slice(2);
 const pulls = [];
+// The refs written, and the commit of each tag object created.
+const refs = [];
+const tagObjects = new Map();
+const associated = () =>
+  associatedFile && fs.existsSync(associatedFile)
+    ? JSON.parse(fs.readFileSync(associatedFile, 'utf8') || '{}')
+    : {};
 let commits = 0;
 const oid = () => (++commits).toString(16).padStart(40, '0');
 const bot = { login: 'skald-release[bot]', id: 1, type: 'Bot' };
@@ -44,6 +55,15 @@ function reply(req, body) {
     return [200, { data: { createCommitOnBranch: { commit: { oid: oid() } } } }];
   }
   if (repo === undefined) return [404, { message: 'Not Found' }];
+  if ((match = repo.match(/^\/commits\/([0-9a-f]+)\/pulls$/)) && req.method === 'GET') {
+    const found = associated()[match[1]] ?? [];
+    return typeof found === 'number' ? [found, { message: 'Server Error' }] : [200, found];
+  }
+  if (repo === '/git/tags' && req.method === 'POST') {
+    const sha = oid();
+    tagObjects.set(sha, json.object);
+    return [201, { sha, tag: json.tag, message: json.message, object: { sha: json.object, type: 'commit' } }];
+  }
   if (repo === '/pulls' && req.method === 'GET') {
     return [200, pulls.filter((p) => p.state === 'open')];
   }
@@ -53,7 +73,11 @@ function reply(req, body) {
     return [201, created];
   }
   if ((match = repo.match(/^\/pulls\/(\d+)$/))) {
-    const found = pulls.find((p) => p.number === Number(match[1]));
+    const found =
+      pulls.find((p) => p.number === Number(match[1])) ??
+      Object.values(associated())
+        .flatMap((listed) => (Array.isArray(listed) ? listed : []))
+        .find((p) => p.number === Number(match[1]));
     if (!found) return [404, { message: 'Not Found' }];
     if (req.method === 'PATCH') Object.assign(found, json);
     return [200, found];
@@ -62,23 +86,18 @@ function reply(req, body) {
     const commit = { message: 'chore: release', author: { name: 'skald-release', email: 'app@example.com', date: '2026-01-01T00:00:00Z' } };
     return [200, [{ sha: oid(), commit, author: bot, committer: bot }]];
   }
-  if ((match = repo.match(/^\/commits\/([0-9a-f]{40})\/pulls$/))) {
-    const merges = fs.existsSync(mergesFile) ? fs.readFileSync(mergesFile, 'utf8') : '';
-    const merged = merges.split('\n').map((line) => line.split(' '));
-    return [200, merged.filter(([commit]) => commit === match[1]).map(([, head], i) => ({
-      ...pull(9000 + i, { title: 'merged', head, base: 'dev' }),
-      state: 'closed',
-    }))];
-  }
-  if (repo === '/git/tags' && req.method === 'POST') {
-    return [201, { sha: oid(), tag: json.tag, object: { sha: json.object, type: json.type } }];
-  }
   if ((match = repo.match(/^\/issues\/(\d+)\/labels$/))) {
     return [200, (json.labels ?? []).map((name, i) => ({ id: i + 1, name }))];
   }
   if (repo.startsWith('/git/refs')) {
-    if (req.method === 'DELETE') return [204, null];
     const ref = json.ref ?? `refs/${repo.slice('/git/refs/'.length)}`;
+    if (req.method === 'POST' && ref.startsWith('refs/tags/') && refs.some((r) => r.ref === ref)) {
+      return [422, { message: 'Reference already exists' }];
+    }
+    if (req.method !== 'GET') {
+      refs.push({ method: req.method, ref, commit: tagObjects.get(json.sha) ?? json.sha ?? null });
+    }
+    if (req.method === 'DELETE') return [204, null];
     return [req.method === 'POST' ? 201 : 200, { ref, object: { sha: json.sha ?? oid(), type: 'commit' } }];
   }
   return [404, { message: 'Not Found' }];
@@ -88,15 +107,15 @@ const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => (body += chunk));
   req.on('end', () => {
+    fs.appendFileSync(log, `${JSON.stringify({ method: req.method, url: req.url, body })}\n`);
     let status, json;
     try {
       [status, json] = reply(req, body);
     } catch (error) {
       [status, json] = [400, { message: String(error) }];
     }
-    const line = { method: req.method, url: req.url, body, status, response: json };
-    fs.appendFileSync(log, `${JSON.stringify(line)}\n`);
     fs.writeFileSync(pullsFile, JSON.stringify(pulls));
+    if (refsFile) fs.writeFileSync(refsFile, JSON.stringify(refs));
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(json === null ? '' : JSON.stringify(json));
   });

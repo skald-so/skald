@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Tests the workflow that tags the merge of a Release PR and keeps the Release PR open, named in
-# script/lib/release.sh: it runs only on pushes to dev; the job that tags runs in no concurrency
-# group, so a later push cancels no run of it, and the job that opens the Release PR runs after it,
-# one run at a time, so the Release PR ends up on the latest dev; release-plz runs `release` and
-# `release-pr` only, once each, every step up to them on every push; each with a token of the GitHub
-# App, the job that tags with one narrowed to contents, so the workflows that run on tags start, and
-# the job that opens the Release PR with one narrowed to contents and pull requests, so the PR checks
-# run on it; no cargo registry token; only the release-plz jobs use the App's environment and
-# secrets, in this workflow and in all others, and no other workflow runs release-plz; every job's
-# own token reads contents at most and no job requests an OIDC token; actions are pinned to commits,
-# and tools are installed by taiki-e/install-action at exact versions it checks against checksums,
-# release-plz at the version script/release-plz-test runs.
+# Tests the workflow that keeps the Release PR open, named in script/lib/release.sh: it runs only on
+# pushes to dev, one run at a time per branch, so the Release PR ends up on the latest dev; no step up
+# to release-plz has a condition; release-plz runs `release-pr`, and `release` only to tag
+# (script/release-tag-workflow-test), with a token of the GitHub App narrowed to contents and pull
+# requests, so the PR checks run on the Release PR; only the release-plz jobs use the App's
+# environment and secrets, in this workflow and in all others; every job's own token reads
+# contents at most and no job requests an OIDC token; actions are pinned to commits, and tools are
+# installed by taiki-e/install-action at exact versions it checks against checksums, release-plz at
+# the version script/release-plz-test runs.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -35,116 +32,88 @@ fi
 workflow=$(to_json "$root/$release_workflow")
 
 # check <what> <jq filter>: the filter is true for the workflow. The filter gets $env, $id_secret,
-# $key_secret, $version, $subcommand and $permissions, and these definitions:
+# $key_secret and $version, and these definitions:
 #   effective(job)  the permissions of the job's own token;
 #   releases        the jobs that run release-plz, as {key, value} entries;
-#   command(c)      the step runs `release-plz c`;
-#   job(c)          the job that runs `release-plz c`, as a {key, value} entry, or an error;
-#   the             the job that runs `release-plz $subcommand`;
-#   opener, tagger  the jobs that run `release-plz release-pr` and `release-plz release`;
-#   step(prefix)    the steps of `the` that use an action whose name starts with prefix;
-#   token_id        the id of the step of `the` that creates the App token;
+#   opener          the job that runs `release-plz release-pr`;
+#   step(prefix)    the steps of the opener that use an action whose name starts with prefix;
+#   token_id        the id of the opener's step that creates the App token;
 #   index_of(f)     the index of the first step f is true for, or an error.
 definitions='
   def effective($job): $job.permissions // .permissions;
   def runs: (.run // "") | test("(^|[^-/A-Za-z0-9_])release-plz\\s+[a-z]");
   def releases: [.jobs | to_entries[] | select([.value.steps[]? | runs] | any)];
   def environment: .environment | if type == "object" then .name else . end;
-  def command($c): .run // "" | test("release-plz\\s+\($c)(\\s|$)");
-  def job($c): [.jobs | to_entries[] | select([.value.steps[]? | command($c)] | any)]
-    | if length == 1 then .[0] else error("not one job runs release-plz \($c)") end;
-  def the: job($subcommand).value;
-  def opener: job("release-pr").value;
-  def tagger: job("release").value;
-  def step($prefix): [the.steps[] | select(.uses // "" | startswith($prefix))];
+  def opener: [.jobs[] | select([.steps[]? | .run // "" | test("release-plz\\s+release-pr")] | any)]
+    | if length == 1 then .[0] else error("not one job runs release-plz release-pr") end;
+  def step($prefix): [opener.steps[] | select(.uses // "" | startswith($prefix))];
   def token_id: step("actions/create-github-app-token@")[0].id;
   def index_of(f): (map(f) | index(true)) // error("no such step");
 '
-subcommand=release-pr
-permissions='{}'
 check() {
   jq --exit-status --arg env "$release_environment" --arg id_secret "$release_app_id_secret" \
     --arg key_secret "$release_app_key_secret" --arg version "$release_plz_version" \
-    --arg subcommand "$subcommand" --argjson permissions "$permissions" \
     "$definitions $2" <<<"$workflow" >/dev/null 2>&1 || fail "$1"
 }
 
 # The trigger and the order of runs.
 check "it runs on pushes to dev and on nothing else" '.on == {"push": {"branches": ["dev"]}}'
-check "release-plz runs only release and release-pr, each in one step" \
-  '[.jobs[].steps[]? | .run // "" | scan("release-plz\\s+([a-z][a-z-]*)") | .[0]] | sort
-    == ["release", "release-pr"]'
-check "the job that tags is in no concurrency group, so a later push cancels none of its runs" \
-  '(.concurrency == null) and (tagger | has("concurrency") | not)'
-check "the job that opens the Release PR runs after the job that tags" \
-  'job("release").key as $tagger | opener.needs | if type == "array" then . else [.] end
-    | index($tagger) != null'
-check "runs of the job that opens the Release PR wait for each other, so the Release PR ends up on
-    the latest dev: a concurrency group that names no commit or run" \
-  'opener.concurrency as $c | $c != null
+check "one job runs release-plz release-pr" 'opener | type == "object"'
+check "the job that opens the Release PR runs on every push to dev, in skald-so/skald" \
+  'opener | (has("if") | not) or (.if | test(
+    "^(\\$\\{\\{ *)?github\\.repository *== *'\''skald-so/skald'\''( *\\}\\})?$"))'
+check "no step up to release-plz release-pr has a condition, so each runs on every push" \
+  'opener.steps | .[:index_of(.run // "" | test("release-plz\\s+release-pr")) + 1]
+    | all(has("if") | not)'
+check "runs wait for each other, so the Release PR ends up on the latest dev: a concurrency group
+    that names no commit or run" \
+  '(opener.concurrency // .concurrency) as $c | $c != null
     and ($c | if type == "object" then .group else . end | type == "string"
       and (test("github\\.(sha|run_id|run_number|run_attempt|event\\.after|event\\.head_commit)")
         | not))'
-check "release-plz release takes no cargo registry token" \
-  '[tagger | .. | strings | test("--token|--registry|CARGO_REGISTR")] | any | not'
+check "release-plz runs only release-pr and release, which tags (script/release-tag-workflow-test)" \
+  '[.jobs[].steps[]? | .run // "" | scan("release-plz\\s+([a-z][a-z-]*)") | .[0]]
+    | any(. == "release-pr") and all(. == "release-pr" or . == "release")'
 
-# The job of each command and its App token: release, narrowed to contents, so the workflows that run
-# on tags start; release-pr, narrowed to contents and pull requests, so the PR checks run on the
-# Release PR.
-for subcommand in release release-pr; do
-  case $subcommand in
-    release) permissions='{"permission-contents": "write"}' ;;
-    release-pr) permissions='{"permission-contents": "write", "permission-pull-requests": "write"}' ;;
-  esac
-  check "one job runs release-plz $subcommand" 'the | type == "object"'
-  check "the job that runs release-plz $subcommand runs on every push to dev, in skald-so/skald" \
-    'the | (has("if") | not) or (.if | test(
-      "^(\\$\\{\\{ *)?github\\.repository *== *'\''skald-so/skald'\''( *\\}\\})?$"))'
-  check "no step up to release-plz $subcommand has a condition, so each runs on every push" \
-    'the.steps | .[:index_of(command($subcommand)) + 1] | all(has("if") | not)'
-  check "one step of the $subcommand job creates the App token, with an id" \
-    'step("actions/create-github-app-token@") | length == 1 and (.[0].id | type == "string")'
-  check "the $subcommand job's App token step takes the App's ID and private key from the secrets
-      $release_app_id_secret and $release_app_key_secret" \
-    'step("actions/create-github-app-token@")[0].with as $with
-      | ([$with["client-id"], $with["app-id"]] | map(select(. != null))
-        == ["${{ secrets.\($id_secret) }}"])
-      and $with["private-key"] == "${{ secrets.\($key_secret) }}"'
-  check "the $subcommand job's App token is narrowed to $permissions" \
-    'step("actions/create-github-app-token@")[0].with
-      | with_entries(select(.key | startswith("permission-"))) == $permissions'
-  check "the $subcommand job's App token is for skald-so/skald only, revoked after the job, from
-      github.com" \
-    'step("actions/create-github-app-token@")[0].with
-      | (.owner == null or .owner == "skald-so" or .owner == "${{ github.repository_owner }}")
-        and (.repositories == null or .repositories == "skald"
-          or .repositories == "${{ github.event.repository.name }}")
-        and (keys - ["client-id", "app-id", "private-key", "owner", "repositories"]
-          - ($permissions | keys) == [])'
-  check "release-plz $subcommand runs with the App token, not the job's own token" \
-    'token_id as $id | [the.steps[] | select(command($subcommand))]
-      | length == 1 and all([.. | strings] | (any(contains("steps.\($id).outputs.token"))
-        and (any(test("secrets\\.GITHUB_TOKEN|github\\.token")) | not)))'
-  check "the $subcommand job's App token is created before the checkout and release-plz use it" \
-    'the.steps | index_of(.uses // "" | startswith("actions/create-github-app-token@"))
-      < index_of(command($subcommand))
-      and (.[index_of(.uses // "" | startswith("actions/checkout@"))].with.token == null
-        or index_of(.uses // "" | startswith("actions/create-github-app-token@"))
-          < index_of(.uses // "" | startswith("actions/checkout@")))'
-  check "the $subcommand job's checkout fetches the whole history and the tags, where release-plz finds
-      the releases" \
-    'step("actions/checkout@") | length == 1 and (.[0].with["fetch-depth"] | . == 0 or . == "0")'
-  check "the $subcommand job's checkout keeps no credentials but the App token" \
-    'token_id as $id | step("actions/checkout@")[0].with
-      | .["persist-credentials"] == false or .token == "${{ steps.\($id).outputs.token }}"'
-  check "the $subcommand job uses the environment $release_environment" 'the | environment == $env'
-  check "release-plz $release_plz_version is installed before release-plz $subcommand runs" \
-    'the.steps | (index_of((.uses // "" | startswith("taiki-e/install-action@"))
-      and (.with.tool // "" | split("[,\\s]+"; null) | any(. == "release-plz@\($version)")))
-      < index_of(command($subcommand)))'
-done
+# The App token.
+check "one step creates the App token, with an id" \
+  'step("actions/create-github-app-token@") | length == 1 and (.[0].id | type == "string")'
+check "the App token step takes the App's ID and private key from the secrets
+    $release_app_id_secret and $release_app_key_secret" \
+  'step("actions/create-github-app-token@")[0].with as $with
+    | ([$with["client-id"], $with["app-id"]] | map(select(. != null))
+      == ["${{ secrets.\($id_secret) }}"])
+    and $with["private-key"] == "${{ secrets.\($key_secret) }}"'
+check "the App token is narrowed to writing contents and pull requests" \
+  'step("actions/create-github-app-token@")[0].with
+    | with_entries(select(.key | startswith("permission-")))
+    == {"permission-contents": "write", "permission-pull-requests": "write"}'
+check "the App token is for skald-so/skald only, revoked after the job, from github.com" \
+  'step("actions/create-github-app-token@")[0].with
+    | (.owner == null or .owner == "skald-so" or .owner == "${{ github.repository_owner }}")
+      and (.repositories == null or .repositories == "skald"
+        or .repositories == "${{ github.event.repository.name }}")
+      and (keys - ["client-id", "app-id", "private-key", "owner", "repositories",
+        "permission-contents", "permission-pull-requests"] == [])'
+check "release-plz release-pr runs with the App token, not the job's own token" \
+  'token_id as $id | [opener.steps[] | select(.run // "" | test("release-plz\\s+release-pr"))]
+    | length == 1 and all([.. | strings] | (any(contains("steps.\($id).outputs.token"))
+      and (any(test("secrets\\.GITHUB_TOKEN|github\\.token")) | not)))'
+check "the App token is created before the checkout and release-plz use it" \
+  'opener.steps | index_of(.uses // "" | startswith("actions/create-github-app-token@"))
+    < index_of(.run // "" | test("release-plz\\s+release-pr"))
+    and (.[index_of(.uses // "" | startswith("actions/checkout@"))].with.token == null
+      or index_of(.uses // "" | startswith("actions/create-github-app-token@"))
+        < index_of(.uses // "" | startswith("actions/checkout@")))'
+check "the checkout fetches the whole history and the tags, where release-plz finds the last release" \
+  'step("actions/checkout@") | length == 1 and (.[0].with["fetch-depth"] | . == 0 or . == "0")'
+check "the checkout keeps no credentials but the App token" \
+  'token_id as $id | step("actions/checkout@")[0].with
+    | .["persist-credentials"] == false or .token == "${{ steps.\($id).outputs.token }}"'
 
 # The environment and the secrets.
+check "the job that opens the Release PR uses the environment $release_environment" \
+  'opener | environment == $env'
 check "only the jobs that run release-plz use the environment $release_environment" \
   '[.jobs | to_entries[] | select(.value | environment == $env) | .key] == [releases[].key]'
 check "it uses no secret but the App's" \
@@ -171,21 +140,21 @@ check "taiki-e/install-action installs each tool at an exact version and checks 
     | all((.tool // "" | split("[,\\s]+"; null) | map(select(. != ""))
       | length > 0 and all(test("^[a-z0-9_-]+@[0-9]+\\.[0-9]+\\.[0-9]+$")))
       and (.checksum | . != false and . != "false"))'
+check "release-plz $release_plz_version is installed before release-plz runs" \
+  'opener.steps | (index_of((.uses // "" | startswith("taiki-e/install-action@"))
+    and (.with.tool // "" | split("[,\\s]+"; null) | any(. == "release-plz@\($version)")))
+    < index_of(.run // "" | test("release-plz\\s+release-pr")))'
 
-# No other workflow uses the environment or the App's secrets, or runs release-plz.
+# No other workflow uses the environment or the App's secrets.
 for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
   [[ -f $file && $file != "$root/$release_workflow" ]] || continue
-  other=$(to_json "$file")
   if ! jq --exit-status --arg env "$release_environment" '[.jobs[]? | .environment
-    | if type == "object" then .name else . end] | all(. != $env)' <<<"$other" >/dev/null; then
+    | if type == "object" then .name else . end] | all(. != $env)' <<<"$(to_json "$file")" \
+    >/dev/null; then
     fail "${file#"$root"/} uses the environment $release_environment"
   fi
   if grep -qE "secrets\.($release_app_id_secret|$release_app_key_secret)([^A-Za-z0-9_]|\$)" "$file"; then
     fail "${file#"$root"/} reads the App's secrets"
-  fi
-  if ! jq --exit-status '[.jobs[]?.steps[]? | (.run // "" | test("(^|[^-/A-Za-z0-9_])release-plz\\s+[a-z]"))
-    or (.uses // "" | startswith("release-plz/"))] | any | not' <<<"$other" >/dev/null; then
-    fail "${file#"$root"/} runs release-plz"
   fi
 done
 

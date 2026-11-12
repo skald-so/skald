@@ -62,32 +62,6 @@ impl Language {
             Some(String::from_utf8_lossy(&source[child.byte_range()]).into_owned())
         };
         match (self, node.kind()) {
-            (
-                Self::Rust,
-                "function_item"
-                | "function_signature_item"
-                | "struct_item"
-                | "enum_item"
-                | "union_item"
-                | "trait_item"
-                | "type_item"
-                | "mod_item",
-            )
-            | (
-                Self::TypeScript,
-                "function_declaration"
-                | "generator_function_declaration"
-                | "class_declaration"
-                | "abstract_class_declaration"
-                | "method_definition"
-                | "abstract_method_signature"
-                | "method_signature"
-                | "interface_declaration"
-                | "enum_declaration"
-                | "type_alias_declaration"
-                | "internal_module",
-            )
-            | (Self::Python, "function_definition" | "class_definition") => field("name"),
             // An `impl` block, named by its type, and its trait if it has one.
             (Self::Rust, "impl_item") => {
                 let name = field("type")?;
@@ -106,9 +80,49 @@ impl Language {
                 ];
                 function.contains(&value).then(|| field("name"))?
             }
+            (_, kind) if self.kinds().contains(&kind) => field("name"),
             _ => None,
         }
     }
+
+    /// The kinds of syntax node that are symbols in this language: those its `name` field names,
+    /// then a Rust `impl` block and the TypeScript variables and class fields that hold a function.
+    pub fn kinds(self) -> &'static [&'static str] {
+        match self {
+            Self::Rust => &[
+                "function_item",
+                "function_signature_item",
+                "struct_item",
+                "enum_item",
+                "union_item",
+                "trait_item",
+                "type_item",
+                "mod_item",
+                "impl_item",
+            ],
+            Self::TypeScript => &[
+                "function_declaration",
+                "generator_function_declaration",
+                "class_declaration",
+                "abstract_class_declaration",
+                "method_definition",
+                "abstract_method_signature",
+                "method_signature",
+                "interface_declaration",
+                "enum_declaration",
+                "type_alias_declaration",
+                "internal_module",
+                "variable_declarator",
+                "public_field_definition",
+            ],
+            Self::Python => &["function_definition", "class_definition"],
+        }
+    }
+}
+
+/// Every symbol of `source`, a file in `language`, in the order of its first line.
+pub fn all(language: Language, source: &[u8]) -> Result<Vec<Symbol>> {
+    Ok(index(language, source)?.0)
 }
 
 /// The innermost symbol enclosing each line of `source`, a file in `language`: the first item for
