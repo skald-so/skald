@@ -1,8 +1,8 @@
 //! The scripted sessions on the measured repositories: sets up the pinned tools, fetches each
-//! repository at its fixed commit into a temporary directory, plays its session and prints the
-//! findings as Markdown, with the machine and the git version. Progress goes to the standard
-//! error. The temporary directory is deleted at the end. Findings: `docs/dev/edit-prototype.md`,
-//! "Edits via Bash and generators".
+//! repository at its fixed commit, plays its session and prints the findings, as [`common::main`]
+//! runs a command. Findings: `docs/dev/edit-prototype.md`, "Edits via Bash and generators".
+
+mod common;
 
 use std::process::ExitCode;
 
@@ -342,20 +342,8 @@ const NETBOX: Session = Session {
 
 fn main() -> ExitCode {
     let progress = |repository: &str, steps| eprintln!("sessions: {repository} step {steps}");
-    let ran = tempfile::TempDir::new()
-        .map_err(Into::into)
-        .and_then(|tmp| {
-            let sessions = [DIESEL, DRIZZLE, NETBOX];
-            sessions::run(tmp.path(), &TOOLSET, &REPOSITORIES, &sessions, progress)
-        });
-    match ran {
-        Ok(report) => {
-            print!("{report}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("sessions: {error}");
-            ExitCode::FAILURE
-        }
-    }
+    common::main("sessions", |tmp| {
+        let sessions = [DIESEL, DRIZZLE, NETBOX];
+        sessions::run(tmp, &TOOLSET, &REPOSITORIES, &sessions, progress)
+    })
 }

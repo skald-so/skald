@@ -8,7 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::noise::table;
+use crate::markdown::table;
 use crate::replay::Measured;
 use crate::{Result, git};
 

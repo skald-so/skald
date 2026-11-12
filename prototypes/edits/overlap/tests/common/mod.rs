@@ -1,4 +1,5 @@
-//! What the scenario tests share: the space key, the test repositories and a space of machines.
+//! What the scenario tests share: the space key, the test repositories, a space of machines, and
+//! the tables of the reports.
 #![allow(dead_code, reason = "each test file uses some of the helpers")]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -43,15 +44,37 @@ pub fn files() -> Vec<(&'static str, String)> {
     ]
 }
 
-/// `src/inventory.rs` with `top` on top of it and each `(line, text)` of `edits`, 1-based, in
-/// place of its line; a text with line breaks stands for several lines, an empty one for none.
-pub fn inventory_with(top: &[&str], edits: &[(usize, &str)]) -> String {
-    let mut lines: Vec<String> = INVENTORY.iter().map(|line| format!("{line}\n")).collect();
-    for &(line, text) in edits {
-        lines[line - 1] = text.lines().map(|line| format!("{line}\n")).collect();
+/// `text` with each `(line, replacement)` of `edits`, 1-based, in place of its line; a
+/// replacement with line breaks stands for several lines, an empty one for none. A line past the
+/// end of `text` is added, with empty lines before it.
+pub fn with_lines(text: &str, edits: &[(usize, &str)]) -> String {
+    let mut lines: Vec<String> = text.lines().map(|line| format!("{line}\n")).collect();
+    for &(line, replacement) in edits {
+        if lines.len() < line {
+            lines.resize(line, String::new());
+        }
+        lines[line - 1] = replacement
+            .lines()
+            .map(|line| format!("{line}\n"))
+            .collect();
     }
-    let top: String = top.iter().map(|line| format!("{line}\n")).collect();
-    top + &lines.concat()
+    lines.concat()
+}
+
+/// `src/inventory.rs` with line 7, in `reserve()`, reserving `reserved`.
+pub fn reserving(reserved: u32) -> String {
+    inventory(&[(7, &format!("    let reserved = {reserved};"))])
+}
+
+/// `src/inventory.rs` with `top` on top of it and `edits` as [`with_lines`] takes them.
+pub fn inventory_with(top: &[&str], edits: &[(usize, &str)]) -> String {
+    let lines = |lines: &[&str]| {
+        lines
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect::<String>()
+    };
+    lines(top) + &with_lines(&lines(&INVENTORY), edits)
 }
 
 pub fn inventory(edits: &[(usize, &str)]) -> String {
@@ -97,6 +120,79 @@ impl Repo {
             Client::new(name, key),
         )
     }
+}
+
+/// Alice's and Bob's machines.
+pub const ALICE_AND_BOB: [&str; 2] = ["alice-laptop", "bob-desktop"];
+
+/// Machines, clones of a test repository in a temporary directory of their own.
+pub struct Clones<const N: usize> {
+    pub repo: Repo,
+    pub machines: [Machine; N],
+    /// The client of each machine, in the space with the key [`key`].
+    pub clients: [Client; N],
+    _tmp: TempDir,
+}
+
+impl<const N: usize> Clones<N> {
+    /// The machines `names`, clones of the repository `repo` creates in a new temporary directory.
+    pub fn new(repo: impl FnOnce(&TempDir) -> Repo, names: [&str; N]) -> Self {
+        let tmp = TempDir::new().unwrap();
+        let repo = repo(&tmp);
+        let clones = names.map(|name| repo.machine(name));
+        Self {
+            clients: clones.each_ref().map(|(_, client)| client.clone()),
+            machines: clones.map(|(machine, _)| machine),
+            repo,
+            _tmp: tmp,
+        }
+    }
+
+    /// The space of the machines.
+    pub fn space(&self) -> Space<'_> {
+        let machines: Vec<_> = self.machines.iter().zip(&self.clients).collect();
+        Space::new(&machines)
+    }
+
+    /// The space of the machines once each has published its edit set, in turn.
+    pub fn published(&self) -> Space<'_> {
+        let mut space = self.space();
+        space.publish();
+        space
+    }
+}
+
+/// Changes the working tree of `machine` in the ways an edit set takes or leaves out but a commit
+/// and a deletion: `src/warehouse.rs` changed and staged, then changed again; an untracked file,
+/// `notes/todo-list.md`; an ignored one, `target/build-output.bin`.
+pub fn change_uncommitted(machine: &Machine) {
+    machine
+        .write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
+        .unwrap();
+    machine.git(&["add", "src/warehouse.rs"]).unwrap();
+    machine
+        .write("src/warehouse.rs", "pub struct Warehouse(u64);\n")
+        .unwrap();
+    machine.write("notes/todo-list.md", "- ship\n").unwrap();
+    machine
+        .write("target/build-output.bin", "ignored\n")
+        .unwrap();
+}
+
+/// The edits of the scenarios of what the server receives: Alice commits an edit of line 7 of
+/// `src/inventory.rs`; Bob edits that line and line 12, and adds a file. Returns the texts they
+/// write.
+pub fn exchanged(a: &Machine, b: &Machine) -> [String; 3] {
+    let texts = [
+        reserving(10),
+        inventory(&[(7, "    let reserved = 20;"), (12, "    let released = 3;")]),
+        "- ship the reservations\n".to_owned(),
+    ];
+    a.write("src/inventory.rs", &texts[0]).unwrap();
+    a.commit("reserve ten").unwrap();
+    b.write("src/inventory.rs", &texts[1]).unwrap();
+    b.write("notes/todo-list.md", &texts[2]).unwrap();
+    texts
 }
 
 /// A space: the server stand-in, the messages between machines, its machines, and their latest
@@ -297,4 +393,22 @@ pub fn assert_holds_none<'n>(bytes: &[u8], needles: impl IntoIterator<Item = &'n
             .any(|window| window == needle.as_bytes());
         assert!(!found, "{needle} in {what}");
     }
+}
+
+/// The lines of the table `title` of `report`, a Markdown report: its header, the line under it
+/// and its rows.
+pub fn table<'r>(report: &'r str, title: &str) -> Vec<&'r str> {
+    let lines: Vec<&str> = report.lines().collect();
+    let start = lines.iter().position(|line| *line == title).unwrap();
+    lines[start + 2..]
+        .iter()
+        .take_while(|line| line.starts_with('|'))
+        .copied()
+        .collect()
+}
+
+/// The rows of the table `title` of `report`.
+pub fn rows(report: &str, title: &str) -> Vec<String> {
+    let table = table(report, title);
+    table[2..].iter().map(|row| row.to_string()).collect()
 }

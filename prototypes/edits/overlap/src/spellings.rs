@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use unicode_normalization::{is_nfc, is_nfd};
 
 use crate::harness::{Machine, Upstream};
-use crate::noise::table;
+use crate::markdown::{list, table};
 use crate::{Client, Edits, Result, fingerprint, git, paths, replay};
 
 /// `café.md` with its `é` precomposed, NFC, and decomposed, NFD.
@@ -430,10 +430,6 @@ pub fn check(tmp: &Path) -> Result<String> {
         unset(ignorecase),
         unset(precompose)
     )?;
-    let list = |items: &[&str]| match items {
-        [] => "none".to_owned(),
-        _ => items.join(", "),
-    };
 
     let mut rows = Vec::new();
     for ignorecase in [true, false] {
@@ -441,9 +437,8 @@ pub fn check(tmp: &Path) -> Result<String> {
             let dir = tmp.join(format!("rename-{ignorecase}-{how:?}"));
             let (edit_set, fingerprints) = match case_only_rename(&dir, ignorecase, how)? {
                 Some((paths, fingerprints)) => {
-                    let paths: Vec<String> = paths.iter().map(|p| format!("`{p}`")).collect();
-                    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
-                    (list(&paths), fingerprints.to_string())
+                    let paths = paths.iter().map(|path| format!("`{path}`"));
+                    (list(paths), fingerprints.to_string())
                 }
                 None => ("the rename fails".into(), "-".into()),
             };

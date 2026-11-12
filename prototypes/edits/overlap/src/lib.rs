@@ -12,7 +12,7 @@
 //! writes and shell commands, with the pinned [`tools`], and compare the sources of a machine's
 //! edits. [`exposure`] gives what the server learns from the fingerprints of the measured merges
 //! without the key, and what a holder of the key recovers from them with a fixed [`dictionary`].
-//! Scenarios and findings: `docs/dev/edit-prototype.md`.
+//! Their reports are [`markdown`] tables. Scenarios and findings: `docs/dev/edit-prototype.md`.
 
 pub mod check;
 pub mod client;
@@ -22,6 +22,7 @@ pub mod fingerprint;
 pub mod git;
 pub mod harness;
 pub mod hunks;
+pub mod markdown;
 pub mod messages;
 pub mod noise;
 pub mod paths;

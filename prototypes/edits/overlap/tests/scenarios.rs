@@ -5,7 +5,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{Repo, Space, assert_holds_none, bytes};
+use common::{ALICE_AND_BOB, Clones, Repo, Space, assert_holds_none, bytes, change_uncommitted};
 use edit_overlap::harness::{self, Machine};
 use edit_overlap::{Edits, Publication, SpaceKey};
 use tempfile::TempDir;
@@ -23,6 +23,11 @@ const FILES: &[(&str, &str)] = &[
     ("src/warehouse.rs", "pub struct Warehouse;\n"),
     ("docs/onboarding-guide.md", "Read the code.\n"),
 ];
+
+/// The test repository with [`FILES`].
+fn repo(tmp: &TempDir) -> Repo {
+    Repo::new(tmp, "repo", FILES)
+}
 
 /// Each machine's paths that other machines edit too, by those machines: `[(machine, [(other
 /// machine, [path])])]`, machines without overlaps left out.
@@ -62,7 +67,7 @@ fn pairs(pairs: &[(&str, &str, &[&str])]) -> Seen {
 #[test]
 fn edit_set_holds_committed_uncommitted_and_untracked_changes() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
+    let repo = repo(&tmp);
     let (machine, client) = repo.machine("alice-laptop");
     let (other, _) = repo.machine("bob-desktop");
     let (maintainer, _) = repo.machine("maintainer");
@@ -77,19 +82,9 @@ fn edit_set_holds_committed_uncommitted_and_untracked_changes() {
         .write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     machine.commit("count one").unwrap();
-    machine
-        .write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
-        .unwrap();
-    machine.git(&["add", "src/warehouse.rs"]).unwrap();
-    machine
-        .write("src/warehouse.rs", "pub struct Warehouse(u64);\n")
-        .unwrap();
+    change_uncommitted(&machine);
     machine
         .rename("docs/onboarding-guide.md", "docs/guide.md")
-        .unwrap();
-    machine.write("notes/todo-list.md", "- ship\n").unwrap();
-    machine
-        .write("target/build-output.bin", "ignored\n")
         .unwrap();
 
     let edits = client.edits(machine.dir()).unwrap();
@@ -115,10 +110,8 @@ fn edit_set_holds_committed_uncommitted_and_untracked_changes() {
 
 #[test]
 fn machines_editing_one_file_overlap() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(repo, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     a.write("README.md", "# Inventory\n").unwrap();
@@ -128,7 +121,7 @@ fn machines_editing_one_file_overlap() {
     b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
         .unwrap();
 
-    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
+    let seen_now = publish(&mut clones.space());
     assert_eq!(
         seen_now,
         pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])])
@@ -137,10 +130,8 @@ fn machines_editing_one_file_overlap() {
 
 #[test]
 fn machines_editing_different_files_do_not_overlap() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(repo, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
@@ -148,28 +139,22 @@ fn machines_editing_different_files_do_not_overlap() {
     b.write("src/shipping.rs", "pub struct Shipment;\n")
         .unwrap();
 
-    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
+    let seen_now = publish(&mut clones.space());
     assert_eq!(seen_now, Seen::new());
 }
 
 #[test]
 fn rename_overlaps_an_edit_of_either_path() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (c, c_client) = repo.machine("carol-server");
+    let names = ["alice-laptop", "bob-desktop", "carol-server"];
+    let clones = Clones::new(repo, names);
+    let [a, b, c] = &clones.machines;
     a.rename("src/warehouse.rs", "src/storage.rs").unwrap();
     a.commit("rename the warehouse").unwrap();
     b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
         .unwrap();
     c.write("src/storage.rs", "pub struct Storage;\n").unwrap();
 
-    let seen_now = publish(&mut Space::new(&[
-        (&a, &a_client),
-        (&b, &b_client),
-        (&c, &c_client),
-    ]));
+    let seen_now = publish(&mut clones.space());
     assert_eq!(
         seen_now,
         pairs(&[
@@ -181,15 +166,13 @@ fn rename_overlaps_an_edit_of_either_path() {
 
 #[test]
 fn deletion_overlaps_an_edit_of_its_path() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(repo, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     a.delete("docs/onboarding-guide.md").unwrap();
     b.write("docs/onboarding-guide.md", "Read the docs.\n")
         .unwrap();
 
-    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
+    let seen_now = publish(&mut clones.space());
     assert_eq!(
         seen_now,
         pairs(&[("alice-laptop", "bob-desktop", &["docs/onboarding-guide.md"])])
@@ -198,11 +181,10 @@ fn deletion_overlaps_an_edit_of_its_path() {
 
 #[test]
 fn machine_whose_changes_are_merged_leaves_the_overlap_once_it_pulls() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let clones = Clones::new(repo, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let a_client = &clones.clients[0];
+    let (maintainer, _) = clones.repo.machine("maintainer");
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     a.commit("count one").unwrap();
@@ -210,7 +192,7 @@ fn machine_whose_changes_are_merged_leaves_the_overlap_once_it_pulls() {
     b.write("src/inventory.rs", "pub fn count() -> u32 {\n    2\n}\n")
         .unwrap();
     let overlap = pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])]);
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    let mut space = clones.space();
     assert_eq!(publish(&mut space), overlap);
 
     // Merged upstream, but the machine does not know it yet.
@@ -225,7 +207,7 @@ fn machine_whose_changes_are_merged_leaves_the_overlap_once_it_pulls() {
 #[test]
 fn same_path_in_another_repository_or_under_another_key_does_not_overlap() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
+    let repo = repo(&tmp);
     // The same paths; another root commit.
     let mut other_files = FILES.to_vec();
     other_files[1] = ("README.md", "# Billing service\n");
@@ -255,11 +237,9 @@ fn same_path_in_another_repository_or_under_another_key_does_not_overlap() {
 
 #[test]
 fn machines_on_different_upstream_commits_share_the_scope() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let clones = Clones::new(repo, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let (maintainer, _) = clones.repo.machine("maintainer");
     // Upstream commits until one sorts before the root commit; Alice pulls them, Bob does not.
     // The harness's fixed date makes the hashes, and so the commit the loop ends at, the same on
     // every run.
@@ -276,13 +256,13 @@ fn machines_on_different_upstream_commits_share_the_scope() {
     }
     maintainer.push("main").unwrap();
     a.pull().unwrap();
-    for machine in [&a, &b] {
+    for machine in [a, b] {
         machine
             .write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
             .unwrap();
     }
 
-    let seen_now = publish(&mut Space::new(&[(&a, &a_client), (&b, &b_client)]));
+    let seen_now = publish(&mut clones.space());
     assert_eq!(
         seen_now,
         pairs(&[("alice-laptop", "bob-desktop", &["src/inventory.rs"])])
@@ -292,7 +272,7 @@ fn machines_on_different_upstream_commits_share_the_scope() {
 #[test]
 fn edit_set_holds_a_submodule_when_its_commit_moves_not_when_its_files_change() {
     let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
+    let repo = repo(&tmp);
     let (machine, client) = repo.machine("alice-laptop");
     let (maintainer, _) = repo.machine("maintainer");
     // A repository nested in the maintainer's clone, committed as a submodule.
@@ -335,10 +315,8 @@ fn edit_set_holds_a_submodule_when_its_commit_moves_not_when_its_files_change() 
 
 #[test]
 fn server_receives_and_keeps_no_path() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::new(&tmp, "repo", FILES);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(repo, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     a.write("src/inventory.rs", "pub fn count() -> u32 {\n    1\n}\n")
         .unwrap();
     a.rename("src/warehouse.rs", "src/storage.rs").unwrap();
@@ -347,7 +325,7 @@ fn server_receives_and_keeps_no_path() {
     b.write("src/inventory.rs", "pub fn count() -> u32 {\n    2\n}\n")
         .unwrap();
     b.write("notes/todo-list.md", "- ship\n").unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    let mut space = clones.space();
 
     let seen_now = publish(&mut space);
     let edits = &space.edits;
