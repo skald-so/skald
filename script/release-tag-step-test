@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Runs the step of .github/workflows/release-plz.yml that runs release-plz release, in the shell
-# GitHub runs it in, with stand-ins for script/release-pr-merged and release-plz:
+# Runs the step of .github/workflows/release-plz.yml that runs release-plz release as GitHub runs a
+# step without `shell`, `bash -e`, with stand-ins for script/release-pr-merged and release-plz:
 #   - script/release-pr-merged exits 0: release-plz release runs, and its failure fails the step;
 #   - it exits 1, not the merge of a Release PR: release-plz does not run, and the step passes;
 #   - it exits with any other code, an error: release-plz does not run, and the step fails.
+# Runs script/release-pr-merged with its defaults, as the workflow does, against a GitHub API that
+# lists no PR: 6 calls, 5 pauses of 10 s between them, then exit 1. No workflow overrides them.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -45,7 +47,7 @@ expect() {
   local status=0 ran=no
   rm -f "$tmp/release-plz.log"
   (cd "$tmp/work" && GATE=$1 RELEASE=$2 PATH="$tmp/bin:$PATH" \
-    bash --noprofile --norc -eo pipefail "$tmp/step.sh") >/dev/null 2>&1 || status=$?
+    bash -e "$tmp/step.sh") >/dev/null 2>&1 || status=$?
   [[ ! -f $tmp/release-plz.log ]] || ran=yes
   [[ $ran == "$4" ]] ||
     fail "script/release-pr-merged exits $1: release-plz runs: $ran, not $4"
@@ -60,6 +62,41 @@ expect 1 0 0 no
 expect 2 0 failed no
 expect 3 0 failed no
 expect 127 0 failed no
+
+# The gate's defaults: curl lists no PR, sleep logs its pause; neither waits.
+mkdir -p "$tmp/gate/bin"
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+git -C "$tmp/gate" init --quiet
+git -C "$tmp/gate" -c user.name=test -c user.email=test@example.com commit --quiet --allow-empty \
+  --message "a merge"
+cat >"$tmp/gate/bin/curl" <<EOF
+#!/usr/bin/env bash
+echo call >>"$tmp/gate/curl.log"
+echo '[]'
+EOF
+cat >"$tmp/gate/bin/sleep" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$tmp/gate/sleep.log"
+EOF
+chmod +x "$tmp/gate/bin/curl" "$tmp/gate/bin/sleep"
+status=0
+(cd "$tmp/gate" && env -u RELEASE_PR_MERGED_ATTEMPTS -u RELEASE_PR_MERGED_PAUSE \
+  PATH="$tmp/gate/bin:$PATH" GITHUB_API_URL=http://127.0.0.1:9 GITHUB_REPOSITORY=skald-so/skald \
+  GH_TOKEN=fixture-token "$root/script/release-pr-merged") >/dev/null 2>&1 || status=$?
+[[ $status == 1 ]] || fail "script/release-pr-merged on an empty list exits $status, not 1"
+calls=$(wc -l <"$tmp/gate/curl.log" 2>/dev/null | tr -d ' ' || true)
+[[ $calls == 6 ]] ||
+  fail "script/release-pr-merged on an empty list calls the GitHub API ${calls:-0} times, not 6"
+pauses=$(paste -sd ' ' - <"$tmp/gate/sleep.log" 2>/dev/null || true)
+[[ $pauses == '10 10 10 10 10' ]] ||
+  fail "script/release-pr-merged on an empty list pauses '$pauses' s, not 5 times 10 s"
+
+# No workflow overrides the gate's defaults.
+if grep -lE 'RELEASE_PR_MERGED_(ATTEMPTS|PAUSE)' "$root"/.github/workflows/*.y*ml \
+  >"$tmp/overrides"; then
+  fail "workflows set RELEASE_PR_MERGED_ATTEMPTS or RELEASE_PR_MERGED_PAUSE:" \
+    "$(sed "s|^$root/||" "$tmp/overrides" | paste -sd ' ' -)"
+fi
 
 if ((failures > 0)); then
   echo "release-tag-step-test: $failures case(s) failed" >&2
