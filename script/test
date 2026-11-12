@@ -59,6 +59,12 @@ if checks rust; then
     echo "script/test: node is missing; the MLS prototypes' WASM tests run in Node.js: https://nodejs.org" >&2
     exit 1
   fi
+  if ! python3 -c 'import ensurepip, venv' 2>/dev/null; then
+    echo "script/test: python3 with its venv and ensurepip modules is missing; the edit comparison" \
+      "prototype's tests install a package with pip in a virtual environment: https://www.python.org" \
+      "(Debian and Ubuntu: the python3-venv package)" >&2
+    exit 1
+  fi
   # The edit comparison prototype reads the conflicts of `git merge-tree --write-tree -z`, git 2.39,
   # and the attributes of a commit with `git check-attr --source`, git 2.40.
   IFS=. read -r git_major git_minor _ <<<"$(git version | awk '{ print $3 }')"
