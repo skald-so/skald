@@ -29,6 +29,7 @@ Documents:
 - Binary structures are in CDDL [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610)]; text forms are in ABNF [[RFC 5234](https://www.rfc-editor.org/rfc/rfc5234)].
 - Account, device, agent, space and channel: [architecture.md, "Data model"](../dev/architecture.md#data-model).
 - A signature is Ed25519 [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)] with the signing key of the signer's [device certificate](membership.md#device-certificate), or with the account's master key where the spec says so. It covers the encoded CBOR array of a label and byte strings, such as `["skald hpke", header, content]`; the label keeps a signature made for one use from passing for another.
+- A verifier MUST check [S]B = R + [k]A' [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032), §5.1.7], reject S not below L, and reject a public key or R of small order.
 
 ## Identifiers
 - An ID is a UUID [[RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)]: 16 bytes on the wire, the lowercase hyphenated form in text, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10`. Any other text form is invalid.

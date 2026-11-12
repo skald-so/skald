@@ -4,3 +4,9 @@ description = "Skald end-to-end encryption core."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+ed25519-dalek = "3"
+getrandom = "0.4"
+skald-proto = { path = "../proto" }
+zeroize = "1"

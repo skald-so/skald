@@ -308,6 +308,14 @@ fn errors_explain_themselves() {
             "15 bytes, not 16",
         ),
         (
+            FieldProblem::Size {
+                min: 1,
+                max: 64,
+                actual: 65,
+            },
+            "65 bytes, not 1 to 64",
+        ),
+        (
             FieldProblem::Items {
                 expected: 2,
                 actual: 3,
