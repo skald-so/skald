@@ -261,7 +261,7 @@ fn generated_keys_differ_and_sign() {
 #[test]
 fn the_master_key_signs_and_the_device_proves_over_their_labels() {
     let body = body(A, DeviceKind::Client, None);
-    let cert = issue(&body, &key(MASTER), &key(A));
+    let cert = issue(&body, &key(MASTER), &key(A)).unwrap();
     let bytes = body.to_cbor();
     assert_eq!(cert.body(), &body);
     assert_eq!(cert.body_bytes(), bytes.as_slice());
@@ -274,7 +274,7 @@ fn the_master_key_signs_and_the_device_proves_over_their_labels() {
 #[test]
 fn an_issuer_device_signs_and_the_device_proves_over_their_labels() {
     let body = body(B, DeviceKind::Browser, Some(A));
-    let cert = issue(&body, &key(A), &key(B));
+    let cert = issue(&body, &key(A), &key(B)).unwrap();
     let bytes = body.to_cbor();
     assert_eq!(cert.signature(), &signature(A, CERT, &bytes));
     assert_eq!(cert.proof(), &signature(B, PROOF, &bytes));

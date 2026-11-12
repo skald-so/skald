@@ -103,6 +103,12 @@ pub enum FieldProblem {
     Type(&'static str),
     /// A byte string has another length.
     Length { expected: usize, actual: usize },
+    /// A string's length in bytes is outside `min..=max`.
+    Size {
+        min: usize,
+        max: usize,
+        actual: usize,
+    },
     /// An array has another number of items.
     Items { expected: usize, actual: usize },
     /// A list that needs at least one item is empty.
@@ -164,6 +170,9 @@ impl fmt::Display for FieldProblem {
             Self::Type(expected) => write!(f, "not {expected}"),
             Self::Length { expected, actual } => {
                 write!(f, "{actual} bytes, not {expected}")
+            }
+            Self::Size { min, max, actual } => {
+                write!(f, "{actual} bytes, not {min} to {max}")
             }
             Self::Items { expected, actual } => write!(f, "{actual} items, not {expected}"),
             Self::Empty => f.write_str("empty; at least one item is needed"),
@@ -590,6 +599,12 @@ pub(crate) fn array(items: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
     head(&mut out, Header::Array(Some(items.len())));
     out.extend(items.into_iter().flatten());
     out
+}
+
+/// What a signature with `label` covers: the encoded CBOR array of `label` and `parts` as byte
+/// strings (`docs/protocol/README.md`, "Conventions").
+pub fn signed_data(label: &str, parts: &[&[u8]]) -> Vec<u8> {
+    array(std::iter::once(text(label)).chain(parts.iter().map(|part| bytes(part))))
 }
 
 /// A map being encoded: known fields and the [`Unknown`] ones, written in bytewise key order.

@@ -11,11 +11,3 @@ ciborium-ll = "0.2"
 getrandom = "0.4"
 sha2 = { version = "0.11", default-features = false }
 
-[features]
-# Builds the acceptance tests of device certificates, written before the code they test.
-# Remove this feature and the [[test]] entry below with that code.
-acceptance = []
-
-[[test]]
-name = "certificates"
-required-features = ["acceptance"]

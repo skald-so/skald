@@ -5,15 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[dev-dependencies]
-ed25519-dalek = "3"
+[dependencies]
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+getrandom = { version = "0.4", features = ["sys_rng"] }
 skald-proto = { path = "../proto" }
-
-[features]
-# Builds the acceptance tests of device certificates, written before the code they test.
-# Remove this feature and the [[test]] entry below with that code.
-acceptance = []
-
-[[test]]
-name = "certificates"
-required-features = ["acceptance"]
