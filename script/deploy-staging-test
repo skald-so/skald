@@ -3,15 +3,17 @@
 # for the deploy command, as on staging: for the head of dev on origin it runs exactly
 # `deploy <digest>` over SSH with the key, pins the host key and passes only when the deploy passes;
 # for an older commit, staging stays; another host key, an unauthorized key, an unreachable address,
-# malformed input or secrets and an origin without dev fail without a deploy. Its output shows the
-# commit, the digest and the deploy's output, never a secret or the address, and it leaves no file.
+# malformed input or secrets and an origin without dev fail without a deploy. An SSH config and an
+# agent with the deploy key change nothing. Its output shows the commit, the digest and the deploy's
+# output, never a secret or the address, and it leaves no file.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 source "$root/script/lib/dev-origin.sh"
 tmp=$(mktemp -d)
-sshd_pid=
-trap '[[ -z $sshd_pid ]] || kill "$sshd_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+sshd_pid= agent_pid=
+trap '[[ -z $sshd_pid ]] || kill "$sshd_pid" 2>/dev/null || true
+  [[ -z $agent_pid ]] || kill "$agent_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 failures=0
 
 fail() {
@@ -80,15 +82,43 @@ fi
 
 dev_origin "$tmp"
 
-# SSH reads nothing of the user's: an empty home, no agent.
-mkdir "$tmp/home" "$tmp/run"
-export HOME=$tmp/home
-unset SSH_AUTH_SOCK
-
+mkdir "$tmp/run"
 key=$(base64 <"$tmp/client" | tr -d '\n')
 host_key=$(cut -d ' ' -f 1,2 "$tmp/host.pub")
 address=127.0.0.1
 destination=ssh://$(id -un)@$address:$port
+
+# An SSH config and an agent in the script's way, both of the test's own, for every run: a stand-in
+# for ssh, first on PATH, runs the real one with a config that sends every connection nowhere; the
+# agent, on its own socket, holds the deploy key. The script must ignore both.
+real_ssh=$(command -v ssh)
+printf 'Host *\n  ProxyCommand false\n' >"$tmp/ssh_config"
+mkdir "$tmp/bin"
+cat >"$tmp/bin/ssh" <<EOF
+#!/bin/sh
+exec "$real_ssh" -F "$tmp/ssh_config" "\$@"
+EOF
+chmod +x "$tmp/bin/ssh"
+export PATH="$tmp/bin:$PATH"
+eval "$(ssh-agent -s -a "$tmp/agent.sock")" >/dev/null
+agent_pid=$SSH_AGENT_PID
+ssh-add -q "$tmp/client" 2>/dev/null
+echo "staging $host_key" >"$tmp/known_hosts"
+# pinned_ssh <options...>: SSH to the test's sshd as the deploy key's command, the host key pinned.
+pinned_ssh() {
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$tmp/known_hosts" \
+    -o GlobalKnownHostsFile=/dev/null -o HostKeyAlias=staging "$@" "$destination" deploy "$digest" \
+    </dev/null >/dev/null 2>&1
+}
+# Both are in the way: the config stops a connection, and with no config the agent's key alone,
+# named by its public key so SSH reads no key of the user's, deploys.
+if pinned_ssh -i "$tmp/client" -o IdentitiesOnly=yes; then
+  fail "the test's SSH config lets a connection through"
+fi
+rm -f "$tmp/command"
+pinned_ssh -F /dev/null -i "$tmp/client.pub" -o IdentitiesOnly=yes ||
+  fail "the test's agent does not hold the deploy key"
+[[ -e $tmp/command ]] || fail "the test's agent's key does not deploy"
 
 # run <args...>: runs script/deploy-staging in the clone with the secrets in $key, $host_key and
 # $destination, setting $status, $output and $command, the command the deploy got.

@@ -78,7 +78,7 @@ if checks rust; then
   fi
 fi
 if checks tooling; then
-  for tool in ssh ssh-keygen sshd; do
+  for tool in ssh ssh-add ssh-agent ssh-keygen sshd; do
     if ! command -v "$tool" >/dev/null && [[ ! -x /usr/sbin/$tool ]]; then
       echo "script/test: $tool is missing; the staging deploy's test runs a local sshd: https://www.openssh.com" \
         "(Debian and Ubuntu: the openssh-client and openssh-server packages)" >&2
