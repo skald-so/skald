@@ -5,8 +5,8 @@
 //! fingerprints of all machines. The [`harness`] runs the scenarios on local clones of a test
 //! repository. On an overlap, a client gets the other machine's changes over [`messages`], which
 //! bypass the server, and checks them with `git merge-tree` ([`check`]). [`replay`] measures the
-//! fingerprints on the merges of real repositories. Scenarios and findings:
-//! `docs/dev/edit-prototype.md`.
+//! fingerprints on the merges of real repositories, and [`noise`] classes the files behind its
+//! warnings and conflicts. Scenarios and findings: `docs/dev/edit-prototype.md`.
 
 pub mod check;
 pub mod client;
@@ -15,6 +15,7 @@ pub mod git;
 pub mod harness;
 pub mod hunks;
 pub mod messages;
+pub mod noise;
 pub mod replay;
 pub mod server;
 pub mod symbols;

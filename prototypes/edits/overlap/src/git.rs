@@ -102,7 +102,12 @@ pub fn blob(dir: &Path, tree: &str, path: &str) -> Result<Vec<u8>> {
 
 /// Whether the repository at `dir` has the commit `oid`.
 pub fn has_commit(dir: &Path, oid: &str) -> Result<bool> {
-    let status = command(dir, &["cat-file", "-e", &format!("{oid}^{{commit}}")])
+    exists(dir, &format!("{oid}^{{commit}}"))
+}
+
+/// Whether the repository at `dir` has the object `object` names, such as `<commit>:<path>`.
+pub fn exists(dir: &Path, object: &str) -> Result<bool> {
+    let status = command(dir, &["cat-file", "-e", object])
         .stderr(Stdio::null())
         .status()?;
     Ok(status.success())
@@ -235,8 +240,13 @@ pub fn changed(dir: &Path, base: &str, commit: &str) -> Result<BTreeSet<String>>
     changed_paths(dir, &[base, commit])
 }
 
+/// The paths [`changed`] gives that are not in the commit `base`: those added since it.
+pub fn added(dir: &Path, base: &str, commit: &str) -> Result<BTreeSet<String>> {
+    changed_paths(dir, &["--diff-filter=A", base, commit])
+}
+
 /// The paths `git diff` finds changed from the first of `commits` to the second, or to the working
-/// tree when there is no second, as [`edit_set`] says.
+/// tree when there is no second, as [`edit_set`] says; `commits` can start with options.
 fn changed_paths(dir: &Path, commits: &[&str]) -> Result<BTreeSet<String>> {
     let mut args = vec![
         "diff",
