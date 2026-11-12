@@ -17,14 +17,15 @@
   - content sections are decrypted in the browser by a WASM build of the Rust core.
 
 ## Device linking
-- The one-time code from the website binds the device to the account. It lives for a few minutes, works once and transfers no keys.
+- The one-time sign-in code from the website binds the device to the account. It lives for a few minutes, works once and transfers no keys.
 - Keys are generated on the machine.
-- **Account master key:** the first device creates it. It is the account's root of trust and is stored on the server encrypted under the recovery key.
+- **Account master key:** the first device creates it, once its user confirms it is the first. It is the account's root of trust and is stored on the server encrypted under the recovery key.
 - Every device certificate chains to the master key: a new device is signed by an already linked device or by the recovery key. A server signature alone never admits a device.
+- **Link code:** a new device shows a short code; its user enters it on an already linked `client` device. A PAKE keyed by the code carries the keys and the certificate, so the server never sees the code and cannot link a device itself.
 - Formats and checks: [protocol spec](../protocol/membership.md#account).
 - The device key can also be signed with the user's SSH key from GitHub: [protocol spec](../protocol/membership.md#device-certificate).
 - The recovery key is entered only in the CLI, never in a web page.
-- **A browser is also a linked device**, linked only with a code or QR from an already linked device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
+- **A browser is also a linked device**, linked only with the link code it shows, entered on an already linked `client` device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
   - it reads through history keys wrapped to its key;
   - it sends actions (approve, answer `ask_user`) as signed messages via HPKE;
   - it enqueues, restarts and cancels tasks through the API: [protocol spec](../protocol/queues.md).
