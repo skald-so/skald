@@ -124,12 +124,15 @@ impl Server {
 
 impl Server {
     /// What every table but `_sqlx_migrations` holds, one XML document per table, whatever its
-    /// schema; byte strings in base64.
+    /// schema; byte strings in hex, which, unlike base64 there, has no line breaks.
     pub fn rows(&self) -> Vec<String> {
         let runtime = Runtime::new().expect("start a tokio runtime");
         runtime
             .block_on(async {
                 let mut conn = PgConnection::connect(&self.db.url()).await?;
+                sqlx::raw_sql("SET xmlbinary = hex")
+                    .execute(&mut conn)
+                    .await?;
                 let tables: Vec<(String,)> = sqlx::query_as(
                     "SELECT query_to_xml(format('SELECT * FROM %I.%I', table_schema, table_name),
                                          true, false, '')::text

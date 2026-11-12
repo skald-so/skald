@@ -1,5 +1,5 @@
-//! Ed25519 signatures over labels (`docs/protocol/README.md`, "Conventions"; `membership.md`,
-//! "Signed objects"), issuing device certificates (`membership.md`, "Device certificate",
+//! A device's keys, kept as their 32-byte secrets; Ed25519 signatures over labels
+//! (`docs/protocol/README.md`, "Conventions"; `membership.md`, "Signed objects"), issuing device certificates (`membership.md`, "Device certificate",
 //! "Linking a device") and checking them against a pinned master key (`membership.md`,
 //! "Device checks", checks 1 and 2).
 //!
@@ -7,7 +7,7 @@
 //! from the crate under test: Ed25519 is deterministic, so they must match byte for byte.
 
 use ed25519_dalek::Signer as _;
-use skald_crypto::{DeviceCheckError, SigningKey, check_device, issue, verify};
+use skald_crypto::{DeviceCheckError, HpkeKey, SigningKey, check_device, issue, verify};
 use skald_proto::{AccountId, Cbor, Cert, CertBody, DeviceId, DeviceKind, Unknown};
 
 // Key seeds.
@@ -195,9 +195,44 @@ fn a_signing_key_has_the_rfc_8032_public_key() {
         ),
     ] {
         let (secret, expected) = (bytes32(secret), bytes32(expected));
-        assert_eq!(SigningKey::from_bytes(&secret).public_key(), expected);
+        let key = SigningKey::from_bytes(&secret);
+        assert_eq!(key.public_key(), expected);
+        assert_eq!(*key.to_bytes(), secret, "the secret it was made of");
     }
     assert_eq!(key(A).public_key(), public(A));
+}
+
+#[test]
+fn an_hpke_key_is_kept_as_its_scalar_and_has_the_rfc_7748_public_key() {
+    // RFC 7748, §6.1: Alice's and Bob's private keys, unclamped, and their public keys.
+    for (secret, expected) in [
+        (
+            "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+            "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+        ),
+        (
+            "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+            "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+        ),
+    ] {
+        let (secret, expected) = (bytes32(secret), bytes32(expected));
+        let key = HpkeKey::from_bytes(&secret);
+        assert_eq!(key.public_key(), expected);
+        assert_eq!(*key.to_bytes(), secret, "the scalar it was made of");
+    }
+    assert_eq!(format!("{:?}", HpkeKey::generate()), "HpkeKey(..)");
+}
+
+#[test]
+fn generated_keys_differ_and_are_made_again_of_their_secrets() {
+    let (one, two) = (SigningKey::generate(), SigningKey::generate());
+    assert_ne!(one.public_key(), two.public_key());
+    let again = SigningKey::from_bytes(&one.to_bytes());
+    assert_eq!(again.public_key(), one.public_key());
+    let (one, two) = (HpkeKey::generate(), HpkeKey::generate());
+    assert_ne!(one.public_key(), two.public_key());
+    let again = HpkeKey::from_bytes(&one.to_bytes());
+    assert_eq!(again.public_key(), one.public_key());
 }
 
 #[test]

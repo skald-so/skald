@@ -680,7 +680,6 @@ fn asks_whether_this_is_the_first_device_before_asking_the_server() {
 #[test]
 fn empty_and_overlong_host_names_give_valid_names() {
     let (cloud, browser) = setup();
-    let page = browser.page();
     let overlong = format!("a{}", "ü".repeat(50));
     let cases = [
         (4_120_666_012, "ada-empty-host-standin", String::new()),
@@ -689,7 +688,8 @@ fn empty_and_overlong_host_names_give_valid_names() {
     for (id, login, host) in cases {
         let user = cloud.user(id, login);
         let machine = Machine::new().with_host_name(&host);
-        let first = first_device(&cloud, &page, &machine, &user, &[]);
+        // A page of its own: one signed in to the server as the user before approves as that user.
+        let first = first_device(&cloud, &browser.page(), &machine, &user, &[]);
         let name = &first.cert.body().name;
         assert!(
             (1..=CERT_NAME_MAX).contains(&name.len()),
