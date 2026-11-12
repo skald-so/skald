@@ -416,6 +416,22 @@ pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -
     }
 }
 
+/// `DELETE /session`: ends the device session of the request's bearer token.
+pub(crate) async fn end(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(Some(token)) = bearer(&headers) else {
+        return not_signed_in();
+    };
+    let ended = sqlx::query("DELETE FROM sessions WHERE kind = 'device' AND token_hash = $1")
+        .bind(digest(token))
+        .execute(&state.db)
+        .await;
+    match ended {
+        Ok(done) if done.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => not_signed_in(),
+        Err(err) => database_failed("end a session", err),
+    }
+}
+
 /// The account of the request's session: the device session of its bearer token if it has an
 /// `Authorization` header, else the web session of its cookie.
 pub(crate) async fn signed_in(

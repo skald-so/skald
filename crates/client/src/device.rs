@@ -501,6 +501,7 @@ mod tests {
         let known = state::Device {
             id: keys.id(),
             name: "ada".to_owned(),
+            account: None,
             registered: true,
             link: Link::New,
         };

@@ -126,7 +126,7 @@ fn shared_names(linked: &[&Cert]) -> Vec<(String, Vec<DeviceId>)> {
 }
 
 /// The text of `err`, as `skald` prints it.
-fn text(err: impl std::fmt::Display) -> String {
+pub fn text(err: impl std::fmt::Display) -> String {
     err.to_string()
 }
 
