@@ -36,10 +36,30 @@ fn session(dir: &Path) -> (UnixListener, agent_source::Source, agent_source::Mes
     (listener, source, message)
 }
 
+/// The first connection to `listener`; fails after 10 s without one, so that a run that never
+/// connects fails the test rather than hanging it.
+fn accept(listener: &UnixListener) -> UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(std::time::Instant::now() < deadline, "no connection");
+                thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+}
+
 /// The lines of the first connection to `listener`, as JSON.
 fn lines(listener: UnixListener) -> thread::JoinHandle<Vec<Value>> {
     thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
+        let stream = accept(&listener);
         BufReader::new(stream)
             .lines()
             .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
@@ -75,39 +95,49 @@ fn hands_the_messages_over_with_the_token_unless_told_not_to() {
 
 #[test]
 fn records_the_receipts_that_come_to_its_reply_address() {
-    let dir = tempfile::tempdir().unwrap();
-    let (listener, source, message) = session(dir.path());
-    let msg_id = message.msg_id.clone();
-    // The stand-in holds the message and says so to the reply address.
-    let session = thread::spawn(move || {
-        let (stream, _) = listener.accept().unwrap();
-        let line: Value =
-            serde_json::from_str(&BufReader::new(stream).lines().next().unwrap().unwrap()).unwrap();
-        let reply = line["from"].as_str().unwrap().strip_prefix("uds:").unwrap();
-        let mut stream = UnixStream::connect(reply).unwrap();
-        let receipt = serde_json::json!({
-            "type": "control", "action": "peer_message_status", "status": "held",
-            "reason": "held for approval", "orig_msg_id": msg_id,
+    for auth in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (listener, source, message) = session(dir.path());
+        let msg_id = message.msg_id.clone();
+        // The stand-in holds the message and says so to the reply address.
+        let session = thread::spawn(move || {
+            let stream = accept(&listener);
+            let line: Value = BufReader::new(stream)
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(&line.unwrap()).unwrap())
+                .find(|line| line["type"] == "user")
+                .unwrap();
+            let reply = line["from"].as_str().unwrap().strip_prefix("uds:").unwrap();
+            let mut stream = UnixStream::connect(reply).unwrap();
+            let receipt = serde_json::json!({
+                "type": "control", "action": "peer_message_status", "status": "held",
+                "reason": "held for approval", "orig_msg_id": msg_id,
+            });
+            writeln!(stream, "{receipt}").unwrap();
         });
-        writeln!(stream, "{receipt}").unwrap();
-    });
-    let source_dir = dir.path().join("source");
-    let output = agent_socket(&[source_dir.to_str().unwrap(), "--no-auth", "--listen", "2"]);
-    session.join().unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        format!("1\nheld {}\n", message.msg_id)
-    );
-    let records = source.records(&message.msg_id).unwrap();
-    assert_eq!(records[0].signal, "socket-held");
-    assert_eq!(records[0].detail.as_deref(), Some("held for approval"));
-    // The reply address is gone with the process.
-    assert_eq!(
-        std::fs::read_dir(dir.path()).unwrap().count(),
-        2,
-        "only the session's socket and the source are left"
-    );
+        let source_dir = dir.path().join("source");
+        let mut args = vec![source_dir.to_str().unwrap()];
+        if !auth {
+            args.push("--no-auth");
+        }
+        args.extend(["--listen", "2"]);
+        let output = agent_socket(&args);
+        session.join().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("1\nheld {}\n", message.msg_id)
+        );
+        let records = source.records(&message.msg_id).unwrap();
+        assert_eq!(records[0].signal, "socket-held");
+        assert_eq!(records[0].detail.as_deref(), Some("held for approval"));
+        // The reply address is gone with the process.
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            2,
+            "only the session's socket and the source are left"
+        );
+    }
 }
 
 #[test]

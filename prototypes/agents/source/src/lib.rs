@@ -706,6 +706,15 @@ mod tests {
     }
 
     #[test]
+    fn compares_secrets_whole() {
+        assert!(same(b"abc", b"abc"));
+        assert!(same(b"", b""));
+        assert!(!same(b"a", b"ab"));
+        // Two differences that cancel each other out still differ.
+        assert!(!same(b"ab", b"ba"));
+    }
+
+    #[test]
     fn records_each_signal_once_in_order() {
         let (dir, source) = opened();
         let message = source.add("alice", "one").unwrap();
@@ -735,6 +744,13 @@ mod tests {
         assert!(source.record("../x", "ack", None).is_err());
         assert!(source.records("../x").is_err());
         assert_eq!(fs::read_dir(dir.path().join(TMP)).unwrap().count(), 0);
+        // A record that cannot be written is an error, not one recorded already.
+        use std::os::unix::fs::PermissionsExt;
+        let records = dir.path().join(RECORDS).join(id);
+        fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
+        let locked = source.record(id, "ack", None);
+        fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(locked.unwrap_err().kind(), ErrorKind::PermissionDenied);
     }
 
     #[test]
@@ -797,6 +813,10 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(fs::read_dir(dir.path().join(TMP)).unwrap().count(), 0);
         fs::write(dir.path().join(SESSION), "{").unwrap();
+        assert!(source.registration().is_err());
+        // A registration that cannot be read is an error, not a missing one.
+        fs::remove_file(dir.path().join(SESSION)).unwrap();
+        fs::create_dir(dir.path().join(SESSION)).unwrap();
         assert!(source.registration().is_err());
     }
 
