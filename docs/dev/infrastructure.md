@@ -55,7 +55,7 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (build, installers, publishing).
 - **Release PR:** on every push to `dev`, `.github/workflows/release-plz.yml` runs release-plz with `release-plz.toml`; it opens the Release PR or updates the open one. Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
 - **One version for everything:** client, server, plugin; for the crates, `[workspace.package]` in `Cargo.toml`. Before 1.0: `0.x` versions.
-- **Bumps in `0.x`:** a PR whose title has `!` bumps the minor version; any other PR the CHANGELOG lists, of any type, the patch version.
+- **Bumps in `0.x`:** of the PRs the CHANGELOG lists, one whose title has `!` bumps the minor version; any other, of any type, the patch version.
 - **Last release:** the last `vX.Y.Z` tag, not crates.io; beta tags do not count.
 - **CHANGELOG:** `CHANGELOG.md` in the root lists the titles of the PRs merged since the last release, except those of PRs that change only `prototypes/`: prototypes ship in no release, and they belong to no package of the workspace, whose files release-plz counts.
 - **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far, those that change only `prototypes/` included; the exception for them starts with the first release tag.
