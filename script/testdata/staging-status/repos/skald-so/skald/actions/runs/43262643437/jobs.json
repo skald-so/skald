@@ -1,0 +1,57 @@
+{
+  "jobs": [
+    {
+      "name": "Publish",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-12T16:48:22Z",
+      "completed_at": "2026-11-12T16:49:08Z",
+      "steps": [
+        {
+          "name": "Set up job",
+          "started_at": "2026-11-12T16:48:23Z"
+        },
+        {
+          "name": "Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "started_at": "2026-11-12T16:48:25Z"
+        },
+        {
+          "name": "Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+          "started_at": "2026-11-12T16:48:26Z"
+        },
+        {
+          "name": "Run docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550",
+          "started_at": "2026-11-12T16:48:33Z"
+        },
+        {
+          "name": "Run docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc",
+          "started_at": "2026-11-12T16:48:34Z"
+        },
+        {
+          "name": "Move :edge",
+          "started_at": "2026-11-12T16:49:00Z"
+        },
+        {
+          "name": "Post Run docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc",
+          "started_at": "2026-11-12T16:49:02Z"
+        },
+        {
+          "name": "Post Run docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550",
+          "started_at": "2026-11-12T16:49:03Z"
+        },
+        {
+          "name": "Post Run docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069",
+          "started_at": "2026-11-12T16:49:04Z"
+        },
+        {
+          "name": "Post Run actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "started_at": "2026-11-12T16:49:06Z"
+        },
+        {
+          "name": "Complete job",
+          "started_at": "2026-11-12T16:49:06Z"
+        }
+      ]
+    }
+  ]
+}

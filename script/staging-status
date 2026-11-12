@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Reports whether staging runs the latest commit on dev of skald-so/skald: the commit and its merge
+# time; the latest staging deploy, the deploy job of .github/workflows/edge.yml, with its commit,
+# result and how long after that commit's merge it finished; the health check over $STAGING_URL
+# (https://dev.skald.so by default), with curl's check of the certificate. Exits 0 only when the
+# latest staging deploy is of that commit and succeeded and the health check answers ok; 1
+# otherwise, naming each cause: the publish or the deploy of that commit failed, has not run or is
+# still running, or the health check fails; 2 on an error, a failed call of the GitHub API among
+# them.
+# Reads only public data, without a token: the head of dev and its CI runs from the GitHub API at
+# $GITHUB_API_URL (https://api.github.com by default), and the health check.
+# A deploy job that succeeded after a newer commit reached dev left staging as it was
+# (script/deploy-staging), so it is no deploy. It reads the newest 10 runs of edge.yml.
+# script/staging-status-test tests it.
+# Usage: script/staging-status
+set -euo pipefail
+
+repo=skald-so/skald
+api=${GITHUB_API_URL:-https://api.github.com}
+staging=${STAGING_URL:-https://dev.skald.so}
+runs_checked=10
+# The names of the jobs and of the deploy's step in .github/workflows/edge.yml.
+publish_job=Publish deploy_job='Deploy to staging' deploy_step=Deploy
+
+if [[ $# -ne 0 ]]; then
+  echo "usage: $0" >&2
+  exit 2
+fi
+
+say() { echo "staging-status: $*"; }
+error() {
+  echo "staging-status: $*" >&2
+  exit 2
+}
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/staging-status.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+# get <path>: the GitHub API's answer for the repository's <path>. --disable: no curl config adds a
+# token or anything else.
+get() {
+  curl --disable --fail --silent --show-error --max-time 30 --retry 3 \
+    --header 'Accept: application/vnd.github+json' --header 'X-GitHub-Api-Version: 2022-11-28' \
+    "$api/repos/$repo/$1" || error "the GitHub API did not answer $1"
+}
+
+# duration <from> <to>: the time between two ISO 8601 times, as `<m> min <s> s`.
+duration() {
+  jq -nr --arg from "$1" --arg to "$2" \
+    '(($to | fromdateiso8601) - ($from | fromdateiso8601)) as $s
+      | "\($s / 60 | floor) min \($s % 60) s"'
+}
+
+commit=$(get commits/dev)
+read -r head merged < <(jq -r '"\(.sha) \(.commit.committer.date)"' <<<"$commit" 2>/dev/null) || true
+[[ $head =~ ^[0-9a-f]{40}$ && $merged =~ ^[0-9T:-]+Z$ ]] ||
+  error "the GitHub API sent an unreadable commit"
+say "dev is $head, merged $merged"
+
+# The runs, newest first, as lines of `<id> <commit> <status> <merge time of the commit> <URL>`.
+runs=$(get "actions/workflows/edge.yml/runs?branch=dev&event=push&per_page=$runs_checked")
+runs=$(jq -r '.workflow_runs | sort_by(.created_at, .id) | reverse | .[]
+  | "\(.id) \(.head_sha) \(.status) \(.head_commit.timestamp) \(.html_url)"' <<<"$runs") ||
+  error "the GitHub API sent an unreadable list of runs"
+
+# run_jobs <run id>: the run's jobs, from the GitHub API once.
+run_jobs() {
+  [[ -e $tmp/jobs-$1 ]] || get "actions/runs/$1/jobs?per_page=100" >"$tmp/jobs-$1"
+  jq -e '.jobs | arrays' "$tmp/jobs-$1" >/dev/null ||
+    error "the GitHub API sent an unreadable list of the jobs of run $1"
+  cat "$tmp/jobs-$1"
+}
+
+# The latest staging deploy: the deploy job of the newest run that started it, unless it succeeded
+# after a newer commit was merged.
+deploy='' newer_merge=''
+while read -r id sha _ merge_time url; do
+  [[ -n $id ]] || continue
+  job=$(run_jobs "$id" | jq -c --arg name "$deploy_job" --arg step "$deploy_step" '
+    [.jobs[] | select(.name == $name)][0] // empty
+    | select(.started_at != null and .conclusion != "skipped")
+    | .step_started = ([.steps[]? | select(.name == $step) | .started_at][0] // .started_at)')
+  if [[ -n $job ]] && ! jq -e --arg newer "$newer_merge" \
+    '.conclusion == "success" and $newer != "" and .step_started >= $newer' <<<"$job" >/dev/null; then
+    deploy="$sha $merge_time $url" deploy_json=$job
+    break
+  fi
+  newer_merge=$merge_time
+done <<<"$runs"
+
+deployed=false
+if [[ -z $deploy ]]; then
+  say "latest staging deploy: none in the newest $runs_checked runs of edge.yml"
+else
+  read -r deploy_sha deploy_merge deploy_url <<<"$deploy"
+  read -r job_status conclusion completed <<<"$(jq -r \
+    '"\(.status) \(.conclusion // "-") \(.completed_at // "-")"' <<<"$deploy_json")"
+  if [[ $job_status != completed ]]; then
+    result="still running"
+  elif [[ $conclusion == success ]]; then
+    result=succeeded
+  else
+    result="failed ($conclusion)"
+  fi
+  [[ $completed == - ]] ||
+    result+=", finished $completed, $(duration "$deploy_merge" "$completed") after its merge"
+  say "latest staging deploy: $deploy_sha, $result; $deploy_url"
+  [[ $deploy_sha != "$head" || $result != succeeded* ]] || deployed=true
+fi
+
+causes=()
+# state <run status> <job name> <jobs JSON>: nothing if the job succeeded, otherwise how it stands.
+state() {
+  jq -r --arg run "$1" --arg name "$2" '[.jobs[] | select(.name == $name)][0] as $job
+    | if $job.status == "completed" then
+        if $job.conclusion == "success" then empty
+        elif $job.conclusion == "skipped" then "has not run"
+        else "failed (\($job.conclusion))" end
+      elif $run == "completed" then "has not run"
+      else "is still running" end' <<<"$3"
+}
+if [[ $deployed == false ]]; then
+  head_run=$(awk -v sha="$head" '$2 == sha { print $1, $3; exit }' <<<"$runs")
+  if [[ -z $head_run ]]; then
+    causes+=("the publish has not run")
+  else
+    read -r run_id run_status <<<"$head_run"
+    head_jobs=$(run_jobs "$run_id")
+    publish=$(state "$run_status" "$publish_job" "$head_jobs")
+    deploy_state=$(state "$run_status" "$deploy_job" "$head_jobs")
+    if [[ -n $publish ]]; then
+      causes+=("the publish $publish")
+    elif [[ -n $deploy_state ]]; then
+      causes+=("the deploy $deploy_state")
+    else
+      causes+=("the latest staging deploy is not of $head")
+    fi
+  fi
+fi
+
+status=0
+code=$(curl --disable --silent --show-error --max-time 30 --output "$tmp/health" \
+  --write-out '%{http_code}' "$staging/health" 2>"$tmp/health-error") || status=$?
+if [[ $status -ne 0 ]]; then
+  health="no answer: $(head -n 1 "$tmp/health-error")"
+elif [[ $code == 200 ]] && jq -e '.status == "ok"' "$tmp/health" >/dev/null 2>&1; then
+  health=ok
+else
+  health="HTTP $code"
+fi
+say "health check $staging/health: $health"
+[[ $health == ok ]] || causes+=("the health check fails: $health")
+
+if [[ ${#causes[@]} -eq 0 ]]; then
+  say "PASSED: staging runs $head"
+  exit 0
+fi
+for cause in "${causes[@]}"; do
+  say "FAILED: $cause"
+done
+exit 1
