@@ -98,17 +98,42 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
-## Questions
-Open questions of edit comparison, and how the prototype answers them:
-| Question | How |
-|---|---|
-| Data source: diff, hooks or declarations | [Edits via Bash and generators](#edits-via-bash-and-generators): the changed files each source misses and when it learns of them, on scripted sessions |
-| When to warn | [Measurement](#measurement): warnings at each level against `git merge-tree` conflicts |
-| Reservation TTL | [Measurement](#measurement): how long each side of a merge lived |
-| How to catch edits made via Bash and generators | [Edits via Bash and generators](#edits-via-bash-and-generators): which source catches the files shell commands, a formatter, a lockfile rewrite and a code generator change |
-| Path normalization | [Path normalization](#path-normalization): one form of a path and of line endings, the paths of the measured repositories that share it, and what git does on macOS and Windows |
-| Noise from lockfiles and migrations | [Measurement](#measurement): warnings and conflicts by class of file, and ways of handling each class |
-| Whether intents like "replacing / extending" are needed | [Measurement](#measurement): whether both sides of a warning only add lines |
+## Answers
+Preliminary answers to the open questions of edit comparison, from the evidence of the sections below; "open" names what is still unknown and what would answer it.
+
+- **Data source: diff, hooks or declarations.** The diff: the [edit set](#file-fingerprints), scanned after each tool call. On the [scripted sessions](#edits-via-bash-and-generators) it is the only source that misses no changed file, and it reports no restored one. Hooks miss every file only shell commands change, declarations every file no step names. A hook serves as the trigger of a scan; declarations can tell of files before the edit, never in place of the diff.
+  - Open: what a scan after each tool call costs on a large worktree; what an agent declares before it edits.
+- **When to warn.** On a match of [hunk fingerprints](#hunk-and-symbol-level), which the [exact check](#exact-check) confirms or clears. A match of path fingerprints alone is a notice: on the [measured merges](#findings) file level warns about several times as many merges that merge cleanly as hunk level, and neither misses a conflicted merge. A match of symbol fingerprints is a notice that both machines edit one function: it misses conflicts.
+  - Open: how early a warning comes while machines work, which a replay of finished merges does not show; conflicts in renamed files.
+- **Reservation TTL.** No fixed TTL. A reservation lasts while its machine keeps publishing, as a lease, and ends once its edit set no longer holds the files, when the changes are merged and pulled. The sides of the measured merges live a median of 2 to 5 days and a 90th percentile of 13 to 47 days ([Side lifetimes](#results)): a TTL short enough to drop stale reservations ends most live ones.
+  - Open: how long a machine goes without publishing while its work is open, which says how long a lease outlives the last publication.
+- **How to catch edits made via Bash and generators.** With the diff, scanned after each tool call, the shell tool's included: on the sessions it catches every file in-place edits, moves, deletions, formatters, lockfile rewrites and code generators change, at the edit.
+  - Open: edits outside an agent's tool calls, such as a file watcher or a build script, which the sessions do not hold and a scan on a timer would catch; how often it scans.
+- **Path normalization.** The [normal form](#path-normalization): the path relative to the repository root with `/` separators, case folded, in NFC; hunks and symbols with LF line endings. `paths::relative` maps the paths an agent's tools give to it. No path of the measured repositories shares the form with another. On macOS and Windows every spelling of a file's path gets its fingerprint, but backslashes on macOS, which name another file there.
+  - Open: the open items of [Path normalization](#path-normalization), such as a case-only rename outside git, which git does not list.
+- **Noise from lockfiles and migrations.** Each class, lockfiles, migrations and generated code, is warned apart, in a list of its own: on the measured merges that takes its noise out of the main list and hides no conflict, where leaving lockfiles or generated code out hides conflicts. A class is recognized by name, `.gitattributes` or a generator marker. Most noise is in other files ([Findings](#findings), "Noise by class").
+  - Open: migrations that clash without sharing a file, such as two of one number in one directory, which a fingerprint of the directory and the number would match; files no rule recognizes, such as drizzle-kit's SQL migrations and generated JSON.
+- **Whether intents like "replacing / extending" are needed.** No. The client's diff already tells whether a side only adds lines, and that does not rule out a conflict: at hunk level 6.5% to 57% of the warnings where both sides only add lines conflict ([Findings](#findings), "Intents"). An intent cannot quiet a warning; the exact check decides.
+  - Open: whether an intent helps a person read a warning.
+
+### File level
+- **A client sends:** the fingerprints of its whole [edit set](#file-fingerprints), 32 bytes per path; each publication replaces its last. A fingerprint is HMAC-SHA256 with the space key over a label, the repository's scope, the least root commit, and the path in its [normal form](#path-normalization). The client publishes after each tool call.
+- **The server compares:** it keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which. The machine maps them back to its paths. The server sees no path or scope.
+- **On a match:** the two machines run the [exact check](#exact-check) over end-to-end encrypted messages; the server receives none of it.
+- **What the server learns:** each publication's machine, time and size, which machines share fingerprints and how many, and how a file's fingerprints recur across machines ([Findings](#findings-1)).
+- **The space key:** changes at each removal of a member and revocation of a device; every machine then publishes again, and overlaps are lost until both machines have. The server takes no publication from a revoked device ([Findings](#findings-1)).
+- **Open:** a scope for shallow clones; conflicts in renamed paths; merges with several merge bases; a key per repository.
+
+### Hunk and symbol level
+- **Hunks:** each boundary between lines of the merge base that a change touches, fingerprinted with the lines on either side of it, without line numbers ([Hunk fingerprints](#hunk-fingerprints)). They go in one set with the path fingerprints, and the server compares them alike.
+  - Noise: on the measured merges, 3, 9 and 6 merges warned without a conflict, against 73, 39 and 28 at file level. In files, most warnings without a conflict are the same change on both sides, which the exact check clears: 166 of 267, 866 of 936 and 162 of 300. Common lines, such as `}` before an empty line, match too.
+  - Misses: no conflicted merge. 3, 3 and 0 conflicted files, each in a renamed path or in a merge with two merge bases, have no warning at any level. Conflicts with upstream commits only one machine has pulled match at file level only; that machine meets them when it pulls.
+  - Cost: most of a publication's fingerprints and bytes, up to 3.5 MB on the largest measured side; a fingerprint per changed line shows the server the size of the edits.
+- **Symbols:** the innermost function, method or type enclosing each changed line, named with the symbols that enclose it, found with tree-sitter in Rust, TypeScript and Python ([Symbol fingerprints](#symbol-fingerprints)).
+  - Noise: edits to distant lines of one function, which merge cleanly, are what the level is for; 6, 17 and 5 merges warned without a conflict.
+  - Misses: 24, 14 and 5 conflicted merges without a warning, from lines outside every symbol and files in other languages, generated code among them. Generated code at file level only cuts the conflicted files without a symbol-level warning from 142 to 126 on diesel and from 325 to 200 on netbox.
+  - So symbols add to hunks, never replace them.
+- **Open:** a symbol moved to another file; files with syntax errors during an edit; more languages; a dictionary of common lines run against hunk fingerprints.
 
 ## File fingerprints
 - **Edit set:** `git diff --no-renames --ignore-submodules=dirty --name-only <merge base>` against the working tree, and `git ls-files --others --exclude-standard`.
