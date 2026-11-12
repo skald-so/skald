@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Runs the step of .github/workflows/release.yml that publishes the release, as GitHub runs it with
-# `shell: bash`, with a stand-in gh, on the files the dry run builds and a CHANGELOG.md:
+# Runs the steps of .github/workflows/release.yml that write the installers and publish the release,
+# every `run` step of the job that creates the release up to the one that creates it, in order, as
+# GitHub runs them with `shell: bash`, with a stand-in gh, on the files the dry run builds and a
+# CHANGELOG.md:
 #   - it creates one release of the tag with all its files: the archives, their checksums and the
 #     installers of the tag, made by script/release-installers;
 #   - the release's notes are the version's CHANGELOG section, script/release-notes;
 #   - a beta's release, vX.Y.Z-beta.N, is a prerelease, and a stable release's is not;
-#   - without a CHANGELOG section for the version, or when gh fails, the step fails, and in the
+#   - without a CHANGELOG section for the version, or when gh fails, a step fails, and in the
 #     first case gh does not run.
 # Also runs the plan job's step that sets the release tag: a push of the tag of the workspace
 # version, a stable release's or a beta's, gets that tag; a push of any other tag fails the step
@@ -23,14 +25,20 @@ fail() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# The step's script. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
+# The steps' scripts, step-<n>.sh, of the job that creates the release, up to the step that creates
+# it. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
 npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/release.yml" |
-  jq -r '[.jobs[].steps[]? | select(.run // "" | test("gh\\s+release\\s+create")) | .run]
-    | if length == 1 then .[0] else error("not one step runs gh release create") end' \
-  >"$tmp/step.sh" || {
+  jq 'def creates: .run // "" | test("gh\\s+release\\s+create");
+    [.jobs[] | .steps // [] | select(any(.[]; creates))]
+    | if length == 1 and (.[0] | map(select(creates)) | length) == 1 then .[0]
+      else error("not one step runs gh release create") end
+    | .[:map(creates) | index(true) + 1] | map(.run // empty)' \
+  >"$tmp/steps.json" || {
   echo "release-step-test: not one step of .github/workflows/release.yml runs gh release create" >&2
   exit 1
 }
+steps=$(jq length "$tmp/steps.json")
+for ((i = 0; i < steps; i++)); do jq -r ".[$i]" "$tmp/steps.json" >"$tmp/step-$i.sh"; done
 
 # The plan job's step that sets the release tag.
 npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/release.yml" |
@@ -85,21 +93,24 @@ exit "\$GH"
 EOF
 chmod +x "$tmp/bin/gh"
 
-# run <tag> <gh exit>: runs the step for <tag>; its exit code.
+# run <tag> <gh exit>: runs the steps for <tag>, each in a shell of its own, until one fails; the
+# exit code of the last one run.
 run() {
   rm -f "$tmp"/gh.* "$tmp/work/release"/install.*
-  local status=0
-  (cd "$tmp/work" && TAG=$1 GH=$2 RUNNER_TEMP=$tmp/runner PATH="$tmp/bin:$PATH" \
-    bash --noprofile --norc -eo pipefail "$tmp/step.sh") >/dev/null 2>&1 || status=$?
+  local status=0 i
+  for ((i = 0; i < steps && status == 0; i++)); do
+    (cd "$tmp/work" && TAG=$1 GH=$2 RUNNER_TEMP=$tmp/runner PATH="$tmp/bin:$PATH" \
+      bash --noprofile --norc -eo pipefail "$tmp/step-$i.sh") >/dev/null 2>&1 || status=$?
+  done
   echo "$status"
 }
 mkdir "$tmp/runner"
 
-# expect_release <tag> <prerelease: yes or no> <notes line>: the step creates the release.
+# expect_release <tag> <prerelease: yes or no> <notes line>: the steps create the release.
 expect_release() {
   local status args given prerelease=no
   status=$(run "$1" 0)
-  [[ $status == 0 ]] || fail "$1: the step exits $status"
+  [[ $status == 0 ]] || fail "$1: a step exits $status"
   if [[ ! -f $tmp/gh.args ]]; then
     fail "$1: gh does not run"
     return
@@ -154,10 +165,10 @@ expect_plan 1.2.3 workflow_dispatch v9.9.9 v1.2.3
 expect_release v1.2.3 no '*(server)* stable fix'
 expect_release v1.2.4-beta.1 yes '*(client)* beta feature'
 status=$(run v1.2.5 0)
-[[ $status != 0 ]] || fail "v1.2.5, without a CHANGELOG section: the step passes"
+[[ $status != 0 ]] || fail "v1.2.5, without a CHANGELOG section: the steps pass"
 [[ ! -f $tmp/gh.args ]] || fail "v1.2.5, without a CHANGELOG section: gh runs"
 status=$(run v1.2.3 1)
-[[ $status != 0 ]] || fail "v1.2.3, gh fails: the step passes"
+[[ $status != 0 ]] || fail "v1.2.3, gh fails: the steps pass"
 
 if ((failures > 0)); then
   echo "release-step-test: $failures case(s) failed" >&2

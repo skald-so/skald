@@ -1,7 +1,7 @@
 # Installs skald from its GitHub Release on Windows: downloads the release's archive for this
-# machine's architecture and puts skald.exe in %LOCALAPPDATA%\Programs\skald, or
-# $env:SKALD_INSTALL_DIR, on the user's PATH, so new shells run it. script/release-installers sets
-# the release tag of a release's copy.
+# machine's architecture, checks it against its checksum and puts skald.exe in
+# %LOCALAPPDATA%\Programs\skald, or $env:SKALD_INSTALL_DIR, on the user's PATH, so new shells run it.
+# script/release-installers sets the release tag of a release's copy.
 #   powershell -ExecutionPolicy Bypass -c "irm https://github.com/skald-so/skald/releases/download/<tag>/install.ps1 | iex"
 # $env:SKALD_DOWNLOAD_URL: where the release's files are instead of its GitHub Release.
 # Runs in a script block and throws on errors, so `iex` leaves the shell open and its variables
@@ -32,6 +32,21 @@
   try {
     $zip = Join-Path $tmp $archive
     Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile $zip
+    # The archive's checksum, <archive>.sha256 of the release as dist writes it: `<hex> *<name>`.
+    # Nothing is installed unless the archive matches it.
+    $sums = Join-Path $tmp "$archive.sha256"
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive.sha256" -OutFile $sums
+    } catch {
+      throw "install.ps1: cannot download the checksum of $archive, $base/$archive.sha256: $($_.Exception.Message)"
+    }
+    $expected = if (Test-Path -LiteralPath $sums) { ([IO.File]::ReadAllText($sums).Trim() -split '\s+')[0] } else { '' }
+    if ($expected -notmatch '^[0-9a-fA-F]{64}$') {
+      throw "install.ps1: the checksum of $archive, $archive.sha256, has no SHA-256"
+    }
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash -ne $expected) {
+      throw "install.ps1: $archive does not match its checksum, $archive.sha256: nothing installed"
+    }
     Expand-Archive -Path $zip -DestinationPath (Join-Path $tmp 'archive')
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     Copy-Item -Force -Path (Join-Path $tmp 'archive\skald.exe') -Destination (Join-Path $dir 'skald.exe')
