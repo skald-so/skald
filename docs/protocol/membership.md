@@ -167,11 +167,11 @@ link-request-body = {
 }
 
 link-grant-body = {
-  1 => bstr .size 32,      ; master: the master key the issuing device pinned
+  1 => bstr .size 32,         ; master: the master key the issuing device pinned
   2 => bstr .cbor cert-body,  ; cert: the new device's certificate body
-  3 => bstr .size 64,      ; signature: by the issuing device, over ["skald cert", cert]
-  4 => link,              ; link: the link object
-  * int => any,            ; fields of later versions
+  3 => bstr .size 64,         ; signature: by the issuing device, over ["skald cert", cert]
+  4 => link,                  ; link: the link object
+  * int => any,               ; fields of later versions
 }
 ```
 
@@ -564,7 +564,7 @@ A reader MUST drop an entry unless:
 - The master key cannot be rotated. A leaked recovery key, current or old, with any copy of a master backup it opens, gives away the master key for good: its holder can certify and revoke devices and sign an account record with its own `recovery`, so member devices wrap history keys to it. A new recovery key does not lock it out: the holder signs a record with a higher `revision` again. Clients warn when `recovery` changes.
 - Only a holder of the recovery key seals a master backup that opens in PSK mode, so the server cannot give a device linked with the recovery key another master key. It can withhold the backup: the device then cannot link with the recovery key.
 - A link code holds 30 bits, and a CPace run gives a server or network attacker one online guess at it and no offline test. Each code takes an action of the new device's user, and the new device runs it at most 3 times, whoever answers: an attacker that answers its hellos gives it a certificate, a master key and a link object of its choice with a chance of at most 3 in 2^30 per user action, about 3 in a billion.
-- The new device does not count the issuing device's runs, which the issuing device counts itself: an attacker that answers its entries with hellos of its own gets at most 3 more guesses before the issuing device stops, so at most 3 + 3 per code, 6 in 2^30. A success there still needs the issuing device's user to confirm the `name` and kind the attacker chose.
+- The new device does not count the issuing device's runs, which the issuing device counts itself: an attacker that answers its entries with hellos of its own gets at most 3 more guesses at each issuing device before it stops. Each issuing device counts only its own runs, so a code allows at most 3 at the new device plus 3 at each issuing device its user enters it on, each guess with a chance of 1 in 2^30. A success there still needs the issuing device's user to confirm the `name` and kind the attacker chose.
 - The issuing device certifies the device whose code its user enters, with the `name` and kind that device chose. A user persuaded to enter someone else's code, such as one a sign-in thief sends, links the thief's device; the issuing device's reminder to enter only a code shown on their own device is the only defense.
 - A device learns whether its account has a master key only from the server. Whoever signs in before the user's first device, such as the IdP, a thief of the user's sign-in or the server, creates the master key and holds the account's root of trust for good: the master key cannot be rotated. The user's first device, whose user says it is the first, warns and stops. The holder links none of the user's devices: that takes a code the user enters on the holder's device. A server that holds such a key can instead report none: the user's first device then rightly says it is the first and creates a second master key, as below, with no warning.
 - Members pin an account's master key from the roster, which takes it from the account's device that created the space or accepted the invite. So members of a space the holder created or joined trust the holder's devices as the account's, and get no key change warning: no other master key came first. The `ssh` signature is optional, so its absence shows nothing.

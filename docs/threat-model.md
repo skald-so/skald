@@ -41,7 +41,7 @@ Also whoever takes over the server or its database.
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
 - Drop an ephemeral agent's message unnoticed: content without `counter` has no gap detection ([Gap detection](protocol/delivery.md#gap-detection)).
 - Serve a linked browser a modified web app: the browser trusts the build it is served ([Trade-offs](#trade-offs)).
-- Guess a link code online: at most 3 guesses at the new device per action of its user, and 3 more at the issuing device before it stops, so at most 3 + 3 per code, each with a chance of 1 in 2^30 ([membership.md](protocol/membership.md#security-considerations)).
+- Guess a link code online: at most 3 guesses at the new device per action of its user, and 3 more at each issuing device its user enters the code on before that device stops, each guess with a chance of 1 in 2^30 ([membership.md](protocol/membership.md#security-considerations)).
 - Report no master key for an existing account: a new device whose user says it is the first then creates a second one, and the account splits into two sets of devices that do not trust each other ([membership.md](protocol/membership.md#security-considerations)).
 - Create an account's master key on a device of its own before the user's first device, as [the IdP](#the-idp-or-github) can, then report none: the user's first device rightly says it is the first and creates a second one, with no warning, and members of a space the server's device created or joined as the account trust that device as the account's ([membership.md](protocol/membership.md#security-considerations)).
 
