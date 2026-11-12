@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 
 use agent_source::{Message, Source};
 use agent_testing::{
-    Exchange, assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
+    Exchange, assert_carries_once, assert_failed, assert_handed_over, assert_waiting,
+    stand_in_step, stderr, wait_exit,
 };
 use serde_json::{Value, json};
 
@@ -107,6 +108,11 @@ impl StandIn {
         self.dir.path().join("ended").exists()
     }
 
+    /// How far the stand-in got ([`stand_in_step`]).
+    fn step(&self) -> String {
+        stand_in_step(self.dir.path())
+    }
+
     fn args(&self) -> Vec<String> {
         let args = fs::read_to_string(self.dir.path().join("args")).unwrap();
         args.lines().map(String::from).collect()
@@ -191,7 +197,7 @@ impl Running {
     /// Ends the client's stdin, which stops it, and returns its output, with the events it printed.
     fn stop(mut self) -> (Output, Vec<Value>) {
         drop(self.stdin.take());
-        self.exit()
+        self.exit(|| "its stdin ended".to_owned())
     }
 
     /// Waits for the events named `names`, in order, then stops the client, asserts that it
@@ -205,36 +211,21 @@ impl Running {
         events
     }
 
-    /// Waits for the client to exit on its own, its stdin still open, and returns its output and
-    /// every event it printed. No deadline: it would bound the client's whole run, from its start,
-    /// which a loaded machine can stretch past any fixed one.
-    fn stop_after_exit(self) -> (Output, Vec<Value>) {
-        let Self {
-            child,
-            stdin,
-            events,
-            mut seen,
-        } = self;
-        let output = child.wait_with_output().unwrap();
-        drop(stdin);
-        seen.extend(events.iter());
-        (output, seen)
+    /// Waits for the client to exit on its own, its stdin still open, as [`Running::exit`] does.
+    /// Its steps are the lines its stand-in `codex`, if it has one, receives and the stand-in's end.
+    fn stop_after_exit(self, codex: Option<&StandIn>) -> (Output, Vec<Value>) {
+        self.exit(|| codex.map_or_else(|| "the start".to_owned(), StandIn::step))
     }
 
-    /// Waits up to 10 s for the client to exit, and returns its output and every event it printed.
-    fn exit(mut self) -> (Output, Vec<Value>) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let status = loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                break status;
-            }
-            if Instant::now() > deadline {
-                self.child.kill().unwrap();
-                self.child.wait().unwrap();
-                panic!("agent-app-server did not exit: {:?}", self.seen);
-            }
-            thread::sleep(Duration::from_millis(20));
-        };
+    /// Waits for the client to exit, with 10 s for each step that `step` names ([`wait_exit`]),
+    /// and returns its output and every event it printed.
+    fn exit(mut self, step: impl Fn() -> String) -> (Output, Vec<Value>) {
+        let status = wait_exit(&mut self.child, step).unwrap_or_else(|step| {
+            panic!(
+                "agent-app-server did not exit within 10 s after {step}: {:?}",
+                self.seen
+            )
+        });
         drop(self.stdin.take());
         let mut stderr = Vec::new();
         self.child
@@ -547,7 +538,7 @@ fn fails_when_the_app_server_refuses_the_thread_or_closes() {
             let closing = format!("n=$((n + 1)); if [ $n = {lines} ]; then exec 1>&-; fi");
             fs::write(&script, text.replace("n=$((n + 1))", &closing)).unwrap();
         }
-        let (output, _) = replay.start(&[]).stop_after_exit();
+        let (output, _) = replay.start(&[]).stop_after_exit(Some(&replay.codex));
         assert_eq!(stderr(&output), error, "{closes_after:?}");
         assert_eq!(output.status.code(), Some(1));
         if handed {
@@ -565,7 +556,7 @@ fn fails_when_the_app_server_refuses_the_thread_or_closes() {
         &dir.path().join("project"),
         None,
     );
-    assert_failed(&client.stop_after_exit().0, "agent-app-server: ");
+    assert_failed(&client.stop_after_exit(None).0, "agent-app-server: ");
 }
 
 /// An app-server on a Unix socket that replays `exchange`: one WebSocket text frame a message. It
