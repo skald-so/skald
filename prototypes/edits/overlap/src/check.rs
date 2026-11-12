@@ -33,6 +33,34 @@ pub struct Conflict {
 /// Merges the commit `theirs` into the commit `ours`, both in the repository at `dir`, with
 /// `git merge-tree` from their merge base.
 pub fn merge(dir: &Path, ours: &str, theirs: &str) -> Result<Check> {
+    let (clean, merged) = merge_tree(dir, ours, theirs)?;
+    let mut files = BTreeMap::new();
+    for (path, stages) in &merged.files {
+        let lines = match (&stages[1], &stages[2]) {
+            (Some(own), Some(_)) => {
+                let file = git::blob(dir, &merged.tree, path)?;
+                own_lines(dir, own, &file, ours, theirs)?
+            }
+            _ => Vec::new(),
+        };
+        files.insert(path.clone(), lines);
+    }
+    Ok(Check {
+        clean,
+        conflicts: merged.conflicts,
+        files,
+    })
+}
+
+/// Whether the commit `theirs` merges cleanly into the commit `ours`, both in the repository at
+/// `dir`, and the conflicts `git merge-tree` reports, as [`merge`] finds them without their lines.
+pub fn conflicts(dir: &Path, ours: &str, theirs: &str) -> Result<(bool, Vec<Conflict>)> {
+    let (clean, merged) = merge_tree(dir, ours, theirs)?;
+    Ok((clean, merged.conflicts))
+}
+
+/// Whether `git merge-tree` merges `theirs` into `ours` cleanly, and its output.
+fn merge_tree(dir: &Path, ours: &str, theirs: &str) -> Result<(bool, Merged)> {
     let args = [
         "merge-tree",
         "--write-tree",
@@ -50,23 +78,7 @@ pub fn merge(dir: &Path, ours: &str, theirs: &str) -> Result<Check> {
             return Err(format!("git merge-tree in {}: {}", dir.display(), error.trim()).into());
         }
     };
-    let merged = parse(&output.stdout)?;
-    let mut files = BTreeMap::new();
-    for (path, stages) in &merged.files {
-        let lines = match (&stages[1], &stages[2]) {
-            (Some(own), Some(_)) => {
-                let file = git::blob(dir, &merged.tree, path)?;
-                own_lines(dir, own, &file, ours, theirs)?
-            }
-            _ => Vec::new(),
-        };
-        files.insert(path.clone(), lines);
-    }
-    Ok(Check {
-        clean,
-        conflicts: merged.conflicts,
-        files,
-    })
+    Ok((clean, parse(&output.stdout)?))
 }
 
 /// The output of `git merge-tree --write-tree -z --messages`.

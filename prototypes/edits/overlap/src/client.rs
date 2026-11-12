@@ -9,8 +9,8 @@ use std::path::Path;
 use crate::messages::{Message, Messages};
 use crate::symbols::{self, Language, Symbol};
 use crate::{
-    Check, Fingerprint, MachineId, Overlap, Publication, Result, SpaceKey, check, fingerprint, git,
-    hunks,
+    Check, Fingerprint, MachineId, Overlap, Publication, Result, Scope, SpaceKey, check,
+    fingerprint, git, hunks,
 };
 
 /// A machine of a space.
@@ -32,6 +32,8 @@ pub struct Edits {
     hunks: BTreeMap<Fingerprint, Vec<(String, Range<usize>)>>,
     /// The symbol behind each symbol fingerprint, with its path.
     symbols: BTreeMap<Fingerprint, (String, Symbol)>,
+    /// The paths whose changes delete or replace no line of the merge base.
+    adding: BTreeSet<String>,
 }
 
 /// Paths with ranges of this machine's lines, 1-based and end-exclusive, as [`Check::files`].
@@ -55,19 +57,37 @@ impl Client {
     /// `git merge-tree` sees them.
     pub fn edits(&self, dir: &Path) -> Result<Edits> {
         let scope = git::scope(dir)?;
-        let paths: BTreeMap<_, _> = git::edit_set(dir)?
-            .into_iter()
-            .map(|path| (fingerprint::path(&self.key, &scope, &path), path))
-            .collect();
+        let paths = git::edit_set(dir)?;
         let base = git::merge_base(dir)?;
         let snapshot = git::snapshot(dir)?;
+        self.edits_between(dir, &scope, &base, &snapshot, paths)
+    }
+
+    /// The edit set `paths` of the changes from the commit `base` to the commit `commit` in the
+    /// repository at `dir`, fingerprinted in `scope` as [`Client::edits`] does.
+    pub fn edits_between(
+        &self,
+        dir: &Path,
+        scope: &Scope,
+        base: &str,
+        commit: &str,
+        paths: BTreeSet<String>,
+    ) -> Result<Edits> {
+        let paths: BTreeMap<_, _> = paths
+            .into_iter()
+            .map(|path| (fingerprint::path(&self.key, scope, &path), path))
+            .collect();
         let mut changed = BTreeMap::<Fingerprint, Vec<(String, Range<usize>)>>::new();
         let mut symbols = BTreeMap::new();
+        let mut adding = BTreeSet::new();
         for path in paths.values() {
-            let changes = hunks::changes(dir, &base, &snapshot, path)?;
+            let changes = hunks::changes(dir, base, commit, path)?;
+            if changes.iter().all(|change| change.old.is_empty()) {
+                adding.insert(path.clone());
+            }
             for change in &changes {
                 for (before, after) in &change.boundaries {
-                    let fingerprint = fingerprint::hunk(&self.key, &scope, path, before, after);
+                    let fingerprint = fingerprint::hunk(&self.key, scope, path, before, after);
                     let lines = (path.clone(), change.lines.clone());
                     changed.entry(fingerprint).or_default().push(lines);
                 }
@@ -76,16 +96,16 @@ impl Client {
                 continue;
             };
             // The lines the changes delete or replace in the merge base, and the lines they add
-            // in the snapshot; a side without lines may have no file.
+            // in `commit`; a side without lines may have no file.
             let base_lines: Vec<usize> = changes.iter().flat_map(|c| c.old.clone()).collect();
             let new_lines: Vec<usize> = changes.iter().flat_map(|c| c.lines.clone()).collect();
-            for (commit, lines) in [(&base, base_lines), (&snapshot, new_lines)] {
+            for (commit, lines) in [(base, base_lines), (commit, new_lines)] {
                 if lines.is_empty() {
                     continue;
                 }
                 let source = git::blob(dir, commit, path)?;
                 for symbol in symbols::enclosing(language, &source, lines)? {
-                    let fingerprint = fingerprint::symbol(&self.key, &scope, path, &symbol);
+                    let fingerprint = fingerprint::symbol(&self.key, scope, path, &symbol);
                     symbols.insert(fingerprint, (path.clone(), symbol));
                 }
             }
@@ -103,6 +123,7 @@ impl Client {
             paths,
             hunks: changed,
             symbols,
+            adding,
         })
     }
 
@@ -166,6 +187,17 @@ impl Edits {
                 (overlap.machine.clone(), paths)
             })
             .collect()
+    }
+
+    /// Whether the changes of `path` delete or replace no line of the merge base: they only add
+    /// lines.
+    pub fn only_adds(&self, path: &str) -> bool {
+        self.adding.contains(path)
+    }
+
+    /// The number of fingerprints of paths, of hunk boundaries and of symbols.
+    pub fn sizes(&self) -> [usize; 3] {
+        [self.paths.len(), self.hunks.len(), self.symbols.len()]
     }
 
     /// Each path of the edit set with the symbols its changed lines are in.

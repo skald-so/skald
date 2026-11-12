@@ -4,7 +4,8 @@
 //! [symbols] with the space key; the [`Server`] stand-in, without the key, compares the
 //! fingerprints of all machines. The [`harness`] runs the scenarios on local clones of a test
 //! repository. On an overlap, a client gets the other machine's changes over [`messages`], which
-//! bypass the server, and checks them with `git merge-tree` ([`check`]). Scenarios and findings:
+//! bypass the server, and checks them with `git merge-tree` ([`check`]). [`replay`] measures the
+//! fingerprints on the merges of real repositories. Scenarios and findings:
 //! `docs/dev/edit-prototype.md`.
 
 pub mod check;
@@ -14,6 +15,7 @@ pub mod git;
 pub mod harness;
 pub mod hunks;
 pub mod messages;
+pub mod replay;
 pub mod server;
 pub mod symbols;
 
