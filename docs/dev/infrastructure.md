@@ -107,9 +107,9 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 
 ## Cloud
 - **The same image that is published for self-hosting.**
-- **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites; every merge into `dev` is deployed to it automatically. `script/staging-status` tells whether staging runs the latest commit on `dev` and how long after its merge it got there, from public data only: the head of `dev`, its CI runs and the health check.
-  - The deploy runs in this repository's CI: after `.github/workflows/edge.yml` publishes `:edge`, its deploy job deploys that digest over SSH with `script/deploy-staging`: one deploy at a time, only of the head of `dev`, so staging never moves back.
-  - The job runs in the environment `staging`: only `dev` deploys from it, only this job uses it. Its secrets: `STAGING_SSH_KEY`, the deploy key; `STAGING_SSH_HOST_KEY`, the host key the job pins; `STAGING_SSH_DESTINATION`, where it connects. The key runs only the deploy on the VPS.
+- **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites. `script/staging-status` tells whether staging runs the latest commit on `dev` and how long after its merge it got there, from public data only: the head of `dev`, its CI runs and the health check.
+  - Every merge into `dev` is deployed to it by this repository's CI: after `.github/workflows/edge.yml` publishes `:edge`, its deploy job deploys that digest over SSH with `script/deploy-staging`: one deploy at a time, only of the head of `dev`, so staging never moves back.
+  - The job runs in the environment `staging`: only `dev` deploys from it, only this job uses it. Its secrets are the connection `script/deploy-staging` reads, described there: `STAGING_SSH_KEY`, `STAGING_SSH_HOST_KEY`, `STAGING_SSH_DESTINATION`. The key runs only the deploy on the VPS.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
   - PostgreSQL 19 with synchronous streaming replication: `stored` is sent after the replica has the write. If the replica is down, replication switches to asynchronous and an alert fires.
   - WAL-G backups to object storage.

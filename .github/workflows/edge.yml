@@ -11,8 +11,7 @@ permissions:
   contents: read
   packages: write
 
-# One run at a time, in push order; a newer push replaces a waiting run. With script/tag-edge and
-# script/deploy-staging, neither :edge nor staging moves back to an older commit.
+# One run at a time, in push order; a newer push replaces a waiting run. Why: script/lib/dev-head.sh.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -56,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # The SSH key, the pinned host key and the destination; only dev deploys from it.
+    # The environment with the connection's secrets: the header of script/deploy-staging.
     environment: staging
     timeout-minutes: 15
     steps:
