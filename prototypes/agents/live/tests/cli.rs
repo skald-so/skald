@@ -1222,7 +1222,7 @@ fn gui_socket_hands_the_message_to_the_registered_session_and_sends_it_again() {
         "live-check: no session registered",
     );
 
-    // The session's SessionStart hook registered its socket, which reads two connections.
+    // The session's SessionStart hook registered its socket, which reads four connections.
     let socket = tmp.path().join("1.sock");
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let source = Source::open(Path::new(&work).join("source")).unwrap();
@@ -1236,7 +1236,7 @@ fn gui_socket_hands_the_message_to_the_registered_session_and_sends_it_again() {
         })
         .unwrap();
     let reader = std::thread::spawn(move || {
-        (0..2)
+        (0..4)
             .map(|_| {
                 let (stream, _) = listener.accept().unwrap();
                 std::io::BufRead::lines(std::io::BufReader::new(stream))
@@ -1256,12 +1256,21 @@ fn gui_socket_hands_the_message_to_the_registered_session_and_sends_it_again() {
     assert_eq!(first, [msg_id.clone(), "handed over: 1".to_owned()]);
     let again = check(&["gui-socket", &work]);
     assert_eq!(again, [msg_id.clone(), "handed over: 1".to_owned()]);
+    // With a reply address next to the session's socket, listening a second for receipts.
+    for args in [&["--listen", "1"][..], &["--no-auth", "--listen", "1"]] {
+        let listened = check(&[&["gui-socket", work.as_str()][..], args].concat());
+        assert_eq!(listened, [msg_id.clone(), "handed over: 1".to_owned()]);
+    }
     let connections = reader.join().unwrap();
-    // Without the token, then with it; the same message both times.
-    assert_eq!(connections[0].len(), 1);
-    assert_eq!(connections[1].len(), 2);
+    // Without the token, then with it, then each with the reply address; the same message.
+    let lines: Vec<usize> = connections.iter().map(Vec::len).collect();
+    assert_eq!(lines, [1, 2, 2, 1]);
     assert!(connections[1][0].contains("child-token"));
-    for connection in &connections {
-        assert!(connection.last().unwrap().contains(&msg_id));
+    assert!(connections[2][0].contains("child-token"));
+    let reply = format!("\"from\":\"uds:{}/skald-", tmp.path().display());
+    for (n, connection) in connections.iter().enumerate() {
+        let line = connection.last().unwrap();
+        assert!(line.contains(&msg_id));
+        assert_eq!(line.contains(&reply), n >= 2, "{line}");
     }
 }
