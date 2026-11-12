@@ -761,6 +761,7 @@ What the fingerprints of the [measured merges](#measurement) show the server wit
 Machine: macos aarch64, Apple M3 Max, 14 CPUs
 Git: git version 2.50.1 (Apple Git-155)
 
+
 What the server sees of each machine
 
 | Repository | Machines | Publications, at least | Publications per machine, median | Fingerprints per machine, median | 90th percentile | Most |
