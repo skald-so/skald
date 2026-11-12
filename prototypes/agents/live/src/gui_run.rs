@@ -101,7 +101,7 @@ pub fn result(work: &Path, token: &str) -> Result<bool> {
 /// Opens the deep link to the session of the GUI check prepared in `work`, as a click on an OS
 /// notification would, and prints it without the text it carries.
 pub fn link(work: &Path) -> Result<bool> {
-    let link = gui::link(work)?;
+    let link = gui::link(work, &home()?)?;
     let opened = std::process::Command::new("open").arg(&link.url).status()?;
     println!("opened: {}", link.shown);
     Ok(opened.success())

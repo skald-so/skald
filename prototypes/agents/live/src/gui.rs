@@ -814,10 +814,11 @@ pub struct Link {
 }
 
 /// The deep link that opens the session of the check prepared in `work` on its surface: the
-/// session that its `SessionStart` hook registered or the thread that `gui-queue` found. Claude
-/// Code for VS Code's link also carries a prompt, the check's message as `inbox` renders it; the
-/// others carry no text. Codex for VS Code has none.
-pub fn link(work: &Path) -> io::Result<Link> {
+/// session that its `SessionStart` hook registered or the thread that `gui-queue` found. The Claude
+/// desktop app's link takes the app's own ID of the session, which its record in `home` maps to
+/// Claude Code's. Claude Code for VS Code's link also carries a prompt, the check's message as
+/// `inbox` renders it; the others carry no text. Codex for VS Code has none.
+pub fn link(work: &Path, home: &Path) -> io::Result<Link> {
     let (check, text) = read_check(work)?;
     let surface = Surface::parse(&text("surface")?)
         .ok_or_else(|| invalid(format!("{CHECK} has no known surface")))?;
@@ -829,37 +830,73 @@ pub fn link(work: &Path) -> io::Result<Link> {
         Agent::Codex => check["thread"].as_str().map(String::from),
     }
     .ok_or_else(|| invalid("the check has no session yet".to_owned()))?;
-    let session = encode(&session);
+    let plain = |url: String| Link {
+        shown: url.clone(),
+        url,
+    };
     Ok(match surface {
         Surface::ClaudeDesktop => {
-            let url = format!("claude://code/needs-input?session={session}");
-            Link {
-                shown: url.clone(),
-                url,
-            }
+            let session = desktop_session(home, &session)?
+                .ok_or_else(|| invalid("the Claude app has no record of the session".to_owned()))?;
+            plain(format!(
+                "claude://code/continue?session={}",
+                encode(&session)
+            ))
         }
         Surface::ClaudeVsCode => {
             let msg_id = check["msg_id"]
                 .as_str()
                 .ok_or_else(|| invalid("the check's message was never added".to_owned()))?;
             let prompt = agent_inbox::render(&[source.handed(msg_id)?]);
-            let base = format!("vscode://anthropic.claude-code/open?session={session}&prompt=");
+            let base = format!(
+                "vscode://anthropic.claude-code/open?session={}&prompt=",
+                encode(&session)
+            );
             Link {
                 url: format!("{base}{}", encode(&prompt)),
                 shown: format!("{base}<the message>"),
             }
         }
-        Surface::CodexDesktop => {
-            let url = format!("codex://threads/{session}");
-            Link {
-                shown: url.clone(),
-                url,
-            }
-        }
+        Surface::CodexDesktop => plain(format!("codex://threads/{}", encode(&session))),
         Surface::CodexVsCode => {
             return Err(invalid("Codex for VS Code has no deep link".to_owned()));
         }
     })
+}
+
+/// The Claude desktop app's ID of the Claude Code session `cli_session`: the `sessionId` of its
+/// record, `claude-code-sessions/<account>/<organization>/local_<id>.json` in the app's data in
+/// `home`, whose `cliSessionId` it is. Reads only those two keys.
+fn desktop_session(home: &Path, cli_session: &str) -> io::Result<Option<String>> {
+    let root = home.join("Library/Application Support/Claude/claude-code-sessions");
+    let entries = |dir: &Path| -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| Some(entry.ok()?.path()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    for account in entries(&root) {
+        for organization in entries(&account) {
+            for record in entries(&organization) {
+                let name = record.file_name().unwrap_or_default().to_string_lossy();
+                if !(name.starts_with("local_") && name.ends_with(".json")) {
+                    continue;
+                }
+                let Ok(record) = read_json(&record) else {
+                    continue;
+                };
+                if record["cliSessionId"] == cli_session
+                    && let Some(id) = record["sessionId"].as_str()
+                {
+                    return Ok(Some(id.to_owned()));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// `text` percent-encoded for a URL's path segment or query value: all but the unreserved
@@ -1766,6 +1803,8 @@ mod tests {
 
     #[test]
     fn links_to_the_checks_session_on_each_surface_that_has_a_link() {
+        let home = tempfile::tempdir().unwrap();
+        let link = |work: &Path| link(work, home.path());
         let error = |work: &Path| link(work).unwrap_err().to_string();
         let register = |work: &Path, session: &str| {
             Source::open(work.join("source"))
@@ -1786,8 +1825,28 @@ mod tests {
             false,
         );
         assert_eq!(error(desktop.path()), "the check has no session yet");
-        register(desktop.path(), "s 1/é");
-        let url = "claude://code/needs-input?session=s%201%2F%C3%A9";
+        register(desktop.path(), "cli-1");
+        assert_eq!(
+            error(desktop.path()),
+            "the Claude app has no record of the session"
+        );
+        let records = home
+            .path()
+            .join("Library/Application Support/Claude/claude-code-sessions/acct/org");
+        fs::create_dir_all(&records).unwrap();
+        fs::write(records.join("notes.txt"), "cli-1").unwrap();
+        fs::write(records.join("local_bad.json"), "{").unwrap();
+        fs::write(
+            records.join("local_other.json"),
+            r#"{"cliSessionId":"cli-2","sessionId":"local_other"}"#,
+        )
+        .unwrap();
+        fs::write(
+            records.join("local_s 1.json"),
+            r#"{"cliSessionId":"cli-1","sessionId":"local_s 1/é","title":"t"}"#,
+        )
+        .unwrap();
+        let url = "claude://code/continue?session=local_s%201%2F%C3%A9";
         assert_eq!(
             link(desktop.path()).unwrap(),
             Link {
@@ -1853,6 +1912,10 @@ mod tests {
             "Codex for VS Code has no deep link"
         );
         assert!(link(Path::new("/nonexistent/check")).is_err());
+        assert_eq!(
+            desktop_session(Path::new("/nonexistent/home"), "cli-1").unwrap(),
+            None
+        );
     }
 
     #[test]

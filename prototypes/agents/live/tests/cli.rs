@@ -820,6 +820,7 @@ fn gui_link_opens_the_sessions_deep_link() {
         .args(["gui-link", work.to_str().unwrap()])
         .env_clear()
         .env("PATH", &bin)
+        .env("HOME", tmp.path())
         .output()
         .expect("live-check runs");
     assert!(output.status.success(), "{}", stderr(&output));
