@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Deploys <digest>, the skald-server image built from <commit>, to staging, only while <commit> is the
+# head of dev on origin. A run for an older commit, such as a rerun, leaves staging as it is, so
+# staging never moves back. .github/workflows/edge.yml runs one deploy at a time, so no newer run
+# deploys between the check and the deploy.
+#
+# Connects over SSH as the deploy key's account and runs `deploy <digest>` there, which passes only
+# when the server runs the image and its health check answers ok; exits 0 only then. The connection
+# comes only from the environment, the secrets of the GitHub environment staging:
+#   STAGING_SSH_KEY          the private key, base64
+#   STAGING_SSH_HOST_KEY     the host key pinned for the connection: `<type> <base64>`
+#   STAGING_SSH_DESTINATION  ssh://<account>@<address>:<port>
+# Prints the commit, the digest and the deploy's own output, its steps and the health check result;
+# never these values: SSH's own messages, which name the address, are off.
+# Usage: script/deploy-staging <commit> <digest>, in a clone of the repository.
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: $0 <commit> <digest>" >&2
+  exit 2
+fi
+commit=$1 digest=$2
+if [[ ! $commit =~ ^[0-9a-f]{40}$ ]]; then
+  echo "deploy-staging: '$commit' is not a full commit hash" >&2
+  exit 2
+fi
+if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "deploy-staging: '$digest' is not an image digest" >&2
+  exit 2
+fi
+for name in STAGING_SSH_KEY STAGING_SSH_HOST_KEY STAGING_SSH_DESTINATION; do
+  if [[ -z ${!name:-} ]]; then
+    echo "deploy-staging: $name is not set" >&2
+    exit 2
+  fi
+done
+if [[ ! $STAGING_SSH_HOST_KEY =~ ^[a-z0-9@.-]+\ [A-Za-z0-9+/]+={0,2}$ ]]; then
+  echo "deploy-staging: STAGING_SSH_HOST_KEY is not '<type> <base64>'" >&2
+  exit 2
+fi
+if [[ ! $STAGING_SSH_DESTINATION =~ ^ssh://[^[:space:]]+$ ]]; then
+  echo "deploy-staging: STAGING_SSH_DESTINATION is not an ssh:// URL" >&2
+  exit 2
+fi
+
+dev_head=$(git ls-remote --exit-code origin refs/heads/dev | cut -f 1)
+if [[ $dev_head != "$commit" ]]; then
+  echo "deploy-staging: dev has moved on to $dev_head; staging stays"
+  exit 0
+fi
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/deploy-staging.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+(
+  umask 077
+  base64 --decode <<<"$STAGING_SSH_KEY" >"$tmp/key" 2>/dev/null
+) || true
+if [[ $(head -n 1 "$tmp/key") != '-----BEGIN OPENSSH PRIVATE KEY-----' ]]; then
+  echo "deploy-staging: STAGING_SSH_KEY is not a base64 private key" >&2
+  exit 2
+fi
+# The pinned host key under an alias: SSH checks it whatever the address and port.
+echo "staging $STAGING_SSH_HOST_KEY" >"$tmp/known_hosts"
+
+echo "deploy-staging: deploying $commit, $digest"
+status=0
+ssh -F /dev/null -i "$tmp/key" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$tmp/known_hosts" \
+  -o GlobalKnownHostsFile=/dev/null -o HostKeyAlias=staging -o CheckHostIP=no \
+  -o UpdateHostKeys=no -o LogLevel=QUIET -o ConnectTimeout=30 -o ServerAliveInterval=15 \
+  -- "$STAGING_SSH_DESTINATION" deploy "$digest" </dev/null || status=$?
+if [[ $status -eq 255 ]]; then
+  echo "deploy-staging: FAILED: no SSH session: the connection, the pinned host key or the key failed"
+  exit 1
+elif [[ $status -ne 0 ]]; then
+  echo "deploy-staging: FAILED: the deploy exited with $status"
+  exit 1
+fi
+echo "deploy-staging: staging runs $commit, $digest"

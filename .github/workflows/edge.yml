@@ -1,18 +1,18 @@
 name: Edge image
 
-# Every push to dev publishes the skald-server image built from it, for staging: tagged with the
-# commit, and :edge. Never runs for PRs. script/edge-workflow-test tests this file.
+# Every push to dev publishes the skald-server image built from it: tagged with the commit, and
+# :edge; then deploys it to staging. Never runs for PRs. script/edge-workflow-test tests this file.
 on:
   push:
     branches: [dev]
 
-# Writes packages only; reads the repository to build it.
+# Writes packages only; reads the repository to build it. The deploy job only reads it.
 permissions:
   contents: read
   packages: write
 
-# One run at a time, in push order; a newer push replaces a waiting run. With script/tag-edge,
-# :edge never moves back to an older commit.
+# One run at a time, in push order; a newer push replaces a waiting run. With script/tag-edge and
+# script/deploy-staging, neither :edge nor staging moves back to an older commit.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -21,6 +21,8 @@ jobs:
   publish:
     name: Publish
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,3 +49,24 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: script/tag-edge ghcr.io/skald-so/skald-server "$GITHUB_SHA" "$DIGEST"
+
+  deploy:
+    name: Deploy to staging
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # The SSH key, the pinned host key and the destination; only dev deploys from it.
+    environment: staging
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Deploy
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_SSH_HOST_KEY: ${{ secrets.STAGING_SSH_HOST_KEY }}
+          STAGING_SSH_DESTINATION: ${{ secrets.STAGING_SSH_DESTINATION }}
+        run: script/deploy-staging "$GITHUB_SHA" "$DIGEST"
