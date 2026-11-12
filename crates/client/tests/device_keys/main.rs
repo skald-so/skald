@@ -34,15 +34,13 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::{Browser, Page};
-use cloud::{APPROVE, Cloud, WAIT, shown_grant};
+use cloud::{APPROVE, Cloud, Device, WAIT, certified, ids, shown_grant};
 use machine::{Finished, Machine, SIGN_IN};
 use relay::Lose;
 use serde_json::Value;
 use skald_github_stand_in::User;
-use skald_proto::{AccountId, CERT_NAME_MAX, Cbor, Cert, DeviceId, DeviceKind};
+use skald_proto::{AccountId, CERT_NAME_MAX, Cert, DeviceId, DeviceKind};
 
 /// The flag that answers whether this is the account's first device, and its answers.
 const FIRST_DEVICE: &str = "--first-device";
@@ -56,34 +54,11 @@ const REGISTER: &str = "POST /devices ";
 const GIVE_MASTER: &str = "PUT /account/master ";
 const ASK_MASTER: &str = "GET /account/master ";
 
-/// A device of the account, as `GET /devices` gives it.
-#[derive(Debug, Clone)]
-struct Device {
-    id: DeviceId,
-    cert: Option<Cert>,
-}
-
 /// `skald sign-in --server <cloud> <extra>`.
 fn args<'a>(cloud: &'a Cloud, extra: &[&'a str]) -> Vec<&'a str> {
     let mut args = vec![SIGN_IN, "--server", &cloud.url];
     args.extend_from_slice(extra);
     args
-}
-
-/// Starts `skald sign-in` with `extra` on `machine`, approves the code it shows as `user` at
-/// `page`, and waits for the run to finish.
-fn signed_in(
-    cloud: &Cloud,
-    page: &Page,
-    machine: &Machine,
-    user: &User,
-    extra: &[&str],
-) -> Finished {
-    let before = cloud.grants().len();
-    let mut run = machine.start(&args(cloud, extra));
-    let grant = shown_grant(cloud, &mut run, before);
-    cloud.decide(page, user, &grant, APPROVE);
-    run.finish()
 }
 
 /// A server whose codes live for 2 minutes and poll every second, and a browser for the person.
@@ -116,17 +91,11 @@ fn first_device(
     user: &User,
     extra: &[&str],
 ) -> First {
-    let finished = signed_in(
-        cloud,
-        page,
-        machine,
-        user,
-        &[&[FIRST_DEVICE, YES], extra].concat(),
-    );
+    let finished = cloud.signed_in(page, machine, user, &[&[FIRST_DEVICE, YES], extra].concat());
     assert!(finished.success, "{finished:?}");
     let (_, token) = secrets_of(cloud, machine);
-    let master = master(cloud, &token).expect("the account's master key");
-    let devices = devices(cloud, &token);
+    let master = cloud.master(&token).expect("the account's master key");
+    let devices = cloud.devices(&token);
     let id = device_of(cloud, machine, &devices);
     let cert = checked(&master, &devices, id);
     First {
@@ -186,56 +155,6 @@ fn secrets_of(cloud: &Cloud, machine: &Machine) -> (PathBuf, String) {
     found.remove(0)
 }
 
-fn unb64(text: &str) -> Vec<u8> {
-    URL_SAFE_NO_PAD
-        .decode(text)
-        .unwrap_or_else(|err| panic!("{text:?} is not base64url without padding: {err}"))
-}
-
-/// The account's master public key, from the server.
-fn master(cloud: &Cloud, token: &str) -> Option<[u8; 32]> {
-    let (status, body) = cloud.get_as("/account/master", token);
-    assert_eq!(status, 200, "GET /account/master: {body}");
-    match &body["master"] {
-        Value::Null => None,
-        Value::String(text) => Some(unb64(text).try_into().expect("a 32-byte master key")),
-        other => panic!("GET /account/master: {other}"),
-    }
-}
-
-/// The account's devices, from the server, each with its certificate as the device sent it.
-fn devices(cloud: &Cloud, token: &str) -> Vec<Device> {
-    let (status, body) = cloud.get_as("/devices", token);
-    assert_eq!(status, 200, "GET /devices: {body}");
-    body["devices"]
-        .as_array()
-        .unwrap_or_else(|| panic!("GET /devices: {body}"))
-        .iter()
-        .map(|device| Device {
-            id: device["device"]
-                .as_str()
-                .and_then(|id| id.parse().ok())
-                .unwrap_or_else(|| panic!("a device ID: {device}")),
-            cert: device["cert"].as_str().map(|cert| {
-                Cert::from_cbor(&unb64(cert)).unwrap_or_else(|err| panic!("a certificate: {err}"))
-            }),
-        })
-        .collect()
-}
-
-fn ids(devices: &[Device]) -> Vec<DeviceId> {
-    devices.iter().map(|device| device.id).collect()
-}
-
-/// The devices of `devices` that have a certificate.
-fn certified(devices: &[Device]) -> Vec<DeviceId> {
-    devices
-        .iter()
-        .filter(|device| device.cert.is_some())
-        .map(|device| device.id)
-        .collect()
-}
-
 /// The session's account, from the server.
 fn account(cloud: &Cloud, token: &str) -> AccountId {
     let (status, body) = cloud.session_of(token);
@@ -271,27 +190,6 @@ fn device_of(cloud: &Cloud, machine: &Machine, devices: &[Device]) -> DeviceId {
         "devices whose private key the machine's secrets hold: {found:?}, of {devices:?}"
     );
     found[0]
-}
-
-/// How many requests whose line starts with `request` the machines sent from `since` on.
-fn sent(cloud: &Cloud, since: Instant, request: &str) -> usize {
-    let request = request.to_lowercase();
-    cloud
-        .relay
-        .sent_since(since)
-        .iter()
-        .filter(|sent| sent.head.starts_with(&request))
-        .count()
-}
-
-/// The bytes of the machine's local state: its SQLite databases and their journals.
-fn state_bytes(machine: &Machine) -> Vec<u8> {
-    let files = machine.sqlite_files();
-    assert!(!files.is_empty(), "no local state in {:?}", machine.root());
-    files
-        .iter()
-        .flat_map(|file| fs::read(file).expect("read the local state"))
-        .collect()
 }
 
 /// Every row of every table of the machine's local state, as text, sorted.
@@ -349,7 +247,7 @@ fn first_machine_creates_the_master_key_and_holds_a_certificate_chained_to_it() 
     assert_eq!(body.kind, DeviceKind::Client);
     assert_eq!(body.issuer, None, "issued by the master key");
     assert_eq!(body.name, "ada-workstation", "the host name");
-    let state = state_bytes(&machine);
+    let state = machine.state_bytes();
     assert!(keys::holds(&state, &first.master), "no pinned master key");
     for part in [
         first.cert.body_bytes(),
@@ -367,14 +265,14 @@ fn first_machine_creates_the_master_key_and_holds_a_certificate_chained_to_it() 
     let run = again(&cloud, &machine, &[FIRST_DEVICE, YES]);
     assert!(run.success, "{run:?}");
     assert_eq!(
-        sent(&cloud, mark, GIVE_MASTER),
+        cloud.count_sent(mark, GIVE_MASTER),
         0,
         "the master key sent again"
     );
-    let devices = devices(&cloud, &first.token);
+    let devices = cloud.devices(&first.token);
     assert_eq!(ids(&devices), vec![first.id], "the device ID changed");
     checked(&first.master, &devices, first.id);
-    assert_eq!(master(&cloud, &first.token), Some(first.master));
+    assert_eq!(cloud.master(&first.token), Some(first.master));
 }
 
 /// The server's database holds the device's public keys and certificate and none of its private
@@ -443,9 +341,9 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
     }
     assert_eq!(cloud.relay.lost(), 1, "the server never answered {request}");
     let token = last_token(&cloud);
-    let registered = devices(&cloud, &token);
+    let registered = cloud.devices(&token);
     assert_eq!(registered.len(), 1, "the server took no registration");
-    let taken = master(&cloud, &token);
+    let taken = cloud.master(&token);
     if request == GIVE_MASTER {
         assert!(taken.is_some(), "the server took no master key");
     }
@@ -455,14 +353,14 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
     assert!(next.success, "{next:?}");
     let since = cloud.relay.sent().first().expect("requests").at;
     assert!(
-        sent(&cloud, since, request) >= 2,
+        cloud.count_sent(since, request) >= 2,
         "{request} was not sent again"
     );
-    let master = master(&cloud, &token).expect("the account's master key");
+    let master = cloud.master(&token).expect("the account's master key");
     if let Some(taken) = taken {
         assert_eq!(master, taken, "another master key");
     }
-    let devices = devices(&cloud, &token);
+    let devices = cloud.devices(&token);
     assert_eq!(ids(&devices), ids(&registered), "another device");
     checked(&master, &devices, registered[0].id);
     assert_eq!(device_of(&cloud, &machine, &devices), registered[0].id);
@@ -513,12 +411,12 @@ fn other_machine(answer: &str, user: (u64, &str)) -> (Finished, First, Cloud, Ma
     let other = Machine::new().with_host_name("ada-other");
 
     let mark = cloud.relay.mark();
-    let finished = signed_in(&cloud, &page, &other, &ada, &[FIRST_DEVICE, answer]);
+    let finished = cloud.signed_in(&page, &other, &ada, &[FIRST_DEVICE, answer]);
 
     assert!(!says_created(&finished), "{finished:?}");
-    assert_eq!(sent(&cloud, mark, GIVE_MASTER), 0, "a master key sent");
-    assert_eq!(master(&cloud, &first.token), Some(first.master));
-    let devices = devices(&cloud, &first.token);
+    assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "a master key sent");
+    assert_eq!(cloud.master(&first.token), Some(first.master));
+    let devices = cloud.devices(&first.token);
     assert_eq!(certified(&devices), vec![first.id], "{devices:?}");
     (finished, first, cloud, other)
 }
@@ -531,18 +429,15 @@ fn second_machine_of_the_account_waits_for_linking_without_a_certificate() {
         other_machine(NO, (4_120_666_007, "ada-second-machine-standin"));
 
     assert!(says(&finished, "link"), "{finished:?}");
-    let devices = devices(&cloud, &first.token);
+    let devices = cloud.devices(&first.token);
     assert_eq!(devices.len(), 2, "the second device is not registered");
     assert_ne!(device_of(&cloud, &second, &devices), first.id);
 
     let mark = cloud.relay.mark();
     let run = again(&cloud, &second, &[FIRST_DEVICE, NO]);
     assert!(says(&run, "link"), "{run:?}");
-    assert_eq!(sent(&cloud, mark, GIVE_MASTER), 0, "a master key sent");
-    assert_eq!(
-        certified(&self::devices(&cloud, &first.token)),
-        vec![first.id]
-    );
+    assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "a master key sent");
+    assert_eq!(certified(&cloud.devices(&first.token)), vec![first.id]);
 }
 
 /// A machine that says it is the first device of an account with a master key warns that someone
@@ -580,8 +475,8 @@ fn two_first_machines_at_once_give_the_account_one_master_key() {
         "both machines did not send a master key: {finished:?}"
     );
     let token = last_token(&cloud);
-    let master = master(&cloud, &token).expect("the account's master key");
-    let devices = devices(&cloud, &token);
+    let master = cloud.master(&token).expect("the account's master key");
+    let devices = cloud.devices(&token);
     assert_eq!(devices.len(), 2, "{devices:?}");
     let certified = certified(&devices);
     assert_eq!(certified.len(), 1, "{devices:?}");
@@ -598,9 +493,13 @@ fn two_first_machines_at_once_give_the_account_one_master_key() {
     let mark = cloud.relay.mark();
     let run = again(&cloud, loser, &[FIRST_DEVICE, YES]);
     assert!(says(&run, "link"), "{run:?}");
-    assert_eq!(sent(&cloud, mark, GIVE_MASTER), 0, "the loser kept its key");
-    assert_eq!(self::master(&cloud, &token), Some(master));
-    assert_eq!(self::certified(&self::devices(&cloud, &token)), certified);
+    assert_eq!(
+        cloud.count_sent(mark, GIVE_MASTER),
+        0,
+        "the loser kept its key"
+    );
+    assert_eq!(cloud.master(&token), Some(master));
+    assert_eq!(self::certified(&cloud.devices(&token)), certified);
 }
 
 /// A machine that says it is not the first device of an account without a master key warns that
@@ -611,15 +510,15 @@ fn no_on_an_account_without_a_master_key_warns_and_creates_none() {
     let ada = cloud.user(4_120_666_010, "ada-says-no-standin");
     let machine = Machine::new().with_host_name("ada-says-no");
 
-    let finished = signed_in(&cloud, &browser.page(), &machine, &ada, &[FIRST_DEVICE, NO]);
+    let finished = cloud.signed_in(&browser.page(), &machine, &ada, &[FIRST_DEVICE, NO]);
 
     assert!(says(&finished, "no master key"), "{finished:?}");
     assert!(!says_created(&finished), "{finished:?}");
     let token = last_token(&cloud);
-    assert_eq!(master(&cloud, &token), None, "a master key created");
-    assert_eq!(certified(&devices(&cloud, &token)), Vec::<DeviceId>::new());
+    assert_eq!(cloud.master(&token), None, "a master key created");
+    assert_eq!(certified(&cloud.devices(&token)), Vec::<DeviceId>::new());
     let since = cloud.relay.sent().first().expect("requests").at;
-    assert_eq!(sent(&cloud, since, GIVE_MASTER), 0, "a master key sent");
+    assert_eq!(cloud.count_sent(since, GIVE_MASTER), 0, "a master key sent");
 }
 
 /// Without the flag, the machine asks its user whether this is the account's first device before
@@ -654,7 +553,7 @@ fn asks_whether_this_is_the_first_device_before_asking_the_server() {
     }
     let since = cloud.relay.sent().first().expect("requests").at;
     assert_eq!(
-        sent(&cloud, since, ASK_MASTER),
+        cloud.count_sent(since, ASK_MASTER),
         0,
         "the server was asked first: {}",
         run.shown()
@@ -669,8 +568,8 @@ fn asks_whether_this_is_the_first_device_before_asking_the_server() {
     assert!(finished.success, "{finished:?}");
     assert!(says_created(&finished), "{finished:?}");
     let token = last_token(&cloud);
-    let master = master(&cloud, &token).expect("the account's master key");
-    let devices = devices(&cloud, &token);
+    let master = cloud.master(&token).expect("the account's master key");
+    let devices = cloud.devices(&token);
     assert_eq!(devices.len(), 1, "{devices:?}");
     checked(&master, &devices, devices[0].id);
 }
@@ -776,15 +675,15 @@ fn missing_or_unreadable_keys_of_a_known_device_are_an_error_and_change_nothing(
             state,
             "{case} keys: the state changed"
         );
-        assert_eq!(ids(&devices(&cloud, &token)), vec![first.id], "{case} keys");
-        assert_eq!(sent(&cloud, mark, GIVE_MASTER), 0, "{case} keys");
-        assert_eq!(master(&cloud, &token), Some(first.master), "{case} keys");
+        assert_eq!(ids(&cloud.devices(&token)), vec![first.id], "{case} keys");
+        assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "{case} keys");
+        assert_eq!(cloud.master(&token), Some(first.master), "{case} keys");
     }
 
     fs::write(&file, &original).expect("write the secrets file");
     let run = again(&cloud, &machine, &[FIRST_DEVICE, YES]);
     assert!(run.success, "{run:?}");
-    let devices = devices(&cloud, &token);
+    let devices = cloud.devices(&token);
     assert_eq!(ids(&devices), vec![first.id]);
     checked(&first.master, &devices, first.id);
 }
