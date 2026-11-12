@@ -10,12 +10,14 @@ use std::sync::Mutex;
 use common::Repo;
 use edit_overlap::git;
 use edit_overlap::harness::{DATE, Machine};
+use edit_overlap::noise::{self, Class, Signal};
 use edit_overlap::replay::{self, Counts, Level, Measured, Replay, Repository};
 use tempfile::TempDir;
 
 /// `machine` replaces each `(path, line, text)` of `edits`, a 1-based line, with `text` on a new
 /// branch `branch` from the upstream's default branch; a text with line breaks stands for several
-/// lines. It commits them with an author date `hours` before [`DATE`] and pushes the branch.
+/// lines, and a path that does not exist is created. It commits them with an author date `hours`
+/// before [`DATE`] and pushes the branch.
 fn branch(machine: &Machine, branch: &str, hours: i64, edits: &[(&str, usize, &str)]) {
     renaming_branch(machine, branch, hours, &[], edits);
 }
@@ -36,8 +38,11 @@ fn renaming_branch(
         machine.rename(from, to).unwrap();
     }
     for &(path, line, text) in edits {
-        let file = fs::read_to_string(machine.dir().join(path)).unwrap();
+        let file = fs::read_to_string(machine.dir().join(path)).unwrap_or_default();
         let mut lines: Vec<String> = file.lines().map(|line| format!("{line}\n")).collect();
+        if lines.len() < line {
+            lines.resize(line, String::new());
+        }
         lines[line - 1] = text.lines().map(|line| format!("{line}\n")).collect();
         machine.write(path, &lines.concat()).unwrap();
     }
@@ -142,7 +147,12 @@ const PAIRS: [[Branch; 2]; 6] = [
 
 /// Alice's, Bob's and the maintainer's clones of the test repository.
 fn clones(tmp: &TempDir) -> [Machine; 3] {
-    let repo = Repo::create(tmp);
+    clones_with(tmp, &[])
+}
+
+/// [`clones`] of the test repository with `extra` files, each a path and its contents.
+fn clones_with(tmp: &TempDir, extra: &[(&str, &str)]) -> [Machine; 3] {
+    let repo = Repo::create_with(tmp, extra);
     ["alice-laptop", "bob-desktop", "maintainer"].map(|name| repo.machine(name).0)
 }
 
@@ -173,15 +183,21 @@ fn fixture(tmp: &TempDir) -> Machine {
     maintainer
         .git(&["push", "--quiet", "origin", "HEAD:main"])
         .unwrap();
-    for [(a, a_hours, a_edits), (b, b_hours, b_edits)] in PAIRS {
-        branch(&alice, a, a_hours, a_edits);
-        branch(&bob, b, b_hours, b_edits);
+    merge_pairs([&alice, &bob, &maintainer], &PAIRS);
+    maintainer
+}
+
+/// Each pair of `pairs` in turn: Alice's branch and Bob's from the default branch, merged by the
+/// maintainer, Alice's first, Bob's resolving any conflict to the default branch's side.
+fn merge_pairs([alice, bob, maintainer]: [&Machine; 3], pairs: &[[Branch; 2]]) {
+    for &[(a, a_hours, a_edits), (b, b_hours, b_edits)] in pairs {
+        branch(alice, a, a_hours, a_edits);
+        branch(bob, b, b_hours, b_edits);
         maintainer.merge(a).unwrap();
         maintainer
             .merge_with(b, &["--strategy-option=ours"])
             .unwrap();
     }
-    maintainer
 }
 
 /// The merges of the fixture replayed on 3 threads, the newest first.
@@ -649,4 +665,315 @@ fn the_header_names_the_machine_and_the_git_version() {
         assert!(!cpu.is_empty());
         assert_eq!(lines[0], format!("Machine: {os}{cpu}, {cpus} CPUs"));
     }
+}
+
+/// The files of the classes the noise fixture adds to the test repository: a lockfile, a
+/// migration, and generated code that `.gitattributes`, a marker and a name each recognize.
+const CLASSED_FILES: [(&str, &str); 6] = [
+    (
+        "Cargo.lock",
+        "[[package]]\nname = \"inventory\"\nversion = \"0.1.0\"\nsource = \"registry\"\nchecksum = \"0\"\n",
+    ),
+    (".gitattributes", "assets/*.js linguist-generated\n"),
+    ("assets/app.js", "var a = 1;\nvar b = 2;\nvar c = 3;\n"),
+    (
+        "snapshots/report.snap",
+        "---\nsource: tests/report.rs\n---\nline 4\nline 5\n",
+    ),
+    (
+        "src/schema.rs",
+        "// @generated automatically by Diesel CLI.\n\ndiesel::table! {\n    users (id) {\n        id -> Integer,\n        name -> Text,\n    }\n}\n",
+    ),
+    (
+        "app/migrations/0001_initial.py",
+        "initial = True\ndependencies = []\noperations = []\n",
+    ),
+];
+
+/// A migration's contents.
+const MIGRATION: &str = "operations = []";
+
+/// The merges of the noise fixture, as [`PAIRS`] are merged; a rename of `src/schema.rs` and an
+/// edit of it follow them.
+const CLASSED_PAIRS: [[Branch; 2]; 9] = [
+    // The same line of the lockfile: a conflict.
+    [
+        (
+            "lock-same-a",
+            1,
+            &[("Cargo.lock", 3, "version = \"0.2.0\"")],
+        ),
+        (
+            "lock-same-b",
+            2,
+            &[("Cargo.lock", 3, "version = \"0.3.0\"")],
+        ),
+    ],
+    // Distant lines of the lockfile.
+    [
+        ("lock-far-a", 1, &[("Cargo.lock", 1, "[[package]] # a")]),
+        ("lock-far-b", 2, &[("Cargo.lock", 5, "checksum = \"1\"")]),
+    ],
+    // The same line of the script `.gitattributes` marks generated: a conflict; distant lines of
+    // the snapshot; the same change to the schema, which has a marker.
+    [
+        (
+            "generated-a",
+            1,
+            &[
+                ("assets/app.js", 2, "var b = 20;"),
+                ("snapshots/report.snap", 1, "--- # a"),
+                ("src/schema.rs", 5, "        id -> BigInt,"),
+            ],
+        ),
+        (
+            "generated-b",
+            2,
+            &[
+                ("assets/app.js", 2, "var b = 30;"),
+                ("snapshots/report.snap", 5, "line five"),
+                ("src/schema.rs", 5, "        id -> BigInt,"),
+            ],
+        ),
+    ],
+    // Different migrations of one number in one directory.
+    [
+        (
+            "migrations-a",
+            1,
+            &[("app/migrations/0002_alice.py", 1, MIGRATION)],
+        ),
+        (
+            "migrations-b",
+            2,
+            &[("app/migrations/0002_bob.py", 1, MIGRATION)],
+        ),
+    ],
+    // Migrations of different numbers in one directory, one of the same number in another, and
+    // the same line of another migration: a conflict.
+    [
+        (
+            "shared-a",
+            1,
+            &[
+                ("app/migrations/0003_alice.py", 1, MIGRATION),
+                ("app/migrations/0001_initial.py", 1, "initial = False"),
+            ],
+        ),
+        (
+            "shared-b",
+            2,
+            &[
+                ("app/migrations/0004_bob.py", 1, MIGRATION),
+                ("lib/migrations/0003_bob.py", 1, MIGRATION),
+                ("app/migrations/0001_initial.py", 1, "initial = None"),
+            ],
+        ),
+    ],
+    // Migrations of one number in different directories.
+    [
+        (
+            "elsewhere-a",
+            1,
+            &[("app/migrations/0005_alice.py", 1, MIGRATION)],
+        ),
+        (
+            "elsewhere-b",
+            2,
+            &[("lib/migrations/0005_bob.py", 1, MIGRATION)],
+        ),
+    ],
+    // The same migration on both sides.
+    [
+        (
+            "same-migration-a",
+            1,
+            &[("app/migrations/0006_same.py", 1, MIGRATION)],
+        ),
+        (
+            "same-migration-b",
+            2,
+            &[("app/migrations/0006_same.py", 1, MIGRATION)],
+        ),
+    ],
+    // Edits of different migrations of one number in one directory: none added.
+    [
+        (
+            "edited-migrations-a",
+            1,
+            &[("app/migrations/0002_alice.py", 1, "operations = [1]")],
+        ),
+        (
+            "edited-migrations-b",
+            2,
+            &[("app/migrations/0002_bob.py", 1, "operations = [2]")],
+        ),
+    ],
+    // Distant lines of the guide, and the same line of `reserve()`: a conflict.
+    [
+        (
+            "other-a",
+            1,
+            &[
+                ("docs/guide.md", 1, "# User guide"),
+                ("src/inventory.rs", 7, "    let reserved = 10;"),
+            ],
+        ),
+        (
+            "other-b",
+            2,
+            &[
+                ("docs/guide.md", 3, "Read the code first."),
+                ("src/inventory.rs", 7, "    let reserved = 20;"),
+            ],
+        ),
+    ],
+];
+
+/// The noise fixture: the test repository with [`CLASSED_FILES`], the merges of
+/// [`CLASSED_PAIRS`], then Alice's rename of `src/schema.rs`, merged first, and Bob's edit of it.
+/// Returns the maintainer's clone, whose `HEAD` is the last merge.
+fn classed_fixture(tmp: &TempDir) -> Machine {
+    let [alice, bob, maintainer] = clones_with(tmp, &CLASSED_FILES);
+    merge_pairs([&alice, &bob, &maintainer], &CLASSED_PAIRS);
+    let renames = [("src/schema.rs", "src/tables.rs")];
+    renaming_branch(&alice, "rename-a", 1, &renames, &[]);
+    branch(
+        &bob,
+        "rename-b",
+        2,
+        &[("src/schema.rs", 6, "        name -> Varchar,")],
+    );
+    maintainer.merge("rename-a").unwrap();
+    maintainer.merge("rename-b").unwrap();
+    maintainer
+}
+
+#[test]
+fn files_of_each_class_are_classed_by_what_recognizes_them() {
+    let tmp = TempDir::new().unwrap();
+    let maintainer = classed_fixture(&tmp);
+    let replays = replays(&maintainer);
+    let classes: std::collections::BTreeMap<&str, (Class, Option<Signal>)> = replays
+        .iter()
+        .flat_map(|replay| replay.classes.iter())
+        .map(|(path, class)| (path.as_str(), *class))
+        .collect();
+    let generated = |signal| (Class::Generated, Some(signal));
+    assert_eq!(
+        classes,
+        [
+            ("Cargo.lock", (Class::Lockfile, Some(Signal::Name))),
+            (
+                "app/migrations/0001_initial.py",
+                (Class::Migration, Some(Signal::Name))
+            ),
+            (
+                "app/migrations/0006_same.py",
+                (Class::Migration, Some(Signal::Name))
+            ),
+            ("assets/app.js", generated(Signal::Attributes)),
+            ("docs/guide.md", (Class::Other, None)),
+            ("snapshots/report.snap", generated(Signal::Name)),
+            // The rename's merge reads the marker from the second parent: the first has no file.
+            ("src/schema.rs", generated(Signal::Marker)),
+            ("src/inventory.rs", (Class::Other, None)),
+        ]
+        .into()
+    );
+    let rename = &replays[0];
+    assert!(
+        !git::exists(
+            maintainer.dir(),
+            &format!("{}:src/schema.rs", rename.parents[0])
+        )
+        .unwrap()
+    );
+    assert_eq!(rename.classes["src/schema.rs"], generated(Signal::Marker));
+}
+
+#[test]
+fn each_way_of_handling_a_class_gives_the_expected_counts() {
+    let tmp = TempDir::new().unwrap();
+    let maintainer = classed_fixture(&tmp);
+    let replays = replays(&maintainer);
+    let repository = Repository {
+        name: "classed",
+        url: "https://example.com/classed",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: replays.len(),
+    };
+    let report = replay::report(&[Measured {
+        repository: &repository,
+        replays,
+        times: Vec::new(),
+    }]);
+    let rows = |title: &str| rows(&report, title);
+    // Warned files: the lockfile in its two pairs; the script, the snapshot and the schema, then
+    // the schema again in the rename's merge; the migration both edit and the one both add; the
+    // guide and `src/inventory.rs`. Conflicts: the lockfile, the script, the edited migration and
+    // `src/inventory.rs`.
+    assert_eq!(
+        rows("Warnings and conflicts by class, in files"),
+        [
+            "| classed | lockfile | 2 | 1 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 1 |",
+            "| classed | migration | 2 | 2 | 0 | 1 | 1 | 0 | 1 | 0 | 0 | 1 |",
+            "| classed | generated | 4 | 3 | 0 | 3 | 2 | 0 | 1 | 0 | 0 | 1 |",
+            "| classed | other | 2 | 1 | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0 |",
+        ]
+    );
+    assert_eq!(
+        rows(
+            "Files of warnings at file level and of conflicts by what recognized their class, once per merge"
+        ),
+        [
+            "| classed | lockfile | 2 | 0 | 0 |",
+            "| classed | migration | 2 | 0 | 0 |",
+            "| classed | generated | 1 | 1 | 2 |",
+        ]
+    );
+    // As is, 6, 3 and 0 warnings without a conflict and 0, 0 and 3 conflicts without a warning.
+    assert_eq!(
+        rows("Ways of handling a class, in files"),
+        [
+            "| classed | lockfile | left out | 5 | 3 | 0 | 1 | 1 | 3 |",
+            "| classed | lockfile | file level only | 6 | 4 | 1 | 0 | 0 | 2 |",
+            "| classed | lockfile | warned apart | 5 | 3 | 0 | 0 | 0 | 3 |",
+            "| classed | migration | left out | 5 | 2 | 0 | 1 | 1 | 3 |",
+            "| classed | migration | file level only | 6 | 3 | 1 | 0 | 0 | 2 |",
+            "| classed | migration | warned apart | 5 | 2 | 0 | 0 | 0 | 3 |",
+            "| classed | generated | left out | 3 | 1 | 0 | 1 | 1 | 3 |",
+            "| classed | generated | file level only | 6 | 4 | 3 | 0 | 0 | 2 |",
+            "| classed | generated | warned apart | 3 | 1 | 0 | 0 | 0 | 3 |",
+        ]
+    );
+    // Both sides add migrations to one directory in three merges: different ones of one number,
+    // without a warning; different numbers next to a conflict on another migration; the same one.
+    // Edits of existing migrations add none.
+    assert_eq!(
+        rows("Migrations both sides add, in merges"),
+        ["| classed | 3 | 1 | 1 | 1 |"]
+    );
+}
+
+#[test]
+fn attributes_of_the_given_commit_mark_files_generated() {
+    let tmp = TempDir::new().unwrap();
+    let attributes = "*.gen linguist-generated\n*.true linguist-generated=true\n\
+        *.false linguist-generated=false\n*.bin binary\n*.nodiff -diff\n*.diff diff\n";
+    let [machine, _, _] = clones_with(&tmp, &[(".gitattributes", attributes)]);
+    machine.delete(".gitattributes").unwrap();
+    machine.commit("no attributes").unwrap();
+    let paths = [
+        "a.gen", "b.true", "c.false", "d.bin", "e.nodiff", "f.diff", "src/g.rs",
+    ]
+    .into();
+    let marked = noise::marked_generated(machine.dir(), "HEAD^", &paths).unwrap();
+    let want: std::collections::BTreeSet<String> = ["a.gen", "b.true", "d.bin", "e.nodiff"]
+        .map(str::to_owned)
+        .into();
+    assert_eq!(marked, want);
+    // The commit without the attributes marks none.
+    let marked = noise::marked_generated(machine.dir(), "HEAD", &paths).unwrap();
+    assert!(marked.is_empty());
 }

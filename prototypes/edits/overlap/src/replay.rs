@@ -2,12 +2,13 @@
 //! with the changes of one parent since their merge base, and the warnings of each level compared
 //! with the conflicts of `git merge-tree`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::noise::{self, Class, Signal};
 use crate::{Client, Conflict, Edits, Result, Scope, Server, SpaceKey, check, git};
 
 /// A level of fingerprints.
@@ -21,7 +22,7 @@ pub enum Level {
 impl Level {
     pub const ALL: [Self; 3] = [Self::File, Self::Hunk, Self::Symbol];
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::File => "file",
             Self::Hunk => "hunk",
@@ -95,6 +96,12 @@ pub struct Replay {
     pub warnings: [BTreeSet<String>; 3],
     /// The warned paths that are the same in both parents: both sides made the same change.
     pub same: BTreeSet<String>,
+    /// The class of each file of a file-level warning or a conflict, and what recognized it, as
+    /// [`noise::classify_all`] gives them for the parents.
+    pub classes: BTreeMap<String, (Class, Option<Signal>)>,
+    /// The migrations each side adds: the paths it adds since the merge base that are in a
+    /// [`noise::migration`].
+    pub migrations: [BTreeSet<String>; 2],
 }
 
 /// Replays `merge`, a commit of two parents in the repository at `dir`, with fingerprints in
@@ -146,6 +153,17 @@ pub fn replay(dir: &Path, scope: &Scope, merge: &str) -> Result<Replay> {
         .difference(&different)
         .cloned()
         .collect();
+    let classed: BTreeSet<&str> = warnings[Level::File as usize]
+        .iter()
+        .chain(conflicts.iter().flat_map(|conflict| &conflict.paths))
+        .map(String::as_str)
+        .collect();
+    let classes = noise::classify_all(dir, &parents, &classed)?;
+    let mut migrations = [BTreeSet::new(), BTreeSet::new()];
+    for (added, parent) in migrations.iter_mut().zip(&parents) {
+        let paths = git::added(dir, &base, parent)?.into_iter();
+        added.extend(paths.filter(|path| noise::migration(path).is_some()));
+    }
     Ok(Replay {
         merge: merge.to_owned(),
         date: date.to_owned(),
@@ -157,6 +175,8 @@ pub fn replay(dir: &Path, scope: &Scope, merge: &str) -> Result<Replay> {
         conflicts,
         warnings,
         same,
+        classes,
+        migrations,
     })
 }
 
@@ -167,6 +187,12 @@ impl Replay {
         self.conflicts
             .iter()
             .filter(|conflict| conflict.paths.iter().all(|path| !warned.contains(path)))
+    }
+
+    /// The files of the conflicts.
+    pub fn conflicted(&self) -> BTreeSet<&String> {
+        let paths = self.conflicts.iter().flat_map(|conflict| &conflict.paths);
+        paths.collect()
     }
 }
 
@@ -340,11 +366,7 @@ impl Counts {
         let mut counts = Self::default();
         for replay in replays {
             let warned = &replay.warnings[level as usize];
-            let conflicted: BTreeSet<&String> = replay
-                .conflicts
-                .iter()
-                .flat_map(|conflict| &conflict.paths)
-                .collect();
+            let conflicted = replay.conflicted();
             let adding: Vec<&String> = warned
                 .iter()
                 .filter(|path| replay.sides.iter().all(|side| side.edits.only_adds(path)))
@@ -408,7 +430,8 @@ pub const LARGEST: usize = 3;
 /// The bytes of a fingerprint.
 const FINGERPRINT_BYTES: usize = 32;
 
-/// The findings on `measured` as Markdown tables. All but the times are the same on every run.
+/// The findings on `measured` as Markdown tables, those of [`noise::report`] last. All but the
+/// times are the same on every run.
 pub fn report(measured: &[Measured]) -> String {
     let mut out = String::new();
     let hours = |seconds: i64| format!("{:.1}", seconds as f64 / 3600.0);
@@ -582,5 +605,6 @@ pub fn report(measured: &[Measured]) -> String {
             .expect("a String takes any write");
         }
     }
+    out += &noise::report(measured);
     out
 }

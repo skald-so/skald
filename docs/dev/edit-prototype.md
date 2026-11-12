@@ -2,7 +2,7 @@
 
 The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
-- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness and the [measurement](#measurement)'s replay of real merges, with its command, `measure`.
+- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness and the [measurement](#measurement)'s replay of real merges and classes of files, with its command, `measure`.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. The harness's commits carry a fixed date, so they get the same hashes on every run; the client's snapshot commits keep the current time. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity, for the harness's commands the fixed date, and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
@@ -62,6 +62,9 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `a_conflict_in_a_renamed_file_has_no_file_level_warning` | One side renames a file and edits a line of it, the other edits that line at the old path: the warning is on the old path, the conflict on the new one, and the table of conflicts without a file-level warning lists it |
 | `the_same_change_on_both_sides_is_counted` | Both sides make one change to a function and different changes to distant lines of another file: the merge is clean, and the function's file is counted as the same change at each level |
 | `measure_fetches_a_repository_at_its_commit_and_replays_its_merges` | The fixture's upstream fetched at the merge before its last: the merges replayed are those of that commit, and its 3 largest sides are timed; asking for one merge more than its history has fails |
+| `files_of_each_class_are_classed_by_what_recognizes_them` | The noise fixture: the test repository with a lockfile, a migration, a script its `.gitattributes` marks `linguist-generated`, a schema with a marker and a snapshot, changed on both sides of merges, then the schema renamed on one side and edited on the other: each file's class and what recognized it; the rename's merge reads the marker from the second parent |
+| `each_way_of_handling_a_class_gives_the_expected_counts` | On the noise fixture: the counts of each class at each level, the files each signal recognized, the counts of each way of handling each class, and the merges whose sides add migrations: different ones of one number, different numbers, one number in different directories, the same one; edits of existing migrations add none |
+| `attributes_of_the_given_commit_mark_files_generated` | `linguist-generated`, set or `true`, `binary` and `-diff` mark a file generated, `linguist-generated=false` and `diff` do not; the attributes are those of the given commit, not of a later one without them |
 | `the_header_names_the_machine_and_the_git_version` | The lines before the tables: the operating system, the architecture and the number of CPUs, on macOS the CPU that `sysctl` names, and `git version` |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
@@ -75,7 +78,7 @@ Open questions of edit comparison, and how the prototype answers them:
 | Reservation TTL | [Measurement](#measurement): how long each side of a merge lived |
 | How to catch edits made via Bash and generators | Open |
 | Path normalization | Open |
-| Noise from lockfiles and migrations | Open |
+| Noise from lockfiles and migrations | [Measurement](#measurement): warnings and conflicts by class of file, and ways of handling each class |
 | Whether intents like "replacing / extending" are needed | [Measurement](#measurement): whether both sides of a warning only add lines |
 
 ## File fingerprints
@@ -186,6 +189,19 @@ How often the warnings of each level match the conflicts of real merges.
 - **Only additions:** a warning where neither side deletes or replaces a line of the merge base in its file.
 - **Same change:** a warning whose file is the same in both parents.
 - **Cost:** the time to compute a side's fingerprints from its commits, without the snapshot a machine takes, and their size in bytes, for the 3 sides with the most fingerprints of each repository.
+- **Classes:** each file of a merge's file-level warnings and conflicts gets the class of the first rule it matches, read at the merge's first parent. The cases checked: the unit tests of [`noise.rs`](../../prototypes/edits/overlap/src/noise.rs).
+  - Lockfile, by name: `Cargo.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `poetry.lock`, `Pipfile.lock`, `uv.lock`, `Gemfile.lock`, `composer.lock`, `go.sum`.
+  - Migration, by name: below the last directory named `migrations` of its path, the first file or directory whose name starts with a digit, such as Django's `<app>/migrations/0001_initial.py` and the diesel repository's `migrations/<backend>/<version>_<name>/up.sql`; drizzle-kit's `meta/_journal.json` and `meta/<number>_snapshot.json`. Its number: the digits and dashes its name starts with.
+  - Generated, by `.gitattributes`: the first parent's attributes set `linguist-generated`, or set it to `true`, or unset `diff`, as `binary` does. Read with `git check-attr --source`, git 2.40.
+  - Generated, by a marker: one of its first 5 lines holds `@generated`, `do not edit`, `autogenerated`, `auto-generated`, `automatically generated`, `code generated` or `generated by`, in any case. The file is read at the first parent, or the second when the first lacks it.
+  - Generated, by name: the extension `.snap`, `.mo` or `.map`; a name ending with `.min.js` or `.min.css`; a directory named `dist` in its path.
+  - Other: the rest.
+  - A conflict has the class of the first file `git merge-tree` names.
+- **Ways of handling a class,** one class at a time, the others as they are; compare with "Warnings and conflicts, in files":
+  - Left out: its files publish no fingerprints.
+  - File level only: its files publish path fingerprints only, and a path match warns at every level.
+  - Warned apart: its warnings go to a list of their own. A warning without a conflict counts in the main list only; a conflict has a warning when either list warns about one of its files.
+- **Migrations both sides add:** each side adds a migration, a path absent from the merge base, to one directory; different migrations of one number: two of them with one number and different names. A file-level warning on a migration is one on any migration of the merge.
 
 ### Results
 Machine: macos aarch64, Apple M3 Max, 14 CPUs
@@ -250,15 +266,86 @@ Cost on the largest sides; times are not compared on a rerun
 
 | Repository | Merge | Parent | File | Hunk | Symbol | Bytes | Time, ms |
 |---|---|---|---|---|---|---|---|
-| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 19983 |
-| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15468 |
-| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15078 |
-| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 15259 |
-| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 8664 |
-| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 4904 |
-| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2341 |
-| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7583 |
-| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 9621 |
+| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 17181 |
+| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15296 |
+| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15058 |
+| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 14528 |
+| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 8843 |
+| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 4816 |
+| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2353 |
+| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7461 |
+| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 10020 |
+
+Warnings and conflicts by class, in files
+
+| Repository | Class | Warnings, file | Warnings, hunk | Warnings, symbol | Without a conflict, file | Without a conflict, hunk | Without a conflict, symbol | Conflicts | Without a warning, file | Without a warning, hunk | Without a warning, symbol |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| diesel | lockfile | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| diesel | migration | 4 | 4 | 0 | 4 | 4 | 0 | 0 | 0 | 0 | 0 |
+| diesel | generated | 39 | 30 | 0 | 23 | 14 | 0 | 16 | 0 | 0 | 16 |
+| diesel | other | 636 | 433 | 180 | 452 | 249 | 119 | 187 | 3 | 3 | 126 |
+| drizzle-orm | lockfile | 19 | 17 | 0 | 9 | 7 | 0 | 10 | 0 | 0 | 10 |
+| drizzle-orm | migration | 6 | 6 | 0 | 6 | 6 | 0 | 0 | 0 | 0 | 0 |
+| drizzle-orm | generated | 3 | 3 | 3 | 3 | 3 | 3 | 0 | 0 | 0 | 0 |
+| drizzle-orm | other | 1237 | 1081 | 787 | 1076 | 920 | 692 | 164 | 3 | 3 | 69 |
+| netbox | lockfile | 5 | 5 | 0 | 0 | 0 | 0 | 5 | 0 | 0 | 5 |
+| netbox | migration | 9 | 9 | 9 | 9 | 9 | 9 | 0 | 0 | 0 | 0 |
+| netbox | generated | 81 | 81 | 0 | 1 | 1 | 0 | 125 | 0 | 0 | 125 |
+| netbox | other | 1024 | 598 | 356 | 716 | 290 | 243 | 308 | 0 | 0 | 195 |
+
+Files of warnings at file level and of conflicts by what recognized their class, once per merge
+
+| Repository | Class | By name | By `.gitattributes` | By a marker |
+|---|---|---|---|---|
+| diesel | lockfile | 0 | 0 | 0 |
+| diesel | migration | 4 | 0 | 0 |
+| diesel | generated | 11 | 0 | 28 |
+| drizzle-orm | lockfile | 19 | 0 | 0 |
+| drizzle-orm | migration | 6 | 0 | 0 |
+| drizzle-orm | generated | 0 | 0 | 3 |
+| netbox | lockfile | 5 | 0 | 0 |
+| netbox | migration | 9 | 0 | 0 |
+| netbox | generated | 45 | 36 | 0 |
+
+Ways of handling a class, in files
+
+| Repository | Class | Way | Warnings without a conflict, file | Warnings without a conflict, hunk | Warnings without a conflict, symbol | Conflicts without a warning, file | Conflicts without a warning, hunk | Conflicts without a warning, symbol |
+|---|---|---|---|---|---|---|---|---|
+| diesel | lockfile | left out | 479 | 267 | 119 | 3 | 3 | 142 |
+| diesel | lockfile | file level only | 479 | 267 | 119 | 3 | 3 | 142 |
+| diesel | lockfile | warned apart | 479 | 267 | 119 | 3 | 3 | 142 |
+| diesel | migration | left out | 475 | 263 | 119 | 3 | 3 | 142 |
+| diesel | migration | file level only | 479 | 267 | 123 | 3 | 3 | 142 |
+| diesel | migration | warned apart | 475 | 263 | 119 | 3 | 3 | 142 |
+| diesel | generated | left out | 456 | 253 | 119 | 19 | 19 | 142 |
+| diesel | generated | file level only | 479 | 276 | 142 | 3 | 3 | 126 |
+| diesel | generated | warned apart | 456 | 253 | 119 | 3 | 3 | 142 |
+| drizzle-orm | lockfile | left out | 1085 | 929 | 695 | 13 | 13 | 79 |
+| drizzle-orm | lockfile | file level only | 1094 | 938 | 704 | 3 | 3 | 69 |
+| drizzle-orm | lockfile | warned apart | 1085 | 929 | 695 | 3 | 3 | 79 |
+| drizzle-orm | migration | left out | 1088 | 930 | 695 | 3 | 3 | 79 |
+| drizzle-orm | migration | file level only | 1094 | 936 | 701 | 3 | 3 | 79 |
+| drizzle-orm | migration | warned apart | 1088 | 930 | 695 | 3 | 3 | 79 |
+| drizzle-orm | generated | left out | 1091 | 933 | 692 | 3 | 3 | 79 |
+| drizzle-orm | generated | file level only | 1094 | 936 | 695 | 3 | 3 | 79 |
+| drizzle-orm | generated | warned apart | 1091 | 933 | 692 | 3 | 3 | 79 |
+| netbox | lockfile | left out | 726 | 300 | 252 | 5 | 5 | 325 |
+| netbox | lockfile | file level only | 726 | 300 | 252 | 0 | 0 | 320 |
+| netbox | lockfile | warned apart | 726 | 300 | 252 | 0 | 0 | 325 |
+| netbox | migration | left out | 717 | 291 | 243 | 0 | 0 | 325 |
+| netbox | migration | file level only | 726 | 300 | 252 | 0 | 0 | 325 |
+| netbox | migration | warned apart | 717 | 291 | 243 | 0 | 0 | 325 |
+| netbox | generated | left out | 725 | 299 | 252 | 125 | 125 | 325 |
+| netbox | generated | file level only | 726 | 300 | 253 | 0 | 0 | 200 |
+| netbox | generated | warned apart | 725 | 299 | 252 | 0 | 0 | 325 |
+
+Migrations both sides add, in merges
+
+| Repository | Both sides add to one directory | Of them without a file-level warning on a migration | Different migrations of one number | Of them without a file-level warning on a migration |
+|---|---|---|---|---|
+| diesel | 1 | 0 | 0 | 0 |
+| drizzle-orm | 2 | 0 | 0 | 0 |
+| netbox | 15 | 12 | 14 | 12 |
 
 ### Findings
 - **When to warn**, in merges:
@@ -269,9 +356,23 @@ Cost on the largest sides; times are not compared on a rerun
 - **Conflicts without a file-level warning:** each listed one is in a merge where one side renamed the conflict's file or its directory, by `git diff -M` from the merge base, or in the merge with two merge bases. The edit sets list a rename by both of its paths ([File fingerprints](#file-fingerprints)) and do not follow it; `git merge-tree` follows renames and names the paths after them. Each of these merges has a file-level warning on another file.
 - **Reservation TTL:** a TTL shorter than the median, 61.8, 116.7 and 51.7 hours, ends before at least half of the sides are merged.
 - **Intents:** at hunk level, 33 of 58, 33 of 505 and 14 of 102 warnings where both sides only add lines conflict: insertions at one place can conflict, so an intent of only adding lines does not rule a conflict out.
-- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2341 to 19983 ms on this Mac.
+- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2353 to 17181 ms on this Mac.
+- **Noise by class,** at file level: other files hold 452 of diesel's 479 warnings without a conflict, 1076 of drizzle-orm's 1094 and 716 of netbox's 726; lockfiles, migrations and generated code hold the rest.
+- **Lockfiles:** diesel has no lockfile warning; drizzle-orm has 9 of 19 without a conflict, netbox 0 of 5. Left out, they hide conflicts: conflicts without a file-level warning rise from 3 to 13 on drizzle-orm and from 0 to 5 on netbox.
+- **Migrations:** 4, 6 and 9 warnings, none of them with a conflict; no conflict of the measured merges is of a migration. Left out, they hide no conflict at any level.
+  - In 14 netbox merges the sides add different migrations of one number to one directory, 12 of them without a file-level warning on a migration; none in diesel or drizzle-orm. Such migrations clash without sharing a file, so no fingerprint of theirs matches.
+- **Generated code:** diesel has 23 of 39 warnings without a conflict, drizzle-orm 3 of 3, netbox 1 of 81. Left out, it hides conflicts: conflicts without a file-level warning rise from 3 to 19 on diesel and from 0 to 125 on netbox.
+  - At file level only, conflicts without a symbol-level warning fall from 142 to 126 on diesel and from 325 to 200 on netbox; symbol-level warnings without a conflict rise from 119 to 142 and from 252 to 253.
+- **Recognition,** in files of file-level warnings and of conflicts, once per merge:
+  - `.gitattributes`: 36 on netbox, in `netbox/project-static/dist/`, which it marks `binary`; none in diesel or drizzle-orm.
+  - Markers: 28 on diesel, such as the schema snapshots of Diesel CLI's tests, whose `// @generated` follows the snapshot's header on line 5; 3 on drizzle-orm. At diesel's measured commit, Diesel CLI's `print_schema.rs` holds the marker in a string on line 13: the 5-line limit keeps the generator itself other.
+  - Names: 11 on diesel, such as snapshots without a marker; 45 on netbox, such as its `.mo` catalogs.
+- **Handling:** warned apart, lockfiles and generated code leave the main list without their warnings and miss no more conflicts than as they are; left out, they hide conflicts. Migrations left out or warned apart hide no conflict on these merges.
 - **Open:**
   - A machine publishes while it works; a replay sees each side only at the merge, so it shows neither how early a warning comes nor warnings on intermediate states.
   - Warnings on renamed paths: whether to fingerprint a rename's new path for the old one, or to leave the renamed file to the exact check.
   - Merges with several merge bases: the fingerprints take the first one.
-  - Lockfiles, migrations and generated code among the warnings without a conflict.
+  - Migrations of one number in one directory: a fingerprint of the directory and the number would match them; not measured.
+  - drizzle-kit's SQL migrations, `<dir>/<number>_<name>.sql` next to `<dir>/meta/`, such as `integration-tests/drizzle2/pg/0000_puzzling_flatman.sql`, match no migration rule and are other. 3 drizzle-orm file-level warnings, once per merge, are on them: `integration-tests/drizzle2/singlestore/0000_nostalgic_carnage.sql` in 2 merges, `integration-tests/tests/sqlite/durable-objects/drizzle/0000_cuddly_black_bolt.sql` in 1; none with a conflict. A numbered `.sql` file next to a `meta/_journal.json` could be classed a migration.
+  - Generated files no rule recognizes are other, such as JSON, which holds no comment for a marker: netbox's `contrib/generated_schema.json`. So are lists of pinned dependencies without a lockfile's name, such as netbox's `requirements.txt`.
+  - A file is classed at the merge's first parent; a machine would class its own files.
