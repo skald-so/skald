@@ -2,7 +2,7 @@
 
 The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
-- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness, the [measurement](#measurement)'s replay of real merges and classes of files, with its command, `measure`, and the [path normalization](#path-normalization) with its check of spellings, `spellings`.
+- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness, the [measurement](#measurement)'s replay of real merges and classes of files, with its command, `measure`, the [path normalization](#path-normalization) with its check of spellings, `spellings`, and the [scripted sessions](#edits-via-bash-and-generators) with their pinned tools, with their command, `sessions`.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. The harness's commits carry a fixed date, so they get the same hashes on every run; the client's snapshot commits keep the current time. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity, for the harness's commands the fixed date, and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
@@ -76,6 +76,20 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `the_check_prints_each_part` | The output of the check: the header, the file system, the settings of `git init`, and the rows of its tables |
 | `lf_and_crlf_versions_of_one_edit_give_the_same_hunk_and_symbol_fingerprints` | A Rust file stored with CRLF, an `impl` block naming its type over three lines; upstream stores it with LF. A machine on each base edits one line of a method, with its base's line endings: both publish the same fingerprints and overlap at hunk and symbol level |
 | `machines_with_macos_windows_and_linux_spellings_of_one_file_overlap` | Three machines each add one new file, named in NFC, in NFD with `core.precomposeunicode` off, and in another case, and edit one line of a tracked file, one with CRLF and `core.autocrlf`: each overlaps the other two on both files, at file and hunk level, under its own spelling |
+| `checkout_fetches_the_repository_at_its_commit_with_an_empty_edit_set` | The [scripted sessions](#edits-via-bash-and-generators)' fixture: the test repository with a file to move and one to delete, fetched at its commit; its edit set is empty |
+| `each_step_gives_the_files_it_changes_and_the_files_it_names` | The fixture's session: edit tool calls; a restore with `git checkout`; `sed -i` on named files and on a glob; `mv` in a subdirectory; `rm`; a generator, a script outside the worktree, that writes a tracked file and an ignored one; an edit tool call on the moved file; a new file. Each step's kind, changed files and named files, and the files changed at the end |
+| `the_diff_reports_every_changed_file_the_generators_included` | On the fixture's session, the diff on its schedule and after each step reports the files changed at the end, the generator's tracked file among them, not its ignored one |
+| `a_file_changed_and_restored_is_not_reported_by_the_diff` | A file an edit tool call changes and `git checkout` restores: the diff after each step reports it until the restore, neither diff at the end; the hooks and the declarations do |
+| `each_source_reports_exactly_the_files_it_can_see` | On the fixture's session, each source's report at the end |
+| `each_source_learns_of_each_change_when_it_can` | On the fixture's session, for each kind of command and for any: each changed file, its first change and when each source learns of it, and the files each source misses |
+| `the_diff_on_its_schedule_scans_every_3_steps_and_after_the_last` | The steps after which the diff on its schedule scans: the 3rd, 6th and 9th of 10, and the last |
+| `report_gives_the_tables_of_the_sessions` | The fixture's tables: its steps, the files each source misses by kind, and when each learns of them |
+| `a_pipe_in_a_command_is_escaped_in_the_table` | A command line with a pipe gets an escaped one in the table of steps |
+| `a_setup_that_changes_the_worktree_fails` | A setup that leaves an untracked file fails; one that leaves only an ignored file does not |
+| `an_edit_of_text_the_file_does_not_hold_once_or_a_failing_command_fails` | An edit tool call of text its file holds twice or not at all, and a command line that fails, fail the session; with text the file holds once, it changes the file |
+| `run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository` | With the toolchain's own versions pinned, a fixture generator crate that `cargo install` builds and a session on the fixture: the tools' versions, the generator's step, and the environment of the shell commands: only `PATH`, of the toolchain, the generator and the system's directories, and a `CARGO_HOME` in the command's directory, besides what the shell sets |
+| `a_tool_of_another_version_is_refused` | Another version pinned for `rustc`, `cargo`, `rustfmt` or the generator: the command fails |
+| `a_session_on_a_repository_that_is_not_measured_fails` | A session that names no measured repository fails before anything is set up |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
@@ -83,10 +97,10 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 Open questions of edit comparison, and how the prototype answers them:
 | Question | How |
 |---|---|
-| Data source: diff, hooks or declarations | Open; the prototype uses the diff so far |
+| Data source: diff, hooks or declarations | [Edits via Bash and generators](#edits-via-bash-and-generators): the changed files each source misses and when it learns of them, on scripted sessions |
 | When to warn | [Measurement](#measurement): warnings at each level against `git merge-tree` conflicts |
 | Reservation TTL | [Measurement](#measurement): how long each side of a merge lived |
-| How to catch edits made via Bash and generators | Open |
+| How to catch edits made via Bash and generators | [Edits via Bash and generators](#edits-via-bash-and-generators): which source catches the files shell commands, a formatter, a lockfile rewrite and a code generator change |
 | Path normalization | [Path normalization](#path-normalization): one form of a path and of line endings, the paths of the measured repositories that share it, and what git does on macOS and Windows |
 | Noise from lockfiles and migrations | [Measurement](#measurement): warnings and conflicts by class of file, and ways of handling each class |
 | Whether intents like "replacing / extending" are needed | [Measurement](#measurement): whether both sides of a warning only add lines |
@@ -314,7 +328,7 @@ Line endings of one edit
   - Windows inputs: the job makes each one on the runner: the repositories and files on its volume, the spellings of their paths, the name in NFD, and the line endings under each `core.autocrlf` setting; the spellings with a lowercase drive letter and with forward slashes are the real path rewritten. It cannot make git precompose names, which only macOS does, or a normalization-insensitive file system: the macOS check covers them. Not checked: network shares, whose paths have no drive letter, and directories set case-sensitive.
 - **Open:**
   - `char::to_lowercase` keeps some letters apart that a case-insensitive file system may take for one, such as Greek `ς` and `σ`, whose uppercase is one letter, `Σ`. Not checked against the case tables of APFS and NTFS.
-  - A rename outside git on a case-insensitive file system with `core.ignorecase` true: the diff never sees it; whether hooks do is the question of edits via Bash.
+  - A rename outside git on a case-insensitive file system with `core.ignorecase` true: the diff never sees it, and the [hooks](#edits-via-bash-and-generators) see no shell command. Not measured: a declaration of an `mv` of it.
   - A name a commit holds in NFD, checked out on macOS: its NFC copy warns against every machine that edits the file.
   - A path whose last component is a symbolic link the repository tracks maps to the link's target, not to the link. Not checked.
   - A path in a submodule maps to none: the submodule is another repository.
@@ -532,3 +546,28 @@ Paths that share a fingerprint once case is folded and Unicode normalized
   - drizzle-kit's SQL migrations, `<dir>/<number>_<name>.sql` next to `<dir>/meta/`, such as `integration-tests/drizzle2/pg/0000_puzzling_flatman.sql`, match no migration rule and are other. 3 drizzle-orm file-level warnings, once per merge, are on them: `integration-tests/drizzle2/singlestore/0000_nostalgic_carnage.sql` in 2 merges, `integration-tests/tests/sqlite/durable-objects/drizzle/0000_cuddly_black_bolt.sql` in 1; none with a conflict. A numbered `.sql` file next to a `meta/_journal.json` could be classed a migration.
   - Generated files no rule recognizes are other, such as JSON, which holds no comment for a marker: netbox's `contrib/generated_schema.json`. So are lists of pinned dependencies without a lockfile's name, such as netbox's `requirements.txt`.
   - A file is classed at the merge's first parent; a machine would class its own files.
+
+## Edits via Bash and generators
+Which source of a machine's edits catches the files an agent changes with shell commands and generators, and when.
+
+- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin sessions`; it needs `git`, the pinned Rust toolchain with `rustfmt`, a C compiler and HTTPS access to GitHub and crates.io, no account. In a temporary directory, deleted at the end, also on an error, it sets up the tools, fetches each [measured repository](#measurement) at its commit, plays its session and prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables. `script/test` does not run it; it plays a session on a fixture repository ([Scenarios](#scenarios)).
+- **Sessions:** one per measured repository, scripted in [`sessions.rs`](../../prototypes/edits/overlap/src/bin/sessions.rs); no agent CLI runs. The table of steps gives each one. A step is one of:
+  - an edit tool call, which hooks see: an edit, which replaces text its file holds once, or a write of a whole file;
+  - a shell command line, run by `/bin/sh -c` in a directory of the worktree, as an agent's shell tool runs it: in-place edits with `sed -i`, moves with `mv`, deletions with `rm`, the formatter, the lockfile rewrite and the code generator;
+  - a restore with `git checkout --`.
+  - diesel's session runs Diesel CLI, which writes a migration and then the schema, `rustfmt` and `cargo update --offline`; those of drizzle-orm and netbox run shell commands only.
+- **Tools:** each version pinned and recorded; another one fails the command ([`tools.rs`](../../prototypes/edits/overlap/src/tools.rs)).
+  - Rust toolchain: `rustc`, `cargo` and `rustfmt`, each by the line `--version` prints. They run from the toolchain's own directory, which `rustc --print sysroot` gives in the temporary directory: diesel's `rust-toolchain` file names another version, which a rustup proxy started in its clone switches to.
+  - Code generator: Diesel CLI from crates.io, built by `cargo install --locked` with the lockfile it is published with, for SQLite only, with SQLite built from its bundled C source.
+  - Cargo cache: a `CARGO_HOME` in the temporary directory, never the machine's. The generator's build fills it, and diesel's session's setup `cargo fetch --locked` fills it at the versions of `diesel_compile_tests/Cargo.lock`; the lockfile rewrite runs offline from it.
+  - Shell commands: `/bin/sh` and the commands of `/usr/bin` and `/bin`, the system's. macOS's `sed`, `mv` and `rm` print no version, so the command records the system's name and release instead of pinning them.
+  - Each shell command gets only `PATH`, of the toolchain, the generator and the system's directories, and `CARGO_HOME`.
+- **Changes:** after each step, a snapshot of the working tree, as the [exact check](#exact-check) takes it; a step's changes are the files that differ between the snapshots before and after it. A changed file: one that differs from the commit at the end of the session. Ignored files are no changes, as in the [edit set](#file-fingerprints).
+- **Sources:**
+  - Diff, every 3 steps: the edit set, scanned after every third step and after the last, as on a timer.
+  - Diff, after each step: the edit set, scanned after each step, as a hook on every tool call could start it.
+  - Hooks: the path of each edit tool call, at the call. A shell command gives none.
+  - Declarations: before each step, the files it names: the edit tool's path, or each word of the command line that names a file of the worktree before or after the step, taken from the step's directory with `paths::relative`. A glob, a pipe's output and a name a command makes up name none.
+- **When:** a source learns of a step's change of a file before the edit, when it reports the file as the step starts; at the edit, when it reports it once the step ends; at the next scan of its schedule; at a later tool call that names or changes the file; or never, when its report at the end does not hold it.
+- **Counts:** by kind of command, each changed file once, at the first step of the kind that changes it; `any`: at its first change. Missed: never learned of. Reported, not changed at the end: files a source reports at the end that are not changed files.
+
