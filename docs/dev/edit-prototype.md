@@ -56,11 +56,13 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `replay_gives_the_expected_counts_at_each_level` | The fixture's pairs of branches, each merged in turn, the second resolved to the default branch's side: different files; the same line of a function; distant lines of a function; different functions of one file and distant lines of another; different lines inserted at one place in a function; the same line outside every function. Replayed on 3 threads, in the order of the merges: the counts of each level |
 | `replay_gives_each_merges_warnings_conflicts_and_sides` | On the fixture: each merge's warned files at each level, its conflicts, and each side's lifetime from the author date of its first commit to the merge |
 | `report_gives_the_tables_of_the_replays` | The fixture's tables: its range of merges, the counts, no conflict without a file-level warning, the lifetimes, and the sizes of its 3 largest sides with the times of a timing run |
-| `merges_with_several_merge_bases_are_counted` | Two branches that each merge the other before both are merged: the last merge has two merge bases, and the table counts it |
+| `merges_with_several_merge_bases_are_counted` | Two branches that each merge the other before both are merged: the last merge has two merge bases, the replay takes the first that `git merge-base --all` gives and warns about the file both sides change the same way from it, and the table counts the merge |
 | `replaying_a_commit_that_is_not_a_merge_fails` | A commit of one parent among the merges to replay: the replay fails |
 | `report_gives_a_repository_without_merges_and_lifetimes` | A repository without merges: its tables give no range, lifetimes or largest sides |
 | `a_conflict_in_a_renamed_file_has_no_file_level_warning` | One side renames a file and edits a line of it, the other edits that line at the old path: the warning is on the old path, the conflict on the new one, and the table of conflicts without a file-level warning lists it |
 | `the_same_change_on_both_sides_is_counted` | Both sides make one change to a function and different changes to distant lines of another file: the merge is clean, and the function's file is counted as the same change at each level |
+| `measure_fetches_a_repository_at_its_commit_and_replays_its_merges` | The fixture's upstream fetched at the merge before its last: the merges replayed are those of that commit, and its 3 largest sides are timed; asking for one merge more than its history has fails |
+| `the_header_names_the_machine_and_the_git_version` | The lines before the tables: the operating system, the architecture and the number of CPUs, on macOS the CPU that `sysctl` names, and `git version` |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
@@ -186,7 +188,8 @@ How often the warnings of each level match the conflicts of real merges.
 - **Cost:** the time to compute a side's fingerprints from its commits, without the snapshot a machine takes, and their size in bytes, for the 3 sides with the most fingerprints of each repository.
 
 ### Results
-Machine: macos aarch64, 14 CPUs, git version 2.50.1 (Apple Git-155).
+Machine: macos aarch64, Apple M3 Max, 14 CPUs
+Git: git version 2.50.1 (Apple Git-155)
 
 Repositories
 
@@ -247,15 +250,15 @@ Cost on the largest sides; times are not compared on a rerun
 
 | Repository | Merge | Parent | File | Hunk | Symbol | Bytes | Time, ms |
 |---|---|---|---|---|---|---|---|
-| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 18669 |
-| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 18444 |
-| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 17555 |
-| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 17268 |
-| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 13392 |
-| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 5954 |
-| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2436 |
-| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7186 |
-| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 9715 |
+| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 19983 |
+| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15468 |
+| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15078 |
+| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 15259 |
+| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 8664 |
+| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 4904 |
+| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2341 |
+| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7583 |
+| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 9621 |
 
 ### Findings
 - **When to warn**, in merges:
@@ -265,8 +268,8 @@ Cost on the largest sides; times are not compared on a rerun
 - **In files:** 267, 936 and 300 hunk-level warnings without a conflict. 166, 866 and 162 hunk-level warnings are on files both sides changed the same way, a false match of [hunk fingerprints](#hunk-fingerprints).
 - **Conflicts without a file-level warning:** each listed one is in a merge where one side renamed the conflict's file or its directory, by `git diff -M` from the merge base, or in the merge with two merge bases. The edit sets list a rename by both of its paths ([File fingerprints](#file-fingerprints)) and do not follow it; `git merge-tree` follows renames and names the paths after them. Each of these merges has a file-level warning on another file.
 - **Reservation TTL:** a TTL shorter than the median, 61.8, 116.7 and 51.7 hours, ends before at least half of the sides are merged.
-- **Intents:** at hunk level, 33 of 58, 33 of 505 and 14 of 102 warnings where both sides only add lines conflict: insertions at one place conflict as changes do.
-- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2436 to 18669 ms on this Mac.
+- **Intents:** at hunk level, 33 of 58, 33 of 505 and 14 of 102 warnings where both sides only add lines conflict: insertions at one place can conflict, so an intent of only adding lines does not rule a conflict out.
+- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2341 to 19983 ms on this Mac.
 - **Open:**
   - A machine publishes while it works; a replay sees each side only at the merge, so it shows neither how early a warning comes nor warnings on intermediate states.
   - Warnings on renamed paths: whether to fingerprint a rename's new path for the old one, or to leave the renamed file to the exact check.
