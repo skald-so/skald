@@ -2,6 +2,7 @@
 
 mod address;
 mod cbor;
+mod cert;
 mod content;
 mod envelope;
 mod id;
@@ -11,7 +12,10 @@ mod version;
 pub use address::{
     Address, AddressError, Name, NameError, PERSON, Segment, ServerError, ServerName,
 };
-pub use cbor::{Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown};
+pub use cbor::{
+    Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown, signed_data,
+};
+pub use cert::{CERT_LABEL, Cert, CertBody, DeviceKind, PROOF_LABEL};
 pub use content::{Attachment, Body, Content, Delegation, DelegationBody, Grant, GrantBody};
 pub use envelope::{Envelope, Header, HpkePayload, HpkePlaintext, Scheme};
 pub use id::{
