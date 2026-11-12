@@ -29,6 +29,7 @@ allow = [
     "Zlib",
 ]
 unused-allowed-license = "allow"
+unused-license-exception = "deny"
 exceptions = [
     # script/deny-test fails when another crate has a normal or build dependency on skald-server.
     { crate = "skald-server", allow = ["AGPL-3.0-only"] },
@@ -37,9 +38,9 @@ exceptions = [
     { crate = "libdbus-sys", allow = ["AFL-2.1"] },
 ]
 
-# libdbus-sys declares `Apache-2.0/MIT`, but it builds in the libdbus of vendor/dbus, which COPYING
+# libdbus-sys declares `Apache-2.0/MIT`, and it builds in the libdbus of vendor/dbus, which COPYING
 # licenses as AFL-2.1 or GPL-2.0-or-later.
 [[licenses.clarify]]
 crate = "libdbus-sys"
-expression = "AFL-2.1 OR GPL-2.0-or-later"
+expression = "(Apache-2.0 OR MIT) AND (AFL-2.1 OR GPL-2.0-or-later)"
 license-files = [{ path = "vendor/dbus/COPYING", hash = 0x9794b080 }]
