@@ -1785,6 +1785,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "skald-github-stand-in",
  "skald-proto",
  "skald-server",
  "sqlx",

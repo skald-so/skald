@@ -83,6 +83,14 @@ impl Server {
             Some(versions) => versions.parse().expect("a protocol version range"),
             None => Default::default(),
         };
+        Self::start_with(|_| skald_server::Settings {
+            versions,
+            sign_in: None,
+        })
+    }
+
+    /// Starts the server with the settings `settings` gives for the address it listens on.
+    pub fn start_with(settings: impl FnOnce(SocketAddr) -> skald_server::Settings) -> Self {
         let runtime = Runtime::new().expect("start a tokio runtime");
         let db = TestDb::create(&runtime);
         let url = db.url();
@@ -100,11 +108,8 @@ impl Server {
             (listener, pool)
         });
         let addr = listener.local_addr().expect("the server's address");
+        let settings = settings(addr);
         runtime.spawn(async move {
-            let settings = skald_server::Settings {
-                versions,
-                sign_in: None,
-            };
             axum::serve(listener, skald_server::app(pool, settings))
                 .await
                 .expect("serve the API");
