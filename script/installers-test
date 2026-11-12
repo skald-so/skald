@@ -4,6 +4,10 @@
 # macOS and Linux or install.ps1 on Windows, run as a user runs it, downloads the release's archive
 # for this machine's target and installs skald, so a new shell runs it and prints the release's
 # version. install.sh also adds skald to PATH once when run twice, and its template installs nothing.
+# Each installer checks the archive against its checksum, the release's <archive>.sha256 as dist
+# writes it, before it installs: a checksum that does not match the archive, an archive replaced
+# under its checksum, and a missing or empty checksum stop it with an error that names the checksum,
+# and it installs nothing: the home, or %LOCALAPPDATA%, stays empty and the user's PATH unchanged.
 #   script/installers-test: against a stand-in release whose skald prints its version and target,
 #     on macOS and Linux; script/test runs this.
 #   script/installers-test <dir> <tag> <target>: against the release files of <tag> in <dir>,
@@ -26,15 +30,25 @@ if [[ $# -ne 0 && $# -ne 3 ]]; then
 fi
 
 tmp=$(mktemp -d)
-server=
+servers=()
 cleanup() {
-  if [[ -n $server ]]; then
+  local server
+  for server in ${servers[@]+"${servers[@]}"}; do
     kill "$server" 2>/dev/null || true
     wait "$server" 2>/dev/null || true
-  fi
+  done
   rm -rf "$tmp"
 }
 trap cleanup EXIT
+
+# sha256 <file>: the file's SHA-256 in hex.
+sha256() {
+  node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$1"
+}
+# checksum <archive>: writes <archive>.sha256 as dist writes it: `<hex> *<name>` and a blank line.
+checksum() {
+  printf '%s *%s\n\n' "$(sha256 "$1")" "${1##*/}" >"$1.sha256"
+}
 
 if [[ $# -eq 3 ]]; then
   release=$1 tag=$2 target=$3
@@ -61,23 +75,82 @@ else
     printf '#!/bin/sh\necho "skald %s %s"\n' "$version" "$t" >"$tmp/skald-client-$t/skald"
     chmod 755 "$tmp/skald-client-$t/skald"
     tar -czf "$release/skald-client-$t.tar.gz" -C "$tmp" "skald-client-$t"
+    checksum "$release/skald-client-$t.tar.gz"
   done
   "$root/script/release-installers" "$tag" "$release"
   expected="skald $version $target"
 fi
 
-node "$root/script/lib/serve.mjs" "$release" >"$tmp/requests" &
-server=$!
-for _ in $(seq 50); do
-  [[ ! -s $tmp/requests ]] || break
-  sleep 0.1
-done
-port=$(head -n 1 "$tmp/requests")
-[[ $port =~ ^[0-9]+$ ]] || {
-  echo "installers-test: the server of the release files did not start" >&2
-  exit 1
+# serve <dir> <log> <var>: serves the files of <dir> as GitHub serves release files, each request's
+# path a line of <log> after the port; sets the variable <var> to the server's address.
+serve() {
+  node "$root/script/lib/serve.mjs" "$1" >"$2" &
+  servers+=($!)
+  for _ in $(seq 50); do
+    [[ ! -s $2 ]] || break
+    sleep 0.1
+  done
+  local port
+  port=$(head -n 1 "$2")
+  [[ $port =~ ^[0-9]+$ ]] || {
+    echo "installers-test: the server of the release files did not start" >&2
+    exit 1
+  }
+  printf -v "$3" '%s' "http://127.0.0.1:$port"
 }
-url=http://127.0.0.1:$port
+serve "$release" "$tmp/requests" url
+
+# The refused releases, each a copy of the release's installers and this machine's archive, served
+# on its own: one whose checksum of the archive does not match it, one with no checksum of it, one
+# with an empty checksum, and one whose archive was replaced under its checksum.
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*) archive=skald-client-$target.zip ;;
+  *) archive=skald-client-$target.tar.gz ;;
+esac
+[[ -f $release/$archive.sha256 ]] || fail "the release has no checksum of $archive: $archive.sha256"
+refused=(mismatched missing empty replaced)
+# refusal <case>: what the refused release <case> has.
+refusal() {
+  case $1 in
+    mismatched) echo 'a checksum that does not match the archive' ;;
+    missing) echo 'no checksum of the archive' ;;
+    empty) echo 'an empty checksum of the archive' ;;
+    replaced) echo 'an archive replaced under its checksum' ;;
+  esac
+}
+for case in "${refused[@]}"; do
+  mkdir "$tmp/$case"
+  for file in "$release"/*; do
+    case ${file##*/} in
+      "$archive" | "$archive.sha256" | install.sh | install.ps1) cp "$file" "$tmp/$case/" ;;
+    esac
+  done
+done
+# The SHA-256 of nothing: a well-formed checksum, of another file.
+printf '%s *%s\n\n' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "$archive" \
+  >"$tmp/mismatched/$archive.sha256"
+rm -f "$tmp/missing/$archive.sha256"
+: >"$tmp/empty/$archive.sha256"
+# A skald of its own, laid out as the release's, under the release's checksum.
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*)
+    mkdir "$tmp/replacement"
+    echo 'skald replaced' >"$tmp/replacement/skald.exe"
+    powershell -NoProfile -Command "Compress-Archive -Force -Path '$(cygpath -w "$tmp/replacement/skald.exe")' -DestinationPath '$(cygpath -w "$tmp/replaced/$archive")'"
+    ;;
+  *)
+    mkdir -p "$tmp/replacement/skald-client-$target"
+    printf '#!/bin/sh\necho "skald replaced"\n' >"$tmp/replacement/skald-client-$target/skald"
+    chmod 755 "$tmp/replacement/skald-client-$target/skald"
+    tar -czf "$tmp/replaced/$archive" -C "$tmp/replacement" "skald-client-$target"
+    ;;
+esac
+[[ $(sha256 "$tmp/replaced/$archive") != "$(sha256 "$release/$archive")" ]] ||
+  fail "the replaced archive is the release's own"
+# says_checksum <output>: the installer's output names the checksum.
+says_checksum() {
+  [[ $(tr -d '\r\n' <<<"$1" | tr '[:upper:]' '[:lower:]') == *checksum* ]]
+}
 
 # requested <archive>: the installer downloaded <archive>, and no other archive.
 requested() {
@@ -101,6 +174,21 @@ case $(uname -s) in
     if powershell -NoProfile -Command "$new_shell; Get-Command skald" >/dev/null 2>&1; then
       fail "a new shell runs skald before the installer runs"
     fi
+    # A refused release: install.ps1 fails, names the checksum, installs nothing and leaves the
+    # user's PATH as it was.
+    for case in "${refused[@]}"; do
+      serve "$tmp/$case" "$tmp/$case.requests" refused_url
+      mkdir "$tmp/$case.local"
+      status=0
+      output=$(LOCALAPPDATA=$(cygpath -w "$tmp/$case.local") SKALD_DOWNLOAD_URL=$refused_url powershell -NoProfile \
+        -ExecutionPolicy Bypass -Command 'irm "$env:SKALD_DOWNLOAD_URL/install.ps1" | iex' 2>&1) || status=$?
+      what=$(refusal "$case")
+      [[ $status != 0 ]] || fail "install.ps1 passes with $what"
+      says_checksum "$output" || fail "install.ps1 with $what does not name the checksum: $(head -n 2 <<<"$output")"
+      [[ -z $(ls -A "$tmp/$case.local") ]] || fail "install.ps1 with $what installs: $(ls -A "$tmp/$case.local" | tr '\n' ' ')"
+      [[ $(powershell -NoProfile -Command "$user_path" | tr -d '\r') == "$saved" ]] ||
+        fail "install.ps1 with $what changes the user's PATH"
+    done
     mkdir "$tmp/local"
     if ! LOCALAPPDATA=$(cygpath -w "$tmp/local") SKALD_DOWNLOAD_URL=$url powershell -NoProfile \
       -ExecutionPolicy Bypass -Command 'irm "$env:SKALD_DOWNLOAD_URL/install.ps1" | iex'; then
@@ -120,6 +208,18 @@ case $(uname -s) in
     if "${clean[@]}" bash -lc 'command -v skald' >/dev/null 2>&1; then
       fail "a new shell runs skald before the installer runs"
     fi
+    # A refused release: install.sh fails, names the checksum and leaves the home empty.
+    for case in "${refused[@]}"; do
+      serve "$tmp/$case" "$tmp/$case.requests" refused_url
+      mkdir "$tmp/$case.home"
+      status=0
+      output=$(env -i "HOME=$tmp/$case.home" PATH=/usr/bin:/bin "SKALD_DOWNLOAD_URL=$refused_url" sh -c \
+        'curl -fsSL "$SKALD_DOWNLOAD_URL/install.sh" | sh' 2>&1) || status=$?
+      what=$(refusal "$case")
+      [[ $status != 0 ]] || fail "install.sh passes with $what"
+      says_checksum "$output" || fail "install.sh with $what does not name the checksum: $(head -n 2 <<<"$output")"
+      [[ -z $(ls -A "$tmp/$case.home") ]] || fail "install.sh with $what changes the home directory: $(ls -A "$tmp/$case.home" | tr '\n' ' ')"
+    done
     # As a user runs it: curl | sh.
     for run in 1 2; do
       if ! "${clean[@]}" "SKALD_DOWNLOAD_URL=$url" sh -c \
