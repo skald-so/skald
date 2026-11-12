@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Tests the workflow that keeps the Release PR open, named in script/lib/release.sh: it runs only on
 # pushes to dev, one run at a time per branch, so the Release PR ends up on the latest dev; no step up
-# to release-plz has a condition; release-plz runs `release-pr` only, so it tags and publishes
-# nothing, with a token of the GitHub App narrowed to contents and pull requests, so the PR checks
-# run on the Release PR; only the release-plz jobs use
-# the App's environment and secrets, in this workflow and in all others; every job's own token reads
+# to release-plz has a condition; release-plz runs `release-pr`, and `release` only to tag
+# (script/release-tag-workflow-test), with a token of the GitHub App narrowed to contents and pull
+# requests, so the PR checks run on the Release PR; only the release-plz jobs use the App's
+# environment and secrets, in this workflow and in all others; every job's own token reads
 # contents at most and no job requests an OIDC token; actions are pinned to commits, and tools are
 # installed by taiki-e/install-action at exact versions it checks against checksums, release-plz at
 # the version script/release-plz-test runs.
@@ -71,9 +71,9 @@ check "runs wait for each other, so the Release PR ends up on the latest dev: a 
     and ($c | if type == "object" then .group else . end | type == "string"
       and (test("github\\.(sha|run_id|run_number|run_attempt|event\\.after|event\\.head_commit)")
         | not))'
-check "release-plz runs only release-pr: it creates no tag and no release" \
+check "release-plz runs only release-pr and release, which tags (script/release-tag-workflow-test)" \
   '[.jobs[].steps[]? | .run // "" | scan("release-plz\\s+([a-z][a-z-]*)") | .[0]]
-    | length > 0 and all(. == "release-pr")'
+    | any(. == "release-pr") and all(. == "release-pr" or . == "release")'
 
 # The App token.
 check "one step creates the App token, with an id" \

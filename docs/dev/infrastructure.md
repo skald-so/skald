@@ -28,7 +28,9 @@ A human takes one action per release: merging the Release PR.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest release; only CI moves it.
   - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.
-- `vX.Y.Z` tags — the releases themselves.
+- `v*` tags — the releases themselves: `vX.Y.Z` and `vX.Y.Z-beta.N`.
+  - Only the GitHub App `skald-release` creates them: ruleset "Release tags: only skald-release creates", the App its only bypass.
+  - No one updates, moves or deletes them, the App and admins included: ruleset "Release tags: immutable", with no bypass.
 - PR titles: rule 3 in [rules.md](../../rules.md).
 - Branch rules are GitHub rulesets; no person bypasses them, admins included.
 
@@ -40,12 +42,12 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, of the edge image workflow and of the Release PR workflow (`script/release-plz-workflow-test`); Renovate config validation.
-- **Release PR:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
+- **Tooling:** tests of the scripts in `script/`, of the edge image workflow and of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`); Renovate config validation.
+- **Release PR and tag:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test` and `script/release-tag-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
-  - The Release PR workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
-  - The App: installed only on `skald-so/skald`; contents and pull requests read-write, metadata read; webhook off; it bypasses no ruleset.
+  - The release-plz workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
+  - The App: installed only on `skald-so/skald`; contents and pull requests read-write, metadata read; webhook off; it bypasses no ruleset but the creation of `v*` tags ("Branches").
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
@@ -53,7 +55,11 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 
 ## Release
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (build, installers, publishing).
-- **Release PR:** on every push to `dev`, `.github/workflows/release-plz.yml` runs release-plz with `release-plz.toml`; it opens the Release PR or updates the open one. Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
+- **Release PR:** on every push to `dev`, `.github/workflows/release-plz.yml` runs release-plz with `release-plz.toml` on the latest `dev` and its tags; it opens the Release PR or updates the open one. Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
+- **Release tag:** on the push of a Release PR's merge, the same workflow first tags that commit `vX.Y.Z`, or `vX.Y.Z-beta.N` for a beta, with `release-plz release`. Its token is the App's, narrowed to contents, so the workflows that run on tags start.
+  - A Release PR is one the App opened from a branch of `skald-so/skald`; `script/release-pr-merged` checks it through the GitHub API before release-plz runs.
+  - No other push gets a tag, whatever its PR's branch is named, and a version already tagged gets none.
+  - It publishes no crate to crates.io and creates no GitHub Release.
 - **One version for everything:** client, server, plugin; for the crates, `[workspace.package]` in `Cargo.toml`. Before 1.0: `0.x` versions.
 - **Bumps in `0.x`:** of the PRs the CHANGELOG lists, one whose title has `!` bumps the minor version; any other, of any type, the patch version.
 - **Last release:** the last `vX.Y.Z` tag, not crates.io; beta tags do not count.

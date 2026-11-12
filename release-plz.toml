@@ -1,5 +1,5 @@
-# release-plz: the Release PR, opened by .github/workflows/release-plz.yml and tested by
-# script/release-plz-test. Docs: https://release-plz.dev/docs/config
+# release-plz: the Release PR and the release tag, made by .github/workflows/release-plz.yml and
+# tested by script/release-plz-test. Docs: https://release-plz.dev/docs/config
 # Every crate takes the version of [workspace.package] in Cargo.toml, so the Release PR sets one
 # version for all of them.
 
@@ -11,6 +11,13 @@ git_tag_name = "v{{ version }}"
 semver_check = false
 # One CHANGELOG.md, the root package's.
 changelog_update = false
+# `release-plz release` tags only the merge of a PR from a release-plz-* branch, with one tag, the
+# root package's; the workflow runs it only for a PR the App opened (script/release-pr-merged). It
+# publishes no crate and creates no GitHub Release.
+release_always = false
+git_tag_enable = false
+git_release_enable = false
+publish = false
 
 # The root package, skald-repository, has every file outside crates/ and prototypes/; it also lists
 # the PRs that change only the crates. Every crate of the workspace goes into changelog_include.
@@ -18,6 +25,7 @@ changelog_update = false
 [[package]]
 name = "skald-repository"
 changelog_update = true
+git_tag_enable = true
 changelog_include = [
   "skald-adapters",
   "skald-client",

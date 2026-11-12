@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# Tests how the workflows tag releases, beyond script/release-plz-workflow-test:
+#   - one job runs `release-plz release`, the tagging job, in the workflow named in
+#     script/lib/release.sh, which runs only on pushes to dev; it runs on every push, and no
+#     concurrency group holds it back, so a newer push cannot cancel the tagging of a Release PR's
+#     merge while it waits;
+#   - it checks out the pushed commit with the whole history and the tags, so release-plz tags that
+#     commit and sees an already tagged version; release-plz release runs only after
+#     script/release-pr-merged exits 0 for it (script/release-tag-test), with a token of the GitHub
+#     App narrowed to writing contents, so the workflows that run on tags start; release-plz is
+#     installed at the version script/release-tag-test runs;
+#   - the job that opens the Release PR runs after the tagging job, on the latest dev and its tags,
+#     so runs that end out of order never leave the Release PR behind;
+#   - every release-plz command line in every workflow is `release-plz release-pr` or
+#     `release-plz release` with no option but --forge github, --config release-plz.toml,
+#     --manifest-path Cargo.toml, --git-token "$GIT_TOKEN", -o|--output json and -v, and its
+#     failure fails its step.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+failures=0
+
+fail() {
+  echo "release-tag-workflow-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# json <file>: a workflow as JSON. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
+json() {
+  npx --yes --package yaml@2.9.1 -- yaml --json --single <"$1"
+}
+
+# The jobs that run release-plz release, as `<workflow> <job>` lines, in all workflows.
+taggers=()
+for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
+  [[ -f $file ]] || continue
+  while IFS= read -r job; do
+    taggers+=("${file#"$root"/} $job")
+  done < <(json "$file" | jq -r '.jobs // {} | to_entries[]
+    | select([.value.steps[]? | .run // "" | test("release-plz\\s+release($|[^-A-Za-z0-9_])")] | any)
+    | .key')
+done
+if [[ ${#taggers[@]} != 1 || ${taggers[0]%% *} != "$release_workflow" ]]; then
+  fail "not one job runs release-plz release, in $release_workflow: ${taggers[*]:-none}"
+  echo "release-tag-workflow-test: $failures case(s) failed" >&2
+  exit 1
+fi
+workflow=$(json "$root/$release_workflow")
+tagger=${taggers[0]#* }
+
+# check <what> <jq filter>: the filter is true for the workflow. The filter gets $tagger, the tagging
+# job's key, $id_secret, $key_secret and $version, and these definitions:
+#   tagging          the tagging job;
+#   opener_key       the key of the job that runs release-plz release-pr;
+#   needs($key)      the keys of the jobs that job needs, directly or not;
+#   is_release       a step runs release-plz release;
+#   index_of(f)      the index of the first step of the tagging job f is true for, or an error;
+#   token_step       the tagging job's step that creates the App token;
+#   checkout($job)   the checkout steps of a job.
+definitions='
+  def tagging: .jobs[$tagger];
+  def opener_key: [.jobs | to_entries[]
+    | select([.value.steps[]? | .run // "" | test("release-plz\\s+release-pr")] | any) | .key]
+    | if length == 1 then .[0] else error("not one job runs release-plz release-pr") end;
+  def direct($key): .jobs[$key].needs // [] | if type == "string" then [.] else . end;
+  def needs($key): . as $w | direct($key) as $direct
+    | ($direct + [$direct[] as $k | $w | needs($k)[]]) | unique;
+  def is_release: .run // "" | test("release-plz\\s+release($|[^-A-Za-z0-9_])");
+  def index_of(f): (tagging.steps | map(f) | index(true)) // error("no such step");
+  def token_step: [tagging.steps[] | select(.uses // "" | startswith("actions/create-github-app-token@"))];
+  def checkout($job): [$job.steps[] | select(.uses // "" | startswith("actions/checkout@"))];
+  def repository_only: has("if") | not or (.if | test(
+    "^(\\$\\{\\{ *)?github\\.repository *== *'\''skald-so/skald'\''( *\\}\\})?$"));
+'
+check() {
+  jq --exit-status --arg tagger "$tagger" --arg id_secret "$release_app_id_secret" \
+    --arg key_secret "$release_app_key_secret" --arg version "$release_plz_version" \
+    "$definitions $2" <<<"$workflow" >/dev/null 2>&1 || fail "$1"
+}
+
+# When the tagging job runs.
+check "the workflow that tags runs on pushes to dev and on nothing else" \
+  '.on == {"push": {"branches": ["dev"]}}'
+check "the tagging job runs on every push to dev, in skald-so/skald" 'tagging | repository_only'
+check "no concurrency group holds the tagging job back: none, or one per commit or run" \
+  '(tagging.concurrency // .concurrency) as $c | $c == null
+    or ($c | if type == "object" then .group else . end
+      | test("github\\.(sha|run_id|event\\.after)"))'
+check "no step before release-plz release has a condition" \
+  'tagging.steps[:index_of(is_release)] | all(has("if") | not)'
+
+# The checkout and the gate.
+check "the tagging job checks out the pushed commit, with the whole history and the tags" \
+  'checkout(tagging) | length == 1 and (.[0].with // {} | (.ref == null or .ref == "${{ github.sha }}")
+    and (.["fetch-depth"] | . == 0 or . == "0"))'
+check "the tagging job checks out before release-plz release" \
+  'index_of(.uses // "" | startswith("actions/checkout@")) < index_of(is_release)'
+check "release-plz release runs only after script/release-pr-merged exits 0, in the same step or
+    in an earlier one with an id whose outputs the step's condition reads" \
+  'tagging.steps[index_of(is_release)] as $release
+    | ($release.run | test("script/release-pr-merged[^\\n;&|]*(&&|;?\\s*then)[\\s\\S]*release-plz\\s+release"))
+      or ([tagging.steps[:index_of(is_release)][]
+        | select((.run // "" | test("script/release-pr-merged")) and (.id | type == "string")
+          and (has("if") | not) and (has("continue-on-error") | not))
+        | .id] as $ids
+        | $ids != [] and ($release.if // "" | test("steps\\.(\($ids | join("|")))\\.outputs\\.")))'
+check "script/release-pr-merged runs after the checkout" \
+  'index_of(.uses // "" | startswith("actions/checkout@"))
+    < index_of(.run // "" | test("script/release-pr-merged"))'
+
+# The App token.
+check "one step of the tagging job creates the App token, with an id, from the secrets
+    $release_app_id_secret and $release_app_key_secret" \
+  'token_step | length == 1 and (.[0].id | type == "string") and (.[0].with as $with
+    | ([$with["client-id"], $with["app-id"]] | map(select(. != null))
+      == ["${{ secrets.\($id_secret) }}"])
+    and $with["private-key"] == "${{ secrets.\($key_secret) }}")'
+check "the tagging job's App token is narrowed to writing contents" \
+  'token_step[0].with | with_entries(select(.key | startswith("permission-")))
+    == {"permission-contents": "write"}'
+check "the tagging job's App token is for skald-so/skald only" \
+  'token_step[0].with as $with
+    | ($with.owner // "skald-so" | IN("skald-so", "${{ github.repository_owner }}"))
+    and ($with.repositories // "skald" | IN("skald", "${{ github.event.repository.name }}"))
+    and ($with | keys | all(IN("app-id", "client-id", "private-key", "owner", "repositories",
+      "permission-contents")))'
+check "release-plz release runs with the App token, created before it, not the job's own token" \
+  'token_step[0].id as $id | index_of(.uses // "" | startswith("actions/create-github-app-token@"))
+    < index_of(is_release)
+    and (tagging.steps[index_of(is_release)] | [.. | strings]
+      | any(contains("steps.\($id).outputs.token"))
+        and (any(test("secrets\\.GITHUB_TOKEN|github\\.token")) | not))'
+check "the tagging job's checkout keeps no credentials but the App token" \
+  'token_step[0].id as $id | checkout(tagging)[0].with
+    | .["persist-credentials"] == false or .token == "${{ steps.\($id).outputs.token }}"'
+check "release-plz $release_plz_version is installed before release-plz release" \
+  'index_of((.uses // "" | startswith("taiki-e/install-action@"))
+    and (.with.tool // "" | split("[,\\s]+"; null) | any(. == "release-plz@\($version)")))
+    < index_of(is_release)'
+
+# The Release PR after the tags.
+check "the job that opens the Release PR runs after the tagging job" \
+  'opener_key as $opener | needs($opener) | index($tagger) != null'
+check "the jobs the Release PR job needs run on every push" \
+  '. as $w | needs(opener_key) | all(. as $k | $w.jobs[$k] | repository_only)'
+check "the job that opens the Release PR checks out the latest dev, not the pushed commit" \
+  'checkout(.jobs[opener_key]) | length > 0 and (last.with.ref // "" | IN("dev", "refs/heads/dev",
+    "${{ github.ref }}", "${{ github.ref_name }}"))'
+
+# command_problems <file>: a line per release-plz command line of the workflow that breaks the rule
+# above.
+command_problems() {
+  local call='(^|[^-/A-Za-z0-9_.])release-plz([[:space:]]|$)(.*)' separator='[;&|)#]*'
+  local file=$1 line rest words after args option value problem
+  while IFS= read -r line; do
+    rest=$line
+    while [[ $rest =~ $call ]]; do
+      rest=${BASH_REMATCH[3]}
+      # The command: its words up to a separator or a comment; then what follows them.
+      words=${rest%%$separator}
+      after=${rest:${#words}}
+      read -ra args <<<"$words"
+      problem=
+      case ${args[0]:-} in
+        release-pr | release) ;;
+        *) problem="the subcommand '${args[0]:-}' is neither release-pr nor release" ;;
+      esac
+      set -- "${args[@]:1}"
+      while [[ -z $problem && $# -gt 0 ]]; do
+        option=$1 value=
+        shift
+        if [[ $option == --*=* ]]; then
+          value=${option#*=} option=${option%%=*}
+        elif [[ $option != -v && $# -gt 0 ]]; then
+          value=$1
+          shift
+        fi
+        case "$option $value" in
+          '--forge github' | '--config release-plz.toml' | '--config ./release-plz.toml' | \
+            '--manifest-path Cargo.toml' | '--manifest-path ./Cargo.toml' | '-o json' | \
+            '--output json' | '-v ' | '--git-token "$GIT_TOKEN"' | '--git-token $GIT_TOKEN' | \
+            '--git-token "${GIT_TOKEN}"') ;;
+          *) problem="the option '$option${value:+ $value}' is not allowed" ;;
+        esac
+      done
+      if [[ -z $problem && ($after == '||'* || ($after == '&'* && $after != '&&'*)) ]]; then
+        problem="its failure does not fail the step: '${after:0:2}'"
+      fi
+      [[ -z $problem ]] || echo "${file#"$root"/}: release-plz $words: $problem"
+    done
+  done < <(json "$file" | jq -r '[.. | objects | .run? // empty | strings] | .[]
+    | gsub("\\\\\\n"; " ") | split("\n")[]')
+}
+for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
+  [[ -f $file ]] || continue
+  while IFS= read -r problem; do
+    fail "$problem"
+  done < <(command_problems "$file")
+done
+
+if ((failures > 0)); then
+  echo "release-tag-workflow-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "release-tag-workflow-test: all cases passed"

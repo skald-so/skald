@@ -2,6 +2,7 @@
 # Tests release-plz.toml against this repository, beyond the PRs script/release-plz-test merges:
 #   - the root package's changelog_include lists every other crate of the workspace, so
 #     CHANGELOG.md lists the PRs that change only a crate, a new crate among them;
+#   - release-plz publishes no crate: `publish = false` for the workspace, and no package turns it on;
 #   - on a fixture repository with the workspace and a prototype, released and tagged: a PR that
 #     changes only prototypes/ bumps nothing and is not listed, as no package has its files; a later
 #     docs PR bumps the patch version and only it is listed.
@@ -36,6 +37,13 @@ if [[ -z $crates || $included != "$crates" ]]; then
   fail "changelog_include in release-plz.toml must list the crates" \
     "$(paste -sd ' ' - <<<"$crates"); it lists: $(paste -sd ' ' - <<<"$included")"
 fi
+
+# The publish settings, one `<section> <value>` per line.
+publish=$(awk '/^\[/ { section = $0 } /^publish *=/ { sub(/^publish *= */, ""); print section, $0 }' \
+  "$root/release-plz.toml")
+[[ $publish == '[workspace] false' ]] ||
+  fail "release-plz.toml must set publish = false in [workspace] alone; it sets:" \
+    "$(paste -sd ',' - <<<"$publish")"
 
 if [[ $(release-plz --version 2>/dev/null) != "release-plz $release_plz_version" ]]; then
   echo "release-plz-config-test: release-plz $release_plz_version is missing: CONTRIBUTING.md" >&2

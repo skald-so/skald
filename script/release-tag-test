@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# Tests the release tags on fixture repositories: copies of this working tree, released as 0.40.5 and
+# tagged v0.40.5, with PRs squash-merged after the tag. Each push to dev is tagged as the workflow
+# that tags releases does it (script/release-tag-workflow-test): script/release-pr-merged, then, only
+# if it exits 0, release-plz release with the repository's own config. GitHub is a stand-in,
+# script/lib/github-api-stub.mjs: it lists the PRs each commit is the merge of and records the tags
+# created through it.
+#   script/release-pr-merged, run in a checkout of dev, exits 0 if the commit checked out is the merge
+#   of a Release PR, 1 if it is not. A Release PR is one the GitHub App skald-release,
+#   skald-release[bot], opened from a branch of this repository, $GITHUB_REPOSITORY, and that was
+#   merged into dev as that commit. It reads the commit's PRs from the GitHub API at
+#   $GITHUB_API_URL with the token $GH_TOKEN.
+#   - The merge of a Release PR with a version change gets one tag, v<version>, on its commit; a beta
+#     its beta tag, vX.Y.Z-beta.N. release-plz creates no GitHub Release and publishes no crate.
+#   - The GitHub API may list a commit's PRs late: on an empty list script/release-pr-merged asks
+#     again, 6 times in all, before it exits 1.
+#   - An already tagged version gets no tag: a run again on a tagged commit, and a Release PR that
+#     keeps a released beta's version.
+#   - A version change from any other PR gets no tag, whatever its branch is named: a person's PR,
+#     from this repository or a fork; a fork's PR; one by a user named like the App; one by another
+#     App; one whose head repository is gone; a commit merged by no PR; a commit whose PR is a
+#     person's, though the App's open Release PR has it too; the commit after a Release PR's merge.
+#     A failed API call tags nothing.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+failures=0
+
+fail() {
+  echo "release-tag-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+if [[ $(release-plz --version 2>/dev/null) != "release-plz $release_plz_version" ]]; then
+  echo "release-tag-test: release-plz $release_plz_version is missing; install it:" \
+    "cargo install release-plz --version $release_plz_version --locked" >&2
+  exit 1
+fi
+if [[ ! -x $root/script/release-pr-merged ]]; then
+  echo "release-tag-test: script/release-pr-merged is missing or not executable" >&2
+  exit 1
+fi
+
+tmp=$(mktemp -d)
+stub=
+stop_stub() {
+  [[ -z $stub ]] || { kill "$stub" && wait "$stub"; } 2>/dev/null || true
+  stub=
+}
+trap 'stop_stub; rm -rf "$tmp"' EXIT
+
+# The fixtures' git, isolated from the user's config and from any repository around $tmp.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_CEILING_DIRECTORIES=$(cd "$tmp" && pwd -P)
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+
+# cargo, logging its arguments to $tmp/cargo.log: release-plz must not run `cargo publish`.
+real_cargo=$(command -v cargo)
+mkdir "$tmp/bin"
+cat >"$tmp/bin/cargo" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$tmp/cargo.log"
+exec "$real_cargo" "\$@"
+EOF
+chmod +x "$tmp/bin/cargo"
+export PATH=$tmp/bin:$PATH
+unset CARGO
+
+copy_tree "$root" "$tmp/tree"
+
+# set_version <dir> <version>: sets the workspace version in Cargo.toml and lets cargo move the
+# crates in Cargo.lock to it.
+set_version() {
+  perl -0pi -e "s/(\\[workspace\\.package\\]\\nversion = )\"[^\"]*\"/\$1\"$2\"/" "$1/Cargo.toml"
+  cargo metadata --offline --format-version 1 --manifest-path "$1/Cargo.toml" >/dev/null 2>&1 ||
+    fail "cargo metadata failed on $1 at $2"
+}
+set_version "$tmp/tree" 0.40.5
+
+# commit <title> [<version>]: squash-merges into $dir a PR titled <title> that adds a line to
+# CHANGELOG.md and, given <version>, sets the workspace version to it. Sets $head to its commit.
+commit() {
+  printf -- '- %s\n' "$1" >>"$dir/CHANGELOG.md"
+  [[ $# -lt 2 ]] || set_version "$dir" "$2"
+  git -C "$dir" add --all
+  git -C "$dir" commit --quiet --message "$1"
+  head=$(git -C "$dir" rev-parse HEAD)
+}
+
+# fixture <name>: sets $dir to a new repository on dev, its own: the tree released as v0.40.5 and a
+# PR merged since.
+pr=100
+fixture() {
+  dir=$tmp/$1
+  cp -R "$tmp/tree" "$dir"
+  git -C "$dir" init --quiet --initial-branch dev
+  if [[ $(git -C "$dir" rev-parse --show-toplevel) != "$(cd "$dir" && pwd -P)" ]]; then
+    echo "release-tag-test: the fixture $dir is not a repository of its own" >&2
+    exit 1
+  fi
+  commit "chore: release v0.40.5 (#$((++pr)))"
+  git -C "$dir" tag v0.40.5
+  commit "feat(client): add the change alpha (#$((++pr)))"
+}
+
+# pull <number> <login> <user type> <head repository or null> <branch> <merge commit or null>: a PR
+# as the GitHub API lists it, into dev; merged as <merge commit>, or open given null.
+pull() {
+  jq -n --argjson number "$1" --arg login "$2" --arg type "$3" --arg repo "$4" --arg branch "$5" \
+    --arg merge "$6" '{
+      number: $number, id: (1000 + $number), node_id: "PR_\($number)",
+      html_url: "https://github.com/skald-so/skald/pull/\($number)",
+      url: "https://api.github.com/repos/skald-so/skald/pulls/\($number)",
+      title: "chore: release", body: "", labels: [], draft: false,
+      state: (if $merge == "null" then "open" else "closed" end),
+      merged_at: (if $merge == "null" then null else "2026-01-01T00:00:00Z" end),
+      merge_commit_sha: (if $merge == "null" then null else $merge end),
+      user: {login: $login, id: 7, type: $type},
+      head: {ref: $branch, label: $branch, sha: ("f" * 40),
+        repo: (if $repo == "null" then null else {full_name: $repo, name: ($repo | split("/")[1]),
+          owner: {login: ($repo | split("/")[0])}, fork: ($repo != "skald-so/skald")} end)},
+      base: {ref: "dev", label: "dev", sha: ("e" * 40),
+        repo: {full_name: "skald-so/skald", name: "skald", owner: {login: "skald-so"}, fork: false}}
+    }'
+}
+app=skald-release[bot]
+branch=release-plz-2026-01-01T00-00-00Z
+
+# release_pull <merge commit>: the App's Release PR, from this repository, merged as that commit.
+release_pull() {
+  pull "$((++pr))" "$app" Bot skald-so/skald "$branch" "$1"
+}
+
+# associate <sha> <PRs as a JSON array or an HTTP status>...: what the stand-in lists for commits.
+associate() {
+  local entries=() i
+  for ((i = 1; i < $#; i += 2)); do
+    entries+=("$(jq -n --arg sha "${!i}" --argjson prs "${@:i+1:1}" '{($sha): $prs}')")
+  done
+  printf '%s\n' "${entries[@]}" | jq -s 'add' >"$tmp/associated.json"
+}
+
+# tag <case>: starts a new stand-in, runs in $dir the tagging as the workflow does and sets $gate to
+# the exit code of script/release-pr-merged and $tags to the refs written, as JSON.
+tag() {
+  local port
+  stop_stub
+  rm -f "$tmp/port" "$tmp/refs.json" "$tmp/cargo.log"
+  : >"$tmp/requests.log"
+  echo '[]' >"$tmp/refs.json"
+  node "$root/script/lib/github-api-stub.mjs" "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" \
+    "$tmp/associated.json" "$tmp/refs.json" &
+  stub=$!
+  for _ in $(seq 100); do
+    [[ ! -s $tmp/port ]] || break
+    sleep 0.1
+  done
+  [[ -s $tmp/port ]] || {
+    echo "release-tag-test: the stand-in for the GitHub API did not start" >&2
+    exit 1
+  }
+  port=$(cat "$tmp/port")
+  gate=0
+  (
+    cd "$dir"
+    export GITHUB_API_URL=http://127.0.0.1:$port/api/v3 GITHUB_SERVER_URL=http://127.0.0.1:$port
+    export GITHUB_REPOSITORY=skald-so/skald GITHUB_SHA=$head GITHUB_REF=refs/heads/dev
+    export GH_TOKEN=fixture-token GITHUB_TOKEN=fixture-token
+    # Its default number of calls on an empty list, a short pause between them.
+    export RELEASE_PR_MERGED_PAUSE=0.1
+    unset RELEASE_PR_MERGED_ATTEMPTS
+    script/release-pr-merged
+  ) >"$tmp/gate.log" 2>&1 || gate=$?
+  if [[ $gate == 0 ]] && ! (cd "$dir" && release-plz release --forge github \
+    --repo-url "http://127.0.0.1:$port/skald-so/skald" --git-token fixture-token) \
+    >"$tmp/release-plz.log" 2>&1; then
+    fail "$1: release-plz release failed: $(tail -n 20 "$tmp/release-plz.log")"
+  fi
+  stop_stub
+  tags=$(cat "$tmp/refs.json")
+  if grep -q '/releases' "$tmp/requests.log"; then
+    fail "$1: release-plz called the GitHub Releases API:" \
+      "$(jq -c 'select(.url | contains("/releases")) | {method, url}' "$tmp/requests.log")"
+  fi
+  if grep -qE '(^| )publish( |$)' "$tmp/cargo.log" 2>/dev/null; then
+    fail "$1: release-plz ran cargo publish: $(grep -E '(^| )publish( |$)' "$tmp/cargo.log")"
+  fi
+}
+
+# expect_tag <case> <version>: the merge of a Release PR, $head: one ref written, the tag
+# v<version> created on $head.
+expect_tag() {
+  if [[ $gate != 0 ]]; then
+    fail "$1: script/release-pr-merged exited $gate, not 0, for the merge of a Release PR:" \
+      "$(tail -n 5 "$tmp/gate.log")"
+    return
+  fi
+  jq -e --arg ref "refs/tags/v$2" --arg head "$head" \
+    '. == [{method: "POST", ref: $ref, commit: $head}]' <<<"$tags" >/dev/null ||
+    fail "$1: not one tag v$2 on its commit $head; refs written: $(jq -c . <<<"$tags")"
+}
+
+# expect_no_tag <case> <gate>: no ref written; script/release-pr-merged exited <gate>, or anything
+# but 0 given "error".
+expect_no_tag() {
+  if [[ $2 == error && $gate == 0 ]] || [[ $2 != error && $gate != "$2" ]]; then
+    fail "$1: script/release-pr-merged exited $gate, not ${2/error/an error}:" \
+      "$(tail -n 5 "$tmp/gate.log")"
+  fi
+  jq -e '. == []' <<<"$tags" >/dev/null || fail "$1: refs written: $(jq -c . <<<"$tags")"
+}
+
+# A release: the merge of a Release PR that sets 0.40.6.
+fixture release
+commit "chore: release v0.40.6 (#$((++pr)))" 0.40.6
+associate "$head" "[$(release_pull "$head")]"
+case="the merge of a Release PR setting 0.40.6"
+tag "$case"
+expect_tag "$case" 0.40.6
+# The workflow runs again on that commit, its tag fetched.
+git -C "$dir" tag v0.40.6
+case="the merge of a Release PR whose version is tagged on its commit"
+tag "$case"
+expect_no_tag "$case" 0
+
+# The list of the commit's PRs, empty on the first 5 calls, has the Release PR on the 6th.
+fixture late-list
+commit "chore: release v0.40.6 (#$((++pr)))" 0.40.6
+associate "$head" "{\"empty\": 5, \"pulls\": [$(release_pull "$head")]}"
+case="the merge of a Release PR the GitHub API lists on its 6th call"
+tag "$case"
+expect_tag "$case" 0.40.6
+
+# Betas: a person's PR sets the version, the Release PR's merge gets the tag.
+fixture beta
+commit "chore: set the version of a beta (#$((++pr)))" 0.41.0-beta.1
+associate "$head" "[$(pull "$pr" a-person User skald-so/skald feature/beta "$head")]"
+case="a person's PR setting a beta's version"
+tag "$case"
+expect_no_tag "$case" 1
+commit "chore: release v0.41.0-beta.1 (#$((++pr)))"
+associate "$head" "[$(release_pull "$head")]"
+case="the merge of a Release PR keeping 0.41.0-beta.1"
+tag "$case"
+expect_tag "$case" 0.41.0-beta.1
+# The beta is released; the next Release PR keeps its version until a PR sets another.
+git -C "$dir" tag v0.41.0-beta.1
+commit "fix(server): fix the change bravo (#$((++pr)))"
+commit "chore: release v0.41.0-beta.1 (#$((++pr)))"
+associate "$head" "[$(release_pull "$head")]"
+case="the merge of a Release PR keeping the released 0.41.0-beta.1"
+tag "$case"
+expect_no_tag "$case" 0
+
+# Any other PR that sets a version: no tag, whatever its branch is named.
+fixture others
+commit "chore: release v0.40.6 (#$((++pr)))" 0.40.6
+others=(
+  "a person's PR from a branch of this repository named like the Release PR's"
+  "[$(pull "$pr" a-person User skald-so/skald "$branch" "$head")]"
+  "a person's PR from a fork, its branch named like the Release PR's"
+  "[$(pull "$pr" a-person User someone/skald "$branch" "$head")]"
+  "a PR from a fork by the App's login"
+  "[$(pull "$pr" "$app" Bot someone/skald "$branch" "$head")]"
+  "a PR by a user named like the App, without [bot]"
+  "[$(pull "$pr" skald-release User skald-so/skald "$branch" "$head")]"
+  "a PR another App opened from a branch of this repository named like the Release PR's"
+  "[$(pull "$pr" renovate[bot] Bot skald-so/skald "$branch" "$head")]"
+  "a PR by the App's login whose head repository is gone"
+  "[$(pull "$pr" "$app" Bot null "$branch" "$head")]"
+  "a commit no PR merged, pushed to dev"
+  "[]"
+  "a person's merged PR whose commit the App's open Release PR has too"
+  "[$(pull "$pr" a-person User skald-so/skald feature/version "$head"), $(pull "$((pr + 1))" \
+    "$app" Bot skald-so/skald "$branch" null)]"
+)
+for ((i = 0; i < ${#others[@]}; i += 2)); do
+  associate "$head" "${others[i + 1]}"
+  tag "${others[i]}"
+  expect_no_tag "${others[i]}" 1
+done
+case="a failed call of the GitHub API"
+associate "$head" 500
+tag "$case"
+expect_no_tag "$case" error
+
+# The commit after a Release PR's merge is a person's PR's merge.
+fixture after-release
+commit "chore: release v0.40.6 (#$((++pr)))" 0.40.6
+release=$head
+commit "chore: set the version of a beta (#$((++pr)))" 0.41.0-beta.1
+associate "$release" "[$(release_pull "$release")]" \
+  "$head" "[$(pull "$pr" a-person User skald-so/skald feature/beta "$head")]"
+case="a person's PR merged after a Release PR's merge"
+tag "$case"
+expect_no_tag "$case" 1
+
+if ((failures > 0)); then
+  echo "release-tag-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "release-tag-test: all cases passed"

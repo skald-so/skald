@@ -7,8 +7,9 @@
 #            delivery prototypes in prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  copied code in script/; tests of the scripts in script/, of the edge image workflow and
-#            of the Release PR workflow; Renovate config validation
-#   rust and tooling both: the Release PR on fixture repositories, with release-plz
+#            of the Release PR workflow and its release tags; Renovate config validation
+#   rust and tooling both: the Release PR and the release tags on fixture repositories, with
+#            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #            references) and build
 set -euo pipefail
@@ -83,8 +84,8 @@ if ! command -v jq >/dev/null; then
   echo "script/test: jq is missing; the copied code check, the license policy test and the edge workflow test read JSON with it: https://jqlang.org" >&2
   exit 1
 fi
-if checks rust && ! command -v curl >/dev/null; then
-  echo "script/test: curl is missing; the image test calls the server's health check with it: https://curl.se" >&2
+if { checks rust || checks tooling; } && ! command -v curl >/dev/null; then
+  echo "script/test: curl is missing; the image test calls the server's health check with it, and the release tag test script/release-pr-merged: https://curl.se" >&2
   exit 1
 fi
 if { checks rust || checks tooling || checks web; } && ! command -v docker >/dev/null; then
@@ -194,4 +195,13 @@ if checks web; then
     npm test
     npm run build
   )
+fi
+
+# The release tags: the tagging workflow, and the tags on fixture repositories, with release-plz.
+if checks tooling; then
+  script/release-tag-workflow-test
+  script/release-tag-step-test
+fi
+if checks rust || checks tooling; then
+  script/release-tag-test
 fi
