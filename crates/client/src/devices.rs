@@ -12,7 +12,7 @@ use serde::Deserialize;
 use skald_crypto::{ChainProblem, DeviceCheckError, check_device};
 use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, VersionRange};
 
-use crate::connection::{self, Connection, printable};
+use crate::connection::{Connection, printable};
 use crate::secrets::{self, Secrets};
 use crate::sign_in::{SESSION_SERVER, SESSION_TOKEN};
 use crate::state::{self, Link, State};
@@ -59,43 +59,21 @@ pub fn run(
         _ => return Err(NOT_SIGNED_IN.to_owned()),
     };
 
-    let (this, master) = match state.device().map_err(text)? {
-        Some(state::Device {
-            id,
-            link: Link::Certified { master, .. },
-            ..
-        }) => (id, master),
-        Some(state::Device {
-            link: Link::Waiting,
-            ..
-        }) => {
-            println!(
-                "This device is not linked yet: it waits for linking by a linked device of the \
-                 account. Until then it has no master key to check devices against, so it lists \
-                 none."
-            );
-            return Ok(());
-        }
-        _ => {
-            println!(
-                "This device is not linked yet: run skald sign-in to link it. Until then it has no \
-                 master key to check devices against, so it lists none."
-            );
-            return Ok(());
-        }
+    let Some(state::Device {
+        id: this,
+        link: Link::Certified { master, .. },
+        ..
+    }) = state.device().map_err(text)?
+    else {
+        println!(
+            "This device is not linked yet, so it lists no device as linked: it has no master key \
+             to check them against until it is linked."
+        );
+        return Ok(());
     };
 
     let mut connection = Connection::new(&session.server, speaks, timeout).map_err(text)?;
-    let body = match connection.get_as("/devices", token) {
-        Ok(body) => body,
-        Err(connection::Error::Refused { status: 401, .. }) => {
-            return Err(format!(
-                "the server no longer accepts this machine's session; run skald sign-in --server {}",
-                printable(&session.server)
-            ));
-        }
-        Err(err) => return Err(err.to_string()),
-    };
+    let body = connection.get_as("/devices", token).map_err(text)?;
     let devices: Devices = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
     let ids: Vec<DeviceId> = devices
