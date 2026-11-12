@@ -2,6 +2,7 @@
 //! a message no layer confirmed. Everything that runs no CLI is in the library's `read` module.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -113,7 +114,21 @@ pub fn transcript(agent: Agent, options: &Options) -> Result<bool> {
     let source = Source::open(&run.source)?;
     let token = token();
     let message = channel::add_message(&source, &token)?;
-    let session = run_session(&run, stub.as_ref(), |_| {})?;
+    // The client polls the session's file while the session runs: its record tells when the
+    // message showed there.
+    let ended = AtomicBool::new(false);
+    let session = thread::scope(|scope| {
+        scope.spawn(|| -> Result<()> {
+            let source = Source::open(&run.source)?;
+            while !ended.load(Ordering::SeqCst) && read_session_file(agent, &source)? == 0 {
+                thread::sleep(Duration::from_millis(50));
+            }
+            Ok(())
+        });
+        let session = run_session(&run, stub.as_ref(), |_| {});
+        ended.store(true, Ordering::SeqCst);
+        session
+    })?;
     read_session_file(agent, &source)?;
     let mut check = ReadCheck::new("transcript");
     println!(

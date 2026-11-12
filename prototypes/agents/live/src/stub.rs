@@ -25,6 +25,9 @@ pub const SHELL: &str = "sleep 20";
 /// A shell command that ends at once.
 pub const QUICK: &str = "true";
 
+/// A short pause, after which Claude Code has written its transcript.
+pub const PAUSE: &str = "sleep 2";
+
 /// The stub's reply once its script ends.
 pub const DONE: &str = "Done.";
 
@@ -40,6 +43,8 @@ pub enum Call {
     Shell,
     /// Runs `QUICK`.
     Quick,
+    /// Runs `PAUSE`.
+    Pause,
     /// Calls the server's `ack` tool for each message the conversation holds, with its secret as
     /// `AckWith` says.
     Ack(AckWith),
@@ -67,6 +72,7 @@ impl Call {
         match self {
             Self::Shell => Some(SHELL),
             Self::Quick => Some(QUICK),
+            Self::Pause => Some(PAUSE),
             Self::Inbox | Self::Ack(_) | Self::InboxSeen | Self::Reply => None,
         }
     }
@@ -82,7 +88,7 @@ impl Call {
                 .collect()
         };
         match self {
-            Self::Shell | Self::Quick => None,
+            Self::Shell | Self::Quick | Self::Pause => None,
             Self::Inbox => Some((INBOX, json!({}))),
             Self::InboxSeen => Some((INBOX, json!({ "seen": seen(&held) }))),
             Self::Ack(with) => {
@@ -1069,6 +1075,8 @@ mod tests {
         assert_eq!(tool(Call::Inbox), ("inbox", json!({})));
         assert_eq!(Call::Shell.server_tool(&body), None);
         assert_eq!(Call::Quick.server_tool(&body), None);
+        assert_eq!(Call::Pause.server_tool(&body), None);
+        assert_eq!(Call::Pause.command(), Some("sleep 2"));
         // Without messages, a reply names none.
         assert_eq!(
             Call::Reply.server_tool(&json!({})).unwrap(),

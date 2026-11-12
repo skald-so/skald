@@ -26,7 +26,7 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 pub use stub::{
-    AckWith, Call, DONE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub, StubLog, held,
+    AckWith, Call, DONE, PAUSE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub, StubLog, held,
 };
 
 /// The name of the MCP server in each session's config.

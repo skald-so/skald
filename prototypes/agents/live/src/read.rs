@@ -12,8 +12,8 @@ use agent_transcript::read_seen;
 use serde_json::json;
 
 use crate::{
-    AckWith, Agent, Call, Checks, Options, QUICK, SERVER, SHELL, Session, claude_print, codex_exec,
-    codex_hook, exec_hooks, handed_over, handover_delay, pretty, seconds,
+    AckWith, Agent, Call, Checks, Options, PAUSE, QUICK, SERVER, SHELL, Session, claude_print,
+    codex_exec, codex_hook, exec_hooks, handed_over, handover_delay, pretty, seconds,
 };
 
 /// The signals of a message's records that confirm the model got it.
@@ -94,13 +94,13 @@ pub fn injected(source: &Source, msg_id: &str) -> io::Result<Vec<(&'static str, 
 /// a later run.
 pub fn transcript_prompt() -> String {
     format!(
-        "Run the shell command `{QUICK}`, then run it once more. Then reply with only the check \
-         token from the {SERVER} message, or NONE if there is none."
+        "Run the shell command `{QUICK}`, then the shell command `{PAUSE}`. Then reply with only \
+         the check token from the {SERVER} message, or NONE if there is none."
     )
 }
 
 /// The model stub's tool calls in the transcript check.
-pub const TRANSCRIPT_SCRIPT: &[Call] = &[Call::Quick, Call::Quick];
+pub const TRANSCRIPT_SCRIPT: &[Call] = &[Call::Quick, Call::Pause];
 
 /// Returns the arguments of a non-interactive session of `agent` whose `SessionStart`,
 /// `PostToolUse` and `Stop` hooks run `handler` on `source`, and which keeps its session file:
@@ -128,9 +128,10 @@ pub fn transcript_session(
             let settings = dir.join("settings.json");
             fs::write(
                 &settings,
-                pretty(
-                    &json!({ "hooks": hooks, "permissions": { "allow": [format!("Bash({QUICK})")] } }),
-                ),
+                pretty(&json!({
+                    "hooks": hooks,
+                    "permissions": { "allow": [format!("Bash({QUICK})"), "Bash(sleep:*)"] },
+                })),
             )?;
             claude_print(
                 &transcript_prompt(),
@@ -199,13 +200,13 @@ pub fn read_session_file(agent: Agent, source: &Source) -> io::Result<usize> {
 /// command gives Claude Code time to write the transcript before the turn's `Stop` hook reads it.
 pub fn resend_prompt() -> String {
     format!(
-        "Run the shell command `{SHELL}`, then the shell command `{QUICK}`. Then reply with only \
+        "Run the shell command `{SHELL}`, then the shell command `{PAUSE}`. Then reply with only \
          the check tokens from the {SERVER} messages, or NONE if there are none."
     )
 }
 
 /// The model stub's tool calls in the resend check.
-pub const RESEND_SCRIPT: &[Call] = &[Call::Shell, Call::Quick];
+pub const RESEND_SCRIPT: &[Call] = &[Call::Shell, Call::Pause];
 
 /// Returns the arguments of the resend check's session: `claude -p` that skips permission prompts,
 /// so a peer message without the session's token is held; its `SessionStart` hook registers it in
@@ -276,21 +277,29 @@ pub fn resend_unconfirmed(
     Ok(resent)
 }
 
-/// The records' signals, each with how long after `from_ms` it came: a record's own time, or the
-/// session file's entry time it names, such as `transcript 0.4 s`.
+/// The records' signals, each with how long after `from_ms` it was recorded and, for a session
+/// file's entry, how long after it the entry was written, such as `transcript 2.1 s (entry 0.0 s)`.
 pub fn signals(records: &[Record], from_ms: Option<u64>) -> String {
     let names: Vec<String> = records
         .iter()
         .map(|record| {
-            let at = record
+            let Some(from) = from_ms else {
+                return record.signal.clone();
+            };
+            let after = |at: u64| seconds(at.saturating_sub(from));
+            let entry = record
                 .detail
                 .as_deref()
                 .and_then(|detail| detail.strip_prefix("entry at "))
-                .and_then(|at| at.parse().ok())
-                .unwrap_or(record.at_ms);
-            match from_ms {
-                Some(from) => format!("{} {}", record.signal, seconds(at.saturating_sub(from))),
-                None => record.signal.clone(),
+                .and_then(|at| at.parse().ok());
+            match entry {
+                Some(entry) => format!(
+                    "{} {} (entry {})",
+                    record.signal,
+                    after(record.at_ms),
+                    after(entry)
+                ),
+                None => format!("{} {}", record.signal, after(record.at_ms)),
             }
         })
         .collect();
@@ -521,11 +530,12 @@ mod tests {
             ]
         );
         assert!(
-            transcript_prompt().starts_with("Run the shell command `true`, then run it once more.")
+            transcript_prompt()
+                .starts_with("Run the shell command `true`, then the shell command `sleep 2`.")
         );
-        assert_eq!(TRANSCRIPT_SCRIPT, [Call::Quick, Call::Quick]);
+        assert_eq!(TRANSCRIPT_SCRIPT, [Call::Quick, Call::Pause]);
         assert!(resend_prompt().starts_with("Run the shell command `sleep 20`, then"));
-        assert_eq!(RESEND_SCRIPT, [Call::Shell, Call::Quick]);
+        assert_eq!(RESEND_SCRIPT, [Call::Shell, Call::Pause]);
     }
 
     #[test]
@@ -575,7 +585,10 @@ mod tests {
                 "{event}"
             );
         }
-        assert_eq!(settings["permissions"]["allow"], json!(["Bash(true)"]));
+        assert_eq!(
+            settings["permissions"]["allow"],
+            json!(["Bash(true)", "Bash(sleep:*)"])
+        );
         let codex = transcript_session(
             Agent::Codex,
             dir.path(),
@@ -652,7 +665,11 @@ mod tests {
         let records = source.records(&message.msg_id).unwrap();
         assert_eq!(records[0].signal, "session-file");
         assert_eq!(records[0].detail.as_deref(), Some("entry at 2000"));
-        assert_eq!(signals(&records, Some(1_000)), "session-file 1.0 s");
+        let told = signals(&records, Some(1_000));
+        assert!(
+            told.starts_with("session-file ") && told.ends_with(" s (entry 1.0 s)"),
+            "{told}"
+        );
     }
 
     #[test]
@@ -711,7 +728,7 @@ mod tests {
         ];
         assert_eq!(
             signals(&records, Some(2_000)),
-            "transcript 1.5 s, session-file 0.1 s, ack 0.4 s"
+            "transcript 1.5 s, session-file 7.0 s (entry 0.1 s), ack 0.4 s"
         );
         assert_eq!(signals(&records, None), "transcript, session-file, ack");
         assert_eq!(signals(&[], Some(1)), "no signal");
@@ -808,7 +825,9 @@ mod tests {
         let mut check = ReadCheck::new("transcript");
         let line = check.transcript(&session, &both);
         assert!(
-            line.ends_with("signals after the handover: transcript 0.5 s, session-file 0.2 s"),
+            line.ends_with(
+                "signals after the handover: transcript 0.5 s, session-file 0.5 s (entry 0.2 s)"
+            ),
             "{line}"
         );
         assert!(check.pass());
