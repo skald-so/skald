@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -94,6 +94,9 @@ pub struct Side {
     /// first-parent history, to the merge's committer date; none when the parent is the merge
     /// base.
     pub lifetime: Option<i64>,
+    /// The side's commits after the merge base along its first-parent history, the newest first,
+    /// each with its author date in seconds since the Unix epoch.
+    pub commits: Vec<(String, i64)>,
 }
 
 /// A merge replayed as two machines.
@@ -102,6 +105,8 @@ pub struct Replay {
     pub merge: String,
     /// The merge's committer date, `YYYY-MM-DD`.
     pub date: String,
+    /// The merge's committer date in seconds since the Unix epoch.
+    pub merged_at: i64,
     /// The merge's first and second parents.
     pub parents: [String; 2],
     /// The parents' merge base: the first one `git merge-base --all` gives.
@@ -150,14 +155,24 @@ pub fn replay(dir: &Path, scope: &Scope, merge: &str) -> Result<Replay> {
     for (machine, parent) in MACHINES.iter().zip(&parents) {
         let edits = edits(dir, scope, machine, &base, parent)?;
         server.publish(edits.publication.clone());
-        // The author date of each commit along the first-parent history, the first one last.
+        // Each commit along the first-parent history with its author date, the first one last.
         let range = format!("{base}..{parent}");
-        let dates = git::run(dir, &["log", "--first-parent", "--format=%at", &range])?;
-        let lifetime = match String::from_utf8(dates)?.lines().last() {
-            Some(first) => Some(merged_at - first.parse::<i64>()?),
-            None => None,
-        };
-        sides.push(Side { edits, lifetime });
+        let log = git::run(dir, &["log", "--first-parent", "--format=%H %at", &range])?;
+        let commits = String::from_utf8(log)?
+            .lines()
+            .map(|line| {
+                let (commit, date) = line
+                    .split_once(' ')
+                    .ok_or_else(|| format!("a commit without a date: {line}"))?;
+                Ok((commit.to_owned(), date.parse::<i64>()?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let lifetime = commits.last().map(|(_, first)| merged_at - first);
+        sides.push(Side {
+            edits,
+            lifetime,
+            commits,
+        });
     }
     let sides: [Side; 2] = sides.try_into().map_err(|_| "a merge without two sides")?;
     let overlaps = server.overlaps(MACHINES[0]);
@@ -190,6 +205,7 @@ pub fn replay(dir: &Path, scope: &Scope, merge: &str) -> Result<Replay> {
     Ok(Replay {
         merge: merge.to_owned(),
         date: date.to_owned(),
+        merged_at,
         parents,
         base,
         bases,
@@ -301,16 +317,17 @@ pub fn tree(dir: &Path, commit: &str) -> Result<BTreeSet<String>> {
     git::nul_separated(&paths)
 }
 
-/// Fetches `repository` at its commit into a bare repository in `tmp`, replays its merges on
-/// `jobs` threads, calling `progress` as [`replay_all`] does, then times its largest sides one
-/// after another and lists its [`tree`]. Fails when the repository has fewer merges than
-/// `repository` says.
-pub fn measure<'r>(
-    tmp: &Path,
-    repository: &'r Repository,
-    jobs: usize,
-    progress: impl Fn(usize) + Sync,
-) -> Result<Measured<'r>> {
+/// A measured repository fetched at its commit: its bare repository, its scope and the merges to
+/// replay.
+pub struct Fetched {
+    pub dir: PathBuf,
+    pub scope: Scope,
+    pub merges: Vec<String>,
+}
+
+/// Fetches `repository` at its commit into a bare repository in `tmp`, with its scope and its
+/// [`merges`]. Fails when the repository has fewer merges than `repository` says.
+pub fn fetch(tmp: &Path, repository: &Repository) -> Result<Fetched> {
     let dir = tmp.join(format!("{}.git", repository.name));
     let path = dir.to_str().ok_or("a path that is not UTF-8")?;
     git::run(tmp, &["init", "--quiet", "--bare", path])?;
@@ -327,9 +344,21 @@ pub fn measure<'r>(
         )
         .into());
     }
+    Ok(Fetched { dir, scope, merges })
+}
+
+/// [`fetch`]es `repository` into `tmp`, replays its merges on `jobs` threads, calling `progress`
+/// as [`replay_all`] does, then times its largest sides one after another and lists its [`tree`].
+pub fn measure<'r>(
+    tmp: &Path,
+    repository: &'r Repository,
+    jobs: usize,
+    progress: impl Fn(usize) + Sync,
+) -> Result<Measured<'r>> {
+    let Fetched { dir, scope, merges } = fetch(tmp, repository)?;
     let replays = replay_all(&dir, &scope, &merges, jobs, progress)?;
     let times = cost(&dir, &scope, &replays)?;
-    let tree = tree(&dir, commit)?;
+    let tree = tree(&dir, repository.commit)?;
     Ok(Measured {
         repository,
         replays,
