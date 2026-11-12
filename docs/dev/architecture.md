@@ -21,7 +21,7 @@
 - Keys are generated on the machine.
 - **Account master key:** the first device creates it, once its user confirms it is the first. It is the account's root of trust and is stored on the server encrypted under the recovery key.
 - Every device certificate chains to the master key: a new device is signed by an already linked device or by the recovery key. A server signature alone never admits a device.
-- **Link code:** a new device shows a short code; its user enters it on an already linked device. A PAKE keyed by the code carries the keys and the certificate, so the server never sees the code and cannot link a device itself.
+- **Link code:** a new device shows a short code; its user enters it on an already linked `client` device. A PAKE keyed by the code carries the keys and the certificate, so the server never sees the code and cannot link a device itself.
 - Formats and checks: [protocol spec](../protocol/membership.md#account).
 - The device key can also be signed with the user's SSH key from GitHub: [protocol spec](../protocol/membership.md#device-certificate).
 - The recovery key is entered only in the CLI, never in a web page.
