@@ -92,6 +92,14 @@ fn main() -> ExitCode {
             ended(gui_run::prepare(path, surface, busy))
         }
         ["gui-add", work] => ended(gui_run::add(Path::new(work))),
+        ["gui-queue", work, cli @ ..] => {
+            let cli = match cli {
+                [] => false,
+                ["--cli"] => true,
+                _ => return usage(),
+            };
+            ended(gui_run::queue(Path::new(work), cli))
+        }
         ["gui-result", work, token] => ended(gui_run::result(Path::new(work), token)),
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
@@ -161,7 +169,10 @@ fn usage() -> ExitCode {
          live-check gui <inbox|post-tool-use|stop> <claude-desktop|claude-vscode> [--busy]\n       \
          live-check gui channel <claude-desktop|claude-vscode>\n       \
          live-check gui inbox <codex-desktop|codex-vscode>\n       \
+         live-check gui <post-tool-use|stop|queue> <codex-desktop|codex-vscode> [--busy]\n       \
+         live-check gui user-prompt-submit <codex-desktop|codex-vscode>\n       \
          live-check gui-add <check-dir>\n       \
+         live-check gui-queue <check-dir> [--cli]\n       \
          live-check gui-result <check-dir> <token>\n       \
          live-check timed-hook <log> <handler> [<arg>...]"
     );

@@ -11,7 +11,7 @@ use agent_live::Agent;
 use agent_live::channel::stub_environment;
 use agent_live::queue;
 use agent_source::{Source, State};
-use agent_testing::{assert_failed, stderr};
+use agent_testing::{Exchange, assert_failed, stderr};
 
 /// Runs `live-check` with no variable of the test's environment, so none of its credentials
 /// reach the output.
@@ -89,9 +89,11 @@ fn wrong_arguments_print_the_usage() {
         &["gui"],
         &["gui", "inbox"],
         &["gui", "inbox", "claude"],
-        &["gui", "queue", "codex-vscode"],
+        &["gui", "queue", "claude-vscode"],
+        &["gui", "app-server", "codex-desktop"],
         &["gui", "channel", "codex-desktop"],
-        &["gui", "stop", "codex-vscode"],
+        &["gui", "user-prompt-submit", "claude-desktop"],
+        &["gui", "user-prompt-submit", "codex-vscode", "--busy"],
         &["gui", "inbox", "claude-vscode", "--keep"],
         &["gui", "inbox", "claude-vscode", "--busy", "--busy"],
         &["gui", "channel", "claude-vscode", "--busy"],
@@ -100,6 +102,9 @@ fn wrong_arguments_print_the_usage() {
         &["gui-add", "dir", "token"],
         &["gui-result"],
         &["gui-result", "dir"],
+        &["gui-queue"],
+        &["gui-queue", "dir", "--bundled"],
+        &["gui-queue", "dir", "--cli", "--cli"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -774,4 +779,170 @@ fn gui_fails_without_the_surface_or_the_check() {
         .output()
         .expect("live-check runs");
     assert_failed(&output, "live-check: HOME is not set");
+}
+
+/// A home where VS Code's list of extensions and the Codex CLI that Codex for VS Code bundles,
+/// recorded in `tests/surfaces/`, hold Codex for VS Code's.
+fn home_with_codex_for_vs_code() -> tempfile::TempDir {
+    let home = home_with_claude_code_for_vs_code();
+    let platform = home
+        .path()
+        .join(".vscode/extensions/openai.chatgpt-26.1021.22027-darwin-arm64/bin/macos-aarch64");
+    fs::create_dir_all(&platform).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/surfaces/codex-package-extension.json"),
+        platform.join("codex-package.json"),
+    )
+    .unwrap();
+    home
+}
+
+/// The `thread/list` exchange recorded from the Codex CLI that the Codex surfaces bundle, shortened.
+fn thread_list() -> Exchange {
+    Exchange::read(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/surfaces/thread-list.jsonl"))
+}
+
+/// Runs `live-check gui-queue <work> --cli` with `bin` first on `PATH`, `home` as `HOME` and `tmp`
+/// as `TMPDIR`.
+fn gui_queue(bin: &Path, home: &Path, tmp: &Path, work: &str) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args(["gui-queue", work, "--cli"])
+        .env_clear()
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("HOME", home)
+        .env("TMPDIR", tmp)
+        .output()
+        .expect("live-check runs")
+}
+
+/// Prepares a `codex queue` GUI check on Codex for VS Code, in the `busy` case or not, with a home
+/// of [`home_with_codex_for_vs_code`] and its own `TMPDIR`. Returns them, the lines it printed and
+/// the check's directory, which the line that names `gui-queue` gives.
+fn queue_check(busy: bool) -> (tempfile::TempDir, tempfile::TempDir, Vec<String>, String) {
+    let home = home_with_codex_for_vs_code();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut args = vec!["gui", "queue", "codex-vscode"];
+    if busy {
+        args.push("--busy");
+    }
+    let (_, lines) = succeeded(home.path(), tmp.path(), &args);
+    let when = if busy {
+        "once the shell command runs"
+    } else {
+        "once the first turn ended"
+    };
+    let work = lines[3]
+        .strip_prefix(&format!("{when}: live-check gui-queue "))
+        .and_then(|rest| rest.strip_suffix(" [--cli]"))
+        .expect("the command that queues the message")
+        .to_owned();
+    (home, tmp, lines, work)
+}
+
+#[test]
+fn gui_queues_the_message_into_the_thread_its_prompt_started() {
+    let (home, tmp, lines, work) = queue_check(false);
+    let work = work.as_str();
+    let [version, _, prompt, _, _] = lines.as_slice() else {
+        panic!("{lines:?}");
+    };
+    assert_eq!(
+        *version,
+        "codex-vscode: Codex for VS Code 26.1021.22027, codex 0.164.0-alpha.11.1"
+    );
+    assert_eq!(
+        *prompt,
+        format!("prompt: {}", queue::prompt(agent_live::Kind::Idle))
+    );
+    let source = Source::open(Path::new(work).join("source")).unwrap();
+    assert!(source.take().unwrap().is_empty(), "added before gui-queue");
+
+    // The stand-in answers `thread/list` as recorded, then `codex queue` with nothing.
+    let codex = tempfile::tempdir().unwrap();
+    let exchange = thread_list();
+    exchange.stand_in(codex.path(), "", "");
+    let output = gui_queue(&codex.path().join("bin"), home.path(), tmp.path(), work);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let check = gui_check(work);
+    let thread = "01a1ce22-0000-7000-8000-000000000001";
+    let msg_id = check["msg_id"].as_str().unwrap();
+    assert_eq!(
+        stdout,
+        format!("thread: {thread}\n{msg_id}\nhanded over: 1\n")
+    );
+    assert!(!stdout.contains(check["token"].as_str().unwrap()));
+    assert_eq!(
+        source
+            .state(msg_id)
+            .unwrap()
+            .map(|s| matches!(s, State::HandedOver { .. })),
+        Some(true)
+    );
+
+    let list: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(codex.path().join("received/2")).unwrap())
+            .unwrap();
+    let project = Path::new(work).join("project");
+    assert_eq!(list["method"], "thread/list");
+    assert_eq!(
+        list["params"]["cwd"],
+        serde_json::json!([project, fs::canonicalize(&project).unwrap()])
+    );
+    let args = fs::read_to_string(codex.path().join("args")).unwrap();
+    let text = format!(
+        "The check token is {}. Reply with only the check token.",
+        check["token"].as_str().unwrap()
+    );
+    assert!(
+        args.starts_with(&format!("queue\n--thread\n{thread}\n--message\n")),
+        "{args}"
+    );
+    assert!(args.contains(&text), "{args}");
+}
+
+#[test]
+fn gui_queue_adds_nothing_without_the_thread() {
+    let (home, tmp, _, work) = queue_check(true);
+    let work = work.as_str();
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+    fs::write(
+        home.path().join(".codex/config.toml"),
+        "[mcp_servers.alpha]\ncommand = \"a\"\n",
+    )
+    .unwrap();
+    let codex = tempfile::tempdir().unwrap();
+    let mut exchange = thread_list();
+    for line in &mut exchange.0 {
+        if let Some(data) = line["server"]["result"].get_mut("data") {
+            data.as_array_mut()
+                .unwrap()
+                .retain(|thread| thread["preview"] == "Reply with only OK.");
+        }
+    }
+    exchange.stand_in(codex.path(), "", "");
+    let output = gui_queue(&codex.path().join("bin"), home.path(), tmp.path(), work);
+    assert_failed(
+        &output,
+        &format!(
+            "live-check: no thread in {work}/project started with the check's prompt: send it first"
+        ),
+    );
+    assert!(
+        gui_check(work).get("msg_id").is_none(),
+        "added without the thread"
+    );
+    // The lookup's app-server starts none of the user's MCP servers.
+    let args = fs::read_to_string(codex.path().join("args")).unwrap();
+    assert!(args.starts_with("app-server\n"), "{args}");
+    assert!(
+        args.contains("\nmcp_servers.alpha.enabled=false\n"),
+        "{args}"
+    );
+
+    // Without the bundled CLI the command fails before it runs any.
+    let other = tempfile::tempdir().unwrap();
+    let output = live_check_in(other.path(), tmp.path(), &["gui-queue", work]);
+    assert_failed(&output, "live-check: ");
+    assert!(gui_check(work).get("msg_id").is_none());
 }

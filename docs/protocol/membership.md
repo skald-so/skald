@@ -237,7 +237,7 @@ A server signature alone never admits a device: a client trusts a device only th
 
 A certificate is valid when:
 1. it passes the [proof check](#device-certificate), and `signature` verifies: with the master key when `issuer` is absent; otherwise with the signing key of the issuer's certificate;
-2. its chain, the certificate and those of its issuers in turn, ends at the master key without repeating a device; every certificate of the chain passes check 1, and every issuer is a `client` device of the same account;
+2. its chain, the certificate and those of its issuers in turn, ends at the master key without repeating a device; every certificate of the chain passes check 1, every issuer is a `client` device of the same account, and a certificate without `issuer` is of a `client` device;
 3. no counting revocation names the device in `device` or `also`;
 4. for each revoked issuer in the chain, every counting revocation of it lists in `keep` the next device down the chain.
 
