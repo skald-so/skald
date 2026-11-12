@@ -317,11 +317,6 @@ pub fn tree(dir: &Path, commit: &str) -> Result<BTreeSet<String>> {
     git::nul_separated(&paths)
 }
 
-/// The bare repository in `tmp` that [`fetch`] fetches `repository` into.
-pub fn dir(tmp: &Path, repository: &Repository) -> PathBuf {
-    tmp.join(format!("{}.git", repository.name))
-}
-
 /// A measured repository fetched at its commit: its bare repository, its scope and the merges to
 /// replay.
 pub struct Fetched {
@@ -330,10 +325,10 @@ pub struct Fetched {
     pub merges: Vec<String>,
 }
 
-/// Fetches `repository` at its commit into a bare repository in `tmp`, its [`dir`], with its
-/// scope and its [`merges`]. Fails when the repository has fewer merges than `repository` says.
+/// Fetches `repository` at its commit into a bare repository in `tmp`, with its scope and its
+/// [`merges`]. Fails when the repository has fewer merges than `repository` says.
 pub fn fetch(tmp: &Path, repository: &Repository) -> Result<Fetched> {
-    let dir = dir(tmp, repository);
+    let dir = tmp.join(format!("{}.git", repository.name));
     let path = dir.to_str().ok_or("a path that is not UTF-8")?;
     git::run(tmp, &["init", "--quiet", "--bare", path])?;
     let (url, commit) = (repository.url, repository.commit);
