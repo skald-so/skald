@@ -1671,6 +1671,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "skald-repository"
+version = "0.1.0"
+
+[[package]]
 name = "skald-server"
 version = "0.1.0"
 dependencies = [

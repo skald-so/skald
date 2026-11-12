@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Tests release-plz.toml against this repository, beyond the PRs script/release-plz-test merges:
+#   - the root package's changelog_include lists every other crate of the workspace, so
+#     CHANGELOG.md lists the PRs that change only a crate, a new crate among them;
+#   - on a fixture repository with the workspace and a prototype, released and tagged: a PR that
+#     changes only prototypes/ bumps nothing and is not listed, as no package has its files; a later
+#     docs PR bumps the patch version and only it is listed.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+failures=0
+
+fail() {
+  echo "release-plz-config-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# The crates of the workspace but the root package, one name per line.
+crates=$(cargo metadata --no-deps --offline --format-version 1 --manifest-path "$root/Cargo.toml" |
+  jq -r --arg root "$root/Cargo.toml" '.packages[] | select(.manifest_path != $root) | .name' |
+  sort)
+# The names in changelog_include, one per line.
+included=$(awk '
+  /^changelog_include *= *\[/ { inside = 1 }
+  inside {
+    line = $0
+    while (match(line, /"[^"]*"/)) {
+      print substr(line, RSTART + 1, RLENGTH - 2)
+      line = substr(line, RSTART + RLENGTH)
+    }
+  }
+  inside && /\]/ { inside = 0 }
+' "$root/release-plz.toml" | sort)
+if [[ -z $crates || $included != "$crates" ]]; then
+  fail "changelog_include in release-plz.toml must list the crates" \
+    "$(paste -sd ' ' - <<<"$crates"); it lists: $(paste -sd ' ' - <<<"$included")"
+fi
+
+if [[ $(release-plz --version 2>/dev/null) != "release-plz $release_plz_version" ]]; then
+  echo "release-plz-config-test: release-plz $release_plz_version is missing: CONTRIBUTING.md" >&2
+  exit 1
+fi
+dir=$(mktemp -d)
+trap 'rm -rf "$dir" "$dir.log"' EXIT
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+
+# The fixture: the workspace, one prototype and one doc, from the working tree; released as 0.40.5,
+# a stable version whatever Cargo.toml has, a beta's included.
+git -C "$root" ls-files -z --cached --others --exclude-standard -- Cargo.toml Cargo.lock \
+  repository.rs release-plz.toml crates prototypes/edits docs/threat-model.md |
+  tar -C "$root" --null -T - -cf - | tar -C "$dir" -xf -
+perl -0pi -e 's/(\[workspace\.package\]\nversion = )"[^"]*"/$1"0.40.5"/' "$dir/Cargo.toml"
+# cargo metadata moves the workspace crates in Cargo.lock to that version, and only them.
+versions=$(cargo metadata --format-version 1 --manifest-path "$dir/Cargo.toml" |
+  jq -r '[.workspace_members as $members | .packages[] | select(.id | IN($members[]))
+    | .version] | unique | join(" ")')
+if [[ $versions != 0.40.5 ]]; then
+  echo "release-plz-config-test: the fixture's crates are not all at 0.40.5: $versions" >&2
+  exit 1
+fi
+git -C "$dir" init --quiet --initial-branch dev
+git -C "$dir" add --all
+git -C "$dir" commit --quiet --message "chore: release v0.40.5 (#1)"
+git -C "$dir" tag v0.40.5
+
+# commit <title> <file>: squash-merges a PR titled <title> that changes <file>.
+commit() {
+  echo "# $1" >>"$dir/$2"
+  git -C "$dir" commit --quiet --all --message "$1"
+}
+# update: runs release-plz update in the fixture; false on an error.
+update() {
+  (cd "$dir" && release-plz update) >"$dir.log" 2>&1 || {
+    fail "release-plz update failed: $(tail -n 20 "$dir.log")"
+    return 1
+  }
+}
+
+commit "feat(prototypes): change only the prototypes (#2)" prototypes/edits/Cargo.toml
+if update; then
+  changed=$(git -C "$dir" status --porcelain)
+  [[ -z $changed ]] ||
+    fail "a PR that changes only prototypes/ changed: $(tr '\n' ' ' <<<"$changed")"
+fi
+commit "docs: change the docs (#3)" docs/threat-model.md
+if update; then
+  grep -qx 'version = "0.40.6"' "$dir/Cargo.toml" ||
+    fail "a docs PR after a prototypes PR does not bump 0.40.5 to 0.40.6"
+  grep -qF "change the docs" "$dir/CHANGELOG.md" 2>/dev/null ||
+    fail "CHANGELOG.md does not list the docs PR"
+  ! grep -qF "change only the prototypes" "$dir/CHANGELOG.md" 2>/dev/null ||
+    fail "CHANGELOG.md lists a PR that changes only prototypes/"
+fi
+
+if ((failures > 0)); then
+  echo "release-plz-config-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "release-plz-config-test: all cases passed"

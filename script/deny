@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Runs cargo-deny with deny.toml on every crate of the workspace, not only the root package:
+# script/deny <cargo-deny command>... script/test runs `script/deny check advisories licenses`;
+# script/deny-test checks that its graph has every workspace crate.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+exec cargo deny --workspace --locked "$@"

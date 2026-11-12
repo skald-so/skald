@@ -6,8 +6,9 @@
 #            and their benchmarks' smoke run, natively and in WASM; the delivery prototypes in
 #            prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
-#   tooling  copied code in script/; tests of the scripts in script/ and of the edge image workflow,
-#            Renovate config validation
+#   tooling  copied code in script/; tests of the scripts in script/, of the edge image workflow and
+#            of the Release PR workflow; Renovate config validation
+#   rust and tooling both: the Release PR on fixture repositories, with release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #            references) and build
 set -euo pipefail
@@ -109,7 +110,7 @@ if checks rust; then
   postgres_wait
   cargo test --workspace --locked
 
-  cargo deny --locked check advisories licenses
+  script/deny check advisories licenses
   script/deny-test
   script/image-test
 
@@ -155,8 +156,16 @@ if checks tooling; then
   script/mutants-test
   script/tag-edge-test
   script/edge-workflow-test
+  script/release-plz-workflow-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.
   npx --yes --package renovate@44.225.1 -- renovate-config-validator --strict --no-global renovate.json
+fi
+
+# The Release PR on fixture repositories, with release-plz: it depends on the workspace and on the
+# scripts.
+if checks rust || checks tooling; then
+  script/release-plz-config-test
+  script/release-plz-test
 fi
 
 # Web UI: lint, tests (including the check that the API client is generated from the spec and the

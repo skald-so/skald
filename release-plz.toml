@@ -1,0 +1,28 @@
+# release-plz: the Release PR, opened by .github/workflows/release-plz.yml and tested by
+# script/release-plz-test. Docs: https://release-plz.dev/docs/config
+# Every crate takes the version of [workspace.package] in Cargo.toml, so the Release PR sets one
+# version for all of them.
+
+[workspace]
+# The last release is the last vX.Y.Z tag: the crates are not on crates.io.
+git_only = true
+git_tag_name = "v{{ version }}"
+# The version follows the PR titles alone, not the API changes cargo-semver-checks finds.
+semver_check = false
+# One CHANGELOG.md, the root package's.
+changelog_update = false
+
+# The root package, skald-repository, has every file outside crates/ and prototypes/; it also lists
+# the PRs that change only the crates. Every crate of the workspace goes into changelog_include.
+# prototypes/: docs/dev/infrastructure.md, "Release".
+[[package]]
+name = "skald-repository"
+changelog_update = true
+changelog_include = [
+  "skald-adapters",
+  "skald-client",
+  "skald-crypto",
+  "skald-mcp",
+  "skald-proto",
+  "skald-server",
+]
