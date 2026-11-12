@@ -15,7 +15,7 @@ Static SPA: TypeScript, Vite, React. Calls the API only through the client gener
 - The theme follows the system setting; `?theme=light` or `?theme=dark` forces one.
 - `?screen=cabinet` shows the cabinet shell around the Machines screen; `?screen=cabinet-menu` opens its side menu at phone width.
 - `npm run kit:screenshots [-- <dir>]` saves every view, default `kit-screenshots/`: the kit page and the cabinet in both themes at 1440 and 360 px, the open side menu in both themes at 360 px. Reviews compare them with the approved design screenshots, `design/png/` in `skald-cloud`.
-- The kit tests run Google Chrome headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
+- The kit tests run Google Chrome headless: [CONTRIBUTING.md](../CONTRIBUTING.md#requirements).
 - The test files with a browser, `kit`, `cabinet` and `kit-references`, run one at a time after the others: a container that Docker starts or removes makes Chrome abort its requests in flight.
 
 ## Reference screenshots
