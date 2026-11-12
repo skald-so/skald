@@ -37,14 +37,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 
-# The working tree as script/test sees it: tracked and new files, without ignored ones.
-mkdir "$tmp/tree"
-(
-  cd "$root"
-  git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d '' path; do
-    if [[ -e $path || -L $path ]]; then printf '%s\0' "$path"; fi
-  done | tar --null -T - -cf -
-) | tar -C "$tmp/tree" -xf -
+copy_tree "$root" "$tmp/tree"
 
 # The workspace's crates, one name per line.
 crates() {

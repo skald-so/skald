@@ -7,8 +7,9 @@
 #            prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  copied code in script/; tests of the scripts in script/, of the edge image workflow and
-#            of the Release PR workflow; Renovate config validation
-#   rust and tooling both: the Release PR on fixture repositories, with release-plz
+#            of the Release PR workflow and its release tags; Renovate config validation
+#   rust and tooling both: the Release PR and the release tags on fixture repositories, with
+#            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #            references) and build
 set -euo pipefail
@@ -180,4 +181,12 @@ if checks web; then
     npm test
     npm run build
   )
+fi
+
+# The release tags: the tagging workflow, and the tags on fixture repositories, with release-plz.
+if checks tooling; then
+  script/release-tag-workflow-test
+fi
+if checks rust || checks tooling; then
+  script/release-tag-test
 fi
