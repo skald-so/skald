@@ -24,5 +24,6 @@ url = "2.5"
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }
 serde_urlencoded = "0.7"
+skald-crypto = { path = "../crypto" }
 skald-github-stand-in = { path = "../github-stand-in" }
 tungstenite = "0.30"

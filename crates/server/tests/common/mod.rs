@@ -4,6 +4,7 @@
 
 pub mod browser;
 pub mod device_flow;
+pub mod devices;
 pub mod sign_in;
 pub mod spec;
 
@@ -207,6 +208,21 @@ pub fn post_form(url: &str, headers: &[(&str, &str)], fields: &[(&str, &str)]) -
     }
     let response = request.send_form(fields.iter().copied());
     read(response.unwrap_or_else(|err| panic!("POST {url}: {err}")))
+}
+
+/// `<method> <url>`, `method` `post` or `put`, of `body` with the request headers `headers`; a
+/// redirect is returned, not followed.
+pub fn send(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Response {
+    let mut request = match method {
+        "post" => agent().post(url),
+        "put" => agent().put(url),
+        _ => panic!("a method with a body: {method}"),
+    };
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send(body);
+    read(response.unwrap_or_else(|err| panic!("{method} {url}: {err}")))
 }
 
 /// An HTTP client that answers any status and follows no redirect.
