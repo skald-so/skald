@@ -3,13 +3,15 @@
 //! with the conflicts of `git merge-tree`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::markdown::table;
 use crate::noise::{self, Class, Signal};
-use crate::{Client, Conflict, Edits, Result, Scope, Server, SpaceKey, check, git, paths};
+use crate::{
+    Client, Conflict, Edits, Result, Scope, Server, SpaceKey, check, fingerprint, git, paths,
+};
 
 /// A level of fingerprints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -472,6 +474,15 @@ pub fn percentile(sorted: &[i64], percent: usize) -> i64 {
     sorted[(sorted.len() * percent).div_ceil(100) - 1]
 }
 
+/// The median, the 90th percentile and the largest of `sorted`, each as `show` gives it; `-` for
+/// each when `sorted` is empty.
+pub fn spread(sorted: &[i64], show: impl Fn(i64) -> String) -> [String; 3] {
+    if sorted.is_empty() {
+        return ["-".into(), "-".into(), "-".into()];
+    }
+    [50, 90, 100].map(|percent| show(percentile(sorted, percent)))
+}
+
 /// The `count` sides of `replays` with the most fingerprints, each with its merge and its parent,
 /// 1 or 2; sides with as many in the order of `replays`, first parent first.
 pub fn largest(replays: &[Replay], count: usize) -> Vec<(&Replay, usize)> {
@@ -490,9 +501,6 @@ pub fn largest(replays: &[Replay], count: usize) -> Vec<(&Replay, usize)> {
 /// The number of sides [`report`] gives the cost of, per repository.
 pub const LARGEST: usize = 3;
 
-/// The bytes of a fingerprint.
-const FINGERPRINT_BYTES: usize = 32;
-
 /// The findings on `measured` as Markdown tables, those of [`noise::report`] and then of
 /// [`paths::report`] last. All but the times are the same on every run.
 pub fn report(measured: &[Measured]) -> String {
@@ -500,175 +508,195 @@ pub fn report(measured: &[Measured]) -> String {
     let hours = |seconds: i64| format!("{:.1}", seconds as f64 / 3600.0);
     let short = |merge: &str| merge[..12].to_owned();
 
-    out += "Repositories\n\n";
-    out += "| Repository | URL | Commit | Merges | Newest | Oldest | Both sides changed \
-        | Several merge bases |\n";
-    out += "|---|---|---|---|---|---|---|---|\n";
-    for Measured {
-        repository,
-        replays,
-        ..
-    } in measured
-    {
-        let ends = |replay: Option<&Replay>| match replay {
-            Some(replay) => format!("`{}` {}", short(&replay.merge), replay.date),
-            None => "-".into(),
-        };
-        let both = replays
-            .iter()
-            .filter(|replay| {
-                let sizes = replay.sides.each_ref().map(|side| side.edits.sizes()[0]);
-                sizes.iter().all(|&paths| paths > 0)
-            })
-            .count();
-        writeln!(
-            out,
-            "| {} | {} | `{}` | {} | {} | {} | {both} | {} |",
-            repository.name,
-            repository.url,
-            repository.commit,
-            replays.len(),
-            ends(replays.first()),
-            ends(replays.last()),
-            replays.iter().filter(|replay| replay.bases > 1).count()
-        )
-        .expect("a String takes any write");
-    }
-
-    out += "\nWarnings and conflicts, in files\n\n";
-    out += "| Repository | Level | Warnings | Conflicts | Warnings without a conflict \
-        | Conflicts without a warning | Warnings where both sides only add | Of them with a conflict \
-        | Warnings where both sides made the same change |\n";
-    out += "|---|---|---|---|---|---|---|---|---|\n";
-    for Measured {
-        repository,
-        replays,
-        ..
-    } in measured
-    {
-        for level in Level::ALL {
-            let c = Counts::of(replays, level);
-            writeln!(
-                out,
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-                repository.name,
-                level.name(),
-                c.warnings,
-                c.conflicts,
-                c.warnings_without_conflict,
-                c.conflicts_without_warning,
-                c.adding,
-                c.adding_with_conflict,
-                c.same
-            )
-            .expect("a String takes any write");
-        }
-    }
-
-    out += "\nConflicts without a file-level warning\n\n";
-    out += "| Repository | Merge | Merge bases | Conflict | Files |\n";
-    out += "|---|---|---|---|---|\n";
-    for Measured {
-        repository,
-        replays,
-        ..
-    } in measured
-    {
-        for replay in replays.iter() {
-            for conflict in replay.unwarned(Level::File) {
-                let paths: Vec<String> = conflict
-                    .paths
+    let title = "Repositories";
+    let header = [
+        "Repository",
+        "URL",
+        "Commit",
+        "Merges",
+        "Newest",
+        "Oldest",
+        "Both sides changed",
+        "Several merge bases",
+    ];
+    table(&mut out, title, &header.map(str::to_owned), |row| {
+        for Measured {
+            repository,
+            replays,
+            ..
+        } in measured
+        {
+            let ends = |replay: Option<&Replay>| match replay {
+                Some(replay) => format!("`{}` {}", short(&replay.merge), replay.date),
+                None => "-".into(),
+            };
+            let both = replays
+                .iter()
+                .filter(|replay| {
+                    let sizes = replay.sides.each_ref().map(|side| side.edits.sizes()[0]);
+                    sizes.iter().all(|&paths| paths > 0)
+                })
+                .count();
+            row(vec![
+                repository.name.into(),
+                repository.url.into(),
+                format!("`{}`", repository.commit),
+                replays.len().to_string(),
+                ends(replays.first()),
+                ends(replays.last()),
+                both.to_string(),
+                replays
                     .iter()
-                    .map(|path| format!("`{path}`"))
-                    .collect();
-                writeln!(
-                    out,
-                    "| {} | `{}` | {} | {} | {} |",
-                    repository.name,
-                    short(&replay.merge),
-                    replay.bases,
-                    conflict.kind,
-                    paths.join(", ")
-                )
-                .expect("a String takes any write");
+                    .filter(|replay| replay.bases > 1)
+                    .count()
+                    .to_string(),
+            ]);
+        }
+    });
+    // The report goes right after the lines of [`header`]: no empty line before its first table.
+    out.remove(0);
+
+    // A table of the counts `counts` picks, named `names`, of each level of each repository.
+    let by_level =
+        |out: &mut String, title: &str, names: &[&str], counts: fn(Counts) -> Vec<usize>| {
+            let mut header = vec!["Repository".to_owned(), "Level".to_owned()];
+            header.extend(names.iter().map(|name| name.to_string()));
+            table(out, title, &header, |row| {
+                for Measured {
+                    repository,
+                    replays,
+                    ..
+                } in measured
+                {
+                    for level in Level::ALL {
+                        let mut cells = vec![repository.name.into(), level.name().into()];
+                        let counts = counts(Counts::of(replays, level));
+                        cells.extend(counts.iter().map(usize::to_string));
+                        row(cells);
+                    }
+                }
+            });
+        };
+
+    let names = [
+        "Warnings",
+        "Conflicts",
+        "Warnings without a conflict",
+        "Conflicts without a warning",
+        "Warnings where both sides only add",
+        "Of them with a conflict",
+        "Warnings where both sides made the same change",
+    ];
+    by_level(&mut out, "Warnings and conflicts, in files", &names, |c| {
+        vec![
+            c.warnings,
+            c.conflicts,
+            c.warnings_without_conflict,
+            c.conflicts_without_warning,
+            c.adding,
+            c.adding_with_conflict,
+            c.same,
+        ]
+    });
+
+    let title = "Conflicts without a file-level warning";
+    let header = ["Repository", "Merge", "Merge bases", "Conflict", "Files"];
+    table(&mut out, title, &header.map(str::to_owned), |row| {
+        for Measured {
+            repository,
+            replays,
+            ..
+        } in measured
+        {
+            for replay in replays.iter() {
+                for conflict in replay.unwarned(Level::File) {
+                    let paths: Vec<String> = conflict
+                        .paths
+                        .iter()
+                        .map(|path| format!("`{path}`"))
+                        .collect();
+                    row(vec![
+                        repository.name.into(),
+                        format!("`{}`", short(&replay.merge)),
+                        replay.bases.to_string(),
+                        conflict.kind.clone(),
+                        paths.join(", "),
+                    ]);
+                }
             }
         }
-    }
+    });
 
-    out += "\nWarnings and conflicts, in merges\n\n";
-    out += "| Repository | Level | With a warning | With a conflict | Warned without a conflict \
-        | Conflicted without a warning |\n";
-    out += "|---|---|---|---|---|---|\n";
-    for Measured {
-        repository,
-        replays,
-        ..
-    } in measured
-    {
-        for level in Level::ALL {
-            let c = Counts::of(replays, level);
-            writeln!(
-                out,
-                "| {} | {} | {} | {} | {} | {} |",
-                repository.name,
-                level.name(),
-                c.merges_warned,
-                c.merges_conflicted,
-                c.merges_warned_clean,
-                c.merges_conflicted_unwarned
-            )
-            .expect("a String takes any write");
+    let names = [
+        "With a warning",
+        "With a conflict",
+        "Warned without a conflict",
+        "Conflicted without a warning",
+    ];
+    by_level(&mut out, "Warnings and conflicts, in merges", &names, |c| {
+        vec![
+            c.merges_warned,
+            c.merges_conflicted,
+            c.merges_warned_clean,
+            c.merges_conflicted_unwarned,
+        ]
+    });
+
+    let title = "Side lifetimes, in hours";
+    let header = [
+        "Repository",
+        "Sides",
+        "Median",
+        "90th percentile",
+        "Longest",
+    ];
+    table(&mut out, title, &header.map(str::to_owned), |row| {
+        for Measured {
+            repository,
+            replays,
+            ..
+        } in measured
+        {
+            let lifetimes = lifetimes(replays);
+            let mut cells = vec![repository.name.into(), lifetimes.len().to_string()];
+            cells.extend(spread(&lifetimes, hours));
+            row(cells);
         }
-    }
+    });
 
-    out += "\nSide lifetimes, in hours\n\n";
-    out += "| Repository | Sides | Median | 90th percentile | Longest |\n";
-    out += "|---|---|---|---|---|\n";
-    for Measured {
-        repository,
-        replays,
-        ..
-    } in measured
-    {
-        let lifetimes = lifetimes(replays);
-        let [median, p90, longest] = if lifetimes.is_empty() {
-            ["-".into(), "-".into(), "-".into()]
-        } else {
-            [50, 90, 100].map(|percent| hours(percentile(&lifetimes, percent)))
-        };
-        writeln!(
-            out,
-            "| {} | {} | {median} | {p90} | {longest} |",
-            repository.name,
-            lifetimes.len()
-        )
-        .expect("a String takes any write");
-    }
-
-    out += "\nCost on the largest sides; times are not compared on a rerun\n\n";
-    out += "| Repository | Merge | Parent | File | Hunk | Symbol | Bytes | Time, ms |\n";
-    out += "|---|---|---|---|---|---|---|---|\n";
-    for Measured {
-        repository,
-        replays,
-        times,
-        ..
-    } in measured
-    {
-        for ((replay, parent), time) in largest(replays, LARGEST).into_iter().zip(times) {
-            let side = &replay.sides[parent - 1];
-            let [paths, hunks, symbols] = side.edits.sizes();
-            let bytes = side.edits.publication.fingerprints.len() * FINGERPRINT_BYTES;
-            writeln!(
-                out,
-                "| {} | `{}` | {parent} | {paths} | {hunks} | {symbols} | {bytes} | {} |",
-                repository.name,
-                short(&replay.merge),
-                time.as_millis()
-            )
-            .expect("a String takes any write");
+    let title = "Cost on the largest sides; times are not compared on a rerun";
+    let header = [
+        "Repository",
+        "Merge",
+        "Parent",
+        "File",
+        "Hunk",
+        "Symbol",
+        "Bytes",
+        "Time, ms",
+    ];
+    table(&mut out, title, &header.map(str::to_owned), |row| {
+        for Measured {
+            repository,
+            replays,
+            times,
+            ..
+        } in measured
+        {
+            for ((replay, parent), time) in largest(replays, LARGEST).into_iter().zip(times) {
+                let side = &replay.sides[parent - 1];
+                let bytes = side.edits.publication.fingerprints.len() * fingerprint::BYTES;
+                let mut cells = vec![
+                    repository.name.into(),
+                    format!("`{}`", short(&replay.merge)),
+                    parent.to_string(),
+                ];
+                cells.extend(side.edits.sizes().map(|size| size.to_string()));
+                cells.extend([bytes.to_string(), time.as_millis().to_string()]);
+                row(cells);
+            }
         }
-    }
+    });
     out += &noise::report(measured);
     out += &paths::report(measured);
     out

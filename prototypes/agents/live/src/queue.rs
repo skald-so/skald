@@ -3,15 +3,19 @@
 //! reaches only a session that keeps running after its turn, so the binary runs Codex's terminal UI
 //! in a pseudo-terminal, as the Channels check runs Claude Code.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use agent_app_server::{Client, Transport};
+use agent_source::Source;
 
-use crate::channel::{Files, PtySession, Sent, TERM, reached_delay};
+use serde_json::json;
+
+use crate::channel::{Files, PtySession, Sent, TERM, hook_inputs};
 use crate::{
-    Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config, codex_hook, handed_over,
-    handover_delay,
+    Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config_flags, codex_hook,
+    codex_trusted, model_flag,
 };
 
 /// The prototype's binary, next to `live-check`.
@@ -54,23 +58,15 @@ pub fn session(files: &Files, kind: Kind, model: Option<&str>, stub: Option<&str
     ]
     .map(String::from)
     .to_vec();
-    let mut config = vec![
+    let config = vec![
         codex_hook("Stop", &files.record()),
         codex_hook("PreToolUse", &files.record()),
-        format!(
-            "projects={{{}={{trust_level=\"trusted\"}}}}",
-            json!(project)
-        ),
+        codex_trusted(&project),
         "check_for_update_on_startup=false".to_owned(),
         "notify=[]".to_owned(),
     ];
-    config.extend(codex_config(stub));
-    for value in config {
-        args.extend(["-c".to_owned(), value]);
-    }
-    if let Some(model) = model {
-        args.extend(["-m".to_owned(), model.to_owned()]);
-    }
+    args.extend(codex_config_flags(config, stub));
+    args.extend(model_flag("-m", model));
     args.push(prompt(kind));
     args
 }
@@ -86,10 +82,32 @@ pub fn stub_environment(home: &Path, stub: &str, path: &str) -> io::Result<Vec<(
 /// The session's thread, which `codex queue` takes: the `session_id` of the first hook input in the
 /// hooks file's `text`.
 pub fn thread(text: &str) -> Option<String> {
-    serde_json::Deserializer::from_str(text)
-        .into_iter::<Value>()
-        .map_while(Result::ok)
-        .find_map(|input| input["session_id"].as_str().map(String::from))
+    hook_inputs(text).find_map(|input| input["session_id"].as_str().map(String::from))
+}
+
+/// Polls `thread/queue/list` of `client`, an app-server on the session's config home that offers
+/// the experimental methods, at least once, until `thread`'s queue is empty or `limit` passes: Codex's own sign that
+/// a session took the queued message `msg_id` of `source`. Records it as the message's
+/// `queue-taken` signal and returns how long it took.
+pub fn taken<T: Transport, W: Write>(
+    client: &mut Client<T, W>,
+    thread: &str,
+    source: &Source,
+    msg_id: &str,
+    limit: Duration,
+) -> io::Result<Option<Duration>> {
+    let started = Instant::now();
+    loop {
+        let queued = client.call("thread/queue/list", json!({ "threadId": thread }))?;
+        if queued["data"].as_array().is_some_and(Vec::is_empty) {
+            source.record(msg_id, "queue-taken", None)?;
+            return Ok(Some(started.elapsed()));
+        }
+        if started.elapsed() >= limit {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
 }
 
 /// The tokens a session used, from the line Codex's terminal UI prints in `screen`, its output,
@@ -156,18 +174,10 @@ impl QueueCheck {
     /// a turn of its own.
     fn received(&mut self, check: &str, session: &PtySession, sent: Option<&Sent>) -> String {
         let Some(sent) = sent else {
-            let details = format!("{}; no message was queued", session.summary());
-            return self.checks.report(check, false, &details);
+            return self.checks.none(check, session, "no message was queued");
         };
-        let pass = session.clean() && session.got(&sent.token) && handed_over(sent.state);
-        let details = format!(
-            "{}; turns ended: {}; queued {} and reached the model {} after adding",
-            session.summary(),
-            session.replies().len(),
-            handover_delay(sent.state, sent.added_at_ms),
-            reached_delay(session, &sent.token, sent.added_at_ms)
-        );
-        self.checks.report(check, pass, &details)
+        let details = sent.arrival(session, "queued");
+        self.checks.report(check, sent.arrived(session), &details)
     }
 
     /// Whether every check passed.
@@ -184,6 +194,7 @@ impl QueueCheck {
 #[cfg(test)]
 mod tests {
     use agent_source::State;
+    use agent_testing::opened;
 
     use crate::channel::tests::{on_stub, real};
     use crate::{StubLog, shell_quote};
@@ -411,5 +422,65 @@ mod tests {
             assert!(line.contains(": fail — "), "{line}");
             assert!(!check.pass());
         }
+    }
+
+    /// An app-server that answers each `thread/queue/list` with the next of `queues`, the queue
+    /// lengths, and closes after them.
+    struct Queues(std::collections::VecDeque<usize>, u64);
+
+    impl Transport for Queues {
+        fn send(&mut self, _: &str) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn receive(&mut self, _: Duration) -> io::Result<agent_app_server::Received> {
+            let Some(length) = self.0.pop_front() else {
+                return Ok(agent_app_server::Received::Closed);
+            };
+            let id = self.1;
+            self.1 += 1;
+            let data = vec![json!({ "id": "q" }); length];
+            Ok(agent_app_server::Received::Message(
+                json!({ "id": id, "result": { "data": data } }).to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn taken_records_the_queue_emptied_or_gives_up_at_the_limit() {
+        let (_dir, source) = opened();
+        let message = source.add("alice", "hi").unwrap();
+        let client = |queues: &[usize]| {
+            agent_app_server::Client::new(
+                Queues(queues.iter().copied().collect(), 0),
+                io::sink(),
+                std::sync::Arc::default(),
+            )
+        };
+
+        // Still queued at the limit: no signal.
+        let mut queued = client(&[1, 1, 1]);
+        let gave_up = taken(&mut queued, "t1", &source, &message.msg_id, Duration::ZERO);
+        assert_eq!(gave_up.unwrap(), None);
+        assert!(source.records(&message.msg_id).unwrap().is_empty());
+
+        // Emptied at the second poll, 300 ms in.
+        let mut emptied = client(&[1, 0]);
+        let after = taken(
+            &mut emptied,
+            "t1",
+            &source,
+            &message.msg_id,
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .expect("taken");
+        assert!(after >= Duration::from_millis(300), "{after:?}");
+        let records = source.records(&message.msg_id).unwrap();
+        let signals: Vec<&str> = records
+            .iter()
+            .map(|record| record.signal.as_str())
+            .collect();
+        assert_eq!(signals, ["queue-taken"]);
     }
 }

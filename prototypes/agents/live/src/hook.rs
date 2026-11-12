@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::{
     Agent, Call, Checks, Event, Kind, Options, QUICK, Run, SERVER, SHELL, Session, Stub,
-    busy_details, claude_print, codex_exec, codex_hook, handed_over, other_details, prepare,
-    pretty, shell_quote, waiting_details,
+    busy_details, claude_print, codex_exec, codex_hook, exec_hooks, handed_over, other_details,
+    prepare, pretty, shell_quote, waiting_details,
 };
 
 /// The hook handler's binary, next to `live-check`.
@@ -115,9 +115,7 @@ pub fn session(
     model: Option<&str>,
 ) -> io::Result<Vec<String>> {
     fs::create_dir_all(dir)?;
-    // The exec form: Claude Code starts the handler with no shell.
-    let handlers =
-        json!([{ "hooks": [{ "type": "command", "command": handler, "args": [source] }] }]);
+    let handlers = exec_hooks(handler, &[source]);
     let settings = dir.join("settings.json");
     fs::write(
         &settings,
@@ -197,21 +195,21 @@ impl Setup<'_> {
     /// Prepares the `kind` session `name` in `work/<name>`: an empty project, the hook's config
     /// and source and, on `stub`, a home of its own.
     pub fn run(&self, name: &str, kind: Kind, stub: Option<&Stub>) -> io::Result<Run> {
-        let url = stub.map(Stub::url);
-        let session = |dir: &Path, project: &Path, source: &Path| match self.agent {
-            Agent::Claude => session(dir, self.handler, source, self.hook, kind, self.model),
-            Agent::Codex => Ok(codex_session(
-                dir,
-                project,
-                self.live_check,
-                self.handler,
-                source,
-                self.hook,
-                kind,
-                self.model,
-                url.as_deref(),
-            )),
-        };
+        let session =
+            |dir: &Path, project: &Path, source: &Path, url: Option<&str>| match self.agent {
+                Agent::Claude => session(dir, self.handler, source, self.hook, kind, self.model),
+                Agent::Codex => Ok(codex_session(
+                    dir,
+                    project,
+                    self.live_check,
+                    self.handler,
+                    source,
+                    self.hook,
+                    kind,
+                    self.model,
+                    url,
+                )),
+            };
         prepare(self.work, name, self.agent, self.path, stub, session)
     }
 }

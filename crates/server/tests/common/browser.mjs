@@ -106,6 +106,103 @@ function page(id) {
   return found;
 }
 
+/**
+ * Runs `navigate`, which navigates `tab` and resolves to the last response, if any; gives the final
+ * URL, the status of that response, the URLs the main frame requested on the way, redirects
+ * included, and the navigation error, if any.
+ */
+async function navigation(tab, navigate) {
+  const navigations = [];
+  const record = (request) => {
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
+      navigations.push(request.url());
+  };
+  const failures = [];
+  const fail = (request) => {
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
+      failures.push(`${request.url()}: ${request.failure()?.errorText}`);
+  };
+  tab.on("request", record);
+  tab.on("requestfailed", fail);
+  let status = null;
+  let error = null;
+  try {
+    const response = await navigate();
+    status = response?.status() ?? null;
+  } catch (caught) {
+    error = [String(caught.message ?? caught), ...failures].join("\n");
+  } finally {
+    tab.off("request", record);
+    tab.off("requestfailed", fail);
+  }
+  return { url: tab.url(), status, navigations, error };
+}
+
+/** How long `followRefreshes` waits in all, as long as playwright-core waits for a navigation. */
+const REFRESH_TIMEOUT = 30_000;
+
+/**
+ * Waits until `tab` stops navigating by itself: until its document has loaded and holds no
+ * `<meta http-equiv="refresh">`, such as the sign-in callback's page. A document that holds one is
+ * followed to the document its refresh commits, an error page included.
+ */
+async function followRefreshes(tab) {
+  const deadline = Date.now() + REFRESH_TIMEOUT;
+  // At least 1 ms: a timeout of 0 is none to playwright-core.
+  const left = () => Math.max(deadline - Date.now(), 1);
+  const stuck = () =>
+    new Error(
+      `${tab.url()} did not stop refreshing within ${REFRESH_TIMEOUT} ms`,
+    );
+  let documents = 0;
+  let committed = () => {};
+  const count = (frame) => {
+    if (frame !== tab.mainFrame()) return;
+    documents += 1;
+    committed();
+  };
+  tab.on("framenavigated", count);
+  try {
+    for (;;) {
+      const seen = documents;
+      // Its timeout is the rest of the deadline.
+      await tab.waitForLoadState("load", { timeout: left() }).catch((error) => {
+        throw error.name === "TimeoutError" ? stuck() : error;
+      });
+      // A navigation that replaces the document fails the evaluation: its document comes next.
+      const refreshes = await tab
+        .evaluate(
+          () => document.querySelector('meta[http-equiv="refresh" i]') !== null,
+        )
+        .catch(() => true);
+      if (documents !== seen) continue;
+      if (!refreshes) return;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(stuck()), left());
+        committed = () => {
+          clearTimeout(timer);
+          committed = () => {};
+          resolve();
+        };
+        if (documents !== seen) committed();
+      });
+    }
+  } finally {
+    tab.off("framenavigated", count);
+  }
+}
+
+/** Clicks what `selector` finds in `tab` and waits for the navigation it starts to load. */
+function click(tab, selector) {
+  return navigation(tab, async () => {
+    const [response] = await Promise.all([
+      tab.waitForNavigation({ waitUntil: "load" }),
+      tab.locator(selector).click(),
+    ]);
+    return response;
+  });
+}
+
 const ops = {
   /** Opens a page in a new browser context: a browser with no cookies. */
   async newPage() {
@@ -116,11 +213,12 @@ const ops = {
   },
 
   /**
-   * Navigates the page to `url`, as a person typing it, and waits for `waitUntil`, default `load`.
-   * Gives the final URL, the status of the last response, the URLs the main frame requested on the
-   * way, redirects included, and the navigation error, if any.
+   * Navigates the page to `url`, as a person typing it, and waits for it to load; with `settle`,
+   * also for the documents its refreshes open, as `followRefreshes` does. Gives the final URL, the
+   * status of the last response of the navigation to `url`, before any refresh, the URLs the main
+   * frame requested on the way, redirects and refreshes included, and the navigation error, if any.
    */
-  async goto({ page: id, url, waitUntil = "load" }) {
+  async goto({ page: id, url, settle = false }) {
     // Each navigation gets a new tab of the browser: Chrome commits its error page for an empty
     // error response, such as a 404 without a body, after goto gave up on it, and that commit
     // would interrupt the next navigation in the same tab.
@@ -128,30 +226,95 @@ const ops = {
     const tab = await found.context.newPage();
     found.page.close().catch(() => {});
     found.page = tab;
-    const navigations = [];
-    const record = (request) => {
-      if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
-        navigations.push(request.url());
-    };
-    const failures = [];
-    const fail = (request) => {
-      if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
-        failures.push(`${request.url()}: ${request.failure()?.errorText}`);
-    };
-    tab.on("request", record);
-    tab.on("requestfailed", fail);
-    let status = null;
-    let error = null;
-    try {
-      const response = await tab.goto(url, { waitUntil });
-      status = response?.status() ?? null;
-    } catch (caught) {
-      error = [String(caught.message ?? caught), ...failures].join("\n");
-    } finally {
-      tab.off("request", record);
-      tab.off("requestfailed", fail);
-    }
-    return { url: tab.url(), status, navigations, error };
+    return navigation(tab, async () => {
+      const response = await tab.goto(url, { waitUntil: "load" });
+      if (settle) await followRefreshes(tab);
+      return response;
+    });
+  },
+
+  /**
+   * Clicks the element `selector` finds, a playwright-core selector such as
+   * `role=button[name=/approve/i]`, as a person does, and waits for the navigation it starts to
+   * load. Gives what `goto` gives.
+   */
+  async click({ page: id, selector }) {
+    return click(page(id).page, selector);
+  },
+
+  /** Clicks each `{page, selector}` of `clicks` at once, as `click` does; gives their visits. */
+  async clickAll({ clicks }) {
+    const tabs = clicks.map(({ page: id }) => page(id).page);
+    // Each element first, so that the clicks themselves go out together.
+    await Promise.all(
+      clicks.map(({ selector }, at) =>
+        tabs[at].locator(selector).waitFor({ state: "visible" }),
+      ),
+    );
+    return Promise.all(
+      clicks.map(({ selector }, at) => click(tabs[at], selector)),
+    );
+  },
+
+  /**
+   * Evaluates the script `expression`, which starts a navigation of the page, and waits until the
+   * network has been idle for 0.5 s. Gives what `goto` gives.
+   */
+  async navigateBy({ page: id, expression }) {
+    const tab = page(id).page;
+    return navigation(tab, async () => {
+      const [response] = await Promise.all([
+        tab.waitForNavigation({ waitUntil: "load" }),
+        tab.evaluate(expression),
+      ]);
+      await tab.waitForLoadState("networkidle");
+      return response;
+    });
+  },
+
+  /** Types `value` into the element `selector` finds, replacing what it holds. */
+  async fill({ page: id, selector, value }) {
+    await page(id).page.locator(selector).fill(value);
+    return null;
+  },
+
+  /** How many elements `selector` finds. */
+  async count({ page: id, selector }) {
+    return page(id).page.locator(selector).count();
+  },
+
+  /** The value of each form field `selector` finds. */
+  async values({ page: id, selector }) {
+    const fields = page(id).page.locator(selector);
+    return fields.evaluateAll((all) => all.map((field) => field.value));
+  },
+
+  /** The page's text as a person sees it. */
+  async text({ page: id }) {
+    return page(id).page.locator("body").innerText();
+  },
+
+  /**
+   * What the button `selector` finds submits: its form's action and method, its own if it
+   * overrides them, and the form's fields with the button's own, as `[name, value]` pairs.
+   */
+  async submission({ page: id, selector }) {
+    return page(id)
+      .page.locator(selector)
+      .evaluate((button) => {
+        const form = button.form;
+        return {
+          action: button.hasAttribute("formaction")
+            ? button.formAction
+            : form.action,
+          method: button.hasAttribute("formmethod")
+            ? button.formMethod
+            : form.method,
+          fields: [...new FormData(form, button).entries()].map(
+            ([name, value]) => [name, String(value)],
+          ),
+        };
+      });
   },
 
   /** Evaluates the script `expression` in the page; a promise is awaited. */

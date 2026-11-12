@@ -102,7 +102,7 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
-A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it already has. It then gets a certificate: as the account's first device, from a linked device, or with the recovery key.
+A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it has with other keys or `name`, or on another account; the same registration sent again counts as stored. It then gets a certificate: as the account's first device, from a linked device, or with the recovery key.
 
 A new `client` device first asks its user whether it is the account's first device, before it learns from the server whether the account has a master key:
 

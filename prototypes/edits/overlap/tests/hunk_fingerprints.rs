@@ -10,12 +10,11 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 
 use common::{
-    PAIRS, Repo, Seen, Space, assert_holds_none, files, hunks, inventory, inventory_with, lines,
-    long_lines, paths, symbols,
+    ALICE_AND_BOB, Clones, PAIRS, Repo, Seen, Space, assert_holds_none, exchanged, files, hunks,
+    inventory, inventory_with, lines, long_lines, paths, reserving, symbols,
 };
 use edit_overlap::harness::Machine;
 use edit_overlap::{Lines, git};
-use tempfile::TempDir;
 
 /// The symbol of `reserve()` in `src/inventory.rs`.
 const RESERVE: &str = "function_item reserve";
@@ -32,10 +31,8 @@ fn assert_hunks_are_the_conflicts(space: &mut Space) {
 
 #[test]
 fn edits_to_the_same_lines_overlap_at_hunk_level_and_conflict() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     // Lines 7 and 8, committed on one machine and uncommitted on the other, which also edits
     // line 2.
     a.write(
@@ -53,8 +50,7 @@ fn edits_to_the_same_lines_overlap_at_hunk_level_and_conflict() {
         ]),
     )
     .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     let file = &["src/inventory.rs"][..];
     assert_eq!(
@@ -78,18 +74,11 @@ fn edits_to_the_same_lines_overlap_at_hunk_level_and_conflict() {
 
 #[test]
 fn edits_next_to_each_other_or_at_one_place_overlap_at_hunk_level_and_conflict() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (c, c_client) = repo.machine("carol-server");
-    let (d, d_client) = repo.machine("dave-laptop");
+    let names = ["alice-laptop", "bob-desktop", "carol-server", "dave-laptop"];
+    let clones = Clones::new(Repo::create, names);
+    let [a, b, c, d] = &clones.machines;
     // Line 7; line 8, next to it; a line inserted between them; another line inserted there.
-    a.write(
-        "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 10;")]),
-    )
-    .unwrap();
+    a.write("src/inventory.rs", &reserving(10)).unwrap();
     b.write("src/inventory.rs", &inventory(&[(8, "    reserved * 2")]))
         .unwrap();
     let inserted = |line: &str| {
@@ -106,13 +95,7 @@ fn edits_next_to_each_other_or_at_one_place_overlap_at_hunk_level_and_conflict()
         ("carol-server", 8..9),
         ("dave-laptop", 8..9),
     ];
-    let mut space = Space::new(&[
-        (&a, &a_client),
-        (&b, &b_client),
-        (&c, &c_client),
-        (&d, &d_client),
-    ]);
-    space.publish();
+    let mut space = clones.published();
 
     for (machine, own) in &machines {
         let others: Vec<(&str, Lines)> = machines
@@ -135,26 +118,18 @@ fn edits_next_to_each_other_or_at_one_place_overlap_at_hunk_level_and_conflict()
 
 #[test]
 fn edits_to_different_hunks_of_one_file_do_not_overlap_at_hunk_level() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (c, c_client) = repo.machine("carol-server");
+    let names = ["alice-laptop", "bob-desktop", "carol-server"];
+    let clones = Clones::new(Repo::create, names);
+    let [a, b, c] = &clones.machines;
     // Lines 7 and 9 of one function, one unchanged line apart, and line 2 of another, far from
     // both.
-    a.write(
-        "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 10;")]),
-    )
-    .unwrap();
+    a.write("src/inventory.rs", &reserving(10)).unwrap();
     a.commit("reserve ten").unwrap();
     b.write("src/inventory.rs", &inventory(&[(9, "} // reserve")]))
         .unwrap();
     c.write("src/inventory.rs", &inventory(&[(2, "    let items = 3;")]))
         .unwrap();
-    let names = ["alice-laptop", "bob-desktop", "carol-server"];
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client), (&c, &c_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     let functions = [
         symbols(&[("bob-desktop", "src/inventory.rs", &[RESERVE])]),
@@ -185,11 +160,9 @@ fn edits_to_different_hunks_of_one_file_do_not_overlap_at_hunk_level() {
 
 #[test]
 fn bases_that_differ_by_lines_added_above_the_hunk_still_match() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let (maintainer, _) = clones.repo.machine("maintainer");
     // Lines added on top upstream; Alice pulls them, Bob does not.
     let top = ["//! Inventory.", "", "use std::fmt;", ""];
     maintainer
@@ -203,13 +176,8 @@ fn bases_that_differ_by_lines_added_above_the_hunk_still_match() {
         &inventory_with(&top, &[(7, "    let reserved = 10;")]),
     )
     .unwrap();
-    b.write(
-        "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 20;")]),
-    )
-    .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    b.write("src/inventory.rs", &reserving(20)).unwrap();
+    let mut space = clones.published();
 
     assert_eq!(
         space.seen("alice-laptop").hunks,
@@ -224,26 +192,22 @@ fn bases_that_differ_by_lines_added_above_the_hunk_still_match() {
 
 #[test]
 fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_and_config() {
-    let tmp = TempDir::new().unwrap();
     // `-diff` makes `git diff` show a file as binary, without hunks; `diff=upper` converts text
     // files with the command of the config `diff.upper.textconv` first.
     let steps = "build\nbuild\ntest\ntest\ndeploy\ntest\n";
     let braces = "}\n}\n}\n    y();\nfn f() {\n    y();\nfn f() {\n";
     let ids = "pub fn id() {}\n\n\n\npub fn di() {}\n";
     let nest = "b\n\n{\n{\n}\na\n}\nb\n}\nb\n";
-    let repo = Repo::create_with(
-        &tmp,
-        &[
-            (".gitattributes", "* -diff\n*.txt diff=upper\n"),
-            ("steps.txt", steps),
-            ("src/braces.rs", braces),
-            ("src/[id].rs", ids),
-            ("src/i.rs", "pub fn i() {}\n"),
-            ("src/nest.rs", nest),
-        ],
-    );
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let files = [
+        (".gitattributes", "* -diff\n*.txt diff=upper\n"),
+        ("steps.txt", steps),
+        ("src/braces.rs", braces),
+        ("src/[id].rs", ids),
+        ("src/i.rs", "pub fn i() {}\n"),
+        ("src/nest.rs", nest),
+    ];
+    let clones = Clones::new(|tmp| Repo::create_with(tmp, &files), ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     // A text conversion, an external diff that fails, no lines of context, and colors.
     a.git(&["config", "diff.upper.textconv", "tr a-z A-Z"])
         .unwrap();
@@ -293,8 +257,7 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
         &inventory(&[(6, "pub fn reserve() -> u16 {")]),
     )
     .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     let files = BTreeSet::from([
         "src/braces.rs",
@@ -326,13 +289,12 @@ fn hunks_follow_the_diff_of_git_merge_tree_whatever_the_repository_attributes_an
 
 #[test]
 fn submodule_moves_overlap_at_hunk_level_whatever_the_repository_config() {
-    let tmp = TempDir::new().unwrap();
     // `ignore = all` hides the submodule's changes from `git diff`.
     let modules = "[submodule \"lib\"]\n\tpath = vendor/lib\n\turl = ./lib\n\tignore = all\n";
-    let repo = Repo::create_with(&tmp, &[(".gitmodules", modules)]);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let gitmodules = [(".gitmodules", modules)];
+    let clones = Clones::new(|tmp| Repo::create_with(tmp, &gitmodules), ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let (maintainer, _) = clones.repo.machine("maintainer");
     // Points the submodule at `commit`; it is not checked out, so its directory stays empty.
     let point = |machine: &Machine, commit: char| {
         std::fs::create_dir_all(machine.dir().join("vendor/lib")).unwrap();
@@ -351,11 +313,10 @@ fn submodule_moves_overlap_at_hunk_level_whatever_the_repository_config() {
     a.git(&["config", "diff.submodule", "log"]).unwrap();
     b.git(&["config", "diff.ignoreSubmodules", "all"]).unwrap();
     // Both move it, committed on one machine and staged on the other.
-    point(&a, '2');
+    point(a, '2');
     a.commit("update the library").unwrap();
-    point(&b, '3');
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    point(b, '3');
+    let space = clones.published();
 
     for (machine, other) in PAIRS {
         assert_eq!(
@@ -382,11 +343,9 @@ fn submodule_moves_overlap_at_hunk_level_whatever_the_repository_config() {
 
 #[test]
 fn hunk_fingerprints_match_without_a_conflict_on_common_lines_and_identical_edits() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (c, c_client) = repo.machine("carol-server");
+    let names = ["alice-laptop", "bob-desktop", "carol-server"];
+    let clones = Clones::new(Repo::create, names);
+    let [a, b, c] = &clones.machines;
     // A comment after the first function and one after the second: both go between `}` and an
     // empty line.
     let added = |line: usize, comment: &str| inventory(&[(line, &format!("}}\n{comment}"))]);
@@ -397,8 +356,7 @@ fn hunk_fingerprints_match_without_a_conflict_on_common_lines_and_identical_edit
     // The same edit as Alice's.
     c.write("src/inventory.rs", &added(4, "// counted"))
         .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client), (&c, &c_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     assert_eq!(
         space.seen("alice-laptop").hunks,
@@ -413,18 +371,15 @@ fn hunk_fingerprints_match_without_a_conflict_on_common_lines_and_identical_edit
 
 #[test]
 fn rename_matches_an_edit_of_its_old_path_at_hunk_level_and_merges_cleanly() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     // The rename deletes the old path, which touches each of its boundaries; `git merge-tree`
     // carries the edit into the renamed file.
     a.rename("docs/guide.md", "docs/handbook.md").unwrap();
     a.commit("rename the guide").unwrap();
     b.write("docs/guide.md", "# Guide\n\nRead the docs.\n")
         .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     let file = &["docs/guide.md"][..];
     assert_eq!(
@@ -449,18 +404,11 @@ fn rename_matches_an_edit_of_its_old_path_at_hunk_level_and_merges_cleanly() {
 
 #[test]
 fn conflicts_with_upstream_commits_only_one_machine_has_do_not_match_at_hunk_level() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let (maintainer, _) = clones.repo.machine("maintainer");
     // Line 7 changed upstream; Alice pulls it and edits line 2, Bob does not and edits line 7.
-    maintainer
-        .write(
-            "src/inventory.rs",
-            &inventory(&[(7, "    let reserved = 5;")]),
-        )
-        .unwrap();
+    maintainer.write("src/inventory.rs", &reserving(5)).unwrap();
     maintainer.commit("reserve five").unwrap();
     maintainer.push("main").unwrap();
     a.pull().unwrap();
@@ -469,13 +417,8 @@ fn conflicts_with_upstream_commits_only_one_machine_has_do_not_match_at_hunk_lev
         &inventory(&[(2, "    let items = 3;"), (7, "    let reserved = 5;")]),
     )
     .unwrap();
-    b.write(
-        "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 20;")]),
-    )
-    .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    b.write("src/inventory.rs", &reserving(20)).unwrap();
+    let mut space = clones.published();
 
     assert_eq!(
         space.seen("bob-desktop"),
@@ -492,27 +435,18 @@ fn conflicts_with_upstream_commits_only_one_machine_has_do_not_match_at_hunk_lev
 
 #[test]
 fn server_receives_no_line_of_the_test_repository() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let a_text = inventory(&[(7, "    let reserved = 10;")]);
-    let b_text = inventory(&[(7, "    let reserved = 20;"), (12, "    let released = 3;")]);
-    a.write("src/inventory.rs", &a_text).unwrap();
-    a.commit("reserve ten").unwrap();
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let edits = exchanged(a, b);
     a.delete("src/warehouse.rs").unwrap();
-    b.write("src/inventory.rs", &b_text).unwrap();
-    b.write("notes/todo-list.md", "- ship the reservations\n")
-        .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let space = clones.published();
     assert!(!space.seen("alice-laptop").hunks.is_empty());
 
     // Every line of the repository and of the edits long enough not to occur in random bytes by
     // chance.
     let files = files();
     let texts = files.iter().map(|(_, text)| text.as_str());
-    let needles = long_lines(texts.chain([a_text.as_str(), &b_text, "- ship the reservations\n"]));
+    let needles = long_lines(texts.chain(edits.iter().map(String::as_str)));
     assert!(needles.contains("let reserved = 20;") && needles.contains("pub struct Warehouse;"));
     assert_holds_none(&space.received_bytes(), needles, "what the server received");
 }

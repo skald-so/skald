@@ -1,0 +1,5 @@
+{
+  "name": "skald-mod",
+  "version": "0.0.0",
+  "description": "Skald delivery prototype: starts a turn with the waiting messages of a source and shows how many wait."
+}

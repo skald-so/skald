@@ -7,6 +7,7 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
 - Run: `cargo test --manifest-path prototypes/edits/Cargo.toml`; it needs `git` ([CONTRIBUTING.md](../../CONTRIBUTING.md), "Requirements"). `script/test` runs it.
+- Commands: each runs with `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin <command>`, in a temporary directory, deleted at the end, also on an error. It prints its findings in Markdown after the machine and the git version; progress, where a command shows any, goes to the standard error; `spellings` shows none. A rerun gives the same tables, times aside. `script/test` runs none of them; their tests run the same code on fixture repositories ([Scenarios](#scenarios)).
 
 ## Scenarios
 | Scenario | Checks |
@@ -104,10 +105,10 @@ Preliminary answers to the open questions of edit comparison; each links to the 
 - **Data source: diff, hooks or declarations.** The diff: the [edit set](#file-fingerprints), scanned after each tool call. It is the only source that misses no changed file ([Edits via Bash and generators](#edits-via-bash-and-generators), "Findings"). A hook only starts a scan; declarations only add an early notice.
   - Open: time a scan of the edit set on the largest measured sides; have agents declare their files before the sessions' steps and compare the declarations with the files they change.
 - **When to warn.** On a match of hunk fingerprints, which the [exact check](#exact-check) confirms or clears. A match of path or symbol fingerprints alone is a notice ([Findings](#findings), "When to warn").
-  - Open: replay each side's commits in order to see how early a warning comes; fingerprint a rename's new path for its old one and rerun the measurement for conflicts in renamed files ([Findings](#findings), "Open").
+  - Open: replay each side's commits in order to see how early a warning comes ([Findings](#findings), "Open"); conflicts in renamed paths: [File level](#file-level), "Open".
 - **Reservation TTL.** No fixed TTL. A reservation lasts while its machine keeps publishing, as a lease, and ends once its edit set no longer holds the files. The [side lifetimes](#results) are too long and too spread for one TTL.
   - Open: how long a lease outlives the last publication; measure the gaps between the commits of each measured side to answer it.
-- **How to catch edits made via Bash and generators.** With the diff, scanned after each tool call, the shell tool's included ([Edits via Bash and generators](#edits-via-bash-and-generators), "Findings").
+- **How to catch edits made via Bash and generators.** With the diff of the data source above: its scans follow the shell tool's calls too ([Edits via Bash and generators](#edits-via-bash-and-generators), "Findings").
   - Open: add a file watcher and a build script to the sessions and scan on a timer at several intervals, to choose the interval ([Edits via Bash and generators](#edits-via-bash-and-generators), "Open").
 - **Path normalization.** The [normal form](#path-normalization), with case folded. `paths::relative` maps the paths an agent's tools give to the path relative to the repository root with `/` separators; the fingerprints take that path in the normal form.
   - Open: the items of [Path normalization](#path-normalization), "Open"; a part of the `spellings` check for each, run on macOS and Windows, would answer it.
@@ -149,7 +150,7 @@ Preliminary answers to the open questions of edit comparison; each links to the 
   - Forks and mirrors share it, so their machines overlap.
   - Repositories with byte-identical root commits share it: the same tree, message, author and time.
   - A shallow clone takes its shallow boundary for the root, so it gets another scope than a full clone. Open: a scope for shallow clones.
-- **Publication:** each machine sends the fingerprints of its whole edit set, its [hunks](#hunk-fingerprints) and its [symbols](#symbol-fingerprints), which replace its earlier ones. The server sees the machine, how many fingerprints it sends and when that changes, and which machines share fingerprints: [What the server learns](#what-the-server-learns).
+- **Publication:** each machine sends the fingerprints of its whole edit set, its [hunks](#hunk-fingerprints) and its [symbols](#symbol-fingerprints) in one set, which replaces its earlier one. The server compares them alike and cannot tell their levels apart. It sees the machine, how many fingerprints it sends and when that changes, and which machines share fingerprints: [What the server learns](#what-the-server-learns).
 
 ## Exact check
 - **Exchange:** on an overlap, a machine asks the other for its changes over an end-to-end encrypted message; the request carries the asker's merge base with the upstream's default branch.
@@ -167,7 +168,7 @@ Preliminary answers to the open questions of edit comparison; each links to the 
   - Markers are as long as the file's `conflict-marker-size` attribute sets, 7 by default. Each conflict's size is the run of `<` that starts it in the merged file: `git check-attr` falls back to the index's `.gitattributes` when the working tree has none, `git merge-tree` does not. The `git diff` options fix what attributes, which reach a diff of two blobs through patterns such as `*`, and config could change: `--text`, `--no-textconv`, `--no-ext-diff`, `--inter-hunk-context=0`, `--no-color`, `--diff-algorithm=myers`, `--no-indent-heuristic`. On repeated lines the algorithm and the indent heuristic decide which copy a hunk takes; Myers without the indent heuristic maps the scenarios' conflicts to the lines `git merge-tree` merged, histogram or the indent heuristic does not.
   - Types: content conflicts, a file both sides add included, are `CONFLICT (contents)`; also `modify/delete`, `rename/rename` and `rename/delete`. Conflicts without markers have no lines.
   - Submodules: a `CONFLICT (submodule)` fails the check, which reads each conflicted path as a file with `git cat-file blob`. Open.
-  - A rename and an edit of its old path merge cleanly: the file-level overlap is a false alarm the check clears.
+  - A rename and an edit of its old path merge cleanly: `git merge-tree` carries the edit into the renamed file. The overlap is a false alarm the check clears.
 - **Different bases:** the snapshots merge from the latest commit both have.
   - Upstream commits only one machine has pulled count as its changes. Lines they add shift the conflicts; each machine gets them in its own lines.
   - A machine's commits merged upstream with a merge commit are in the other's history once it pulls, so they conflict with nothing. After a squash or rebase merge they are not: an edit of the same lines on the other machine conflicts until the first drops its commits.
@@ -187,13 +188,13 @@ Preliminary answers to the open questions of edit comparison; each links to the 
   - An insertion touches the boundary it goes into; a change of `n` lines touches the `n + 1` boundaries around and between them.
   - Two hunks share a boundary when they change the same or adjacent lines, or insert at one place: where `git merge-tree` conflicts. Changes with one unchanged line between them merge cleanly and share none.
   - An added file touches the one boundary of an empty file, so two machines adding one path match; a deleted file touches all of its boundaries.
-- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit hunk"`, the scope, the path in its [normal form](#path-normalization), and the lines on either side of the boundary with their line endings, LF in place of CRLF, each after its length as a big-endian `u64`; empty at the start or the end of the file. No line numbers: lines added elsewhere in the file keep the fingerprint.
-- **Publication:** in one set with the path fingerprints. The server compares them alike and cannot tell them apart; a hunk match comes with a path match, since the path is in the HMAC. Each changed line of the merge base adds a fingerprint, so the server learns the size of the edits.
+- **Fingerprint:** as a [path fingerprint](#file-fingerprints), over `"skald edit hunk"`, the scope, the path, and the lines on either side of the boundary with their line endings, LF in place of CRLF; empty at the start or the end of the file. No line numbers: lines added elsewhere in the file keep the fingerprint.
+- **Publication:** in the one set of a machine's [fingerprints](#file-fingerprints). A hunk match comes with a path match, since the path is in the HMAC. Each changed line of the merge base adds a fingerprint, so the server learns the size of the edits.
 - **Mapping back:** a machine maps shared hunk fingerprints to its own changed lines. On the same-lines scenarios these are the lines the exact check finds conflicting.
 - **False matches:**
   - Common lines: the lines on either side of a boundary recur in the file, such as `}` before an empty line between functions; insertions after two functions match.
   - Identical edits on both machines: `git merge-tree` merges them cleanly.
-  - Renames: a rename deletes its old path, which touches each of its boundaries, so it matches any edit of the old path. `git merge-tree` carries the edit into the renamed file and merges cleanly.
+  - Renames: a rename deletes its old path, which touches each of its boundaries, so it matches any edit of the old path, which [merges cleanly](#exact-check).
 - **Misses:** a conflict with upstream commits only one machine has pulled, on the conflicting lines or next to them. Each machine fingerprints its own changes since its own base; the file still matches. The conflict is with upstream, and the other machine meets it when it pulls.
 - **Cost:** each publication takes a snapshot, whose changed files stay as loose objects until `git gc`, and one `git diff` per path. Cost on real repositories: [Measurement](#measurement).
 
@@ -210,8 +211,8 @@ Preliminary answers to the open questions of edit comparison; each links to the 
 
   - Each language needs its grammar, compiled from C at build time, and the list of node kinds that are symbols with the field that names each.
   - Other files, `.tsx` and `.go` among them, get path and hunk fingerprints only.
-- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit symbol"`, the scope, the path in its [normal form](#path-normalization), and the node kind and the name of each symbol from the outermost, LF in place of each CRLF of a name that spans lines, each after its length as a big-endian `u64`. No line numbers or content: a symbol moved within its file keeps its fingerprint.
-- **Publication:** in one set with the path and hunk fingerprints. The server cannot tell them apart: each changed symbol adds to the total it sees.
+- **Fingerprint:** as a [path fingerprint](#file-fingerprints), over `"skald edit symbol"`, the scope, the path, and the node kind and the name of each symbol from the outermost, LF in place of each CRLF of a name that spans lines. No line numbers or content: a symbol moved within its file keeps its fingerprint.
+- **Publication:** in the one set of a machine's [fingerprints](#file-fingerprints): each changed symbol adds to the total the server sees.
 - **Matches without a conflict:**
   - Edits to distant lines of one function, which `git merge-tree` merges cleanly: what this level is for.
   - Symbols of one name and kind in one file under the same enclosing symbols, such as a TypeScript getter and setter, share a fingerprint.
@@ -226,20 +227,20 @@ Preliminary answers to the open questions of edit comparison; each links to the 
 ## Path normalization
 One file gets one fingerprint on every machine, whatever its system's spelling of its path.
 
-- **Form:** the path relative to the repository root with `/` separators, as git gives it, each character lowercased with Rust's `char::to_lowercase`, in Unicode NFC. Hunks take the lines on either side of a boundary, and symbols their names, with LF in place of each CRLF: [`fingerprint.rs`](../../prototypes/edits/overlap/src/fingerprint.rs), [`paths.rs`](../../prototypes/edits/overlap/src/paths.rs).
+- **Form:** the path relative to the repository root with `/` separators, as git gives it, each character lowercased with Rust's `char::to_lowercase`, in Unicode NFC; line endings as the [hunk](#hunk-fingerprints) and [symbol fingerprints](#symbol-fingerprints) take them: [`fingerprint.rs`](../../prototypes/edits/overlap/src/fingerprint.rs), [`paths.rs`](../../prototypes/edits/overlap/src/paths.rs).
   - Git gives a tracked file's path as the index holds it, the same on every clone. Spellings differ for new files, whose names git reads from the file system, and for the paths an agent's tools give.
   - Line endings matter where two machines' bases store a file's lines with different endings, such as before and after a commit that renormalizes it: the boundaries' lines come from each machine's base.
 - **Case:** folded. A case-insensitive file system, the default on macOS and Windows, holds one file where a case-sensitive one can hold two; with case kept, one file that two machines add in two cases would get two fingerprints, where macOS and Windows hold one file. Folded, two files of one repository that differ only in case share a fingerprint: a false match where a case-sensitive file system holds both. No path of the measured repositories shares a fingerprint with another: none in the tree at each one's commit or among the paths the replayed sides change ([Results](#results), the last table).
 - **Paths an agent's tools give:** `paths::relative` maps a path to the path of its file relative to the root of the repository's worktree that holds it, with `/` separators.
   - A relative path is taken from the machine's worktree. `Path::components` splits it at its separators: `/`, and on Windows also `\`. Each component that exists is resolved with `std::fs::canonicalize`: symbolic links, drive letters on Windows, and the case the directory holds on macOS and Windows. Components from the first that does not resolve on, such as a deleted file's name, stay as given. `..` drops the last component, resolved or not.
   - The worktree is the one `git rev-parse --show-toplevel` gives for the deepest directory that exists; it must share the machine's `git rev-parse --git-common-dir`, so another worktree of the repository maps, another repository does not.
-- **Check:** `cargo run --manifest-path prototypes/edits/Cargo.toml --bin spellings`; it needs `git`. It creates its repositories in a temporary directory, deleted at the end, and prints, in Markdown, the machine, the git version, the file system of the temporary directory and the settings `git init` writes, then:
+- **Check:** the [command](#edit-comparison-prototype) `spellings`; it needs `git`. It creates its repositories in its temporary directory and prints the file system of that directory and the settings `git init` writes, then:
   - a case-only rename of `README.md` to `Readme.md`, with `git mv` and outside git, under each `core.ignorecase` setting: the edit set and its path fingerprints;
   - `café.md` written in NFC, in NFD, and checked out from a commit that holds it in NFD, under each `core.precomposeunicode` setting: the forms of the names in the edit set and in the index, and the path fingerprints;
   - the spellings of the paths of a clone's files that an agent's tools give: what each maps to and whether it gets the file's fingerprint;
   - a one-line edit written with LF on a clone without `core.autocrlf`, and written with CRLF over the whole file and committed on a clone with each setting: the line endings of the checkout and of the stored file, and the fingerprints of both edits and those they share.
-  - Git runs as in the [harness](#edit-comparison-prototype): without the global and system config, so `core.autocrlf` is unset unless the check sets it.
-  - The tests of [`spellings.rs`](../../prototypes/edits/overlap/tests/spellings.rs) run each part on the file system they run on and check what it gives there; `script/test` runs them, not the command.
+  - Git runs as in the [harness](#edit-comparison-prototype), so `core.autocrlf` is unset unless the check sets it.
+  - The tests of [`spellings.rs`](../../prototypes/edits/overlap/tests/spellings.rs) run each part on the file system they run on and check what it gives there.
 - **macOS:** the check on this Mac's own volume, APFS, case-insensitive:
 
 Machine: macos aarch64, Apple M3 Max, 14 CPUs
@@ -366,7 +367,7 @@ Line endings of one edit
 ## Measurement
 How often the warnings of each level match the conflicts of real merges.
 
-- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin measure`; it needs `git` and HTTPS access to GitHub, no account. It fetches each repository at its commit into a temporary directory, deleted at the end, also on an error; replays its merges on every CPU; then times its largest sides one after another. It prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables, times aside. `script/test` does not run it; it runs the replay on a fixture repository ([Scenarios](#scenarios)).
+- **Command:** [`measure`](#edit-comparison-prototype); it needs `git` and HTTPS access to GitHub, no account. It fetches each repository at its commit, replays its merges on every CPU, then times its largest sides one after another, and prints the tables below.
 - **Repositories:** public ones that keep merge commits, one per language with symbol fingerprints:
   - `diesel`, Rust: `Cargo.lock` files, the SQL migrations of its examples and tests, and schema code that Diesel CLI generates, checked in as its examples' `schema.rs` and as test snapshots.
   - `drizzle-orm`, TypeScript: `pnpm-lock.yaml`, and the SQL migrations and snapshots drizzle-kit generates, checked in for its tests.
@@ -580,7 +581,7 @@ Paths that share a fingerprint once case is folded and Unicode normalized
 ## Edits via Bash and generators
 Which source of a machine's edits catches the files an agent changes with shell commands and generators, and when.
 
-- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin sessions`; it needs `git`, a C compiler, the pinned Rust toolchain with `rustfmt`, Node.js with npm, and Python 3, and HTTPS access to GitHub, crates.io, the npm registry, PyPI and dprint's plugins, no account. In a temporary directory, deleted at the end, also on an error, it sets up the tools, fetches each [measured repository](#measurement) at its commit, plays its session and prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables. `script/test` does not run it; it plays a session on a fixture repository ([Scenarios](#scenarios)).
+- **Command:** [`sessions`](#edit-comparison-prototype); it needs `git`, a C compiler, the pinned Rust toolchain with `rustfmt`, Node.js with npm, and Python 3, and HTTPS access to GitHub, crates.io, the npm registry, PyPI and dprint's plugins, no account. It sets up the tools, fetches each [measured repository](#measurement) at its commit, plays its session and prints the tables below.
 - **Sessions:** one per measured repository, scripted in [`sessions.rs`](../../prototypes/edits/overlap/src/bin/sessions.rs); no agent CLI runs. The table of steps gives each one. A step is one of:
   - an edit tool call, which hooks see: an edit, which replaces text its file holds once, or a write of a whole file;
   - a shell command line, run by `/bin/sh -c` in a directory of the worktree, as an agent's shell tool runs it: in-place edits with `sed -i`, moves with `mv`, deletions with `rm`, the formatter, the lockfile rewrite and the code generator;
@@ -733,7 +734,6 @@ When each source learns of a changed file, from its first change, in files
   - Declarations: they miss 3 of 11, 9 of 16 and 5 of 12: the files no word of a command line names. The lockfiles the package managers rewrite, `Cargo.lock`, `pnpm-lock.yaml` and `yarn.lock`, and netbox's `package.json`, which `yarn remove` rewrites too; the files the code generators write, but diesel's `up.sql` and `down.sql`, which later edit tool calls name; the 5 `dialect.ts` files of a glob on drizzle-orm; `account/views.py`, from `grep | xargs`, on netbox. They learn of 6, 7 and 7 files before the edit, and of diesel's `up.sql` and `down.sql` at a later tool call. They also report each session's restored file, and on diesel `lib.rs`: `rustfmt`, named with `lib.rs`, changed only `models.rs`, a module `lib.rs` declares.
   - Formatters: each changed only files that earlier steps of its session had changed, though `dprint fmt` and `ruff check --fix` were given the whole repository and `netbox/`.
   - Diesel CLI's `migration generate` leaves `migrations/.diesel_lock`, an untracked file that is not ignored, in the edit set to the end of the session.
-  - Answer on these sessions: only the diff learns of every changed file; scanned after each step, at the edit. Hooks learn only of the files edit tool calls name; declarations, of the files each step names, most of them before the edit.
 - **Open:**
   - Steps stand for tool calls; time is not measured: what a scan after each tool call costs on a large worktree, and how often a timer scans.
   - A hook on the shell tool could take the files its command line names, as the declarations here do, at the edit.
@@ -744,14 +744,14 @@ When each source learns of a changed file, from its first change, in files
 ## What the server learns
 What the fingerprints of the [measured merges](#measurement) show the server without the space key, and a holder of the key with them.
 
-- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin exposure`; it needs `git` and HTTPS access to GitHub, no account. It fetches each measured repository at its commit into a temporary directory, deleted at the end, also on an error, replays its merges as the measurement does, on every CPU, and prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables. `script/test` does not run it; its tests compute the tables on fixture repositories ([Scenarios](#scenarios)). Code: [`exposure.rs`](../../prototypes/edits/overlap/src/exposure.rs), [`dictionary.rs`](../../prototypes/edits/overlap/src/dictionary.rs).
+- **Command:** [`exposure`](#edit-comparison-prototype); it needs `git` and HTTPS access to GitHub, no account. It fetches each measured repository at its commit, replays its merges as the measurement does and prints the tables below. Code: [`exposure.rs`](../../prototypes/edits/overlap/src/exposure.rs), [`dictionary.rs`](../../prototypes/edits/overlap/src/dictionary.rs).
 - **Machines:** each side of a replayed merge that has fingerprints; the sides of several merges with one parent and one merge base are one machine, until the latest of the merges. A machine publishes its side's fingerprints at least once at each of its commits after the merge base along its first-parent history, at the commit's author date, and stops at the merge. Its size is that of its last publication.
-- **The server, without the key:** it sees each publication's machine, time and fingerprints, and cannot tell their levels apart.
+- **The server, without the key:** it sees each publication's machine, time and fingerprints ([File fingerprints](#file-fingerprints), "Publication").
   - Shared: the fingerprints both machines of a merge publish.
   - Groups: machines that a chain of machines, each sharing a fingerprint with the next, links.
   - Recurrence: how many machines publish each fingerprint, and whether another measured repository publishes it too.
   - Hours: the commits of all machines, each once, by hour of the day in UTC, and the 8 consecutive hours with the most.
-- **A holder of the key:** it also needs the scope, the least root commit, which every clone and every reader of a public repository has. It computes the fingerprints of candidates and looks them up among the repository's distinct fingerprints at the path and symbol levels; it tries no hunks.
+- **A holder of the key:** it also needs the [scope](#file-fingerprints), which every reader of a public repository has too. It computes the fingerprints of candidates and looks them up among the repository's distinct fingerprints at the path and symbol levels; it tries no hunks.
   - The fixed dictionary: [`dictionary/paths.txt`](../../prototypes/edits/overlap/dictionary/paths.txt), 158 common paths, such as `README.md`, `Cargo.toml` and `.github/workflows/ci.yml`, and [`dictionary/names.txt`](../../prototypes/edits/overlap/dictionary/names.txt), 118 common names of functions, methods, types and modules, such as `main`, `new`, `__init__` and `Config`; none of them taken from the measured repositories. On each path it recovers in a language with symbols, it tries each name with each kind of symbol of the language, alone and inside a type, trait, interface, module or `impl` block of each name.
   - A clone at the oldest merge replayed, as a removed member or a revoked device may keep: each path of its tree, and each symbol of its files.
 - **A change of the key,** at each merge's time in turn: the machines that publish before and after it publish their fingerprints again under the new key; the merges whose two machines share fingerprints and both publish again overlap under neither key until both have.
@@ -760,6 +760,7 @@ What the fingerprints of the [measured merges](#measurement) show the server wit
 
 Machine: macos aarch64, Apple M3 Max, 14 CPUs
 Git: git version 2.50.1 (Apple Git-155)
+
 
 What the server sees of each machine
 
@@ -866,7 +867,7 @@ A change of the space key at the time of each merge replayed
 - **A clone** at the oldest merge, 6, 29 and 20 months older than the newest, recovers 63.1%, 35.7% and 63.2% of the paths and 38.6%, 24.1% and 31.9% of the symbols: those it already holds under the same path and name.
 - **When the key must change:** whenever a member is removed or a device revoked, as the history key rotates ([architecture.md, "Cryptography"](architecture.md#cryptography)).
   - Every device of the space holds the key. A removed member or a revoked device keeps it, and the scope of each repository it had a clone of, so it recovers the paths and symbols of its old clones and those it can guess.
-  - It needs the fingerprints: from the server, compromised or colluding, or as overlaps. The server stand-in tells any machine that publishes which machines share its fingerprints, so a device that still publishes learns which machines edit each path it fingerprints. The server must stop taking a revoked device's publications.
+  - It needs the fingerprints: from the server, compromised or colluding, or as overlaps. As the [server stand-in](#edit-comparison-prototype) answers any machine that publishes, a device that still publishes learns which machines edit each path it fingerprints. The server must stop taking a revoked device's publications.
   - Each change also stops the recurrence of a file's fingerprints across it, so a scheduled change limits how long the server links the machines that edit one file.
 - **What a change costs,** at the time of each measured merge:
   - Every machine publishes all its fingerprints again under the new key: a median of 24, 24 and 8 machines, at most 51, 49 and 20; a median of 2149408, 2465440 and 4217664 bytes, at most 4832832, 9197056 and 14271232.

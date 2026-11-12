@@ -109,15 +109,10 @@ fn repository(tmp: &TempDir) -> Repository {
     }
 }
 
-/// [`FIXTURE`] played on a clone of the test repository, with the system's shell commands.
+/// [`FIXTURE`] played on a clone of the test repository, as [`play`] plays it.
 fn played(tmp: &TempDir) -> Played {
-    let dir = tmp.path().join("clone");
-    sessions::checkout(&dir, &repository(tmp)).unwrap();
-    let scratch = tmp.path().join("scratch");
-    fs::create_dir(&scratch).unwrap();
-    fs::write(scratch.join("generate"), GENERATE).unwrap();
-    let env = Environment::system().unwrap();
-    sessions::play(&dir, &scratch, &FIXTURE, &env, |_| ()).unwrap()
+    fs::write(tmp.path().join("generate"), GENERATE).unwrap();
+    play(tmp, &FIXTURE).unwrap()
 }
 
 fn set(paths: &[&str]) -> BTreeSet<String> {
@@ -415,8 +410,6 @@ fn report_gives_the_tables_of_the_sessions() {
 #[test]
 fn a_pipe_in_a_command_is_escaped_in_the_table() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join("clone");
-    sessions::checkout(&dir, &repository(&tmp)).unwrap();
     let session = Session {
         repository: "fixture",
         setup: &[],
@@ -426,8 +419,7 @@ fn a_pipe_in_a_command_is_escaped_in_the_table() {
             line: "ls src | sed -e 's/x/y/'",
         }],
     };
-    let env = Environment::system().unwrap();
-    let played = sessions::play(&dir, tmp.path(), &session, &env, |_| ()).unwrap();
+    let played = play(&tmp, &session).unwrap();
     let report = sessions::report(&[], &[played]);
     assert!(
         report.contains("| `ls src \\| sed -e 's/x/y/'` | none | none |"),
@@ -435,7 +427,8 @@ fn a_pipe_in_a_command_is_escaped_in_the_table() {
     );
 }
 
-/// Plays `session` on a clone of the test repository with the system's shell commands.
+/// Plays `session` on a clone of the test repository in `tmp`, which it takes for the scratch
+/// directory, with the system's shell commands.
 fn play(tmp: &TempDir, session: &Session) -> edit_overlap::Result<Played> {
     let dir = tmp.path().join("clone");
     sessions::checkout(&dir, &repository(tmp)).unwrap();

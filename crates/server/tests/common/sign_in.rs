@@ -48,6 +48,19 @@ pub struct Account {
     pub github_login: String,
 }
 
+impl Account {
+    /// The account in `body`, a `GET /session` answer.
+    pub fn of(body: &Value) -> Self {
+        let id = body["account"].as_str().expect("an account ID").to_owned();
+        assert!(is_uuid_v7(&id), "account ID {id:?} is not a UUIDv7");
+        let github_login = body["github_login"].as_str().expect("a GitHub login");
+        Account {
+            id,
+            github_login: github_login.to_owned(),
+        }
+    }
+}
+
 impl SignIn {
     /// A server whose public address is plain HTTP under `skald.test`: a browser's address.
     pub fn start() -> Self {
@@ -177,13 +190,7 @@ impl SignIn {
     pub fn account(&self, page: &Page) -> Account {
         let (status, body) = self.session(page);
         assert_eq!(status, 200, "GET {SESSION}: {body}");
-        let id = body["account"].as_str().expect("an account ID").to_owned();
-        assert!(is_uuid_v7(&id), "account ID {id:?} is not a UUIDv7");
-        let github_login = body["github_login"].as_str().expect("a GitHub login");
-        Account {
-            id,
-            github_login: github_login.to_owned(),
-        }
+        Account::of(&body)
     }
 
     /// Checks that `page`'s browser has no session on the server.

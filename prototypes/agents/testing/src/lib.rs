@@ -1,14 +1,83 @@
-//! Assertions and recorded exchanges the delivery prototypes' tests share.
+//! Fixtures, assertions and recorded exchanges the delivery prototypes' tests share.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Output;
+use std::process::{Child, ExitStatus, Output};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_source::{Message, Source, State};
+use rmcp::model::CustomNotification;
+use rmcp::service::NotificationContext;
+use rmcp::{ClientHandler, RoleClient};
 use serde_json::Value;
+use tempfile::TempDir;
+use tokio::sync::mpsc;
+
+/// A message `msg_id` from `alice` saying `hi`, never added to a source.
+pub fn message(msg_id: &str) -> Message {
+    Message {
+        msg_id: msg_id.to_owned(),
+        sender: "alice".to_owned(),
+        text: "hi".to_owned(),
+        added_at_ms: 1,
+        handed_over_at_ms: None,
+        ack: None,
+    }
+}
+
+/// A source in a temporary directory.
+pub fn opened() -> (TempDir, Source) {
+    let dir = tempfile::tempdir().unwrap();
+    let source = Source::open(dir.path()).unwrap();
+    (dir, source)
+}
+
+/// Opens the source in `dir` and adds a message from `alice` saying `hi`.
+pub fn one_waiting(dir: &Path) -> (Source, Message) {
+    let source = Source::open(dir).unwrap();
+    let message = source.add("alice", "hi").unwrap();
+    (source, message)
+}
+
+/// Adds `count` messages from `alice`, `message 0` and on, to `source`; returns their `msg_id`s.
+pub fn add_many(source: &Source, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| source.add("alice", &format!("message {i}")).unwrap().msg_id)
+        .collect()
+}
+
+/// Adds a message from `alice` saying `hi` to `source`, in `dir`, that a server took and died with
+/// before handing it over: its claim stays.
+pub fn taken_by_a_dead_server(dir: &Path, source: &Source) -> Message {
+    let crashed = Source::open(dir).unwrap();
+    let message = source.add("alice", "hi").unwrap();
+    assert_eq!(crashed.take().unwrap(), vec![message.clone()]);
+    drop(crashed);
+    message
+}
+
+/// An MCP client that passes on each custom notification it gets, such as a channel's events.
+pub struct Events(pub mpsc::UnboundedSender<CustomNotification>);
+
+impl ClientHandler for Events {
+    async fn on_custom_notification(
+        &self,
+        notification: CustomNotification,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        let _ = self.0.send(notification);
+    }
+}
+
+/// `pairs` as owned strings, such as variables or headers.
+pub fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+        .collect()
+}
 
 /// Writes `script` to `path` as an executable file, such as a stand-in for a CLI.
 pub fn write_executable(path: &Path, script: &str) {
@@ -78,6 +147,48 @@ pub fn wait_handed_over(source: &Source, msg_id: &str) {
             source.state(msg_id).unwrap()
         );
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waits for `child` to exit and returns its status. It has 10 s from the start, and again from
+/// each new step that `step` names, such as a line a stand-in received. Past that, it kills
+/// `child` and returns the last step.
+pub fn wait_exit(child: &mut Child, step: impl Fn() -> String) -> Result<ExitStatus, String> {
+    let mut last = step();
+    let mut deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return Ok(status);
+        }
+        let now = step();
+        if now != last {
+            last = now;
+            deadline = Instant::now() + Duration::from_secs(10);
+        } else if Instant::now() > deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            return Err(last);
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// How far the stand-in of [`Exchange::stand_in`] in `dir` got, as a step of [`wait_exit`]: the
+/// last line it received, then its end, once its `on_line` or `at_end` wrote `dir/ended`.
+pub fn stand_in_step(dir: &Path) -> String {
+    if dir.join("ended").exists() {
+        return "the stand-in ended".to_owned();
+    }
+    let lines = fs::read_dir(dir.join("received"))
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            name.to_string_lossy().parse::<usize>().is_ok()
+        })
+        .count();
+    match lines {
+        0 => "the start".to_owned(),
+        n => format!("the stand-in received line {}", n - 1),
     }
 }
 

@@ -12,7 +12,10 @@ use agent_limits::{Limit, claude_status_line};
 use serde_json::{Value, json};
 
 use crate::channel::Files;
-use crate::{Agent, Checks, Kind, Usage, app_server, pretty, queue, shell_quote, verdict};
+use crate::{
+    Agent, Checks, Kind, Usage, app_server, claude_flags, model_flag, pretty, queue, shell_quote,
+    verdict,
+};
 
 /// The prototype's binary, next to `live-check`.
 pub const LIMITS_BIN: &str = "agent-limits";
@@ -91,11 +94,10 @@ pub fn status_line_log(files: &Files) -> PathBuf {
 }
 
 /// Writes the settings of the status line session in `files` and returns the arguments of an
-/// interactive Claude Code session with one short prompt, with `model` if given. Only the settings
-/// file and the arguments change Claude Code's config: no project or user settings, no MCP server,
-/// skills or tools, the lowest effort, no prompt suggestions, which would cost a model request; the
-/// status line command `agent_limits status-line --log <log>`, with `agent_limits` the prototype;
-/// and a `Stop` hook that tells when the turn ended.
+/// interactive Claude Code session with one short prompt, with `model` if given, which only they
+/// configure ([`claude_flags`]): no MCP server or tools, no prompt suggestions, which would cost a
+/// model request; the status line command `agent_limits status-line --log <log>`, with
+/// `agent_limits` the prototype; and a `Stop` hook that tells when the turn ended.
 pub fn status_line_session(
     files: &Files,
     agent_limits: &Path,
@@ -117,24 +119,13 @@ pub fn status_line_session(
         })),
     )?;
     let mut args = vec![queue::prompt(Kind::Idle)];
-    args.extend(
-        [
-            "--setting-sources",
-            "local",
-            "--strict-mcp-config",
-            "--settings",
-            &settings.to_string_lossy(),
-            "--disable-slash-commands",
-            "--tools",
-            "",
-            "--effort",
-            "low",
-        ]
-        .map(String::from),
-    );
-    if let Some(model) = model {
-        args.extend(["--model".to_owned(), model.to_owned()]);
-    }
+    args.extend(claude_flags(
+        &["--settings", &settings.to_string_lossy()],
+        false,
+        "",
+        false,
+    ));
+    args.extend(model_flag("--model", model));
     Ok(args)
 }
 

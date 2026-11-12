@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 
 use agent_source::Source;
 use agent_testing::{
-    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
+    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, opened, stderr,
     write_executable,
 };
 
@@ -77,18 +77,29 @@ fn agent_queue(bin: &Path, source: &Path, thread: &str) -> Output {
         .unwrap()
 }
 
+/// A source in a temporary directory and a stand-in `codex` for it.
+fn stand_in() -> (tempfile::TempDir, Source, StandIn) {
+    let (dir, source) = opened();
+    let codex = StandIn::new(dir.path());
+    (dir, source, codex)
+}
+
+/// Runs `agent-queue <source> <thread>` with `codex` and asserts that it succeeded; returns its
+/// stdout.
+fn queued(codex: &StandIn, source: &Path, thread: &str) -> String {
+    let output = agent_queue(&codex.bin(), source, thread);
+    assert!(output.status.success(), "{}", stderr(&output));
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 #[test]
 fn queues_each_waiting_message_once_and_marks_it_after_the_command_succeeds() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
-    let codex = StandIn::new(dir.path());
+    let (dir, source, codex) = stand_in();
     let messages = [
         source.add("alice of skald", "first").unwrap(),
         source.add("bob", "second").unwrap(),
     ];
-    let output = agent_queue(&codex.bin(), dir.path(), "thread-1");
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
+    assert_eq!(queued(&codex, dir.path(), "thread-1"), "2\n");
     let calls = codex.calls();
     assert_eq!(calls.len(), 1);
     let (args, handed) = &calls[0];
@@ -100,17 +111,11 @@ fn queues_each_waiting_message_once_and_marks_it_after_the_command_succeeds() {
     assert_handed_over(&source, &messages);
 
     // Handed over: with none waiting, it runs no command.
-    let output = agent_queue(&codex.bin(), dir.path(), "thread-1");
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "0\n");
+    assert_eq!(queued(&codex, dir.path(), "thread-1"), "0\n");
     assert_eq!(codex.calls().len(), 1);
 
     let later = [source.add("carol", "third").unwrap()];
-    assert!(
-        agent_queue(&codex.bin(), dir.path(), "thread-2")
-            .status
-            .success()
-    );
+    queued(&codex, dir.path(), "thread-2");
     let calls = codex.calls();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[1].0[2], "thread-2");
@@ -121,9 +126,7 @@ fn queues_each_waiting_message_once_and_marks_it_after_the_command_succeeds() {
 
 #[test]
 fn a_failed_command_leaves_the_messages_waiting() {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
-    let codex = StandIn::new(dir.path());
+    let (dir, source, codex) = stand_in();
     let messages = [source.add("alice", "hi").unwrap()];
     codex.fail_with(1);
     let output = agent_queue(&codex.bin(), dir.path(), "thread-1");
@@ -146,11 +149,7 @@ fn a_failed_command_leaves_the_messages_waiting() {
 
     // The next run that succeeds hands it over.
     fs::remove_file(codex.dir.path().join("exit")).unwrap();
-    assert!(
-        agent_queue(&codex.bin(), dir.path(), "thread-1")
-            .status
-            .success()
-    );
+    queued(&codex, dir.path(), "thread-1");
     assert_handed_over(&source, &messages);
 }
 

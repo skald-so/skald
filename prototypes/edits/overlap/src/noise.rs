@@ -3,9 +3,9 @@
 //! measurement compares.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write;
 use std::path::Path;
 
+use crate::markdown::table;
 use crate::replay::{Level, Measured, Replay};
 use crate::{Conflict, Result, git};
 
@@ -569,20 +569,6 @@ pub fn report(measured: &[Measured]) -> String {
         },
     );
     out
-}
-
-/// Appends to `out` the Markdown table `title` with `header`, after an empty line, and the rows
-/// `rows` passes to the function it takes, each a list of cells.
-pub(crate) fn table(
-    out: &mut String,
-    title: &str,
-    header: &[String],
-    rows: impl FnOnce(&mut dyn FnMut(Vec<String>)),
-) {
-    let line = |cells: &[String]| format!("| {} |\n", cells.join(" | "));
-    write!(out, "\n{title}\n\n{}", line(header)).expect("a String takes any write");
-    *out += &line(&vec!["---".to_owned(); header.len()]).replace(' ', "");
-    rows(&mut |cells| *out += &line(&cells));
 }
 
 #[cfg(test)]

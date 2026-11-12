@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use common::{Repo, Space, hunks, lines, paths};
+use common::{Clones, Repo, Space, hunks, lines, paths, table};
 use edit_overlap::spellings::{self, Arrival, FileSystem, LineEndings, NFC, NFD, Rename};
 use tempfile::TempDir;
 
@@ -254,14 +254,7 @@ fn the_check_prints_each_part() {
     assert_eq!(lines[3], system_line);
     assert!(lines[4].starts_with("`git init` sets: `core.ignorecase` "));
     // Each table with its header and its rows.
-    let rows = |title: &str| {
-        let start = lines.iter().position(|line| *line == title).unwrap();
-        lines[start + 2..]
-            .iter()
-            .take_while(|line| line.starts_with('|'))
-            .copied()
-            .collect::<Vec<_>>()
-    };
+    let rows = |title: &str| table(&report, title);
     let rename = rows("Case-only rename of `README.md` to `Readme.md`");
     assert_eq!(rename.len(), 2 + 4);
     assert_eq!(
@@ -352,18 +345,16 @@ fn lf_and_crlf_versions_of_one_edit_give_the_same_hunk_and_symbol_fingerprints()
 
 #[test]
 fn machines_with_macos_windows_and_linux_spellings_of_one_file_overlap() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (linux, linux_client) = repo.machine("linux-box");
-    let (mac, mac_client) = repo.machine("mac-laptop");
-    let (windows, windows_client) = repo.machine("windows-desktop");
+    let names = ["linux-box", "mac-laptop", "windows-desktop"];
+    let clones = Clones::new(Repo::create, names);
+    let [linux, mac, windows] = &clones.machines;
     // Each adds one new file as its system spells it: in NFC; in NFD, which git keeps on macOS
     // without `core.precomposeunicode`; in another case, which NTFS takes for one file. Each edits
     // one line of a tracked file, Windows with CRLF line endings and `core.autocrlf`.
     let spellings = [
-        (&linux, "docs/caf\u{e9}.md"),
-        (&mac, "docs/cafe\u{301}.md"),
-        (&windows, "docs/CAF\u{c9}.md"),
+        (linux, "docs/caf\u{e9}.md"),
+        (mac, "docs/cafe\u{301}.md"),
+        (windows, "docs/CAF\u{c9}.md"),
     ];
     mac.git(&["config", "core.precomposeunicode", "false"])
         .unwrap();
@@ -379,12 +370,7 @@ fn machines_with_macos_windows_and_linux_spellings_of_one_file_overlap() {
         machine.write("src/inventory.rs", &edited).unwrap();
     }
 
-    let mut space = Space::new(&[
-        (&linux, &linux_client),
-        (&mac, &mac_client),
-        (&windows, &windows_client),
-    ]);
-    space.publish();
+    let space = clones.published();
     for (machine, path) in spellings {
         let name = &space
             .machines

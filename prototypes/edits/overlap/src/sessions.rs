@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use crate::noise::table;
+use crate::markdown::{list, table};
 use crate::replay::{self, Repository};
 use crate::tools::{self, Environment, Toolset};
 use crate::{Result, git, paths};
@@ -447,14 +447,7 @@ pub fn run(
 /// every run with the same tools.
 pub fn report(versions: &[(String, String)], played: &[Played]) -> String {
     let mut out = String::new();
-    let list = |paths: &mut dyn Iterator<Item = &String>| {
-        let paths: Vec<String> = paths.map(|path| format!("`{path}`")).collect();
-        if paths.is_empty() {
-            "none".to_owned()
-        } else {
-            paths.join(", ")
-        }
-    };
+    let quoted = |paths: &BTreeSet<String>| list(paths.iter().map(|path| format!("`{path}`")));
     let header = ["Tool", "Version"].map(str::to_owned);
     table(&mut out, "Tools", &header, |row| {
         for (tool, version) in versions {
@@ -471,8 +464,8 @@ pub fn report(versions: &[(String, String)], played: &[Played]) -> String {
                     (i + 1).to_string(),
                     ran.step.kind().name().into(),
                     ran.step.shown().replace('|', "\\|"),
-                    list(&mut ran.changes.iter()),
-                    list(&mut ran.named.iter()),
+                    quoted(&ran.changes),
+                    quoted(&ran.named),
                 ]);
             }
         }

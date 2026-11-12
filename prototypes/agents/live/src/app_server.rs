@@ -7,7 +7,10 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::channel::{Files, Sent};
-use crate::{Agent, Checks, Kind, Options, StubLog, Usage, codex_config, handed_over};
+use crate::{
+    Agent, Checks, Kind, Options, StubLog, Usage, codex_config_flags, codex_trusted, handed_over,
+    model_flag,
+};
 use crate::{handover_delay, model_use, queue, seconds};
 
 /// The client's binary, next to `live-check`.
@@ -27,11 +30,8 @@ pub fn options(model: Option<&str>, stub: Option<&str>) -> Vec<String> {
     if let Some(model) = model {
         config.push(format!("model={}", json!(model)));
     }
-    config.extend(codex_config(stub));
     let mut args = vec!["--disable".to_owned(), "plugins".to_owned()];
-    for value in config {
-        args.extend(["-c".to_owned(), value]);
-    }
+    args.extend(codex_config_flags(config, stub));
     args
 }
 
@@ -44,13 +44,7 @@ pub fn listening(socket: &Path, project: &Path, options: &[String]) -> Vec<Strin
         format!("unix://{}", socket.display()),
     ];
     args.extend(options.iter().cloned());
-    args.extend([
-        "-c".to_owned(),
-        format!(
-            "projects={{{}={{trust_level=\"trusted\"}}}}",
-            json!(project.to_string_lossy())
-        ),
-    ]);
+    args.extend(["-c".to_owned(), codex_trusted(&project.to_string_lossy())]);
     args
 }
 
@@ -107,9 +101,7 @@ pub fn person(socket: &Path, project: &Path, model: Option<&str>) -> Vec<String>
         "-C".to_owned(),
         project.to_string_lossy().into_owned(),
     ];
-    if let Some(model) = model {
-        args.extend(["-m".to_owned(), model.to_owned()]);
-    }
+    args.extend(model_flag("-m", model));
     args.push(person_prompt());
     args
 }
@@ -221,22 +213,16 @@ impl Delivery {
     /// Whether `token` reached the model: in a request to the stub, or in the reply of the turn
     /// that took the message.
     pub fn got(&self, token: &str) -> bool {
-        match &self.stub {
-            Some(stub) => stub.saw(token),
-            None => self
-                .answer()
-                .is_some_and(|reply| reply.text.contains(token)),
-        }
+        StubLog::reached(self.stub.as_ref(), token, || {
+            self.answer()
+                .is_some_and(|reply| reply.text.contains(token))
+        })
     }
 
     /// Whether the stub got no credential but the placeholder, and the client declined no request
     /// of the app-server, such as an approval.
     fn clean(&self) -> bool {
-        self.declined.is_empty()
-            && self
-                .stub
-                .as_ref()
-                .is_none_or(|stub| stub.failure().is_none())
+        self.declined.is_empty() && StubLog::clean(self.stub.as_ref())
     }
 
     pub fn summary(&self) -> String {

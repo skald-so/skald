@@ -42,9 +42,11 @@ impl Driver {
 pub struct Visit {
     /// The page's URL afterwards; `about:blank` when its page failed to load.
     pub url: String,
-    /// The status of the last response, if any.
+    /// The status of the last response of the navigation itself, after its redirects and before any
+    /// followed refresh, if any.
     pub status: Option<u16>,
-    /// Every URL the page requested on the way, redirects included, in order.
+    /// Every URL the page requested on the way, redirects and followed refreshes included, in
+    /// order.
     pub navigations: Vec<String>,
     /// Why the navigation failed, if it did.
     pub error: Option<String>,
@@ -56,6 +58,16 @@ impl Visit {
     pub fn last(&self) -> &str {
         self.navigations.last().map_or(&self.url, String::as_str)
     }
+}
+
+/// What a button submits: its form's action and method, its own if it overrides them, and the
+/// form's fields with the button's own.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Submission {
+    pub action: String,
+    /// `get` or `post`.
+    pub method: String,
+    pub fields: Vec<(String, String)>,
 }
 
 /// A cookie in a browser's jar, as playwright-core gives it.
@@ -188,6 +200,16 @@ impl Browser {
         }
     }
 
+    /// Clicks each `(page, selector)` of `clicks` at once, as [`Page::click`] does; gives their
+    /// visits, in order.
+    pub fn click_all(&self, clicks: &[(&Page, &str)]) -> Vec<Visit> {
+        let clicks: Vec<Value> = clicks
+            .iter()
+            .map(|(page, selector)| json!({ "page": page.id, "selector": selector }))
+            .collect();
+        serde_json::from_value(self.call("clickAll", json!({ "clicks": clicks }))).expect("visits")
+    }
+
     /// Starts an HTTPS server that forwards every request to `target`, e.g.
     /// `http://127.0.0.1:41234`; gives its port.
     pub fn tls_proxy(&self, target: &str) -> u16 {
@@ -225,21 +247,78 @@ pub struct Page<'a> {
 impl Page<'_> {
     /// Navigates to `url` as a person typing it, and waits for the page to load.
     pub fn goto(&self, url: &str) -> Visit {
-        self.goto_until(url, "load")
+        self.goto_with(url, false)
     }
 
-    /// Navigates to `url` and waits until the network has been idle for 0.5 s: past redirects a
-    /// page script makes once loaded.
+    /// Navigates to `url` as [`Page::goto`] does, then follows each page that refreshes itself
+    /// with `<meta http-equiv="refresh">`, such as the sign-in callback's, until a page without one
+    /// has loaded. The visit's status stays that of the navigation to `url`.
     pub fn goto_settled(&self, url: &str) -> Visit {
-        self.goto_until(url, "networkidle")
+        self.goto_with(url, true)
     }
 
-    fn goto_until(&self, url: &str, wait_until: &str) -> Visit {
+    fn goto_with(&self, url: &str, settle: bool) -> Visit {
         let visit = self.browser.call(
             "goto",
-            json!({ "page": self.id, "url": url, "waitUntil": wait_until }),
+            json!({ "page": self.id, "url": url, "settle": settle }),
         );
         serde_json::from_value(visit).expect("a visit")
+    }
+
+    /// Clicks the element `selector` finds, a playwright-core selector such as
+    /// `role=button[name=/approve/i]`, as a person does, and waits for the navigation it starts.
+    pub fn click(&self, selector: &str) -> Visit {
+        self.visit("click", json!({ "selector": selector }))
+    }
+
+    /// Evaluates the script `expression`, which starts a navigation of the page, and waits until
+    /// the network has been idle for 0.5 s.
+    pub fn navigate_by(&self, expression: &str) -> Visit {
+        self.visit("navigateBy", json!({ "expression": expression }))
+    }
+
+    fn visit(&self, op: &str, mut args: Value) -> Visit {
+        args["page"] = self.id.clone();
+        serde_json::from_value(self.browser.call(op, args)).expect("a visit")
+    }
+
+    /// Types `value` into the element `selector` finds, replacing what it holds.
+    pub fn fill(&self, selector: &str, value: &str) {
+        self.browser.call(
+            "fill",
+            json!({ "page": self.id, "selector": selector, "value": value }),
+        );
+    }
+
+    /// How many elements `selector` finds.
+    pub fn count(&self, selector: &str) -> usize {
+        let count = self
+            .browser
+            .call("count", json!({ "page": self.id, "selector": selector }));
+        serde_json::from_value(count).expect("a count")
+    }
+
+    /// The value of each form field `selector` finds.
+    pub fn values(&self, selector: &str) -> Vec<String> {
+        let values = self
+            .browser
+            .call("values", json!({ "page": self.id, "selector": selector }));
+        serde_json::from_value(values).expect("values")
+    }
+
+    /// The page's text as a person sees it.
+    pub fn text(&self) -> String {
+        let text = self.browser.call("text", json!({ "page": self.id }));
+        serde_json::from_value(text).expect("a text")
+    }
+
+    /// What the button `selector` finds submits.
+    pub fn submission(&self, selector: &str) -> Submission {
+        let submission = self.browser.call(
+            "submission",
+            json!({ "page": self.id, "selector": selector }),
+        );
+        serde_json::from_value(submission).expect("a submission")
     }
 
     /// Evaluates the script `expression` in the page; a promise is awaited.

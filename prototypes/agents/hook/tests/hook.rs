@@ -1,13 +1,16 @@
 //! `agent-hook` runs as each CLI runs it: a hook input recorded from the real CLI on stdin, the
 //! handler's output on stdout.
 
+use std::ffi::OsStr;
+use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 
 use agent_source::Source;
 use agent_testing::{
-    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, stderr,
+    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, one_waiting, opened,
+    stderr,
 };
 use serde_json::Value;
 
@@ -32,6 +35,10 @@ const CLAUDE: Cli = Cli {
     user_prompt_submit: None,
 };
 
+/// Each CLI's `SessionStart` input, recorded as the others.
+const CLAUDE_SESSION_START: &str = include_str!("inputs/claude-session-start.json");
+const CODEX_SESSION_START: &str = include_str!("inputs/codex-session-start.json");
+
 /// Codex 0.162.1.
 const CODEX: Cli = Cli {
     flags: &["--codex"],
@@ -55,12 +62,12 @@ impl Cli {
     }
 }
 
-/// Starts `agent-hook <flags> <source>` with piped stdio and no variable of the test's environment.
-fn start(cli: &Cli, source: &Path) -> Child {
+/// Starts `agent-hook <args>` with piped stdio and only `env` of the test's environment.
+fn spawn(args: &[&OsStr], env: &[(&str, &str)]) -> Child {
     Command::new(env!("CARGO_BIN_EXE_agent-hook"))
-        .args(cli.flags)
-        .arg(source)
+        .args(args)
         .env_clear()
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -68,15 +75,26 @@ fn start(cli: &Cli, source: &Path) -> Child {
         .unwrap()
 }
 
-/// Runs the handler for `cli` on `source` with `input` on stdin.
-fn hook(cli: &Cli, source: &Path, input: &str) -> Output {
-    let mut child = start(cli, source);
+/// Starts `agent-hook <flags> <source>` with piped stdio and no variable of the test's environment.
+fn start(cli: &Cli, source: &Path) -> Child {
+    let mut args: Vec<&OsStr> = cli.flags.iter().map(OsStr::new).collect();
+    args.push(source.as_os_str());
+    spawn(&args, &[])
+}
+
+/// Writes `input` to `child`'s stdin and waits for its output.
+fn finish(mut child: Child, input: &str) -> Output {
     // A handler that fails before reading its input, such as on a source it cannot open, may close
     // stdin first.
     if let Err(error) = child.stdin.take().unwrap().write_all(input.as_bytes()) {
         assert_eq!(error.kind(), ErrorKind::BrokenPipe, "{error}");
     }
     child.wait_with_output().unwrap()
+}
+
+/// Runs the handler for `cli` on `source` with `input` on stdin.
+fn hook(cli: &Cli, source: &Path, input: &str) -> Output {
+    finish(start(cli, source), input)
 }
 
 /// What a successful run of `cli`'s `event` hook gave the agent: the `additionalContext`, or on
@@ -107,8 +125,7 @@ fn quiet(output: &Output) {
 /// Asserts that `cli`'s `event` hook, with `input`, adds each waiting message to the context once
 /// and nothing once they are handed over.
 fn adds_each_waiting_message_once(cli: &Cli, input: &str, event: &str) {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     let messages = [
         source.add("alice of skald", "first").unwrap(),
         source.add("bob", "second").unwrap(),
@@ -140,8 +157,7 @@ fn user_prompt_submit_on_codex_adds_each_waiting_message_to_the_context_once() {
 #[test]
 fn stop_keeps_the_turn_going_with_the_waiting_messages_and_then_lets_it_end() {
     for cli in [&CLAUDE, &CODEX] {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (dir, source) = opened();
         let messages = [source.add("alice", "the token").unwrap()];
         // The output keeps the turn going: the agent gets the messages.
         assert_carries_once(
@@ -183,8 +199,7 @@ fn another_event_takes_nothing() {
         (&CLAUDE, user_prompt_submit),
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
-        let message = source.add("alice", "hi").unwrap();
+        let (source, message) = one_waiting(dir.path());
         quiet(&hook(cli, dir.path(), &input));
         assert_waiting(&source, &[message]);
     }
@@ -194,8 +209,7 @@ fn another_event_takes_nothing() {
 fn a_closed_output_puts_the_messages_back() {
     for cli in [&CLAUDE, &CODEX] {
         let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
-        let message = source.add("alice", "hi").unwrap();
+        let (source, message) = one_waiting(dir.path());
         let mut child = start(cli, dir.path());
         // The handler writes only after its input ends, so the output is closed by then.
         drop(child.stdout.take());
@@ -212,8 +226,7 @@ fn a_closed_output_puts_the_messages_back() {
 fn fails_with_exit_code_1() {
     for cli in [&CLAUDE, &CODEX] {
         let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
-        let message = source.add("alice", "hi").unwrap();
+        let (source, message) = one_waiting(dir.path());
         let output = hook(cli, dir.path(), "not JSON");
         assert_failed(&output, "agent-hook: ");
         assert!(output.stdout.is_empty());
@@ -232,17 +245,304 @@ fn fails_with_exit_code_1() {
         &["--codex"],
         &["--codex", "a", "b"],
         &["--claude", "a"],
+        &["--wait", "a"],
+        &["--wait", "a", "soon"],
+        &["--take"],
+        &["--count", "a", "b"],
+        &["--release", "a"],
+        &["--confirm"],
+        &["--confirm", "--codex"],
+        &["--confirm", "--claude", "a"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_agent-hook"))
-            .args(args)
-            .env_clear()
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+        let output = run(args, "", &[]);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
-        assert_eq!(
-            stderr(&output),
-            "usage: agent-hook [--codex] <source-dir>\n"
+        assert!(
+            stderr(&output).starts_with("usage: agent-hook [--codex] <source-dir>\n"),
+            "{args:?}: {}",
+            stderr(&output)
         );
     }
+}
+
+/// Runs `agent-hook <args>` with `input` on stdin and only `env` in its environment.
+fn run(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
+    let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();
+    finish(spawn(&args, env), input)
+}
+
+#[test]
+fn session_start_registers_the_session_and_its_inbox_socket() {
+    let messaging = [
+        ("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/cc-socks/35442.sock"),
+        ("CLAUDE_CODE_MESSAGING_TOKEN", "child-token"),
+    ];
+    for (cli, input, env) in [
+        (&CLAUDE, CLAUDE_SESSION_START, &messaging[..]),
+        (&CODEX, CODEX_SESSION_START, &[]),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let (source, message) = one_waiting(dir.path());
+        let mut args: Vec<&OsStr> = cli.flags.iter().map(OsStr::new).collect();
+        args.push(dir.path().as_os_str());
+        let output = finish(spawn(&args, env), input);
+        quiet(&output);
+        // It hands nothing over.
+        assert_waiting(&source, &[message]);
+        let registered = source.registration().unwrap().unwrap();
+        let input: Value = serde_json::from_str(input).unwrap();
+        assert_eq!(registered.session_id, input["session_id"].as_str().unwrap());
+        assert_eq!(
+            registered.transcript_path.as_deref(),
+            input["transcript_path"].as_str()
+        );
+        assert_eq!(registered.cwd.as_deref(), input["cwd"].as_str());
+        let socket = env.first().map(|(_, value)| (*value).to_owned());
+        let token = env.get(1).map(|(_, value)| (*value).to_owned());
+        assert_eq!((registered.socket, registered.token), (socket, token));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let output = run(
+        &[dir.path().to_str().unwrap()],
+        r#"{"hook_event_name":"SessionStart"}"#,
+        &[],
+    );
+    assert_failed(&output, "agent-hook: no session_id");
+}
+
+/// An input of `cli`'s `event` whose transcript is `transcript`.
+fn with_transcript(input: &str, transcript: &Path) -> String {
+    let mut input: Value = serde_json::from_str(input).unwrap();
+    input["transcript_path"] = transcript.to_str().unwrap().into();
+    input.to_string()
+}
+
+/// A session file of `cli` in which `msg_id` went to the model.
+fn transcript_line(cli: &Cli, msg_id: &str) -> String {
+    if cli.is_codex() {
+        format!(
+            r#"{{"timestamp":"2026-11-12T07:52:11.632Z","type":"response_item","payload":{{"type":"message","role":"developer","content":[{{"type":"input_text","text":"<message msg_id=\"{msg_id}\">"}}]}}}}"#
+        )
+    } else {
+        format!(
+            r#"{{"type":"attachment","timestamp":"2026-11-12T07:49:14.100Z","attachment":{{"type":"hook_additional_context","content":["<message msg_id=\"{msg_id}\">"]}}}}"#
+        )
+    }
+}
+
+/// An entry of `cli`'s session file that is the model's own; with `failed`, the API error a CLI
+/// writes in its place, or the turn's end with the error.
+fn model_line(cli: &Cli, failed: bool) -> &'static str {
+    match (cli.is_codex(), failed) {
+        (true, false) => {
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[]}}"#
+        }
+        (true, true) => {
+            r#"{"type":"event_msg","payload":{"type":"task_complete","error":{"message":"x"}}}"#
+        }
+        (false, false) => r#"{"type":"assistant","message":{"model":"claude-opus-5-5"}}"#,
+        (false, true) => {
+            r#"{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>"}}"#
+        }
+    }
+}
+
+/// Writes `cli`'s session file `path`: the entries of `answered`, followed by the model's own, then
+/// the entry of `failed`, followed only by an API error.
+fn write_answered(cli: &Cli, path: &Path, answered: [&str; 2], failed: &str) {
+    let mut lines: Vec<String> = answered.map(|id| transcript_line(cli, id)).to_vec();
+    lines.push(model_line(cli, false).to_owned());
+    lines.push(transcript_line(cli, failed));
+    lines.push(model_line(cli, true).to_owned());
+    fs::write(path, lines.join("\n")).unwrap();
+}
+
+fn signals(source: &Source, msg_id: &str) -> Vec<String> {
+    source
+        .records(msg_id)
+        .unwrap()
+        .into_iter()
+        .map(|record| record.signal)
+        .collect()
+}
+
+#[test]
+fn confirms_the_messages_the_session_file_shows_and_drops_their_repeats() {
+    for cli in [&CLAUDE, &CODEX] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Source::open(dir.path().join("source")).unwrap();
+        let transcript = dir.path().join("session.jsonl");
+        // Handed over earlier, and in the transcript: confirmed.
+        let shown = source.add("alice", "shown").unwrap();
+        // Handed over, but not in the transcript yet.
+        let unseen = source.add("bob", "unseen").unwrap();
+        let taken = source.take().unwrap();
+        let ids: Vec<String> = taken.iter().map(|m| m.msg_id.clone()).collect();
+        source.handed_over(&ids).unwrap();
+        // Waiting again, resent by another path, but already in the transcript: a repeat.
+        let repeat = source.add("carol", "repeat").unwrap();
+        // Waiting and new: handed over.
+        let fresh = source.add("dave", "fresh").unwrap();
+        // Waiting again, but its request failed: handed over, not a repeat.
+        let failed = source.add("frank", "failed").unwrap();
+        write_answered(
+            cli,
+            &transcript,
+            [&shown.msg_id, &repeat.msg_id],
+            &failed.msg_id,
+        );
+        let input = with_transcript(cli.post_tool_use, &transcript);
+        let context = given(
+            cli,
+            &hook(cli, &dir.path().join("source"), &input),
+            "PostToolUse",
+        );
+        assert_carries_once(&context, &[fresh.clone(), failed.clone()]);
+        assert!(!context.contains(&repeat.msg_id), "{context}");
+        assert_handed_over(&source, &[fresh.clone(), repeat.clone(), failed.clone()]);
+        assert!(signals(&source, &failed.msg_id).is_empty());
+        assert_eq!(signals(&source, &shown.msg_id), ["transcript"]);
+        assert!(signals(&source, &unseen.msg_id).is_empty());
+        assert_eq!(
+            signals(&source, &repeat.msg_id),
+            ["transcript", "repeat-dropped"]
+        );
+        assert!(signals(&source, &fresh.msg_id).is_empty());
+
+        // Only a repeat waiting: nothing is printed, so Stop lets the turn end.
+        let again = source.add("erin", "again").unwrap();
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        writeln!(
+            file,
+            "\n{}\n{}",
+            transcript_line(cli, &again.msg_id),
+            model_line(cli, false)
+        )
+        .unwrap();
+        let input = with_transcript(cli.stop, &transcript);
+        quiet(&hook(cli, &dir.path().join("source"), &input));
+        assert_handed_over(&source, &[again]);
+    }
+}
+
+/// A temporary directory, its path, and the source in it.
+fn opened_with_path() -> (tempfile::TempDir, String, Source) {
+    let (dir, source) = opened();
+    let path = dir.path().to_string_lossy().into_owned();
+    (dir, path, source)
+}
+
+#[test]
+fn confirm_only_records_what_the_session_file_shows_and_hands_nothing_over() {
+    for cli in [&CLAUDE, &CODEX] {
+        let (dir, path, source) = opened_with_path();
+        let shown = source.add("alice", "shown").unwrap();
+        source
+            .handed_over(&[source.take().unwrap()[0].msg_id.clone()])
+            .unwrap();
+        // Handed over, but only an API error followed its entry.
+        let failed = source.add("carol", "failed").unwrap();
+        source
+            .handed_over(&[source.take().unwrap()[0].msg_id.clone()])
+            .unwrap();
+        let waiting = source.add("bob", "waiting").unwrap();
+        let transcript = dir.path().join("session.jsonl");
+        write_answered(
+            cli,
+            &transcript,
+            [&shown.msg_id, &waiting.msg_id],
+            &failed.msg_id,
+        );
+        let mut args = vec!["--confirm"];
+        args.extend(cli.flags);
+        args.push(&path);
+        quiet(&run(&args, &with_transcript(cli.stop, &transcript), &[]));
+        assert_eq!(signals(&source, &shown.msg_id), ["transcript"]);
+        assert!(signals(&source, &failed.msg_id).is_empty());
+        // A waiting message is neither handed over nor confirmed.
+        assert_waiting(&source, std::slice::from_ref(&waiting));
+        assert!(signals(&source, &waiting.msg_id).is_empty());
+        // An input without a session file, such as Codex's in `codex exec --ephemeral`, does nothing.
+        quiet(&run(
+            &args,
+            cli.stop.replace("transcript_path", "other").as_str(),
+            &[],
+        ));
+        assert_failed(&run(&args, "not JSON", &[]), "agent-hook: ");
+    }
+}
+
+#[test]
+fn takes_counts_and_releases_messages_for_the_mod() {
+    let (_dir, path, source) = opened_with_path();
+    let path = path.as_str();
+    let count = |expected: &str| {
+        let output = run(&["--count", path], "", &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    };
+    count("0\n");
+    let take = run(&["--take", path], "", &[]);
+    quiet(&take);
+
+    let messages = [
+        source.add("alice", "one").unwrap(),
+        source.add("bob", "two").unwrap(),
+    ];
+    count("2\n");
+    let take = run(&["--take", path], "", &[]);
+    assert!(take.status.success(), "{}", stderr(&take));
+    let printed: Value = serde_json::from_slice(&take.stdout).unwrap();
+    let ids: Vec<&str> = messages.iter().map(|m| m.msg_id.as_str()).collect();
+    assert_eq!(printed["ids"], serde_json::json!(ids));
+    assert_carries_once(printed["text"].as_str().unwrap(), &messages);
+    assert_handed_over(&source, &messages);
+    count("0\n");
+
+    let release = run(&["--release", path, ids[0], ids[1]], "", &[]);
+    quiet(&release);
+    assert_waiting(&source, &messages);
+    assert_failed(
+        &run(&["--release", path, ids[0], "nope"], "", &[]),
+        "agent-hook: ",
+    );
+}
+
+#[test]
+fn wait_hands_a_message_over_on_stderr_and_exits_2_to_wake_the_session() {
+    let (_dir, path, source) = opened_with_path();
+    let path = path.as_str();
+    // Nothing comes: the wait ends with exit code 0.
+    let started = std::time::Instant::now();
+    let idle = run(&["--wait", path, "1"], CLAUDE.stop, &[]);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(1));
+    quiet(&idle);
+    assert!(idle.stderr.is_empty());
+
+    let mut waiter = spawn(
+        &[OsStr::new("--wait"), OsStr::new(path), OsStr::new("30")],
+        &[],
+    );
+    drop(waiter.stdin.take());
+    // A waiter that finds the wait taken leaves at once; this one stays: it holds the wait.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(waiter.try_wait().unwrap().is_none(), "the waiter left");
+    let started = std::time::Instant::now();
+    let second = run(&["--wait", path, "5"], "", &[]);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    quiet(&second);
+    let message = source.add("alice", "the token").unwrap();
+    let woke = waiter.wait_with_output().unwrap();
+    assert_eq!(woke.status.code(), Some(2), "{}", stderr(&woke));
+    assert!(woke.stdout.is_empty());
+    assert_carries_once(&stderr(&woke), std::slice::from_ref(&message));
+    assert_handed_over(&source, &[message]);
+
+    // A wait of no time still hands over a message that waits.
+    let waiting = source.add("alice", "the next token").unwrap();
+    let at_once = run(&["--wait", path, "0"], "", &[]);
+    assert_eq!(at_once.status.code(), Some(2), "{}", stderr(&at_once));
+    assert_carries_once(&stderr(&at_once), std::slice::from_ref(&waiting));
 }

@@ -150,8 +150,9 @@ mod tests {
     use std::fs;
 
     use agent_source::State;
+    use agent_testing::{Events, opened};
     use rmcp::service::RunningService;
-    use rmcp::{ClientHandler, RoleClient, ServiceExt};
+    use rmcp::{RoleClient, ServiceExt};
     use tokio::sync::mpsc;
 
     use super::*;
@@ -161,19 +162,6 @@ mod tests {
     struct Quiet;
 
     impl ServerHandler for Quiet {}
-
-    /// A client that passes on each custom notification it gets.
-    struct Events(mpsc::UnboundedSender<CustomNotification>);
-
-    impl ClientHandler for Events {
-        async fn on_custom_notification(
-            &self,
-            notification: CustomNotification,
-            _context: NotificationContext<RoleClient>,
-        ) {
-            let _ = self.0.send(notification);
-        }
-    }
 
     type Connected = (
         RunningService<RoleServer, Quiet>,
@@ -190,8 +178,7 @@ mod tests {
 
     #[tokio::test]
     async fn pushes_each_waiting_message_and_marks_it_handed_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let (server, _client, mut received) = connected().await;
         assert_eq!(push(&source, server.peer()).await, Ok(0));
         let messages = [
@@ -216,8 +203,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_push_puts_the_messages_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let (server, client, _received) = connected().await;
         client.cancel().await.unwrap();
         let messages = [
@@ -237,8 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_mark_puts_back_the_messages_after_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (dir, source) = opened();
         let (server, _client, mut received) = connected().await;
         let messages = [
             source.add("alice", "one").unwrap(),
@@ -263,8 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_take_returns_the_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (dir, source) = opened();
         let (server, _client, mut received) = connected().await;
         let message = source.add("alice", "one").unwrap();
         // A take first looks for abandoned claims in `claims`.
@@ -282,8 +266,7 @@ mod tests {
     #[tokio::test]
     async fn the_server_stops_when_a_push_fails() {
         for broken in ["handed", "claims"] {
-            let dir = tempfile::tempdir().unwrap();
-            let source = Source::open(dir.path()).unwrap();
+            let (dir, source) = opened();
             let server = ChannelServer::new(Source::open(dir.path()).unwrap());
             source.add("alice", "one").unwrap();
             fs::remove_dir_all(dir.path().join(broken)).unwrap();
@@ -307,6 +290,7 @@ mod tests {
             text: "Tests pass.".to_owned(),
             added_at_ms: 0,
             handed_over_at_ms: None,
+            ack: None,
         };
         let event = event(&message);
         assert_eq!(event.method, "notifications/claude/channel");

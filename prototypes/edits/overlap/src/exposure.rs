@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::dictionary::{self, Dictionary, Recovered};
-use crate::fingerprint::Keying;
-use crate::noise::table;
-use crate::replay::{self, Replay, Repository, percentile};
+use crate::fingerprint::{self, Keying};
+use crate::markdown::table;
+use crate::replay::{self, Replay, Repository};
 use crate::{Fingerprint, Result, Scope};
 
 /// A machine as the server sees it: the fingerprints it publishes, when it publishes, and when it
@@ -158,7 +158,7 @@ impl View {
             })
             .collect();
         let bytes = alive.iter().map(|&i| self.machines[i].fingerprints.len());
-        let bytes = bytes.sum::<usize>() * FINGERPRINT_BYTES;
+        let bytes = bytes.sum::<usize>() * fingerprint::BYTES;
         let broken = self.merges.iter().filter(|sides| match sides {
             [Some(a), Some(b)] => {
                 let shared = (self.machines[*a].fingerprints)
@@ -179,9 +179,6 @@ impl View {
 
 /// The number of consecutive hours [`View::busiest_hours`] counts.
 pub const HOURS: usize = 8;
-
-/// The bytes of a fingerprint.
-const FINGERPRINT_BYTES: usize = 32;
 
 /// What a change of the space key costs, as [`View::change`] gives it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -238,14 +235,11 @@ fn share(part: usize, whole: usize) -> String {
     format!("{part} ({}.{}%)", tenths / 10, tenths % 10)
 }
 
-/// The median, the 90th percentile and the largest of `values`, sorted in place; `-` for none.
+/// The [`replay::spread`] of `values`, sorted in place.
 fn spread(values: &mut [usize]) -> [String; 3] {
     values.sort_unstable();
-    if values.is_empty() {
-        return ["-".into(), "-".into(), "-".into()];
-    }
     let values: Vec<i64> = values.iter().map(|&value| value as i64).collect();
-    [50, 90, 100].map(|percent| percentile(&values, percent).to_string())
+    replay::spread(&values, |value| value.to_string())
 }
 
 /// The findings on `exposed` as Markdown tables.

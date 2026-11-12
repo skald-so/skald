@@ -42,9 +42,12 @@ pub enum Keying<'k> {
     WithoutKey,
 }
 
+/// The bytes of a fingerprint.
+pub const BYTES: usize = 32;
+
 /// An HMAC fingerprint, all the server learns of a path, a hunk or a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Fingerprint(pub [u8; 32]);
+pub struct Fingerprint(pub [u8; BYTES]);
 
 /// The label that separates path fingerprints from other HMACs of the space key.
 pub const PATH_LABEL: &str = "skald edit path";
