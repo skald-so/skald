@@ -407,24 +407,36 @@ fn bearer(headers: &HeaderMap) -> Option<Option<&str>> {
     }))
 }
 
-/// `GET /session`: the account of the request's session: the device session of its bearer token if
-/// it has an `Authorization` header, else the web session of its cookie.
+/// `GET /session`: the account of the request's session.
 pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let found = match bearer(&headers) {
-        Some(Some(token)) => find(&state.db, "device", vec![digest(token)]).await,
-        Some(None) => Ok(None),
-        None => web_session(&state.db, &headers).await,
-    };
-    match found {
+    match signed_in(&state.db, &headers).await {
         Ok(Some(session)) => axum::Json(session).into_response(),
-        Ok(None) => problem(
-            StatusCode::UNAUTHORIZED,
-            "not-signed-in",
-            "Not signed in",
-            "The request has no session, or an unknown one: sign in at /auth/github.",
-        ),
+        Ok(None) => not_signed_in(),
         Err(err) => database_failed("read a session", err),
     }
+}
+
+/// The account of the request's session: the device session of its bearer token if it has an
+/// `Authorization` header, else the web session of its cookie.
+pub(crate) async fn signed_in(
+    db: &PgPool,
+    headers: &HeaderMap,
+) -> Result<Option<Session>, sqlx::Error> {
+    match bearer(headers) {
+        Some(Some(token)) => find(db, "device", vec![digest(token)]).await,
+        Some(None) => Ok(None),
+        None => web_session(db, headers).await,
+    }
+}
+
+/// The answer to a request without a session.
+pub(crate) fn not_signed_in() -> Response {
+    problem(
+        StatusCode::UNAUTHORIZED,
+        "not-signed-in",
+        "Not signed in",
+        "The request has no session, or an unknown one: sign in at /auth/github.",
+    )
 }
 
 #[cfg(test)]

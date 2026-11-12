@@ -5,6 +5,214 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/account/master": {
+      "get": {
+        "operationId": "getMasterKey",
+        "summary": "The account's master key",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The master public key of the session's account, or `null` while it has none.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MasterKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "putMasterKey",
+        "summary": "Give the account's master key",
+        "description": "The account's first device gives the master public key with its own certificate, issued by that key (docs/protocol/membership.md, \"Linking a device\"). The server takes them only while the account has no master key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MasterKeyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The master key and certificate the account took before, sent again: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MasterKey"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Taken: the account's master key, and the certificate of its device.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MasterKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; a certificate that fails the proof check, that the master key does not sign or that names an `issuer`; or one whose account, device, kind, keys or `name` differ from the device's registration on the session's account.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The account has a master key, and this is not the master key and certificate it took.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/device": {
       "post": {
         "operationId": "authorizeDevice",
@@ -530,6 +738,214 @@
         }
       }
     },
+    "/devices": {
+      "get": {
+        "operationId": "getDevices",
+        "summary": "The account's devices",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The devices of the session's account, each with its certificate as the device sent it, or `null` while it has none.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Devices"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "registerDevice",
+        "summary": "Register a device",
+        "description": "A new device registers its ID and public keys with its account (docs/protocol/membership.md, \"Linking a device\"). Only `client` devices register here.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRegistration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The same registration again, by the same account: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Registered.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the registration is invalid: a malformed body, an ID not derived from `signing`, a kind other than `client`, a key not of 32 bytes or a `name` not of 1 to 64 bytes.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has the ID with other keys or `name`, or on another account.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "getHealth",
@@ -808,6 +1224,32 @@
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
       },
+      "Certificate": {
+        "description": "A device certificate's CBOR bytes (docs/protocol/membership.md, \"Device certificate\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "Device": {
+        "type": "object",
+        "required": ["device", "cert"],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "cert": {
+            "description": "The certificate as the device sent it; `null` while it has none.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Certificate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "DeviceAuthorization": {
         "description": "Device authorization's answer (RFC 8628, §3.2).",
         "type": "object",
@@ -878,6 +1320,39 @@
           }
         }
       },
+      "DeviceId": {
+        "description": "A device's ID: a UUIDv8 derived from its signing key, in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "DeviceRegistration": {
+        "type": "object",
+        "required": ["device", "kind", "signing", "hpke", "name"],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["client"]
+          },
+          "signing": {
+            "description": "The Ed25519 public key the ID derives from.",
+            "$ref": "#/components/schemas/PublicKey"
+          },
+          "hpke": {
+            "description": "The X25519 public key.",
+            "$ref": "#/components/schemas/PublicKey"
+          },
+          "name": {
+            "description": "1 to 64 bytes of UTF-8, set on the device; its certificate's `name`.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "additionalProperties": false
+      },
       "DeviceToken": {
         "description": "The token endpoint's answer (RFC 6749, §5.1).",
         "type": "object",
@@ -912,6 +1387,19 @@
           }
         }
       },
+      "Devices": {
+        "type": "object",
+        "required": ["devices"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Device"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Health": {
         "type": "object",
         "required": ["status"],
@@ -930,6 +1418,39 @@
           "status": {
             "type": "string",
             "enum": ["unavailable"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "MasterKey": {
+        "type": "object",
+        "required": ["master"],
+        "properties": {
+          "master": {
+            "description": "The account's master public key; `null` while it has none.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PublicKey"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "MasterKeyRequest": {
+        "type": "object",
+        "required": ["master", "cert"],
+        "properties": {
+          "master": {
+            "description": "The account's master public key.",
+            "$ref": "#/components/schemas/PublicKey"
+          },
+          "cert": {
+            "description": "The certificate of the device, issued by the master key.",
+            "$ref": "#/components/schemas/Certificate"
           }
         },
         "additionalProperties": false
@@ -1019,6 +1540,11 @@
           }
         },
         "additionalProperties": false
+      },
+      "PublicKey": {
+        "description": "An Ed25519 or X25519 public key: 32 bytes in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
       },
       "Session": {
         "type": "object",

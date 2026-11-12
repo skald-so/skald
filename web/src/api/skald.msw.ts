@@ -4,17 +4,386 @@
 import { faker } from "@faker-js/faker";
 
 import { HttpResponse, http } from "msw";
-import type { HttpResponseResolver, RequestHandlerOptions } from "msw";
+import type {
+  HttpResponseResolver,
+  PathParams,
+  RequestHandlerOptions,
+} from "msw";
 
 import type {
+  Device,
+  DeviceRegistration,
+  Devices,
   GetOpenApiSpec200,
   Health,
   HealthUnavailable,
+  MasterKey,
+  MasterKeyRequest,
   Problem,
   Protocol,
   ProtocolProblem,
   Session,
 } from "./skald.schemas";
+
+export const getGetMasterKeyResponseMock = (
+  overrideResponse: Partial<Extract<MasterKey, object>> = {},
+): MasterKey => ({
+  master: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetMasterKeyResponseMock200 = (
+  overrideResponse: Partial<Extract<MasterKey, object>> = {},
+): MasterKey => ({
+  master: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetMasterKeyResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetMasterKeyResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetMasterKeyResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getPutMasterKeyResponseMock = (
+  overrideResponse: Partial<Extract<MasterKey, object>> = {},
+): MasterKey =>
+  faker.helpers.arrayElement([
+    {
+      master: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+        null,
+      ]),
+      ...overrideResponse,
+    },
+    {
+      master: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+        null,
+      ]),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getPutMasterKeyResponseMock200 = (
+  overrideResponse: Partial<Extract<MasterKey, object>> = {},
+): MasterKey => ({
+  master: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getPutMasterKeyResponseMock201 = (
+  overrideResponse: Partial<Extract<MasterKey, object>> = {},
+): MasterKey => ({
+  master: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getPutMasterKeyResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getPutMasterKeyResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getPutMasterKeyResponseMock400 = (): ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getPutMasterKeyResponseProtocolProblemMock() },
+    { ...getPutMasterKeyResponseProblemMock() },
+  ]);
+
+export const getPutMasterKeyResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getPutMasterKeyResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getPutMasterKeyResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetDevicesResponseMock = (
+  overrideResponse: Partial<Extract<Devices, object>> = {},
+): Devices => ({
+  devices: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    cert: faker.helpers.arrayElement([
+      faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      null,
+    ]),
+  })),
+  ...overrideResponse,
+});
+
+export const getGetDevicesResponseMock200 = (
+  overrideResponse: Partial<Extract<Devices, object>> = {},
+): Devices => ({
+  devices: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    cert: faker.helpers.arrayElement([
+      faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      null,
+    ]),
+  })),
+  ...overrideResponse,
+});
+
+export const getGetDevicesResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetDevicesResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetDevicesResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRegisterDeviceResponseMock = (
+  overrideResponse: Partial<Extract<Device, object>> = {},
+): Device =>
+  faker.helpers.arrayElement([
+    {
+      device: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      cert: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+      ...overrideResponse,
+    },
+    {
+      device: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      cert: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getRegisterDeviceResponseMock200 = (
+  overrideResponse: Partial<Extract<Device, object>> = {},
+): Device => ({
+  device: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  cert: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getRegisterDeviceResponseMock201 = (
+  overrideResponse: Partial<Extract<Device, object>> = {},
+): Device => ({
+  device: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  cert: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getRegisterDeviceResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getRegisterDeviceResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getRegisterDeviceResponseMock400 = (): ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getRegisterDeviceResponseProtocolProblemMock() },
+    { ...getRegisterDeviceResponseProblemMock() },
+  ]);
+
+export const getRegisterDeviceResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRegisterDeviceResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRegisterDeviceResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
 
 export const getGetHealthResponseMock = (
   overrideResponse: Partial<Extract<Health, object>> = {},
@@ -136,6 +505,668 @@ export const getGetSessionResponseMock500 = (
   detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
+
+export const getGetMasterKeyMockHandler = (
+  overrideResponse?:
+    | MasterKey
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<MasterKey> | MasterKey),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/master",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetMasterKeyResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetMasterKeyMockHandler200 = (
+  overrideResponse?:
+    | MasterKey
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<MasterKey> | MasterKey),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/master",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetMasterKeyResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetMasterKeyMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/master",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetMasterKeyResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetMasterKeyMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/master",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetMasterKeyResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetMasterKeyMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/master",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetMasterKeyResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getPutMasterKeyMockHandler = (
+  overrideResponse?:
+    | MasterKey
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+      ) => Promise<MasterKey> | MasterKey),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<PathParams, MasterKeyRequest>(
+    "*/account/master",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutMasterKeyResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getPutMasterKeyMockHandler200 = (
+  overrideResponse?:
+    | MasterKey
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+      ) => Promise<MasterKey> | MasterKey),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<PathParams, MasterKeyRequest>(
+    "*/account/master",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutMasterKeyResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getPutMasterKeyMockHandler201 = (
+  overrideResponse?:
+    | MasterKey
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+      ) => Promise<MasterKey> | MasterKey),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<PathParams, MasterKeyRequest>(
+    "*/account/master",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutMasterKeyResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getPutMasterKeyMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<PathParams, MasterKeyRequest>(
+    "*/account/master",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutMasterKeyResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getPutMasterKeyMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<PathParams, MasterKeyRequest>(
+    "*/account/master",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutMasterKeyResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getPutMasterKeyMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<PathParams, MasterKeyRequest>(
+    "*/account/master",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutMasterKeyResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getPutMasterKeyMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<PathParams, MasterKeyRequest>(
+    "*/account/master",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, MasterKeyRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getPutMasterKeyResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetDevicesMockHandler = (
+  overrideResponse?:
+    | Devices
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Devices> | Devices),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/devices",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetDevicesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetDevicesMockHandler200 = (
+  overrideResponse?:
+    | Devices
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Devices> | Devices),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/devices",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetDevicesResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetDevicesMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/devices",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetDevicesResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetDevicesMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/devices",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetDevicesResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetDevicesMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/devices",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetDevicesResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler = (
+  overrideResponse?:
+    | Device
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<Device> | Device),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler200 = (
+  overrideResponse?:
+    | Device
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<Device> | Device),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler201 = (
+  overrideResponse?:
+    | Device
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<Device> | Device),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
 
 export const getGetHealthMockHandler = (
   overrideResponse?:
@@ -457,6 +1488,10 @@ export const getGetSessionMockHandler500 = (
   );
 };
 export const getSkaldAPIMock = () => [
+  getGetMasterKeyMockHandler(),
+  getPutMasterKeyMockHandler(),
+  getGetDevicesMockHandler(),
+  getRegisterDeviceMockHandler(),
   getGetHealthMockHandler(),
   getGetOpenApiSpecMockHandler(),
   getGetProtocolMockHandler(),
