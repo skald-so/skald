@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+# Runs the step of .github/workflows/release.yml that publishes the release, as GitHub runs it with
+# `shell: bash`, with a stand-in gh, on the files the dry run builds and a CHANGELOG.md:
+#   - it creates one release of the tag with all its files: the archives, their checksums and the
+#     installers of the tag, made by script/release-installers;
+#   - the release's notes are the version's CHANGELOG section, script/release-notes;
+#   - a beta's release, vX.Y.Z-beta.N, is a prerelease, and a stable release's is not;
+#   - without a CHANGELOG section for the version, or when gh fails, the step fails, and in the
+#     first case gh does not run.
+# Also runs the plan job's step that sets the release tag: a push of the tag of the workspace
+# version, a stable release's or a beta's, gets that tag; a push of any other tag fails the step
+# and sets none; a PR and a manual run, on a tag ref too, get the workspace version's tag.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+failures=0
+
+fail() {
+  echo "release-step-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# The step's script. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
+npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/release.yml" |
+  jq -r '[.jobs[].steps[]? | select(.run // "" | test("gh\\s+release\\s+create")) | .run]
+    | if length == 1 then .[0] else error("not one step runs gh release create") end' \
+  >"$tmp/step.sh" || {
+  echo "release-step-test: not one step of .github/workflows/release.yml runs gh release create" >&2
+  exit 1
+}
+
+# The plan job's step that sets the release tag.
+npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/release.yml" |
+  jq -r '.jobs.plan.steps[]? | select(.id == "tag") | .run // error("no run")' >"$tmp/plan.sh" || {
+  echo "release-step-test: the plan job of .github/workflows/release.yml has no step with the id tag" >&2
+  exit 1
+}
+
+# The checkout: the scripts and the installers, and a CHANGELOG.md with a stable release and a beta.
+mkdir -p "$tmp/work/release" "$tmp/bin"
+ln -s "$root/script" "$tmp/work/script"
+ln -s "$root/installers" "$tmp/work/installers"
+cat >"$tmp/work/CHANGELOG.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [1.2.4-beta.1](https://github.com/skald-so/skald/compare/v1.2.3...v1.2.4-beta.1) - 2026-11-20
+
+### Added
+
+- *(client)* beta feature ([#20](https://github.com/skald-so/skald/pull/20))
+
+## [1.2.3](https://github.com/skald-so/skald/releases/tag/v1.2.3) - 2026-11-12
+
+### Fixed
+
+- *(server)* stable fix ([#10](https://github.com/skald-so/skald/pull/10))
+EOF
+# The files of the build jobs, as the dry run downloads them.
+files=()
+for archive in skald-client-aarch64-apple-darwin.tar.gz skald-client-x86_64-pc-windows-msvc.zip; do
+  echo "$archive" >"$tmp/work/release/$archive"
+  echo "checksum of $archive" >"$tmp/work/release/$archive.sha256"
+  files+=("$archive" "$archive.sha256")
+done
+files+=(install.ps1 install.sh)
+files=$(printf '%s\n' "${files[@]}" | sort | paste -sd ' ' -)
+
+# gh logs its arguments, a line each, and keeps the notes file and the installers it was given;
+# it exits with $GH.
+cat >"$tmp/bin/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" >"$tmp/gh.args"
+previous=
+for arg in "\$@"; do
+  [[ \$previous != --notes-file ]] || cp "\$arg" "$tmp/gh.notes"
+  [[ \$arg != */install.* ]] || cp "\$arg" "$tmp/gh.\${arg##*/}"
+  previous=\$arg
+done
+exit "\$GH"
+EOF
+chmod +x "$tmp/bin/gh"
+
+# run <tag> <gh exit>: runs the step for <tag>; its exit code.
+run() {
+  rm -f "$tmp"/gh.* "$tmp/work/release"/install.*
+  local status=0
+  (cd "$tmp/work" && TAG=$1 GH=$2 RUNNER_TEMP=$tmp/runner PATH="$tmp/bin:$PATH" \
+    bash --noprofile --norc -eo pipefail "$tmp/step.sh") >/dev/null 2>&1 || status=$?
+  echo "$status"
+}
+mkdir "$tmp/runner"
+
+# expect_release <tag> <prerelease: yes or no> <notes line>: the step creates the release.
+expect_release() {
+  local status args given prerelease=no
+  status=$(run "$1" 0)
+  [[ $status == 0 ]] || fail "$1: the step exits $status"
+  if [[ ! -f $tmp/gh.args ]]; then
+    fail "$1: gh does not run"
+    return
+  fi
+  args=$(<"$tmp/gh.args")
+  [[ $(sed -n 1,3p <<<"$args" | paste -sd ' ' -) == "release create $1" ]] ||
+    fail "$1: gh runs '$(paste -sd ' ' - <<<"$args")', not gh release create $1"
+  grep -qx -- --verify-tag <<<"$args" || fail "$1: gh release create may create the tag: no --verify-tag"
+  ! grep -qx -- --draft <<<"$args" || fail "$1: the release is a draft"
+  ! grep -qE -- '^--(generate-notes|notes-from-tag)$' <<<"$args" || fail "$1: GitHub makes the notes"
+  grep -qx -- --prerelease <<<"$args" && prerelease=yes
+  [[ $prerelease == "$2" ]] || fail "$1: the release is a prerelease: $prerelease, not $2"
+  given=$(grep '^release/' <<<"$args" | sed 's|^release/||' | sort | paste -sd ' ' -)
+  [[ $given == "$files" ]] || fail "$1: the release's files are '$given', not '$files'"
+  for installer in install.sh install.ps1; do
+    grep -qF "'$1'" "$tmp/gh.$installer" 2>/dev/null ||
+      fail "$1: $installer of the release does not download the release $1"
+  done
+  [[ -f $tmp/gh.notes && $(<"$tmp/gh.notes") == *"$3"* ]] ||
+    fail "$1: the release's notes do not list '$3': $(cat "$tmp/gh.notes" 2>/dev/null)"
+  ! grep -q '^## ' "$tmp/gh.notes" 2>/dev/null || fail "$1: the release's notes have a version's heading"
+}
+
+# expect_plan <workspace version> <event> <ref name> <tag, or failed>: the plan step for the event
+# sets that tag, or fails and sets none.
+expect_plan() {
+  local status=0 output
+  printf '[workspace.package]\nversion = "%s"\n' "$1" >"$tmp/work/Cargo.toml"
+  : >"$tmp/plan.output"
+  (cd "$tmp/work" && GITHUB_EVENT_NAME=$2 GITHUB_REF_NAME=$3 GITHUB_OUTPUT=$tmp/plan.output \
+    bash --noprofile --norc -eo pipefail "$tmp/plan.sh") >/dev/null 2>&1 || status=$?
+  output=$(<"$tmp/plan.output")
+  if [[ $4 == failed ]]; then
+    [[ $status != 0 ]] || fail "plan, $2 of $3 with the workspace at $1: the step passes"
+    [[ $output != *tag=* ]] || fail "plan, $2 of $3 with the workspace at $1: it sets $output"
+  else
+    [[ $status == 0 ]] || fail "plan, $2 of $3 with the workspace at $1: the step exits $status"
+    [[ $output == "tag=$4" ]] || fail "plan, $2 of $3 with the workspace at $1: it sets '$output', not tag=$4"
+  fi
+}
+
+expect_plan 1.2.3 push v1.2.3 v1.2.3
+expect_plan 1.2.4-beta.1 push v1.2.4-beta.1 v1.2.4-beta.1
+expect_plan 1.2.3 push v1.2.4 failed
+expect_plan 1.2.3 push v1.2.3-beta.1 failed
+expect_plan 1.2.3 push 1.2.3 failed
+expect_plan 1.2.3 push v-refused-test failed
+expect_plan 1.2.3 pull_request 7/merge v1.2.3
+expect_plan 1.2.3 workflow_dispatch dev v1.2.3
+expect_plan 1.2.3 workflow_dispatch v9.9.9 v1.2.3
+
+expect_release v1.2.3 no '*(server)* stable fix'
+expect_release v1.2.4-beta.1 yes '*(client)* beta feature'
+status=$(run v1.2.5 0)
+[[ $status != 0 ]] || fail "v1.2.5, without a CHANGELOG section: the step passes"
+[[ ! -f $tmp/gh.args ]] || fail "v1.2.5, without a CHANGELOG section: gh runs"
+status=$(run v1.2.3 1)
+[[ $status != 0 ]] || fail "v1.2.3, gh fails: the step passes"
+
+if ((failures > 0)); then
+  echo "release-step-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "release-step-test: all cases passed"

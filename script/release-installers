@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Writes the installers of the release <tag>, install.sh and install.ps1, into <dir>: the templates
+# of installers/ with the release tag set, so each downloads that release's archive.
+# Usage: script/release-installers <tag> <dir>, <tag> vX.Y.Z or vX.Y.Z-beta.N.
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: $0 <tag> <dir>" >&2
+  exit 2
+fi
+if [[ ! $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+  echo "release-installers: $1 is no release tag, vX.Y.Z or vX.Y.Z-beta.N" >&2
+  exit 2
+fi
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+mkdir -p "$2"
+for installer in install.sh install.ps1; do
+  # The template has the placeholder once.
+  if [[ $(grep -c "'@RELEASE_TAG@'" "$root/installers/$installer") != 1 ]]; then
+    echo "release-installers: installers/$installer has not one '@RELEASE_TAG@'" >&2
+    exit 1
+  fi
+  sed "s/'@RELEASE_TAG@'/'$1'/" "$root/installers/$installer" >"$2/$installer"
+done

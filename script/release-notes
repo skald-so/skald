@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Prints the notes of the release of <version>: its section of CHANGELOG.md, the one release-plz
+# writes, without the heading. Fails when the CHANGELOG has no section for <version>, or more than
+# one, or the section is empty.
+# Usage: script/release-notes <version> [<changelog>], <changelog> CHANGELOG.md in the root by default.
+set -euo pipefail
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: $0 <version> [<changelog>]" >&2
+  exit 2
+fi
+root=$(cd "$(dirname "$0")/.." && pwd)
+changelog=${2:-$root/CHANGELOG.md}
+if [[ ! -f $changelog ]]; then
+  echo "release-notes: $changelog is missing" >&2
+  exit 1
+fi
+
+# The heading of the version, `## [0.1.0](<link>) - <date>`: the version in brackets, so not one of
+# a longer version, such as 0.1.0-beta.1.
+heading="^## \\[${1//./\\.}\\]"
+count=$(grep -cE "$heading" "$changelog" || true)
+if [[ $count != 1 ]]; then
+  echo "release-notes: $changelog has $count sections for $1, not one" >&2
+  exit 1
+fi
+# The section's lines, without the blank lines around them: the command substitution drops those
+# at the end.
+# ENVIRON, not -v: awk would read the backslashes of -v as escapes.
+notes=$(HEADING=$heading awk '/^## / { inside = $0 ~ ENVIRON["HEADING"]; next } inside' "$changelog" |
+  sed -e '/./,$!d')
+if [[ -z $notes ]]; then
+  echo "release-notes: the section of $1 in $changelog is empty" >&2
+  exit 1
+fi
+printf '%s\n' "$notes"
