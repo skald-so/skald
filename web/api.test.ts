@@ -11,6 +11,9 @@ const orval = join(
   "dist/bin/orval.mjs",
 );
 
+// Each check starts orval in a Node.js process: a loaded machine takes longer than vitest's 5 s.
+const orvalCheck = { timeout: 30_000 };
+
 /** Runs `orval --outdated`: compares src/api/ with the client generated from the spec. */
 function checkClient(...args: string[]) {
   const run = spawnSync(process.execPath, [orval, "--outdated", ...args], {
@@ -20,15 +23,19 @@ function checkClient(...args: string[]) {
   return { status: run.status, output: run.stdout + run.stderr };
 }
 
-test("the API client in src/api/ is generated from api/openapi.json", () => {
-  const { status, output } = checkClient();
-  expect(
-    status,
-    `src/api/ is stale, run \`npm run generate\`:\n${output}`,
-  ).toBe(0);
-});
+test(
+  "the API client in src/api/ is generated from api/openapi.json",
+  orvalCheck,
+  () => {
+    const { status, output } = checkClient();
+    expect(
+      status,
+      `src/api/ is stale, run \`npm run generate\`:\n${output}`,
+    ).toBe(0);
+  },
+);
 
-test("a spec change makes the API client outdated", () => {
+test("a spec change makes the API client outdated", orvalCheck, () => {
   const dir = mkdtempSync(join(tmpdir(), "skald-web-"));
   try {
     const spec = JSON.parse(
