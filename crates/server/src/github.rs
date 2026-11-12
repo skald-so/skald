@@ -121,15 +121,12 @@ impl GitHubApp {
             ]);
         let answer: Answer = read("token endpoint", response)?;
         match (answer.access_token, answer.error) {
-            (Some(token), None) if !token.is_empty() => Ok(token),
+            (Some(token), None) => Ok(token),
             (_, Some(error)) if error == "bad_verification_code" => Err(Refusal::Code),
-            (_, Some(error)) => Err(Refusal::GitHub(format!(
-                "GitHub's token endpoint refused the app: {}",
-                printable(&error)
+            (_, error) => Err(Refusal::GitHub(format!(
+                "GitHub's token endpoint gave no token: {}",
+                printable(error.as_deref().unwrap_or("no error"))
             ))),
-            _ => Err(Refusal::GitHub(
-                "GitHub's token endpoint gave no token".to_owned(),
-            )),
         }
     }
 
@@ -238,7 +235,7 @@ mod tests {
     #[test]
     fn client_secret_is_never_printed() {
         let secret = ClientSecret::new("s3cret".to_owned()).expect("a secret");
-        assert!(!format!("{secret:?}").contains("s3cret"));
+        assert_eq!(format!("{secret:?}"), "ClientSecret(…)");
         assert!(ClientSecret::new(String::new()).is_none());
     }
 }
