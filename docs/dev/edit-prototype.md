@@ -2,7 +2,7 @@
 
 The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
-- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness and the [measurement](#measurement)'s replay of real merges and classes of files, with its command, `measure`.
+- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness, the [measurement](#measurement)'s replay of real merges and classes of files, with its command, `measure`, and the [path normalization](#path-normalization) with its check of spellings, `spellings`.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. The harness's commits carry a fixed date, so they get the same hashes on every run; the client's snapshot commits keep the current time. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity, for the harness's commands the fixed date, and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
@@ -61,11 +61,21 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `report_gives_a_repository_without_merges_and_lifetimes` | A repository without merges: its tables give no range, lifetimes or largest sides |
 | `a_conflict_in_a_renamed_file_has_no_file_level_warning` | One side renames a file and edits a line of it, the other edits that line at the old path: the warning is on the old path, the conflict on the new one, and the table of conflicts without a file-level warning lists it |
 | `the_same_change_on_both_sides_is_counted` | Both sides make one change to a function and different changes to distant lines of another file: the merge is clean, and the function's file is counted as the same change at each level |
-| `measure_fetches_a_repository_at_its_commit_and_replays_its_merges` | The fixture's upstream fetched at the merge before its last: the merges replayed are those of that commit, and its 3 largest sides are timed; asking for one merge more than its history has fails |
+| `measure_fetches_a_repository_at_its_commit_and_replays_its_merges` | The fixture's upstream fetched at the merge before its last: the merges replayed are those of that commit, its 3 largest sides are timed, and the paths of its tree are those `git ls-tree` gives; asking for one merge more than its history has fails |
+| `report_gives_the_paths_that_share_a_fingerprint` | A tree with `README.md` and `Readme.md`, and a side that changes `docs/guide.md` and `Docs/Guide.md`, and `docs/café.md` in NFC and in NFD: the table lists each group with how its paths differ |
 | `files_of_each_class_are_classed_by_what_recognizes_them` | The noise fixture: the test repository with a lockfile, a migration, a script its `.gitattributes` marks `linguist-generated`, a schema with a marker and a snapshot, changed on both sides of merges, then the schema renamed on one side and edited on the other: each file's class and what recognized it; the rename's merge reads the marker from the second parent |
 | `each_way_of_handling_a_class_gives_the_expected_counts` | On the noise fixture: the counts of each class at each level, the files each signal recognized, the counts of each way of handling each class, and the merges whose sides add migrations: different ones of one number, different numbers, one number in different directories, the same one; edits of existing migrations add none |
 | `attributes_of_the_given_commit_mark_files_generated` | `linguist-generated`, set or `true`, `binary` and `-diff` mark a file generated, `linguist-generated=false` and `diff` do not; the attributes are those of the given commit, not of a later one without them |
 | `the_header_names_the_machine_and_the_git_version` | The lines before the tables: the operating system, the architecture and the number of CPUs, on macOS the CPU that `sysctl` names, and `git version` |
+| `the_file_system_and_the_settings_git_init_writes_are_found` | The [check of spellings](#path-normalization) finds the file system case-insensitive and normalization-insensitive where a directory holds one file once it is written under two names; `git init` writes `core.ignorecase` on a case-insensitive file system and `core.precomposeunicode` on macOS only |
+| `a_case_only_rename_gets_one_path_fingerprint` | `README.md` renamed to `Readme.md` with `git mv` and outside git, under each `core.ignorecase` setting: the edit set and its path fingerprints, at most one, by the file system's case sensitivity |
+| `names_in_nfc_and_nfd_get_one_path_fingerprint` | `café.md` written in NFC, written in NFD, and checked out from a commit that holds it in NFD, under each `core.precomposeunicode` setting: the forms of the names of the edit set and of the index, and one path fingerprint, by whether git precomposes names, on macOS with the setting on |
+| `every_spelling_of_one_path_gives_one_fingerprint` | Paths an agent's tools give for a clone's files: relative, with `.` and `..`, with backslashes, absolute as the temporary directory spells it and as the file system resolves it, through a symbolic link, from another worktree, in another case, with the file name in NFD, a deleted file; on Windows also with a lowercase drive letter and with forward slashes. Each maps to the file's path and gets its fingerprint, but backslashes outside Windows, which name another file; a file outside the repository or in another repository maps to none |
+| `paths_past_the_last_existing_component_stay_as_given` | `..` after a missing directory drops it; the root of the worktree, and a path that leads back to it, map to no file |
+| `line_endings_of_one_edit_give_its_fingerprints_under_each_autocrlf_setting` | One line edited on a clone without `core.autocrlf` with LF, and on a clone with each setting with the whole file written with CRLF and committed: the line endings of the checkout and of the stored file, and the fingerprints of both edits and those they share |
+| `the_check_prints_each_part` | The output of the check: the header, the file system, the settings of `git init`, and the rows of its tables |
+| `lf_and_crlf_versions_of_one_edit_give_the_same_hunk_and_symbol_fingerprints` | A Rust file stored with CRLF, an `impl` block naming its type over three lines; upstream stores it with LF. A machine on each base edits one line of a method, with its base's line endings: both publish the same fingerprints and overlap at hunk and symbol level |
+| `machines_with_macos_windows_and_linux_spellings_of_one_file_overlap` | Three machines each add one new file, named in NFC, in NFD with `core.precomposeunicode` off, and in another case, and edit one line of a tracked file, one with CRLF and `core.autocrlf`: each overlaps the other two on both files, at file and hunk level, under its own spelling |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
@@ -77,7 +87,7 @@ Open questions of edit comparison, and how the prototype answers them:
 | When to warn | [Measurement](#measurement): warnings at each level against `git merge-tree` conflicts |
 | Reservation TTL | [Measurement](#measurement): how long each side of a merge lived |
 | How to catch edits made via Bash and generators | Open |
-| Path normalization | Open |
+| Path normalization | [Path normalization](#path-normalization): one form of a path and of line endings, the paths of the measured repositories that share it, and what git does on macOS and Windows |
 | Noise from lockfiles and migrations | [Measurement](#measurement): warnings and conflicts by class of file, and ways of handling each class |
 | Whether intents like "replacing / extending" are needed | [Measurement](#measurement): whether both sides of a warning only add lines |
 
@@ -88,7 +98,7 @@ Open questions of edit comparison, and how the prototype answers them:
   - `--no-renames` lists a rename as a deletion and an addition, so both paths count without rename detection and its similarity threshold.
   - `--ignore-submodules=dirty`: a submodule counts when its commit changes, whatever the config and `.gitmodules` say, not when its work tree does; the snapshot records its commit only.
   - Ignored files, such as build output, are not edits.
-- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit path"`, the scope and the path, each after its length as a big-endian `u64`; 32 bytes per path. The path is as git gives it: relative to the root, with `/` separators, not normalized.
+- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit path"`, the scope and the path in its [normal form](#path-normalization), each after its length as a big-endian `u64`; 32 bytes per path.
 - **Scope:** the least root commit of the upstream's default branch.
   - Every clone has it without setup. It goes only into the HMAC; the server never sees it.
   - Rejected: the remote URL, which differs between HTTPS and SSH and for mirrors; a random ID per repository, which needs a step on each machine.
@@ -133,7 +143,7 @@ Open questions of edit comparison, and how the prototype answers them:
   - An insertion touches the boundary it goes into; a change of `n` lines touches the `n + 1` boundaries around and between them.
   - Two hunks share a boundary when they change the same or adjacent lines, or insert at one place: where `git merge-tree` conflicts. Changes with one unchanged line between them merge cleanly and share none.
   - An added file touches the one boundary of an empty file, so two machines adding one path match; a deleted file touches all of its boundaries.
-- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit hunk"`, the scope, the path, and the lines on either side of the boundary with their line endings, each after its length as a big-endian `u64`; empty at the start or the end of the file. No line numbers: lines added elsewhere in the file keep the fingerprint.
+- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit hunk"`, the scope, the path in its [normal form](#path-normalization), and the lines on either side of the boundary with their line endings, LF in place of CRLF, each after its length as a big-endian `u64`; empty at the start or the end of the file. No line numbers: lines added elsewhere in the file keep the fingerprint.
 - **Publication:** in one set with the path fingerprints. The server compares them alike and cannot tell them apart; a hunk match comes with a path match, since the path is in the HMAC. Each changed line of the merge base adds a fingerprint, so the server learns the size of the edits.
 - **Mapping back:** a machine maps shared hunk fingerprints to its own changed lines. On the same-lines scenarios these are the lines the exact check finds conflicting.
 - **False matches:**
@@ -156,7 +166,7 @@ Open questions of edit comparison, and how the prototype answers them:
 
   - Each language needs its grammar, compiled from C at build time, and the list of node kinds that are symbols with the field that names each.
   - Other files, `.tsx` and `.go` among them, get path and hunk fingerprints only.
-- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit symbol"`, the scope, the path, and the node kind and the name of each symbol from the outermost, each after its length as a big-endian `u64`. No line numbers or content: a symbol moved within its file keeps its fingerprint.
+- **Fingerprint:** HMAC-SHA256 with the space key over `"skald edit symbol"`, the scope, the path in its [normal form](#path-normalization), and the node kind and the name of each symbol from the outermost, LF in place of each CRLF of a name that spans lines, each after its length as a big-endian `u64`. No line numbers or content: a symbol moved within its file keeps its fingerprint.
 - **Publication:** in one set with the path and hunk fingerprints. The server cannot tell them apart: each changed symbol adds to the total it sees.
 - **Matches without a conflict:**
   - Edits to distant lines of one function, which `git merge-tree` merges cleanly: what this level is for.
@@ -168,6 +178,93 @@ Open questions of edit comparison, and how the prototype answers them:
   - A type's fields and its methods are different symbols; so are a Rust struct and its `impl` block.
 - **Open:** a symbol moved to another file, which gets another fingerprint; files with syntax errors, as during an edit; a line that holds two symbols, which counts towards the last; more languages and extensions, such as `.tsx` and JavaScript.
 - **Cost:** at most two parses of each changed file in a supported language, one of each version, the merge base and the snapshot, that holds changed lines. Cost on real repositories: [Measurement](#measurement).
+
+## Path normalization
+One file gets one fingerprint on every machine, whatever its system's spelling of its path.
+
+- **Form:** the path relative to the repository root with `/` separators, as git gives it, each character lowercased with Rust's `char::to_lowercase`, in Unicode NFC. Hunks take the lines on either side of a boundary, and symbols their names, with LF in place of each CRLF: [`fingerprint.rs`](../../prototypes/edits/overlap/src/fingerprint.rs), [`paths.rs`](../../prototypes/edits/overlap/src/paths.rs).
+  - Git gives a tracked file's path as the index holds it, the same on every clone. Spellings differ for new files, which git lists as the file system names them, and for the paths an agent's tools give.
+  - Line endings matter where two machines' bases store a file's lines with different endings, such as before and after a commit that renormalizes it: the boundaries' lines come from each machine's base.
+- **Case:** folded. A case-insensitive file system, the default on macOS and Windows, holds one file where a case-sensitive one can hold two; with case kept, a file two machines add in two cases, one file on macOS, would get two fingerprints. Folded, two files of one repository that differ only in case share a fingerprint: a false match where a case-sensitive file system holds both. No path of the measured repositories shares a fingerprint with another: none in the tree at each one's commit or among the paths the replayed sides change ([Results](#results), the last table).
+- **Paths an agent's tools give:** `paths::relative` maps a path to the path of its file relative to the root of the repository's worktree that holds it, with `/` separators.
+  - A relative path is taken from the machine's worktree. Each component that exists is resolved with `std::fs::canonicalize`: symbolic links, `..`, drive letters and both separators on Windows, and the case the directory holds on macOS and Windows. Components from the first that does not resolve on, such as a deleted file's name, stay as given; `..` drops the one before it.
+  - The worktree is the one `git rev-parse --show-toplevel` gives for the deepest directory that exists; it must share the machine's `git rev-parse --git-common-dir`, so another worktree of the repository maps, another repository does not.
+- **Check:** `cargo run --manifest-path prototypes/edits/Cargo.toml --bin spellings`; it needs `git`. It creates its repositories in a temporary directory, deleted at the end, and prints, in Markdown, the machine, the git version, the file system of the temporary directory and the settings `git init` writes, then:
+  - a case-only rename of `README.md` to `Readme.md`, with `git mv` and outside git, under each `core.ignorecase` setting: the edit set and its path fingerprints;
+  - `café.md` written in NFC, in NFD, and checked out from a commit that holds it in NFD, under each `core.precomposeunicode` setting: the forms of the names in the edit set and in the index, and the path fingerprints;
+  - the spellings of the paths of a clone's files that an agent's tools give: what each maps to and whether it gets the file's fingerprint;
+  - a one-line edit written with LF on a clone without `core.autocrlf`, and written with CRLF over the whole file and committed on a clone with each setting: the line endings of the checkout and of the stored file, and the fingerprints of both edits and those they share.
+  - Git runs as in the [harness](#edit-comparison-prototype): without the global and system config, so `core.autocrlf` is unset unless the check sets it.
+  - The tests of [`spellings.rs`](../../prototypes/edits/overlap/tests/spellings.rs) run each part on the file system they run on and check what it gives there; `script/test` runs them, not the command.
+- **macOS:** the check on this Mac's own volume, APFS, case-insensitive:
+
+Machine: macos aarch64, Apple M3 Max, 14 CPUs
+Git: git version 2.50.1 (Apple Git-155)
+
+File system: case-insensitive: yes; Unicode normalization-insensitive: yes
+`git init` sets: `core.ignorecase` true, `core.precomposeunicode` true
+
+Case-only rename of `README.md` to `Readme.md`
+
+| `core.ignorecase` | Rename | Edit set | Path fingerprints |
+|---|---|---|---|
+| true | git mv | `README.md`, `Readme.md` | 1 |
+| true | file system | none | 0 |
+| false | git mv | the rename fails | - |
+| false | file system | `Readme.md` | 1 |
+
+File names in NFC and NFD: `café.md`, by the form of each name
+
+| `core.precomposeunicode` | File | Edit set | Index | Path fingerprints |
+|---|---|---|---|---|
+| true | written in NFC | NFC | NFC | 1 |
+| true | written in NFD | NFC | NFC | 1 |
+| true | checked out from a commit in NFD | NFC | NFD | 1 |
+| false | written in NFC | NFC | NFC | 1 |
+| false | written in NFD | NFD | NFD | 1 |
+| false | checked out from a commit in NFD | none | NFD | 0 |
+
+Paths an agent's tools give
+
+| Spelling | File | Maps to | The file's path fingerprint |
+|---|---|---|---|
+| relative | `src/inventory.rs` | `src/inventory.rs` | yes |
+| relative, with `.` and `..` | `src/inventory.rs` | `src/inventory.rs` | yes |
+| relative, with backslashes | `src/inventory.rs` | `src\inventory.rs` | no |
+| absolute, as the temporary directory spells it | `src/inventory.rs` | `src/inventory.rs` | yes |
+| absolute, resolved by the file system | `src/inventory.rs` | `src/inventory.rs` | yes |
+| through a symbolic link to the clone | `src/inventory.rs` | `src/inventory.rs` | yes |
+| from another worktree | `src/inventory.rs` | `src/inventory.rs` | yes |
+| in another case | `src/inventory.rs` | `src/inventory.rs` | yes |
+| with the file name in NFD | `docs/café.md` | `docs/café.md` | yes |
+| a deleted file | `docs/guide.md` | `docs/guide.md` | yes |
+| outside the repository | `src/inventory.rs` | no worktree of the repository | no |
+| in another repository | `src/inventory.rs` | no worktree of the repository | no |
+
+Line endings of one edit
+
+| `core.autocrlf` | Checkout of an LF file | Stored once written with CRLF | Fingerprints of an edit written with LF | Of the edit written with CRLF | Shared |
+|---|---|---|---|---|---|
+| true | CRLF | LF | 4 | 4 | 4 |
+| input | LF | LF | 4 | 4 | 4 |
+| false | LF | CRLF | 4 | 13 | 4 |
+- **Windows:** the `Windows` job of [`.github/workflows/edits-windows.yml`](../../.github/workflows/edits-windows.yml), on `windows-latest`, runs the tests of `spellings.rs` and the check ([infrastructure.md](infrastructure.md), "PR checks"). Its check in run @@RUN@@:
+
+@@WIN@@
+- **Findings,** from the two outputs above:
+  - Case-only rename: on macOS and Windows, with `core.ignorecase` true, as `git init` sets it there, `git mv` lists both paths, which share one path fingerprint; a rename outside git, as `mv` or an editor makes it, changes nothing git lists, so the machine publishes nothing for it. With `core.ignorecase` false, `git mv` fails, and a rename outside git lists the new name, with the old name's fingerprint.
+  - On a case-sensitive file system, as the `Rust` job checks on Linux with `a_case_only_rename_gets_one_path_fingerprint`: with `core.ignorecase` true a rename outside git lists only the old name, as deleted; otherwise both names. One path fingerprint each time.
+  - NFC and NFD: on macOS with `core.precomposeunicode` true, as `git init` sets it there, git lists and stores a new name in NFC, whatever form it is written in. A name a commit holds in NFD, checked out there, lists as a new file in NFC; normalized, it gets the fingerprint of the file, so it matches every other machine's edit of it. With the setting false, and on Windows under either setting, git keeps names as written.
+  - Windows takes NFC and NFD for two names, as a case-sensitive file system takes two cases: normalized, two such files of one repository share a fingerprint.
+  - Tool paths: every spelling maps to the file's path and gets its fingerprint on both systems, but backslashes outside Windows, which name another file there. With the file name in NFD, macOS maps to the name in NFC, as the directory holds it; Windows keeps the NFD name.
+  - Line endings: the same on both systems. With `core.autocrlf` true or input, git stores the file written with CRLF with LF: the edit gets the same 4 fingerprints as the one written with LF. With false, it stores CRLF and every line changes: 13 fingerprints, the LF edit's 4 among them, so it matches every edit of the file at hunk level.
+  - Windows inputs: the job makes each one on the runner: the repositories and files on its volume, the spellings of their paths, the name in NFD, and the line endings under each `core.autocrlf` setting; the spellings with a lowercase drive letter and with forward slashes are the real path rewritten. It cannot make git precompose names, which only macOS does, or a normalization-insensitive file system: the macOS check covers them. Not checked: network shares, whose paths have no drive letter, and directories set case-sensitive.
+- **Open:**
+  - `char::to_lowercase` keeps some letters apart that a case-insensitive file system may take for one, such as Greek `ς` and `σ`, whose uppercase is one letter, `Σ`. Not checked against the case tables of APFS and NTFS.
+  - A rename outside git on a case-insensitive file system with `core.ignorecase` true: the diff never sees it; whether hooks do is the question of edits via Bash.
+  - A name a commit holds in NFD, checked out on macOS: its NFC copy warns against every machine that edits the file.
+  - A path whose last component is a symbolic link the repository tracks maps to the link's target, not to the link. Not checked.
+  - A path in a submodule maps to none: the submodule is another repository.
 
 ## Measurement
 How often the warnings of each level match the conflicts of real merges.
@@ -202,6 +299,7 @@ How often the warnings of each level match the conflicts of real merges.
   - File level only: its files publish path fingerprints only, and a path match warns at every level.
   - Warned apart: its warnings go to a list of their own. A warning without a conflict counts in the main list only; a conflict has a warning when either list warns about one of its files.
 - **Migrations both sides add:** each side adds a migration, a path absent from the merge base, to one directory; different migrations of one number: two of them with one number and different names. A file-level warning on a migration is one on any migration of the merge.
+- **Paths that share a fingerprint:** the groups of paths, of the tree at the repository's commit and of all the paths the replayed sides change, that share their [normal form](#path-normalization), with how they differ: in case, in Unicode normalization, or both.
 
 ### Results
 Machine: macos aarch64, Apple M3 Max, 14 CPUs
@@ -266,15 +364,15 @@ Cost on the largest sides; times are not compared on a rerun
 
 | Repository | Merge | Parent | File | Hunk | Symbol | Bytes | Time, ms |
 |---|---|---|---|---|---|---|---|
-| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 17181 |
-| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15296 |
-| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15058 |
-| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 14528 |
-| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 8843 |
-| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 4816 |
-| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2353 |
-| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7461 |
-| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 10020 |
+| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 17811 |
+| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15649 |
+| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15430 |
+| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 14874 |
+| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 9230 |
+| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 5301 |
+| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2526 |
+| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7165 |
+| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 9791 |
 
 Warnings and conflicts by class, in files
 
@@ -347,6 +445,11 @@ Migrations both sides add, in merges
 | drizzle-orm | 2 | 0 | 0 | 0 |
 | netbox | 15 | 12 | 14 | 12 |
 
+Paths that share a fingerprint once case is folded and Unicode normalized
+
+| Repository | Paths of | Differ in | Paths |
+|---|---|---|---|
+
 ### Findings
 - **When to warn**, in merges:
   - Hunk level: no merge that `git merge-tree` does not merge cleanly is without a warning; 3, 9 and 6 warned merges merge cleanly.
@@ -356,7 +459,7 @@ Migrations both sides add, in merges
 - **Conflicts without a file-level warning:** each listed one is in a merge where one side renamed the conflict's file or its directory, by `git diff -M` from the merge base, or in the merge with two merge bases. The edit sets list a rename by both of its paths ([File fingerprints](#file-fingerprints)) and do not follow it; `git merge-tree` follows renames and names the paths after them. Each of these merges has a file-level warning on another file.
 - **Reservation TTL:** a TTL shorter than the median, 61.8, 116.7 and 51.7 hours, ends before at least half of the sides are merged.
 - **Intents:** at hunk level, 33 of 58, 33 of 505 and 14 of 102 warnings where both sides only add lines conflict: insertions at one place can conflict, so an intent of only adding lines does not rule a conflict out.
-- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2353 to 17181 ms on this Mac.
+- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2526 to 17811 ms on this Mac.
 - **Noise by class,** at file level: other files hold 452 of diesel's 479 warnings without a conflict, 1076 of drizzle-orm's 1094 and 716 of netbox's 726; lockfiles, migrations and generated code hold the rest.
 - **Lockfiles:** diesel has no lockfile warning; drizzle-orm has 9 of 19 without a conflict, netbox 0 of 5. Left out, they hide conflicts: conflicts without a file-level warning rise from 3 to 13 on drizzle-orm and from 0 to 5 on netbox.
 - **Migrations:** 4, 6 and 9 warnings, none of them with a conflict; no conflict of the measured merges is of a migration. Left out, they hide no conflict at any level.

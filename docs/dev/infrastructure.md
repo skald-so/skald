@@ -24,6 +24,7 @@ A human takes one action per release: merging the Release PR.
 - `dev` — the main and default branch; PRs from people and agents go here.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
+  - `Windows`, the edit comparison prototype's job, is not required: its workflow runs only for PRs that change the prototype, and a required check whose workflow does not run keeps a PR waiting.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest release; only CI moves it.
   - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.
@@ -32,7 +33,7 @@ A human takes one action per release: merging the Release PR.
 - Branch rules are GitHub rulesets; no person bypasses them, admins included.
 
 ## PR checks
-All checks except e2e, the PR title and the CLA run via `script/test`, the same script agents and people use.
+All checks except e2e, the PR title, the CLA and the edit comparison prototype's Windows job run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
@@ -43,6 +44,7 @@ All checks except e2e, the PR title and the CLA run via `script/test`, the same 
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
+- **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
 
