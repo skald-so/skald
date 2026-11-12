@@ -116,8 +116,8 @@ fn confirm(agent: Agent, dir: &str) -> io::Result<ExitCode> {
     })
 }
 
-/// Waits up to `limit` for a message in `source`, as one waiter per source: hands the waiting
-/// messages over on stderr and exits 2.
+/// Waits up to `limit` for a message in `source`, as one waiter per source, looking at least once:
+/// hands the waiting messages over on stderr and exits 2.
 fn wait(source: &Source, limit: Duration) -> io::Result<ExitCode> {
     // Claude Code gives the hook its input; the wait needs none.
     let _ = io::copy(&mut io::stdin(), &mut io::sink());
@@ -126,7 +126,7 @@ fn wait(source: &Source, limit: Duration) -> io::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     let deadline = Instant::now() + limit;
-    while Instant::now() < deadline {
+    loop {
         let mut err = io::stderr().lock();
         let handed = source
             .hand_over(|messages| write!(err, "{}", render(messages)).and_then(|()| err.flush()))?;
@@ -134,7 +134,10 @@ fn wait(source: &Source, limit: Duration) -> io::Result<ExitCode> {
             return Ok(ExitCode::from(2));
         }
         drop(err);
-        std::thread::sleep(Duration::from_millis(200));
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(ExitCode::SUCCESS);
+        }
+        std::thread::sleep(left.min(Duration::from_millis(200)));
     }
-    Ok(ExitCode::SUCCESS)
 }

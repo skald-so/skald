@@ -500,4 +500,10 @@ fn wait_hands_a_message_over_on_stderr_and_exits_2_to_wake_the_session() {
     assert!(woke.stdout.is_empty());
     assert_carries_once(&stderr(&woke), std::slice::from_ref(&message));
     assert_handed_over(&source, &[message]);
+
+    // A wait of no time still hands over a message that waits.
+    let waiting = source.add("alice", "the next token").unwrap();
+    let at_once = run(&["--wait", path, "0"], "", &[]);
+    assert_eq!(at_once.status.code(), Some(2), "{}", stderr(&at_once));
+    assert_carries_once(&stderr(&at_once), std::slice::from_ref(&waiting));
 }
