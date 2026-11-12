@@ -65,9 +65,7 @@ impl Cert {
         signature: [u8; 64],
         proof: [u8; 64],
     ) -> Result<Self, DecodeError> {
-        let decoded = cbor::parse(&body)
-            .and_then(|item| CertBody::decode(&item))
-            .map_err(|error| field_error("cert.body", FieldProblem::Embedded(Box::new(error))))?;
+        let decoded = cbor::decode_embedded(&body, "cert.body")?;
         Ok(Self {
             body: decoded,
             body_bytes: body,

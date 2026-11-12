@@ -2,7 +2,7 @@
 //! forbids, and what keys and errors show.
 
 use skald_crypto::{
-    ChainProblem, DeviceCheckError, SignatureError, SigningKey, check_device, issue,
+    ChainProblem, DeviceCheckError, SignatureError, SigningKey, check_device, issue, verify,
 };
 use skald_proto::{
     AccountId, Cert, CertBody, DecodeError, DeviceId, DeviceKind, FieldProblem, Unknown,
@@ -114,6 +114,42 @@ fn each_failed_check_has_its_reason() {
         chain(2, ChainProblem::OtherAccount)
     );
     assert_eq!(check(&[first, second.clone()], 2), Ok(second));
+}
+
+#[test]
+fn a_device_hanging_off_a_loop_of_issuers_is_not_valid() {
+    // 1 issued by 2, 2 by 3, 3 by 4 and 4 by 2: the chain of 1 repeats 2, but not 1.
+    let certs = [
+        issued(1, DeviceKind::Client, Some(2), 1),
+        issued(2, DeviceKind::Client, Some(3), 1),
+        issued(3, DeviceKind::Client, Some(4), 1),
+        issued(4, DeviceKind::Client, Some(2), 1),
+    ];
+    let master = signing_key(MASTER).public_key();
+    assert_eq!(
+        check_device(&master, &certs, device_id(1)).cloned(),
+        chain(4, ChainProblem::Repeats)
+    );
+}
+
+#[test]
+fn a_public_key_or_r_of_small_order_verifies_nothing() {
+    // The identity point as the public key and as R, with S = 0: a signature over any data with
+    // a verifier that does not reject small orders.
+    let mut identity = [0; 32];
+    identity[0] = 1;
+    let mut signature = [0; 64];
+    signature[..32].copy_from_slice(&identity);
+    for (label, parts) in [
+        ("skald cert", [b"body".as_slice()].as_slice()),
+        ("skald proof", &[]),
+        ("", &[b"a", b"b"]),
+    ] {
+        assert_eq!(
+            verify(&identity, label, parts, &signature),
+            Err(SignatureError)
+        );
+    }
 }
 
 #[test]

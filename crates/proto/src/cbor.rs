@@ -506,10 +506,18 @@ impl<'b> Item<'b> {
 
     /// A byte string that holds one item of `T`, for CDDL `bstr .cbor T`.
     pub(crate) fn embedded<T: Codec>(&self, field: &'static str) -> Result<T, DecodeError> {
-        parse(self.bytes(field)?)
-            .and_then(|item| T::decode(&item))
-            .map_err(|error| field_error(field, FieldProblem::Embedded(Box::new(error))))
+        decode_embedded(self.bytes(field)?, field)
     }
+}
+
+/// `bytes` as one item of `T`, the bytes of `field`, for CDDL `bstr .cbor T`.
+pub(crate) fn decode_embedded<T: Codec>(
+    bytes: &[u8],
+    field: &'static str,
+) -> Result<T, DecodeError> {
+    parse(bytes)
+        .and_then(|item| T::decode(&item))
+        .map_err(|error| field_error(field, FieldProblem::Embedded(Box::new(error))))
 }
 
 /// The fields of a decoded map, taken one by one; the rest are [`Unknown`].
