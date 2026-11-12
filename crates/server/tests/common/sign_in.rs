@@ -1,6 +1,8 @@
 //! A `skald-server` set up for GitHub sign-in against the GitHub stand-in, and a person signing in
 //! to it in a browser.
 
+use std::time::Duration;
+
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
 
@@ -98,7 +100,7 @@ impl SignIn {
     /// A server whose public address `public` gives for the port the server listens on.
     fn new(public: impl Fn(u16) -> String, args: &[&str], secret: &str) -> Self {
         let db = TestDb::create();
-        let (github, server, public) = on_free_port(|port| {
+        let (github, server, public) = on_free_port(Duration::from_secs(30), |port| {
             let public = public(port);
             let github = GitHub::start(App {
                 client_id: CLIENT_ID.to_owned(),

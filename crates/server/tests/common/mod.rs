@@ -71,9 +71,9 @@ pub fn wait(child: &mut Child, timeout: Duration) -> ExitStatus {
 /// Starts a server whose address must be known before it starts: `launch` starts it listening on
 /// `127.0.0.1:<port>`, as [`Server::try_launch`] does. The port is one the OS gave and took back,
 /// which another socket can take before the server listens on it; `launch` then runs again with
-/// another port, for up to 30 s.
-pub fn on_free_port<T>(mut launch: impl FnMut(u16) -> Result<T, String>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(30);
+/// another port, for up to `within`.
+pub fn on_free_port<T>(within: Duration, mut launch: impl FnMut(u16) -> Result<T, String>) -> T {
+    let deadline = Instant::now() + within;
     loop {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let port = listener.local_addr().expect("local address").port();
@@ -83,7 +83,7 @@ pub fn on_free_port<T>(mut launch: impl FnMut(u16) -> Result<T, String>) -> T {
             Err(taken) if Instant::now() < deadline => {
                 eprintln!("skald-server's port was taken, trying another: {taken:?}");
             }
-            Err(taken) => panic!("no free port for skald-server within 30 s: {taken:?}"),
+            Err(taken) => panic!("no free port for skald-server within {within:?}: {taken:?}"),
         }
     }
 }
