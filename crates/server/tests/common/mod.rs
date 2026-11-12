@@ -68,11 +68,24 @@ pub fn wait(child: &mut Child, timeout: Duration) -> ExitStatus {
     }
 }
 
-/// A free local port: one the OS gave and took back, for a server whose address must be known
-/// before it starts.
-pub fn free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    listener.local_addr().expect("local address").port()
+/// Starts a server whose address must be known before it starts: `launch` starts it listening on
+/// `127.0.0.1:<port>`, as [`Server::try_launch`] does. The port is one the OS gave and took back,
+/// which another socket can take before the server listens on it; `launch` then runs again with
+/// another port, for up to 30 s.
+pub fn on_free_port<T>(mut launch: impl FnMut(u16) -> Result<T, String>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let port = listener.local_addr().expect("local address").port();
+        drop(listener);
+        match launch(port) {
+            Ok(launched) => return launched,
+            Err(taken) if Instant::now() < deadline => {
+                eprintln!("skald-server's port was taken, trying another: {taken:?}");
+            }
+            Err(taken) => panic!("no free port for skald-server within 30 s: {taken:?}"),
+        }
+    }
 }
 
 /// A `skald-server` listening on a local port; killed on drop.
@@ -99,6 +112,18 @@ impl Server {
     /// Starts the server on `db`, listening on `listen`, with the extra arguments `args` and the
     /// environment variables `envs`, as [`Server::start`] does.
     pub fn launch(db: &TestDb, listen: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
+        Self::try_launch(db, listen, args, envs)
+            .unwrap_or_else(|line| panic!("unexpected skald-server output: {line:?}"))
+    }
+
+    /// As [`Server::launch`]; `Err` holds what the server printed if it could not listen on
+    /// `listen` because the address is in use.
+    pub fn try_launch(
+        db: &TestDb,
+        listen: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Result<Self, String> {
         let url = db.url();
         let mut all = vec!["--listen", listen, "--database-url", &url];
         all.extend_from_slice(args);
@@ -115,19 +140,24 @@ impl Server {
         stderr
             .read_line(&mut line)
             .expect("read skald-server stderr");
-        let base = line
-            .trim_end()
-            .strip_prefix("skald-server: listening on ")
-            .unwrap_or_else(|| panic!("unexpected skald-server output: {line:?}"))
-            .to_owned();
+        let Some(base) = line.trim_end().strip_prefix("skald-server: listening on ") else {
+            let _ = child.kill();
+            let _ = child.wait();
+            let in_use = format!("skald-server: cannot listen on {listen}: Address already in use");
+            if line.starts_with(&in_use) {
+                return Err(line);
+            }
+            panic!("unexpected skald-server output: {line:?}");
+        };
+        let base = base.to_owned();
         let output = Arc::new(Mutex::new(line));
         let readers = vec![collect(stderr, &output), collect(stdout, &output)];
-        Server {
+        Ok(Server {
             child,
             base,
             output,
             readers,
-        }
+        })
     }
 
     /// The address it listens on, e.g. `http://127.0.0.1:41234`.

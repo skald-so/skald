@@ -6,7 +6,7 @@ use std::net::TcpListener;
 use std::process::Command;
 
 use common::spec::{spec, spec_bytes, spec_violations};
-use common::{Response, SERVER, Server, TestDb, start_failure};
+use common::{Response, SERVER, Server, TestDb, on_free_port, start_failure};
 use serde_json::{Value, json};
 
 impl Response {
@@ -215,4 +215,28 @@ fn exits_with_error_when_address_is_taken() {
         stderr.starts_with(&format!("skald-server: cannot listen on {addr}: ")),
         "stderr: {stderr:?}"
     );
+}
+
+/// The tests' servers whose address must be known before they start: the port they are given can
+/// be taken before they listen on it.
+#[test]
+fn a_test_server_whose_port_is_taken_before_it_listens_starts_on_another() {
+    let db = TestDb::create();
+    let holder = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let taken = holder.local_addr().expect("local address").port();
+    let mut launches = Vec::new();
+
+    // The first launch is on the taken port, as if another socket took the one it was given.
+    let server = on_free_port(|port| {
+        let port = if launches.is_empty() { taken } else { port };
+        let launched = Server::try_launch(&db, &format!("127.0.0.1:{port}"), &[], &[]);
+        launches.push((port, launched.is_ok()));
+        launched
+    });
+
+    assert_eq!(launches.first(), Some(&(taken, false)), "{launches:?}");
+    let &(port, listens) = launches.last().expect("a launch");
+    assert!(listens && port != taken, "{launches:?}");
+    assert_eq!(server.base(), format!("http://127.0.0.1:{port}"));
+    assert_eq!(server.get("/health").status, 200);
 }

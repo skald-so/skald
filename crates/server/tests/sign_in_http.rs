@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use common::browser::Browser;
 use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn, github_settings};
-use common::{Response, SERVER, Server, TestDb, free_port, get_url};
+use common::{Response, SERVER, Server, TestDb, get_url};
 use skald_github_stand_in::{App, Endpoint, Fault, GitHub, User};
 
 /// A client secret other than the one the stand-in's app has.
@@ -250,9 +250,11 @@ fn github_settings_that_do_not_fit_together_stop_the_start() {
 #[test]
 fn the_return_page_request_carries_the_session_cookie() {
     let browser = Browser::launch();
-    let port = free_port();
-    let recorder = Recorder::start(port);
-    let public = format!("http://skald.test:{}", recorder.port);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let public = format!(
+        "http://skald.test:{}",
+        listener.local_addr().expect("local address").port()
+    );
     let db = TestDb::create();
     // The stand-in's app takes any callback: this one is the proxy's.
     let github = GitHub::start(App {
@@ -260,12 +262,13 @@ fn the_return_page_request_carries_the_session_cookie() {
         client_secret: CLIENT_SECRET.to_owned(),
         callback: None,
     });
-    let _server = Server::launch(
+    let server = Server::launch(
         &db,
-        &format!("127.0.0.1:{port}"),
+        "127.0.0.1:0",
         &github_settings(&public, &github),
         &[("SKALD_GITHUB_CLIENT_SECRET", CLIENT_SECRET)],
     );
+    let recorder = Recorder::start(listener, server.base());
     let ada = User::new(1_402_000_006, "ada-landing-standin");
     github.put_user(ada.clone());
 
@@ -291,26 +294,30 @@ fn the_return_page_request_carries_the_session_cookie() {
 /// A request's path and `Cookie` header.
 type Hit = (String, Option<String>);
 
-/// A plain HTTP proxy in front of the server on a local port that records each request's path and
+/// A plain HTTP proxy on `listener` in front of the server that records each request's path and
 /// `Cookie` header. It closes each connection after one exchange, so it sees every request.
 struct Recorder {
-    port: u16,
     hits: Arc<Mutex<Vec<Hit>>>,
 }
 
 impl Recorder {
-    fn start(target: u16) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-        let port = listener.local_addr().expect("local address").port();
+    /// Starts the proxy on `listener` in front of the server at `target`, e.g.
+    /// `http://127.0.0.1:41234`.
+    fn start(listener: TcpListener, target: &str) -> Self {
+        let target = target
+            .strip_prefix("http://")
+            .expect("an http:// address")
+            .to_owned();
         let hits = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&hits);
         thread::spawn(move || {
             for client in listener.incoming().flatten() {
                 let recorded = Arc::clone(&recorded);
-                thread::spawn(move || forward(client, target, &recorded));
+                let target = target.clone();
+                thread::spawn(move || forward(client, &target, &recorded));
             }
         });
-        Recorder { port, hits }
+        Recorder { hits }
     }
 
     fn hits(&self) -> Vec<Hit> {
@@ -334,9 +341,9 @@ impl Recorder {
     }
 }
 
-/// Forwards one request without a body from `client` to the server on `target` with
-/// `Connection: close`, records it in `hits`, and copies the answer back.
-fn forward(client: TcpStream, target: u16, hits: &Mutex<Vec<Hit>>) {
+/// Forwards one request without a body from `client` to the server at `target`, e.g.
+/// `127.0.0.1:41234`, with `Connection: close`, records it in `hits`, and copies the answer back.
+fn forward(client: TcpStream, target: &str, hits: &Mutex<Vec<Hit>>) {
     let mut reader = BufReader::new(client.try_clone().expect("clone the stream"));
     let mut head = Vec::new();
     let mut line = String::new();
@@ -361,7 +368,7 @@ fn forward(client: TcpStream, target: u16, hits: &Mutex<Vec<Hit>>) {
     };
     hits.lock().expect("hits").push((path, header("cookie")));
 
-    let mut upstream = TcpStream::connect(("127.0.0.1", target)).expect("reach the server");
+    let mut upstream = TcpStream::connect(target).expect("reach the server");
     let mut forwarded: Vec<_> = head
         .into_iter()
         .filter(|line| {
