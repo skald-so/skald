@@ -7,6 +7,8 @@ exclude_globs = [
   "live/src/pty.rs",
   "live/src/app.rs",
   "live/src/subscription.rs",
+  "live/src/wake_run.rs",
+  "live/src/read_run.rs",
   "testing/src/lib.rs",
 ]
 # cargo-mutants builds and tests only the mutated packages in its baseline run; live-check's tests
