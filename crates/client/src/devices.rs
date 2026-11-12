@@ -228,7 +228,8 @@ fn date(seconds: u64) -> String {
     let leap = |year: u64| {
         year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
     };
-    loop {
+    // A cycle holds 400 years.
+    for _ in 0..400 {
         let length = if leap(year) { 366 } else { 365 };
         if day < length {
             break;
