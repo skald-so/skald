@@ -8,29 +8,106 @@ use std::process::ExitCode;
 
 use edit_overlap::replay::REPOSITORIES;
 use edit_overlap::sessions::{self, Kind, Session, Step};
-use edit_overlap::tools::{Generator, Pins};
+use edit_overlap::tools::{Install, Installer, Pin, Toolset};
 
-/// The Rust toolchain the sessions run.
-const PINS: Pins = Pins {
-    rustc: "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
-    cargo: "cargo 1.99.1 (5f94df478 2026-08-27)",
-    rustfmt: "rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13)",
-};
-
-/// Diesel CLI from crates.io with the lockfile it is published with, for SQLite only, built from
-/// SQLite's bundled source.
-const GENERATOR: Generator = Generator {
-    install: &[
-        "diesel_cli",
-        "--version",
-        "2.3.14",
-        "--locked",
-        "--no-default-features",
-        "--features",
-        "sqlite-bundled",
+/// The tools the sessions run, each pinned. The npm and pip tools are those the repositories use,
+/// at the versions they name: drizzle-orm's `packageManager`, the `dprint` of its lockfile and its
+/// own drizzle-kit and drizzle-orm; netbox's `packageManager` and the ruff of its `pyproject.toml`.
+const TOOLSET: Toolset = Toolset {
+    toolchain: &[
+        Pin {
+            tool: "rustc",
+            version: "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+        },
+        Pin {
+            tool: "cargo",
+            version: "cargo 1.99.1 (5f94df478 2026-08-27)",
+        },
+        Pin {
+            tool: "rustfmt",
+            version: "rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13)",
+        },
     ],
-    binary: "diesel",
-    version: "Version: 2.3.14",
+    system: &[
+        Pin {
+            tool: "node",
+            version: "v26.13.0",
+        },
+        Pin {
+            tool: "npm",
+            version: "11.20.0",
+        },
+        Pin {
+            tool: "python3",
+            version: "Python 3.13.2",
+        },
+    ],
+    installs: &[
+        // Diesel CLI from crates.io with the lockfile it is published with, for SQLite only, built
+        // from SQLite's bundled source.
+        Install {
+            installer: Installer::Cargo,
+            args: &[
+                "diesel_cli",
+                "--version",
+                "2.3.14",
+                "--locked",
+                "--no-default-features",
+                "--features",
+                "sqlite-bundled",
+            ],
+            pins: &[Pin {
+                tool: "diesel",
+                version: "Version: 2.3.14",
+            }],
+        },
+        Install {
+            installer: Installer::Npm,
+            args: &[
+                "pnpm@10.6.3",
+                "yarn@1.22.22",
+                "dprint@0.46.3",
+                "drizzle-kit@0.31.11",
+                "drizzle-orm@0.45.4",
+            ],
+            pins: &[
+                Pin {
+                    tool: "pnpm",
+                    version: "10.6.3",
+                },
+                Pin {
+                    tool: "yarn",
+                    version: "1.22.22",
+                },
+                Pin {
+                    tool: "dprint",
+                    version: "dprint 0.46.3",
+                },
+                Pin {
+                    tool: "drizzle-kit",
+                    version: "drizzle-kit: v0.31.11",
+                },
+                Pin {
+                    tool: "drizzle-kit",
+                    version: "drizzle-orm: v0.45.4",
+                },
+            ],
+        },
+        Install {
+            installer: Installer::Pip,
+            args: &["ruff==0.17.4"],
+            pins: &[
+                Pin {
+                    tool: "pip",
+                    version: "pip 24.3.1",
+                },
+                Pin {
+                    tool: "ruff",
+                    version: "ruff 0.17.4",
+                },
+            ],
+        },
+    ],
 };
 
 /// The diesel example the Rust session works on.
@@ -113,20 +190,27 @@ const DIESEL: Session = Session {
 };
 
 /// The session on drizzle-orm: an edit, a class renamed with `sed` in a named file and in files a
-/// glob gives, a module moved and edited, a changelog deleted, and an edit restored.
+/// glob gives, a module moved and edited, the repository formatted with `dprint`, a changelog
+/// deleted, a dependency removed and the lockfile rewritten offline with pnpm, a migration
+/// generated with drizzle-kit from a new schema, and an edit restored.
 const DRIZZLE: Session = Session {
     repository: "drizzle-orm",
-    setup: &[],
+    // Fills pnpm's metadata cache with the packages of its lockfile, which it resolves again, and
+    // dprint's with its plugins; the lockfile stays as it is.
+    setup: &[
+        "cp pnpm-lock.yaml {scratch}/pnpm-lock.yaml && pnpm install --resolution-only --ignore-scripts --silent && cp {scratch}/pnpm-lock.yaml pnpm-lock.yaml",
+        "dprint output-resolved-config > /dev/null",
+    ],
     steps: &[
         Step::Edit {
             path: "drizzle-orm/src/logger.ts",
             old: "this.writer.write(`Query: ${query}${paramsStr}`);",
-            new: "this.writer.write(`Query (drizzle): ${query}${paramsStr}`);",
+            new: "this.writer.write(\"Query (drizzle): \" + query + paramsStr);",
         },
         Step::Shell {
             kind: Kind::InPlaceEdit,
             dir: "",
-            line: "sed -i.bak -e \"s/'DrizzleError'/'DrizzleOrmError'/\" drizzle-orm/src/errors.ts && rm drizzle-orm/src/errors.ts.bak",
+            line: "sed -i.bak -e \"s/'DrizzleError'/\\\"DrizzleOrmError\\\"/\" drizzle-orm/src/errors.ts && rm drizzle-orm/src/errors.ts.bak",
         },
         Step::Shell {
             kind: Kind::InPlaceEdit,
@@ -144,9 +228,33 @@ const DRIZZLE: Session = Session {
             new: "export function toSnakeCase(input: string): string {",
         },
         Step::Shell {
+            kind: Kind::Formatter,
+            dir: "",
+            line: "dprint fmt",
+        },
+        Step::Shell {
             kind: Kind::Deletion,
             dir: "",
             line: "rm changelogs/drizzle-orm/0.30.5.md",
+        },
+        Step::Edit {
+            path: "package.json",
+            old: "\t\t\"concurrently\": \"^8.2.1\",\n",
+            new: "",
+        },
+        Step::Shell {
+            kind: Kind::Lockfile,
+            dir: "",
+            line: "pnpm install --lockfile-only --offline --ignore-scripts --silent",
+        },
+        Step::Write {
+            path: "integration-tests/session/schema.ts",
+            contents: "import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';\n\nexport const posts = sqliteTable('posts', {\n\tid: integer('id').primaryKey(),\n\ttitle: text('title').notNull(),\n});\n",
+        },
+        Step::Shell {
+            kind: Kind::Generator,
+            dir: "",
+            line: "drizzle-kit generate --dialect sqlite --schema integration-tests/session/schema.ts --out integration-tests/session/drizzle --name init > /dev/null",
         },
         Step::Edit {
             path: "drizzle-orm/src/utils.ts",
@@ -161,11 +269,15 @@ const DRIZZLE: Session = Session {
 };
 
 /// The session on netbox: a function renamed by an edit and by `sed` on the files `grep` finds, a
-/// test written, a module moved, a setting renamed with `sed` in a named file, a test deleted, and
-/// an edit restored.
+/// test written, a module moved, a setting renamed with `sed` in a named file, the code fixed with
+/// ruff, a test deleted, a front-end dependency removed with yarn offline, a script edited and the
+/// bundles built again, and an edit restored.
 const NETBOX: Session = Session {
     repository: "netbox",
-    setup: &[],
+    // Fills yarn's cache and installs the front end's packages, which netbox ignores.
+    setup: &[
+        "cd netbox/project-static && yarn install --frozen-lockfile --ignore-scripts --non-interactive --silent",
+    ],
     steps: &[
         Step::Edit {
             path: "netbox/utilities/string.py",
@@ -179,7 +291,7 @@ const NETBOX: Session = Session {
         },
         Step::Write {
             path: "netbox/utilities/tests/test_linebreaks.py",
-            contents: "from django.test import TestCase\n\nfrom utilities.string import strip_linebreaks\n\n\nclass StripLinebreaksTest(TestCase):\n    def test_strips_both_line_endings(self):\n        self.assertEqual(strip_linebreaks('a\\r\\nb\\n'), 'ab')\n",
+            contents: "from utilities.string import strip_linebreaks\nfrom django.test import TestCase\n\n\nclass StripLinebreaksTest(TestCase):\n    def test_strips_both_line_endings(self):\n        self.assertEqual(strip_linebreaks('a\\r\\nb\\n'), 'ab')\n",
         },
         Step::Shell {
             kind: Kind::Move,
@@ -192,9 +304,29 @@ const NETBOX: Session = Session {
             line: "sed -i.bak -e 's/trailing_slash/with_trailing_slash/g' netbox/netbox/settings.py && rm netbox/netbox/settings.py.bak",
         },
         Step::Shell {
+            kind: Kind::Formatter,
+            dir: "",
+            line: "ruff check --fix --quiet netbox/",
+        },
+        Step::Shell {
             kind: Kind::Deletion,
             dir: "",
             line: "rm netbox/utilities/tests/test_string.py",
+        },
+        Step::Shell {
+            kind: Kind::Lockfile,
+            dir: "netbox/project-static",
+            line: "yarn remove -W typeface-roboto-mono --offline --ignore-scripts --non-interactive --silent",
+        },
+        Step::Edit {
+            path: "netbox/project-static/src/clipboard.ts",
+            old: "  for (const element of getElements('.copy-content')) {",
+            new: "  for (const element of getElements('.copy-content, .copy-token')) {",
+        },
+        Step::Shell {
+            kind: Kind::Generator,
+            dir: "netbox/project-static",
+            line: "yarn --silent bundle:scripts > /dev/null",
         },
         Step::Edit {
             path: "README.md",
@@ -214,14 +346,7 @@ fn main() -> ExitCode {
         .map_err(Into::into)
         .and_then(|tmp| {
             let sessions = [DIESEL, DRIZZLE, NETBOX];
-            sessions::run(
-                tmp.path(),
-                &PINS,
-                &GENERATOR,
-                &REPOSITORIES,
-                &sessions,
-                progress,
-            )
+            sessions::run(tmp.path(), &TOOLSET, &REPOSITORIES, &sessions, progress)
         });
     match ran {
         Ok(report) => {

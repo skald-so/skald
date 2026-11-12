@@ -12,7 +12,7 @@ use common::Repo;
 use edit_overlap::git;
 use edit_overlap::replay::Repository;
 use edit_overlap::sessions::{self, Kind, Played, Session, Source, Step, When};
-use edit_overlap::tools::{self, Environment, Generator, Pins};
+use edit_overlap::tools::{self, Environment, Install, Installer, Pin, Toolset};
 use tempfile::TempDir;
 
 /// The fixture's session: edit tool calls, a restore, `sed` on named files and on a glob, a move,
@@ -78,10 +78,16 @@ const GENERATE: &str = "mkdir -p target\n\
     printf 'pub const ITEMS: u32 = 4;\\n' > src/schema.rs\n\
     printf 'generated\\n' > target/schema.txt\n";
 
-/// The test repository's extra files, which the fixture moves and deletes.
-const EXTRA: [(&str, &str); 2] = [
+/// The test repository's extra files: those the fixture moves and deletes, and a toolchain file
+/// that names a toolchain rustup does not have and cannot install, so a rustup proxy in the clone
+/// fails.
+const EXTRA: [(&str, &str); 3] = [
     ("docs/faq.md", "# FAQ\n\nRead the code.\n"),
     ("src/legacy.rs", "pub fn old() {}\n"),
+    (
+        "rust-toolchain.toml",
+        "[toolchain]\nchannel = \"skald-fixture-missing\"\n",
+    ),
 ];
 
 fn leak(text: String) -> &'static str {
@@ -490,17 +496,20 @@ fn an_edit_of_text_the_file_does_not_hold_once_or_a_failing_command_fails() {
     assert!(error.contains("rm no-such-file"), "{error}");
 }
 
-/// The first line `--version` prints for the toolchain's `name`.
-fn version(bin: &Path, name: &str, tmp: &Path) -> &'static str {
-    let env = Environment::system().unwrap();
-    let mut command = env.command(bin.join(name), tmp);
+/// The first line `--version` prints for `program`, run with the system's directories and its
+/// own on `PATH`.
+fn version(program: &Path, tmp: &Path) -> &'static str {
+    let dir = program.parent().unwrap();
+    let env = Environment::new(&[dir, Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    let mut command = env.command(program, tmp);
     command.arg("--version");
-    let printed = tools::output(command, name).unwrap();
-    leak(printed.lines().next().unwrap().to_owned())
+    let printed = tools::output(command, "--version").unwrap();
+    leak(printed.lines().next().unwrap().trim().to_owned())
 }
 
 /// A generator crate in `dir`: its `--version` prints a header and `Version: 1.0.0`; with
-/// `generate`, it writes `src/schema.rs`.
+/// `generate`, it writes `src/schema.rs`; with `cargo-home`, it prints the `CARGO_HOME` its build
+/// script was built with.
 fn generator_crate(dir: &Path) {
     fs::create_dir_all(dir.join("src")).unwrap();
     fs::write(
@@ -509,16 +518,114 @@ fn generator_crate(dir: &Path) {
     )
     .unwrap();
     fs::write(
+        dir.join("build.rs"),
+        "fn main() {\n    let home = std::env::var(\"CARGO_HOME\").unwrap_or_default();\n    \
+        println!(\"cargo::rustc-env=BUILT_WITH_CARGO_HOME={home}\");\n}\n",
+    )
+    .unwrap();
+    fs::write(
         dir.join("src/main.rs"),
         "fn main() {\n    match std::env::args().nth(1).as_deref() {\n        \
         Some(\"--version\") => println!(\"fixture-generator\\n Version: 1.0.0\"),\n        \
+        Some(\"cargo-home\") => println!(\"{}\", env!(\"BUILT_WITH_CARGO_HOME\")),\n        \
         _ => std::fs::write(\"src/schema.rs\", \"pub struct Schema;\\n\").unwrap(),\n    }\n}\n",
     )
     .unwrap();
 }
 
-/// A session that runs the generator and writes the environment its shell commands get, without
-/// values, to the scratch directory.
+/// An npm package in `dir`: its `fixture-tool --version` prints `fixture-tool 1.0.0`; its install
+/// script writes the cache and the user and global configs npm installs it with to the file
+/// `installed-with` of the installed package.
+fn npm_package(dir: &Path) {
+    fs::create_dir_all(dir).unwrap();
+    let record = "require('fs').writeFileSync('installed-with', [process.env.npm_config_cache, \
+        process.env.npm_config_userconfig, process.env.npm_config_globalconfig].join('\\n'))";
+    let package = format!(
+        "{{\"name\": \"fixture-tool\", \"version\": \"1.0.0\", \"bin\": {{\"fixture-tool\": \
+        \"cli.js\"}}, \"scripts\": {{\"postinstall\": {:?}}}}}\n",
+        format!("node -e \"{record}\"")
+    );
+    fs::write(dir.join("package.json"), package).unwrap();
+    fs::write(
+        dir.join("cli.js"),
+        "#!/usr/bin/env node\nconsole.log('fixture-tool 1.0.0');\n",
+    )
+    .unwrap();
+}
+
+/// Writes a wheel to `wheel` with `python3`: its `fixture-py` prints `fixture-py 1.0.0`.
+fn wheel(python: &Path, wheel: &Path) {
+    let script = "import sys, zipfile\n\
+        files = {\n\
+        'fixture_py/__init__.py': 'def main():\\n    print(\"fixture-py 1.0.0\")\\n',\n\
+        'fixture_py-1.0.0.dist-info/METADATA': 'Metadata-Version: 2.1\\nName: fixture-py\\nVersion: 1.0.0\\n',\n\
+        'fixture_py-1.0.0.dist-info/WHEEL': 'Wheel-Version: 1.0\\nGenerator: skald\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n',\n\
+        'fixture_py-1.0.0.dist-info/entry_points.txt': '[console_scripts]\\nfixture-py = fixture_py:main\\n',\n\
+        }\n\
+        record = ''.join(name + ',,\\n' for name in files) + 'fixture_py-1.0.0.dist-info/RECORD,,\\n'\n\
+        files['fixture_py-1.0.0.dist-info/RECORD'] = record\n\
+        with zipfile.ZipFile(sys.argv[1], 'w') as archive:\n\
+        \x20   for name, text in files.items():\n\
+        \x20       archive.writestr(name, text)\n";
+    let env = Environment::system().unwrap();
+    let mut command = env.command(python, wheel.parent().unwrap());
+    command.args(["-I", "-c", script]).arg(wheel);
+    tools::output(command, "python3").unwrap();
+}
+
+/// The fixture's tools in `fixture`: the toolchain, `node`, `npm` and `python3` at the versions this
+/// machine has, and the fixture generator, npm package and wheel installed offline, each pinned at
+/// its version, or at `wrong` for the tool `broken`.
+fn toolset(fixture: &Path, probe: &Path, broken: Option<&str>) -> Toolset {
+    let crate_dir = fixture.join("generator");
+    generator_crate(&crate_dir);
+    let package = fixture.join("package");
+    npm_package(&package);
+    let python = git::on_path("python3").unwrap();
+    let wheel_path = fixture.join("fixture_py-1.0.0-py3-none-any.whl");
+    wheel(&python, &wheel_path);
+    let path = |path: &Path| leak(path.to_str().unwrap().to_owned());
+    let pin = |tool: &'static str, version: &'static str| Pin {
+        tool,
+        version: if broken == Some(tool) {
+            "0.0.0"
+        } else {
+            version
+        },
+    };
+    let bin = tools::toolchain(probe).unwrap();
+    let toolchain =
+        ["rustc", "cargo", "rustfmt"].map(|tool| pin(tool, version(&bin.join(tool), probe)));
+    let system = ["node", "npm", "python3"]
+        .map(|tool| pin(tool, version(&git::on_path(tool).unwrap(), probe)));
+    let installs = [
+        Install {
+            installer: Installer::Cargo,
+            args: Box::leak(Box::new(["--path", path(&crate_dir), "--offline"])),
+            pins: Box::leak(Box::new([pin("fixture-generator", "Version: 1.0.0")])),
+        },
+        Install {
+            installer: Installer::Npm,
+            args: Box::leak(Box::new(["--offline", "--install-links", path(&package)])),
+            pins: Box::leak(Box::new([pin("fixture-tool", "fixture-tool 1.0.0")])),
+        },
+        Install {
+            installer: Installer::Pip,
+            args: Box::leak(Box::new(["--no-index", path(&wheel_path)])),
+            pins: Box::leak(Box::new([pin("fixture-py", "fixture-py 1.0.0")])),
+        },
+    ];
+    Toolset {
+        toolchain: Box::leak(Box::new(toolchain)),
+        system: Box::leak(Box::new(system)),
+        installs: Box::leak(Box::new(installs)),
+    }
+}
+
+/// A session that runs the generator and writes, to the scratch directory, the versions of the
+/// toolchain's tools in the clone, whose toolchain file a rustup proxy cannot use, the
+/// `CARGO_HOME` the generator was built with, pip's cache, and the environment of its shell
+/// commands.
 const GENERATED: Session = Session {
     repository: "fixture",
     setup: &["cargo --version"],
@@ -531,7 +638,10 @@ const GENERATED: Session = Session {
         Step::Shell {
             kind: Kind::Formatter,
             dir: "",
-            line: "rustfmt --edition 2024 src/schema.rs && env > {scratch}/environment",
+            line: "rustfmt --edition 2024 src/schema.rs && { rustc --version; cargo --version; \
+                rustfmt --version; } > {scratch}/versions && fixture-generator cargo-home > \
+                {scratch}/cargo-home && pip cache dir > {scratch}/pip-cache && fixture-tool \
+                --version && fixture-py --version && env > {scratch}/environment",
         },
     ],
 };
@@ -540,53 +650,40 @@ const GENERATED: Session = Session {
 fn run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository() {
     let fixture = TempDir::new().unwrap();
     let repository = repository(&fixture);
-    let crate_dir = fixture.path().join("generator");
-    generator_crate(&crate_dir);
+    let probe = TempDir::new().unwrap();
+    let toolset = toolset(fixture.path(), probe.path(), None);
     let tmp = TempDir::new().unwrap();
-    let bin = tools::toolchain(tmp.path()).unwrap();
-    let pins = Pins {
-        rustc: version(&bin, "rustc", tmp.path()),
-        cargo: version(&bin, "cargo", tmp.path()),
-        rustfmt: version(&bin, "rustfmt", tmp.path()),
-    };
-    let install: &'static [&'static str] = Box::leak(Box::new([
-        "--path",
-        leak(crate_dir.to_str().unwrap().to_owned()),
-        "--offline",
-    ]));
-    let generator = Generator {
-        install,
-        binary: "fixture-generator",
-        version: "Version: 1.0.0",
-    };
-    let report = sessions::run(
-        tmp.path(),
-        &pins,
-        &generator,
-        &[repository],
-        &[GENERATED],
-        |_, _| (),
-    )
-    .unwrap();
+    let report =
+        sessions::run(tmp.path(), &toolset, &[repository], &[GENERATED], |_, _| ()).unwrap();
     let rows = [
         "| fixture | 1 | code generator | `fixture-generator generate` | `src/schema.rs` | none |",
         "| fixture-generator | Version: 1.0.0 |",
+        "| fixture-tool | fixture-tool 1.0.0 |",
+        "| fixture-py | fixture-py 1.0.0 |",
     ];
     for row in rows {
         assert!(report.lines().any(|line| line == row), "{row}\n{report}");
     }
-    let version_rows = report.lines().filter(|line| line.starts_with("| ")).take(6);
-    let tools: Vec<&str> = version_rows
+    let version_rows = report
+        .lines()
+        .filter(|line| line.starts_with("| "))
+        .take(11);
+    let names: Vec<&str> = version_rows
         .filter_map(|line| line.split(" | ").next())
         .collect();
     assert_eq!(
-        tools,
+        names,
         [
             "| Tool",
             "| rustc",
             "| cargo",
             "| rustfmt",
+            "| node",
+            "| npm",
+            "| python3",
             "| fixture-generator",
+            "| fixture-tool",
+            "| fixture-py",
             "| the shell and its commands"
         ]
     );
@@ -594,10 +691,34 @@ fn run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository() {
         report.starts_with("Machine: "),
         "the report starts with the header"
     );
-    // The shell commands get the toolchain's, the generator's and the system's `PATH`, and a
-    // cargo cache in the command's directory; nothing else of the test's environment, but what
-    // the shell sets itself.
-    let environment = fs::read_to_string(tmp.path().join("fixture-scratch/environment")).unwrap();
+    let scratch = tmp.path().join("fixture-scratch");
+    let read = |name: &str| fs::read_to_string(scratch.join(name)).unwrap();
+    // In the clone, whose toolchain file names a toolchain rustup cannot install, the toolchain's
+    // tools are the pinned ones.
+    let pinned: Vec<&str> = toolset.toolchain.iter().map(|pin| pin.version).collect();
+    assert_eq!(read("versions").lines().collect::<Vec<_>>(), pinned);
+    // The installs use the command's own caches and configs.
+    let own = |name: &str| tmp.path().join(name).display().to_string();
+    assert!(
+        read("cargo-home").trim_end() == own("cargo"),
+        "the generator's CARGO_HOME"
+    );
+    let installed = tmp
+        .path()
+        .join("npm/node_modules/fixture-tool/installed-with");
+    let installed = fs::read_to_string(installed).unwrap();
+    let configs = [own("npm-cache"), own("npmrc"), own("npmrc-global")];
+    assert!(
+        installed.lines().eq(configs.iter().map(String::as_str)),
+        "npm's cache and configs"
+    );
+    // pip gives its cache as the file system resolves it.
+    let resolved = fs::canonicalize(tmp.path()).unwrap().join("pip-cache");
+    let pip_cache = read("pip-cache");
+    assert!(Path::new(pip_cache.trim_end()) == resolved, "pip's cache");
+    // The shell commands get `PATH` and the variables of `tools::isolation`, with their values;
+    // nothing else of the test's environment, but what the shell sets itself.
+    let environment = read("environment");
     let environment: BTreeMap<&str, &str> = environment
         .lines()
         .filter_map(|line| line.split_once('='))
@@ -608,19 +729,23 @@ fn run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository() {
         .copied()
         .filter(|name| !shell.contains(name))
         .collect();
-    assert_eq!(names, BTreeSet::from(["CARGO_HOME", "PATH"]));
-    let cargo_home = tmp.path().join("cargo");
-    assert!(
-        environment["CARGO_HOME"] == cargo_home.to_str().unwrap(),
-        "CARGO_HOME is the command's own cache"
-    );
+    let isolation = tools::isolation(tmp.path());
+    let mut expected: BTreeSet<&str> = isolation.iter().map(|(name, _)| *name).collect();
+    expected.insert("PATH");
+    assert_eq!(names, expected);
+    for (name, value) in &isolation {
+        assert!(environment[name] == value.to_str().unwrap(), "{name}");
+    }
     let path: Vec<String> = std::env::split_paths(environment["PATH"])
         .map(|dir| dir.display().to_string())
         .collect();
-    let generator_bin = tmp.path().join("generator/bin");
+    let bin = tools::toolchain(probe.path()).unwrap();
     let expected = [
         bin.display().to_string(),
-        generator_bin.display().to_string(),
+        own("venv/bin"),
+        own("cargo-tools/bin"),
+        own("npm/node_modules/.bin"),
+        own("bin"),
         "/usr/bin".into(),
         "/bin".into(),
     ];
@@ -631,73 +756,49 @@ fn run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository() {
 fn a_tool_of_another_version_is_refused() {
     let fixture = TempDir::new().unwrap();
     let repository = repository(&fixture);
-    let crate_dir = fixture.path().join("generator");
-    generator_crate(&crate_dir);
-    let install: &'static [&'static str] = Box::leak(Box::new([
-        "--path",
-        leak(crate_dir.to_str().unwrap().to_owned()),
-        "--offline",
-    ]));
     let probe = TempDir::new().unwrap();
-    let bin = tools::toolchain(probe.path()).unwrap();
-    let versions = ["rustc", "cargo", "rustfmt"].map(|name| version(&bin, name, probe.path()));
-    let run = |pins: [&'static str; 3], generator_version| {
+    let run = |broken: &str| {
+        let tools = TempDir::new().unwrap();
+        let toolset = toolset(tools.path(), probe.path(), Some(broken));
         let tmp = TempDir::new().unwrap();
-        let [rustc, cargo, rustfmt] = pins;
-        let generator = Generator {
-            install,
-            binary: "fixture-generator",
-            version: generator_version,
-        };
-        let pins = Pins {
-            rustc,
-            cargo,
-            rustfmt,
-        };
         let sessions = [Session {
             repository: "fixture",
             setup: &[],
             steps: &[],
         }];
         let repositories = std::slice::from_ref(&repository);
-        sessions::run(
-            tmp.path(),
-            &pins,
-            &generator,
-            repositories,
-            &sessions,
-            |_, _| (),
-        )
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+        sessions::run(tmp.path(), &toolset, repositories, &sessions, |_, _| ())
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     };
-    for i in 0..3 {
-        let mut pins = versions;
-        pins[i] = "0.0.0";
-        let error = run(pins, "Version: 1.0.0").unwrap_err();
-        assert!(error.contains("not the pinned"), "tool {i}");
+    for tool in [
+        "rustc",
+        "cargo",
+        "rustfmt",
+        "node",
+        "npm",
+        "python3",
+        "fixture-generator",
+        "fixture-tool",
+        "fixture-py",
+    ] {
+        let error = run(tool).unwrap_err();
+        assert!(
+            error.contains(&format!("{tool} prints")) && error.contains("not the pinned"),
+            "{tool}"
+        );
     }
-    let error = run(versions, "Version: 9.9.9").unwrap_err();
-    assert!(
-        error.contains("fixture-generator"),
-        "the generator's version"
-    );
 }
 
 #[test]
 fn a_session_on_a_repository_that_is_not_measured_fails() {
     let tmp = TempDir::new().unwrap();
-    let pins = Pins {
-        rustc: "",
-        cargo: "",
-        rustfmt: "",
+    let toolset = Toolset {
+        toolchain: &[],
+        system: &[],
+        installs: &[],
     };
-    let generator = Generator {
-        install: &[],
-        binary: "",
-        version: "",
-    };
-    let error = sessions::run(tmp.path(), &pins, &generator, &[], &[FIXTURE], |_, _| ())
+    let error = sessions::run(tmp.path(), &toolset, &[], &[FIXTURE], |_, _| ())
         .unwrap_err()
         .to_string();
     assert!(

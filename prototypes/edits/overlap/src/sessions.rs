@@ -11,7 +11,7 @@ use std::path::Path;
 
 use crate::noise::table;
 use crate::replay::{self, Repository};
-use crate::tools::{self, Environment, Generator, Pins};
+use crate::tools::{self, Environment, Toolset};
 use crate::{Result, git, paths};
 
 /// A kind of step.
@@ -414,8 +414,7 @@ impl Played {
 /// repository and the number of steps played after each.
 pub fn run(
     tmp: &Path,
-    pins: &Pins,
-    generator: &Generator,
+    toolset: &Toolset,
     repositories: &[Repository],
     sessions: &[Session],
     progress: impl Fn(&str, usize),
@@ -430,7 +429,7 @@ pub fn run(
     for session in sessions {
         repository(session)?;
     }
-    let tools = tools::prepare(tmp, pins, generator)?;
+    let tools = tools::prepare(tmp, toolset)?;
     let mut played = Vec::new();
     for session in sessions {
         let repository = repository(session)?;
