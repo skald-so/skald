@@ -3,9 +3,8 @@
 use std::fmt;
 
 use ed25519_dalek::{Signature, Signer as _, VerifyingKey};
-use getrandom::SysRng;
-use getrandom::rand_core::UnwrapErr;
 use skald_proto::signed_data;
+use zeroize::Zeroizing;
 
 /// An Ed25519 private key: a device's signing key or an account's master key. Its bytes are
 /// zeroed on drop and never shown.
@@ -22,7 +21,9 @@ impl SigningKey {
     /// # Panics
     /// If the operating system's random generator fails.
     pub fn generate() -> Self {
-        Self(ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng)))
+        let mut secret = Zeroizing::new([0; 32]);
+        getrandom::fill(secret.as_mut()).expect("the operating system's random generator failed");
+        Self::from_bytes(&secret)
     }
 
     /// The Ed25519 public key.
