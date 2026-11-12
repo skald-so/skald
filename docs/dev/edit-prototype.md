@@ -98,17 +98,42 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
-## Questions
-Open questions of edit comparison, and how the prototype answers them:
-| Question | How |
-|---|---|
-| Data source: diff, hooks or declarations | [Edits via Bash and generators](#edits-via-bash-and-generators): the changed files each source misses and when it learns of them, on scripted sessions |
-| When to warn | [Measurement](#measurement): warnings at each level against `git merge-tree` conflicts |
-| Reservation TTL | [Measurement](#measurement): how long each side of a merge lived |
-| How to catch edits made via Bash and generators | [Edits via Bash and generators](#edits-via-bash-and-generators): which source catches the files shell commands, a formatter, a lockfile rewrite and a code generator change |
-| Path normalization | [Path normalization](#path-normalization): one form of a path and of line endings, the paths of the measured repositories that share it, and what git does on macOS and Windows |
-| Noise from lockfiles and migrations | [Measurement](#measurement): warnings and conflicts by class of file, and ways of handling each class |
-| Whether intents like "replacing / extending" are needed | [Measurement](#measurement): whether both sides of a warning only add lines |
+## Answers
+Preliminary answers to the open questions of edit comparison; each links to the section that holds its evidence. "Open" says what would answer what is still unknown.
+
+- **Data source: diff, hooks or declarations.** The diff: the [edit set](#file-fingerprints), scanned after each tool call. It is the only source that misses no changed file ([Edits via Bash and generators](#edits-via-bash-and-generators), "Findings"). A hook only starts a scan; declarations only add an early notice.
+  - Open: time a scan of the edit set on the largest measured sides; have agents declare their files before the sessions' steps and compare the declarations with the files they change.
+- **When to warn.** On a match of hunk fingerprints, which the [exact check](#exact-check) confirms or clears. A match of path or symbol fingerprints alone is a notice ([Findings](#findings), "When to warn").
+  - Open: replay each side's commits in order to see how early a warning comes; fingerprint a rename's new path for its old one and rerun the measurement for conflicts in renamed files ([Findings](#findings), "Open").
+- **Reservation TTL.** No fixed TTL. A reservation lasts while its machine keeps publishing, as a lease, and ends once its edit set no longer holds the files. The [side lifetimes](#results) are too long and too spread for one TTL.
+  - Open: how long a lease outlives the last publication; measure the gaps between the commits of each measured side to answer it.
+- **How to catch edits made via Bash and generators.** With the diff, scanned after each tool call, the shell tool's included ([Edits via Bash and generators](#edits-via-bash-and-generators), "Findings").
+  - Open: add a file watcher and a build script to the sessions and scan on a timer at several intervals, to choose the interval ([Edits via Bash and generators](#edits-via-bash-and-generators), "Open").
+- **Path normalization.** The [normal form](#path-normalization), with case folded. `paths::relative` maps the paths an agent's tools give to the path relative to the repository root with `/` separators; the fingerprints take that path in the normal form.
+  - Open: the items of [Path normalization](#path-normalization), "Open"; a part of the `spellings` check for each, run on macOS and Windows, would answer it.
+- **Noise from lockfiles and migrations.** Each class, lockfiles, migrations and generated code, is warned apart, in a list of its own ([Findings](#findings), "Handling").
+  - Open: fingerprint each added migration's directory and number and rerun the measurement, for migrations that clash without sharing a file; add rules for the files no rule recognizes and rerun it ([Findings](#findings), "Open").
+- **Whether intents like "replacing / extending" are needed.** No: the client's diff already tells whether a side only adds lines, and that does not rule out a conflict ([Findings](#findings), "Intents"). The exact check decides.
+  - Open: whether an intent helps a person read a warning; show people warnings with and without one to answer it.
+
+### File level
+- **A client sends:** the [path fingerprints](#file-fingerprints) of its whole edit set, after each tool call.
+- **The server compares:** them as the [server stand-in](#edit-comparison-prototype) does.
+- **On a match:** the two machines run the [exact check](#exact-check).
+- **What the server learns and when the space key changes:** [What the server learns](#findings-1).
+- **Open:**
+  - a scope for shallow clones ([File fingerprints](#file-fingerprints)): try one that a shallow clone gets without its root commit on shallow and full clones of the measured repositories;
+  - conflicts in renamed paths and merges with several merge bases ([Findings](#findings), "Open"): fingerprint a rename's new path for its old one, and fingerprint from each merge base, then rerun the measurement;
+  - a key per repository ([Findings](#findings-1), "Open"): rerun `exposure` with one key per repository and compare what a change of the key costs.
+
+### Hunk and symbol level
+- **Hunks:** the scheme of [Hunk fingerprints](#hunk-fingerprints); the server compares them as path fingerprints. Hunk level warns. Noise, misses and cost: [Findings](#findings), "When to warn", "In files" and "Cost".
+- **Symbols:** the scheme of [Symbol fingerprints](#symbol-fingerprints); noise and misses: [Findings](#findings), "When to warn" and "Generated code". They miss conflicts, so they add to hunks, never replace them.
+- **Open** ([Symbol fingerprints](#symbol-fingerprints), [What the server learns](#findings-1)):
+  - a symbol moved to another file: fingerprint a symbol also without its path and rerun the measurement;
+  - files with syntax errors during an edit: parse the files of the sessions after each step;
+  - more languages: add their grammars and measure repositories in them;
+  - a dictionary of common lines: run one against the measured hunk fingerprints with `exposure`.
 
 ## File fingerprints
 - **Edit set:** `git diff --no-renames --ignore-submodules=dirty --name-only <merge base>` against the working tree, and `git ls-files --others --exclude-standard`.
@@ -268,7 +293,7 @@ Line endings of one edit
 | input | LF | LF | 4 | 4 | 4 |
 | false | LF | CRLF | 4 | 13 | 4 |
 
-- **Windows:** the `Windows` job of [`.github/workflows/edits-windows.yml`](../../.github/workflows/edits-windows.yml), on `windows-latest`, runs the tests of `spellings.rs` and the check ([infrastructure.md](infrastructure.md), "PR checks"). Its check in run [43152461016](https://github.com/skald-so/skald/actions/runs/43152461016):
+- **Windows:** the `Windows` job of [`.github/workflows/edits-windows.yml`](../../.github/workflows/edits-windows.yml), on `windows-latest`, runs the tests of `spellings.rs` and the check ([infrastructure.md](infrastructure.md), "PR checks"). Its check in run [43200655188](https://github.com/skald-so/skald/actions/runs/43200655188):
 
 Machine: windows x86_64, 4 CPUs
 Git: git version 2.56.0.windows.4
@@ -436,15 +461,15 @@ Cost on the largest sides; times are not compared on a rerun
 
 | Repository | Merge | Parent | File | Hunk | Symbol | Bytes | Time, ms |
 |---|---|---|---|---|---|---|---|
-| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 17811 |
-| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15649 |
-| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15430 |
-| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 14874 |
-| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 9230 |
-| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 5301 |
-| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2526 |
-| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7165 |
-| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 9791 |
+| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 19053 |
+| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15884 |
+| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15306 |
+| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 14538 |
+| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 10732 |
+| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 5012 |
+| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 3204 |
+| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 8123 |
+| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 12026 |
 
 Warnings and conflicts by class, in files
 
@@ -531,7 +556,7 @@ Paths that share a fingerprint once case is folded and Unicode normalized
 - **Conflicts without a file-level warning:** each listed one is in a merge where one side renamed the conflict's file or its directory, by `git diff -M` from the merge base, or in the merge with two merge bases. The edit sets list a rename by both of its paths ([File fingerprints](#file-fingerprints)) and do not follow it; `git merge-tree` follows renames and names the paths after them. Each of these merges has a file-level warning on another file.
 - **Reservation TTL:** a TTL shorter than the median, 61.8, 116.7 and 51.7 hours, ends before at least half of the sides are merged.
 - **Intents:** at hunk level, 33 of 58, 33 of 505 and 14 of 102 warnings where both sides only add lines conflict: insertions at one place can conflict, so an intent of only adding lines does not rule a conflict out.
-- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2526 to 17811 ms on this Mac.
+- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 3204 to 19053 ms on this Mac.
 - **Noise by class,** at file level: other files hold 452 of diesel's 479 warnings without a conflict, 1076 of drizzle-orm's 1094 and 716 of netbox's 726; lockfiles, migrations and generated code hold the rest.
 - **Lockfiles:** diesel has no lockfile warning; drizzle-orm has 9 of 19 without a conflict, netbox 0 of 5. Left out, they hide conflicts: conflicts without a file-level warning rise from 3 to 13 on drizzle-orm and from 0 to 5 on netbox.
 - **Migrations:** 4, 6 and 9 warnings, none of them with a conflict; no conflict of the measured merges is of a migration. Left out, they hide no conflict at any level.
