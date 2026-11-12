@@ -93,7 +93,7 @@ local_fixture() {
 # workspace's own check requires to be in its graph.
 config=$tmp/deny.toml
 sed 's/^unused-license-exception = "deny"$/unused-license-exception = "allow"/' "$root/deny.toml" >"$config"
-grep -qx 'unused-license-exception = "allow"' "$config" ||
+grep -qx 'unused-license-exception = "deny"' "$root/deny.toml" ||
   fail 'deny.toml: no unused-license-exception = "deny" in [licenses]'
 
 # expect <case> <pass|code> <check>...: runs cargo-deny on the fixture <case>;
