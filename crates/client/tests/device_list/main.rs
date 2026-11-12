@@ -635,3 +635,28 @@ fn device_without_a_certificate_says_it_is_not_linked_yet() {
     assert_eq!(listing.linked, Vec::<String>::new(), "{listing:?}");
     assert!(!listing.shown().contains(ada.name), "{listing:?}");
 }
+
+/// Two linked devices with one name, Ada's and one she issued: both are listed as linked, and the
+/// list warns once, naming both.
+#[test]
+fn linked_devices_with_the_same_name_get_a_warning() {
+    let (cloud, _browser, ada) = setup(4_120_667_011, "ada-same-name-standin");
+    let namesake = MadeUp::new();
+    let cert = namesake.cert(
+        &namesake.body(ada.account, Some(ada.id()), ada.name),
+        &ada.key,
+    );
+    add(&cloud, vec![], vec![entry(namesake.id(), &cert)]);
+
+    let listing = list(&ada.machine);
+
+    assert!(listing.finished.success, "{listing:?}");
+    listing.assert_linked(ada.id());
+    listing.assert_linked(namesake.id());
+    let warnings = listing.warnings(ada.id());
+    assert_eq!(warnings.len(), 1, "{listing:?}");
+    assert!(
+        warnings[0].contains(&namesake.id().to_string()) && warnings[0].contains(ada.name),
+        "{listing:?}"
+    );
+}

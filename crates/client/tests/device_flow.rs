@@ -1,6 +1,7 @@
 //! `skald sign-in` against stubs of the device flow's endpoints: the answers a `skald-server` gives
 //! only in time or in a fault, a stored session on another server, the default state directory, a
-//! device ID the server has taken and a name given to a named device.
+//! device ID the server has taken and a name given to a named device. Then `skald devices` without
+//! a session, with a token for another server and with the server's error answers.
 
 #[allow(dead_code)]
 mod common;
@@ -327,4 +328,103 @@ fn name_of_a_named_device_does_not_change_and_it_registers_once() {
         1,
         "registered once only"
     );
+}
+
+/// A stub that signs every machine in as the account's first device: the account has no master key
+/// and takes the device's; `/devices` answers as `devices` gives.
+fn certifying(path: &str, devices: fn() -> String) -> String {
+    match path {
+        "/account/master" => response("200 OK", "application/json", r#"{"master":null}"#),
+        "/devices" => devices(),
+        path => approving(path),
+    }
+}
+
+/// Signs `machine` in on `stub` as the account's first device, which holds its certificate then.
+fn sign_in_first(machine: &Machine, stub: &Stub) {
+    let args = ["sign-in", "--server", &stub.url, "--first-device", "yes"];
+    let finished = machine.start(&args).finish();
+    assert!(finished.success, "{finished:?}");
+    assert!(
+        finished.stdout.contains("holds its certificate"),
+        "{finished:?}"
+    );
+}
+
+/// Runs `skald devices` on `machine` with `args` before it; fails unless the run fails and its
+/// stderr holds each of `parts`.
+fn devices_fail_saying(machine: &Machine, args: &[&str], parts: &[&str]) {
+    let args: Vec<&str> = args.iter().copied().chain(["devices"]).collect();
+    let finished = machine.start(&args).finish();
+    assert!(!finished.success, "{finished:?}");
+    for part in parts {
+        assert!(finished.stderr.contains(part), "{part:?}: {finished:?}");
+    }
+}
+
+const NOT_SIGNED_IN: [&str; 2] = ["not signed in", "skald sign-in"];
+
+#[test]
+fn devices_without_a_session_ask_to_sign_in() {
+    let machine = Machine::new();
+    let missing = machine.root().join("missing");
+    devices_fail_saying(
+        &machine,
+        &["--state-dir", missing.to_str().expect("a UTF-8 path")],
+        &NOT_SIGNED_IN,
+    );
+    assert!(!missing.exists(), "the run made the state directory");
+
+    devices_fail_saying(&machine, &[], &NOT_SIGNED_IN);
+
+    // A denied code leaves the state without a session.
+    let denied = Stub::start(denying);
+    assert!(!machine.sign_in(&denied.url).finish().success);
+    devices_fail_saying(&machine, &[], &NOT_SIGNED_IN);
+}
+
+#[test]
+fn devices_never_send_the_token_to_a_server_it_was_not_stored_for() {
+    let first = Stub::start(|path| certifying(path, registered));
+    let other = Stub::start(|path| certifying(path, registered));
+    let machine = Machine::new();
+    sign_in_first(&machine, &first);
+    let state = rusqlite::Connection::open(machine.state_dir().join("state.sqlite3")).unwrap();
+    state
+        .execute("UPDATE session SET server = ?1", [&other.url])
+        .unwrap();
+    drop(state);
+
+    devices_fail_saying(&machine, &[], &NOT_SIGNED_IN);
+
+    assert_eq!(other.requests(), Vec::<String>::new());
+}
+
+#[test]
+fn devices_show_the_servers_error_answers() {
+    static LISTS: AtomicUsize = AtomicUsize::new(0);
+    // The device's registration is taken; then the device list fails.
+    let failing = Stub::start(|path| {
+        certifying(path, || {
+            if LISTS.fetch_add(1, Ordering::SeqCst) == 0 {
+                return registered();
+            }
+            response(
+                "500 Internal Server Error",
+                "application/problem+json",
+                r#"{"type":"about:blank","title":"Internal Server Error","status":500,"detail":"The database failed."}"#,
+            )
+        })
+    });
+    let machine = Machine::new();
+    sign_in_first(&machine, &failing);
+
+    devices_fail_saying(&machine, &[], &["500", "The database failed."]);
+
+    // An answer that is no device list, such as a registration's.
+    let unlisting = Stub::start(|path| certifying(path, registered));
+    let machine = Machine::new();
+    sign_in_first(&machine, &unlisting);
+
+    devices_fail_saying(&machine, &[], &["a device list without its devices"]);
 }

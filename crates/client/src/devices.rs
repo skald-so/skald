@@ -66,8 +66,8 @@ pub fn run(
     }) = state.device().map_err(text)?
     else {
         println!(
-            "This device is not linked yet, so it lists no device as linked: it has no master key \
-             to check them against until it is linked."
+            "This device is not linked yet: the server has taken no certificate of it, so it lists \
+             no device as linked."
         );
         return Ok(());
     };
@@ -95,11 +95,34 @@ pub fn run(
     print!("{}", listing(&checked, this));
     for id in &checked.two_bodies {
         eprintln!(
-            "skald: warning: device {id} has two certificates with different bodies, so neither \
-             counts; the server may be compromised"
+            "skald: warning: the key of device {id} signed two different certificates of it, so \
+             neither counts; the device or its key may be compromised"
+        );
+    }
+    for (name, ids) in shared_names(&checked.linked) {
+        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        eprintln!(
+            "skald: warning: linked devices {} have the same name {:?}; tell them apart by ID",
+            ids.join(", "),
+            printable(&name)
         );
     }
     Ok(())
+}
+
+/// Each name that two or more of the `linked` certificates hold, with their devices, in the order
+/// of the name's first certificate.
+fn shared_names(linked: &[&Cert]) -> Vec<(String, Vec<DeviceId>)> {
+    let mut names: Vec<(String, Vec<DeviceId>)> = Vec::new();
+    for cert in linked {
+        let body = cert.body();
+        match names.iter_mut().find(|(name, _)| *name == body.name) {
+            Some((_, ids)) => ids.push(body.device),
+            None => names.push((body.name.clone(), vec![body.device])),
+        }
+    }
+    names.retain(|(_, ids)| ids.len() > 1);
+    names
 }
 
 /// The text of `err`, as `skald` prints it.
@@ -327,6 +350,27 @@ mod tests {
     }
 
     #[test]
+    fn names_shared_by_linked_devices_are_each_reported_once_with_their_devices() {
+        let (account, master) = (AccountId::generate(), SigningKey::generate());
+        let devices: Vec<Device> = (0..5).map(|_| Device::new()).collect();
+        let certs: Vec<Cert> = ["ada", "bob", "ada", "eve", "bob"]
+            .iter()
+            .zip(&devices)
+            .map(|(name, device)| device.cert(account, None, &master, name))
+            .collect();
+        let linked: Vec<&Cert> = certs.iter().collect();
+
+        assert_eq!(
+            shared_names(&linked),
+            vec![
+                ("ada".to_owned(), vec![devices[0].id(), devices[2].id()]),
+                ("bob".to_owned(), vec![devices[1].id(), devices[4].id()]),
+            ]
+        );
+        assert_eq!(shared_names(&linked[..2]), vec![]);
+    }
+
+    #[test]
     fn listing_heads_only_the_parts_it_has() {
         let master = SigningKey::generate();
         let device = Device::new();
@@ -371,6 +415,13 @@ mod tests {
             (0, "1970-01-01"),
             (86_399, "1970-01-01"),
             (86_400, "1970-01-02"),
+            (2_678_400, "1970-02-01"),
+            (31_536_000, "1971-01-01"),
+            (94_608_000, "1972-12-31"),
+            (94_694_400, "1973-01-01"),
+            (978_220_800, "2000-12-31"),
+            (978_307_200, "2001-01-01"),
+            (1_009_756_800, "2001-12-31"),
             (951_782_400, "2000-02-29"),
             (951_868_800, "2000-03-01"),
             (981_201_600, "2001-02-03"),
