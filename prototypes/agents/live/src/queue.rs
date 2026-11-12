@@ -430,4 +430,65 @@ mod tests {
             assert!(!check.pass());
         }
     }
+
+    /// An app-server that answers each `thread/queue/list` with the next of `queues`, the queue
+    /// lengths, and closes after them.
+    struct Queues(std::collections::VecDeque<usize>, u64);
+
+    impl Transport for Queues {
+        fn send(&mut self, _: &str) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn receive(&mut self, _: Duration) -> io::Result<agent_app_server::Received> {
+            let Some(length) = self.0.pop_front() else {
+                return Ok(agent_app_server::Received::Closed);
+            };
+            let id = self.1;
+            self.1 += 1;
+            let data = vec![json!({ "id": "q" }); length];
+            Ok(agent_app_server::Received::Message(
+                json!({ "id": id, "result": { "data": data } }).to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn taken_records_the_queue_emptied_or_gives_up_at_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Source::open(dir.path()).unwrap();
+        let message = source.add("alice", "hi").unwrap();
+        let client = |queues: &[usize]| {
+            agent_app_server::Client::new(
+                Queues(queues.iter().copied().collect(), 0),
+                io::sink(),
+                std::sync::Arc::default(),
+            )
+        };
+
+        // Still queued at the limit: no signal.
+        let mut queued = client(&[1, 1, 1]);
+        let gave_up = taken(&mut queued, "t1", &source, &message.msg_id, Duration::ZERO);
+        assert_eq!(gave_up.unwrap(), None);
+        assert!(source.records(&message.msg_id).unwrap().is_empty());
+
+        // Emptied at the second poll, 300 ms in.
+        let mut emptied = client(&[1, 0]);
+        let after = taken(
+            &mut emptied,
+            "t1",
+            &source,
+            &message.msg_id,
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .expect("taken");
+        assert!(after >= Duration::from_millis(300), "{after:?}");
+        let records = source.records(&message.msg_id).unwrap();
+        let signals: Vec<&str> = records
+            .iter()
+            .map(|record| record.signal.as_str())
+            .collect();
+        assert_eq!(signals, ["queue-taken"]);
+    }
 }

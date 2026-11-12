@@ -842,7 +842,14 @@ mod tests {
         let held = confirmed_with(&[("socket-held", None), ("resent", None)]);
         let shown = confirmed_with(&[("session-file", None)]);
         let mut check = ReadCheck::new("resend");
-        assert!(check.lost(&held, &shown, 1).contains(": pass — "));
+        let lost = check.lost(&held, &shown, 1);
+        assert!(
+            lost.ends_with(
+                ": pass — socket: socket-held 0.5 s, resent 0.5 s; the next path: session-file \
+                 0.5 s; in the model's last request 1 time(s)"
+            ),
+            "{lost}"
+        );
         assert!(
             check
                 .repeated(

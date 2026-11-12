@@ -784,6 +784,36 @@ fn gui_turns_off_the_users_claude_plugins_and_servers() {
 }
 
 #[test]
+fn gui_prepares_a_bypass_session_only_for_the_socket() {
+    let home = home_with_claude_code_for_vs_code();
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, lines) = succeeded(
+        home.path(),
+        tmp.path(),
+        &["gui", "socket", "claude-vscode", "--bypass"],
+    );
+    assert!(lines.contains(&"mode: bypass permissions, before the first prompt".to_owned()));
+    let profile = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("VS Code profile: "))
+        .expect("the profile");
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(Path::new(profile).join("User/settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["claudeCode.initialPermissionMode"],
+        "bypassPermissions"
+    );
+    let refused = live_check_in(
+        home.path(),
+        tmp.path(),
+        &["gui", "mod", "claude-vscode", "--bypass"],
+    );
+    assert_eq!(refused.status.code(), Some(2), "{}", stderr(&refused));
+}
+
+#[test]
 fn gui_link_opens_the_sessions_deep_link() {
     let tmp = tempfile::tempdir().unwrap();
     let work = tmp.path().join("check");

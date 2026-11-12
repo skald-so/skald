@@ -1457,6 +1457,11 @@ mod tests {
             .map(|signal| signal.split(' ').next().unwrap())
             .collect();
         assert_eq!(names, ["queue-taken", "session-file"], "{line}");
+        // Each tells how long after the handover it came.
+        for signal in signals.split(", ") {
+            let words: Vec<&str> = signal.split(' ').collect();
+            assert!(words[1].parse::<f64>().is_ok() && words[2] == "s", "{line}");
+        }
         assert_eq!(
             source.registration().unwrap().unwrap().session_id,
             thread,
@@ -1471,7 +1476,7 @@ mod tests {
             &token,
             false,
         );
-        add(other.path()).unwrap();
+        assert_eq!(add(other.path()).unwrap().ack, None, "a secret for no ack");
         assert_eq!(
             result(other.path(), &token, home.path())
                 .unwrap()
@@ -1834,6 +1839,15 @@ mod tests {
         fs::create_dir_all(&records).unwrap();
         fs::write(records.join("notes.txt"), "cli-1").unwrap();
         fs::write(records.join("local_bad.json"), "{").unwrap();
+        // Only the app's session records count.
+        for decoy in ["decoy.json", "local_decoy.txt"] {
+            fs::write(
+                records.join(decoy),
+                r#"{"cliSessionId":"cli-3","sessionId":"local_decoy"}"#,
+            )
+            .unwrap();
+        }
+        assert_eq!(desktop_session(home.path(), "cli-3").unwrap(), None);
         fs::write(
             records.join("local_other.json"),
             r#"{"cliSessionId":"cli-2","sessionId":"local_other"}"#,
