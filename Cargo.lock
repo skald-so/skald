@@ -1657,6 +1657,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "skald-github-stand-in"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "clap",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
 name = "skald-mcp"
 version = "0.1.0"
 
@@ -1675,10 +1689,13 @@ name = "skald-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "clap",
  "jsonschema",
  "serde",
  "serde_json",
+ "serde_urlencoded",
+ "skald-github-stand-in",
  "skald-proto",
  "sqlx",
  "tokio",

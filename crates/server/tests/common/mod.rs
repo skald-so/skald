@@ -2,14 +2,17 @@
 //! Each test binary uses a subset of them.
 #![allow(dead_code)]
 
+pub mod browser;
+pub mod sign_in;
 pub mod spec;
 
 use std::env;
 use std::io::{BufRead, BufReader, Read};
-use std::net::TcpStream;
-use std::process::{self, Child, ChildStderr, Command, ExitStatus, Stdio};
+use std::net::{TcpListener, TcpStream};
+use std::process::{self, Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
@@ -63,12 +66,21 @@ pub fn wait(child: &mut Child, timeout: Duration) -> ExitStatus {
     }
 }
 
-/// A `skald-server` listening on a free local port; killed on drop.
+/// A free local port: one the OS gave and took back, for a server whose address must be known
+/// before it starts.
+pub fn free_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    listener.local_addr().expect("local address").port()
+}
+
+/// A `skald-server` listening on a local port; killed on drop.
 pub struct Server {
     child: Child,
-    /// Kept open so that the server never writes to a closed pipe.
-    stderr: BufReader<ChildStderr>,
     base: String,
+    /// Everything the server printed so far, stdout and stderr, read by `readers`; also so that
+    /// the server never writes to a closed pipe.
+    output: Arc<Mutex<String>>,
+    readers: Vec<JoinHandle<()>>,
 }
 
 impl Server {
@@ -79,27 +91,56 @@ impl Server {
 
     /// Starts the server on `db` with the extra arguments `args`, as [`Server::start`] does.
     pub fn start_with(db: &TestDb, args: &[&str]) -> Self {
+        Self::launch(db, "127.0.0.1:0", args, &[])
+    }
+
+    /// Starts the server on `db`, listening on `listen`, with the extra arguments `args` and the
+    /// environment variables `envs`, as [`Server::start`] does.
+    pub fn launch(db: &TestDb, listen: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
         let url = db.url();
-        let mut all = vec!["--listen", "127.0.0.1:0", "--database-url", &url];
+        let mut all = vec!["--listen", listen, "--database-url", &url];
         all.extend_from_slice(args);
-        let mut child = spawn(&all);
-        let stderr = BufReader::new(child.stderr.take().expect("stderr is piped"));
-        let mut server = Server {
-            child,
-            stderr,
-            base: String::new(),
-        };
+        let mut child = Command::new(SERVER)
+            .args(&all)
+            .envs(envs.iter().copied())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start skald-server");
+        let mut stderr = BufReader::new(child.stderr.take().expect("stderr is piped"));
+        let stdout = child.stdout.take().expect("stdout is piped");
         let mut line = String::new();
-        server
-            .stderr
+        stderr
             .read_line(&mut line)
             .expect("read skald-server stderr");
-        server.base = line
+        let base = line
             .trim_end()
             .strip_prefix("skald-server: listening on ")
             .unwrap_or_else(|| panic!("unexpected skald-server output: {line:?}"))
             .to_owned();
-        server
+        let output = Arc::new(Mutex::new(line));
+        let readers = vec![collect(stderr, &output), collect(stdout, &output)];
+        Server {
+            child,
+            base,
+            output,
+            readers,
+        }
+    }
+
+    /// The address it listens on, e.g. `http://127.0.0.1:41234`.
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    /// Stops the server and returns everything it printed, stdout and stderr.
+    pub fn stop(&mut self) -> String {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        for reader in self.readers.drain(..) {
+            reader.join().expect("read skald-server output");
+        }
+        self.output.lock().expect("server output").clone()
     }
 
     pub fn get(&self, path: &str) -> Response {
@@ -108,20 +149,7 @@ impl Server {
 
     /// `GET <path>` with the request headers `headers`.
     pub fn get_with(&self, path: &str, headers: &[(&str, &str)]) -> Response {
-        let agent = ureq::Agent::config_builder()
-            .proxy(None)
-            .http_status_as_error(false)
-            .build()
-            .new_agent();
-        let mut request = agent.get(format!("{}{path}", self.base));
-        for (name, value) in headers {
-            request = request.header(*name, *value);
-        }
-        let mut response = request
-            .call()
-            .unwrap_or_else(|err| panic!("GET {path}: {err}"));
-        let body = response.body_mut().read_to_vec().expect("read body");
-        Response::new(response.status().as_u16(), response.headers(), body)
+        get_url(&format!("{}{path}", self.base), headers)
     }
 
     /// Sends a WebSocket opening request to `path` with `Sec-WebSocket-Protocol: <offer>`, or
@@ -157,6 +185,39 @@ impl Server {
             Err(err) => panic!("WebSocket {path}: {err}"),
         }
     }
+}
+
+/// `GET <url>` with the request headers `headers`; a redirect is returned, not followed.
+pub fn get_url(url: &str, headers: &[(&str, &str)]) -> Response {
+    let agent = ureq::Agent::config_builder()
+        .proxy(None)
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .build()
+        .new_agent();
+    let mut request = agent.get(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let mut response = request
+        .call()
+        .unwrap_or_else(|err| panic!("GET {url}: {err}"));
+    let body = response.body_mut().read_to_vec().expect("read body");
+    Response::new(response.status().as_u16(), response.headers(), body)
+}
+
+/// Appends what `pipe` gives to `output` until it closes.
+fn collect(pipe: impl Read + Send + 'static, output: &Arc<Mutex<String>>) -> JoinHandle<()> {
+    let output = Arc::clone(output);
+    thread::spawn(move || {
+        let mut pipe = BufReader::new(pipe);
+        let mut line = String::new();
+        while matches!(pipe.read_line(&mut line), Ok(read) if read > 0) {
+            output.lock().expect("server output").push_str(&line);
+            line.clear();
+        }
+    })
 }
 
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
@@ -202,6 +263,15 @@ impl Response {
             .iter()
             .find(|(header, _)| header == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// The values of every header `name`, in lowercase, such as each `set-cookie`.
+    pub fn header_values(&self, name: &str) -> Vec<&str> {
+        self.headers
+            .iter()
+            .filter(|(header, _)| header == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
     }
 }
 
@@ -282,6 +352,34 @@ impl TestDb {
             Ok::<_, sqlx::Error>(applied)
         })
         .expect("read _sqlx_migrations")
+    }
+
+    /// Every row of every table but `_sqlx_migrations`, each as PostgreSQL's text form of the row:
+    /// what the database holds, whatever its schema.
+    pub fn rows(&self) -> Vec<String> {
+        block_on(async {
+            let mut conn = PgConnection::connect(&self.url()).await?;
+            let tables: Vec<(String, String)> = sqlx::query_as(
+                "SELECT table_schema::text, table_name::text FROM information_schema.tables
+                 WHERE table_type = 'BASE TABLE'
+                   AND table_schema NOT IN ('pg_catalog', 'information_schema')
+                   AND table_name <> '_sqlx_migrations'",
+            )
+            .fetch_all(&mut conn)
+            .await?;
+            let mut rows = Vec::new();
+            for (schema, table) in tables {
+                let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
+                let sql = format!("SELECT t::text FROM {}.{} t", quote(&schema), quote(&table));
+                let found: Vec<(String,)> = sqlx::query_as(AssertSqlSafe(sql))
+                    .fetch_all(&mut conn)
+                    .await?;
+                rows.extend(found.into_iter().map(|(row,)| format!("{table}: {row}")));
+            }
+            conn.close().await?;
+            Ok::<_, sqlx::Error>(rows)
+        })
+        .expect("read the database's rows")
     }
 
     /// Runs `statements` one by one in the `postgres` maintenance database of the server.
