@@ -363,15 +363,16 @@ Migrations both sides add, in merges
   - In 14 netbox merges the sides add different migrations of one number to one directory, 12 of them without a file-level warning on a migration; none in diesel or drizzle-orm. Such migrations clash without sharing a file, so no fingerprint of theirs matches.
 - **Generated code:** diesel has 23 of 39 warnings without a conflict, drizzle-orm 3 of 3, netbox 1 of 81. Left out, it hides conflicts: conflicts without a file-level warning rise from 3 to 19 on diesel and from 0 to 125 on netbox.
   - At file level only, conflicts without a symbol-level warning fall from 142 to 126 on diesel and from 325 to 200 on netbox; symbol-level warnings without a conflict rise from 119 to 142 and from 252 to 253.
-- **Recognition:**
-  - `.gitattributes`: 36 netbox files, in `netbox/project-static/dist/`, which it marks `binary`; none in diesel or drizzle-orm.
-  - Markers: 28 diesel files, such as the schema snapshots of Diesel CLI's tests, whose `// @generated` follows the snapshot's header on line 5; 3 drizzle-orm files. At diesel's measured commit, Diesel CLI's `print_schema.rs` holds the marker in a string on line 13: the 5-line limit keeps the generator itself other.
-  - Names: 11 diesel files, such as snapshots without a marker; 45 netbox files, such as its `.mo` catalogs.
+- **Recognition,** in files of file-level warnings and of conflicts, once per merge:
+  - `.gitattributes`: 36 on netbox, in `netbox/project-static/dist/`, which it marks `binary`; none in diesel or drizzle-orm.
+  - Markers: 28 on diesel, such as the schema snapshots of Diesel CLI's tests, whose `// @generated` follows the snapshot's header on line 5; 3 on drizzle-orm. At diesel's measured commit, Diesel CLI's `print_schema.rs` holds the marker in a string on line 13: the 5-line limit keeps the generator itself other.
+  - Names: 11 on diesel, such as snapshots without a marker; 45 on netbox, such as its `.mo` catalogs.
 - **Handling:** warned apart, lockfiles and generated code leave the main list without their warnings and miss no more conflicts than as they are; left out, they hide conflicts. Migrations left out or warned apart hide no conflict on these merges.
 - **Open:**
   - A machine publishes while it works; a replay sees each side only at the merge, so it shows neither how early a warning comes nor warnings on intermediate states.
   - Warnings on renamed paths: whether to fingerprint a rename's new path for the old one, or to leave the renamed file to the exact check.
   - Merges with several merge bases: the fingerprints take the first one.
   - Migrations of one number in one directory: a fingerprint of the directory and the number would match them; not measured.
+  - drizzle-kit's SQL migrations, `<dir>/<number>_<name>.sql` next to `<dir>/meta/`, such as `integration-tests/drizzle2/pg/0000_puzzling_flatman.sql`, match no migration rule and are other. 3 drizzle-orm file-level warnings, once per merge, are on them: `integration-tests/drizzle2/singlestore/0000_nostalgic_carnage.sql` in 2 merges, `integration-tests/tests/sqlite/durable-objects/drizzle/0000_cuddly_black_bolt.sql` in 1; none with a conflict. A numbered `.sql` file next to a `meta/_journal.json` could be classed a migration.
   - Generated files no rule recognizes are other, such as JSON, which holds no comment for a marker: netbox's `contrib/generated_schema.json`. So are lists of pinned dependencies without a lockfile's name, such as netbox's `requirements.txt`.
   - A file is classed at the merge's first parent; a machine would class its own files.
