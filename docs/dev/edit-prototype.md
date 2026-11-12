@@ -94,6 +94,7 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `a_clone_recovers_the_paths_and_symbols_it_holds` | The same machine also adds a file and a function: a clone at the commit before gives the paths and symbols it holds, not the new ones; without the key or with another key, nothing |
 | `exposure_gives_what_the_server_learns_of_the_replays` | The [measurement](#measurement)'s fixture, its merges an hour apart: the tables of the machines, the fingerprints they share, how many machines publish each fingerprint, the busiest hours, what the dictionary and a clone at the oldest merge recover, and a change of the key at each merge |
 | `exposure_gives_what_a_holder_of_the_key_recovers` | Two branches that edit `src/main.rs`, one adding `README.md`, merged, as two repositories: what the dictionary and a clone at the oldest merge recover, and the fingerprints each repository shares with the other |
+| `exposure_counts_each_commit_of_a_side_and_a_side_of_two_merges_once` | A topic of two commits 5 and 2 hours before, merged into a release branch and then into the default branch, an hour and 3 hours after; the release branch merged 5 hours after: the topic's side lives from its first commit and is one machine of 2 publications until its later merge; the machines, publications and busiest hours, and a change of the key between the topic's merges, when it publishes again |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 

@@ -1168,3 +1168,95 @@ fn exposure_gives_what_a_holder_of_the_key_recovers() {
         ]
     );
 }
+
+#[test]
+fn exposure_counts_each_commit_of_a_side_and_a_side_of_two_merges_once() {
+    let tmp = TempDir::new().unwrap();
+    let [alice, bob, maintainer] = clones(&tmp);
+    // Alice's topic: two commits, 5 and 2 hours before the fixture's date.
+    branch(
+        &alice,
+        "topic",
+        5,
+        &[("src/warehouse.rs", 1, "pub struct Warehouse(u8);")],
+    );
+    alice
+        .write("src/warehouse.rs", "pub struct Warehouse(u16);\n")
+        .unwrap();
+    alice.git(&["add", "--all"]).unwrap();
+    let (seconds, zone) = DATE.split_once(' ').unwrap();
+    let date: i64 = seconds.parse().unwrap();
+    let two_hours_before = format!("{} {zone}", date - 2 * 3600);
+    let commit = ["commit", "--quiet", "--message", "topic 2", "--date"];
+    alice
+        .git(&[&commit[..], &[&two_hours_before]].concat())
+        .unwrap();
+    alice.push("topic").unwrap();
+    // Bob's release branch, 4 hours before, from the same commit of the default branch.
+    branch(
+        &bob,
+        "release",
+        4,
+        &[("docs/guide.md", 3, "Read the release notes.")],
+    );
+    // The maintainer merges the topic into the release branch, then into the default branch, and
+    // then the release branch: the topic is the same side, with one merge base, of two merges.
+    maintainer.git(&["fetch", "--quiet", "origin"]).unwrap();
+    maintainer
+        .git(&["checkout", "--quiet", "-B", "release", "origin/release"])
+        .unwrap();
+    let merge = ["merge", "--quiet", "--no-ff", "--message"];
+    (maintainer.git(&[&merge[..], &["release-topic", "origin/topic"]].concat())).unwrap();
+    maintainer.push("release").unwrap();
+    maintainer.git(&["checkout", "--quiet", "main"]).unwrap();
+    maintainer.merge("topic").unwrap();
+    maintainer.merge("release").unwrap();
+    let mut replays = replays(&maintainer);
+    let messages: Vec<String> = (replays.iter())
+        .map(|replay| message(&maintainer, &replay.merge))
+        .collect();
+    assert_eq!(messages, ["release", "topic", "release-topic"]);
+    // The topic's side, in both merges of it, lives from its first commit.
+    for replay in &replays[1..] {
+        assert_eq!(replay.sides[1].lifetime, Some(5 * 3600));
+        let dates: Vec<i64> = replay.sides[1].commits.iter().map(|c| c.1).collect();
+        assert_eq!(dates, [date - 2 * 3600, date - 5 * 3600]);
+    }
+    // The topic merges into the release branch 1 hour after the date, into the default branch 3
+    // hours after it, and the release branch merges 5 hours after it.
+    for (replay, hours) in replays.iter_mut().zip([5, 3, 1]) {
+        replay.merged_at = date + hours * 3600;
+    }
+    // Machines, the newest merge's first: the release branch with the topic merged, whose commits
+    // are the merge and Bob's; the topic, once for its two merges, until the later; Bob's release.
+    // The default branch's sides of the topic's merge and of the release's change nothing.
+    let view = exposure::View::of(&replays);
+    let machines: Vec<(usize, i64)> = (view.machines.iter())
+        .map(|machine| (machine.commits.len(), (machine.until - date) / 3600))
+        .collect();
+    assert_eq!(machines, [(2, 5), (2, 3), (1, 1)]);
+    // 2 hours after the date, between the topic's two merges: the topic and the release branch
+    // with it publish again.
+    assert_eq!(view.change(date + 2 * 3600).machines, 2);
+    let repository = Repository {
+        name: "fixture",
+        url: "https://example.com/fixture",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        merges: 3,
+    };
+    let report = exposure::report(&[exposed(&maintainer, &repository, replays)]);
+    let rows = |title: &str| rows(&report, title);
+    assert_eq!(
+        rows("What the server sees of each machine")[0][..21].to_owned(),
+        "| fixture | 3 | 5 | 2"
+    );
+    // The merge at 22:13 UTC, Alice's commits at 17:13 and 20:13, Bob's at 18:13.
+    assert_eq!(
+        rows("When the machines publish: their commits, each once, by hour of the day, UTC"),
+        ["| fixture | 4 | 15:00 to 23:00 | 4 (100.0%) |"]
+    );
+    // At the release branch's merge of the topic, the topic and the release branch with it
+    // publish again; at the topic's merge into the default branch, the release branch with it.
+    let change = &rows("A change of the space key at the time of each merge replayed")[0];
+    assert!(change.starts_with("| fixture | 3 | 1 | 2 |"), "{change}");
+}
