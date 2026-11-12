@@ -51,8 +51,8 @@ pub struct Cert {
     proof: [u8; 64],
 }
 
-/// The longest `name`, in bytes.
-const NAME_MAX: usize = 64;
+/// The longest `name` of a certificate, in bytes.
+pub const CERT_NAME_MAX: usize = 64;
 
 impl Cert {
     /// The certificate of an encoded body, its `signature` by the issuer over
@@ -163,14 +163,14 @@ impl Codec for CertBody {
 /// `name`: `tstr .size (1..64)`.
 fn name(item: &Item<'_>) -> Result<String, DecodeError> {
     let name = item.text("cert-body.name")?;
-    if (1..=NAME_MAX).contains(&name.len()) {
+    if (1..=CERT_NAME_MAX).contains(&name.len()) {
         Ok(name.to_owned())
     } else {
         Err(field_error(
             "cert-body.name",
             FieldProblem::Size {
                 min: 1,
-                max: NAME_MAX,
+                max: CERT_NAME_MAX,
                 actual: name.len(),
             },
         ))

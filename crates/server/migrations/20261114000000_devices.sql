@@ -5,14 +5,14 @@
 ALTER TABLE accounts ADD COLUMN master bytea CHECK (length(master) = 32);
 
 -- A device as it registered, by the ID derived from its signing key, and its certificate as it sent
--- it.
+-- it. `name` is its UTF-8 bytes: a `text` cannot hold U+0000.
 CREATE TABLE devices (
     id uuid PRIMARY KEY,
     account_id uuid NOT NULL REFERENCES accounts (id) ON DELETE CASCADE,
     kind text NOT NULL CHECK (kind IN ('client', 'browser', 'service')),
     signing bytea NOT NULL CHECK (length(signing) = 32),
     hpke bytea NOT NULL CHECK (length(hpke) = 32),
-    name text NOT NULL CHECK (octet_length(name) BETWEEN 1 AND 64),
+    name bytea NOT NULL CHECK (length(name) BETWEEN 1 AND 64),
     cert bytea,
     registered_at timestamptz NOT NULL DEFAULT now()
 );

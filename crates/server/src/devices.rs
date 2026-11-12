@@ -11,7 +11,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use skald_proto::{Cbor as _, Cert, DeviceId};
+use skald_proto::{CERT_NAME_MAX, Cbor as _, Cert, DeviceId};
 use sqlx::PgPool;
 
 use crate::sign_in::{not_signed_in, signed_in};
@@ -19,8 +19,6 @@ use crate::{AppState, database_failed, problem};
 
 /// The only kind of device that registers here; other kinds come with later stories.
 const CLIENT: &str = "client";
-/// The longest `name`, in bytes, as in a certificate.
-const NAME_MAX: usize = 64;
 
 /// Why the server refuses a request.
 enum Refusal {
@@ -173,8 +171,10 @@ impl Checked {
         }
         let signing = key(&registration.signing, "signing")?;
         let hpke = key(&registration.hpke, "hpke")?;
-        if !(1..=NAME_MAX).contains(&registration.name.len()) {
-            return Err(invalid("name: not 1 to 64 bytes"));
+        if !(1..=CERT_NAME_MAX).contains(&registration.name.len()) {
+            return Err(Refusal::Invalid(format!(
+                "name: not 1 to {CERT_NAME_MAX} bytes"
+            )));
         }
         if !device.is_derived_from(&signing) {
             return Err(invalid("device: not the ID derived from `signing`"));
@@ -214,7 +214,7 @@ pub(crate) async fn register(
         .bind(CLIENT)
         .bind(checked.signing.as_slice())
         .bind(checked.hpke.as_slice())
-        .bind(&checked.name)
+        .bind(checked.name.as_bytes())
         .fetch_optional(&state.db)
         .await
         .map_err(|err| Refusal::Database("register a device", err))?;
@@ -312,7 +312,7 @@ pub(crate) async fn give_master(
         .bind(CLIENT)
         .bind(body.signing.as_slice())
         .bind(body.hpke.as_slice())
-        .bind(&body.name)
+        .bind(body.name.as_bytes())
         .fetch_optional(&state.db)
         .await
         .map_err(|err| Refusal::Database("read a device", err))?;
