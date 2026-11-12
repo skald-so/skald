@@ -9,6 +9,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
+- release-plz of the version in `script/lib/release.sh`, for the Release PR tests: `cargo install release-plz --version <version> --locked`.
 - Docker: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots.
 - Node.js 26 with npm.
 - git 2.40 or newer: the edit comparison prototype reads the conflicts of `git merge-tree` and the attributes of a commit with `git check-attr --source`.
@@ -18,6 +19,8 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - Google Chrome: the web tests ([web/README.md](web/README.md)) and the server's sign-in tests run it headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
 
 ## Running locally
+The root `Cargo.toml` is a package too, for release-plz: in the root, `cargo build`, `cargo test` and `cargo clippy` cover the crates only with `--workspace` or `-p <crate>`.
+
 PostgreSQL 19 in a container:
 ```sh
 docker run --detach --name skald-postgres --env POSTGRES_PASSWORD=skald \

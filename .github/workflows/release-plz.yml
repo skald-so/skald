@@ -1,0 +1,53 @@
+name: Release PR
+
+# Every push to dev opens the Release PR or updates the open one: release-plz with release-plz.toml
+# sets the next version and adds the PRs merged since the last release to CHANGELOG.md. It tags and
+# publishes nothing. script/release-plz-workflow-test tests this file.
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+# One run at a time, in push order; a newer push replaces a waiting run, so the Release PR ends up
+# on the latest dev.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release-pr:
+    name: Release PR
+    runs-on: ubuntu-latest
+    # The App's secrets; only dev deploys from it.
+    environment: release-plz
+    steps:
+      # A token of the GitHub App skald-release: PR checks run on a PR it opens, unlike on one opened
+      # with the job's own token. Revoked when the job ends.
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      # The whole history and the tags: the last release is the last vX.Y.Z tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # release-plz runs cargo to read the workspace and update Cargo.lock.
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: release-plz@0.4.3
+      # It commits and moves the PR branch through the GitHub API, so the checkout needs no
+      # credentials.
+      - name: Open or update the Release PR
+        env:
+          GIT_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: release-plz release-pr --forge github

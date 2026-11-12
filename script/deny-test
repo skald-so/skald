@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests the license and vulnerability policy: workspace crates declare their planned licenses;
+# Tests the license and vulnerability policy: script/deny checks the graph of every workspace crate;
+# workspace crates declare their planned licenses;
 # no other crate has a normal or build dependency on the AGPL skald-server;
 # no workspace crate depends on the prototypes in prototypes/, which never ship;
 # cargo-deny with deny.toml accepts permissive dependencies and rejects disallowed licenses,
@@ -24,6 +25,13 @@ while read -r name license; do
   want='MIT OR Apache-2.0'
   [[ $name == skald-server ]] && want='AGPL-3.0-only'
   [[ $license == "$want" ]] || fail "$name: license '$license', want '$want'"
+done <<<"$crates"
+
+# script/deny, as script/test runs it: the root package is one of the crates, so cargo-deny alone
+# would check only its graph.
+graph=$("$root/script/deny" list --format json --layout crate | jq -r 'keys[] | split(" ")[0]')
+while read -r name _; do
+  grep -qxF "$name" <<<"$graph" || fail "script/deny does not check the workspace crate $name"
 done <<<"$crates"
 
 # server_dependents <manifest> [cargo-metadata flag...]: prints the packages in the graph, other than

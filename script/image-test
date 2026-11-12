@@ -87,7 +87,7 @@ fi
 
 # The dependency build, from these sources and from a copy with a changed server source: the same
 # layers, so a build for a new commit reuses it.
-cp -R Cargo.toml Cargo.lock api crates .dockerignore "$context/"
+cp -R Cargo.toml Cargo.lock repository.rs api crates .dockerignore "$context/"
 echo '// changed' >>"$context/crates/server/src/main.rs"
 docker build --quiet --file crates/server/Dockerfile --target deps --tag "$image-deps" . >/dev/null
 docker build --quiet --file crates/server/Dockerfile --target deps --tag "$image-deps-changed" \

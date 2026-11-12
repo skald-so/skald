@@ -35,14 +35,17 @@ A human takes one action per release: merging the Release PR.
 ## PR checks
 All checks except e2e, the PR title, the CLA and the edit comparison prototype's Windows job run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
-- **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md).
+- **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md); it exempts bots, `*[bot]`.
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of the server's GitHub sign-in also in headless Chrome; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
-- **`cargo-deny`:** dependency licenses and vulnerabilities.
-- **Tooling:** tests of the scripts in `script/` and of the edge image workflow, Renovate config validation.
+- **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
+- **Tooling:** tests of the scripts in `script/`, of the edge image workflow and of the Release PR workflow (`script/release-plz-workflow-test`); Renovate config validation.
+- **Release PR:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
+  - The Release PR workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
+  - The App: installed only on `skald-so/skald`; contents and pull requests read-write, metadata read; webhook off; it bypasses no ruleset.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
@@ -50,10 +53,17 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 
 ## Release
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (build, installers, publishing).
-- **One version for everything:** client, server, plugin. Before 1.0: `0.x` versions.
+- **Release PR:** on every push to `dev`, `.github/workflows/release-plz.yml` runs release-plz with `release-plz.toml`; it opens the Release PR or updates the open one. Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
+- **One version for everything:** client, server, plugin; for the crates, `[workspace.package]` in `Cargo.toml`. Before 1.0: `0.x` versions.
+- **Bumps in `0.x`:** of the PRs the CHANGELOG lists, one whose title has `!` bumps the minor version; any other, of any type, the patch version.
+- **Last release:** the last `vX.Y.Z` tag, not crates.io; beta tags do not count.
+- **CHANGELOG:** `CHANGELOG.md` in the root lists the titles of the PRs merged since the last release, except those of PRs that change only `prototypes/`: prototypes ship in no release, and they belong to no package of the workspace, whose files release-plz counts.
+- **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far, those that change only `prototypes/` included; the exception for them starts with the first release tag.
 - **The protocol** has its own version number: [protocol spec](../protocol/README.md#protocol-version).
 - **Cadence:** we release when ready, aiming for every 1–2 weeks. Fixes ship at any time.
 - **Betas:** `vX.Y.Z-beta.N`, on npm with the `next` tag.
+  - A PR sets a beta's version in `[workspace.package]` of `Cargo.toml`; the Release PR keeps it, after the beta too, until a PR sets the next beta's or the release's.
+  - As beta tags do not count, the CHANGELOG section of a beta or a release lists the PRs of the betas before it too.
 - **Updates for users:** `skald update` and plugin auto-update from the marketplace.
 
 ## Channels
@@ -69,6 +79,7 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 ## Trust in builds
 - Builds get **GitHub Artifact Attestations** (Sigstore); verify with `gh attestation verify`.
 - Images are signed with cosign, without stored keys.
+- Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums.
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.
 - The installer verifies the checksum.
 - The repository has `SECURITY.md`; private vulnerability reporting is enabled on GitHub.
