@@ -1,8 +1,12 @@
 //! The device flow as plain HTTP shows it: malformed requests of a machine, a server without GitHub
 //! sign-in or with its database down, the verification page's refusals, and which session a token
-//! opens. Every response is checked against the OpenAPI spec in `api/openapi.json`.
+//! opens; the limit of wrong user codes. Every response is checked against the OpenAPI spec in
+//! `api/openapi.json`.
 
 mod common;
+
+use std::sync::Barrier;
+use std::thread;
 
 use common::device_flow::{
     CLIENT_ID, DEVICE_AUTHORIZATION, DeviceFlow, GRANT_TYPE, TOKEN, json, text,
@@ -14,6 +18,10 @@ use skald_github_stand_in::User;
 
 /// The verification page.
 const PAGE: &str = "/device";
+/// The most wrong user codes an account may type within the window.
+const WRONG_CODE_LIMIT: usize = 10;
+/// A user code in the codes' form that the server never issued in these tests.
+const WRONG_CODE: &str = "ZZZZ-ZZZZ";
 
 /// `POST <path>` of `fields` to `flow`'s server, stating the protocol version, checked against the
 /// spec.
@@ -340,4 +348,99 @@ fn database_failures_answer_500() {
     // The failed poll did not count.
     flow.stand.db.set_reachable(true);
     flow.assert_pending(&grant);
+}
+
+/// The number of wrong user codes `flow`'s database holds.
+fn wrong_codes(flow: &DeviceFlow) -> usize {
+    let rows = flow.stand.db.rows();
+    rows.iter()
+        .filter(|row| row.starts_with("wrong_user_codes: "))
+        .count()
+}
+
+/// The person with the request headers `headers` types `user_code` on the verification page and
+/// approves it; gives the answer's status.
+fn approve(flow: &DeviceFlow, headers: &[(&str, &str)], user_code: &str) -> u16 {
+    decide(
+        flow,
+        headers,
+        &[("user_code", user_code), ("decision", "approve")],
+    )
+    .status
+}
+
+#[test]
+fn wrong_codes_hold_codes_back_only_within_their_window() {
+    let flow = DeviceFlow::start();
+    let ada = flow.stand.user(3_120_664_604, "ada-window-standin");
+    let cookie = web_cookie(&flow, &ada);
+    let headers = [
+        ("cookie", cookie.as_str()),
+        ("origin", flow.stand.public.as_str()),
+    ];
+    let grant = flow.authorize();
+
+    for _ in 0..WRONG_CODE_LIMIT {
+        assert_eq!(approve(&flow, &headers, WRONG_CODE), 400);
+    }
+    assert_eq!(approve(&flow, &headers, &grant.user_code), 429);
+
+    // 14 of the window's 15 minutes later, all of them still count.
+    let db = &flow.stand.db;
+    db.execute("UPDATE wrong_user_codes SET typed_at = typed_at - interval '14 minutes'");
+    assert_eq!(approve(&flow, &headers, &grant.user_code), 429);
+    // Once the first of them is past the window, fewer than the limit remain.
+    db.execute(
+        "UPDATE wrong_user_codes SET typed_at = typed_at - interval '61 seconds'
+         WHERE typed_at = (SELECT min(typed_at) FROM wrong_user_codes)",
+    );
+    assert_eq!(approve(&flow, &headers, &grant.user_code), 200);
+    assert_eq!(flow.account_of(&flow.token(&grant)).github_login, ada.login);
+}
+
+#[test]
+fn wrong_codes_at_once_count_at_most_one_past_the_limit() {
+    /// How many wrong codes go out at once, and how many times.
+    const AT_ONCE: usize = 30;
+    const ROUNDS: usize = 10;
+    let flow = DeviceFlow::start();
+    let ada = flow.stand.user(3_120_664_605, "ada-burst-standin");
+    let cookie = web_cookie(&flow, &ada);
+    let headers = [
+        ("cookie", cookie.as_str()),
+        ("origin", flow.stand.public.as_str()),
+    ];
+    let burst = |send: &(dyn Fn() -> u16 + Sync)| -> Vec<u16> {
+        let barrier = Barrier::new(AT_ONCE);
+        thread::scope(|scope| {
+            let sent: Vec<_> = (0..AT_ONCE)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        send()
+                    })
+                })
+                .collect();
+            sent.into_iter()
+                .map(|answer| answer.join().expect("a request"))
+                .collect()
+        })
+    };
+    // Requests at once open the server's database connections, so that the burst's decisions
+    // run side by side.
+    let health = format!("{}/health", flow.stand.server.base());
+    burst(&|| get_url(&health, &[]).status);
+
+    for round in 0..ROUNDS {
+        flow.stand.db.execute("DELETE FROM wrong_user_codes");
+        for _ in 1..WRONG_CODE_LIMIT {
+            assert_eq!(approve(&flow, &headers, WRONG_CODE), 400, "round {round}");
+        }
+        let mut statuses = burst(&|| approve(&flow, &headers, WRONG_CODE));
+        statuses.sort_unstable();
+        let mut expected = vec![429; AT_ONCE];
+        expected[0] = 400;
+        assert_eq!(statuses, expected, "round {round}");
+        assert_eq!(wrong_codes(&flow), WRONG_CODE_LIMIT, "round {round}");
+    }
 }
