@@ -91,7 +91,7 @@ Paths of Claude Code and Codex as [agent-delivery.md](agent-delivery.md#summary)
 | Agent | Primary path | Fallback |
 |---|---|---|
 | Claude Code | Channels: CLI | `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox`: CLI, desktop app, VS Code extension |
-| Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI | `UserPromptSubmit` hook: CLI; MCP `inbox`: CLI, desktop app, VS Code extension |
+| Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI, desktop app, VS Code extension | `UserPromptSubmit` hook, MCP `inbox`: CLI, desktop app, VS Code extension |
 | Codex threads a program starts | App-server: CLI | — |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
 | Agents of [agents.md](agents.md#setup-by-skald-connect) | — | MCP `inbox` |
