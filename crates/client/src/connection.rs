@@ -466,6 +466,22 @@ mod tests {
     }
 
     #[test]
+    fn oauth_error_shows_its_description_if_any() {
+        let error = |description: &str| Error::OAuth {
+            error: "invalid_grant".to_owned(),
+            description: description.to_owned(),
+        };
+        assert_eq!(
+            error("").to_string(),
+            "the server refused the request: invalid_grant"
+        );
+        assert_eq!(
+            error("Unknown code.\u{1b}").to_string(),
+            "the server refused the request: invalid_grant: Unknown code.\\u{1b}"
+        );
+    }
+
+    #[test]
     fn closed_port_is_unreachable() {
         let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let uri: Uri = format!("ws://{}/ws", closed.local_addr().unwrap())

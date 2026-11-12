@@ -241,6 +241,19 @@ mod tests {
     }
 
     #[test]
+    fn errors_say_what_failed() {
+        assert_eq!(
+            Error::Newer(7).to_string(),
+            "a newer skald wrote the local state (schema version 7); update skald"
+        );
+        let error = Error::Sqlite(rusqlite::Error::InvalidQuery);
+        assert!(
+            error.to_string().starts_with("the local state failed: "),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn given_dir_is_used() {
         let given = PathBuf::from("/some/where");
         assert_eq!(dir(Some(given.clone())).unwrap(), given);

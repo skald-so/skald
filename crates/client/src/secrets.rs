@@ -380,6 +380,49 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_file_is_an_error() {
+        let dir = temp_dir("unreadable");
+        fs::create_dir(dir.join(FILE)).unwrap();
+        let error = Secrets::new(&dir, Storage::File)
+            .load()
+            .expect_err("a directory");
+        assert!(matches!(error, Error::File(..)), "{error:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn key_storage_takes_the_secrets_with_or_without_a_file_and_fails_on_one_it_cannot_remove() {
+        let dir = temp_dir("remove");
+        let secrets = Secrets::with(&dir, Some(Box::new(StandIn::new(None))));
+        secrets.save(&token("one")).unwrap();
+
+        fs::create_dir(dir.join(FILE)).unwrap();
+        let error = secrets.save(&token("two")).expect_err("the file stays");
+        assert!(matches!(error, Error::File(..)), "{error:?}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn errors_say_what_failed() {
+        let file = PathBuf::from("/state/secrets.json");
+        let error = Error::File(file, io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(
+            error
+                .to_string()
+                .starts_with("the secrets file /state/secrets.json failed: "),
+            "{error}"
+        );
+        assert_eq!(
+            Error::Keyring("locked".to_owned()).to_string(),
+            "the system's key storage failed: locked"
+        );
+        assert_eq!(
+            Error::Malformed("the file".to_owned()).to_string(),
+            "the secrets in the file are malformed"
+        );
+    }
+
+    #[test]
     fn key_storage_errors_are_told_apart() {
         assert!(matches!(
             keyring_error(keyring_core::Error::NoDefaultStore),
