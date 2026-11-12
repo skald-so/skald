@@ -490,7 +490,7 @@ The runs leave on the user's Mac:
 - the Codex chats in the history the Codex app and extension share, and a `project` entry for each folder in the app's Projects;
 - for Codex for VS Code, the project in VS Code's recent list and its workspace trust, in the user's profile;
 - the extensions' updates: VS Code updated Codex for VS Code from 26.1021.22027 to 26.1106.51428 during the runs;
-- the model and effort picked in a Codex for VS Code session, which the extension saved at the top level of the user's `~/.codex/config.toml` at 10:21 (UTC+7) on 2026-11-12: `model = "gpt-5.5"` and `model_reasoning_effort = "low"`, before `"gpt-6-astra"` and `"high"`.
+- the model and effort picked in a Codex for VS Code session, which the extension saved at the top level of the user's `~/.codex/config.toml` at 10:21 (UTC+7) on 2026-11-12: `model = "gpt-5.5"` and `model_reasoning_effort = "low"`, replacing `"gpt-6-astra"` and `"high"`.
 
 ### Results
 On 2026-11-12, one run of each case. A is the idle case; B the same in a second project, run after A; C the busy case:
