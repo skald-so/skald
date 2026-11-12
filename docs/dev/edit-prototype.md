@@ -571,3 +571,108 @@ Which source of a machine's edits catches the files an agent changes with shell 
 - **When:** a source learns of a step's change of a file before the edit, when it reports the file as the step starts; at the edit, when it reports it once the step ends; at the next scan of its schedule; at a later tool call that names or changes the file; or never, when its report at the end does not hold it.
 - **Counts:** by kind of command, each changed file once, at the first step of the kind that changes it; `any`: at its first change. Missed: never learned of. Reported, not changed at the end: files a source reports at the end that are not changed files.
 
+- **Results,** on this Mac:
+
+Machine: macos aarch64, Apple M3 Max, 14 CPUs
+Git: git version 2.50.1 (Apple Git-155)
+
+
+Tools
+
+| Tool | Version |
+|---|---|
+| rustc | rustc 1.99.1 (58cf8f9c3 2026-10-13) |
+| cargo | cargo 1.99.1 (5f94df478 2026-08-27) |
+| rustfmt | rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13) |
+| diesel | Version: 2.3.14 |
+| the shell and its commands | the system's: Darwin 25.5.0 |
+
+Steps
+
+| Repository | Step | Kind | Command | Changes | Names |
+|---|---|---|---|---|---|
+| diesel | 1 | code generator | in `examples/sqlite/getting_started_step_1`: `diesel migration generate --version 20261112000000 add_published_at` | `examples/sqlite/getting_started_step_1/migrations/.diesel_lock`, `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/down.sql`, `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/up.sql` | none |
+| diesel | 2 | edit tool | write `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/up.sql` | `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/up.sql` | `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/up.sql` |
+| diesel | 3 | edit tool | write `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/down.sql` | `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/down.sql` | `examples/sqlite/getting_started_step_1/migrations/20261112000000_add_published_at/down.sql` |
+| diesel | 4 | code generator | in `examples/sqlite/getting_started_step_1`: `diesel migration run --database-url {scratch}/posts.db` | `examples/sqlite/getting_started_step_1/src/schema.rs` | none |
+| diesel | 5 | in-place edit | `sed -i.bak -e 's/    pub published: bool,/    pub published: bool, pub published_at: Option<String>,/' examples/sqlite/getting_started_step_1/src/models.rs && rm examples/sqlite/getting_started_step_1/src/models.rs.bak` | `examples/sqlite/getting_started_step_1/src/models.rs` | `examples/sqlite/getting_started_step_1/src/models.rs` |
+| diesel | 6 | formatter | `rustfmt --edition 2024 examples/sqlite/getting_started_step_1/src/lib.rs` | `examples/sqlite/getting_started_step_1/src/models.rs` | `examples/sqlite/getting_started_step_1/src/lib.rs` |
+| diesel | 7 | move | in `examples/sqlite/getting_started_step_1`: `mv src/bin/show_posts.rs src/bin/list_posts.rs` | `examples/sqlite/getting_started_step_1/src/bin/list_posts.rs`, `examples/sqlite/getting_started_step_1/src/bin/show_posts.rs` | `examples/sqlite/getting_started_step_1/src/bin/list_posts.rs`, `examples/sqlite/getting_started_step_1/src/bin/show_posts.rs` |
+| diesel | 8 | edit tool | edit `examples/sqlite/getting_started_step_1/Cargo.toml` | `examples/sqlite/getting_started_step_1/Cargo.toml` | `examples/sqlite/getting_started_step_1/Cargo.toml` |
+| diesel | 9 | deletion | in `examples/sqlite/getting_started_step_1`: `rm tests/step_1.rs` | `examples/sqlite/getting_started_step_1/tests/step_1.rs` | `examples/sqlite/getting_started_step_1/tests/step_1.rs` |
+| diesel | 10 | edit tool | edit `diesel_compile_tests/Cargo.toml` | `diesel_compile_tests/Cargo.toml` | `diesel_compile_tests/Cargo.toml` |
+| diesel | 11 | lockfile rewrite | `cargo update --offline --quiet --workspace --manifest-path diesel_compile_tests/Cargo.toml` | `diesel_compile_tests/Cargo.lock` | `diesel_compile_tests/Cargo.toml` |
+| diesel | 12 | edit tool | edit `examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` |
+| diesel | 13 | restore | `git checkout -- examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` |
+| drizzle-orm | 1 | edit tool | edit `drizzle-orm/src/logger.ts` | `drizzle-orm/src/logger.ts` | `drizzle-orm/src/logger.ts` |
+| drizzle-orm | 2 | in-place edit | `sed -i.bak -e "s/'DrizzleError'/'DrizzleOrmError'/" drizzle-orm/src/errors.ts && rm drizzle-orm/src/errors.ts.bak` | `drizzle-orm/src/errors.ts` | `drizzle-orm/src/errors.ts` |
+| drizzle-orm | 3 | in-place edit | `sed -i.bak -e 's/DrizzleError/DrizzleOrmError/g' drizzle-orm/src/*-core/dialect.ts && rm drizzle-orm/src/*-core/dialect.ts.bak` | `drizzle-orm/src/gel-core/dialect.ts`, `drizzle-orm/src/mysql-core/dialect.ts`, `drizzle-orm/src/pg-core/dialect.ts`, `drizzle-orm/src/singlestore-core/dialect.ts`, `drizzle-orm/src/sqlite-core/dialect.ts` | none |
+| drizzle-orm | 4 | move | in `drizzle-orm/src`: `mv casing.ts casing-cache.ts` | `drizzle-orm/src/casing-cache.ts`, `drizzle-orm/src/casing.ts` | `drizzle-orm/src/casing-cache.ts`, `drizzle-orm/src/casing.ts` |
+| drizzle-orm | 5 | edit tool | edit `drizzle-orm/src/casing-cache.ts` | `drizzle-orm/src/casing-cache.ts` | `drizzle-orm/src/casing-cache.ts` |
+| drizzle-orm | 6 | deletion | `rm changelogs/drizzle-orm/0.30.5.md` | `changelogs/drizzle-orm/0.30.5.md` | `changelogs/drizzle-orm/0.30.5.md` |
+| drizzle-orm | 7 | edit tool | edit `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` |
+| drizzle-orm | 8 | restore | `git checkout -- drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` |
+| netbox | 1 | edit tool | edit `netbox/utilities/string.py` | `netbox/utilities/string.py` | `netbox/utilities/string.py` |
+| netbox | 2 | in-place edit | `grep -rl remove_linebreaks netbox \| xargs sed -i.bak -e 's/remove_linebreaks/strip_linebreaks/g' && find netbox -name '*.bak' -delete` | `netbox/account/views.py`, `netbox/utilities/string.py` | none |
+| netbox | 3 | edit tool | write `netbox/utilities/tests/test_linebreaks.py` | `netbox/utilities/tests/test_linebreaks.py` | `netbox/utilities/tests/test_linebreaks.py` |
+| netbox | 4 | move | in `netbox/utilities`: `mv socks.py proxy_socks.py` | `netbox/utilities/proxy_socks.py`, `netbox/utilities/socks.py` | `netbox/utilities/proxy_socks.py`, `netbox/utilities/socks.py` |
+| netbox | 5 | in-place edit | `sed -i.bak -e 's/trailing_slash/with_trailing_slash/g' netbox/netbox/settings.py && rm netbox/netbox/settings.py.bak` | `netbox/netbox/settings.py` | `netbox/netbox/settings.py` |
+| netbox | 6 | deletion | `rm netbox/utilities/tests/test_string.py` | `netbox/utilities/tests/test_string.py` | `netbox/utilities/tests/test_string.py` |
+| netbox | 7 | edit tool | edit `README.md` | `README.md` | `README.md` |
+| netbox | 8 | restore | `git checkout -- README.md` | `README.md` | `README.md` |
+
+Changed files each source misses, by kind of command, in files and % of the files
+
+| Repository | Kind | Files | diff, every 3 steps | diff, after each step | hooks | declarations |
+|---|---|---|---|---|---|---|
+| diesel | edit tool | 4 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
+| diesel | in-place edit | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 0 (0%) |
+| diesel | move | 2 | 0 (0%) | 0 (0%) | 2 (100%) | 0 (0%) |
+| diesel | deletion | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 0 (0%) |
+| diesel | formatter | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 0 (0%) |
+| diesel | lockfile rewrite | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 1 (100%) |
+| diesel | code generator | 4 | 0 (0%) | 0 (0%) | 2 (50%) | 2 (50%) |
+| diesel | restore | 0 | - | - | - | - |
+| diesel | any | 11 | 0 (0%) | 0 (0%) | 7 (64%) | 3 (27%) |
+| drizzle-orm | edit tool | 2 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
+| drizzle-orm | in-place edit | 6 | 0 (0%) | 0 (0%) | 6 (100%) | 5 (83%) |
+| drizzle-orm | move | 2 | 0 (0%) | 0 (0%) | 1 (50%) | 0 (0%) |
+| drizzle-orm | deletion | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 0 (0%) |
+| drizzle-orm | restore | 0 | - | - | - | - |
+| drizzle-orm | any | 10 | 0 (0%) | 0 (0%) | 8 (80%) | 5 (50%) |
+| netbox | edit tool | 2 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
+| netbox | in-place edit | 3 | 0 (0%) | 0 (0%) | 2 (67%) | 1 (33%) |
+| netbox | move | 2 | 0 (0%) | 0 (0%) | 2 (100%) | 0 (0%) |
+| netbox | deletion | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 0 (0%) |
+| netbox | restore | 0 | - | - | - | - |
+| netbox | any | 7 | 0 (0%) | 0 (0%) | 5 (71%) | 1 (14%) |
+
+When each source learns of a changed file, from its first change, in files
+
+| Repository | Source | Files | Before the edit | At the edit | At the next scan | At a later tool call | Never | Reported, not changed at the end |
+|---|---|---|---|---|---|---|---|---|
+| diesel | diff, every 3 steps | 11 | 0 | 0 | 11 | 0 | 0 | 0 |
+| diesel | diff, after each step | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
+| diesel | hooks | 11 | 0 | 2 | 0 | 2 | 7 | 1 |
+| diesel | declarations | 11 | 6 | 0 | 0 | 2 | 3 | 2 |
+| drizzle-orm | diff, every 3 steps | 10 | 0 | 0 | 10 | 0 | 0 | 0 |
+| drizzle-orm | diff, after each step | 10 | 0 | 10 | 0 | 0 | 0 | 0 |
+| drizzle-orm | hooks | 10 | 0 | 1 | 0 | 1 | 8 | 1 |
+| drizzle-orm | declarations | 10 | 5 | 0 | 0 | 0 | 5 | 1 |
+| netbox | diff, every 3 steps | 7 | 0 | 0 | 7 | 0 | 0 | 0 |
+| netbox | diff, after each step | 7 | 0 | 7 | 0 | 0 | 0 | 0 |
+| netbox | hooks | 7 | 0 | 2 | 0 | 0 | 5 | 1 |
+| netbox | declarations | 7 | 6 | 0 | 0 | 0 | 1 | 1 |
+
+- **Findings,** from the output above:
+  - Diff: it misses no changed file in any session or kind of command, the code generator's 4 on diesel included. On its schedule it learns of each one at the next scan, 11, 10 and 7 files; scanned after each step, at the edit. It reports no file that is not changed at the end, such as a restored one.
+  - Hooks: they miss 7 of 11 changed files on diesel, 8 of 10 on drizzle-orm and 5 of 7 on netbox: those only shell commands change. They learn of a file a command changes only when an edit tool call names it too: drizzle-orm's `casing-cache.ts`, edited after its move, and diesel's `up.sql` and `down.sql`, which Diesel CLI creates and edit tool calls then write, at a later tool call; netbox's `string.py`, edited before `sed` changes it, before the edit. Each session's restored file stays in their report.
+  - Declarations: they miss 3 of 11, 5 of 10 and 1 of 7: the files no word of a command line names. On diesel, the lockfile `cargo update` rewrites and Diesel CLI's `schema.rs` and `migrations/.diesel_lock`; on drizzle-orm, the 5 `dialect.ts` files of a glob; on netbox, `account/views.py`, from `grep | xargs`. They learn of 6, 5 and 6 files before the edit. They also report each session's restored file, and on diesel `lib.rs`: `rustfmt`, named with `lib.rs`, changed only `models.rs`, a module `lib.rs` declares.
+  - Diesel CLI's `migration generate` leaves `migrations/.diesel_lock`, an untracked file that is not ignored, in the edit set to the end of the session.
+  - Answer on these sessions: only the diff learns of every changed file; scanned after each step, at the edit. Hooks learn only of the files edit tool calls name; declarations, before the edit, only of the files a command line names.
+- **Open:**
+  - The drizzle-orm and netbox sessions run no formatter, package manager or code generator: theirs, such as `pnpm` and Django's `makemigrations`, need npm or pip, which the command does not run.
+  - Steps stand for tool calls; time is not measured: what a scan after each tool call costs on a large worktree, and how often a timer scans.
+  - A hook on the shell tool could take the files its command line names, as the declarations here do, at the edit.
+  - Edits outside an agent's tool calls, such as a file watcher or a build script that writes files, are not in the sessions.
+  - The declarations follow a rule, the files each step names; what an agent declares before it edits is not measured.
