@@ -8,9 +8,9 @@ use skald_proto::VersionRange;
 
 use crate::connection::{self, Connection};
 use crate::devices::text;
-use crate::secrets::{self, Secrets};
+use crate::secrets;
 use crate::sign_in::{self, SESSION_SERVER, SESSION_TOKEN};
-use crate::state::{self, State};
+use crate::state;
 
 /// What `skald sign-out` says when the machine has no session.
 const NOT_SIGNED_IN: &str = "This machine is not signed in.";
@@ -27,12 +27,7 @@ pub fn run(
         println!("{NOT_SIGNED_IN}");
         return Ok(());
     }
-    // The key storage's entry is named by the directory's absolute path.
-    let dir = &dir
-        .canonicalize()
-        .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
-    let state = State::open(dir).map_err(text)?;
-    let secrets = Secrets::new(dir, storage);
+    let (state, secrets) = sign_in::open(dir, storage)?;
     let mut stored = secrets.load().map_err(text)?;
     // The token goes only to the server it came from, kept with it.
     let (Some(token), Some(server)) = (

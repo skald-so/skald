@@ -291,6 +291,17 @@ fn take(
     Ok((token, id))
 }
 
+/// The local state and the secrets, in `storage`, of the machine whose state directory `dir`
+/// exists.
+pub fn open(dir: &Path, storage: secrets::Storage) -> Result<(State, Secrets), String> {
+    // The key storage's entry is named by the directory's absolute path.
+    let dir = &dir
+        .canonicalize()
+        .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
+    let state = State::open(dir).map_err(|err| err.to_string())?;
+    Ok((state, Secrets::new(dir, storage)))
+}
+
 /// Forgets the machine's session: deletes its token from `stored`, the secrets, and the session
 /// from `state`. The device stays.
 pub fn forget(state: &State, secrets: &Secrets, stored: &mut secrets::Map) -> Result<(), Error> {
