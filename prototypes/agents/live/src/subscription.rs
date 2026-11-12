@@ -73,16 +73,21 @@ pub fn status_line(options: &Options) -> Result<bool> {
     Ok(finish(work, options, &verdict, check.pass()))
 }
 
-/// The live check of the Codex app-server: `agent-limits codex` reads limits, each with its reset.
-pub fn codex(options: &Options) -> Result<bool> {
-    let work = start(Agent::Codex)?;
-    let agent_limits = binary(&std::env::current_exe()?, LIMITS_BIN)?;
-    let config = codex_config_file(
+/// The user's Codex config, as `CODEX_HOME` and `HOME` find it; empty without one.
+pub(crate) fn user_codex_config() -> String {
+    codex_config_file(
         std::env::var_os("CODEX_HOME").as_deref(),
         std::env::var_os("HOME").as_deref(),
     )
     .and_then(|file| fs::read_to_string(file).ok())
-    .unwrap_or_default();
+    .unwrap_or_default()
+}
+
+/// The live check of the Codex app-server: `agent-limits codex` reads limits, each with its reset.
+pub fn codex(options: &Options) -> Result<bool> {
+    let work = start(Agent::Codex)?;
+    let agent_limits = binary(&std::env::current_exe()?, LIMITS_BIN)?;
+    let config = user_codex_config();
     let dir = work.path().join("app-server");
     let args = limits::codex(&dir.join("exchange.jsonl"), &config);
     let read = run(&dir, Agent::Codex, &agent_limits, &args)?;

@@ -35,11 +35,17 @@ pub enum Hook {
 impl Hook {
     /// The hook of `live-check`'s argument.
     pub fn parse(name: &str) -> Option<Self> {
-        match name {
-            "post-tool-use" => Some(Self::PostToolUse),
-            "stop" => Some(Self::Stop),
-            "user-prompt-submit" => Some(Self::UserPromptSubmit),
-            _ => None,
+        [Self::PostToolUse, Self::Stop, Self::UserPromptSubmit]
+            .into_iter()
+            .find(|hook| hook.name() == name)
+    }
+
+    /// The hook's name as `live-check` takes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PostToolUse => "post-tool-use",
+            Self::Stop => "stop",
+            Self::UserPromptSubmit => "user-prompt-submit",
         }
     }
 
@@ -503,6 +509,9 @@ mod tests {
             Some(Hook::UserPromptSubmit)
         );
         assert_eq!(Hook::UserPromptSubmit.event(), "UserPromptSubmit");
+        for hook in [Hook::PostToolUse, Hook::Stop, Hook::UserPromptSubmit] {
+            assert_eq!(Hook::parse(hook.name()), Some(hook));
+        }
     }
 
     #[test]

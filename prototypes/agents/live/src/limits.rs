@@ -30,8 +30,7 @@ pub fn claude(log: &Path) -> Vec<String> {
 }
 
 /// The arguments of `agent-limits codex`, which writes its exchange with the app-server to `log`.
-/// The app-server gets the options of the app-server check, with no model, and each MCP server of
-/// `config`, the user's Codex config, turned off: it has no option that ignores the user's config.
+/// The app-server gets [`quiet_app_server`]'s options for `config`, the user's Codex config.
 pub fn codex(log: &Path, config: &str) -> Vec<String> {
     let mut args = vec![
         "codex".to_owned(),
@@ -39,7 +38,15 @@ pub fn codex(log: &Path, config: &str) -> Vec<String> {
         log.to_string_lossy().into_owned(),
         "--".to_owned(),
     ];
-    args.extend(app_server::options(None, None));
+    args.extend(quiet_app_server(config));
+    args
+}
+
+/// The options of an app-server that starts no thread: those of the app-server check, with no
+/// model, and each MCP server of `config`, the user's Codex config, turned off. The app-server has
+/// no option that ignores the user's config.
+pub fn quiet_app_server(config: &str) -> Vec<String> {
+    let mut args = app_server::options(None, None);
     for name in mcp_servers(config) {
         args.extend(["-c".to_owned(), format!("mcp_servers.{name}.enabled=false")]);
     }

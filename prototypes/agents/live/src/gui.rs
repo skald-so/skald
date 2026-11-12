@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::hook::Hook;
 use crate::{
-    Agent, Kind, QUICK, SERVER, add_message, channel, handed_over, handover_delay, inbox_tool,
-    pretty, shell_quote, verdict,
+    Agent, Kind, QUICK, SERVER, add_message, channel, codex_hook, handed_over, handover_delay,
+    inbox_tool, pretty, queue, shell_quote, verdict,
 };
 
 /// The file, in a check's directory, that holds what [`result`] needs, the token too.
@@ -75,25 +75,51 @@ impl Surface {
                 format!("Claude Code for VS Code {version}")
             }
             Self::CodexDesktop => {
-                let app = installed.app("ChatGPT.app");
-                let id = plist_string(&app, "CFBundleIdentifier")?;
-                if id != CODEX_APP {
-                    return Err(invalid(format!(
-                        "{} is {id}, not the Codex app {CODEX_APP}",
-                        app.display()
-                    )));
-                }
-                let codex = codex_package(&app.join("Contents/Resources/codex-cli"))?;
+                let app = codex_app(installed)?;
+                let codex = codex_package(&self.codex_dir(installed)?)?;
                 format!("ChatGPT {}, codex {codex}", bundle_version(&app)?)
             }
             Self::CodexVsCode => {
-                let (version, dir) = installed.extension("openai.chatgpt")?;
-                let codex = codex_package(&only_dir(&dir.join("bin"))?)?;
+                let (version, _) = installed.extension("openai.chatgpt")?;
+                let codex = codex_package(&self.codex_dir(installed)?)?;
                 format!("Codex for VS Code {version}, codex {codex}")
             }
         };
         Ok(format!("{}: {version}", self.name()))
     }
+
+    /// The Codex CLI that a Codex surface bundles: `bin/codex` in the directory of its
+    /// `codex-package.json`.
+    pub fn codex(self, installed: &Installed) -> io::Result<PathBuf> {
+        Ok(self.codex_dir(installed)?.join("bin/codex"))
+    }
+
+    /// The directory of the Codex CLI that a Codex surface bundles.
+    fn codex_dir(self, installed: &Installed) -> io::Result<PathBuf> {
+        match self {
+            Self::CodexDesktop => Ok(codex_app(installed)?.join("Contents/Resources/codex-cli")),
+            Self::CodexVsCode => {
+                let (_, dir) = installed.extension("openai.chatgpt")?;
+                only_dir(&dir.join("bin"))
+            }
+            Self::ClaudeDesktop | Self::ClaudeVsCode => {
+                Err(invalid(format!("{} bundles no Codex CLI", self.name())))
+            }
+        }
+    }
+}
+
+/// The Codex desktop app, once its bundle ID is the Codex app's.
+fn codex_app(installed: &Installed) -> io::Result<PathBuf> {
+    let app = installed.app("ChatGPT.app");
+    let id = plist_string(&app, "CFBundleIdentifier")?;
+    if id != CODEX_APP {
+        return Err(invalid(format!(
+            "{} is {id}, not the Codex app {CODEX_APP}",
+            app.display()
+        )));
+    }
+    Ok(app)
 }
 
 /// The Codex desktop app's bundle ID.
@@ -220,8 +246,10 @@ fn invalid(message: String) -> io::Error {
 pub enum GuiPath {
     Inbox,
     Channel,
-    /// Claude Code's `PostToolUse` or `Stop` hook.
+    /// A hook: `PostToolUse` and `Stop` on each surface, `UserPromptSubmit` on Codex's.
     Hook(Hook),
+    /// `codex queue` into the session's thread, on Codex's surfaces.
+    Queue,
 }
 
 impl GuiPath {
@@ -229,9 +257,8 @@ impl GuiPath {
         match name {
             "inbox" => Some(Self::Inbox),
             "channel" => Some(Self::Channel),
-            "post-tool-use" => Some(Self::Hook(Hook::PostToolUse)),
-            "stop" => Some(Self::Hook(Hook::Stop)),
-            _ => None,
+            "queue" => Some(Self::Queue),
+            hook => Hook::parse(hook).map(Self::Hook),
         }
     }
 
@@ -239,20 +266,37 @@ impl GuiPath {
         match self {
             Self::Inbox => "inbox",
             Self::Channel => "channel",
-            Self::Hook(Hook::PostToolUse) => "post-tool-use",
-            Self::Hook(_) => "stop",
+            Self::Queue => "queue",
+            Self::Hook(hook) => hook.name(),
         }
     }
 
-    /// Whether the GUI check runs on `surface`: `inbox` on each; Channels and the hooks on Claude
-    /// Code's.
+    /// Whether the GUI check runs on `surface`: `inbox` on each; Channels on Claude Code's; the
+    /// hooks where the CLI checks run them; `codex queue` on Codex's.
     pub fn runs_on(self, surface: Surface) -> bool {
-        self == Self::Inbox || surface.agent() == Agent::Claude
+        match self {
+            Self::Inbox => true,
+            Self::Channel => surface.agent() == Agent::Claude,
+            Self::Hook(hook) => hook.runs_on(surface.agent()),
+            Self::Queue => surface.agent() == Agent::Codex,
+        }
     }
 
-    /// Whether the GUI check has a busy case on `surface`: `inbox` and the hooks on Claude Code's.
+    /// Whether the GUI check has a busy case on `surface`: `inbox` on Claude Code's; the hooks the
+    /// CLI checks run busy, and `codex queue`.
     pub fn runs_busy_on(self, surface: Surface) -> bool {
-        self != Self::Channel && surface.agent() == Agent::Claude
+        match self {
+            Self::Inbox => surface.agent() == Agent::Claude,
+            Self::Channel => false,
+            Self::Hook(hook) => hook.checks_busy() && self.runs_on(surface),
+            Self::Queue => self.runs_on(surface),
+        }
+    }
+
+    /// Whether the message comes only once the session has a thread: `codex queue` hands it to
+    /// the session's thread, which its first prompt makes.
+    pub fn needs_thread(self) -> bool {
+        self == Self::Queue
     }
 
     /// The prompt the developer or reviewer types: in the busy case, with a shell command during
@@ -264,6 +308,8 @@ impl GuiPath {
             Self::Hook(hook) => hook.prompt(kind),
             // Only a reply, as for the `Stop` hook: a loaded channel pushes the message itself.
             Self::Channel => Hook::Stop.prompt(Kind::Idle),
+            // The first turn, which makes the thread; the message's own turn asks for the token.
+            Self::Queue => queue::prompt(kind),
         }
     }
 
@@ -271,7 +317,7 @@ impl GuiPath {
     fn add_message(self, source: &Source, token: &str) -> io::Result<Message> {
         match self {
             Self::Inbox => add_message(source, token),
-            Self::Channel | Self::Hook(_) => channel::add_message(source, token),
+            _ => channel::add_message(source, token),
         }
     }
 }
@@ -282,6 +328,22 @@ pub struct Binaries {
     pub inbox: PathBuf,
     pub channel: PathBuf,
     pub hook: PathBuf,
+}
+
+impl Binaries {
+    /// The shell form of the hook handler's command on `agent`'s `source`: both CLIs run it
+    /// through the shell.
+    fn hook_command(&self, agent: Agent, source: &Path) -> String {
+        let mut args = vec![self.hook.as_path()];
+        if agent == Agent::Codex {
+            args.push(Path::new("--codex"));
+        }
+        args.push(source);
+        args.iter()
+            .map(|arg| shell_quote(&arg.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 /// The model of Codex's sessions: the API key of the test machine has no access to Codex's default
@@ -304,6 +366,13 @@ pub fn write_config(
     binaries: &Binaries,
     source: &Path,
 ) -> io::Result<()> {
+    if !path.runs_on(surface) {
+        return Err(invalid(format!(
+            "{} does not run on {}",
+            path.name(),
+            surface.name()
+        )));
+    }
     fs::create_dir_all(project)?;
     match surface.agent() {
         Agent::Claude => {
@@ -326,10 +395,7 @@ pub fn write_config(
                     json!({ "enabledMcpjsonServers": [SERVER], "maxEffortLevel": LOW })
                 }
                 GuiPath::Hook(hook) => {
-                    // The shell form: Claude Code runs it through the shell.
-                    let command = [&binaries.hook, source]
-                        .map(|arg| shell_quote(&arg.to_string_lossy()))
-                        .join(" ");
+                    let command = binaries.hook_command(Agent::Claude, source);
                     let handlers =
                         json!([{ "hooks": [{ "type": "command", "command": command }] }]);
                     json!({
@@ -339,6 +405,7 @@ pub fn write_config(
                         "maxEffortLevel": LOW,
                     })
                 }
+                GuiPath::Queue => unreachable!("checked above"),
             };
             fs::create_dir_all(project.join(".claude"))?;
             fs::write(
@@ -348,15 +415,27 @@ pub fn write_config(
         }
         Agent::Codex => {
             // TOML; a JSON string or array of strings is valid TOML.
-            let config = format!(
-                "model = {}\nmodel_reasoning_effort = \"low\"\n\n[mcp_servers.{SERVER}]\n\
-                 command = {}\nargs = {}\n\
-                 # Without it, Codex asks a person to approve each call.\n\
-                 default_tools_approval_mode = \"approve\"\n",
-                json!(CODEX_MODEL),
-                json!(binaries.inbox),
-                json!([source]),
+            let mut config = format!(
+                "model = {}\nmodel_reasoning_effort = \"low\"\n",
+                json!(CODEX_MODEL)
             );
+            match path {
+                GuiPath::Inbox => config.push_str(&format!(
+                    "\n[mcp_servers.{SERVER}]\ncommand = {}\nargs = {}\n\
+                     # Without it, Codex asks a person to approve each call.\n\
+                     default_tools_approval_mode = \"approve\"\n",
+                    json!(binaries.inbox),
+                    json!([source]),
+                )),
+                // A dotted key, as `-c` takes it: it runs once a person trusts it in Review hooks.
+                GuiPath::Hook(hook) => {
+                    let command = binaries.hook_command(Agent::Codex, source);
+                    config.push_str(&format!("{}\n", codex_hook(hook.event(), &command)));
+                }
+                // The message comes from outside the session.
+                GuiPath::Queue => {}
+                GuiPath::Channel => unreachable!("checked above"),
+            }
             fs::create_dir_all(project.join(".codex"))?;
             fs::write(project.join(".codex/config.toml"), config)
         }
@@ -373,7 +452,8 @@ pub struct Prepared {
 
 /// Prepares the GUI check of `path` on `surface`, whose version line is `version`, in `work`: the
 /// project with the surface's config, the source with a message that holds `token`, and the
-/// [`CHECK`] file for [`add`] and [`result`]. In the `busy` case the message waits for [`add`].
+/// [`CHECK`] file for [`add`] and [`result`]. In the `busy` case, and for a path that
+/// [needs the thread](GuiPath::needs_thread), the message waits for [`add`].
 pub fn prepare(
     work: &Path,
     surface: Surface,
@@ -395,7 +475,7 @@ pub fn prepare(
         "busy": busy,
     });
     fs::write(work.join(CHECK), pretty(&check))?;
-    if !busy {
+    if !busy && !path.needs_thread() {
         add(work)?;
     }
     Ok(Prepared {
@@ -429,6 +509,41 @@ pub fn add(work: &Path) -> io::Result<Message> {
     check["msg_id"] = message.msg_id.clone().into();
     fs::write(work.join(CHECK), pretty(&check))?;
     Ok(message)
+}
+
+/// A prepared check of a path that [needs the session's thread](GuiPath::needs_thread).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    pub surface: Surface,
+    /// The project, where the session runs.
+    pub project: PathBuf,
+    /// The prompt that started the session's thread.
+    pub prompt: String,
+}
+
+/// The check prepared in `work`, if its path needs the session's thread.
+pub fn pending(work: &Path) -> io::Result<Pending> {
+    let (check, text) = read_check(work)?;
+    let path = GuiPath::parse(&text("path")?)
+        .filter(|path| path.needs_thread())
+        .ok_or_else(|| invalid(format!("{CHECK} is not of a path that needs the thread")))?;
+    let surface = Surface::parse(&text("surface")?)
+        .ok_or_else(|| invalid(format!("{CHECK} has no known surface")))?;
+    Ok(Pending {
+        surface,
+        project: work.join("project"),
+        prompt: path.prompt(check["busy"] == true),
+    })
+}
+
+/// The session's thread in a `thread/list` result, newest first: the newest whose first message is
+/// `prompt`.
+pub fn session_thread(list: &Value, prompt: &str) -> Option<String> {
+    list["data"]
+        .as_array()?
+        .iter()
+        .find(|thread| thread["preview"] == prompt)
+        .and_then(|thread| thread["id"].as_str().map(String::from))
 }
 
 /// The outcome of a GUI check.
@@ -517,11 +632,13 @@ mod tests {
         Surface::CodexDesktop,
         Surface::CodexVsCode,
     ];
-    const PATHS: [GuiPath; 4] = [
+    const PATHS: [GuiPath; 6] = [
         GuiPath::Inbox,
         GuiPath::Channel,
         GuiPath::Hook(Hook::PostToolUse),
         GuiPath::Hook(Hook::Stop),
+        GuiPath::Hook(Hook::UserPromptSubmit),
+        GuiPath::Queue,
     ];
 
     /// The metadata recorded on the test machine, in `tests/surfaces/`, where the surfaces keep
@@ -586,6 +703,7 @@ mod tests {
         fs::write(&plist, text.replace(CODEX_APP, "com.openai.chat")).unwrap();
         let error = Surface::CodexDesktop.version(&installed).unwrap_err();
         assert!(error.to_string().contains("not the Codex app"), "{error}");
+        assert!(Surface::CodexDesktop.codex(&installed).is_err());
     }
 
     #[test]
@@ -634,12 +752,12 @@ mod tests {
             assert_eq!(GuiPath::parse(path.name()), Some(path));
         }
         assert_eq!(Surface::parse("claude"), None);
-        assert_eq!(GuiPath::parse("user-prompt-submit"), None);
-        assert_eq!(GuiPath::parse("queue"), None);
+        assert_eq!(GuiPath::parse("app-server"), None);
+        assert_eq!(GuiPath::parse("pre-tool-use"), None);
     }
 
     #[test]
-    fn runs_inbox_on_each_surface_and_the_rest_on_claude_code() {
+    fn runs_each_path_where_its_surface_can_take_it() {
         for surface in SURFACES {
             let claude = surface.agent() == Agent::Claude;
             assert_eq!(
@@ -647,16 +765,16 @@ mod tests {
                 matches!(surface, Surface::ClaudeDesktop | Surface::ClaudeVsCode)
             );
             for path in PATHS {
-                assert_eq!(
-                    path.runs_on(surface),
-                    path == GuiPath::Inbox || claude,
-                    "{path:?} on {surface:?}"
-                );
-                assert_eq!(
-                    path.runs_busy_on(surface),
-                    path != GuiPath::Channel && claude,
-                    "{path:?} on {surface:?}"
-                );
+                let (runs, busy) = match path {
+                    GuiPath::Inbox => (true, claude),
+                    GuiPath::Channel => (claude, false),
+                    GuiPath::Hook(Hook::UserPromptSubmit) => (!claude, false),
+                    GuiPath::Hook(_) => (true, true),
+                    GuiPath::Queue => (!claude, !claude),
+                };
+                assert_eq!(path.runs_on(surface), runs, "{path:?} on {surface:?}");
+                assert_eq!(path.runs_busy_on(surface), busy, "{path:?} on {surface:?}");
+                assert_eq!(path.needs_thread(), path == GuiPath::Queue, "{path:?}");
             }
         }
     }
@@ -703,18 +821,33 @@ mod tests {
                 "maxEffortLevel": "low",
             }))
         };
-        let codex = "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"low\"\n\n\
-                     [mcp_servers.skald]\ncommand = \"/bin/agent-inbox\"\n\
-                     args = [\"/work/source\"]\n\
-                     # Without it, Codex asks a person to approve each call.\n\
-                     default_tools_approval_mode = \"approve\"\n";
+        let codex_model = "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"low\"\n";
+        let codex_inbox = format!(
+            "{codex_model}\n[mcp_servers.skald]\ncommand = \"/bin/agent-inbox\"\n\
+             args = [\"/work/source\"]\n\
+             # Without it, Codex asks a person to approve each call.\n\
+             default_tools_approval_mode = \"approve\"\n"
+        );
+        // A dotted key at the top level, before any table.
+        let codex_hook = |event: &str| {
+            format!(
+                "{codex_model}hooks.{event}=[{{hooks=[{{type=\"command\",\
+                 command=\"'/bin/agent-hook' '--codex' '/work/source'\"}}]}}]\n"
+            )
+        };
         for surface in SURFACES {
             for path in PATHS.into_iter().filter(|path| path.runs_on(surface)) {
                 let dir = tempfile::tempdir().unwrap();
                 let project = dir.path().join("project");
                 write_config(&project, surface, path, &binaries(), source).unwrap();
                 let expected = match (surface.agent(), path) {
-                    (Agent::Codex, _) => vec![(".codex/config.toml", codex.to_owned())],
+                    (Agent::Codex, GuiPath::Inbox) => {
+                        vec![(".codex/config.toml", codex_inbox.clone())]
+                    }
+                    (Agent::Codex, GuiPath::Hook(hook)) => {
+                        vec![(".codex/config.toml", codex_hook(hook.event()))]
+                    }
+                    (Agent::Codex, _) => vec![(".codex/config.toml", codex_model.to_owned())],
                     (Agent::Claude, GuiPath::Inbox) => vec![
                         (".mcp.json", server("/bin/agent-inbox")),
                         (
@@ -739,7 +872,7 @@ mod tests {
                     (Agent::Claude, GuiPath::Hook(Hook::PostToolUse)) => {
                         vec![(".claude/settings.local.json", hook("PostToolUse"))]
                     }
-                    (Agent::Claude, GuiPath::Hook(_)) => {
+                    (Agent::Claude, _) => {
                         vec![(".claude/settings.local.json", hook("Stop"))]
                     }
                 };
@@ -756,6 +889,28 @@ mod tests {
     }
 
     #[test]
+    fn writes_no_config_for_a_path_its_surface_cannot_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        for (surface, path) in [
+            (Surface::ClaudeVsCode, GuiPath::Queue),
+            (
+                Surface::ClaudeDesktop,
+                GuiPath::Hook(Hook::UserPromptSubmit),
+            ),
+            (Surface::CodexDesktop, GuiPath::Channel),
+        ] {
+            let error =
+                write_config(&project, surface, path, &binaries(), Path::new("/s")).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("{} does not run on {}", path.name(), surface.name())
+            );
+            assert!(!project.exists(), "{path:?} on {surface:?}");
+        }
+    }
+
+    #[test]
     fn prompts_as_the_cli_checks() {
         for (busy, kind) in [(false, Kind::Idle), (true, Kind::Busy)] {
             assert_eq!(GuiPath::Inbox.prompt(busy), kind.prompt());
@@ -767,6 +922,13 @@ mod tests {
             GuiPath::Channel.prompt(false),
             Hook::Stop.prompt(Kind::Idle)
         );
+        assert_eq!(
+            GuiPath::Hook(Hook::UserPromptSubmit).prompt(false),
+            Hook::UserPromptSubmit.prompt(Kind::Idle)
+        );
+        for (busy, kind) in [(false, Kind::Idle), (true, Kind::Busy)] {
+            assert_eq!(GuiPath::Queue.prompt(busy), queue::prompt(kind));
+        }
     }
 
     /// Prepares `path`'s check on `surface` in `work` with `token`, in the `busy` case or not.
@@ -862,6 +1024,117 @@ mod tests {
             .and_then(|rest| rest.strip_suffix(" s after it was added"))
             .expect("the handover's delay");
         assert!(delay.parse::<f64>().is_ok(), "{delay}");
+    }
+
+    #[test]
+    fn a_queue_check_adds_its_message_only_when_asked_and_knows_its_thread_prompt() {
+        for busy in [false, true] {
+            let work = tempfile::tempdir().unwrap();
+            let token = token();
+            let prepared = prepared(
+                work.path(),
+                Surface::CodexVsCode,
+                GuiPath::Queue,
+                &token,
+                busy,
+            );
+            assert_eq!(prepared.prompt, GuiPath::Queue.prompt(busy));
+            let source = Source::open(work.path().join("source")).unwrap();
+            assert!(source.take().unwrap().is_empty(), "added before the thread");
+            assert_eq!(
+                pending(work.path()).unwrap(),
+                Pending {
+                    surface: Surface::CodexVsCode,
+                    project: work.path().join("project"),
+                    prompt: queue::prompt(if busy { Kind::Busy } else { Kind::Idle }),
+                }
+            );
+            assert_eq!(add(work.path()).unwrap().text, channel::text(&token));
+        }
+    }
+
+    #[test]
+    fn only_a_queue_check_waits_for_the_thread() {
+        let work = tempfile::tempdir().unwrap();
+        prepared(
+            work.path(),
+            Surface::CodexDesktop,
+            GuiPath::Hook(Hook::Stop),
+            &token(),
+            true,
+        );
+        let error = pending(work.path()).unwrap_err();
+        assert!(
+            error.to_string().contains("not of a path that needs"),
+            "{error}"
+        );
+        assert!(pending(&work.path().join("none")).is_err());
+        fs::write(
+            work.path().join(CHECK),
+            r#"{"path": "queue", "surface": "codex-tv"}"#,
+        )
+        .unwrap();
+        let error = pending(work.path()).unwrap_err();
+        assert!(error.to_string().contains("no known surface"), "{error}");
+    }
+
+    #[test]
+    fn finds_the_newest_thread_that_the_check_prompt_started() {
+        let exchange = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/surfaces/thread-list.jsonl"),
+        )
+        .unwrap();
+        let list = exchange
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find_map(|line| {
+                line["server"]["result"]
+                    .get("data")
+                    .map(|_| line["server"]["result"].clone())
+            })
+            .unwrap();
+        assert_eq!(
+            session_thread(&list, &queue::prompt(Kind::Busy)).as_deref(),
+            Some("01a1ce21-961d-7a10-b19d-afc3cbde7c0d")
+        );
+        let mut twice = list.clone();
+        let first = twice["data"][1].clone();
+        twice["data"].as_array_mut().unwrap().push(first);
+        twice["data"][2]["id"] = "older".into();
+        assert_eq!(
+            session_thread(&twice, &queue::prompt(Kind::Busy)).as_deref(),
+            Some("01a1ce21-961d-7a10-b19d-afc3cbde7c0d")
+        );
+        assert_eq!(
+            session_thread(&list, &queue::prompt(Kind::Idle)).as_deref(),
+            Some("01a1ce22-0000-7000-8000-000000000001")
+        );
+        assert_eq!(session_thread(&list, "Another prompt."), None);
+        assert_eq!(session_thread(&json!({}), "Reply with only OK."), None);
+    }
+
+    #[test]
+    fn finds_the_codex_cli_each_codex_surface_bundles() {
+        let (_root, installed) = recorded();
+        assert_eq!(
+            Surface::CodexDesktop.codex(&installed).unwrap(),
+            installed
+                .applications
+                .join("ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
+        );
+        assert_eq!(
+            Surface::CodexVsCode.codex(&installed).unwrap(),
+            installed.home.join(
+                ".vscode/extensions/openai.chatgpt-26.1021.22027-darwin-arm64/bin/macos-aarch64/bin/codex"
+            )
+        );
+        for surface in [Surface::ClaudeDesktop, Surface::ClaudeVsCode] {
+            let error = surface.codex(&installed).unwrap_err();
+            assert!(
+                error.to_string().contains("bundles no Codex CLI"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
