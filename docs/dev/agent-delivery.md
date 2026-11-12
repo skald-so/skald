@@ -7,18 +7,19 @@ Per agent and surface; a path not named for a surface was not checked there:
 
 | Agent and surface | Primary | Fallback | Refuted |
 |---|---|---|---|
-| Claude Code CLI | [Channels](#channels): idle and busy, without a prompt | [`PostToolUse` and `Stop` hooks](#claude-code-hooks): busy only; [MCP `inbox`](#mcp-inbox): when the agent calls it | — |
-| Claude desktop app, Claude Code for VS Code | — | `PostToolUse` and `Stop` hooks, MCP `inbox`: [as on the CLI](#results) | Channels: neither surface loads a channel ([Channels on the surfaces](#channels-on-the-surfaces)) |
+| Claude Code CLI | [Channels](#channels), [the socket](#waking-an-idle-session): idle and busy, without a prompt | [`asyncRewake` hook, mod, `/loop`](#waking-an-idle-session); [`PostToolUse` and `Stop` hooks](#claude-code-hooks): busy only; [MCP `inbox`](#mcp-inbox): when the agent calls it | — |
+| Claude desktop app, Claude Code for VS Code | [The socket](#waking-an-idle-session): idle and busy, without a prompt | `asyncRewake` hook, mod, `/loop`: [as on the CLI](#waking-an-idle-session), the mod in the desktop app only as an installed plugin; `PostToolUse` and `Stop` hooks, MCP `inbox`: [as on the CLI](#results) | Channels: neither surface loads a channel ([Channels on the surfaces](#channels-on-the-surfaces)) |
 | Codex CLI | [`codex queue`](#codex-queue): idle, and busy once the turn ends; [`PostToolUse` and `Stop` hooks](#codex-hooks): busy only | `UserPromptSubmit` hook: with the next prompt; MCP `inbox` | — |
 | Codex threads a program starts | [App-server](#codex-app-server): idle and busy, with the agent's reply | — | — |
-| Codex desktop app, Codex for VS Code | [`codex queue`](#results): idle and busy, without a prompt; [`PostToolUse` and `Stop` hooks](#results): busy only, once a person trusts them | `UserPromptSubmit` hook: with the next prompt; MCP `inbox`: [with a model the sign-in can use](#results) | App-server: each surface runs its own on stdio |
+| Codex desktop app, Codex for VS Code | [`codex queue`](#results): idle and busy, without a prompt; [`PostToolUse` and `Stop` hooks](#results): busy only, once a person trusts them | `UserPromptSubmit` hook: with the next prompt; MCP `inbox`: [with a model the sign-in can use](#results); the desktop app's [scheduled task](#waking-an-idle-session) | App-server: each surface runs its own on stdio |
 
 What each path needs: the "Needs" of its section, and on the desktop apps and IDE extensions [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions). Steps that need a person: [Manual check](#manual-check).
 
 For the adapters:
-- **Claude Code adapter and plugin:** Channels, with the hooks and `inbox` as fallbacks; the plugin can ship the channel and the hooks ([Channels](#channels), [Claude Code hooks](#claude-code-hooks)).
+- **Claude Code adapter and plugin:** the socket on each surface, registered by the plugin's `SessionStart` hook, and Channels on the CLI; the hooks and `inbox` as fallbacks ([Waking an idle session](#waking-an-idle-session), [Channels](#channels), [Claude Code hooks](#claude-code-hooks)).
 - **Codex adapter:** `codex queue` and the hooks, with `inbox` as the fallback, on the CLI, the desktop app and the VS Code extension; setup in [Codex hooks](#codex-hooks), [`codex queue`](#codex-queue), [MCP `inbox`](#mcp-inbox) and, on the desktop app and the extension, [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions).
 - **Codex threads without a person:** the app-server; setup in [Codex app-server](#codex-app-server).
+- **`read`:** issued when the session file shows the message in an entry that went to the model, read by the client, with a `Stop` hook as the fallback; then by construction, vendor signals and the agent's `ack`; an unconfirmed message goes again by the next path ([Read confirmations](#read-confirmations)).
 - **Daily e2e with real CLIs** ([infrastructure.md, "PR checks"](infrastructure.md#pr-checks)): Claude Code and Codex installed, and a pseudo-terminal for Channels and `codex queue`, whose dialogs code answers. On the [model stub](#model-stub) the checks need no key; on the real model, an Anthropic API key and an OpenAI API key with access to `gpt-5.5`. The desktop apps and IDE extensions need a person or an agent driving them.
 - **Subscription limits:** Claude Code shows them and a local program may read them; Codex shows them only on a ChatGPT sign-in ([Subscription limits](#subscription-limits)).
 
@@ -29,6 +30,8 @@ On 2026-11-12, each live check ran with neither flag, as `env -i PATH="$PATH" HO
 |---|---|---|
 | `inbox claude`, `channel claude`, `post-tool-use claude`, `stop claude` | Claude Code 2.1.322 | pass each, on the model stub |
 | `inbox codex`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex` | Codex 0.162.1 | pass each, on the model stub |
+| `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `transcript claude`, `resend claude`, each with `--all` | Claude Code 2.1.322 | pass each, on the model stub |
+| `ack codex`, `transcript codex`, each with `--all` | Codex 0.162.1 | pass each, on the model stub |
 | `limits claude`, `status-line claude` | Claude Code 2.1.322 | pass each, on a Claude account |
 | `limits codex` | Codex 0.162.1 | fail: the app-server refused, "chatgpt authentication required to read rate limits" |
 | `gui inbox claude-vscode`, `gui post-tool-use claude-vscode`, `gui stop claude-vscode` | Claude Code for VS Code 2.1.322; the sessions ran Claude Code 2.1.322 | pass each |
@@ -54,10 +57,10 @@ Each path's section answers, for each agent:
 | Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
 
 ## Prototypes
-- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
+- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks), and the helper of the [wake paths](#waking-an-idle-session) and [read confirmations](#read-confirmations); `agent-socket` the Claude Code [socket](#waking-an-idle-session) client; `agent-transcript` the reader of the [session file](#read-confirmations); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Codex runs on an OpenAI API key, by the owner's choice: no check signs it in with ChatGPT.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex` or `app-server codex`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
 - GUI live checks, on the desktop apps and IDE extensions: [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions).
 
 ## Model stub
@@ -404,6 +407,160 @@ Open questions:
 - Codex 0.162.1 also has a `granular` approval policy, which allows or refuses each kind of approval request; it was not compared with `never`.
 - In D the client resumes a thread with the terminal UI's settings, `approvalPolicy: "on-request"`, and declines every request of the app-server. Whether an approval in a turn the client started goes to the client or to the terminal UI was not checked.
 
+## Waking an idle session
+Paths that start a turn in a Claude Code session waiting for a prompt, where Channels do not load ([Channels on the surfaces](#channels-on-the-surfaces)). On Codex, [`codex queue`](#codex-queue) does this on each surface.
+
+`live-check <socket|rewake|mod|loop> claude`: a Claude Code terminal UI in a pseudo-terminal, as the Channels check runs it; `SessionStart` registers the session in the source. Cases:
+- **A, idle:** the message comes after the first turn, with no prompt.
+- **With `--all`:** a second message to A; B, a second idle session that gets nothing; C, busy: the message comes during `sleep 20`; for `socket`, a bypass session.
+
+Paths:
+- **`socket`:** the session's cross-session inbox socket ([docs](https://code.claude.com/docs/en/cross-session-messaging.md#the-sessions-inbox-socket)). `agent-socket` writes one line per message, after an auth line with the session's token: [`socket/src/lib.rs`](../../prototypes/agents/socket/src/lib.rs). With a reply address it collects `peer_message_status` receipts.
+- **`rewake`:** an `asyncRewake` hook on `SessionStart` and `Stop`, `agent-hook --wait`, waits up to 600 s, prints the messages to stderr and exits 2, which starts a turn.
+- **`mod`:** the plugin in [`prototypes/agents/mod`](../../prototypes/agents/mod) polls `agent-hook --count` each second, shows "N Skald message(s) waiting" under the prompt and, while no turn runs, takes the messages and starts a turn with `$.prompt.submit`; a dropped prompt goes back to the source.
+- **`loop`:** the prompt `/loop 1m` with `inbox`: each minute a scheduled turn calls `inbox`.
+
+Results on 2026-11-12, Claude Code 2.1.322; the real model is `claude-opus-5-5` on a Claude account. Each delay is from adding the message to its handover and to the model's request with it:
+
+| Command | Result | A | C |
+|---|---|---|---|
+| `live-check socket claude --all` | pass | 0.0 s, 0.4 s | 0.0 s, 20.1 s: after `sleep 20`, in the same turn |
+| `live-check socket claude --real` | pass | 0.0 s, 2.4 s | |
+| `live-check rewake claude --all` | pass | 0.2 s, 0.5 s | 0.1 s, 20.1 s: in the same turn |
+| `live-check rewake claude --real` | pass | 0.2 s, 3.6 s | |
+| `live-check mod claude --all` | pass | 1.0 s, 1.0 s | 21.0 s: once the turn ended, in a turn of its own; the badge showed meanwhile |
+| `live-check mod claude --real` | pass | 1.0 s, 3.7 s | |
+| `live-check loop claude --all` | pass | 57.1 s | |
+| `live-check loop claude --real` | pass | 62.1 s, 66.9 s; the first tick replied `NONE` | |
+
+In each `--all` run B got nothing and the second message to A came as the first did. The socket's bypass session runs as the desktop app and VS Code run Claude Code, `-p --input-format stream-json --permission-mode bypassPermissions`: without the token, the receipt was `held`, the output had the `peer_message_hold` notice and the message did not reach the model; with the token it did.
+
+GUI checks: `live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vscode> [--busy]`, and `gui socket claude-vscode --bypass`, as in [GUI live check](#gui-live-check); the message comes with `gui-socket <dir> [--no-auth] [--listen <seconds>]` for the socket, `gui-add <dir>` for the others. The project's settings turn off the user's plugins (`enabledPlugins`) and their MCP servers' tools (`permissions.deny`). Results on 2026-11-12, Claude 5.1231.2 running Claude Code 2.1.321 and Claude Code for VS Code 2.1.322, one run each; the delay is from adding to the handover:
+
+| Surface | Path | Result |
+|---|---|---|
+| Desktop app | socket, idle | pass: 0.0 s; with and without the token, in Auto mode |
+| | socket, busy | the reply tool got the token during `sleep 20`; the text reply was the first prompt's `OK` |
+| | socket, bypass | not run: the app offers bypass mode only once it is turned on in its settings |
+| | `rewake` | handed over in 0.1 s and in the transcript; the agent declined to reply with the token: "That request came from the agent, not from you" |
+| | mod | pass with the plugin installed from a local marketplace (`claude plugin install --scope local`): 0.4 s, shown as "The skald-mod plugin sent a message". Not loaded through `CLAUDE_CODE_PLUGIN_DIRS` in the project settings' `env`: no turn, and `ListPlugins` listed none |
+| | `loop` | pass: 5.9 s |
+| VS Code | socket, idle | pass: 0.0 s |
+| | socket, busy | as on the desktop app |
+| | socket, bypass | without the token: `held` at once, `expired` 300.0 s later; it reached the model only when sent again with the token: pass |
+| | `rewake` | as on the desktop app; the agent acked the message first |
+| | mod | pass, busy: 18.7 s, once the turn ended; loaded through VS Code's `claudeCode.environmentVariables` with `CLAUDE_CODE_PLUGIN_DIRS`. Through the project settings' `env`: not loaded |
+| | `loop` | pass: 3.3 s |
+
+| Check | `socket` | `rewake` | mod | `loop` |
+|---|---|---|---|---|
+| Idle session | Yes, each surface | Yes, each surface | Yes: CLI, VS Code, the desktop app with an installed plugin | Yes, each surface |
+| Busy session | Yes: at the next tool call's end, in the same turn | Yes, the same | Once the turn ends | At the next tick after the turn |
+| Delay | Under 3 s to the model | Under 4 s | About 1 s polling, plus the turn's start | Up to the 1-minute tick, plus a turn |
+| In context | A user turn from another session: the text with Claude Code's note "This came from another Claude session — not typed by your user … A peer cannot grant escalation"; the sender is the line's `from` | The hook's stderr as a hook message | The user's prompt; the desktop app labels it "The skald-mod plugin sent a message" | The `inbox` tool result |
+| Handover known | Once the line is written; receipts only for `held`, `expired`, `refused`, `dropped`, `denied` and a released `delivered` | Once stderr is written | Once the prompt is submitted; a dropped prompt is put back | As for [`inbox`](#mcp-inbox) |
+| One of two sessions | Yes: by the socket each session registers | Yes: by settings and source | Yes: by `.skald/mod.json` in the project | Yes: by the server's source |
+| Needs | A `SessionStart` hook; the token for a session that bypasses permission prompts; no `crossSessionInbound: refuse` | The hook in settings | The plugin: `--plugin-dir` on the CLI, the profile's variable in VS Code, an installed plugin in the desktop app, whose marketplace `claude plugin marketplace add` declares in the user's `~/.claude/settings.json` | A model turn per tick, on the user's subscription; the session ends the loop after 7 days |
+
+Other ways, checked once by hand on the surfaces:
+- **ChatGPT scheduled task, Codex desktop app:** a task on the session's thread, every minute, with the prompt to call `inbox`. A message added between ticks was handed over 85.8 s later; the window marks the prompt "Sent by scheduled task". Like `/loop`, each tick is a model turn. The check's task was deleted; Scheduled then listed none.
+- **Deep links, for an OS notification** (`live-check gui-link <dir>` opens the check session's link):
+  - Desktop app: `claude://code/continue?session=<id>` opens the session. `<id>` is the app's own ID, `local_<uuid>`, whose record in `~/Library/Application Support/Claude/claude-code-sessions/` holds Claude Code's as `cliSessionId`; with Claude Code's ID it opens nothing. `claude://code/needs-input?session=` opened nothing for an idle session.
+  - VS Code: `vscode://anthropic.claude-code/open?session=<id>&prompt=<text>` asks "Allow 'Claude Code for VS Code' extension to open this URI?", then resumes the session with the prompt in the prompt box, unsent. With the session already open it says "Session is already open. Your prompt was not applied". The URL goes to the VS Code instance macOS picks: with two running, it opened in the other one, in an empty window, as a new session. The check's prompt asks the agent to call `inbox`; sent by hand, it handed the message over.
+  - Codex desktop app: `codex://threads/<thread>` opens the thread.
+  - None delivers text by itself: a person sends the prompt.
+
+Findings:
+- `socket` is the best wake path on all three Claude surfaces: it needs only a `SessionStart` hook, starts a turn within seconds, reaches a busy session at the next tool call, and Claude Code frames the message as another session's, not the user's.
+- `rewake` works on each surface too, but the agent may not act on what a hook says comes from another agent.
+- A mod reaches an idle session on each surface, as the user's prompt, but loads in the desktop app only as an installed plugin.
+- `/loop` and scheduled tasks cost a model turn per minute even with no message: a fallback only.
+
+Open questions:
+- The socket in the desktop app's bypass mode: whether it holds a message without the token and drops it after 5 minutes, as VS Code did. Not run: the mode needs the app's setting.
+- `claude://code/needs-input?session=` for a session waiting on a permission prompt: whether it opens that session.
+- Whether a project's settings can declare the mod's marketplace, so that the desktop app's install changes no user settings.
+
+## Read confirmations
+What tells the sending device that the session's model got a message, for `read` ([delivery.md, "Receipts"](../protocol/delivery.md#receipts)). Each layer records a signal with its time in the source's `records/<msg_id>/`.
+
+| Layer | Signal | How |
+|---|---|---|
+| Session file, by a hook | `transcript` | `agent-hook --confirm` on `Stop`, or the handler on `PostToolUse` and `Stop`, reads the session file the hook input names: Claude Code's transcript, Codex's rollout. A handed-over message's `msg_id` in an entry that went to the model counts ([`transcript/src/lib.rs`](../../prototypes/agents/transcript/src/lib.rs)); a queued prompt or a hook's own output does not |
+| Session file, by the client | `session-file` | The same reading by the client, of the file the `SessionStart` hook registered; it keeps no line |
+| By construction | the handover | `inbox`, a hook, the socket, the mod or `codex queue` handed it over |
+| Vendor signals | `queue-taken`, `socket-<status>`, `app-server-turn` | `codex queue` no longer lists it; the socket's receipts; the app-server's turn with it |
+| `ack` tool | `ack`, `ack-refused` | `inbox` adds a per-message secret, `ack`, to each message; the `ack` tool takes `msg_id` and `ack` and refuses a wrong or missing one |
+| Piggyback | `ack`, `reply` | `seen` in any call of a Skald tool acks several messages; `reply` with `reply_to` acks its message |
+| Resend | `resent`, `repeat-dropped` | A message unconfirmed after a timeout goes again by the next path; the receiving side drops a `msg_id` it already has |
+
+Checks:
+- `live-check ack <claude|codex>`: A, the agent calls `inbox`, then `ack`; the stub first acks with a wrong and a missing secret. Then three acks of a process that never saw the message: none, a wrong one, an unknown `msg_id`. With `--all`, three messages acked by `seen` and `reply`.
+- `live-check transcript <claude|codex>`: `PostToolUse` hands the message over after a first command; a second command gives the hook a later run; the client polls the session file every 50 ms meanwhile.
+- `live-check resend claude`, stub only: a bypass session, during `sleep 20`, gets one message through the socket without the token, so it is held, and one with it. Neither is confirmed within 5 s, so both go again by the `Stop` hook.
+- The GUI wake checks and `live-check gui read <codex-desktop|codex-vscode>`, `codex queue` with `inbox`'s `ack` and a `Stop` hook with `--confirm`, report each signal in `gui-result`.
+
+Results on 2026-11-12, Claude Code 2.1.322 and Codex 0.162.1, `gpt-5.5` at low effort on the API key; each delay is from the handover:
+
+| Command | Result | Signals |
+|---|---|---|
+| `live-check ack claude --all`, `ack codex --all` | pass each | The wrong and missing acks refused, then the right one; each injected ack refused; the three messages acked by `seen` and `reply` |
+| `live-check ack claude --real` | pass | `ack` 2.7 s |
+| `live-check ack codex --real --model gpt-5.5` | pass | `ack` 2.0 s |
+| `live-check transcript claude --real` | pass | `session-file` 0.1 s, `transcript` 4.8 s; the entry 0.0 s |
+| `live-check transcript codex --real --model gpt-5.5` | pass | `session-file` 0.0 s, `transcript` 3.3 s; the entry 0.0 s |
+| `live-check resend claude` | pass | Held: `socket-held` 0.1 s, resent 5.2 s, in the transcript at the turn's end. Delivered: resent 5.2 s, `transcript` and `repeat-dropped` 22.1 s; the model's last request held it once |
+
+On the GUI checks:
+
+| Surface | Path | Signals after the handover |
+|---|---|---|
+| Desktop app | socket | `ack` 4.4–6.4 s or `reply` 11.4 s, `transcript` 9.5–14.5 s |
+| | `rewake` | `transcript` 5.8 s; no `ack` |
+| | mod, `loop` | `ack` 2.6–5.8 s, `transcript` 7.8–10.8 s |
+| VS Code | socket | `reply` 5.5–12.7 s, `transcript` 9.5–17.2 s |
+| | `rewake` | `ack` 10.4 s, `transcript` 16.2 s |
+| | mod, `loop` | `ack` 4.9 s or none, `transcript` 4.8–9.6 s |
+| Codex desktop app | `codex queue` | `queue-taken` 7.0 s, `ack` 10.3 s, `transcript` 11.7 s |
+| Codex for VS Code | `codex queue` | `queue-taken` 4.0 s, `ack` 7.2 s, `transcript` 8.2 s |
+
+In each, the session file's entry was 0.0 s after the handover, but for `codex queue`, whose entry comes when the turn starts: 4.0 s and 7.0 s.
+
+| Layer | Claude Code CLI, desktop app, VS Code | Codex CLI, desktop app, VS Code | False positives | Needs |
+|---|---|---|---|---|
+| Session file, by the client | Yes, each; 0.1 s after the entry | Yes, each | A `msg_id` in a tool result: the agent read the source itself | The session file's path: from the `SessionStart` hook, or the thread's rollout |
+| Session file, by a hook | Yes, each; at the hook's next run, 2–17 s | Yes, each; Codex hooks need Review hooks on the surfaces | The same | A `Stop` hook |
+| By construction | Yes | Yes | The `Stop` hook's 9th continuation, Channels on the GUI surfaces, a held socket message | Nothing more |
+| Vendor signals | The socket: only failures | `codex queue`: taken, 4–7 s; the app-server: the turn | `queue-taken` before the turn runs | — |
+| `ack`, piggyback | When the agent calls it: 2–10 s; none in 3 of 15 GUI runs | The same | None: the secret is only in the message; a process that reads the session file could copy it | The agent's call, a turn's tokens |
+| Resend | Yes, stub | Not run | A repeat, dropped by `msg_id` | The receiving side's record of `msg_id`s |
+
+Findings:
+- The session file shows that a message reached the model on every surface of both agents, with no help from the model; the client sees it at once, a hook at its next run.
+- No layer shows that the model acted on a message: on the GUI `rewake` runs the agent got it and declined to act, once after acking it; a `codex queue` run replied `OK`, not the token. `read` stays "handed to the agent", as [delivery.md](../protocol/delivery.md#receipts) says; work that must be done goes through the queue.
+- The agent skips `ack`, so it cannot be the only layer.
+
+Recommended order, most reliable first:
+1. **The session file**, by the client while the session runs and by a `Stop` hook as the fallback: issue `read` on the entry.
+2. **By construction**, for a handover whose output is always model input: an `inbox` tool result, `PostToolUse` context.
+3. **Vendor signals:** `codex queue` taken, the app-server's turn; a socket `held`, `expired` or `refused` receipt stops waiting for `read` and triggers the resend.
+4. **`ack` and piggyback:** as a sign that the agent processed it, not as `read`.
+5. **Resend** by the next path after a timeout, with the receiving side dropping repeats by `msg_id`.
+
+The order differs from the planned one: the client's reading comes first because it is the fastest and needs no hook run; `ack` moves down because the agent skips it.
+
+Security points:
+- The socket's token, `CLAUDE_CODE_MESSAGING_TOKEN`, reaches every hook and Bash command of the session: any of them can post as the session's own child, which a bypass session delivers. The source keeps it in `session.json`, mode 600.
+- Without the token, any process of the user can post to the socket; a session that prompts for permissions delivers it, as from another session. Claude Code tells the model a peer cannot approve prompts or change config, but asks it to act on the request "within this session's own permission settings".
+- A mod's and a deep link's prompt is the user's own, with the user's authority. The link must carry only a fixed prompt to call `inbox`, never the message: a URL lands in logs and history.
+- The session file holds the user's whole conversation. The client reads only the registered session's file, only `msg_id`s of entries that went to the model, and keeps no line.
+- The ack secret is in the session file: it proves the model saw the message only while no other local process reads that file.
+- `/loop` and scheduled tasks spend the user's tokens each minute.
+
+Open questions:
+- The read confirmations of `codex queue` in a busy session and with a second session on the Codex surfaces; resending after `codex queue`. Not run.
+- What makes the agent act on a message it got: it acted on socket messages and declined `rewake` ones on both GUI surfaces, which the CLI acted on.
+
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. On Claude Code the limits exist and a local program can read them so. Codex has them only on a ChatGPT sign-in. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
 
@@ -470,7 +627,7 @@ The surfaces take no CLI flags, so a check attaches a path only with files in th
 - Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and, for `inbox`, the server with `default_tools_approval_mode = "approve"`; for a hook, the hook as a top-level dotted key, `hooks.<event>=[{hooks=[{type="command",command="<handler> --codex <source>"}]}]`; for `codex queue`, nothing more. For each path it also turns off plugins, `[features] plugins = false`, and each MCP server of the user's `~/.codex/config.toml`, `[mcp_servers."<name>"] enabled = false`: it reads that file and keeps only the table headers' names. Without them, a Codex for VS Code session started the user's servers, and one asked macOS for automation access. With them, the session gets none of their tools and the desktop app starts none; Codex for VS Code still starts the user's servers right after `thread/start`, as the panel asks for their status with `mcpServerStatus/list`, which ignores the project's `enabled = false`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use. The check picks no model.
 
 ### GUI live check
-`live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel` on the Claude Code ones, `user-prompt-submit` or `queue` on the Codex ones:
+`live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel`, `socket`, `rewake`, `mod` or `loop` on the Claude Code ones, `user-prompt-submit`, `queue` or `read` on the Codex ones; the [wake paths](#waking-an-idle-session) and [`read`](#read-confirmations) have their own commands there:
 - makes a `skald-live-*` directory in `$TMPDIR` with the project, the surface's config and a source with one message holding a random token, the text of the path's CLI check;
 - prints the surface's version, the project, the prompt to type and the commands to run next; never the token;
 - with `--busy`, for `inbox` on Claude Code, `post-tool-use` and `stop`: the prompt of the path's busy case, with `sleep 20`, and no message until `live-check gui-add <dir>` adds it, which the person or agent runs once the command runs;
@@ -484,12 +641,12 @@ Steps, each on a new session in the check's project; Return did not always send 
 - **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. For a hook, Review hooks as on the desktop app, from the hooks icon in the composer; the new chat button, top right of the panel. Close that window.
 - **Codex desktop app:** `open -a /Applications/ChatGPT.app <dir>/project`. "Trust this folder?": Trust folder; the app chooses the folder as the project. Type the prompt; the send button, right of the composer. For a hook, first send "Reply with only OK.": the untrusted hook does not run, and a hooks icon with a dot appears in the composer. It opens "Review hooks", which lists each new hook with its source ("This project"), event, command and timeout (600 s); check the hook, Allow selected; then New chat and the check's prompt.
 
-The Claude Code surfaces also load the user's config: the desktop session's `/status` listed the user's MCP servers, and Claude Code for VS Code connected each session to Remote Control. No surface shows a turn's tokens.
+The Claude Code surfaces also load the user's config: the desktop session's `/status` listed the user's MCP servers, and Claude Code for VS Code connected each session to Remote Control and to the Claude in Chrome extension. Each check's project settings on them turn off the user's plugins and the tools of the user's MCP servers. No surface shows a turn's tokens.
 
 The runs leave on the user's Mac:
 - trust of each `skald-live-*` project in `~/.claude.json` and, for the Codex surfaces, in `~/.codex/config.toml`. The hook trust that Review hooks saves there, `[hooks.state."<project>/.codex/config.toml:<event, such as post_tool_use>:0:0"]` with `trusted_hash = "sha256:…"`, was deleted after the runs;
 - each Claude Code session's transcript and an empty memory directory in `~/.claude/projects/`;
-- the Claude Code sessions in the Claude app's Code list, under each `skald-live-*` project;
+- the Claude Code sessions in the Claude app's Code list, under each `skald-live-*` project, with the app's record of each in `~/Library/Application Support/Claude/claude-code-sessions/`;
 - the Codex chats in the history the Codex app and extension share, and a `project` entry for each folder in the app's Projects;
 - for Codex for VS Code, the project in VS Code's recent list and its workspace trust, in the user's profile;
 - the extensions' updates: VS Code updated Codex for VS Code from 26.1021.22027 to 26.1106.51428 during the runs;

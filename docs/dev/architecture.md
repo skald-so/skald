@@ -91,8 +91,8 @@ Paths of Claude Code and Codex as [agent-delivery.md](agent-delivery.md#summary)
 
 | Agent | Primary path | Fallback |
 |---|---|---|
-| Claude Code | Channels: CLI | `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox`: CLI, desktop app, VS Code extension |
-| Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI, desktop app, VS Code extension | `UserPromptSubmit` hook, MCP `inbox`: CLI, desktop app, VS Code extension |
+| Claude Code | Cross-session socket: CLI, desktop app, VS Code extension. Channels: CLI | `asyncRewake` hook, mod, `/loop`, `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox`: CLI, desktop app, VS Code extension |
+| Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI, desktop app, VS Code extension | `UserPromptSubmit` hook, MCP `inbox`: CLI, desktop app, VS Code extension. Scheduled task: desktop app |
 | Codex threads a program starts | App-server: CLI | — |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
 | Agents of [agents.md](agents.md#setup-by-skald-connect) | — | MCP `inbox` |
@@ -100,6 +100,8 @@ Paths of Claude Code and Codex as [agent-delivery.md](agent-delivery.md#summary)
 | CI | — | One-shot mode |
 
 Adapters are separate modules with e2e tests against real CLIs.
+
+`read` is issued once the agent's session file shows the message in an entry that went to the model, then on weaker signals; an unconfirmed message goes again by the next path: [agent-delivery.md, "Read confirmations"](agent-delivery.md#read-confirmations).
 
 ## Notifications
 - To Telegram, Slack or a webhook.
