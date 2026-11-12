@@ -361,8 +361,62 @@ pub struct Binaries {
     pub inbox: PathBuf,
     pub channel: PathBuf,
     pub hook: PathBuf,
+    /// The mod's plugin directory, which a mod check's project loads.
+    pub plugin: PathBuf,
     /// The MCP servers of the user's Codex config, which a Codex project turns off.
     pub user_mcp_servers: Vec<String>,
+    /// The plugins and MCP servers of the user's Claude Code config, which a Claude Code project
+    /// turns off.
+    pub user_claude: UserClaude,
+}
+
+/// The names of the plugins and MCP servers of the user's Claude Code config.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserClaude {
+    pub plugins: Vec<String>,
+    pub mcp_servers: Vec<String>,
+}
+
+impl UserClaude {
+    /// Reads only the names: the plugins that the user's `settings`, `~/.claude/settings.json`,
+    /// turn on in `enabledPlugins`, and the servers of `mcpServers` in `config`, `~/.claude.json`.
+    pub fn read(settings: &Value, config: &Value) -> Self {
+        let names = |value: &Value, on: fn(&Value) -> bool| -> Vec<String> {
+            value.as_object().map_or_else(Vec::new, |map| {
+                map.iter()
+                    .filter(|(_, value)| on(value))
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+        };
+        Self {
+            plugins: names(&settings["enabledPlugins"], |on| on == &Value::Bool(true)),
+            mcp_servers: names(&config["mcpServers"], |_| true),
+        }
+    }
+
+    /// Turns them off in a Claude Code project's `settings`: each plugin in `enabledPlugins`, and
+    /// each server's tools, but those of a server named as the check's, by a deny rule. Claude Code
+    /// still starts the servers; the session gets none of their tools.
+    fn turn_off(&self, settings: &mut Value) {
+        if !self.plugins.is_empty() {
+            let off: serde_json::Map<String, Value> = self
+                .plugins
+                .iter()
+                .map(|plugin| (plugin.clone(), false.into()))
+                .collect();
+            settings["enabledPlugins"] = off.into();
+        }
+        let deny: Vec<String> = self
+            .mcp_servers
+            .iter()
+            .filter(|name| *name != SERVER)
+            .map(|name| format!("mcp__{name}"))
+            .collect();
+        if !deny.is_empty() {
+            settings["permissions"]["deny"] = deny.into();
+        }
+    }
 }
 
 impl Binaries {
@@ -395,6 +449,9 @@ pub const CODEX_MODEL: &str = "gpt-5.5";
 /// The rule that allows the busy case's shell command.
 const BUSY_SHELL: &str = "Bash(sleep:*)";
 
+/// Claude Code's variable that loads plugin directories, as `--plugin-dir` does.
+const PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
+
 /// Claude Code's lowest effort: `maxEffortLevel` caps the effort the surface would pick, and the
 /// lowest across settings files wins.
 const LOW: &str = "low";
@@ -419,7 +476,7 @@ pub fn write_config(
     match surface.agent() {
         Agent::Claude => {
             let server = |command: &Path| json!({ "mcpServers": { SERVER: { "command": command, "args": [source] } } });
-            let settings = match path {
+            let mut settings = match path {
                 GuiPath::Inbox => {
                     fs::write(project.join(".mcp.json"), pretty(&server(&binaries.inbox)))?;
                     // Without them, Claude Code asks a person to approve the server and each call.
@@ -465,6 +522,12 @@ pub fn write_config(
                 }
                 GuiPath::Queue | GuiPath::Read => unreachable!("checked above"),
             };
+            binaries.user_claude.turn_off(&mut settings);
+            if path == GuiPath::Wake(Wake::Mod) {
+                // Claude Code applies the settings' variables before it loads plugins, on each
+                // surface; neither surface takes `--plugin-dir`.
+                settings["env"] = json!({ PLUGIN_DIRS: binaries.plugin });
+            }
             fs::create_dir_all(project.join(".claude"))?;
             fs::write(
                 project.join(".claude/settings.local.json"),
@@ -560,44 +623,20 @@ pub fn prepare(
     })
 }
 
-/// Writes the settings of the VS Code profile, `work/vscode`, that a check of `path` on Claude Code
-/// for VS Code needs, and returns the profile: for the mod, Claude Code's variable that loads the
-/// plugin directory `plugin`; for a `bypass` session, the extension's bypass mode. `None` for any
+/// Writes the settings of the VS Code profile, `work/vscode`, that a `bypass` session on Claude
+/// Code for VS Code needs, the extension's bypass mode, and returns the profile. `None` for any
 /// other check, which needs no settings of its own.
-pub fn vscode_profile(
-    work: &Path,
-    surface: Surface,
-    path: GuiPath,
-    plugin: &Path,
-    bypass: bool,
-) -> io::Result<Option<PathBuf>> {
-    let loads_mod = path == GuiPath::Wake(Wake::Mod);
-    if surface != Surface::ClaudeVsCode || !(loads_mod || bypass) {
+pub fn vscode_profile(work: &Path, surface: Surface, bypass: bool) -> io::Result<Option<PathBuf>> {
+    if surface != Surface::ClaudeVsCode || !bypass {
         return Ok(None);
     }
-    let mut settings = serde_json::Map::new();
-    if loads_mod {
-        settings.insert(
-            "claudeCode.environmentVariables".to_owned(),
-            json!([{ "name": "CLAUDE_CODE_PLUGIN_DIRS", "value": plugin }]),
-        );
-    }
-    if bypass {
-        settings.insert(
-            "claudeCode.allowDangerouslySkipPermissions".to_owned(),
-            true.into(),
-        );
-        settings.insert(
-            "claudeCode.initialPermissionMode".to_owned(),
-            "bypassPermissions".into(),
-        );
-    }
+    let settings = json!({
+        "claudeCode.allowDangerouslySkipPermissions": true,
+        "claudeCode.initialPermissionMode": "bypassPermissions",
+    });
     let profile = work.join("vscode");
     fs::create_dir_all(profile.join("User"))?;
-    fs::write(
-        profile.join("User/settings.json"),
-        pretty(&Value::Object(settings)),
-    )?;
+    fs::write(profile.join("User/settings.json"), pretty(&settings))?;
     Ok(Some(profile))
 }
 
@@ -764,6 +803,76 @@ pub fn result(work: &Path, reported: &str, home: &Path) -> io::Result<Outcome> {
         ),
         pass,
     })
+}
+
+/// A deep link that opens a check's session, for an OS notification to carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub url: String,
+    /// The link as output shows it: with `<the message>` for the text it carries, if any.
+    pub shown: String,
+}
+
+/// The deep link that opens the session of the check prepared in `work` on its surface: the
+/// session that its `SessionStart` hook registered or the thread that `gui-queue` found. Claude
+/// Code for VS Code's link also carries a prompt, the check's message as `inbox` renders it; the
+/// others carry no text. Codex for VS Code has none.
+pub fn link(work: &Path) -> io::Result<Link> {
+    let (check, text) = read_check(work)?;
+    let surface = Surface::parse(&text("surface")?)
+        .ok_or_else(|| invalid(format!("{CHECK} has no known surface")))?;
+    let source = Source::open(work.join("source"))?;
+    let session = match surface.agent() {
+        Agent::Claude => source
+            .registration()?
+            .map(|registration| registration.session_id),
+        Agent::Codex => check["thread"].as_str().map(String::from),
+    }
+    .ok_or_else(|| invalid("the check has no session yet".to_owned()))?;
+    let session = encode(&session);
+    Ok(match surface {
+        Surface::ClaudeDesktop => {
+            let url = format!("claude://code/needs-input?session={session}");
+            Link {
+                shown: url.clone(),
+                url,
+            }
+        }
+        Surface::ClaudeVsCode => {
+            let msg_id = check["msg_id"]
+                .as_str()
+                .ok_or_else(|| invalid("the check's message was never added".to_owned()))?;
+            let prompt = agent_inbox::render(&[source.handed(msg_id)?]);
+            let base = format!("vscode://anthropic.claude-code/open?session={session}&prompt=");
+            Link {
+                url: format!("{base}{}", encode(&prompt)),
+                shown: format!("{base}<the message>"),
+            }
+        }
+        Surface::CodexDesktop => {
+            let url = format!("codex://threads/{session}");
+            Link {
+                shown: url.clone(),
+                url,
+            }
+        }
+        Surface::CodexVsCode => {
+            return Err(invalid("Codex for VS Code has no deep link".to_owned()));
+        }
+    })
+}
+
+/// `text` percent-encoded for a URL's path segment or query value: all but the unreserved
+/// characters.
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 /// The read confirmations of the message `msg_id` in `source`, a check's on `surface` whose
@@ -977,12 +1086,55 @@ mod tests {
             inbox: PathBuf::from("/bin/agent-inbox"),
             channel: PathBuf::from("/bin/agent-channel"),
             hook: PathBuf::from("/bin/agent-hook"),
+            plugin: PathBuf::from("/p/mod"),
             user_mcp_servers: vec![
                 "alpha".to_owned(),
                 "skald".to_owned(),
                 "beta-two".to_owned(),
             ],
+            user_claude: UserClaude {
+                plugins: vec!["one@market".to_owned(), "two@market".to_owned()],
+                mcp_servers: vec!["gamma".to_owned(), "skald".to_owned()],
+            },
         }
+    }
+
+    /// `settings` with the user's Claude Code plugins and servers of [`binaries`] turned off.
+    fn claude_off(mut settings: Value) -> String {
+        settings["enabledPlugins"] = json!({ "one@market": false, "two@market": false });
+        settings["permissions"]["deny"] = json!(["mcp__gamma"]);
+        pretty(&settings)
+    }
+
+    #[test]
+    fn reads_only_the_names_of_the_users_claude_plugins_and_servers() {
+        let settings = json!({
+            "enabledPlugins": { "on@m": true, "off@m": false, "odd@m": "yes" },
+            "model": "opus",
+        });
+        let config = json!({ "mcpServers": { "exa": { "command": "x" }, "local": {} } });
+        assert_eq!(
+            UserClaude::read(&settings, &config),
+            UserClaude {
+                plugins: vec!["on@m".to_owned()],
+                mcp_servers: vec!["exa".to_owned(), "local".to_owned()],
+            }
+        );
+        assert_eq!(
+            UserClaude::read(&json!({}), &json!(null)),
+            UserClaude::default()
+        );
+        // With nothing to turn off, the settings stay as they are.
+        let mut settings = json!({ "maxEffortLevel": "low" });
+        UserClaude::default().turn_off(&mut settings);
+        assert_eq!(settings, json!({ "maxEffortLevel": "low" }));
+        let mut settings = json!({});
+        UserClaude {
+            plugins: Vec::new(),
+            mcp_servers: vec!["skald".to_owned()],
+        }
+        .turn_off(&mut settings);
+        assert_eq!(settings, json!({}));
     }
 
     /// The files under `dir`, as paths relative to it, sorted.
@@ -1010,7 +1162,7 @@ mod tests {
             pretty(&json!({ "mcpServers": { "skald": { "command": command, "args": [source] } } }))
         };
         let hook = |event: &str| {
-            pretty(&json!({
+            claude_off(json!({
                 "hooks": { event: [{ "hooks": [{
                     "type": "command",
                     "command": "'/bin/agent-hook' '/work/source'",
@@ -1067,7 +1219,7 @@ mod tests {
                         (".mcp.json", server("/bin/agent-inbox")),
                         (
                             ".claude/settings.local.json",
-                            pretty(&json!({
+                            claude_off(json!({
                                 "enabledMcpjsonServers": ["skald"],
                                 "permissions": { "allow": ["mcp__skald__inbox", "Bash(sleep:*)"] },
                                 "maxEffortLevel": "low",
@@ -1078,7 +1230,7 @@ mod tests {
                         (".mcp.json", server("/bin/agent-channel")),
                         (
                             ".claude/settings.local.json",
-                            pretty(&json!({
+                            claude_off(json!({
                                 "enabledMcpjsonServers": ["skald"],
                                 "maxEffortLevel": "low",
                             })),
@@ -1096,14 +1248,18 @@ mod tests {
                             json!({ "type": "command", "command": words.join(" ") })
                         };
                         let confirm = handler(&["--confirm", "/work/source"]);
-                        let settings = pretty(&json!({
+                        let mut settings = json!({
                             "hooks": wake::hooks(wake, &handler, source, &[("Stop", confirm)]),
                             "enabledMcpjsonServers": ["skald"],
                             "permissions": { "allow": [
                                 "mcp__skald__inbox", "mcp__skald__ack", "mcp__skald__reply", "Bash(sleep:*)"
                             ] },
                             "maxEffortLevel": "low",
-                        }));
+                        });
+                        if wake == Wake::Mod {
+                            settings["env"] = json!({ "CLAUDE_CODE_PLUGIN_DIRS": "/p/mod" });
+                        }
+                        let settings = claude_off(settings);
                         let mut files = vec![
                             (".mcp.json", server("/bin/agent-inbox")),
                             (".claude/settings.local.json", settings),
@@ -1203,39 +1359,28 @@ mod tests {
     }
 
     #[test]
-    fn writes_a_vs_code_profile_only_for_the_mod_and_a_bypass_session() {
-        let plugin = Path::new("/p/mod");
-        let written = |surface, path, bypass| {
+    fn writes_a_vs_code_profile_only_for_a_bypass_session() {
+        let written = |surface, bypass| {
             let work = tempfile::tempdir().unwrap();
-            let profile = vscode_profile(work.path(), surface, path, plugin, bypass).unwrap();
+            let profile = vscode_profile(work.path(), surface, bypass).unwrap();
             profile.map(|profile| {
                 assert_eq!(profile, work.path().join("vscode"));
                 json_at(profile.join("User/settings.json"))
             })
         };
         assert_eq!(
-            written(Surface::ClaudeVsCode, GuiPath::Wake(Wake::Mod), false),
-            Some(json!({ "claudeCode.environmentVariables": [
-                { "name": "CLAUDE_CODE_PLUGIN_DIRS", "value": "/p/mod" }
-            ] }))
-        );
-        assert_eq!(
-            written(Surface::ClaudeVsCode, GuiPath::Wake(Wake::Socket), true),
+            written(Surface::ClaudeVsCode, true),
             Some(json!({
                 "claudeCode.allowDangerouslySkipPermissions": true,
                 "claudeCode.initialPermissionMode": "bypassPermissions",
             }))
         );
-        for (surface, path, bypass) in [
-            (Surface::ClaudeVsCode, GuiPath::Wake(Wake::Socket), false),
-            (Surface::ClaudeDesktop, GuiPath::Wake(Wake::Mod), false),
-            (Surface::ClaudeVsCode, GuiPath::Inbox, false),
+        for (surface, bypass) in [
+            (Surface::ClaudeVsCode, false),
+            (Surface::ClaudeDesktop, true),
+            (Surface::CodexVsCode, true),
         ] {
-            assert_eq!(
-                written(surface, path, bypass),
-                None,
-                "{path:?} on {surface:?}"
-            );
+            assert_eq!(written(surface, bypass), None, "{surface:?}");
         }
     }
 
@@ -1617,6 +1762,104 @@ mod tests {
             read.verdict,
             "inbox on codex-vscode with the real model: pass"
         );
+    }
+
+    #[test]
+    fn links_to_the_checks_session_on_each_surface_that_has_a_link() {
+        let error = |work: &Path| link(work).unwrap_err().to_string();
+        let register = |work: &Path, session: &str| {
+            Source::open(work.join("source"))
+                .unwrap()
+                .register(&agent_source::Registration {
+                    session_id: session.to_owned(),
+                    ..agent_source::Registration::default()
+                })
+                .unwrap();
+        };
+
+        let desktop = tempfile::tempdir().unwrap();
+        prepared(
+            desktop.path(),
+            Surface::ClaudeDesktop,
+            GuiPath::Wake(Wake::Socket),
+            &token(),
+            false,
+        );
+        assert_eq!(error(desktop.path()), "the check has no session yet");
+        register(desktop.path(), "s 1/é");
+        let url = "claude://code/needs-input?session=s%201%2F%C3%A9";
+        assert_eq!(
+            link(desktop.path()).unwrap(),
+            Link {
+                url: url.to_owned(),
+                shown: url.to_owned()
+            }
+        );
+
+        let vscode = tempfile::tempdir().unwrap();
+        let token = token();
+        prepared(
+            vscode.path(),
+            Surface::ClaudeVsCode,
+            GuiPath::Wake(Wake::Rewake),
+            &token,
+            false,
+        );
+        register(vscode.path(), "abc-1");
+        assert_eq!(error(vscode.path()), "the check's message was never added");
+        let message = add(vscode.path()).unwrap();
+        hand_over(vscode.path());
+        let base = "vscode://anthropic.claude-code/open?session=abc-1&prompt=";
+        let vscode_link = link(vscode.path()).unwrap();
+        assert_eq!(
+            vscode_link.url,
+            format!("{base}{}", encode(&agent_inbox::render(&[message])))
+        );
+        assert!(vscode_link.url.contains(&token));
+        assert!(!vscode_link.url.contains([' ', '\n']));
+        assert_eq!(vscode_link.shown, format!("{base}<the message>"));
+        assert!(!vscode_link.shown.contains(&token));
+
+        let codex = tempfile::tempdir().unwrap();
+        prepared(
+            codex.path(),
+            Surface::CodexDesktop,
+            GuiPath::Read,
+            &token,
+            false,
+        );
+        assert_eq!(error(codex.path()), "the check has no session yet");
+        set_thread(codex.path(), "019a-thread").unwrap();
+        let url = "codex://threads/019a-thread";
+        assert_eq!(
+            link(codex.path()).unwrap(),
+            Link {
+                url: url.to_owned(),
+                shown: url.to_owned()
+            }
+        );
+
+        let codex_vscode = tempfile::tempdir().unwrap();
+        prepared(
+            codex_vscode.path(),
+            Surface::CodexVsCode,
+            GuiPath::Read,
+            &token,
+            false,
+        );
+        set_thread(codex_vscode.path(), "019a-thread").unwrap();
+        assert_eq!(
+            error(codex_vscode.path()),
+            "Codex for VS Code has no deep link"
+        );
+        assert!(link(Path::new("/nonexistent/check")).is_err());
+    }
+
+    #[test]
+    fn percent_encodes_all_but_the_unreserved_characters() {
+        assert_eq!(encode("Az09-._~"), "Az09-._~");
+        assert_eq!(encode("a b/?&=%\n"), "a%20b%2F%3F%26%3D%25%0A");
+        assert_eq!(encode("é"), "%C3%A9");
     }
 
     #[test]

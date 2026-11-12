@@ -29,7 +29,7 @@ const LOOP: Duration = Duration::from_secs(200);
 const HELD: Duration = Duration::from_secs(5);
 
 /// The mod's plugin directory, in the repository.
-fn plugin() -> Result<PathBuf> {
+pub(crate) fn plugin() -> Result<PathBuf> {
     Ok(fs::canonicalize(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../mod"),
     )?)

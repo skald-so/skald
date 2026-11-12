@@ -119,6 +119,7 @@ fn main() -> ExitCode {
             ended(gui_run::socket(Path::new(work), auth, listen))
         }
         ["gui-add", work] => ended(gui_run::add(Path::new(work))),
+        ["gui-link", work] => ended(gui_run::link(Path::new(work))),
         ["gui-queue", work, cli @ ..] => {
             let cli = match cli {
                 [] => false,
@@ -218,6 +219,7 @@ fn usage() -> ExitCode {
          live-check gui read <codex-desktop|codex-vscode> [--busy]\n       \
          live-check gui-socket <check-dir> [--no-auth] [--listen <seconds>]\n       \
          live-check gui-add <check-dir>\n       \
+         live-check gui-link <check-dir>\n       \
          live-check gui-queue <check-dir> [--cli]\n       \
          live-check gui-result <check-dir> <token>\n       \
          live-check timed-hook <log> <handler> [<arg>...]"

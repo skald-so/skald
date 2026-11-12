@@ -102,6 +102,8 @@ fn wrong_arguments_print_the_usage() {
         &["gui-add", "dir", "token"],
         &["gui-result"],
         &["gui-result", "dir"],
+        &["gui-link"],
+        &["gui-link", "dir", "--open"],
         &["gui-queue"],
         &["gui-queue", "dir", "--bundled"],
         &["gui-queue", "dir", "--cli", "--cli"],
@@ -747,6 +749,91 @@ fn gui_prepares_a_check_without_showing_its_token_and_passes_only_on_it() {
 }
 
 #[test]
+fn gui_turns_off_the_users_claude_plugins_and_servers_and_loads_the_mod_from_the_project() {
+    let home = home_with_claude_code_for_vs_code();
+    fs::create_dir_all(home.path().join(".claude")).unwrap();
+    fs::write(
+        home.path().join(".claude/settings.json"),
+        r#"{"enabledPlugins":{"tool@market":true,"idle@market":false},"model":"opus"}"#,
+    )
+    .unwrap();
+    fs::write(
+        home.path().join(".claude.json"),
+        r#"{"mcpServers":{"search":{"command":"secret-command"}}}"#,
+    )
+    .unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, lines) = succeeded(home.path(), tmp.path(), &["gui", "mod", "claude-vscode"]);
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.starts_with("VS Code profile:")),
+        "{lines:?}"
+    );
+    let project = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("project: "))
+        .expect("the project");
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(Path::new(project).join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        settings["enabledPlugins"],
+        serde_json::json!({ "tool@market": false })
+    );
+    assert_eq!(
+        settings["permissions"]["deny"],
+        serde_json::json!(["mcp__search"])
+    );
+    let plugin = settings["env"]["CLAUDE_CODE_PLUGIN_DIRS"].as_str().unwrap();
+    assert!(
+        Path::new(plugin)
+            .join(".claude-plugin/plugin.json")
+            .exists(),
+        "{plugin}"
+    );
+    assert!(!settings.to_string().contains("secret-command"));
+}
+
+#[test]
+fn gui_link_opens_the_sessions_deep_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("check");
+    fs::create_dir_all(work.join("source")).unwrap();
+    fs::write(
+        work.join("check.json"),
+        r#"{"surface":"codex-desktop","path":"read","version":"v","token":"tok","busy":false,"thread":"019a-thread"}"#,
+    )
+    .unwrap();
+    let bin = tmp.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let opened = tmp.path().join("opened");
+    let open = bin.join("open");
+    fs::write(
+        &open,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >'{}'\n", opened.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args(["gui-link", work.to_str().unwrap()])
+        .env_clear()
+        .env("PATH", &bin)
+        .output()
+        .expect("live-check runs");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "opened: codex://threads/019a-thread\n"
+    );
+    assert_eq!(
+        fs::read_to_string(&opened).unwrap(),
+        "codex://threads/019a-thread\n"
+    );
+}
+
+#[test]
 fn gui_adds_the_busy_case_message_without_showing_its_token() {
     let home = home_with_claude_code_for_vs_code();
     let tmp = tempfile::tempdir().unwrap();
@@ -790,6 +877,7 @@ fn gui_fails_without_the_surface_or_the_check() {
     for args in [
         &["gui", "inbox", "claude-vscode"][..],
         &["gui-result", tmp.path().to_str().unwrap(), "tok"],
+        &["gui-link", tmp.path().to_str().unwrap()],
     ] {
         assert_failed(
             &live_check_in(home.path(), tmp.path(), args),
@@ -1053,7 +1141,9 @@ fn wake_sessions_get_only_their_environment_and_register_on_session_start() {
                 let looped = session.args[0].starts_with("/loop 1m ");
                 assert_eq!(looped, wake == "loop", "{at}");
                 assert_eq!(
-                    session.args.contains(&"--disable-slash-commands".to_owned()),
+                    session
+                        .args
+                        .contains(&"--disable-slash-commands".to_owned()),
                     !looped,
                     "{at}"
                 );

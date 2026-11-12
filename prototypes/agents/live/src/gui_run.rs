@@ -1,7 +1,7 @@
 //! The GUI live checks' commands: `gui` prepares a check for the developer or reviewer who drives
 //! the surface, `gui-add` adds the busy case's message, `gui-queue` queues it into the session's
-//! thread, `gui-result` takes the token they read. Everything else is in the library's `gui`
-//! module.
+//! thread, `gui-link` opens the session's deep link, `gui-result` takes the token they read.
+//! Everything else is in the library's `gui` module.
 
 use std::fs;
 use std::io;
@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use agent_app_server::{Client, Stdio};
-use agent_live::gui::{self, Binaries, GuiPath, Installed, Surface};
+use agent_live::gui::{self, Binaries, GuiPath, Installed, Surface, UserClaude};
 use agent_live::hook::HOOK_BIN;
 use agent_live::limits::{mcp_servers, quiet_app_server};
 use agent_live::wake::Wake;
@@ -30,19 +30,30 @@ use crate::subscription::user_codex_config;
 pub fn prepare(path: GuiPath, surface: Surface, busy: bool, bypass: bool) -> Result<bool> {
     let version = surface.version(&installed()?)?;
     let exe = std::env::current_exe()?;
+    let home = home()?;
+    let user_json = |file: PathBuf| -> serde_json::Value {
+        fs::read_to_string(file)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    };
     let binaries = Binaries {
         inbox: binary(&exe, INBOX_BIN)?,
         channel: binary(&exe, CHANNEL_BIN)?,
         hook: binary(&exe, HOOK_BIN)?,
+        plugin: crate::wake_run::plugin()?,
         user_mcp_servers: mcp_servers(&user_codex_config()),
+        user_claude: UserClaude::read(
+            &user_json(home.join(".claude/settings.json")),
+            &user_json(home.join(".claude.json")),
+        ),
     };
     let work = tempfile::Builder::new()
         .prefix("skald-live-")
         .tempdir()?
         .keep();
     let prepared = gui::prepare(&work, surface, path, &binaries, &version, &token(), busy)?;
-    let plugin = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../mod"))?;
-    let profile = gui::vscode_profile(&work, surface, path, &plugin, bypass)?;
+    let profile = gui::vscode_profile(&work, surface, bypass)?;
     println!("{version}");
     println!("project: {}", prepared.project.display());
     if let Some(profile) = profile {
@@ -85,6 +96,15 @@ pub fn result(work: &Path, token: &str) -> Result<bool> {
     }
     println!("{}", outcome.verdict);
     Ok(outcome.pass)
+}
+
+/// Opens the deep link to the session of the GUI check prepared in `work`, as a click on an OS
+/// notification would, and prints it without the text it carries.
+pub fn link(work: &Path) -> Result<bool> {
+    let link = gui::link(work)?;
+    let opened = std::process::Command::new("open").arg(&link.url).status()?;
+    println!("opened: {}", link.shown);
+    Ok(opened.success())
 }
 
 /// Adds the message of the GUI check prepared in `work` and prints its `msg_id`, not its token.
