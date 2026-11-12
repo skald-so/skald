@@ -86,10 +86,13 @@
 - Claim: `SELECT … FOR UPDATE SKIP LOCKED`.
 
 ## Delivery to agents
+Paths of Claude Code and Codex as [agent-delivery.md](agent-delivery.md#summary) confirmed them, with the surfaces each works on:
+
 | Agent | Primary path | Fallback |
 |---|---|---|
-| Claude Code | Channels | `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox` |
-| Codex | `PostToolUse`, `Stop`, `UserPromptSubmit` hooks | MCP `inbox`, `codex queue` (to verify) |
+| Claude Code | Channels: CLI | `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox`: CLI, desktop app, VS Code extension |
+| Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI | `UserPromptSubmit` hook: CLI; MCP `inbox`: CLI, desktop app, VS Code extension |
+| Codex threads a program starts | App-server: CLI | — |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
 | Agents of [agents.md](agents.md#setup-by-skald-connect) | — | MCP `inbox` |
 | Any agent with a shell | — | `skald recv --wait` |
