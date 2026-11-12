@@ -7,11 +7,19 @@
 //! With no message waiting it prints nothing, so `Stop` lets the turn end. It marks the messages
 //! handed over once its output is written to the CLI and puts them back if the write fails, as
 //! `docs/protocol/delivery.md`, "Device to agent", says.
+//!
+//! Each of these events also confirms the handed-over messages it finds in the session's own file,
+//! the hook input's `transcript_path`, as the source's `transcript` signal; a waiting message
+//! already there, which another path delivered first, it drops as a repeat by its `msg_id`. On
+//! `SessionStart` it registers the session in the source: its ID, file and directory and, on Claude
+//! Code, its inbox socket and token from the environment ([`Messaging`]).
 
 use std::io::{self, ErrorKind, Write};
+use std::path::Path;
 
 use agent_inbox::render;
-use agent_source::{Message, Source};
+use agent_source::{Message, Registration, Source, now_ms};
+use agent_transcript::read_seen;
 use serde_json::{Value, json};
 
 /// The CLI that runs the handler: their hooks' outputs differ.
@@ -22,10 +30,37 @@ pub enum Agent {
 }
 
 impl Agent {
-    /// Whether the handler answers `event` on this CLI: Claude Code's `PostToolUse` and `Stop`;
-    /// Codex's also `UserPromptSubmit`.
+    /// Whether the handler answers `event` on this CLI: Claude Code's `PostToolUse`, `Stop` and
+    /// `SessionStart`; Codex's also `UserPromptSubmit`.
     pub fn answers(self, event: Event) -> bool {
         self == Self::Codex || event != Event::UserPromptSubmit
+    }
+
+    fn transcript(self) -> agent_transcript::Agent {
+        match self {
+            Self::Claude => agent_transcript::Agent::Claude,
+            Self::Codex => agent_transcript::Agent::Codex,
+        }
+    }
+}
+
+/// What Claude Code exports to its hooks for cross-session messaging, read from the environment.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Messaging {
+    /// `CLAUDE_CODE_MESSAGING_SOCKET`: the session's inbox socket.
+    pub socket: Option<String>,
+    /// `CLAUDE_CODE_MESSAGING_TOKEN`: the session's token for it.
+    pub token: Option<String>,
+}
+
+impl Messaging {
+    /// The variables in the handler's environment.
+    pub fn from_env() -> Self {
+        let var = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
+        Self {
+            socket: var("CLAUDE_CODE_MESSAGING_SOCKET"),
+            token: var("CLAUDE_CODE_MESSAGING_TOKEN"),
+        }
     }
 }
 
@@ -38,6 +73,8 @@ pub enum Event {
     Stop,
     /// The user submitted a prompt; the turn starts with it.
     UserPromptSubmit,
+    /// The session started: the handler only registers it.
+    SessionStart,
 }
 
 impl Event {
@@ -47,6 +84,7 @@ impl Event {
             "PostToolUse" => Some(Self::PostToolUse),
             "Stop" => Some(Self::Stop),
             "UserPromptSubmit" => Some(Self::UserPromptSubmit),
+            "SessionStart" => Some(Self::SessionStart),
             _ => None,
         }
     }
@@ -57,6 +95,7 @@ impl Event {
             Self::PostToolUse => "PostToolUse",
             Self::Stop => "Stop",
             Self::UserPromptSubmit => "UserPromptSubmit",
+            Self::SessionStart => "SessionStart",
         }
     }
 }
@@ -77,30 +116,115 @@ pub fn output(agent: Agent, event: Event, messages: &[Message]) -> Value {
     }
 }
 
-/// Handles the hook input `input` of `agent`: takes the waiting messages of `source`, writes the
-/// output to `out` and marks them handed over; puts them back if the write fails. Takes nothing
-/// for an event it does not answer.
-pub fn handle(agent: Agent, input: &[u8], source: &Source, out: &mut impl Write) -> io::Result<()> {
+/// Handles the hook input `input` of `agent`, whose environment gave `messaging`: on
+/// `SessionStart`, registers the session; on another event it answers, confirms the messages the
+/// session's file shows, takes the waiting messages of `source`, drops those the file shows as
+/// repeats, writes the output for the rest to `out` and marks them handed over; puts them back if
+/// the write fails. Takes nothing for an event it does not answer.
+pub fn handle(
+    agent: Agent,
+    input: &[u8],
+    source: &Source,
+    out: &mut impl Write,
+    messaging: &Messaging,
+) -> io::Result<()> {
     let input: Value = serde_json::from_slice(input)
         .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?;
     let Some(event) = Event::of(&input).filter(|event| agent.answers(*event)) else {
         return Ok(());
     };
-    source.hand_over(|messages| {
-        writeln!(out, "{}", output(agent, event, messages)).and_then(|()| out.flush())
-    })?;
-    Ok(())
+    let text = |key: &str| input[key].as_str().map(String::from);
+    if event == Event::SessionStart {
+        let session_id = text("session_id")
+            .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "no session_id"))?;
+        return source.register(&Registration {
+            session_id,
+            transcript_path: text("transcript_path"),
+            cwd: text("cwd"),
+            socket: messaging.socket.clone(),
+            token: messaging.token.clone(),
+            at_ms: now_ms(),
+        });
+    }
+    let transcript = text("transcript_path");
+    let transcript = transcript.as_deref().map(Path::new);
+    if let Some(transcript) = transcript {
+        confirm(agent, transcript, source)?;
+    }
+    let taken = source.take()?;
+    if taken.is_empty() {
+        return Ok(());
+    }
+    let ids = |messages: &[&Message]| -> Vec<String> {
+        messages.iter().map(|m| m.msg_id.clone()).collect()
+    };
+    let seen: Vec<String> = match transcript {
+        Some(transcript) => {
+            let all: Vec<&Message> = taken.iter().collect();
+            read_seen(agent.transcript(), transcript, &ids(&all))?
+                .into_iter()
+                .map(|seen| seen.msg_id)
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let (repeats, fresh): (Vec<&Message>, Vec<&Message>) =
+        taken.iter().partition(|m| seen.contains(&m.msg_id));
+    if !repeats.is_empty() {
+        source.handed_over(&ids(&repeats))?;
+        for message in &repeats {
+            source.record(&message.msg_id, "transcript", None)?;
+            source.record(&message.msg_id, "repeat-dropped", Some(event.name()))?;
+        }
+    }
+    if fresh.is_empty() {
+        return Ok(());
+    }
+    let fresh_ids = ids(&fresh);
+    let fresh: Vec<Message> = fresh.into_iter().cloned().collect();
+    match writeln!(out, "{}", output(agent, event, &fresh)).and_then(|()| out.flush()) {
+        Ok(()) => source.handed_over(&fresh_ids),
+        Err(error) => {
+            source.release(&fresh_ids)?;
+            Err(error)
+        }
+    }
+}
+
+/// Records the `transcript` signal of each handed-over message of `source` that the session file
+/// `transcript` shows reached the model; returns how many it found.
+pub fn confirm(agent: Agent, transcript: &Path, source: &Source) -> io::Result<usize> {
+    let handed: Vec<String> = source
+        .handed_messages()?
+        .into_iter()
+        .map(|message| message.msg_id)
+        .collect();
+    let seen = read_seen(agent.transcript(), transcript, &handed)?;
+    for found in &seen {
+        let detail = found.at_ms.map(|at| format!("entry at {at}"));
+        source.record(&found.msg_id, "transcript", detail.as_deref())?;
+    }
+    Ok(seen.len())
+}
+
+/// What `--take` prints for `messages`, at least one: their IDs and the text that hands them over.
+pub fn taken(messages: &[Message]) -> Value {
+    let ids: Vec<&str> = messages.iter().map(|m| m.msg_id.as_str()).collect();
+    json!({ "ids": ids, "text": render(messages) })
 }
 
 #[cfg(test)]
 mod tests {
     use agent_source::State;
+    use agent_testing::message;
 
     use super::*;
 
     #[test]
     fn reads_the_event_of_a_hook_input() {
         let event = |name: &str| Event::of(&json!({ "hook_event_name": name }));
+        assert_eq!(event("SessionStart"), Some(Event::SessionStart));
+        assert_eq!(Event::SessionStart.name(), "SessionStart");
         assert_eq!(event("PostToolUse"), Some(Event::PostToolUse));
         assert_eq!(event("Stop"), Some(Event::Stop));
         assert_eq!(event("UserPromptSubmit"), Some(Event::UserPromptSubmit));
@@ -121,16 +245,8 @@ mod tests {
         }
         assert!(!Agent::Claude.answers(Event::UserPromptSubmit));
         assert!(Agent::Codex.answers(Event::UserPromptSubmit));
-    }
-
-    fn message(msg_id: &str) -> Message {
-        Message {
-            msg_id: msg_id.to_owned(),
-            sender: "alice".to_owned(),
-            text: "hi".to_owned(),
-            added_at_ms: 1,
-            handed_over_at_ms: None,
-        }
+        assert!(Agent::Claude.answers(Event::SessionStart));
+        assert!(Agent::Codex.answers(Event::SessionStart));
     }
 
     #[test]
@@ -186,7 +302,14 @@ mod tests {
         let input = br#"{"hook_event_name":"Stop"}"#;
         for agent in [Agent::Claude, Agent::Codex] {
             for flush_only in [false, true] {
-                let error = handle(agent, input, &source, &mut Broken { flush_only }).unwrap_err();
+                let error = handle(
+                    agent,
+                    input,
+                    &source,
+                    &mut Broken { flush_only },
+                    &Messaging::default(),
+                )
+                .unwrap_err();
                 assert_eq!(error.to_string(), "closed");
                 assert_eq!(source.state(&added.msg_id).unwrap(), Some(State::Waiting));
             }
@@ -199,7 +322,8 @@ mod tests {
         let source = Source::open(dir.path()).unwrap();
         let added = source.add("alice", "hi").unwrap();
         let mut out = Vec::new();
-        let error = handle(Agent::Codex, b"{", &source, &mut out).unwrap_err();
+        let error =
+            handle(Agent::Codex, b"{", &source, &mut out, &Messaging::default()).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidData);
         assert!(out.is_empty());
         assert_eq!(source.state(&added.msg_id).unwrap(), Some(State::Waiting));

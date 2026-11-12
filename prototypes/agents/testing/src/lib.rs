@@ -10,6 +10,25 @@ use std::time::{Duration, Instant};
 use agent_source::{Message, Source, State};
 use serde_json::Value;
 
+/// A message `msg_id` from `alice` saying `hi`, never added to a source.
+pub fn message(msg_id: &str) -> Message {
+    Message {
+        msg_id: msg_id.to_owned(),
+        sender: "alice".to_owned(),
+        text: "hi".to_owned(),
+        added_at_ms: 1,
+        handed_over_at_ms: None,
+        ack: None,
+    }
+}
+
+/// Opens the source in `dir` and adds a message from `alice` saying `hi`.
+pub fn one_waiting(dir: &Path) -> (Source, Message) {
+    let source = Source::open(dir).unwrap();
+    let message = source.add("alice", "hi").unwrap();
+    (source, message)
+}
+
 /// Writes `script` to `path` as an executable file, such as a stand-in for a CLI.
 pub fn write_executable(path: &Path, script: &str) {
     fs::write(path, script).unwrap();

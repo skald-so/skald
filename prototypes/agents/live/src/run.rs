@@ -1,6 +1,7 @@
 //! Starts the installed CLIs and reads their output; everything else is in the library.
 
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::process::{ChildStdout, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -24,6 +25,15 @@ pub fn start(agent: Agent) -> Result<TempDir> {
     let version = agent.command().arg("--version").output()?;
     println!("{}", agent.version(&version.stdout));
     Ok(tempfile::Builder::new().prefix("skald-live-").tempdir()?)
+}
+
+/// Starts a check of `agent` whose sessions run the workspace's binary `name`, as [`start`] does;
+/// returns its temporary directory, the binary, and `live-check`'s `PATH`, the only variable the
+/// CLI on the stub inherits.
+pub fn start_with(agent: Agent, name: &str) -> Result<(TempDir, PathBuf, String)> {
+    let work = start(agent)?;
+    let binary = binary(&std::env::current_exe()?, name)?;
+    Ok((work, binary, std::env::var("PATH").unwrap_or_default()))
 }
 
 /// Ends a check that ended with `pass`: prints its `verdict` and, if `options` keep the logs, where
@@ -62,9 +72,7 @@ fn busy_outcome(
 /// The `inbox` path's live check: an idle session; with `--all`, also the other of two idle
 /// sessions and a busy session.
 pub fn inbox(agent: Agent, options: &Options) -> Result<bool> {
-    let work = start(agent)?;
-    let inbox = binary(&std::env::current_exe()?, INBOX_BIN)?;
-    let path = std::env::var("PATH").unwrap_or_default();
+    let (work, inbox, path) = start_with(agent, INBOX_BIN)?;
     let setup = Setup {
         work: work.path(),
         agent,
@@ -213,7 +221,7 @@ pub fn read_lines(stdout: ChildStdout) -> Receiver<(String, u64)> {
 }
 
 /// Runs `run`'s session to its end, calling `on_event` with each event; `stub` is its model stub.
-fn run_session(
+pub(crate) fn run_session(
     run: &Run,
     stub: Option<&Stub>,
     mut on_event: impl FnMut(&Event),
@@ -254,7 +262,9 @@ fn run_session(
         }
     }
     let status = child.wait()?;
-    if let Some(failure) = session_failure(timed_out, TIMEOUT, status) {
+    // A session on a stub that fails each request is meant to fail.
+    let expected = stub.is_some_and(Stub::fails);
+    if let Some(failure) = session_failure(timed_out, TIMEOUT, status, expected) {
         eprintln!(
             "live-check: session {} {failure}; see {}",
             run.name,

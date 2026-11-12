@@ -11,7 +11,9 @@ agent-app-server = { path = "../app-server" }
 agent-inbox = { path = "../inbox" }
 agent-limits = { path = "../limits" }
 agent-queue = { path = "../queue" }
+agent-socket = { path = "../socket" }
 agent-source = { path = "../source" }
+agent-transcript = { path = "../transcript" }
 libc = "0.2"
 serde_json = "1"
 tempfile = "3"

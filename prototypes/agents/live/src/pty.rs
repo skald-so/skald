@@ -4,26 +4,33 @@
 //! session a person works in with it. Everything that runs no CLI is in the library's `channel` and
 //! `queue` modules.
 
+use std::cell::{Cell, RefCell};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use agent_app_server::{Client, Stdio as AppStdio};
 use agent_live::channel::{
     CHANNEL_BIN, Case, ChannelCheck, Files, HookEvent, IN_A_ROW, LISTENING, PtySession, Screen,
     Sent, TERM, add_message, extra_environment, hook_events, session, stub_environment,
 };
+use agent_live::limits::quiet_app_server;
 use agent_live::queue::{self, QUEUE_BIN, QueueCheck, thread};
+use agent_live::read;
 use agent_live::{Agent, Kind, Options, Stub, binary, token};
 use agent_source::{Source, now_ms};
 
 use crate::Result;
-use crate::run::{finish, side_by_side, start};
+use crate::run::{finish, side_by_side, start, start_with};
+use crate::subscription::user_codex_config;
 
 /// The longest wait for a turn.
 const TURN: Duration = Duration::from_secs(120);
@@ -128,9 +135,7 @@ pub fn channel(options: &Options) -> Result<bool> {
 /// The `codex queue` path's live check: an idle session, once its first turn ends; with `--all`,
 /// also the other of two idle sessions and a busy session.
 pub fn queue(options: &Options) -> Result<bool> {
-    let work = start(Agent::Codex)?;
-    let agent_queue = binary(&std::env::current_exe()?, QUEUE_BIN)?;
-    let path = std::env::var("PATH").unwrap_or_default();
+    let (work, agent_queue, path) = start_with(Agent::Codex, QUEUE_BIN)?;
     let prepare = |name: &str, kind: Kind| -> Result<Prepared> {
         let files = Files::new(&work.path().join(name));
         fs::create_dir_all(&files.project)?;
@@ -152,15 +157,32 @@ pub fn queue(options: &Options) -> Result<bool> {
         None
     };
     let (session_a, session_b) = side_by_side(
-        || -> Result<(PtySession, Option<Added>)> {
+        || -> Result<(PtySession, Option<Added>, String)> {
             let mut a = a.start()?;
             a.wait(TURN, turn_ended)?;
             let added = a.queue(&agent_queue)?;
             if let Some(added) = &added {
                 a.watch(added.token());
-                a.wait(TURN, |s| answered(s, added.token()))?;
+                // Codex's own sign that the session took the message: its queue empties.
+                let client = RefCell::new(a.queue_client(options.real)?);
+                let (thread, source) = (a.thread().unwrap_or_default(), Source::open(&added.dir)?);
+                let taken = Cell::new(false);
+                a.wait(TURN, |s| {
+                    if !taken.get() {
+                        let polled = queue::taken(
+                            &mut client.borrow_mut(),
+                            &thread,
+                            &source,
+                            &added.msg_id,
+                            Duration::ZERO,
+                        );
+                        taken.set(polled.is_ok_and(|after| after.is_some()));
+                    }
+                    answered(s, added.token())
+                })?;
             }
-            Ok((a.end()?, added))
+            let read = a.read_rollout(options.real, added.as_ref())?;
+            Ok((a.end()?, added, read))
         },
         b.map(|b| {
             move || -> Result<PtySession> {
@@ -171,9 +193,10 @@ pub fn queue(options: &Options) -> Result<bool> {
             }
         }),
     );
-    let (session_a, added_a) = session_a?;
+    let (session_a, added_a, read_a) = session_a?;
     let sent_a = added_a.as_ref().map(Added::now).transpose()?;
     println!("{}", check.idle(&session_a, sent_a.as_ref()));
+    println!("{read_a}");
     if let Some(session_b) = session_b {
         let token_a = added_a.as_ref().map_or("", Added::token);
         println!("{}", check.other(&session_b?, token_a));
@@ -427,13 +450,86 @@ pub(crate) struct Live {
 }
 
 impl Live {
-    fn watch(&mut self, token: &str) {
+    pub(crate) fn watch(&mut self, token: &str) {
         self.tokens.push(token.to_owned());
     }
 
     /// Adds a check's message with `token` to the session's source.
-    fn add(&self, token: &str) -> Result<Added> {
+    pub(crate) fn add(&self, token: &str) -> Result<Added> {
         self.prepared.add(token)
+    }
+
+    /// The session's thread, which the first hook input told.
+    pub(crate) fn thread(&self) -> Option<String> {
+        thread(&fs::read_to_string(&self.prepared.files.hooks).unwrap_or_default())
+    }
+
+    /// A client of `codex app-server` in the session's environment, which offers the experimental
+    /// methods: off the stub, on the user's config home with its MCP servers turned off.
+    pub(crate) fn queue_client(&self, real: bool) -> Result<Client<AppStdio, io::Sink>> {
+        let mut command = self.prepared.agent.command();
+        self.prepared.env.apply(&mut command);
+        let config = if real {
+            user_codex_config()
+        } else {
+            String::new()
+        };
+        // Its stderr would show the user's config.
+        command
+            .arg("app-server")
+            .args(quiet_app_server(&config))
+            .current_dir(&self.prepared.files.project)
+            .stderr(Stdio::null());
+        let mut client = Client::new(
+            AppStdio::spawn(command)?,
+            io::sink(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        client.initialize_experimental()?;
+        Ok(client)
+    }
+
+    /// Reads the session's rollout for `added`'s message, as the client would, and returns the
+    /// line that tells its read confirmations: the rollout of the session's thread in its config
+    /// home, the check's own on the stub, the user's off it.
+    pub(crate) fn read_rollout(&self, real: bool, added: Option<&Added>) -> Result<String> {
+        let Some(added) = added else {
+            return Ok("  read confirmations: no message".to_owned());
+        };
+        let codex = if real {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".codex")
+        } else {
+            self.prepared.files.dir.join("home/.codex")
+        };
+        let source = Source::open(&added.dir)?;
+        if let Some(thread) = self.thread()
+            && let Some(rollout) = agent_transcript::codex_rollout(&codex, &thread)?
+        {
+            source.register(&agent_source::Registration {
+                session_id: thread,
+                transcript_path: Some(rollout.to_string_lossy().into_owned()),
+                ..agent_source::Registration::default()
+            })?;
+            read::read_session_file(Agent::Codex, &source)?;
+        }
+        let handed = source
+            .handed(&added.msg_id)
+            .ok()
+            .and_then(|m| m.handed_over_at_ms);
+        Ok(format!(
+            "  read confirmations after the handover: {}",
+            read::signals(&source.records(&added.msg_id)?, handed)
+        ))
+    }
+
+    /// What the session did so far.
+    pub(crate) fn session(&self) -> &PtySession {
+        &self.session
+    }
+
+    /// The session's source.
+    pub(crate) fn source(&self) -> &Source {
+        &self.prepared.source
     }
 
     /// Adds a check's message and queues it for the session with `agent_queue`, in the session's

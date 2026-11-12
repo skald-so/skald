@@ -1,0 +1,13 @@
+[package]
+name = "agent-transcript"
+description = "Finds in a Claude Code transcript or a Codex rollout whether a message reached the model."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
