@@ -102,7 +102,7 @@ pub fn run(
     for (name, ids) in shared_names(&checked.linked) {
         let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
         eprintln!(
-            "skald: warning: linked devices {} have the same name {:?}; tell them apart by ID",
+            "skald: warning: linked devices {} have the same name \"{}\"; tell them apart by ID",
             ids.join(", "),
             printable(&name)
         );
