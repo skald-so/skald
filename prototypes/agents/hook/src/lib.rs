@@ -322,7 +322,8 @@ mod tests {
         let source = Source::open(dir.path()).unwrap();
         let added = source.add("alice", "hi").unwrap();
         let mut out = Vec::new();
-        let error = handle(Agent::Codex, b"{", &source, &mut out, &Messaging::default()).unwrap_err();
+        let error =
+            handle(Agent::Codex, b"{", &source, &mut out, &Messaging::default()).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::InvalidData);
         assert!(out.is_empty());
         assert_eq!(source.state(&added.msg_id).unwrap(), Some(State::Waiting));

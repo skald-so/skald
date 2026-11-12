@@ -17,7 +17,6 @@ prototypes/agents/hook/src/lib.rs prototypes/agents/hook/src/lib.rs 53
 prototypes/agents/live/src/channel.rs prototypes/agents/live/src/channel.rs 70
 prototypes/agents/live/src/channel.rs prototypes/agents/live/src/lib.rs 68
 prototypes/agents/live/src/channel.rs prototypes/agents/live/src/lib.rs 69
-prototypes/agents/live/src/channel.rs prototypes/agents/live/src/queue.rs 50
 prototypes/agents/live/src/channel.rs prototypes/agents/live/src/stub.rs 67
 prototypes/agents/live/src/hook.rs prototypes/agents/live/src/lib.rs 51
 prototypes/agents/live/src/lib.rs prototypes/agents/live/src/queue.rs 66

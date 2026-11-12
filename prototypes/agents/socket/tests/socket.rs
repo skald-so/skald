@@ -82,8 +82,7 @@ fn records_the_receipts_that_come_to_its_reply_address() {
     let session = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
         let line: Value =
-            serde_json::from_str(&BufReader::new(stream).lines().next().unwrap().unwrap())
-                .unwrap();
+            serde_json::from_str(&BufReader::new(stream).lines().next().unwrap().unwrap()).unwrap();
         let reply = line["from"].as_str().unwrap().strip_prefix("uds:").unwrap();
         let mut stream = UnixStream::connect(reply).unwrap();
         let receipt = serde_json::json!({
@@ -128,6 +127,9 @@ fn fails_without_a_session_or_with_wrong_arguments() {
     ] {
         let output = agent_socket(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
-        assert!(stderr(&output).starts_with("usage: agent-socket"), "{args:?}");
+        assert!(
+            stderr(&output).starts_with("usage: agent-socket"),
+            "{args:?}"
+        );
     }
 }

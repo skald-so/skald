@@ -251,6 +251,9 @@ fn fails_with_exit_code_1() {
         &["--take"],
         &["--count", "a", "b"],
         &["--release", "a"],
+        &["--confirm"],
+        &["--confirm", "--codex"],
+        &["--confirm", "--claude", "a"],
     ] {
         let output = run(args, "", &[]);
         assert_eq!(output.status.code(), Some(1), "{args:?}");
@@ -361,18 +364,28 @@ fn confirms_the_messages_the_session_file_shows_and_drops_their_repeats() {
         )
         .unwrap();
         let input = with_transcript(cli.post_tool_use, &transcript);
-        let context = given(cli, &hook(cli, &dir.path().join("source"), &input), "PostToolUse");
+        let context = given(
+            cli,
+            &hook(cli, &dir.path().join("source"), &input),
+            "PostToolUse",
+        );
         assert_carries_once(&context, std::slice::from_ref(&fresh));
         assert!(!context.contains(&repeat.msg_id), "{context}");
         assert_handed_over(&source, &[fresh.clone(), repeat.clone()]);
         assert_eq!(signals(&source, &shown.msg_id), ["transcript"]);
         assert!(signals(&source, &unseen.msg_id).is_empty());
-        assert_eq!(signals(&source, &repeat.msg_id), ["transcript", "repeat-dropped"]);
+        assert_eq!(
+            signals(&source, &repeat.msg_id),
+            ["transcript", "repeat-dropped"]
+        );
         assert!(signals(&source, &fresh.msg_id).is_empty());
 
         // Only a repeat waiting: nothing is printed, so Stop lets the turn end.
         let again = source.add("erin", "again").unwrap();
-        let mut file = fs::OpenOptions::new().append(true).open(&transcript).unwrap();
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
         writeln!(file, "\n{}", transcript_line(cli, &again.msg_id)).unwrap();
         let input = with_transcript(cli.stop, &transcript);
         quiet(&hook(cli, &dir.path().join("source"), &input));
@@ -388,6 +401,41 @@ fn opened() -> (tempfile::TempDir, String, Source) {
 }
 
 #[test]
+fn confirm_only_records_what_the_session_file_shows_and_hands_nothing_over() {
+    for cli in [&CLAUDE, &CODEX] {
+        let (dir, path, source) = opened();
+        let shown = source.add("alice", "shown").unwrap();
+        source
+            .handed_over(&[source.take().unwrap()[0].msg_id.clone()])
+            .unwrap();
+        let waiting = source.add("bob", "waiting").unwrap();
+        let transcript = dir.path().join("session.jsonl");
+        fs::write(
+            &transcript,
+            [&shown.msg_id, &waiting.msg_id]
+                .map(|id| transcript_line(cli, id))
+                .join("\n"),
+        )
+        .unwrap();
+        let mut args = vec!["--confirm"];
+        args.extend(cli.flags);
+        args.push(&path);
+        quiet(&run(&args, &with_transcript(cli.stop, &transcript), &[]));
+        assert_eq!(signals(&source, &shown.msg_id), ["transcript"]);
+        // A waiting message is neither handed over nor confirmed.
+        assert_waiting(&source, std::slice::from_ref(&waiting));
+        assert!(signals(&source, &waiting.msg_id).is_empty());
+        // An input without a session file, such as Codex's in `codex exec --ephemeral`, does nothing.
+        quiet(&run(
+            &args,
+            cli.stop.replace("transcript_path", "other").as_str(),
+            &[],
+        ));
+        assert_failed(&run(&args, "not JSON", &[]), "agent-hook: ");
+    }
+}
+
+#[test]
 fn takes_counts_and_releases_messages_for_the_mod() {
     let (_dir, path, source) = opened();
     let path = path.as_str();
@@ -400,7 +448,10 @@ fn takes_counts_and_releases_messages_for_the_mod() {
     let take = run(&["--take", path], "", &[]);
     quiet(&take);
 
-    let messages = [source.add("alice", "one").unwrap(), source.add("bob", "two").unwrap()];
+    let messages = [
+        source.add("alice", "one").unwrap(),
+        source.add("bob", "two").unwrap(),
+    ];
     count("2\n");
     let take = run(&["--take", path], "", &[]);
     assert!(take.status.success(), "{}", stderr(&take));
@@ -414,7 +465,10 @@ fn takes_counts_and_releases_messages_for_the_mod() {
     let release = run(&["--release", path, ids[0], ids[1]], "", &[]);
     quiet(&release);
     assert_waiting(&source, &messages);
-    assert_failed(&run(&["--release", path, ids[0], "nope"], "", &[]), "agent-hook: ");
+    assert_failed(
+        &run(&["--release", path, ids[0], "nope"], "", &[]),
+        "agent-hook: ",
+    );
 }
 
 #[test]
@@ -428,7 +482,10 @@ fn wait_hands_a_message_over_on_stderr_and_exits_2_to_wake_the_session() {
     quiet(&idle);
     assert!(idle.stderr.is_empty());
 
-    let mut waiter = spawn(&[OsStr::new("--wait"), OsStr::new(path), OsStr::new("30")], &[]);
+    let mut waiter = spawn(
+        &[OsStr::new("--wait"), OsStr::new(path), OsStr::new("30")],
+        &[],
+    );
     drop(waiter.stdin.take());
     // A waiter that finds the wait taken leaves at once; this one stays: it holds the wait.
     std::thread::sleep(std::time::Duration::from_millis(500));

@@ -11,7 +11,9 @@ pub mod gui;
 pub mod hook;
 pub mod limits;
 pub mod queue;
+pub mod read;
 mod stub;
+pub mod wake;
 
 use std::fs;
 use std::io;
@@ -19,11 +21,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus};
 use std::time::Duration;
 
-use agent_inbox::INBOX;
+use agent_inbox::{ACK, INBOX, REPLY};
 use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
-pub use stub::{AckWith, Call, DONE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub, StubLog, held};
+pub use stub::{
+    AckWith, Call, DONE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub, StubLog, held,
+};
 
 /// The name of the MCP server in each session's config.
 pub const SERVER: &str = "skald";
@@ -118,8 +122,29 @@ impl Agent {
         model: Option<&str>,
         stub: Option<&str>,
     ) -> io::Result<Vec<String>> {
-        let inbox = inbox.to_string_lossy();
-        let source = source.to_string_lossy();
+        let server = Server { inbox, source };
+        self.session_with(
+            project,
+            server,
+            &kind.prompt(),
+            kind.claude_tools(),
+            model,
+            stub,
+        )
+    }
+
+    /// As [`Agent::session`], with `prompt` and, on Claude Code, the built-in `tools`.
+    pub fn session_with(
+        self,
+        project: &Path,
+        server: Server,
+        prompt: &str,
+        tools: &str,
+        model: Option<&str>,
+        stub: Option<&str>,
+    ) -> io::Result<Vec<String>> {
+        let inbox = server.inbox.to_string_lossy();
+        let source = server.source.to_string_lossy();
         let args = match self {
             Self::Claude => {
                 let servers = project.join(".mcp.json");
@@ -130,17 +155,18 @@ impl Agent {
                     ),
                 )?;
                 // Without it, Claude Code asks a person to approve each call.
-                let settings =
-                    json!({ "permissions": { "allow": [inbox_tool(), "Bash(sleep:*)"] } });
+                let mut allow = server_tools();
+                allow.push("Bash(sleep:*)".to_owned());
+                let settings = json!({ "permissions": { "allow": allow } });
                 fs::create_dir_all(project.join(".claude"))?;
                 fs::write(
                     project.join(".claude/settings.local.json"),
                     pretty(&settings),
                 )?;
                 claude_print(
-                    &kind.prompt(),
+                    prompt,
                     &["--mcp-config", &servers.to_string_lossy()],
-                    kind.claude_tools(),
+                    tools,
                     model,
                 )
             }
@@ -153,7 +179,7 @@ impl Agent {
                     // Without it, `codex exec` refuses the tool call: it cannot ask a person.
                     format!("{server}.default_tools_approval_mode=\"approve\""),
                 ];
-                codex_exec(project, &[], &config, model, stub, &kind.prompt())
+                codex_exec(project, &[], &config, model, stub, prompt)
             }
         };
         Ok(args)
@@ -390,14 +416,34 @@ fn codex_hook(event: &str, command: &str) -> String {
     )
 }
 
+/// The settings hooks of one event that run `handler` with `args`, in the exec form: Claude Code
+/// starts the handler with no shell.
+pub(crate) fn exec_hooks(handler: &Path, args: &[&Path]) -> Value {
+    json!([{ "hooks": [{ "type": "command", "command": handler, "args": args }] }])
+}
+
 /// `text` as one word of a POSIX shell command.
 pub fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
+/// The `inbox` server of a session: its binary and its source.
+#[derive(Debug, Clone, Copy)]
+pub struct Server<'a> {
+    pub inbox: &'a Path,
+    pub source: &'a Path,
+}
+
 /// Claude Code's name of the `inbox` tool.
 fn inbox_tool() -> String {
     format!("mcp__{SERVER}__{INBOX}")
+}
+
+/// Claude Code's names of the `inbox` server's tools: `inbox`, `ack` and `reply`.
+pub(crate) fn server_tools() -> Vec<String> {
+    [INBOX, ACK, REPLY]
+        .map(|tool| format!("mcp__{SERVER}__{tool}"))
+        .to_vec()
 }
 
 fn pretty(value: &Value) -> String {
@@ -597,7 +643,7 @@ impl Setup<'_> {
 /// Prepares `agent`'s session `name` in `work/<name>`: an empty project, the source's directory
 /// and the logs there, the arguments `args` gives for the session's directory, project and source,
 /// and, on `stub`, the CLI's environment with a home of its own and `path` as `PATH`.
-fn prepare(
+pub fn prepare(
     work: &Path,
     name: &str,
     agent: Agent,
@@ -811,7 +857,7 @@ impl Session {
 /// The end of a session's summary: the requests to the model stub, and why it fails the session if
 /// it does; or, on the real model, the tokens the CLI says it used. On the stub, the CLI's token
 /// counts are the stub's, so they are left out.
-pub(crate) fn model_use(stub: Option<&StubLog>, usage: Option<Usage>) -> String {
+pub fn model_use(stub: Option<&StubLog>, usage: Option<Usage>) -> String {
     match (stub, usage) {
         (Some(stub), _) => {
             let mut text = format!(", requests to the stub: {}", stub.requests.len());
@@ -875,6 +921,11 @@ impl Checks {
     fn report(&mut self, check: &str, pass: bool, details: &str) -> String {
         self.passed.push(pass);
         format!("  {check}: {} — {details}", verdict(pass))
+    }
+
+    /// Records the fail of `check` of a pseudo-terminal `session` whose message never came, `why`.
+    pub(crate) fn none(&mut self, check: &str, session: &channel::PtySession, why: &str) -> String {
+        self.report(check, false, &format!("{}; {why}", session.summary()))
     }
 
     /// Whether every check passed.
@@ -1235,7 +1286,9 @@ mod tests {
         );
         assert_eq!(
             read_json(project.path().join(".claude/settings.local.json")),
-            json!({ "permissions": { "allow": ["mcp__skald__inbox", "Bash(sleep:*)"] } })
+            json!({ "permissions": { "allow": [
+                "mcp__skald__inbox", "mcp__skald__ack", "mcp__skald__reply", "Bash(sleep:*)"
+            ] } })
         );
 
         // The stub changes nothing in Claude Code's arguments: it is in the environment.

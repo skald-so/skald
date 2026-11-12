@@ -31,7 +31,14 @@ use serde_json::{Value, json};
 pub const FROM: &str = "skald";
 
 /// The receipts' statuses, as Claude Code 2.1.322 sends them.
-pub const STATUSES: [&str; 6] = ["held", "denied", "expired", "delivered", "refused", "dropped"];
+pub const STATUSES: [&str; 6] = [
+    "held",
+    "denied",
+    "expired",
+    "delivered",
+    "refused",
+    "dropped",
+];
 
 /// The lines that carry `messages` to the registered session: an auth line if `auth` and the
 /// registration has a token, then one line per message from `from`.

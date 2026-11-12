@@ -23,7 +23,7 @@ use agent_live::{Agent, Kind, Options, Stub, binary, token};
 use agent_source::{Source, now_ms};
 
 use crate::Result;
-use crate::run::{finish, side_by_side, start};
+use crate::run::{finish, side_by_side, start, start_with};
 
 /// The longest wait for a turn.
 const TURN: Duration = Duration::from_secs(120);
@@ -128,9 +128,7 @@ pub fn channel(options: &Options) -> Result<bool> {
 /// The `codex queue` path's live check: an idle session, once its first turn ends; with `--all`,
 /// also the other of two idle sessions and a busy session.
 pub fn queue(options: &Options) -> Result<bool> {
-    let work = start(Agent::Codex)?;
-    let agent_queue = binary(&std::env::current_exe()?, QUEUE_BIN)?;
-    let path = std::env::var("PATH").unwrap_or_default();
+    let (work, agent_queue, path) = start_with(Agent::Codex, QUEUE_BIN)?;
     let prepare = |name: &str, kind: Kind| -> Result<Prepared> {
         let files = Files::new(&work.path().join(name));
         fs::create_dir_all(&files.project)?;
@@ -427,13 +425,23 @@ pub(crate) struct Live {
 }
 
 impl Live {
-    fn watch(&mut self, token: &str) {
+    pub(crate) fn watch(&mut self, token: &str) {
         self.tokens.push(token.to_owned());
     }
 
     /// Adds a check's message with `token` to the session's source.
-    fn add(&self, token: &str) -> Result<Added> {
+    pub(crate) fn add(&self, token: &str) -> Result<Added> {
         self.prepared.add(token)
+    }
+
+    /// What the session did so far.
+    pub(crate) fn session(&self) -> &PtySession {
+        &self.session
+    }
+
+    /// The session's source.
+    pub(crate) fn source(&self) -> &Source {
+        &self.prepared.source
     }
 
     /// Adds a check's message and queues it for the session with `agent_queue`, in the session's

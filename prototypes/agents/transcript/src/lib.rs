@@ -102,8 +102,9 @@ pub fn claude_project(config: &Path, cwd: &Path) -> io::Result<PathBuf> {
 /// `sessions/<year>/<month>/<day>/rollout-<time>-<thread>.jsonl`. Reads only directory names.
 pub fn codex_rollout(codex: &Path, thread: &str) -> io::Result<Option<PathBuf>> {
     let suffix = format!("-{thread}.jsonl");
+    // The files in `sessions/<year>/<month>/<day>/`: four levels down.
     let mut days = vec![codex.join("sessions")];
-    for _ in 0..3 {
+    for _ in 0..4 {
         let mut next = Vec::new();
         for dir in days {
             let Ok(entries) = fs::read_dir(&dir) else {
@@ -216,11 +217,7 @@ mod tests {
             }]
         );
         // Each agent reads only its own entries.
-        assert!(
-            read_seen(Agent::Claude, &path, &ids())
-                .unwrap()
-                .is_empty()
-        );
+        assert!(read_seen(Agent::Claude, &path, &ids()).unwrap().is_empty());
         let (_dir, path) = written(CLAUDE);
         assert!(read_seen(Agent::Codex, &path, &ids()).unwrap().is_empty());
     }
@@ -229,7 +226,11 @@ mod tests {
     fn a_missing_file_shows_nothing_and_an_unreadable_one_fails() {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("none.jsonl");
-        assert!(read_seen(Agent::Codex, &missing, &ids()).unwrap().is_empty());
+        assert!(
+            read_seen(Agent::Codex, &missing, &ids())
+                .unwrap()
+                .is_empty()
+        );
         assert!(read_seen(Agent::Codex, dir.path(), &ids()).is_err());
     }
 
@@ -271,8 +272,14 @@ mod tests {
             timestamp_ms("2026-11-12T07:52:11.460Z"),
             Some(1_794_469_931_460)
         );
-        assert_eq!(timestamp_ms("2000-03-01T00:00:00.000Z"), Some(951_868_800_000));
-        assert_eq!(timestamp_ms("2024-02-29T23:59:59.999Z"), Some(1_709_251_199_999));
+        assert_eq!(
+            timestamp_ms("2000-03-01T00:00:00.000Z"),
+            Some(951_868_800_000)
+        );
+        assert_eq!(
+            timestamp_ms("2024-02-29T23:59:59.999Z"),
+            Some(1_709_251_199_999)
+        );
         for bad in [
             "2026-11-12T07:52:11.460",
             "2026-11-12 07:52:11Z",

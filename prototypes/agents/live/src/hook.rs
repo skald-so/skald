@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::{
     Agent, Call, Checks, Event, Kind, Options, QUICK, Run, SERVER, SHELL, Session, Stub,
-    busy_details, claude_print, codex_exec, codex_hook, handed_over, other_details, prepare,
-    pretty, shell_quote, waiting_details,
+    busy_details, claude_print, codex_exec, codex_hook, exec_hooks, handed_over, other_details,
+    prepare, pretty, shell_quote, waiting_details,
 };
 
 /// The hook handler's binary, next to `live-check`.
@@ -115,9 +115,7 @@ pub fn session(
     model: Option<&str>,
 ) -> io::Result<Vec<String>> {
     fs::create_dir_all(dir)?;
-    // The exec form: Claude Code starts the handler with no shell.
-    let handlers =
-        json!([{ "hooks": [{ "type": "command", "command": handler, "args": [source] }] }]);
+    let handlers = exec_hooks(handler, &[source]);
     let settings = dir.join("settings.json");
     fs::write(
         &settings,

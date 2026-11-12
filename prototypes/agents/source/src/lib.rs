@@ -470,7 +470,9 @@ fn file_name(msg_id: &str) -> String {
 fn checked_id(msg_id: &str) -> io::Result<&str> {
     if !msg_id.is_empty()
         && msg_id.len() <= 64
-        && msg_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && msg_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         Ok(msg_id)
     } else {
@@ -757,7 +759,9 @@ mod tests {
         ));
         assert!(source.resend("nope", &fallback).is_err());
 
-        source.requeue(std::slice::from_ref(&second.msg_id)).unwrap();
+        source
+            .requeue(std::slice::from_ref(&second.msg_id))
+            .unwrap();
         assert_eq!(source.state(&second.msg_id).unwrap(), Some(State::Waiting));
         assert_eq!(source.take().unwrap(), vec![second]);
         assert!(source.requeue(&["nope".to_owned()]).is_err());

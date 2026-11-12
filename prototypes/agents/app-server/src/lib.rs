@@ -242,12 +242,22 @@ impl<T: Transport, W: Write> Client<T, W> {
 
     /// Opens the connection: `initialize`, then `initialized`.
     pub fn initialize(&mut self) -> io::Result<()> {
-        let info = json!({
+        self.initialize_with(json!({}))
+    }
+
+    /// As [`Client::initialize`], asking for the app-server's experimental methods too, such as
+    /// `thread/queue/list`.
+    pub fn initialize_experimental(&mut self) -> io::Result<()> {
+        self.initialize_with(json!({ "capabilities": { "experimentalApi": true } }))
+    }
+
+    fn initialize_with(&mut self, mut params: Value) -> io::Result<()> {
+        params["clientInfo"] = json!({
             "name": "skald_prototype",
             "title": "Skald prototype",
             "version": env!("CARGO_PKG_VERSION"),
         });
-        self.call("initialize", json!({ "clientInfo": info }))?;
+        self.call("initialize", params)?;
         self.send(&json!({ "method": "initialized" }))
     }
 

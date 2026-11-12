@@ -98,7 +98,10 @@ impl ServerHandler for InboxServer {
                 None
             }
             REPLY => Some((
-                arguments["reply_to"].as_str().unwrap_or_default().to_owned(),
+                arguments["reply_to"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
                 arguments["ack"].as_str().map(String::from),
                 arguments["text"].as_str().unwrap_or_default().to_owned(),
             )),
@@ -112,13 +115,13 @@ impl ServerHandler for InboxServer {
         let via = request.name.as_ref();
         let mut lines = Vec::new();
         for (msg_id, ack) in &acks {
-            let outcome = acknowledge(&self.source, msg_id, ack.as_deref(), "ack", via)
-                .map_err(internal)?;
+            let outcome =
+                acknowledge(&self.source, msg_id, ack.as_deref(), "ack", via).map_err(internal)?;
             lines.push(outcome_line(msg_id, outcome));
         }
         if let Some((msg_id, ack, text)) = &replied {
-            let outcome =
-                acknowledge(&self.source, msg_id, ack.as_deref(), "reply", text).map_err(internal)?;
+            let outcome = acknowledge(&self.source, msg_id, ack.as_deref(), "reply", text)
+                .map_err(internal)?;
             lines.push(match outcome.refusal() {
                 None => format!("Replied to {msg_id}."),
                 Some(reason) => format!("Not replied to {msg_id}: {reason}."),
@@ -461,9 +464,14 @@ mod tests {
         first.ack = Some("a\"b".to_owned());
         let second = message("0191", "bob", "two");
         let text = render(&[first, second.clone()]);
-        assert!(text.contains("Confirm each one you read with the ack tool"), "{text}");
         assert!(
-            text.contains("<message msg_id=\"0190\" from=\"alice\" ack=\"a&quot;b\">\none\n</message>"),
+            text.contains("Confirm each one you read with the ack tool"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "<message msg_id=\"0190\" from=\"alice\" ack=\"a&quot;b\">\none\n</message>"
+            ),
             "{text}"
         );
         assert!(text.contains("<message msg_id=\"0191\" from=\"bob\">\ntwo\n</message>"));

@@ -8,12 +8,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 use agent_app_server::{Client, Stdio};
 use agent_live::gui::{self, Binaries, GuiPath, Installed, Surface};
 use agent_live::hook::HOOK_BIN;
 use agent_live::limits::{mcp_servers, quiet_app_server};
-use agent_live::{Agent, INBOX_BIN, binary, channel::CHANNEL_BIN, token};
+use agent_live::wake::Wake;
+use agent_live::{Agent, INBOX_BIN, binary, channel::CHANNEL_BIN, seconds, token};
 use agent_source::Source;
 use serde_json::json;
 
@@ -21,10 +23,11 @@ use crate::Result;
 use crate::subscription::user_codex_config;
 
 /// Prepares the GUI check of `path` on `surface` in a new temporary directory, which stays: prints
-/// the surface's version, the project to open, the prompt to type and the commands to run next. It
-/// never prints the token. In the `busy` case the message waits for `gui-add`; for `codex queue`,
-/// for `gui-queue`.
-pub fn prepare(path: GuiPath, surface: Surface, busy: bool) -> Result<bool> {
+/// the surface's version, the project to open, the VS Code profile it needs if any, the prompt to
+/// type and the commands to run next. It never prints the token. In the `busy` case the message
+/// waits for `gui-add`; for `codex queue`, for `gui-queue`; for the paths that wake a session, for
+/// `gui-add` or, for the socket, `gui-socket`. A `bypass` session skips permission prompts.
+pub fn prepare(path: GuiPath, surface: Surface, busy: bool, bypass: bool) -> Result<bool> {
     let version = surface.version(&installed()?)?;
     let exe = std::env::current_exe()?;
     let binaries = Binaries {
@@ -38,8 +41,16 @@ pub fn prepare(path: GuiPath, surface: Surface, busy: bool) -> Result<bool> {
         .tempdir()?
         .keep();
     let prepared = gui::prepare(&work, surface, path, &binaries, &version, &token(), busy)?;
+    let plugin = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../mod"))?;
+    let profile = gui::vscode_profile(&work, surface, path, &plugin, bypass)?;
     println!("{version}");
     println!("project: {}", prepared.project.display());
+    if let Some(profile) = profile {
+        println!("VS Code profile: {}", profile.display());
+    }
+    if bypass {
+        println!("mode: bypass permissions, before the first prompt");
+    }
     println!("prompt: {}", prepared.prompt);
     let when = if busy {
         "once the shell command runs"
@@ -48,7 +59,12 @@ pub fn prepare(path: GuiPath, surface: Surface, busy: bool) -> Result<bool> {
     };
     if path.needs_thread() {
         println!("{when}: live-check gui-queue {} [--cli]", work.display());
-    } else if busy {
+    } else if path == GuiPath::Wake(Wake::Socket) {
+        println!(
+            "{when}: live-check gui-socket {} [--no-auth] [--listen <seconds>]",
+            work.display()
+        );
+    } else if busy || path.wakes() {
         println!("{when}: live-check gui-add {}", work.display());
     }
     println!(
@@ -64,6 +80,9 @@ pub fn result(work: &Path, token: &str) -> Result<bool> {
     let outcome = gui::result(work, token, &home()?)?;
     println!("{}", outcome.version);
     println!("{}", outcome.details);
+    if let Some(confirmations) = &outcome.confirmations {
+        println!("{confirmations}");
+    }
     println!("{}", outcome.verdict);
     Ok(outcome.pass)
 }
@@ -86,23 +105,88 @@ pub fn queue(work: &Path, cli: bool) -> Result<bool> {
     } else {
         pending.surface.codex(&installed()?)?
     };
-    let thread = session_thread(&codex, &pending)?.ok_or_else(|| {
+    let (mut client, thread) = session_thread(&codex, &pending)?;
+    let thread = thread.ok_or_else(|| {
         format!(
             "no thread in {} started with the check's prompt: send it first",
             pending.project.display()
         )
     })?;
     println!("thread: {thread}");
-    println!("{}", gui::add(work)?.msg_id);
+    gui::set_thread(work, &thread)?;
+    let message = gui::add(work)?;
+    println!("{}", message.msg_id);
     let source = Source::open(work.join("source"))?;
     let handed = agent_queue::hand_over(&source, &thread, Agent::Codex.command_for(&codex))?;
     println!("handed over: {}", handed.len());
+    if !handed.is_empty() {
+        // Codex's own sign that a session took it: the message leaves the thread's queue.
+        let started = Instant::now();
+        while started.elapsed() < QUEUED {
+            let queued = client.call("thread/queue/list", json!({ "threadId": thread }))?;
+            if queued["data"].as_array().is_some_and(Vec::is_empty) {
+                source.record(&message.msg_id, "queue-taken", None)?;
+                println!(
+                    "taken from the queue: {}",
+                    seconds(started.elapsed().as_millis() as u64)
+                );
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
     Ok(!handed.is_empty())
 }
 
-/// The thread of the session that `pending` waits for, from `thread/list` of `codex app-server` on
-/// the user's config home, which starts no thread and no MCP server.
-fn session_thread(codex: &Path, pending: &gui::Pending) -> Result<Option<String>> {
+/// Hands the message of the socket check prepared in `work` to the session through its inbox
+/// socket: adds it the first time, and sends it again once it was handed over, such as after the
+/// session held it; with the session's token unless `auth` is false. With `listen`, from a reply
+/// address it keeps for that long, printing each receipt. Prints the message's `msg_id`, never its
+/// token.
+pub fn socket(work: &Path, auth: bool, listen: Option<Duration>) -> Result<bool> {
+    let source = Source::open(work.join("source"))?;
+    let registration = agent_socket::registered(&source)?;
+    match gui::added(work)? {
+        None => println!("{}", gui::add(work)?.msg_id),
+        Some((_, msg_id)) => {
+            if matches!(
+                source.state(&msg_id)?,
+                Some(agent_source::State::HandedOver { .. })
+            ) {
+                source.requeue(std::slice::from_ref(&msg_id))?;
+            }
+            println!("{msg_id}");
+        }
+    }
+    let Some(listen) = listen else {
+        let handed = agent_socket::hand_over(&source, auth, agent_socket::FROM)?;
+        println!("handed over: {}", handed.len());
+        return Ok(!handed.is_empty());
+    };
+    let receipts =
+        agent_socket::Receipts::bind(Path::new(&registration.socket.unwrap_or_default()))?;
+    let handed = agent_socket::hand_over(&source, auth, &receipts.address())?;
+    println!("handed over: {}", handed.len());
+    let started = Instant::now();
+    receipts.collect(&source, started + listen, |receipt| {
+        println!(
+            "{} after {}",
+            receipt.status,
+            seconds(started.elapsed().as_millis() as u64)
+        );
+    })?;
+    Ok(!handed.is_empty())
+}
+
+/// How long `gui-queue` waits for the queued message to leave the thread's queue.
+const QUEUED: Duration = Duration::from_secs(120);
+
+/// A client of `codex app-server` on the user's config home, which starts no thread and no MCP
+/// server, and the thread of the session that `pending` waits for, from its `thread/list`.
+fn session_thread(
+    codex: &Path,
+    pending: &gui::Pending,
+) -> Result<(Client<Stdio, io::Sink>, Option<String>)> {
     let config = user_codex_config();
     let mut command = Agent::Codex.command_for(codex);
     // Its stderr would show the user's config.
@@ -112,11 +196,13 @@ fn session_thread(codex: &Path, pending: &gui::Pending) -> Result<Option<String>
         .stderr(std::process::Stdio::null());
     let stop = Arc::new(AtomicBool::new(false));
     let mut client = Client::new(Stdio::spawn(command)?, io::sink(), stop);
-    client.initialize()?;
+    // The queue's methods are experimental.
+    client.initialize_experimental()?;
     // Codex keeps the directory as it got it or with its symbolic links resolved.
     let cwd = [pending.project.clone(), fs::canonicalize(&pending.project)?];
     let list = client.call("thread/list", json!({ "cwd": cwd }))?;
-    Ok(gui::session_thread(&list, &pending.prompt))
+    let thread = gui::session_thread(&list, &pending.prompt);
+    Ok((client, thread))
 }
 
 /// Where the surfaces are installed.

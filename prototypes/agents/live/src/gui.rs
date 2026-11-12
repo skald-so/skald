@@ -12,9 +12,10 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 use crate::hook::Hook;
+use crate::wake::{self, Wake};
 use crate::{
-    Agent, Kind, QUICK, SERVER, add_message, channel, codex_hook, handed_over, handover_delay,
-    inbox_tool, pretty, queue, shell_quote, verdict,
+    Agent, Kind, QUICK, SENDER, SERVER, add_message, channel, codex_hook, handed_over,
+    handover_delay, inbox_tool, pretty, queue, read, server_tools, shell_quote, verdict,
 };
 
 /// The file, in a check's directory, that holds what [`result`] needs, the token too.
@@ -255,6 +256,10 @@ pub enum GuiPath {
     Hook(Hook),
     /// `codex queue` into the session's thread, on Codex's surfaces.
     Queue,
+    /// A path that wakes an idle session, on Claude Code's surfaces, with the read confirmations.
+    Wake(Wake),
+    /// `codex queue`, on Codex's surfaces, with the read confirmations.
+    Read,
 }
 
 impl GuiPath {
@@ -263,7 +268,10 @@ impl GuiPath {
             "inbox" => Some(Self::Inbox),
             "channel" => Some(Self::Channel),
             "queue" => Some(Self::Queue),
-            hook => Hook::parse(hook).map(Self::Hook),
+            "read" => Some(Self::Read),
+            other => Hook::parse(other)
+                .map(Self::Hook)
+                .or_else(|| Wake::parse(other).map(Self::Wake)),
         }
     }
 
@@ -272,7 +280,9 @@ impl GuiPath {
             Self::Inbox => "inbox",
             Self::Channel => "channel",
             Self::Queue => "queue",
+            Self::Read => "read",
             Self::Hook(hook) => hook.name(),
+            Self::Wake(wake) => wake.name(),
         }
     }
 
@@ -283,7 +293,8 @@ impl GuiPath {
             Self::Inbox => true,
             Self::Channel => surface.agent() == Agent::Claude,
             Self::Hook(hook) => hook.runs_on(surface.agent()),
-            Self::Queue => surface.agent() == Agent::Codex,
+            Self::Queue | Self::Read => surface.agent() == Agent::Codex,
+            Self::Wake(_) => surface.agent() == Agent::Claude,
         }
     }
 
@@ -294,14 +305,26 @@ impl GuiPath {
             Self::Inbox => surface.agent() == Agent::Claude,
             Self::Channel => false,
             Self::Hook(hook) => hook.checks_busy() && self.runs_on(surface),
-            Self::Queue => self.runs_on(surface),
+            Self::Queue | Self::Read | Self::Wake(_) => self.runs_on(surface),
         }
     }
 
     /// Whether the message comes only once the session has a thread: `codex queue` hands it to
     /// the session's thread, which its first prompt makes.
     pub fn needs_thread(self) -> bool {
-        self == Self::Queue
+        matches!(self, Self::Queue | Self::Read)
+    }
+
+    /// Whether the message comes only after the session's first turn, by `gui-add` or, for the
+    /// socket, `gui-socket`: the paths that wake an idle session.
+    pub fn wakes(self) -> bool {
+        matches!(self, Self::Wake(_))
+    }
+
+    /// Whether the message carries a secret for its acknowledgement, and the read confirmations
+    /// are reported.
+    pub fn confirms(self) -> bool {
+        matches!(self, Self::Wake(_) | Self::Read)
     }
 
     /// The prompt the developer or reviewer types: in the busy case, with a shell command during
@@ -313,8 +336,9 @@ impl GuiPath {
             Self::Hook(hook) => hook.prompt(kind),
             // Only a reply, as for the `Stop` hook: a loaded channel pushes the message itself.
             Self::Channel => Hook::Stop.prompt(Kind::Idle),
-            // The first turn, which makes the thread; the message's own turn asks for the token.
-            Self::Queue => queue::prompt(kind),
+            // The first turn, which makes the thread or starts the session; the message's own
+            // turn asks for the token.
+            Self::Queue | Self::Read | Self::Wake(_) => queue::prompt(kind),
         }
     }
 
@@ -322,6 +346,7 @@ impl GuiPath {
     fn add_message(self, source: &Source, token: &str) -> io::Result<Message> {
         match self {
             Self::Inbox => add_message(source, token),
+            _ if self.confirms() => source.add_with_ack(SENDER, &channel::text(token)),
             _ => channel::add_message(source, token),
         }
     }
@@ -342,13 +367,20 @@ impl Binaries {
     /// The shell form of the hook handler's command on `agent`'s `source`: both CLIs run it
     /// through the shell.
     fn hook_command(&self, agent: Agent, source: &Path) -> String {
-        let mut args = vec![self.hook.as_path()];
+        let source = source.to_string_lossy();
+        let mut args = Vec::new();
         if agent == Agent::Codex {
-            args.push(Path::new("--codex"));
+            args.push("--codex");
         }
-        args.push(source);
-        args.iter()
-            .map(|arg| shell_quote(&arg.to_string_lossy()))
+        args.push(&source);
+        self.hook_with(&args)
+    }
+
+    /// The shell form of the hook handler's command with `args`.
+    fn hook_with(&self, args: &[&str]) -> String {
+        std::iter::once(self.hook.to_string_lossy().as_ref())
+            .chain(args.iter().copied())
+            .map(shell_quote)
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -413,7 +445,23 @@ pub fn write_config(
                         "maxEffortLevel": LOW,
                     })
                 }
-                GuiPath::Queue => unreachable!("checked above"),
+                GuiPath::Wake(wake) => {
+                    fs::write(project.join(".mcp.json"), pretty(&server(&binaries.inbox)))?;
+                    if wake == Wake::Mod {
+                        wake::write_mod_config(project, &binaries.hook, source)?;
+                    }
+                    let handler = |args: &[&str]| json!({ "type": "command", "command": binaries.hook_with(args) });
+                    let confirm = handler(&["--confirm", &source.to_string_lossy()]);
+                    let mut allow = server_tools();
+                    allow.push(BUSY_SHELL.to_owned());
+                    json!({
+                        "hooks": wake::hooks(wake, &handler, source, &[("Stop", confirm)]),
+                        "enabledMcpjsonServers": [SERVER],
+                        "permissions": { "allow": allow },
+                        "maxEffortLevel": LOW,
+                    })
+                }
+                GuiPath::Queue | GuiPath::Read => unreachable!("checked above"),
             };
             fs::create_dir_all(project.join(".claude"))?;
             fs::write(
@@ -427,8 +475,14 @@ pub fn write_config(
                 "model = {}\nmodel_reasoning_effort = \"low\"\n",
                 json!(CODEX_MODEL)
             );
+            if path == GuiPath::Read {
+                // A dotted key, before any table: it runs once a person trusts it.
+                let source = source.to_string_lossy();
+                let command = binaries.hook_with(&["--confirm", "--codex", &source]);
+                config.push_str(&format!("{}\n", codex_hook("Stop", &command)));
+            }
             match path {
-                GuiPath::Inbox => config.push_str(&format!(
+                GuiPath::Inbox | GuiPath::Read => config.push_str(&format!(
                     "\n[mcp_servers.{SERVER}]\ncommand = {}\nargs = {}\n\
                      # Without it, Codex asks a person to approve each call.\n\
                      default_tools_approval_mode = \"approve\"\n",
@@ -442,7 +496,7 @@ pub fn write_config(
                 }
                 // The message comes from outside the session.
                 GuiPath::Queue => {}
-                GuiPath::Channel => unreachable!("checked above"),
+                GuiPath::Channel | GuiPath::Wake(_) => unreachable!("checked above"),
             }
             // The session gets no tools of the user's MCP servers and plugins: one of the servers
             // asked macOS for automation access in Codex for VS Code. That extension still starts
@@ -495,13 +549,54 @@ pub fn prepare(
         "busy": busy,
     });
     fs::write(work.join(CHECK), pretty(&check))?;
-    if !busy && !path.needs_thread() {
+    if !busy && !path.needs_thread() && !path.wakes() {
         add(work)?;
     }
     Ok(Prepared {
         project,
         prompt: path.prompt(busy),
     })
+}
+
+/// Writes the settings of the VS Code profile, `work/vscode`, that a check of `path` on Claude Code
+/// for VS Code needs, and returns the profile: for the mod, Claude Code's variable that loads the
+/// plugin directory `plugin`; for a `bypass` session, the extension's bypass mode. `None` for any
+/// other check, which needs no settings of its own.
+pub fn vscode_profile(
+    work: &Path,
+    surface: Surface,
+    path: GuiPath,
+    plugin: &Path,
+    bypass: bool,
+) -> io::Result<Option<PathBuf>> {
+    let loads_mod = path == GuiPath::Wake(Wake::Mod);
+    if surface != Surface::ClaudeVsCode || !(loads_mod || bypass) {
+        return Ok(None);
+    }
+    let mut settings = serde_json::Map::new();
+    if loads_mod {
+        settings.insert(
+            "claudeCode.environmentVariables".to_owned(),
+            json!([{ "name": "CLAUDE_CODE_PLUGIN_DIRS", "value": plugin }]),
+        );
+    }
+    if bypass {
+        settings.insert(
+            "claudeCode.allowDangerouslySkipPermissions".to_owned(),
+            true.into(),
+        );
+        settings.insert(
+            "claudeCode.initialPermissionMode".to_owned(),
+            "bypassPermissions".into(),
+        );
+    }
+    let profile = work.join("vscode");
+    fs::create_dir_all(profile.join("User"))?;
+    fs::write(
+        profile.join("User/settings.json"),
+        pretty(&Value::Object(settings)),
+    )?;
+    Ok(Some(profile))
 }
 
 /// The [`CHECK`] file of the check prepared in `work`, and its string `key`.
@@ -556,6 +651,26 @@ pub fn pending(work: &Path) -> io::Result<Pending> {
     })
 }
 
+/// Records `thread`, the session's thread that `gui-queue` found, in the check prepared in `work`,
+/// for [`result`] to find the session's rollout.
+pub fn set_thread(work: &Path, thread: &str) -> io::Result<()> {
+    let (mut check, _) = read_check(work)?;
+    check["thread"] = thread.into();
+    fs::write(work.join(CHECK), pretty(&check))
+}
+
+/// The message of the check prepared in `work`, if it was added: its source and `msg_id`.
+pub fn added(work: &Path) -> io::Result<Option<(Source, String)>> {
+    let (check, _) = read_check(work)?;
+    let Some(msg_id) = check["msg_id"].as_str() else {
+        return Ok(None);
+    };
+    Ok(Some((
+        Source::open(work.join("source"))?,
+        msg_id.to_owned(),
+    )))
+}
+
 /// The session's thread in a `thread/list` result, newest first: the newest whose first message is
 /// `prompt`.
 pub fn session_thread(list: &Value, prompt: &str) -> Option<String> {
@@ -573,6 +688,8 @@ pub struct Outcome {
     pub version: String,
     /// The check's line: the reported token and the message's state.
     pub details: String,
+    /// For a path with the read confirmations, the line that tells them.
+    pub confirmations: Option<String>,
     /// The last line: the verdict.
     pub verdict: String,
     pub pass: bool,
@@ -615,6 +732,12 @@ pub fn result(work: &Path, reported: &str, home: &Path) -> io::Result<Outcome> {
         }
         Some((_, other)) => format!("not handed over (state {other:?})"),
     };
+    let confirmations = match (GuiPath::parse(&text("path")?), check["msg_id"].as_str()) {
+        (Some(path), Some(msg_id)) if path.confirms() => {
+            Some(confirmations(&source, msg_id, surface, &check, home)?)
+        }
+        _ => None,
+    };
     let mut version = text("version")?;
     if surface.agent() == Agent::Claude {
         let ran = session_versions(home, &work.join("project"))?;
@@ -630,6 +753,7 @@ pub fn result(work: &Path, reported: &str, home: &Path) -> io::Result<Outcome> {
     Ok(Outcome {
         version,
         details: format!("  the reported token {reported}; the message is {message}"),
+        confirmations,
         verdict: format!(
             "{} on {} with the real model: {}",
             text("path")?,
@@ -638,6 +762,37 @@ pub fn result(work: &Path, reported: &str, home: &Path) -> io::Result<Outcome> {
         ),
         pass,
     })
+}
+
+/// The read confirmations of the message `msg_id` in `source`, a check's on `surface` whose
+/// [`CHECK`] file is `check`: reads the session's file, as the client would, then tells each
+/// signal and how long after the handover it came. The file is the transcript the `SessionStart`
+/// hook registered or, for a thread `gui-queue` found, its rollout in `home`'s `.codex`.
+fn confirmations(
+    source: &Source,
+    msg_id: &str,
+    surface: Surface,
+    check: &Value,
+    home: &Path,
+) -> io::Result<String> {
+    if let (None, Some(thread)) = (source.registration()?, check["thread"].as_str())
+        && let Some(rollout) = agent_transcript::codex_rollout(&home.join(".codex"), thread)?
+    {
+        source.register(&agent_source::Registration {
+            session_id: thread.to_owned(),
+            transcript_path: Some(rollout.to_string_lossy().into_owned()),
+            ..agent_source::Registration::default()
+        })?;
+    }
+    read::read_session_file(surface.agent(), source)?;
+    let handed = match source.state(msg_id)? {
+        Some(State::HandedOver { at_ms }) => Some(at_ms),
+        _ => None,
+    };
+    Ok(format!(
+        "  read confirmations after the handover: {}",
+        read::signals(&source.records(msg_id)?, handed)
+    ))
 }
 
 #[cfg(test)]
@@ -652,13 +807,17 @@ mod tests {
         Surface::CodexDesktop,
         Surface::CodexVsCode,
     ];
-    const PATHS: [GuiPath; 6] = [
+    const PATHS: [GuiPath; 10] = [
         GuiPath::Inbox,
         GuiPath::Channel,
         GuiPath::Hook(Hook::PostToolUse),
         GuiPath::Hook(Hook::Stop),
         GuiPath::Hook(Hook::UserPromptSubmit),
         GuiPath::Queue,
+        GuiPath::Wake(Wake::Socket),
+        GuiPath::Wake(Wake::Rewake),
+        GuiPath::Wake(Wake::Mod),
+        GuiPath::Read,
     ];
 
     /// The metadata recorded on the test machine, in `tests/surfaces/`, where the surfaces keep
@@ -790,11 +949,22 @@ mod tests {
                     GuiPath::Channel => (claude, false),
                     GuiPath::Hook(Hook::UserPromptSubmit) => (!claude, false),
                     GuiPath::Hook(_) => (true, true),
-                    GuiPath::Queue => (!claude, !claude),
+                    GuiPath::Queue | GuiPath::Read => (!claude, !claude),
+                    GuiPath::Wake(_) => (claude, claude),
                 };
                 assert_eq!(path.runs_on(surface), runs, "{path:?} on {surface:?}");
                 assert_eq!(path.runs_busy_on(surface), busy, "{path:?} on {surface:?}");
-                assert_eq!(path.needs_thread(), path == GuiPath::Queue, "{path:?}");
+                assert_eq!(
+                    path.needs_thread(),
+                    matches!(path, GuiPath::Queue | GuiPath::Read),
+                    "{path:?}"
+                );
+                assert_eq!(path.wakes(), matches!(path, GuiPath::Wake(_)), "{path:?}");
+                assert_eq!(
+                    path.confirms(),
+                    matches!(path, GuiPath::Wake(_) | GuiPath::Read),
+                    "{path:?}"
+                );
             }
         }
     }
@@ -875,6 +1045,18 @@ mod tests {
                     (Agent::Codex, GuiPath::Hook(hook)) => {
                         vec![(".codex/config.toml", codex_hook(hook.event()))]
                     }
+                    (Agent::Codex, GuiPath::Read) => vec![(
+                        ".codex/config.toml",
+                        codex_inbox.replacen(
+                            codex_model,
+                            &format!(
+                                "{codex_model}hooks.Stop=[{{hooks=[{{type=\"command\",\
+                                 command=\"'/bin/agent-hook' '--confirm' '--codex' \
+                                 '/work/source'\"}}]}}]\n"
+                            ),
+                            1,
+                        ),
+                    )],
                     (Agent::Codex, _) => {
                         vec![(".codex/config.toml", format!("{codex_model}{codex_off}"))]
                     }
@@ -901,6 +1083,35 @@ mod tests {
                     ],
                     (Agent::Claude, GuiPath::Hook(Hook::PostToolUse)) => {
                         vec![(".claude/settings.local.json", hook("PostToolUse"))]
+                    }
+                    (Agent::Claude, GuiPath::Wake(wake)) => {
+                        let handler = |args: &[&str]| {
+                            let words: Vec<String> = std::iter::once("/bin/agent-hook")
+                                .chain(args.iter().copied())
+                                .map(|word| format!("'{word}'"))
+                                .collect();
+                            json!({ "type": "command", "command": words.join(" ") })
+                        };
+                        let confirm = handler(&["--confirm", "/work/source"]);
+                        let settings = pretty(&json!({
+                            "hooks": wake::hooks(wake, &handler, source, &[("Stop", confirm)]),
+                            "enabledMcpjsonServers": ["skald"],
+                            "permissions": { "allow": [
+                                "mcp__skald__inbox", "mcp__skald__ack", "mcp__skald__reply", "Bash(sleep:*)"
+                            ] },
+                            "maxEffortLevel": "low",
+                        }));
+                        let mut files = vec![
+                            (".mcp.json", server("/bin/agent-inbox")),
+                            (".claude/settings.local.json", settings),
+                        ];
+                        if wake == Wake::Mod {
+                            files.push((
+                                ".skald/mod.json",
+                                pretty(&json!({ "handler": "/bin/agent-hook", "source": source })),
+                            ));
+                        }
+                        files
                     }
                     (Agent::Claude, _) => {
                         vec![(".claude/settings.local.json", hook("Stop"))]
@@ -929,6 +1140,8 @@ mod tests {
                 GuiPath::Hook(Hook::UserPromptSubmit),
             ),
             (Surface::CodexDesktop, GuiPath::Channel),
+            (Surface::CodexVsCode, GuiPath::Wake(Wake::Rewake)),
+            (Surface::ClaudeDesktop, GuiPath::Read),
         ] {
             let error =
                 write_config(&project, surface, path, &binaries(), Path::new("/s")).unwrap_err();
@@ -957,8 +1170,128 @@ mod tests {
             Hook::UserPromptSubmit.prompt(Kind::Idle)
         );
         for (busy, kind) in [(false, Kind::Idle), (true, Kind::Busy)] {
-            assert_eq!(GuiPath::Queue.prompt(busy), queue::prompt(kind));
+            for path in [GuiPath::Queue, GuiPath::Read, GuiPath::Wake(Wake::Socket)] {
+                assert_eq!(path.prompt(busy), queue::prompt(kind));
+            }
         }
+    }
+
+    #[test]
+    fn a_wake_check_adds_its_message_with_a_secret_only_when_asked() {
+        for path in [GuiPath::Wake(Wake::Socket), GuiPath::Wake(Wake::Mod)] {
+            let work = tempfile::tempdir().unwrap();
+            let token = token();
+            prepared(work.path(), Surface::ClaudeDesktop, path, &token, false);
+            assert!(
+                added(work.path()).unwrap().is_none(),
+                "added before the first turn"
+            );
+            let message = add(work.path()).unwrap();
+            assert_eq!(message.text, channel::text(&token));
+            assert_eq!(message.ack.as_ref().map(String::len), Some(32));
+            let (source, msg_id) = added(work.path()).unwrap().unwrap();
+            assert_eq!(msg_id, message.msg_id);
+            assert_eq!(source.state(&msg_id).unwrap(), Some(State::Waiting));
+        }
+    }
+
+    #[test]
+    fn writes_a_vs_code_profile_only_for_the_mod_and_a_bypass_session() {
+        let plugin = Path::new("/p/mod");
+        let written = |surface, path, bypass| {
+            let work = tempfile::tempdir().unwrap();
+            let profile = vscode_profile(work.path(), surface, path, plugin, bypass).unwrap();
+            profile.map(|profile| {
+                assert_eq!(profile, work.path().join("vscode"));
+                json_at(profile.join("User/settings.json"))
+            })
+        };
+        assert_eq!(
+            written(Surface::ClaudeVsCode, GuiPath::Wake(Wake::Mod), false),
+            Some(json!({ "claudeCode.environmentVariables": [
+                { "name": "CLAUDE_CODE_PLUGIN_DIRS", "value": "/p/mod" }
+            ] }))
+        );
+        assert_eq!(
+            written(Surface::ClaudeVsCode, GuiPath::Wake(Wake::Socket), true),
+            Some(json!({
+                "claudeCode.allowDangerouslySkipPermissions": true,
+                "claudeCode.initialPermissionMode": "bypassPermissions",
+            }))
+        );
+        for (surface, path, bypass) in [
+            (Surface::ClaudeVsCode, GuiPath::Wake(Wake::Socket), false),
+            (Surface::ClaudeDesktop, GuiPath::Wake(Wake::Mod), false),
+            (Surface::ClaudeVsCode, GuiPath::Inbox, false),
+        ] {
+            assert_eq!(
+                written(surface, path, bypass),
+                None,
+                "{path:?} on {surface:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tells_the_read_confirmations_from_the_session_file_and_the_records() {
+        let home = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let token = token();
+        prepared(
+            work.path(),
+            Surface::CodexDesktop,
+            GuiPath::Read,
+            &token,
+            false,
+        );
+        let message = add(work.path()).unwrap();
+        hand_over(work.path());
+        let source = Source::open(work.path().join("source")).unwrap();
+        source.record(&message.msg_id, "queue-taken", None).unwrap();
+        let thread = "01a1ce22-0000-7000-8000-000000000001";
+        set_thread(work.path(), thread).unwrap();
+        let day = home.path().join(".codex/sessions/2026/11/12");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(
+            day.join(format!("rollout-2026-11-12T14-52-10-{thread}.jsonl")),
+            format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"text":"{}"}}]}}}}"#,
+                message.msg_id
+            ),
+        )
+        .unwrap();
+        let outcome = result(work.path(), &token, home.path()).unwrap();
+        assert!(outcome.pass);
+        let line = outcome.confirmations.unwrap();
+        let signals = line
+            .strip_prefix("  read confirmations after the handover: ")
+            .unwrap();
+        let names: Vec<&str> = signals
+            .split(", ")
+            .map(|signal| signal.split(' ').next().unwrap())
+            .collect();
+        assert_eq!(names, ["queue-taken", "session-file"], "{line}");
+        assert_eq!(
+            source.registration().unwrap().unwrap().session_id,
+            thread,
+            "the rollout is registered"
+        );
+        // A check of another path tells none.
+        let other = tempfile::tempdir().unwrap();
+        prepared(
+            other.path(),
+            Surface::CodexDesktop,
+            GuiPath::Queue,
+            &token,
+            false,
+        );
+        add(other.path()).unwrap();
+        assert_eq!(
+            result(other.path(), &token, home.path())
+                .unwrap()
+                .confirmations,
+            None
+        );
     }
 
     /// Prepares `path`'s check on `surface` in `work` with `token`, in the `busy` case or not.

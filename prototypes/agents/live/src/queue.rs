@@ -8,11 +8,8 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::channel::{Files, PtySession, Sent, TERM, reached_delay};
-use crate::{
-    Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config, codex_hook, handed_over,
-    handover_delay,
-};
+use crate::channel::{Files, PtySession, Sent, TERM};
+use crate::{Agent, Call, Checks, Kind, Options, SHELL, Usage, codex_config, codex_hook};
 
 /// The prototype's binary, next to `live-check`.
 pub const QUEUE_BIN: &str = "agent-queue";
@@ -156,18 +153,10 @@ impl QueueCheck {
     /// a turn of its own.
     fn received(&mut self, check: &str, session: &PtySession, sent: Option<&Sent>) -> String {
         let Some(sent) = sent else {
-            let details = format!("{}; no message was queued", session.summary());
-            return self.checks.report(check, false, &details);
+            return self.checks.none(check, session, "no message was queued");
         };
-        let pass = session.clean() && session.got(&sent.token) && handed_over(sent.state);
-        let details = format!(
-            "{}; turns ended: {}; queued {} and reached the model {} after adding",
-            session.summary(),
-            session.replies().len(),
-            handover_delay(sent.state, sent.added_at_ms),
-            reached_delay(session, &sent.token, sent.added_at_ms)
-        );
-        self.checks.report(check, pass, &details)
+        let details = sent.arrival(session, "queued");
+        self.checks.report(check, sent.arrived(session), &details)
     }
 
     /// Whether every check passed.

@@ -482,6 +482,36 @@ pub struct Sent {
     pub state: Option<State>,
 }
 
+impl Sent {
+    /// Whether the message is handed over and its token reached the model of `session`.
+    pub fn arrived(&self, session: &PtySession) -> bool {
+        session.clean() && session.got(&self.token) && handed_over(self.state)
+    }
+
+    /// How the message reached `session`: the session's summary, how many turns ended, and how
+    /// long after its adding it was handed over, `how` such as `queued`, and reached the model.
+    pub fn arrival(&self, session: &PtySession, how: &str) -> String {
+        format!(
+            "{}; turns ended: {}; {how} {} and reached the model {} after adding",
+            session.summary(),
+            session.replies().len(),
+            handover_delay(self.state, self.added_at_ms),
+            reached_delay(session, &self.token, self.added_at_ms)
+        )
+    }
+}
+
+/// In which turn `token` reached the model of a session that ran a shell command, if it did.
+pub(crate) fn turn_of(session: &PtySession, token: &str) -> Option<&'static str> {
+    session.in_first_turn(token).map(|first| {
+        if first {
+            "in the turn that ran the command"
+        } else {
+            "in a later turn"
+        }
+    })
+}
+
 /// The Channels path's checks: each returns its line in the output.
 #[derive(Debug, Default)]
 pub struct ChannelCheck {
@@ -560,15 +590,12 @@ impl ChannelCheck {
     /// did.
     pub fn busy(&mut self, session: &PtySession, sent: Option<&Sent>) -> String {
         let Some(sent) = sent else {
-            let details = format!("{}; the agent ran no shell command", session.summary());
-            return self.checks.report("busy session", false, &details);
+            return self
+                .checks
+                .none("busy session", session, "the agent ran no shell command");
         };
-        let pass = session.clean() && session.got(&sent.token) && handed_over(sent.state);
-        let turn = match session.in_first_turn(&sent.token) {
-            Some(true) => "in the turn that ran the command",
-            Some(false) => "in a later turn",
-            None => "in no turn",
-        };
+        let pass = sent.arrived(session);
+        let turn = turn_of(session, &sent.token).unwrap_or("in no turn");
         let details = format!(
             "{}; added while the shell command ran, handed over {} and reached the model {} \
              later, {turn}",

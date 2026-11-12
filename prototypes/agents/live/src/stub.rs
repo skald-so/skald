@@ -97,7 +97,9 @@ impl Call {
                 Some(("ack", json!({ "acks": acks })))
             }
             Self::Reply => {
-                let (last, others) = held.split_last().map_or((None, &[][..]), |(l, o)| (Some(l), o));
+                let (last, others) = held
+                    .split_last()
+                    .map_or((None, &[][..]), |(l, o)| (Some(l), o));
                 let (reply_to, ack) = last.cloned().unwrap_or_default();
                 Some((
                     "reply",
@@ -1004,13 +1006,22 @@ mod tests {
     fn finds_the_messages_a_conversation_holds_with_their_secrets() {
         assert_eq!(
             held(&holding()),
-            [("m1".to_owned(), Some("s1".to_owned())), ("m2".to_owned(), Some("s2".to_owned()))]
+            [
+                ("m1".to_owned(), Some("s1".to_owned())),
+                ("m2".to_owned(), Some("s2".to_owned()))
+            ]
         );
         // An element without a secret, and one whose secret belongs to the next element.
-        let body = json!(["<message msg_id=\"m3\" from=\"c\">\nx\n</message> <message msg_id=\"m4\" ack=\"s4\">", 5]);
+        let body = json!([
+            "<message msg_id=\"m3\" from=\"c\">\nx\n</message> <message msg_id=\"m4\" ack=\"s4\">",
+            5
+        ]);
         assert_eq!(
             held(&body),
-            [("m3".to_owned(), None), ("m4".to_owned(), Some("s4".to_owned()))]
+            [
+                ("m3".to_owned(), None),
+                ("m4".to_owned(), Some("s4".to_owned()))
+            ]
         );
         assert!(held(&json!({ "text": "msg_id=\"unended" })).is_empty());
     }
@@ -1021,24 +1032,39 @@ mod tests {
         let tool = |call: Call| call.server_tool(&body).unwrap();
         assert_eq!(
             tool(Call::Ack(AckWith::Right)),
-            ("ack", json!({ "acks": [{ "msg_id": "m1", "ack": "s1" }, { "msg_id": "m2", "ack": "s2" }] }))
+            (
+                "ack",
+                json!({ "acks": [{ "msg_id": "m1", "ack": "s1" }, { "msg_id": "m2", "ack": "s2" }] })
+            )
         );
         let wrong = "0".repeat(32);
         assert_eq!(
             tool(Call::Ack(AckWith::Wrong)),
-            ("ack", json!({ "acks": [{ "msg_id": "m1", "ack": wrong }, { "msg_id": "m2", "ack": wrong }] }))
+            (
+                "ack",
+                json!({ "acks": [{ "msg_id": "m1", "ack": wrong }, { "msg_id": "m2", "ack": wrong }] })
+            )
         );
         assert_eq!(
             tool(Call::Ack(AckWith::Missing)),
-            ("ack", json!({ "acks": [{ "msg_id": "m1" }, { "msg_id": "m2" }] }))
+            (
+                "ack",
+                json!({ "acks": [{ "msg_id": "m1" }, { "msg_id": "m2" }] })
+            )
         );
         assert_eq!(
             tool(Call::InboxSeen),
-            ("inbox", json!({ "seen": [{ "msg_id": "m1", "ack": "s1" }, { "msg_id": "m2", "ack": "s2" }] }))
+            (
+                "inbox",
+                json!({ "seen": [{ "msg_id": "m1", "ack": "s1" }, { "msg_id": "m2", "ack": "s2" }] })
+            )
         );
         assert_eq!(
             tool(Call::Reply),
-            ("reply", json!({ "reply_to": "m2", "ack": "s2", "text": DONE, "seen": [{ "msg_id": "m1", "ack": "s1" }] }))
+            (
+                "reply",
+                json!({ "reply_to": "m2", "ack": "s2", "text": DONE, "seen": [{ "msg_id": "m1", "ack": "s1" }] })
+            )
         );
         assert_eq!(tool(Call::Inbox), ("inbox", json!({})));
         assert_eq!(Call::Shell.server_tool(&body), None);
@@ -1046,7 +1072,10 @@ mod tests {
         // Without messages, a reply names none.
         assert_eq!(
             Call::Reply.server_tool(&json!({})).unwrap(),
-            ("reply", json!({ "reply_to": "", "ack": null, "text": DONE, "seen": [] }))
+            (
+                "reply",
+                json!({ "reply_to": "", "ack": null, "text": DONE, "seen": [] })
+            )
         );
     }
 
@@ -1075,6 +1104,9 @@ mod tests {
         assert_eq!(item["namespace"], "mcp__skald");
         assert_eq!(item["name"], "ack");
         let arguments: Value = serde_json::from_str(item["arguments"].as_str().unwrap()).unwrap();
-        assert_eq!(arguments, json!({ "acks": [{ "msg_id": "m1", "ack": "s1" }] }));
+        assert_eq!(
+            arguments,
+            json!({ "acks": [{ "msg_id": "m1", "ack": "s1" }] })
+        );
     }
 }

@@ -105,6 +105,27 @@ fn wrong_arguments_print_the_usage() {
         &["gui-queue"],
         &["gui-queue", "dir", "--bundled"],
         &["gui-queue", "dir", "--cli", "--cli"],
+        &["socket"],
+        &["socket", "codex"],
+        &["rewake", "claude", "--verbose"],
+        &["mod", "codex"],
+        &["ack"],
+        &["ack", "gemini"],
+        &["ack", "codex", "--verbose"],
+        &["transcript", "claude", "--stub"],
+        &["resend", "claude", "--real"],
+        &["resend", "codex"],
+        &["gui", "socket", "codex-desktop"],
+        &["gui", "mod", "codex-vscode"],
+        &["gui", "read", "claude-vscode"],
+        &["gui", "socket", "claude-vscode", "--busy", "--bypass"],
+        &["gui", "rewake", "claude-desktop", "--bypass"],
+        &["gui", "read", "codex-desktop", "--bypass"],
+        &["gui-socket"],
+        &["gui-socket", "dir", "--auth"],
+        &["gui-socket", "dir", "--listen"],
+        &["gui-socket", "dir", "--listen", "soon"],
+        &["gui-socket", "dir", "--listen", "1", "--no-auth"],
     ] {
         let output = live_check(args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -866,10 +887,19 @@ fn gui_queues_the_message_into_the_thread_its_prompt_started() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let check = gui_check(work);
     let thread = "01a1ce22-0000-7000-8000-000000000001";
+    assert_eq!(check["thread"], thread);
     let msg_id = check["msg_id"].as_str().unwrap();
+    // The stand-in answers the queue's listing with none queued: the message was taken.
     assert_eq!(
         stdout,
-        format!("thread: {thread}\n{msg_id}\nhanded over: 1\n")
+        format!("thread: {thread}\n{msg_id}\nhanded over: 1\ntaken from the queue: 0.0 s\n")
+    );
+    let initialize: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(codex.path().join("received/0")).unwrap())
+            .unwrap();
+    assert_eq!(
+        initialize["params"]["capabilities"]["experimentalApi"],
+        true
     );
     assert!(!stdout.contains(check["token"].as_str().unwrap()));
     assert_eq!(
@@ -945,4 +975,205 @@ fn gui_queue_adds_nothing_without_the_thread() {
     let output = live_check_in(other.path(), tmp.path(), &["gui-queue", work]);
     assert_failed(&output, "live-check: ");
     assert!(gui_check(work).get("msg_id").is_none());
+}
+
+/// The settings file a Claude Code session of a stand-in got with `--settings`.
+fn settings_of(session: &Recorded) -> serde_json::Value {
+    let at = session
+        .args
+        .iter()
+        .position(|arg| arg == "--settings")
+        .expect("a settings file");
+    serde_json::from_str(&fs::read_to_string(&session.args[at + 1]).unwrap()).unwrap()
+}
+
+/// The commands of the hooks of `event` in `settings`, each with its arguments.
+fn hook_commands(settings: &serde_json::Value, event: &str) -> Vec<Vec<String>> {
+    settings["hooks"][event][0]["hooks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|hook| {
+            std::iter::once(&hook["command"])
+                .chain(hook["args"].as_array().into_iter().flatten())
+                .map(|word| word.as_str().unwrap().to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn wake_sessions_get_only_their_environment_and_register_on_session_start() {
+    let handler = Path::new(env!("CARGO_BIN_EXE_live-check")).with_file_name("agent-hook");
+    let handler = handler.to_str().unwrap();
+    for (wake, all) in [("socket", 4), ("rewake", 3), ("mod", 3)] {
+        for (flags, sessions) in runs(1, all) {
+            let real = flags.contains(&"--real");
+            let checked = checked_sessions(
+                Agent::Claude,
+                &[wake, "claude"],
+                flags,
+                sessions,
+                |home, stub, path| {
+                    // The bypass session runs as the desktop app and VS Code run Claude Code.
+                    if home.parent().unwrap().ends_with("s") {
+                        Agent::Claude.environment(home, stub, path)
+                    } else {
+                        stub_environment(home, stub, path)
+                    }
+                },
+            );
+            let at = &checked.at;
+            for session in &checked.sessions {
+                let settings = settings_of(session);
+                let starts = hook_commands(&settings, "SessionStart");
+                assert_eq!(starts[0][0], handler, "{at}: the registration");
+                assert_eq!(starts[0].len(), 2, "{at}: {starts:?}");
+                let bypass = session.args[0] == "-p";
+                assert_eq!(
+                    bypass,
+                    wake == "socket" && session.args.contains(&"bypassPermissions".to_owned()),
+                    "{at}"
+                );
+                if !bypass && real {
+                    assert!(
+                        session.env["TERM"] == "xterm-256color",
+                        "{at}: TERM differs"
+                    );
+                }
+                let rewake = starts
+                    .iter()
+                    .chain(&hook_commands(&settings, "Stop"))
+                    .filter(|command| command.get(1).is_some_and(|arg| arg == "--wait"))
+                    .count();
+                assert_eq!(rewake, if wake == "rewake" { 2 } else { 0 }, "{at}");
+                let plugin = session.args.iter().position(|arg| arg == "--plugin-dir");
+                assert_eq!(plugin.is_some(), wake == "mod", "{at}");
+                if let Some(at_plugin) = plugin {
+                    let dir = Path::new(&session.args[at_plugin + 1]);
+                    assert!(dir.join(".claude-plugin/plugin.json").is_file(), "{at}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn read_sessions_get_only_their_environment() {
+    for agent in [Agent::Claude, Agent::Codex] {
+        for (flags, sessions) in runs(1, 2) {
+            let checked =
+                checked_sessions(agent, &["ack", agent.cli()], flags, sessions, |h, s, p| {
+                    agent.environment(h, s, p)
+                });
+            for session in &checked.sessions {
+                let prompt = session
+                    .args
+                    .iter()
+                    .any(|arg| arg.contains("the ack tool") || arg.contains("as seen"));
+                assert!(prompt, "{}: {:?}", checked.at, session.args);
+            }
+        }
+        for (flags, sessions) in runs(1, 1) {
+            let checked = checked_sessions(
+                agent,
+                &["transcript", agent.cli()],
+                flags,
+                sessions,
+                |h, s, p| agent.environment(h, s, p),
+            );
+            for session in &checked.sessions {
+                // The session keeps its file, which the check reads.
+                for kept in ["--no-session-persistence", "--ephemeral"] {
+                    assert!(!session.args.contains(&kept.to_owned()), "{}", checked.at);
+                }
+            }
+        }
+    }
+    for flags in [&[][..], &["--all"]] {
+        let checked =
+            checked_sessions(Agent::Claude, &["resend", "claude"], flags, 1, |h, s, p| {
+                Agent::Claude.environment(h, s, p)
+            });
+        let settings = settings_of(&checked.sessions[0]);
+        let start = &hook_commands(&settings, "SessionStart")[0];
+        let stop = &hook_commands(&settings, "Stop")[0];
+        // The socket's source and the next path's.
+        assert!(
+            start[1].ends_with("/source") && stop[1].ends_with("/fallback"),
+            "{start:?} {stop:?}"
+        );
+    }
+}
+
+#[test]
+fn gui_socket_hands_the_message_to_the_registered_session_and_sends_it_again() {
+    let home = home_with_claude_code_for_vs_code();
+    let tmp = tempfile::tempdir().unwrap();
+    let (_, lines) = succeeded(home.path(), tmp.path(), &["gui", "socket", "claude-vscode"]);
+    let work = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("once the first turn ended: live-check gui-socket "))
+        .and_then(|rest| rest.strip_suffix(" [--no-auth] [--listen <seconds>]"))
+        .expect("the command that hands the message over")
+        .to_owned();
+    let project = Path::new(&work).join("project");
+    let settings: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(project.join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("/source'"),
+        "{settings}"
+    );
+    assert_failed(
+        &live_check_in(home.path(), tmp.path(), &["gui-socket", &work]),
+        "live-check: no session registered",
+    );
+
+    // The session's SessionStart hook registered its socket, which reads two connections.
+    let socket = tmp.path().join("1.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let source = Source::open(Path::new(&work).join("source")).unwrap();
+    source
+        .register(&agent_source::Registration {
+            session_id: "s1".to_owned(),
+            socket: Some(socket.to_string_lossy().into_owned()),
+            token: Some("child-token".to_owned()),
+            at_ms: 1,
+            ..agent_source::Registration::default()
+        })
+        .unwrap();
+    let reader = std::thread::spawn(move || {
+        (0..2)
+            .map(|_| {
+                let (stream, _) = listener.accept().unwrap();
+                std::io::BufRead::lines(std::io::BufReader::new(stream))
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    });
+    let check = |args: &[&str]| -> Vec<String> {
+        let (output, lines) = succeeded(home.path(), tmp.path(), args);
+        let token = gui_check(&work)["token"].as_str().unwrap().to_owned();
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(&token));
+        lines
+    };
+    let first = check(&["gui-socket", &work, "--no-auth"]);
+    let msg_id = gui_check(&work)["msg_id"].as_str().unwrap().to_owned();
+    assert_eq!(first, [msg_id.clone(), "handed over: 1".to_owned()]);
+    let again = check(&["gui-socket", &work]);
+    assert_eq!(again, [msg_id.clone(), "handed over: 1".to_owned()]);
+    let connections = reader.join().unwrap();
+    // Without the token, then with it; the same message both times.
+    assert_eq!(connections[0].len(), 1);
+    assert_eq!(connections[1].len(), 2);
+    assert!(connections[1][0].contains("child-token"));
+    for connection in &connections {
+        assert!(connection.last().unwrap().contains(&msg_id));
+    }
 }
