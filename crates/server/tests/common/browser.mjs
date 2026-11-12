@@ -34,6 +34,9 @@ try {
   const executablePath = process.env.SKALD_CHROME;
   browser = await chromium.launch({
     ...(executablePath ? { executablePath } : { channel: "chrome" }),
+    // Below the 200 s browser.rs waits for the ready line: a slow start under load still succeeds,
+    // or fails with playwright-core's own error.
+    timeout: 180_000,
     args: [
       "--host-resolver-rules=MAP *.test 127.0.0.1",
       // Plain HTTP stays plain: no upgrade of a navigation to HTTPS.

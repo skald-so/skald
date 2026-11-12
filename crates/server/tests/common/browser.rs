@@ -17,8 +17,9 @@ pub struct Browser {
     driver: Mutex<Driver>,
 }
 
-/// How long the driver may take to answer: past every timeout of playwright-core.
-const ANSWER_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long the driver may take to answer: past every timeout of playwright-core, the 180 s that
+/// `browser.mjs` gives Chrome to start included.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(200);
 
 struct Driver {
     child: Child,
