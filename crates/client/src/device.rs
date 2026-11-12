@@ -189,11 +189,7 @@ pub fn name(given: Option<&str>, host: &str) -> Result<String, Error> {
 /// [`UNNAMED`] if empty.
 fn host_name(host: &str) -> String {
     let host = host.trim();
-    let mut end = host.len().min(CERT_NAME_MAX);
-    while !host.is_char_boundary(end) {
-        end -= 1;
-    }
-    match &host[..end] {
+    match &host[..host.floor_char_boundary(CERT_NAME_MAX)] {
         "" => UNNAMED.to_owned(),
         name => name.to_owned(),
     }
