@@ -151,10 +151,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
         ))
     };
     state::create_dir(dir).map_err(unusable)?;
-    // The key storage's entry is named by the directory's absolute path.
-    let dir = &dir.canonicalize().map_err(unusable)?;
-    let state = State::open(dir)?;
-    let secrets = Secrets::new(dir, options.storage);
+    let (state, secrets) = open(dir, options.storage)?;
     let mut stored = secrets.load()?;
 
     // The keys of a device the state knows, and the name the user gives, are checked before
@@ -293,12 +290,15 @@ fn take(
 
 /// The local state and the secrets, in `storage`, of the machine whose state directory `dir`
 /// exists.
-pub fn open(dir: &Path, storage: secrets::Storage) -> Result<(State, Secrets), String> {
+pub fn open(dir: &Path, storage: secrets::Storage) -> Result<(State, Secrets), Error> {
     // The key storage's entry is named by the directory's absolute path.
-    let dir = &dir
-        .canonicalize()
-        .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
-    let state = State::open(dir).map_err(|err| err.to_string())?;
+    let dir = &dir.canonicalize().map_err(|err| {
+        Error::Io(format!(
+            "cannot use the state directory {}: {err}",
+            dir.display()
+        ))
+    })?;
+    let state = State::open(dir)?;
     Ok((state, Secrets::new(dir, storage)))
 }
 

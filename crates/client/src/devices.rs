@@ -44,7 +44,7 @@ pub fn run(
     if !dir.is_dir() {
         return Err(NOT_SIGNED_IN.to_owned());
     }
-    let (state, secrets) = sign_in::open(dir, storage)?;
+    let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
     let session = state
         .session()
         .map_err(text)?

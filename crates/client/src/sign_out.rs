@@ -27,7 +27,7 @@ pub fn run(
         println!("{NOT_SIGNED_IN}");
         return Ok(());
     }
-    let (state, secrets) = sign_in::open(dir, storage)?;
+    let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
     let mut stored = secrets.load().map_err(text)?;
     // The token goes only to the server it came from, kept with it.
     let (Some(token), Some(server)) = (
