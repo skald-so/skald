@@ -2,7 +2,8 @@ name: Release
 
 # A push of a release tag, vX.Y.Z or vX.Y.Z-beta.N, publishes skald to the tag's GitHub Release: dist
 # builds it on a runner of each OS and architecture (dist-workspace.toml), each runner installs it
-# with its installer from the release's files, then one step creates the release with all of them.
+# with its installer from the release's files, then one job attests every file of the release and
+# creates the release with all of them.
 # Any other run is the dry run: it builds and checks everything and publishes nothing; a PR that
 # changes the release config or this workflow starts it, and so does a manual run.
 # Its tests: docs/dev/infrastructure.md, "PR checks", "Tooling".
@@ -124,7 +125,8 @@ jobs:
           merge-multiple: true
           path: release
       # The installer of this OS downloads this runner's archive from the release's files and
-      # installs skald; a new shell runs it and it prints the workspace version.
+      # installs skald; a new shell runs it and it prints the workspace version. It refuses an
+      # archive that does not match its checksum, or has none, and installs nothing.
       - name: Install skald
         env:
           TAG: ${{ needs.plan.outputs.tag }}
@@ -138,9 +140,11 @@ jobs:
     needs: [plan, check]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    # Creates the release.
+    # Attests the release's files and creates the release.
     permissions:
+      attestations: write
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -150,6 +154,15 @@ jobs:
           pattern: build-*
           merge-multiple: true
           path: release
+      - name: Write the installers
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: script/release-installers "$TAG" release
+      # Every file of the release, the installers and checksums included, gets a build provenance
+      # attestation of this workflow at the tag's ref before the release is published.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release/*
       # One release of the tag with all its files: gh uploads them to a draft and publishes it once
       # they are all there, and an immutable release never changes after that. Its notes are the
       # version's CHANGELOG section; a beta's release is a prerelease.
@@ -159,7 +172,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.plan.outputs.tag }}
         run: |
-          script/release-installers "$TAG" release
           script/release-notes "${TAG#v}" >"$RUNNER_TEMP/notes.md"
           prerelease=()
           [[ $TAG != *-* ]] || prerelease=(--prerelease)

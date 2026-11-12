@@ -42,7 +42,7 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the edge image and staging deploy workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the edge image and staging deploy workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test` and `script/release-tag-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
@@ -66,8 +66,9 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
   - The notes are the version's CHANGELOG section, by `script/release-notes`; a beta's release is a prerelease.
   - GitHub Releases hold `skald` only; `skald-server` ships as the image.
   - Linux binaries are built on Ubuntu 22.04: they need glibc 2.35 or later.
-  - Only the job that creates the release writes, contents only.
-- **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture and install `skald` so a new shell runs it. dist's own installers are not used.
+  - Before it publishes, the job that creates the release attests every file of the release, the installers and checksums included, with `actions/attest`; a dry run attests nothing.
+  - Only that job writes: contents, and attestations with an OIDC token.
+- **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture, check it against its `.sha256` and install `skald` so a new shell runs it. On a mismatch or a missing or empty checksum they stop and install nothing. dist's own installers are not used.
   - `install.sh`: into `~/.local/bin`. Unless that directory is on the running shell's `PATH` already, it adds it to `PATH` in `~/.profile`, in `~/.bash_profile` if there is one, in `~/.bashrc` if bash is installed, and in `.zshenv` if zsh is installed.
   - `install.ps1`: into `%LOCALAPPDATA%\Programs\skald`, added to the user's `PATH`.
   - `SKALD_INSTALL_DIR` sets the directory; `SKALD_DOWNLOAD_URL`, where the release's files are instead of GitHub.
@@ -94,13 +95,15 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 | Website and docs | GitHub Pages, built from `docs/` |
 
 ## Trust in builds
-- Builds get **GitHub Artifact Attestations** (Sigstore); verify with `gh attestation verify`.
+- Release files get **GitHub Artifact Attestations** (Sigstore build provenance) from the release workflow at the release tag ("Release").
+- Verify a release file, here of `vX.Y.Z`, in the directory with it and its `.sha256`:
+  - checksum: `sha256sum -c skald-client-<target>.tar.gz.sha256` (macOS: `shasum -a 256 -c …`; Windows: compare `(Get-FileHash skald-client-<target>.zip).Hash` with the `.sha256`);
+  - attestation, with gh 2.97.0 or later: `gh attestation verify <file> --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`. An attestation made on any other ref, or by another workflow or repository, fails it.
 - Images are signed with cosign, without stored keys.
 - Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums.
 - dist is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
 - Releases are immutable, a repository setting: a published release's files and checksums never change.
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.
-- The installer verifies the checksum.
 - The repository has `SECURITY.md`; private vulnerability reporting is enabled on GitHub.
 - The web UI build is reproducible: a rebuild from the release tag matches the files `app.skald.so` serves.
 - Later: reproducible builds of the binaries.

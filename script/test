@@ -10,8 +10,8 @@
 #   tooling  copied code in script/; tests of the scripts in script/, the staging deploy's against a
 #            local sshd and the staging status check's on recorded GitHub API responses, of the edge
 #            image and staging deploy workflow, of the Release PR workflow and its release tags, of
-#            the release workflow and its release notes, and of the installers in installers/ on
-#            this machine; Renovate config validation
+#            the release workflow, its release notes and the attestations of its files, and of the
+#            installers in installers/ on this machine; Renovate config validation
 #   rust and tooling both: the Release PR and the release tags on fixture repositories, with
 #            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
@@ -222,11 +222,13 @@ if checks rust || checks tooling; then
 fi
 
 # The release workflow: what it publishes to GitHub Releases, on which events and with which rules;
-# its publishing step, the release notes, and the installers against a stand-in release.
+# its publishing step, the release notes, the attestations of the release files and how to verify
+# them, and the installers against a stand-in release.
 if checks tooling; then
   script/release-workflow-test
   script/release-jobs-test
   script/release-step-test
   script/release-notes-test
+  script/release-attest-test
   script/installers-test
 fi

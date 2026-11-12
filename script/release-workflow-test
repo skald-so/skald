@@ -15,7 +15,8 @@
 //   - the dry run has jobs on a runner of each OS and architecture, macOS, Linux and Windows on
 //     x86_64 and arm64, for PRs and manual runs;
 //   - the rules of the release pipeline: every job's permissions are set; only the job that creates
-//     the release writes, and only contents; no job requests an OIDC token; actions are pinned to
+//     the release writes: contents, and the attestations of its files, with an OIDC token
+//     (id-token); no job that does not attest requests an OIDC token; actions are pinned to
 //     commits and Docker images to digests; tools are installed by taiki-e/install-action at exact
 //     versions it checks against checksums, never downloaded by a step or run from an expression;
 //     no job restores a cache.
@@ -249,13 +250,20 @@ for (const entry of jobs) {
   }
   const w = writes(p);
   const isCreator = creator && entry.file === creator.file && entry.key === creator.key;
-  if (isCreator && JSON.stringify(w) !== '["contents"]') {
-    fail(`${where(entry)}: the job that creates the release writes contents and nothing else, not: ${w.join(', ') || 'nothing'}`);
+  if (isCreator && JSON.stringify([...w].sort()) !== '["attestations","contents","id-token"]') {
+    fail(
+      `${where(entry)}: the job that creates the release writes contents, and attestations with an OIDC token (id-token), and nothing else, not: ${
+        w.join(', ') || 'nothing'
+      }`,
+    );
   }
   if (!isCreator && w.length > 0) fail(`${where(entry)}: only the job that creates the release writes; this one writes ${w.join(', ')}`);
+  const attestsHere = (entry.job.steps ?? []).some((step) => /^actions\/(attest-build-provenance|attest)@/i.test(String(step.uses ?? '')));
+  if ('id-token' in p && !attestsHere) fail(`${where(entry)}: it requests an OIDC token, but attests nothing`);
 }
 for (const file of files) {
-  if (JSON.stringify(workflows[file]).includes('"id-token"')) fail(`${file}: a job requests an OIDC token; none publishes by OIDC, signs or attests`);
+  const p = workflows[file].permissions;
+  if (p && typeof p === 'object' && 'id-token' in p) fail(`${file}: the workflow requests an OIDC token for every job; only a job that attests requests one`);
 }
 
 // Actions, tools and caches.

@@ -1,0 +1,339 @@
+#!/usr/bin/env node
+// Tests the attestations of the release files, made by .github/workflows/release.yml with GitHub
+// Artifact Attestations, and how docs/dev/infrastructure.md says to verify a release file:
+//   - only a push of a v* tag attests: for any other push, a PR and a manual run, on a tag ref too,
+//     every step that attests is skipped, whatever the run's inputs, variables and step outputs; a
+//     push of vX.Y.Z or vX.Y.Z-beta.N runs one;
+//   - the attesting steps are actions/attest-build-provenance or actions/attest, in the job that
+//     creates the release and before the step that creates it, so no release is published before its
+//     files are attested; a failed attestation fails the job: no continue-on-error;
+//   - the job that attests has the token permissions attestations: write and id-token: write;
+//   - every file of the release is attested: the job that creates the release, run as GitHub runs it
+//     on a push of a stable and of a beta tag, with a stand-in gh and the files the build jobs make,
+//     attests a subject of the same SHA-256 as each file gh publishes, the installers and checksums
+//     included;
+//   - "Trust in builds" in docs/dev/infrastructure.md has the command that verifies a release file's
+//     checksum, and the gh attestation verify command that pins the repository skald-so/skald, the
+//     release workflow and the release tag's ref, refs/tags/vX.Y.Z, and names gh 2.97.0.
+import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { commands, event, isUnknown, jobsFor, open, readWorkflow, stepSkipped, template, toText } from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const releaseFile = '.github/workflows/release.yml';
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-attest-test: ${what}`);
+  failures++;
+};
+
+const release = readWorkflow(path.join(root, releaseFile));
+const jobs = release.jobs ?? {};
+const attests = (step) => /^actions\/(attest-build-provenance|attest)@/i.test(String(step?.uses ?? ''));
+const createsRelease = (step) => commands(step?.run).some((line) => /\bgh\s+release\s+create\b/.test(line));
+const name = (key, step, index) => `job ${key} step ${step.name ?? step.id ?? index + 1}`;
+// Every step that attests, as {key, step, index}.
+const attesting = Object.entries(jobs).flatMap(([key, job]) =>
+  (job.steps ?? []).map((step, index) => ({ key, step, index })).filter(({ step }) => attests(step)),
+);
+if (attesting.length === 0) fail(`no step of ${releaseFile} attests with actions/attest-build-provenance or actions/attest`);
+
+// Only a push of a v* tag attests.
+const quiet = [
+  ['push', 'refs/heads/dev'],
+  ['push', 'refs/heads/main'],
+  ['push', 'refs/heads/v1.2.3'],
+  ['push', 'refs/tags/1.2.3'],
+  ['push', 'refs/tags/release-1.2.3'],
+  ['push', 'refs/tags/skald-v1.2.3'],
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
+];
+for (const [eventName, ref] of quiet) {
+  const states = jobsFor(release, event(eventName, ref));
+  for (const { key, step, index } of attesting) {
+    if (!stepSkipped(step, states[key])) fail(`a ${eventName} on ${ref} attests nothing, but ${name(key, step, index)} may run`);
+  }
+}
+for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
+  const states = jobsFor(release, event('push', `refs/tags/${tag}`));
+  if (attesting.length > 0 && attesting.every(({ key, step }) => stepSkipped(step, states[key]))) {
+    fail(`a push of the tag ${tag} attests nothing: every step that attests is skipped`);
+  }
+}
+
+// Where the attesting steps are, and their job's token.
+const creators = Object.entries(jobs).filter(([, job]) => (job.steps ?? []).some(createsRelease));
+const [creatorKey, creator] = creators.length === 1 ? creators[0] : [null, null];
+if (!creator) fail(`not one job of ${releaseFile} runs gh release create`);
+const publishAt = creator ? creator.steps.findIndex(createsRelease) : -1;
+for (const { key, step, index } of attesting) {
+  if (creator && key !== creatorKey) fail(`${name(key, step, index)} attests outside job ${creatorKey}, which creates the release`);
+  else if (creator && index > publishAt) fail(`${name(key, step, index)} attests after the release is created`);
+  const ignored = step['continue-on-error'];
+  if (ignored !== undefined && ignored !== false && ignored !== 'false') {
+    fail(`${name(key, step, index)}: a failed attestation fails the job, not continue-on-error: ${ignored}`);
+  }
+}
+for (const key of new Set(attesting.map((a) => a.key))) {
+  const p = jobs[key].permissions ?? release.permissions ?? {};
+  for (const scope of ['attestations', 'id-token']) {
+    if (typeof p !== 'object' || p[scope] !== 'write') fail(`job ${key} attests, so its token has ${scope}: write, not: ${p?.[scope] ?? 'none'}`);
+  }
+}
+
+// The job that creates the release, run as GitHub runs it on a push of <tag>; its attestations' and
+// its release's files.
+const targets = [
+  'aarch64-apple-darwin',
+  'aarch64-pc-windows-msvc',
+  'aarch64-unknown-linux-gnu',
+  'x86_64-apple-darwin',
+  'x86_64-pc-windows-msvc',
+  'x86_64-unknown-linux-gnu',
+];
+const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const changelog = `# Changelog
+
+## [Unreleased]
+
+## [1.2.4-beta.1](https://github.com/skald-so/skald/compare/v1.2.3...v1.2.4-beta.1) - 2026-11-20
+
+### Added
+
+- *(client)* beta feature ([#20](https://github.com/skald-so/skald/pull/20))
+
+## [1.2.3](https://github.com/skald-so/skald/releases/tag/v1.2.3) - 2026-11-12
+
+### Fixed
+
+- *(server)* stable fix ([#10](https://github.com/skald-so/skald/pull/10))
+`;
+
+// items <text>: a multiline or comma-separated input of an action, as its items.
+const items = (text) =>
+  toText(text)
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+function runRelease(tag) {
+  const version = tag.slice(1);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-attest-test-'));
+  try {
+    const work = path.join(tmp, 'work');
+    const bin = path.join(tmp, 'bin');
+    const runner = path.join(tmp, 'runner');
+    const published = path.join(tmp, 'published');
+    const build = path.join(tmp, 'build');
+    for (const dir of [work, bin, runner, published, build]) fs.mkdirSync(dir);
+    // The checkout: the scripts and the installers, the workspace at the tag's version, a CHANGELOG.
+    fs.symlinkSync(path.join(root, 'script'), path.join(work, 'script'));
+    fs.symlinkSync(path.join(root, 'installers'), path.join(work, 'installers'));
+    fs.writeFileSync(path.join(work, 'Cargo.toml'), `[workspace.package]\nversion = "${version}"\n`);
+    fs.writeFileSync(path.join(work, 'CHANGELOG.md'), changelog);
+    // The files of the build jobs: each target's archive and its checksum, as dist writes them.
+    const artifacts = {};
+    for (const target of targets) {
+      const archive = `skald-client-${target}.${target.includes('windows') ? 'zip' : 'tar.gz'}`;
+      const dir = path.join(build, `build-${target}`);
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, archive), crypto.randomBytes(256));
+      fs.writeFileSync(path.join(dir, `${archive}.sha256`), `${sha256(path.join(dir, archive))} *${archive}\n\n`);
+      artifacts[`build-${target}`] = dir;
+    }
+    // gh: `release create` keeps a copy of each file it publishes; anything else does nothing.
+    fs.writeFileSync(
+      path.join(bin, 'gh'),
+      `#!/usr/bin/env bash
+if [[ $1 == release && $2 == create ]]; then
+  n=0
+  previous=
+  for arg in "$@"; do
+    # The notes file is no file of the release.
+    if [[ -f $arg && $previous != --notes-file && $previous != -F ]]; then
+      n=$((n + 1))
+      cp "$arg" "${published}/$n-\${arg##*/}"
+    fi
+    previous=$arg
+  done
+fi
+`,
+      { mode: 0o755 },
+    );
+
+    const ev = event('push', `refs/tags/${tag}`);
+    const state = jobsFor(release, ev)[creatorKey];
+    if (state.skipped) {
+      fail(`${tag}: a push of the tag skips job ${creatorKey}, which creates the release`);
+      return;
+    }
+    const needs = {};
+    for (const need of [].concat(creator.needs ?? [])) {
+      const outputs = {};
+      for (const output of Object.keys(jobs[need]?.outputs ?? {})) {
+        outputs[output] = /tag/i.test(output) ? tag : /version/i.test(output) ? version : open({});
+      }
+      needs[need] = { result: 'success', outputs: open(outputs) };
+    }
+    const github = open({ ...ev.github, workspace: work, token: 'stub-token', sha: '0'.repeat(40), server_url: 'https://github.com' });
+    const env = {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
+      CI: 'true',
+      GITHUB_ACTIONS: 'true',
+      GITHUB_WORKSPACE: work,
+      GITHUB_EVENT_NAME: 'push',
+      GITHUB_REF: ev.ref,
+      GITHUB_REF_NAME: ev.refName,
+      GITHUB_REF_TYPE: 'tag',
+      GITHUB_REPOSITORY: 'skald-so/skald',
+      GITHUB_SHA: '0'.repeat(40),
+      RUNNER_TEMP: runner,
+      RUNNER_OS: 'Linux',
+    };
+    const steps = {};
+    const scope = (extra) => ({
+      contexts: {
+        github,
+        needs: open(needs),
+        runner: open({ temp: runner, os: 'Linux', arch: 'X64' }),
+        env: open(extra),
+        steps: open(steps),
+        secrets: open({ GITHUB_TOKEN: 'stub-token' }),
+        vars: open({}),
+        inputs: {},
+        matrix: open({}),
+      },
+      status: { success: true, always: true, failure: false, cancelled: false },
+    });
+    const value = (text, extra) => {
+      const v = template(text, scope(extra));
+      return isUnknown(v) ? '' : toText(v);
+    };
+    // The digests attested by the steps before the release is created.
+    const attested = new Map();
+    let ran = false;
+    for (const [index, step] of creator.steps.entries()) {
+      if (stepSkipped(step, state)) continue;
+      const stepEnv = { ...env };
+      for (const source of [release.env, creator.env, step.env]) {
+        for (const [k, v] of Object.entries(source ?? {})) stepEnv[k] = value(v, stepEnv);
+      }
+      const input = (key) => value(step.with?.[key], stepEnv);
+      const uses = String(step.uses ?? '');
+      if (/^actions\/download-artifact@/i.test(uses)) {
+        const into = path.resolve(work, input('path') || '.');
+        const pattern = input('pattern') || input('name');
+        for (const [artifact, dir] of Object.entries(artifacts)) {
+          if (pattern && !new RegExp(`^${pattern.replace(/[.+^$()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')}$`).test(artifact)) continue;
+          const dest = input('merge-multiple') === 'true' || input('name') ? into : path.join(into, artifact);
+          fs.mkdirSync(dest, { recursive: true });
+          for (const file of fs.readdirSync(dir)) fs.copyFileSync(path.join(dir, file), path.join(dest, file));
+        }
+      } else if (attests(step)) {
+        const cwd = work;
+        const subjects = [];
+        for (const pattern of items(input('subject-path'))) {
+          for (const match of fs.globSync(pattern, { cwd })) {
+            const file = path.resolve(cwd, match);
+            if (fs.statSync(file).isFile()) subjects.push([sha256(file), path.relative(work, file)]);
+          }
+        }
+        const checksums = input('subject-checksums');
+        if (checksums && fs.existsSync(path.resolve(cwd, checksums))) {
+          for (const line of fs.readFileSync(path.resolve(cwd, checksums), 'utf8').split('\n')) {
+            const m = line.match(/^([0-9a-fA-F]{64})\s+\*?(.+)$/);
+            if (m) subjects.push([m[1].toLowerCase(), m[2]]);
+          }
+        }
+        const digest = input('subject-digest').match(/^sha256:([0-9a-fA-F]{64})$/);
+        if (digest) subjects.push([digest[1].toLowerCase(), input('subject-name')]);
+        if (index < publishAt) for (const [d, n] of subjects) attested.set(d, n);
+      } else if (step.run !== undefined) {
+        const output = path.join(runner, `output-${index}`);
+        const envFile = path.join(runner, `env-${index}`);
+        for (const f of [output, envFile]) fs.writeFileSync(f, '');
+        const script = path.join(runner, `step-${index}.sh`);
+        fs.writeFileSync(script, toText(step.run));
+        const cwd = path.resolve(work, value(step['working-directory'] ?? creator.defaults?.run?.['working-directory'] ?? '.', stepEnv));
+        const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', script], {
+          cwd,
+          env: { ...stepEnv, GITHUB_OUTPUT: output, GITHUB_ENV: envFile, GITHUB_PATH: path.join(runner, 'path'), GITHUB_STEP_SUMMARY: path.join(runner, 'summary') },
+          encoding: 'utf8',
+        });
+        if (result.status !== 0) {
+          fail(`${tag}: ${name(creatorKey, step, index)} exits ${result.status}: ${(result.stderr ?? '').trim().split('\n').slice(-3).join(' | ')}`);
+          return;
+        }
+        for (const line of fs.readFileSync(envFile, 'utf8').split('\n')) {
+          const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+          if (m) env[m[1]] = m[2];
+        }
+        if (step.id) {
+          const outputs = {};
+          for (const line of fs.readFileSync(output, 'utf8').split('\n')) {
+            const m = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)=(.*)$/);
+            if (m) outputs[m[1]] = m[2];
+          }
+          steps[step.id] = { outputs: open(outputs), outcome: 'success', conclusion: 'success' };
+        }
+        if (index === publishAt) ran = true;
+      }
+    }
+    if (!ran) {
+      fail(`${tag}: the step that creates the release does not run`);
+      return;
+    }
+    const files = fs.readdirSync(published).sort();
+    if (files.length === 0) fail(`${tag}: gh release create publishes no file`);
+    const unattested = files.filter((f) => !attested.has(sha256(path.join(published, f)))).map((f) => f.replace(/^\d+-/, ''));
+    if (unattested.length > 0) {
+      fail(`${tag}: every published file is attested before the release is created; not: ${unattested.join(', ')}`);
+    }
+    for (const required of ['install.sh', 'install.ps1', 'skald-client-x86_64-unknown-linux-gnu.tar.gz.sha256']) {
+      if (!files.some((f) => f.replace(/^\d+-/, '') === required)) fail(`${tag}: the release has no ${required}`);
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+if (creator && publishAt >= 0) {
+  runRelease('v1.2.3');
+  runRelease('v1.2.4-beta.1');
+}
+
+// "Trust in builds": the verification commands.
+const docs = fs.readFileSync(path.join(root, 'docs/dev/infrastructure.md'), 'utf8');
+const trust = docs.match(/^## Trust in builds\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
+if (!trust) fail('docs/dev/infrastructure.md has no section "Trust in builds"');
+if (!/\bsha256sum\s+(-c|--check)\b|\bshasum\s+-a\s*256\s+(-c|--check)\b|\bGet-FileHash\b/.test(trust)) {
+  fail('"Trust in builds" has no command that verifies a release file against its checksum');
+}
+const verify = trust.split('\n').filter((line) => /\bgh\s+attestation\s+verify\b/.test(line));
+const workflowIdentity = 'skald-so/skald/\\.github/workflows/release\\.yml';
+const pins = (line) =>
+  /(--repo|-R)[\s=]+['"]?skald-so\/skald(?![\w/.-])/.test(line) &&
+  ((new RegExp(`--signer-workflow[\\s=]+['"]?(https://)?(github\\.com/)?${workflowIdentity}`).test(line) &&
+    /--source-ref[\s=]+['"]?refs\/tags\/v/.test(line)) ||
+    new RegExp(`--cert-identity[\\s=]+['"]?https://github\\.com/${workflowIdentity}@refs/tags/v`).test(line));
+if (verify.length === 0) fail('"Trust in builds" has no gh attestation verify command');
+else if (!verify.some(pins)) {
+  fail(
+    '"Trust in builds": gh attestation verify pins the repository skald-so/skald, the release workflow and the release tag\'s ref refs/tags/vX.Y.Z, not: ' +
+      verify.map((l) => l.trim()).join(' | '),
+  );
+}
+if (!/\bgh\b[^\n]*2\.97\.0|2\.97\.0[^\n]*\bgh\b/.test(trust)) fail('"Trust in builds" does not say the attestation check needs gh 2.97.0 or later');
+
+if (failures > 0) {
+  console.error(`release-attest-test: ${failures} case(s) failed`);
+  process.exit(1);
+}
+console.log('release-attest-test: all cases passed');

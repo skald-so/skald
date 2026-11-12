@@ -1,7 +1,8 @@
 #!/bin/sh
 # Installs skald from its GitHub Release on macOS and Linux: downloads the release's archive for this
-# machine's OS and architecture and puts `skald` in ~/.local/bin, or $SKALD_INSTALL_DIR, on the PATH
-# of new shells. script/release-installers sets the release tag of a release's copy.
+# machine's OS and architecture, checks it against its checksum and puts `skald` in ~/.local/bin, or
+# $SKALD_INSTALL_DIR, on the PATH of new shells. script/release-installers sets the release tag of a
+# release's copy.
 #   curl -fsSL https://github.com/skald-so/skald/releases/download/<tag>/install.sh | sh
 # SKALD_DOWNLOAD_URL: where the release's files are instead of its GitHub Release.
 set -eu
@@ -57,9 +58,37 @@ download() {
   fi
 }
 
+# sha256 <file>: writes the file's SHA-256 in hex, first on its line.
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1"
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 -r "$1"
+  else
+    fail "sha256sum, shasum or openssl is needed to check the checksum of $archive"
+  fi
+}
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 download "$base/$archive" "$tmp/$archive" || fail "cannot download $base/$archive"
+# The archive's checksum, <archive>.sha256 of the release as dist writes it: `<hex> *<name>`.
+# Nothing is installed unless the archive matches it.
+download "$base/$archive.sha256" "$tmp/$archive.sha256" ||
+  fail "cannot download the checksum of $archive, $base/$archive.sha256"
+expected=
+read -r expected _ <"$tmp/$archive.sha256" || true
+case $expected in
+  *[!0-9a-fA-F]* | '') fail "the checksum of $archive, $archive.sha256, has no SHA-256" ;;
+esac
+[ ${#expected} -eq 64 ] || fail "the checksum of $archive, $archive.sha256, has no SHA-256"
+sha256 "$tmp/$archive" >"$tmp/actual"
+read -r actual _ <"$tmp/actual" || true
+if [ "$(printf %s "$actual" | tr 'A-F' 'a-f')" != "$(printf %s "$expected" | tr 'A-F' 'a-f')" ]; then
+  fail "$archive does not match its checksum, $archive.sha256: nothing installed"
+fi
 tar -xzf "$tmp/$archive" -C "$tmp" || fail "cannot unpack $archive"
 
 dir=${SKALD_INSTALL_DIR:-$HOME/.local/bin}
