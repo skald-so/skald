@@ -127,7 +127,9 @@ pub fn write_mod_config(project: &Path, hook: &Path, source: &Path) -> io::Resul
 /// Writes the settings of an interactive `kind` session of `wake` into `files.dir` and returns
 /// its arguments, which only they configure ([`claude_flags`]): no MCP server, and no tool but the
 /// busy session's `sleep`, without asking; `Stop` and `PreToolUse` hooks record the agent's turns.
-/// A mod session also loads the mod's plugin directory, with its config in the project.
+/// A mod session also loads the mod's plugin directory, with its config in the project. A loop
+/// session instead keeps slash commands, for `/loop`, and gets the `inbox` server and no tool but
+/// `CronCreate`, with `CronCreate` and `inbox` allowed without asking.
 pub fn session(
     files: &Files,
     wake: Wake,

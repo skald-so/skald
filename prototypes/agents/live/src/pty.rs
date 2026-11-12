@@ -38,7 +38,8 @@ pub(crate) const TURN: Duration = Duration::from_secs(120);
 /// How long the session without the channel flag runs.
 const QUIET: Duration = Duration::from_secs(20);
 
-/// How long a read of a session's output waits before the check looks at its state again.
+/// How long a check reads a session's output, or waits between two polls, before it looks at the
+/// state again.
 pub(crate) const TICK: Duration = Duration::from_millis(100);
 
 /// The Channels path's live check: an idle session; with `--all`, also messages in a row, the
