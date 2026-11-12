@@ -477,7 +477,6 @@ Open questions:
 - The socket in the desktop app's bypass mode: whether it holds a message without the token and drops it after 5 minutes, as VS Code did.
 - `claude://code/needs-input?session=` for a session waiting on a permission prompt: whether it opens that session.
 - Whether a project's settings can declare the mod's marketplace, so that the desktop app's install changes no user settings.
-- Whether a socket line that carries only a fixed prompt to call `inbox`, as for deep links, wakes the session and keeps the message's text out of Claude Code's teammate framing.
 
 ## Read confirmations
 What tells the sending device that the session's model got a message, for `read` ([delivery.md, "Receipts"](../protocol/delivery.md#receipts)). Each layer records a signal with its time in the source's `records/<msg_id>/`.
@@ -710,6 +709,16 @@ Open questions:
 A session loads a channel only with `--channels` or `--dangerously-load-development-channels` and only when interactive ([Channels](#channels)). Neither surface was found to offer that:
 - **Claude Code for VS Code** 2.1.322 runs Claude Code through the Agent SDK, `--input-format stream-json`; its debug log shows `nonInteractive=true`. None of its settings (`package.json`) passes CLI arguments; `claudeCode.claudeProcessWrapper`, the path of an executable that launches Claude Code, can add them. Checked in a VS Code with its own profile (`--user-data-dir`), with the wrapper adding `--dangerously-load-development-channels server:skald`: the session started with the flag and showed no development channel warning; `gui channel claude-vscode` failed as without it, the message handed over and the agent replying `NONE`. The busy case was not run. `claudeCode.useTerminal` runs the CLI in VS Code's terminal instead of the extension's panel.
 - **Claude desktop app** 5.1231.2, read from its code (`app.asar`): its contract for the arguments it sends a host's launcher lists each option as required or never sent, with `--channels`, `--mcp-config` and `--plugin-dir` never sent; `--dangerously-load-development-channels` appears nowhere. The one launch wrapper found in it is `processWrapper` in managed settings, described as a corporate launcher prefix for the sessions and background processes it starts; the app uses it only once the organization's configuration turns on `claudeCodeProcessWrapperEnabled`. No project file or session option that loads a channel was found in it.
+
+## Checks before implementation
+Live checks to add before the adapters take tasks and run executors ([delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent), [queues.md, "Running a task"](../protocol/queues.md#running-a-task)):
+- A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over the [socket](#waking-an-idle-session) and over [`codex queue`](#codex-queue).
+- Claude Code acts on a request from the person's own agent that comes over the socket as text.
+- Claude Code with `--tools` limited to reading and `--permission-mode dontAsk`: the agent writes no file, runs no command and reads nothing outside its folder.
+- Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder.
+- An executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment; [Session config](#session-config) lists what each CLI still loads with the flags checked so far.
+
+Vendor terms, as for [Subscription limits](#subscription-limits): whether the Anthropic and OpenAI subscriptions allow sessions without a person, other people's tasks included.
 
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):

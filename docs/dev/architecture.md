@@ -32,7 +32,7 @@
 
 ## Membership
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
-- **Space policy:** restricted mode per trust level and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
+- **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
 - **Invite:**
   - a valid `client` or `browser` device of an admin signs it: [protocol spec](../protocol/membership.md#invite);
   - its secret travels only in the link's fragment and never reaches the server;
@@ -58,7 +58,7 @@
 | Mailbox | [Protocol spec](../protocol/delivery.md#mailbox) |
 | History | Copies of channel messages under the channel's history key |
 | Queue / Task | A named queue of a channel and its tasks: [protocol spec](../protocol/queues.md) |
-| Presence | Encrypted agent status; the server stores the latest value: [protocol spec](../protocol/agents.md#presence) |
+| Presence | Encrypted agent status and the queues a device serves; the server stores the latest value: [protocol spec](../protocol/agents.md#presence) |
 | `ask_user` | An agent's question to its person and the signed answer: [protocol spec](../protocol/agents.md#ask_user) |
 
 ## Cryptography
@@ -85,9 +85,17 @@
 ## Queue
 - Queues, tasks, claims, leases, fencing and modes: [protocol spec](../protocol/queues.md).
 - Claim: `SELECT … FOR UPDATE SKIP LOCKED`.
+- `skald send` sends a message and `skald enqueue` a task; the MCP server has both as tools, with `claim` and `complete` for tasks.
+- `skald connect` asks only whether the machine takes its own account's tasks. What it takes from others, [per queue](../protocol/queues.md#running-a-task), the user turns on and changes at any time with `skald serve`, only in the CLI on the machine:
+  - `skald serve`: each queue's settings;
+  - `skald serve <queue> --dir <folder> --member read-only`, and `--service` for service agents;
+  - `skald serve <queue> --member approve --in session`;
+  - `skald serve <queue> --off`.
+- `skald approve` lists the tasks waiting for the user's yes and answers them.
+- The web UI shows each device's queues and tiers from its presence.
 
 ## Delivery to agents
-Paths of Claude Code and Codex as [agent-delivery.md](agent-delivery.md#summary) confirmed them, with the surfaces each works on:
+For users, per surface, with what reaches a session from whom: [Delivery to agent sessions](../agent-sessions.md); the rule by the sender's trust level: [delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent). Paths of Claude Code and Codex as [agent-delivery.md](agent-delivery.md#summary) confirmed them, with the surfaces each works on:
 
 | Agent | Primary path | Fallback |
 |---|---|---|
@@ -106,15 +114,21 @@ Adapters are separate modules with e2e tests against real CLIs.
 ## Notifications
 - To Telegram, Slack or a webhook.
 - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
-- The person's device triggers the events that come from content: a task, `hold` or `ask_user` waiting for the person, a key changed. The server only relays them, so they need a running device of the person.
+- The person's device triggers the events that come from content: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a key changed. The server only relays them, so they need a running device of the person.
 - A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 
 ## Security
-- **An inbound message is data, not an instruction:**
-  - sender label and a prompt injection warning;
+- **The sender, not the kind of text, sets its weight** ([delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent)):
+  - sender label with its trust level, and a prompt injection warning;
+  - text from another account or a service agent only through `inbox`, labelled as data;
   - sender allowlist;
-  - `hold` until a human confirms;
-  - a task from another person runs in the restricted mode the signed space policy ([Membership](#membership)) sets for the sender's trust level (read only, no shell); a mode the agent cannot enforce is refused.
+  - `hold` until a human confirms.
+- **Tasks from others** ([queues.md, "Running a task"](../protocol/queues.md#running-a-task)):
+  - run nowhere until the machine's user turns them on per queue;
+  - run in an executor by default, a new session without the user's context, environment, MCP servers, hooks and plugins;
+  - without the user's yes, get at most the signed space policy's ceiling ([Membership](#membership));
+  - the agent CLI enforces the mode; Skald adds no sandbox, and a mode the agent cannot enforce is refused;
+  - a task that needs more rights stops at once and waits for the user's yes.
 - **Loops:**
   - hop counter in the envelope;
   - a limit on replies without a human, enforced by the client;

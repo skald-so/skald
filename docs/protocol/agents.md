@@ -17,7 +17,7 @@ CDDL rules not defined here, such as `id`, `address`, `signed` and `timestamp`, 
 - An agent's person is the member whose handle is the owner in its address; a service agent's, the member on whose account its `service` device is certified ([Device certificate](membership.md#device-certificate)).
 
 ## Presence
-Each device publishes, per channel, the status of its agents there. The value is encrypted under the channel's epoch and signed by the device; the server keeps only the latest value of each device in each channel.
+Each device publishes, per channel, the status of its agents there and the queues it takes tasks from. The value is encrypted under the channel's epoch and signed by the device; the server keeps only the latest value of each device in each channel.
 
 ```cddl
 presence = {               ; what a device uploads; the server keeps and returns it unchanged
@@ -38,6 +38,7 @@ presence-body = {
   4 => uint .ge 1,         ; revision: one more than the device's previous value in the channel
   5 => timestamp,          ; expires
   6 => [* agent-status],   ; agents: this device's agents in the channel
+  7 => [* served-queue],   ; serves: the channel's queues this device takes tasks from
   * int => any,
 }
 
@@ -51,11 +52,19 @@ agent-status = {
 }
 
 agent-state = &(available: 1, busy: 2, waiting: 3, offline: 4)
+
+served-queue = [
+  queue: id,
+  tiers: [own: tier, member: tier, service: tier],
+]
+
+tier = &(off: 1, read-only: 2, approve: 3, full: 4)
 ```
 
 - `state`: `available` takes messages; `busy` works on a turn or a task; `waiting` waits for its person, such as on a [question](#ask_user); `offline` has no running session.
 - `revision`: a device keeps it as durably as its [counters](delivery.md#gap-detection).
 - `expires`: at most 900 seconds after the upload.
+- `serves`: each queue's tier per sender trust level, from the device's settings ([Running a task](queues.md#running-a-task)); for `own`, `full` if it takes `own` tasks, otherwise `off`. A sender uses it to warn of a queue no device serves ([Tasks](queues.md#tasks)).
 
 **Key and encryption.**
 - The presence key of epoch e is `HKDF-SHA256(salt = "", IKM = the history key of e, info = "skald presence", L = 16)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)].
@@ -65,7 +74,7 @@ agent-state = &(available: 1, busy: 2, waiting: 3, offline: 4)
 
 **Uploads.**
 - A member device of kind `client` or `service` keeps a current value in every channel whose group it is a member of, while its helper runs or a one-shot run of it has an agent. Where it runs no agent, `agents` is empty.
-- It uploads new values in all those channels together when an agent's state changes and before `expires` passes, so uploads do not show the server where its agents are. On entering a new epoch, it uploads a new value in that channel. On stopping, it SHOULD upload its agents as `offline`.
+- It uploads new values in all those channels together when an agent's state or `serves` changes and before `expires` passes, so uploads do not show the server where its agents are. On entering a new epoch, it uploads a new value in that channel. On stopping, it SHOULD upload its agents as `offline`.
 - It seals a value only under its current epoch, one it judged [clean](membership.md#clean-epochs); after a browser's revocation, it first commits the empty Commit, as before it sends ([History key](membership.md#history-key)).
 - Other devices upload no value: a `browser` runs no agents, and a `service` device that is not a member holds no history key.
 - The server takes an upload only from a member device of the channel's current epoch, of kind `client` or `service`, with `device` itself and `epoch` the current one. It refuses others: with `not-a-member` from another device, with `epoch-mismatch` for another epoch, and with `too-large` for a `ct` over 65552 bytes: 16 blocks of 4096 and the tag.
@@ -78,10 +87,10 @@ A reader MUST drop a value unless:
 2. the body's `device`, `channel` and `epoch` are the value's; `signature` verifies with the certificate of `device`, a valid device ([Device checks](membership.md#device-checks)) of kind `client` or `service`, [admitted](membership.md#admitted-devices) to the channel;
 3. `revision` is above the highest the reader accepted for this channel and device, or the value is the one it accepted with that revision;
 4. `expires` has not passed;
-5. each `agent` passes, as the `from` of content from `device`, check 2 of [Envelope](README.md#envelope); none is a [person](#person) or repeated.
+5. each `agent` passes, as the `from` of content from `device`, check 2 of [Envelope](README.md#envelope); none is a [person](#person) or repeated; no queue in `serves` is repeated.
 
 - A value that fails only check 4: the reader shows its agents as `offline`, last seen before `expires`.
-- It labels each agent with `device` and its [trust level](membership.md#trust-levels). A device that hands presence to an agent, such as through an MCP tool, hands it as data, labelled as inbound content is ([architecture.md, "Security"](../dev/architecture.md#security)).
+- It labels each agent with `device` and its [trust level](membership.md#trust-levels). A device that hands presence to an agent, such as through an MCP tool, hands it with that label, as the text of a message from `device` ([Device to agent](delivery.md#device-to-agent)).
 
 ## `ask_user`
 An agent asks its [person](#person) a question and waits for the answer. The person answers on one of their `client` or `browser` devices, which signs the answer.
@@ -144,7 +153,8 @@ A question this device keeps is in one of these states:
 ## Security considerations
 - The server cannot read, forge or move a presence value: it is encrypted, signed by its device and bound by the associated data and the body to its device, channel and epoch. It can withhold, delete or delay values, and give a reader that has not seen a newer value an older one until that one expires, at most 900 seconds after its upload.
 - Presence uploads show the server when each member device runs and when a value changes, not where its agents are, since each such device uploads in all its channels together on every change and refresh. A value over 4096 bytes, such as one with many agents, shows its size in steps of 4096 bytes.
-- A status and its `note` are the word of the device that signs them; a device lists any agent of its account, as it may send as one. A `note` is data for the agents that read it, not an instruction.
+- A status, its `note` and `serves` are the word of the device that signs them; a device lists any agent of its account, as it may send as one. A `note` reaches an agent labelled with its device and trust level, as a message's text does.
+- `serves` shows every reader of the channel's presence which queues the device takes tasks from, and at which tiers; the server does not see it.
 - A device that holds an epoch's history key reads that epoch's presence. A revoked device reads the values sealed under epochs it held, if the server gives them to it; devices upload under the new epoch when they enter it.
 - An answer proves the device, not the person. An agent with a shell on a `client` device of the person can answer in its CLI; a browser runs no agent. The asking agent gets the answering device's name and kind.
 - A stolen `client` or `browser` device of the person answers the person's questions until its revocation; its answers then fail the device checks. Only an agent of the person asks the person: other members, their agents and service agents certified on other accounts put no question on the person's devices.
