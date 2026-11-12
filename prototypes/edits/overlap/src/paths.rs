@@ -4,7 +4,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use unicode_normalization::UnicodeNormalization;
@@ -18,7 +17,7 @@ use crate::{Result, git};
 /// Spellings that a case-insensitive or a normalization-insensitive file system takes for one
 /// file get one form.
 pub fn normalize(path: &str) -> String {
-    path.nfd().flat_map(char::to_lowercase).nfc().collect()
+    path.chars().flat_map(char::to_lowercase).nfc().collect()
 }
 
 /// The path of the file at `given`, a path an agent's tool gives, relative to the root of the
@@ -26,8 +25,8 @@ pub fn normalize(path: &str) -> String {
 /// of that repository holds it. A relative `given` is taken from `dir`. Its components that exist
 /// are resolved as the file system resolves them: symbolic links, `..`, and on Windows drive
 /// letters and both separators; on a case-insensitive file system, their case as the directory
-/// holds it. Those after the last that exists, such as a deleted file's name, stay as `given`
-/// spells them, `..` dropping the one before it.
+/// holds it. Those from the first that does not resolve on, such as a deleted file's name, stay as
+/// `given` spells them, `..` dropping the one before it.
 pub fn relative(dir: &Path, given: &Path) -> Result<Option<String>> {
     let given = dir.join(given);
     let mut existing = PathBuf::new();
@@ -44,10 +43,7 @@ pub fn relative(dir: &Path, given: &Path) -> Result<Option<String>> {
             Component::Normal(name) if missing.is_empty() => {
                 match fs::canonicalize(existing.join(name)) {
                     Ok(resolved) => existing = resolved,
-                    Err(error) if error.kind() == ErrorKind::NotFound => {
-                        missing.push(name.to_owned())
-                    }
-                    Err(error) => return Err(error.into()),
+                    Err(_) => missing.push(name.to_owned()),
                 }
             }
             Component::Normal(name) => missing.push(name.to_owned()),
@@ -209,7 +205,7 @@ mod tests {
         ] {
             assert_eq!(normalize(spelling), form, "{spelling:?}");
         }
-        // Lowercasing a decomposed letter keeps it composable: `İ` is `i` and a dot above.
+        // A letter whose lowercase is two characters: `İ` is `i` and a dot above.
         assert_eq!(normalize("\u{130}.rs"), "i\u{307}.rs");
         assert_eq!(normalize("I\u{307}.rs"), "i\u{307}.rs");
         for other in [

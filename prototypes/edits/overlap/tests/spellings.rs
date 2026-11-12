@@ -197,6 +197,16 @@ fn paths_past_the_last_existing_component_stay_as_given() {
         relative("src/new/deeper/../lib.rs").unwrap().as_deref(),
         Some("src/new/lib.rs")
     );
+    // A missing directory is not skipped, even where the path without it names a file.
+    assert_eq!(
+        relative("src/new/inventory.rs").unwrap().as_deref(),
+        Some("src/new/inventory.rs")
+    );
+    // Nothing resolves below a file.
+    assert_eq!(
+        relative("src/inventory.rs/x").unwrap().as_deref(),
+        Some("src/inventory.rs/x")
+    );
     assert_eq!(relative("src/..").unwrap(), None);
     assert_eq!(relative(".").unwrap(), None);
     // A directory of the clone maps to its path.
@@ -261,6 +271,10 @@ fn the_check_prints_each_part() {
     let names = rows("File names in NFC and NFD: `café.md`, by the form of each name");
     assert_eq!(names.len(), 2 + 6);
     assert_eq!(names[2], "| true | written in NFC | NFC | NFC | 1 |");
+    assert_eq!(
+        names[7],
+        "| false | checked out from a commit in NFD | none | NFD | 0 |"
+    );
     let tools = rows("Paths an agent's tools give");
     assert_eq!(
         tools[2],

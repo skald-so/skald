@@ -45,23 +45,17 @@ pub fn file_system(dir: &Path) -> Result<FileSystem> {
 pub fn init_settings(dir: &Path) -> Result<[Option<String>; 2]> {
     fs::create_dir(dir)?;
     git::run(dir, &["init", "--quiet"])?;
+    let config = String::from_utf8(git::run(dir, &["config", "--local", "--list"])?)?;
+    let setting = |name: &str| {
+        let line = config
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix('='));
+        line.map(str::to_owned)
+    };
     Ok([
-        setting(dir, "core.ignorecase")?,
-        setting(dir, "core.precomposeunicode")?,
+        setting("core.ignorecase"),
+        setting("core.precomposeunicode"),
     ])
-}
-
-/// The value of the setting `name` in the config of the repository at `dir`, none when unset.
-fn setting(dir: &Path, name: &str) -> Result<Option<String>> {
-    let output = git::command(dir, &["config", "--local", "--get", name]).output()?;
-    match output.status.code() {
-        Some(0) => Ok(Some(
-            String::from_utf8(output.stdout)?.trim_end().to_owned(),
-        )),
-        // `git config --get` exits with 1 for a setting that is not set.
-        Some(1) => Ok(None),
-        _ => Err(format!("git config --get {name} failed").into()),
-    }
 }
 
 /// How a case-only rename is made.
@@ -291,26 +285,8 @@ pub fn tool_paths(dir: &Path) -> Result<Vec<Spelling>> {
         ),
     ];
     if cfg!(windows) {
-        let lowercase = match text.as_bytes() {
-            [drive, b':', ..] => Some(format!(
-                "{}{}",
-                drive.to_ascii_lowercase() as char,
-                &text[1..]
-            )),
-            _ => None,
-        };
-        spellings.extend([
-            (
-                "absolute, with a lowercase drive letter",
-                inventory,
-                lowercase.map(PathBuf::from),
-            ),
-            (
-                "absolute, with forward slashes",
-                inventory,
-                Some(text.replace('\\', "/").into()),
-            ),
-        ]);
+        let windows = windows_spellings(text);
+        spellings.extend(windows.map(|(name, path)| (name, inventory, path.map(PathBuf::from))));
     }
     spellings.extend([
         (
@@ -349,6 +325,34 @@ pub fn tool_paths(dir: &Path) -> Result<Vec<Spelling>> {
             })
         })
         .collect()
+}
+
+/// The spellings of `path`, an absolute Windows path, that only Windows takes for it: with a
+/// lowercase drive letter, none when it has no drive letter, and with forward slashes.
+pub fn windows_spellings(path: &str) -> [(&'static str, Option<String>); 2] {
+    let lowercase = match path.as_bytes() {
+        [drive, b':', ..] => Some(format!(
+            "{}{}",
+            drive.to_ascii_lowercase() as char,
+            &path[1..]
+        )),
+        _ => None,
+    };
+    [
+        ("absolute, with a lowercase drive letter", lowercase),
+        (
+            "absolute, with forward slashes",
+            Some(path.replace('\\', "/")),
+        ),
+    ]
+}
+
+/// `path` in backquotes, followed by its Unicode normalization form when it is not NFC.
+pub fn shown(path: &str) -> String {
+    match form(path) {
+        "NFC" => format!("`{path}`"),
+        form => format!("`{path}`, {form}"),
+    }
 }
 
 /// Creates `link`, a symbolic link to the directory `target`.
@@ -492,8 +496,7 @@ pub fn check(tmp: &Path) -> Result<String> {
         let maps_to = match spelling.maps_to {
             None => "cannot be made here".into(),
             Some(None) => "no worktree of the repository".into(),
-            Some(Some(path)) if form(&path) == "NFC" => format!("`{path}`"),
-            Some(Some(path)) => format!("`{path}`, {}", form(&path)),
+            Some(Some(path)) => shown(&path),
         };
         vec![
             spelling.name.into(),
@@ -532,4 +535,39 @@ pub fn check(tmp: &Path) -> Result<String> {
         rows.into_iter().for_each(row)
     });
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forms_are_told_apart_and_shown_when_not_nfc() {
+        assert_eq!(form("src/lib.rs"), "NFC");
+        assert_eq!(form(NFC), "NFC");
+        assert_eq!(form(NFD), "NFD");
+        assert_eq!(form(&format!("{NFC}/{NFD}")), "mixed");
+        assert_eq!(shown(NFC), format!("`{NFC}`"));
+        assert_eq!(shown(NFD), format!("`{NFD}`, NFD"));
+    }
+
+    #[test]
+    fn windows_spellings_lowercase_the_drive_letter_and_turn_backslashes_forward() {
+        assert_eq!(
+            windows_spellings("C:\\Users\\RUNNER~1\\src\\inventory.rs"),
+            [
+                (
+                    "absolute, with a lowercase drive letter",
+                    Some("c:\\Users\\RUNNER~1\\src\\inventory.rs".into())
+                ),
+                (
+                    "absolute, with forward slashes",
+                    Some("C:/Users/RUNNER~1/src/inventory.rs".into())
+                ),
+            ]
+        );
+        let [lowercase, forward] = windows_spellings("\\\\server\\share\\a.rs");
+        assert_eq!(lowercase.1, None);
+        assert_eq!(forward.1.as_deref(), Some("//server/share/a.rs"));
+    }
 }
