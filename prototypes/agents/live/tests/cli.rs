@@ -783,15 +783,19 @@ fn gui_turns_off_the_users_claude_plugins_and_servers() {
     assert!(!settings.to_string().contains("secret-command"));
 }
 
-#[test]
-fn gui_prepares_a_bypass_session_only_for_the_socket() {
+/// Prepares the socket's GUI check on Claude Code for VS Code with `flags`; returns the home, the
+/// `TMPDIR` and the lines of the output.
+fn socket_check(flags: &[&str]) -> (tempfile::TempDir, tempfile::TempDir, Vec<String>) {
     let home = home_with_claude_code_for_vs_code();
     let tmp = tempfile::tempdir().unwrap();
-    let (_, lines) = succeeded(
-        home.path(),
-        tmp.path(),
-        &["gui", "socket", "claude-vscode", "--bypass"],
-    );
+    let args = [&["gui", "socket", "claude-vscode"][..], flags].concat();
+    let (_, lines) = succeeded(home.path(), tmp.path(), &args);
+    (home, tmp, lines)
+}
+
+#[test]
+fn gui_prepares_a_bypass_session_only_for_the_socket() {
+    let (home, tmp, lines) = socket_check(&["--bypass"]);
     assert!(lines.contains(&"mode: bypass permissions, before the first prompt".to_owned()));
     let profile = lines
         .iter()
@@ -1226,9 +1230,7 @@ fn read_sessions_get_only_their_environment() {
 
 #[test]
 fn gui_socket_hands_the_message_to_the_registered_session_and_sends_it_again() {
-    let home = home_with_claude_code_for_vs_code();
-    let tmp = tempfile::tempdir().unwrap();
-    let (_, lines) = succeeded(home.path(), tmp.path(), &["gui", "socket", "claude-vscode"]);
+    let (home, tmp, lines) = socket_check(&[]);
     let work = lines
         .iter()
         .find_map(|line| line.strip_prefix("once the first turn ended: live-check gui-socket "))
