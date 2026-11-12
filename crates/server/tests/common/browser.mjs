@@ -150,6 +150,10 @@ async function followRefreshes(tab) {
   const deadline = Date.now() + REFRESH_TIMEOUT;
   // At least 1 ms: a timeout of 0 is none to playwright-core.
   const left = () => Math.max(deadline - Date.now(), 1);
+  const stuck = () =>
+    new Error(
+      `${tab.url()} did not stop refreshing within ${REFRESH_TIMEOUT} ms`,
+    );
   let documents = 0;
   let committed = () => {};
   const count = (frame) => {
@@ -161,7 +165,10 @@ async function followRefreshes(tab) {
   try {
     for (;;) {
       const seen = documents;
-      await tab.waitForLoadState("load", { timeout: left() });
+      // Its timeout is the rest of the deadline.
+      await tab.waitForLoadState("load", { timeout: left() }).catch((error) => {
+        throw error.name === "TimeoutError" ? stuck() : error;
+      });
       // A navigation that replaces the document fails the evaluation: its document comes next.
       const refreshes = await tab
         .evaluate(
@@ -171,15 +178,7 @@ async function followRefreshes(tab) {
       if (documents !== seen) continue;
       if (!refreshes) return;
       await new Promise((resolve, reject) => {
-        const timer = setTimeout(
-          () =>
-            reject(
-              new Error(
-                `${tab.url()} did not stop refreshing within ${REFRESH_TIMEOUT} ms`,
-              ),
-            ),
-          left(),
-        );
+        const timer = setTimeout(() => reject(stuck()), left());
         committed = () => {
           clearTimeout(timer);
           committed = () => {};

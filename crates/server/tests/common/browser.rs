@@ -42,7 +42,8 @@ impl Driver {
 pub struct Visit {
     /// The page's URL afterwards; `about:blank` when its page failed to load.
     pub url: String,
-    /// The status of the last response, if any.
+    /// The status of the last response of the navigation itself, after its redirects and before any
+    /// followed refresh, if any.
     pub status: Option<u16>,
     /// Every URL the page requested on the way, redirects and followed refreshes included, in
     /// order.
