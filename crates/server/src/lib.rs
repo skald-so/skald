@@ -110,7 +110,9 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route(
             "/session",
-            get(sign_in::session).layer(checked(Statement::Header)),
+            get(sign_in::session)
+                .delete(sign_in::end)
+                .layer(checked(Statement::Header)),
         )
         .route("/ws", get(websocket).layer(checked(Statement::Subprotocol)))
         .with_state(AppState {

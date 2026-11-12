@@ -229,6 +229,16 @@ pub fn get_url(url: &str, headers: &[(&str, &str)]) -> Response {
     read(response.unwrap_or_else(|err| panic!("GET {url}: {err}")))
 }
 
+/// `DELETE <url>` with the request headers `headers`; a redirect is returned, not followed.
+pub fn delete_url(url: &str, headers: &[(&str, &str)]) -> Response {
+    let mut request = agent().delete(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.call();
+    read(response.unwrap_or_else(|err| panic!("DELETE {url}: {err}")))
+}
+
 /// `POST <url>` of the form `fields`, `application/x-www-form-urlencoded`, with the request headers
 /// `headers`; a redirect is returned, not followed.
 pub fn post_form(url: &str, headers: &[(&str, &str)], fields: &[(&str, &str)]) -> Response {

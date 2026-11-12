@@ -13,9 +13,9 @@ use skald_crypto::{ChainProblem, DeviceCheckError, check_device};
 use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, VersionRange};
 
 use crate::connection::{Connection, printable};
-use crate::secrets::{self, Secrets};
-use crate::sign_in::{SESSION_SERVER, SESSION_TOKEN};
-use crate::state::{self, Link, State};
+use crate::secrets;
+use crate::sign_in::{self, SESSION_SERVER, SESSION_TOKEN};
+use crate::state::{self, Link};
 
 /// What `skald devices` says when the machine has no session.
 const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
@@ -44,16 +44,12 @@ pub fn run(
     if !dir.is_dir() {
         return Err(NOT_SIGNED_IN.to_owned());
     }
-    // The key storage's entry is named by the directory's absolute path.
-    let dir = &dir
-        .canonicalize()
-        .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
-    let state = State::open(dir).map_err(text)?;
+    let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
     let session = state
         .session()
         .map_err(text)?
         .ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
-    let stored = Secrets::new(dir, storage).load().map_err(text)?;
+    let stored = secrets.load().map_err(text)?;
     let token = match stored.get(SESSION_TOKEN) {
         Some(token) if stored.get(SESSION_SERVER) == Some(&session.server) => token,
         _ => return Err(NOT_SIGNED_IN.to_owned()),
@@ -126,7 +122,7 @@ fn shared_names(linked: &[&Cert]) -> Vec<(String, Vec<DeviceId>)> {
 }
 
 /// The text of `err`, as `skald` prints it.
-fn text(err: impl std::fmt::Display) -> String {
+pub fn text(err: impl std::fmt::Display) -> String {
     err.to_string()
 }
 

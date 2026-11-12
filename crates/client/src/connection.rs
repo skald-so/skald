@@ -185,6 +185,8 @@ pub struct Connection {
 enum Body<'a> {
     /// None: a `GET`.
     None,
+    /// None: a `DELETE`.
+    Delete,
     /// A form: a `POST`.
     Form(&'a [(&'a str, &'a str)]),
     /// JSON.
@@ -287,6 +289,11 @@ impl Connection {
         self.http(path, Some(token), Body::None)
     }
 
+    /// `DELETE <path>` as the session of `token`.
+    pub fn delete_as(&mut self, path: &str, token: &str) -> Result<(), Error> {
+        self.http(path, Some(token), Body::Delete).map(drop)
+    }
+
     /// `POST <path>` with the form `form`; the body of the answer that serves it.
     pub fn post_form(&mut self, path: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, Error> {
         self.http(path, None, Body::Form(form))
@@ -314,6 +321,7 @@ impl Connection {
             let bearer = bearer.as_deref();
             let sent = match body {
                 Body::None => with_headers(agent.get(&url), &version, bearer).call(),
+                Body::Delete => with_headers(agent.delete(&url), &version, bearer).call(),
                 Body::Form(form) => {
                     with_headers(agent.post(&url), &version, bearer).send_form(form.iter().copied())
                 }

@@ -41,8 +41,8 @@ use std::fs;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::{Browser, Page};
-use cloud::{APPROVE, Cloud, shown_grant};
-use machine::{Finished, Machine, SIGN_IN};
+use cloud::Cloud;
+use machine::{Finished, Machine};
 use serde_json::{Value, json};
 use skald_crypto::{SigningKey, issue};
 use skald_github_stand_in::User;
@@ -128,11 +128,7 @@ fn setup(github_id: u64, login: &str) -> (Cloud, Browser, Ada) {
 /// Signs `machine` in as `user`, the person approving at `page`, answering `first` whether it is
 /// the account's first device.
 fn sign_in(cloud: &Cloud, page: &Page, machine: &Machine, user: &User, first: &str) -> Finished {
-    let before = cloud.grants().len();
-    let mut run = machine.start(&[SIGN_IN, "--server", &cloud.url, "--first-device", first]);
-    let grant = shown_grant(cloud, &mut run, before);
-    cloud.decide(page, user, &grant, APPROVE);
-    run.finish()
+    cloud.signed_in(page, machine, user, &["--first-device", first])
 }
 
 /// A second machine of Ada's account, registered and waiting for linking, without a certificate;

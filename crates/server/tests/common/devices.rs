@@ -27,7 +27,7 @@ use skald_proto::{AccountId, Cbor, CertBody, DeviceId, DeviceKind, Unknown};
 
 use super::device_flow::{DeviceFlow, json, text};
 use super::sign_in::Account;
-use super::{Response, get_url, post_form, send};
+use super::{Response, delete_url, get_url, post_form, send};
 
 /// Registers a device: `POST`; the account's devices: `GET`.
 pub const DEVICES: &str = "/devices";
@@ -174,8 +174,8 @@ pub fn machine<'f>(flow: &'f DeviceFlow, user: &User) -> Machine<'f> {
     }
 }
 
-/// `<method> <path>` to `flow`'s server with the request headers `headers` and the JSON `body` if
-/// given, stating the protocol version if `stated`; checked against the spec.
+/// `<method> <path>` to `flow`'s server, `method` in lowercase, with the request headers `headers`
+/// and the JSON `body` if given, stating the protocol version if `stated`; checked against the spec.
 pub fn request(
     flow: &DeviceFlow,
     method: &str,
@@ -195,6 +195,7 @@ pub fn request(
             all.push(("content-type", "application/json"));
             send(method, &url, &all, body)
         }
+        None if method == "delete" => delete_url(&url, &all),
         None => get_url(&url, &all),
     };
     flow.conforms(method, path, &response);
@@ -239,6 +240,11 @@ impl Machine<'_> {
     /// `PUT /account/master` of `master`'s public key and the certificate `cert`.
     pub fn give_master(&self, master: &Key, cert: &[u8]) -> Response {
         self.give(&json!({ "master": b64(&master.public()), "cert": b64(cert) }))
+    }
+
+    /// `DELETE /session`: ends this machine's session.
+    pub fn sign_out(&self) -> Response {
+        self.send("delete", super::sign_in::SESSION, None)
     }
 
     /// The account's master public key as `GET /account/master` gives it.

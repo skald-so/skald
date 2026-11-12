@@ -5,6 +5,7 @@ mod device;
 mod devices;
 mod secrets;
 mod sign_in;
+mod sign_out;
 mod state;
 #[cfg(test)]
 mod test_dir;
@@ -96,6 +97,10 @@ enum Command {
     /// a valid certificate shows by its certificate's name, kind and date issued; any other, such
     /// as one only the server signed, is listed apart as not linked, by its ID only.
     Devices,
+    /// Signs this machine out: ends its session on the server it signed in to and deletes the
+    /// session token. The device's keys and certificate stay, so the next sign-in to the same
+    /// account resumes the same device.
+    SignOut,
 }
 
 /// An answer to a question.
@@ -144,6 +149,11 @@ fn main() -> ExitCode {
         Command::Devices => {
             let result = state::dir(cli.state_dir)
                 .and_then(|dir| devices::run(&dir, cli.key_storage, speaks, timeout));
+            exit(result)
+        }
+        Command::SignOut => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| sign_out::run(&dir, cli.key_storage, speaks, timeout));
             exit(result)
         }
     }

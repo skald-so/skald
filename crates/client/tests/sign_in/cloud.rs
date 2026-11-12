@@ -5,13 +5,16 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
+use skald_proto::{Cbor, Cert, DeviceId};
 use skald_server::{CALLBACK_PATH, ClientSecret, GitHubApp, Settings, SignInSettings};
 
 use super::browser::{Page, Visit};
 use super::common::Server;
-use super::machine::Run;
+use super::machine::{self, Finished, Machine, Run};
 use super::relay::{Relay, strings_named};
 
 /// How long a test waits for the server to see what it expects.
@@ -35,6 +38,33 @@ const SIGN_IN: &str = "a:has-text('sign in'), button:has-text('sign in')";
 pub struct Grant {
     pub user_code: String,
     pub verification_uri: String,
+}
+
+/// A device of the account, as `GET /devices` gives it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Device {
+    pub id: DeviceId,
+    pub cert: Option<Cert>,
+}
+
+/// The IDs of `devices`.
+pub fn ids(devices: &[Device]) -> Vec<DeviceId> {
+    devices.iter().map(|device| device.id).collect()
+}
+
+/// The devices of `devices` that have a certificate.
+pub fn certified(devices: &[Device]) -> Vec<DeviceId> {
+    devices
+        .iter()
+        .filter(|device| device.cert.is_some())
+        .map(|device| device.id)
+        .collect()
+}
+
+fn unb64(text: &str) -> Vec<u8> {
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .unwrap_or_else(|err| panic!("{text:?} is not base64url without padding: {err}"))
 }
 
 pub struct Cloud {
@@ -148,6 +178,67 @@ impl Cloud {
             .read_to_string()
             .unwrap_or_else(|err| panic!("read GET {path}: {err}"));
         (status, serde_json::from_str(&body).unwrap_or(Value::Null))
+    }
+
+    /// The account's master public key, from the server, for a session with `token`.
+    pub fn master(&self, token: &str) -> Option<[u8; 32]> {
+        let (status, body) = self.get_as("/account/master", token);
+        assert_eq!(status, 200, "GET /account/master: {body}");
+        match &body["master"] {
+            Value::Null => None,
+            Value::String(text) => Some(unb64(text).try_into().expect("a 32-byte master key")),
+            other => panic!("GET /account/master: {other}"),
+        }
+    }
+
+    /// The account's devices, from the server, for a session with `token`, each with its
+    /// certificate as the device sent it.
+    pub fn devices(&self, token: &str) -> Vec<Device> {
+        let (status, body) = self.get_as("/devices", token);
+        assert_eq!(status, 200, "GET /devices: {body}");
+        body["devices"]
+            .as_array()
+            .unwrap_or_else(|| panic!("GET /devices: {body}"))
+            .iter()
+            .map(|device| Device {
+                id: device["device"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok())
+                    .unwrap_or_else(|| panic!("a device ID: {device}")),
+                cert: device["cert"].as_str().map(|cert| {
+                    Cert::from_cbor(&unb64(cert))
+                        .unwrap_or_else(|err| panic!("a certificate: {err}"))
+                }),
+            })
+            .collect()
+    }
+
+    /// How many requests whose line starts with `request` the machines sent from `since` on.
+    pub fn count_sent(&self, since: Instant, request: &str) -> usize {
+        let request = request.to_lowercase();
+        self.relay
+            .sent_since(since)
+            .iter()
+            .filter(|sent| sent.head.starts_with(&request))
+            .count()
+    }
+
+    /// Starts `skald sign-in --server <this server> <extra>` on `machine`, approves the code it
+    /// shows as `user` at `page`, and waits for the run to finish.
+    pub fn signed_in(
+        &self,
+        page: &Page,
+        machine: &Machine,
+        user: &User,
+        extra: &[&str],
+    ) -> Finished {
+        let before = self.grants().len();
+        let mut args = vec![machine::SIGN_IN, "--server", &self.url];
+        args.extend_from_slice(extra);
+        let mut run = machine.start(&args);
+        let grant = shown_grant(self, &mut run, before);
+        self.decide(page, user, &grant, APPROVE);
+        run.finish()
     }
 
     /// What every table of the server's database holds, one XML document per table.

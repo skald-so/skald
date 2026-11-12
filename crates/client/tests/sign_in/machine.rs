@@ -136,6 +136,16 @@ impl Machine {
             .collect()
     }
 
+    /// The bytes of its local state: its SQLite databases and their journals.
+    pub fn state_bytes(&self) -> Vec<u8> {
+        let files = self.sqlite_files();
+        assert!(!files.is_empty(), "no local state in {:?}", self.root);
+        files
+            .iter()
+            .flat_map(|file| fs::read(file).expect("read the local state"))
+            .collect()
+    }
+
     /// The files in the state directory that start as an SQLite database does, and their journals.
     pub fn sqlite_files(&self) -> Vec<PathBuf> {
         let databases: Vec<PathBuf> = files(&self.state_dir())

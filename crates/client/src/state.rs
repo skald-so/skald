@@ -38,6 +38,10 @@ const MIGRATIONS: &[&str] = &[
         CHECK ((link IN ('sent', 'certified')) = (master IS NOT NULL AND cert IS NOT NULL)),
         CHECK (link IN ('sent', 'certified') OR (master IS NULL AND cert IS NULL))
     ) STRICT",
+    // The account the device belongs to: the account of the session it was set up with. A device
+    // of a state older than this column takes its session's account, if the session has one.
+    "ALTER TABLE device ADD COLUMN account TEXT;
+    UPDATE device SET account = (SELECT account FROM session);",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -83,6 +87,9 @@ pub struct Device {
     pub id: DeviceId,
     /// Its certificate's `name`.
     pub name: String,
+    /// The account it belongs to; `None` only in a state older than this field whose session had
+    /// no account.
+    pub account: Option<String>,
     /// Whether the server took its registration.
     pub registered: bool,
     pub link: Link,
@@ -194,21 +201,22 @@ impl State {
         let row = self
             .db
             .query_row(
-                "SELECT device, name, registered, link, master, cert FROM device",
+                "SELECT device, name, account, registered, link, master, cert FROM device",
                 [],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, bool>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, String>(4)?,
                         row.get::<_, Option<Vec<u8>>>(5)?,
+                        row.get::<_, Option<Vec<u8>>>(6)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((id, name, registered, link, master, cert)) = row else {
+        let Some((id, name, account, registered, link, master, cert)) = row else {
             return Ok(None);
         };
         let id = id
@@ -231,16 +239,26 @@ impl State {
         Ok(Some(Device {
             id,
             name,
+            account,
             registered,
             link,
         }))
     }
 
-    /// Records the machine's own device, new and not registered yet.
-    pub fn add_device(&self, id: DeviceId, name: &str) -> Result<(), Error> {
+    /// Records the machine's own device of `account`, new and not registered yet.
+    pub fn add_device(&self, id: DeviceId, name: &str, account: &str) -> Result<(), Error> {
         self.db.execute(
-            "INSERT INTO device (id, device, name) VALUES (1, ?1, ?2)",
-            params![id.to_string(), name],
+            "INSERT INTO device (id, device, name, account) VALUES (1, ?1, ?2, ?3)",
+            params![id.to_string(), name, account],
+        )?;
+        Ok(())
+    }
+
+    /// Records the account of a device that has none recorded.
+    pub fn set_device_account(&self, account: &str) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE device SET account = ?1 WHERE account IS NULL",
+            params![account],
         )?;
         Ok(())
     }
@@ -344,11 +362,12 @@ mod tests {
         let state = State::open(&dir).unwrap();
         assert_eq!(state.device().unwrap(), None);
         let id = DeviceId::from_signing_key(&[7; 32]);
-        state.add_device(id, "ada-laptop").unwrap();
-        assert!(state.add_device(id, "again").is_err(), "one device");
+        state.add_device(id, "ada-laptop", "0190").unwrap();
+        assert!(state.add_device(id, "again", "0190").is_err(), "one device");
         let new = Device {
             id,
             name: "ada-laptop".to_owned(),
+            account: Some("0190".to_owned()),
             registered: false,
             link: Link::New,
         };
@@ -370,8 +389,50 @@ mod tests {
             let device = state.device().unwrap().expect("a device");
             assert!(device.registered);
             assert_eq!((device.id, device.name.as_str()), (id, "ada-laptop"));
+            assert_eq!(device.account.as_deref(), Some("0190"));
             assert_eq!(device.link, link);
         }
+        // The account is set only where none is recorded, and ending the session keeps it.
+        state.set_device_account("0191").unwrap();
+        state.start_session("http://one.test").unwrap();
+        state.end_session().unwrap();
+        assert_eq!(
+            state.device().unwrap().unwrap().account.as_deref(),
+            Some("0190")
+        );
+    }
+
+    #[test]
+    fn device_of_an_older_state_takes_its_sessions_account() {
+        let dir = TestDir::new("state-device-account");
+        let db = Connection::open(dir.join(FILE)).unwrap();
+        for migration in &MIGRATIONS[..2] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.execute_batch(
+            "PRAGMA user_version = 2;
+             INSERT INTO session (id, server, account, github_login)
+                 VALUES (1, 'http://one.test', '0190', 'ada');
+             INSERT INTO device (id, device, name) VALUES (1, 'x', 'ada-laptop');",
+        )
+        .unwrap();
+        let id = DeviceId::from_signing_key(&[7; 32]).to_string();
+        db.execute("UPDATE device SET device = ?1", [&id]).unwrap();
+        drop(db);
+
+        let state = State::open(&dir).unwrap();
+        let device = state.device().unwrap().expect("a device");
+        assert_eq!(device.account.as_deref(), Some("0190"));
+        // Without an account in its session, it has none until it signs in.
+        state
+            .db
+            .execute("UPDATE device SET account = NULL", [])
+            .unwrap();
+        state.set_device_account("0191").unwrap();
+        assert_eq!(
+            state.device().unwrap().unwrap().account.as_deref(),
+            Some("0191")
+        );
     }
 
     #[test]
