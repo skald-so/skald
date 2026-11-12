@@ -2,10 +2,12 @@
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
 //! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path, [`hook`]
 //! for the hooks, [`queue`] for `codex queue`, [`app_server`] for the Codex app-server and
-//! [`limits`] for the subscription limits. The binary only starts the CLIs and reads their output.
+//! [`limits`] for the subscription limits; [`gui`] prepares and judges the checks on the desktop
+//! apps and IDE extensions. The binary only starts the CLIs and reads their output.
 
 pub mod app_server;
 pub mod channel;
+pub mod gui;
 pub mod hook;
 pub mod limits;
 pub mod queue;
