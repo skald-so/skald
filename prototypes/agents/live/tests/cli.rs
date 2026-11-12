@@ -1288,7 +1288,9 @@ fn gui_socket_hands_the_message_to_the_registered_session_and_sends_it_again() {
     assert_eq!(again, [msg_id.clone(), "handed over: 1".to_owned()]);
     // With a reply address next to the session's socket, listening a second for receipts.
     for args in [&["--listen", "1"][..], &["--no-auth", "--listen", "1"]] {
+        let started = std::time::Instant::now();
         let listened = check(&[&["gui-socket", work.as_str()][..], args].concat());
+        assert!(started.elapsed() >= std::time::Duration::from_secs(1));
         assert_eq!(listened, [msg_id.clone(), "handed over: 1".to_owned()]);
     }
     let connections = reader.join().unwrap();
