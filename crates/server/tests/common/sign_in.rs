@@ -1,11 +1,13 @@
 //! A `skald-server` set up for GitHub sign-in against the GitHub stand-in, and a person signing in
 //! to it in a browser.
 
+use std::time::Duration;
+
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
 
 use super::browser::{Browser, Page, Visit};
-use super::{Server, TestDb, free_port};
+use super::{Server, TestDb, on_free_port};
 
 /// The fake OAuth App's client ID and secret.
 pub const CLIENT_ID: &str = "Ov23li0standin0client";
@@ -69,17 +71,14 @@ impl SignIn {
 
     /// As [`SignIn::start`], with the extra arguments `args` and the client secret `secret`.
     pub fn start_with(args: &[&str], secret: &str) -> Self {
-        let port = free_port();
-        Self::new(&format!("http://skald.test:{port}"), port, args, secret)
+        Self::new(|port| format!("http://skald.test:{port}"), args, secret)
     }
 
     /// A server whose public address is plain HTTP under `127.0.0.1`, where the test itself sends
     /// requests.
     pub fn start_local() -> Self {
-        let port = free_port();
         Self::new(
-            &format!("http://127.0.0.1:{port}"),
-            port,
+            |port| format!("http://127.0.0.1:{port}"),
             &[],
             CLIENT_SECRET,
         )
@@ -88,36 +87,41 @@ impl SignIn {
     /// A server whose public address is `https://skald.test:<port>`, an HTTPS proxy of `browser`'s
     /// driver in front of it, as a server behind a TLS-terminating proxy.
     pub fn start_https(browser: &Browser) -> Self {
-        let port = free_port();
-        let proxy = browser.tls_proxy(&format!("http://127.0.0.1:{port}"));
         Self::new(
-            &format!("https://skald.test:{proxy}"),
-            port,
+            |port| {
+                let proxy = browser.tls_proxy(&format!("http://127.0.0.1:{port}"));
+                format!("https://skald.test:{proxy}")
+            },
             &[],
             CLIENT_SECRET,
         )
     }
 
-    fn new(public: &str, port: u16, args: &[&str], secret: &str) -> Self {
+    /// A server whose public address `public` gives for the port the server listens on.
+    fn new(public: impl Fn(u16) -> String, args: &[&str], secret: &str) -> Self {
         let db = TestDb::create();
-        let github = GitHub::start(App {
-            client_id: CLIENT_ID.to_owned(),
-            client_secret: CLIENT_SECRET.to_owned(),
-            callback: Some(format!("{public}{CALLBACK}")),
+        let (github, server, public) = on_free_port(Duration::from_secs(30), |port| {
+            let public = public(port);
+            let github = GitHub::start(App {
+                client_id: CLIENT_ID.to_owned(),
+                client_secret: CLIENT_SECRET.to_owned(),
+                callback: Some(format!("{public}{CALLBACK}")),
+            });
+            let mut all = github_settings(&public, &github);
+            all.extend_from_slice(args);
+            let server = Server::try_launch(
+                &db,
+                &format!("127.0.0.1:{port}"),
+                &all,
+                &[("SKALD_GITHUB_CLIENT_SECRET", secret)],
+            )?;
+            Ok((github, server, public))
         });
-        let mut all = github_settings(public, &github);
-        all.extend_from_slice(args);
-        let server = Server::launch(
-            &db,
-            &format!("127.0.0.1:{port}"),
-            &all,
-            &[("SKALD_GITHUB_CLIENT_SECRET", secret)],
-        );
         SignIn {
             db,
             github,
             server,
-            public: public.to_owned(),
+            public,
         }
     }
 

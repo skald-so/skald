@@ -3,10 +3,12 @@
 mod common;
 
 use std::net::TcpListener;
+use std::panic::{self, AssertUnwindSafe};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use common::spec::{spec, spec_bytes, spec_violations};
-use common::{Response, SERVER, Server, TestDb, start_failure};
+use common::{Response, SERVER, Server, TestDb, on_free_port, start_failure};
 use serde_json::{Value, json};
 
 impl Response {
@@ -215,4 +217,90 @@ fn exits_with_error_when_address_is_taken() {
         stderr.starts_with(&format!("skald-server: cannot listen on {addr}: ")),
         "stderr: {stderr:?}"
     );
+}
+
+/// The tests' servers whose address must be known before they start: the port they are given can
+/// be taken before they listen on it.
+#[test]
+fn a_test_server_whose_port_is_taken_before_it_listens_starts_on_another() {
+    let db = TestDb::create();
+    let holder = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let taken = holder.local_addr().expect("local address").port();
+    let mut launches = Vec::new();
+
+    // The first launch is on the taken port, as if another socket took the one it was given.
+    let server = on_free_port(Duration::from_secs(30), |port| {
+        let port = if launches.is_empty() { taken } else { port };
+        let launched = Server::try_launch(&db, &format!("127.0.0.1:{port}"), &[], &[]);
+        launches.push((port, launched.is_ok()));
+        launched
+    });
+
+    assert_eq!(launches.first(), Some(&(taken, false)), "{launches:?}");
+    let &(port, listens) = launches.last().expect("a launch");
+    assert!(listens && port != taken, "{launches:?}");
+    assert_eq!(server.base(), format!("http://127.0.0.1:{port}"));
+    assert_eq!(server.get("/health").status, 200);
+}
+
+#[test]
+fn a_test_server_that_fails_to_start_for_another_reason_is_launched_once() {
+    let db = TestDb::create();
+    let mut launches = 0;
+
+    let failure = panic_of(|| {
+        on_free_port(Duration::from_secs(5), |port| {
+            launches += 1;
+            let no_secret = ["--github-client-id", "Ov23li0standin0client"];
+            Server::try_launch(&db, &format!("127.0.0.1:{port}"), &no_secret, &[])
+        })
+    });
+
+    assert_eq!(launches, 1, "{failure}");
+    assert!(
+        failure.starts_with(
+            "unexpected skald-server output: \"skald-server: --github-client-id needs the client \
+             secret in SKALD_GITHUB_CLIENT_SECRET"
+        ),
+        "{failure}"
+    );
+}
+
+#[test]
+fn a_test_server_whose_port_stays_taken_is_given_up_at_the_deadline() {
+    let db = TestDb::create();
+    let holder = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let taken = holder.local_addr().expect("local address").port();
+    let started = Instant::now();
+
+    let failure = panic_of(|| {
+        on_free_port(Duration::from_secs(1), |_| {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "launches went on 10 s past a deadline of 1 s"
+            );
+            Server::try_launch(&db, &format!("127.0.0.1:{taken}"), &[], &[])
+        })
+    });
+
+    assert!(
+        failure.starts_with(&format!(
+            "no free port for skald-server within 1s: \"skald-server: cannot listen on \
+             127.0.0.1:{taken}: Address already in use"
+        )),
+        "{failure}"
+    );
+}
+
+/// What `run` panics with; fails if it returns.
+fn panic_of<T>(run: impl FnOnce() -> T) -> String {
+    let Err(payload) = panic::catch_unwind(AssertUnwindSafe(run)) else {
+        panic!("no panic");
+    };
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => payload
+            .downcast_ref::<&str>()
+            .map_or_else(String::new, |message| (*message).to_owned()),
+    }
 }
