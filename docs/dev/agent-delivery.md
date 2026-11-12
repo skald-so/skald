@@ -2,6 +2,42 @@
 
 Prototypes that confirm or refute each path of [architecture.md, "Delivery to agents"](architecture.md#delivery-to-agents) on current Claude Code and Codex, and find the [subscription limits](#subscription-limits) they show the user ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)).
 
+## Summary
+Per agent and surface; a path not named for a surface was not checked there:
+
+| Agent and surface | Primary | Fallback | Refuted |
+|---|---|---|---|
+| Claude Code CLI | [Channels](#channels): idle and busy, without a prompt | [`PostToolUse` and `Stop` hooks](#claude-code-hooks): busy only; [MCP `inbox`](#mcp-inbox): when the agent calls it | — |
+| Claude desktop app, Claude Code for VS Code | — | `PostToolUse` and `Stop` hooks, MCP `inbox`: [as on the CLI](#results) | Channels: neither surface loads a channel |
+| Codex CLI | [`codex queue`](#codex-queue): idle, and busy once the turn ends; [`PostToolUse` and `Stop` hooks](#codex-hooks): busy only | `UserPromptSubmit` hook: with the next prompt; MCP `inbox` | — |
+| Codex threads a program starts | [App-server](#codex-app-server): idle and busy, with the agent's reply | — | — |
+| Codex desktop app, Codex for VS Code | — | MCP `inbox`: [with a model the API key can use](#results) | App-server: each surface runs its own on stdio |
+
+What each path needs: the "Needs" of its section, and on the desktop apps and IDE extensions [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions). Steps that need a person: [Manual check](#manual-check).
+
+For the adapters:
+- **Claude Code adapter and plugin:** Channels, with the hooks and `inbox` as fallbacks; the plugin can ship the channel and the hooks ([Channels](#channels), [Claude Code hooks](#claude-code-hooks)).
+- **Codex adapter:** `codex queue` and the hooks, with `inbox` as the fallback; setup in [Codex hooks](#codex-hooks), [`codex queue`](#codex-queue) and [MCP `inbox`](#mcp-inbox).
+- **Codex threads without a person:** the app-server; setup in [Codex app-server](#codex-app-server).
+- **Daily e2e with real CLIs** ([infrastructure.md, "PR checks"](infrastructure.md#pr-checks)): Claude Code and Codex installed, and a pseudo-terminal for Channels and `codex queue`, whose dialogs code answers. On the [model stub](#model-stub) the checks need no key; on the real model, an Anthropic API key and an OpenAI API key with access to `gpt-5.5`. The desktop apps and IDE extensions need a person or an agent driving them.
+- **Subscription limits:** Claude Code shows them and a local program may read them; Codex shows them only on a ChatGPT sign-in ([Subscription limits](#subscription-limits)).
+
+### Reruns
+On 2026-11-12, each live check ran with neither flag, as `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check <command>`. The `--all` and `--real` results in each path's section were taken on Claude Code 2.1.322 and Codex 0.162.1; the busy GUI results, on the versions [Results](#results) gives.
+
+| Command | Version | Result |
+|---|---|---|
+| `inbox claude`, `channel claude`, `post-tool-use claude`, `stop claude` | Claude Code 2.1.322 | pass each, on the model stub |
+| `inbox codex`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex` | Codex 0.162.1 | pass each, on the model stub |
+| `limits claude`, `status-line claude` | Claude Code 2.1.322 | pass each, on a Claude account |
+| `limits codex` | Codex 0.162.1 | fail: the app-server refused, "chatgpt authentication required to read rate limits" |
+| `gui inbox claude-vscode`, `gui post-tool-use claude-vscode`, `gui stop claude-vscode` | Claude Code for VS Code 2.1.322; the sessions ran Claude Code 2.1.322 | pass each |
+| `gui channel claude-vscode` | the same | fail: the agent replied `NONE`; the message was handed over |
+| `gui inbox codex-vscode` | Codex for VS Code 26.1106.51428, codex 0.167.0-alpha.4.1 | pass, with 5.5 at Light picked in the session |
+| `gui inbox codex-desktop` | ChatGPT 26.1106.51428, codex 0.167.0-alpha.4.1 | pass, with 5.5 at Light picked in the session |
+| `gui inbox claude-desktop` | Claude 5.1231.2; the session ran Claude Code 2.1.321 | not done: "Weekly limit reached" on the app's Claude account, so no turn ran |
+| `gui post-tool-use claude-desktop`, `gui stop claude-desktop`, `gui channel claude-desktop` | — | not rerun |
+
 ## Checks
 Each path's section answers, for each agent:
 
@@ -429,7 +465,7 @@ Surfaces, each running its own copy of the agent; the apps and extensions update
 
 The surfaces take no CLI flags, so a check attaches a path only with files in the project:
 - Claude Code reads the project's `.mcp.json` and `.claude/settings.local.json`, as the CLI does ([docs](https://code.claude.com/docs/en/desktop.md#shared-configuration)). The check writes the server to `.mcp.json` and, to settings, `enabledMcpjsonServers` and `permissions.allow` with `mcp__skald__inbox` for `inbox`; `enabledMcpjsonServers` for Channels; for a hook, the hook in the shell form and `permissions.allow` with `Bash(true)`. `permissions.allow` also holds `Bash(sleep:*)` for the busy case. Each settings file has `maxEffortLevel: "low"`, which caps the effort, the lowest across settings files winning: both surfaces showed Opus 5.5 at Low, the desktop app in `/status` and VS Code in its prompt box.
-- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and the `inbox` server with `default_tools_approval_mode = "approve"`. Codex for VS Code showed `5.5` at `Light` effort from it in its model menu; the desktop app's composer showed the user's default model.
+- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and the `inbox` server with `default_tools_approval_mode = "approve"`. In the [rerun](#reruns) both surfaces' composers showed the user's default model instead, 6 Astra at High, which the API key cannot use: the check picks 5.5 and the lowest effort, Light, in the session's model menu.
 
 ### GUI live check
 `live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`, `<path>` `inbox` on each, and `channel`, `post-tool-use` or `stop` on the Claude Code ones:
@@ -442,8 +478,8 @@ Then a person or an agent drives the surface with `screencapture -l <window>`, `
 Steps, each on a new session in the check's project; Return did not always send the prompt, the send button did:
 - **Claude desktop app:** in a terminal in the project, `claude --desktop`, which needs a terminal: from a program, under `script`. It opens the app on a new session there. "Trust this workspace?": Trust workspace. Type the prompt; the send button, right of the prompt box.
 - **Claude Code for VS Code:** `open -n -a "Visual Studio Code" --args --user-data-dir <dir>/vscode <dir>/project`: a VS Code with an empty profile, so no other window opens. Continue without Signing In; close the welcome dialog; Restricted Mode, Manage: Trust; the Claude Code icon in the editor title opens a new session. Type the prompt; the send button, bottom right of the prompt box. Quit that VS Code.
-- **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. Close that window.
-- **Codex desktop app:** `open -a /Applications/ChatGPT.app <dir>/project`. "Trust this folder?": Trust folder; the app chooses the folder as the project. Type the prompt; the send button, right of the composer.
+- **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; the brain icon in the composer: the model name opens the list, 5.5; the slider's leftmost stop, Light. Type the prompt; the send button, bottom right. Close that window.
+- **Codex desktop app:** `open -a /Applications/ChatGPT.app <dir>/project`. "Trust this folder?": Trust folder; the app chooses the folder as the project. The model button left of the send button: the model name opens the list, 5.5; the slider's leftmost stop, Light. Type the prompt; the send button, right of the composer.
 
 The Claude Code surfaces also load the user's config: the desktop session's `/status` listed the user's MCP servers, and Claude Code for VS Code connected each session to Remote Control. No surface shows a turn's tokens.
 
@@ -453,7 +489,8 @@ The runs leave on the user's Mac:
 - the Claude Code sessions in the Claude app's Code list, under each `skald-live-*` project;
 - the Codex chats in the history the Codex app and extension share, and a `project` entry for each folder in the app's Projects;
 - for Codex for VS Code, the project in VS Code's recent list and its workspace trust, in the user's profile;
-- the extensions' updates: VS Code updated Codex for VS Code from 26.1021.22027 to 26.1106.51428 during the runs.
+- the extensions' updates: VS Code updated Codex for VS Code from 26.1021.22027 to 26.1106.51428 during the runs;
+- the model picked in Codex for VS Code, which the extension saves as the user's default in `~/.codex/config.toml`: after the rerun it held `model = "gpt-5.5"` and `model_reasoning_effort = "low"`. The pick in the desktop app left the file unchanged.
 
 ### Results
 On 2026-11-12, one run of each case. A is the idle case; B the same in a second project, run after A; C the busy case:
@@ -468,29 +505,29 @@ On 2026-11-12, one run of each case. A is the idle case; B the same in a second 
 | | `PostToolUse` | pass: A, B, C | C: 13.8 s |
 | | `Stop` | pass: A, B, C | As on the desktop app; C: 17.6 s |
 | | Channels | fail | As on the desktop app; the message was handed over when the panel opened, before the prompt |
-| `codex-desktop: ChatGPT 26.1106.51428, codex 0.167.0-alpha.4.1` | `inbox` | fail | No turn ran: "This model isn't available" with the composer's model, the user's default; the message stayed waiting |
-| `codex-vscode: Codex for VS Code 26.1106.51428, codex 0.167.0-alpha.4.1` | `inbox` | fail | No turn ran: "This model isn't available" with `model = "gpt-5.5"` in the project's config, and again with the user's default after that line was removed; the message stayed waiting |
+| `codex-desktop: ChatGPT 26.1106.51428, codex 0.167.0-alpha.4.1` | `inbox` | pass: A, in the [rerun](#reruns), on 5.5 at Light picked in the session; B and C not run | With the composer's model, 6 Astra at High, no turn ran: "This model isn't available"; the message stayed waiting |
+| `codex-vscode: Codex for VS Code 26.1106.51428, codex 0.167.0-alpha.4.1` | `inbox` | pass: A, as on the desktop app | As on the desktop app |
 
-`codex login status` of the extension's bundled CLI, on the user's config home, shows the API key sign-in.
+`codex login status` of the bundled CLI of each Codex surface, on the user's config home, shows the API key sign-in.
 
 Not run:
 - Codex hooks on the Codex surfaces: a hook runs only after a person trusts it in Review hooks, which Codex saves in the user's config ([docs](https://developers.openai.com/codex/hooks#review-and-trust-hooks)); `--dangerously-bypass-hook-trust` is a CLI flag.
 - `codex queue` on the Codex surfaces: it needs the session's thread ID and `codex queue` on the user's config home.
 - The app-server on the Codex surfaces: refuted by default. Both start `codex app-server` without `--listen`, on their own stdio, which no other client reaches. The desktop app 26.1106.51428 with `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1` in its environment joins the shared background app-server over WebSocket at `<codex home>/app-server-control/app-server-control.sock` instead; the extension has no such mode (read from the code of both).
 
-| Check | `inbox` | `PostToolUse` and `Stop` | Channels |
-|---|---|---|---|
-| Idle session | As on the CLI: the prompt made the agent call it | As on the CLI: in a turn only | No, on either Claude Code surface |
-| Busy session | Yes: at the agent's call after the running command (C) | Yes: `PostToolUse` once the running command ends, `Stop` at the end of the turn (C) | No: the events are dropped |
-| Delay | Until the agent's call: see C | Until the tool call or the turn ends: see C | Never |
-| In context | The tool result. VS Code shows the call with its result; the desktop app folds it into "Loaded tools, used skald" | Neither surface shows the hook's text; `Stop` shows the second reply | — |
-| Handover known | As on the CLI: the same server | As on the CLI: the same handler | The server learns only that the event is written; the event is lost |
-| One of two sessions | Yes: B, in a project of its own, got only its own message. On the desktop app A's session stayed open meanwhile; on VS Code A's window was closed first | The same | — |
-| Needs | `.mcp.json`; `enabledMcpjsonServers` and the allow rule in settings; workspace trust; a Claude account | The hook in settings; `Bash(true)` allowed for `PostToolUse`; workspace trust; a Claude account | `--channels` or `--dangerously-load-development-channels`, which neither surface passes |
+| Check | `inbox`, Claude Code | `PostToolUse` and `Stop` | Channels | `inbox`, Codex |
+|---|---|---|---|---|
+| Idle session | As on the CLI: the prompt made the agent call it | As on the CLI: in a turn only | No, on either Claude Code surface | As on the CLI |
+| Busy session | Yes: at the agent's call after the running command (C) | Yes: `PostToolUse` once the running command ends, `Stop` at the end of the turn (C) | No: the events are dropped | Not run |
+| Delay | Until the agent's call: see C | Until the tool call or the turn ends: see C | Never | Until the agent's call |
+| In context | The tool result. VS Code shows the call with its result; the desktop app folds it into "Loaded tools, used skald" | Neither surface shows the hook's text; `Stop` shows the second reply | — | The tool result; both surfaces fold the turn into "Worked for <n>s" |
+| Handover known | As on the CLI: the same server | As on the CLI: the same handler | The server learns only that the event is written; the event is lost | As on the CLI |
+| One of two sessions | Yes: B, in a project of its own, got only its own message. On the desktop app A's session stayed open meanwhile; on VS Code A's window was closed first | The same | — | Not run |
+| Needs | `.mcp.json`; `enabledMcpjsonServers` and the allow rule in settings; workspace trust; a Claude account | The hook in settings; `Bash(true)` allowed for `PostToolUse`; workspace trust; a Claude account | `--channels` or `--dangerously-load-development-channels`, which neither surface passes | `.codex/config.toml` with the server and its approval mode; folder trust; a model the sign-in can use, picked in the session; an OpenAI API key |
 
 Findings:
 - On both Claude Code surfaces `inbox` and the hooks work from project files alone, idle and busy; Channels do not, so nothing there reaches an idle session without a prompt.
-- On the Codex surfaces no path is confirmed: no turn ran.
+- On the Codex surfaces `inbox` works from project files once a model the API key can use is picked in the session; no path checked there reaches an idle session without a prompt.
 
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
@@ -502,7 +539,6 @@ Steps that need a person, left to the owner's check by hand ([rules.md](../../ru
 - Codex, an interactive session with the hooks in the project's `.codex/hooks.json`, without `--dangerously-bypass-hook-trust`: the review in `/hooks`, and a message reaches the session after a tool call, at the end of a turn and with the next prompt.
 - `codex queue` for a Codex session a person started on the shared app-server, without `--no-daemon`: whether a message reaches it idle and busy.
 - The app-server client on the socket of the shared background app-server, with `--thread` of a session a person started there without `--no-daemon`: whether a message reaches it idle and busy, and its terminal UI shows it.
-- Codex desktop app and Codex for VS Code with a model picked in the surface that the API key can use: whether `live-check gui inbox <codex-desktop|codex-vscode>` passes. The check picks no model in a surface.
 - The Codex desktop app started with `CODEX_APP_SERVER_USE_LOCAL_DAEMON=1`: whether its sessions run on the shared background app-server, and the app-server client reaches them there.
 - Codex hooks on the Codex surfaces after trusting them in Review hooks; `codex queue` for a session in a Codex surface.
-- Claude Code for VS Code with `claudeCode.claudeProcessWrapper` that adds `--dangerously-load-development-channels server:skald`: whether a message reaches the session. The check changes no user setting.
+- Claude Code for VS Code with `claudeCode.claudeProcessWrapper` that adds `--dangerously-load-development-channels server:skald`: whether a message reaches the session. The check does not set it.
