@@ -749,7 +749,7 @@ fn gui_prepares_a_check_without_showing_its_token_and_passes_only_on_it() {
 }
 
 #[test]
-fn gui_turns_off_the_users_claude_plugins_and_servers_and_loads_the_mod_from_the_project() {
+fn gui_turns_off_the_users_claude_plugins_and_servers() {
     let home = home_with_claude_code_for_vs_code();
     fs::create_dir_all(home.path().join(".claude")).unwrap();
     fs::write(
@@ -763,13 +763,7 @@ fn gui_turns_off_the_users_claude_plugins_and_servers_and_loads_the_mod_from_the
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    let (_, lines) = succeeded(home.path(), tmp.path(), &["gui", "mod", "claude-vscode"]);
-    assert!(
-        !lines
-            .iter()
-            .any(|line| line.starts_with("VS Code profile:")),
-        "{lines:?}"
-    );
+    let (_, lines) = succeeded(home.path(), tmp.path(), &["gui", "socket", "claude-vscode"]);
     let project = lines
         .iter()
         .find_map(|line| line.strip_prefix("project: "))
@@ -785,13 +779,6 @@ fn gui_turns_off_the_users_claude_plugins_and_servers_and_loads_the_mod_from_the
     assert_eq!(
         settings["permissions"]["deny"],
         serde_json::json!(["mcp__search"])
-    );
-    let plugin = settings["env"]["CLAUDE_CODE_PLUGIN_DIRS"].as_str().unwrap();
-    assert!(
-        Path::new(plugin)
-            .join(".claude-plugin/plugin.json")
-            .exists(),
-        "{plugin}"
     );
     assert!(!settings.to_string().contains("secret-command"));
 }

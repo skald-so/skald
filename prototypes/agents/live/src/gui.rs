@@ -361,8 +361,6 @@ pub struct Binaries {
     pub inbox: PathBuf,
     pub channel: PathBuf,
     pub hook: PathBuf,
-    /// The mod's plugin directory, which a mod check's project loads.
-    pub plugin: PathBuf,
     /// The MCP servers of the user's Codex config, which a Codex project turns off.
     pub user_mcp_servers: Vec<String>,
     /// The plugins and MCP servers of the user's Claude Code config, which a Claude Code project
@@ -449,9 +447,6 @@ pub const CODEX_MODEL: &str = "gpt-5.5";
 /// The rule that allows the busy case's shell command.
 const BUSY_SHELL: &str = "Bash(sleep:*)";
 
-/// Claude Code's variable that loads plugin directories, as `--plugin-dir` does.
-const PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
-
 /// Claude Code's lowest effort: `maxEffortLevel` caps the effort the surface would pick, and the
 /// lowest across settings files wins.
 const LOW: &str = "low";
@@ -523,11 +518,6 @@ pub fn write_config(
                 GuiPath::Queue | GuiPath::Read => unreachable!("checked above"),
             };
             binaries.user_claude.turn_off(&mut settings);
-            if path == GuiPath::Wake(Wake::Mod) {
-                // Claude Code applies the settings' variables before it loads plugins, on each
-                // surface; neither surface takes `--plugin-dir`.
-                settings["env"] = json!({ PLUGIN_DIRS: binaries.plugin });
-            }
             fs::create_dir_all(project.join(".claude"))?;
             fs::write(
                 project.join(".claude/settings.local.json"),
@@ -623,20 +613,44 @@ pub fn prepare(
     })
 }
 
-/// Writes the settings of the VS Code profile, `work/vscode`, that a `bypass` session on Claude
-/// Code for VS Code needs, the extension's bypass mode, and returns the profile. `None` for any
+/// Writes the settings of the VS Code profile, `work/vscode`, that a check of `path` on Claude Code
+/// for VS Code needs, and returns the profile: for the mod, Claude Code's variable that loads the
+/// plugin directory `plugin`; for a `bypass` session, the extension's bypass mode. `None` for any
 /// other check, which needs no settings of its own.
-pub fn vscode_profile(work: &Path, surface: Surface, bypass: bool) -> io::Result<Option<PathBuf>> {
-    if surface != Surface::ClaudeVsCode || !bypass {
+pub fn vscode_profile(
+    work: &Path,
+    surface: Surface,
+    path: GuiPath,
+    plugin: &Path,
+    bypass: bool,
+) -> io::Result<Option<PathBuf>> {
+    let loads_mod = path == GuiPath::Wake(Wake::Mod);
+    if surface != Surface::ClaudeVsCode || !(loads_mod || bypass) {
         return Ok(None);
     }
-    let settings = json!({
-        "claudeCode.allowDangerouslySkipPermissions": true,
-        "claudeCode.initialPermissionMode": "bypassPermissions",
-    });
+    let mut settings = serde_json::Map::new();
+    if loads_mod {
+        settings.insert(
+            "claudeCode.environmentVariables".to_owned(),
+            json!([{ "name": "CLAUDE_CODE_PLUGIN_DIRS", "value": plugin }]),
+        );
+    }
+    if bypass {
+        settings.insert(
+            "claudeCode.allowDangerouslySkipPermissions".to_owned(),
+            true.into(),
+        );
+        settings.insert(
+            "claudeCode.initialPermissionMode".to_owned(),
+            "bypassPermissions".into(),
+        );
+    }
     let profile = work.join("vscode");
     fs::create_dir_all(profile.join("User"))?;
-    fs::write(profile.join("User/settings.json"), pretty(&settings))?;
+    fs::write(
+        profile.join("User/settings.json"),
+        pretty(&Value::Object(settings)),
+    )?;
     Ok(Some(profile))
 }
 
@@ -805,59 +819,35 @@ pub fn result(work: &Path, reported: &str, home: &Path) -> io::Result<Outcome> {
     })
 }
 
-/// A deep link that opens a check's session, for an OS notification to carry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Link {
-    pub url: String,
-    /// The link as output shows it: with `<the message>` for the text it carries, if any.
-    pub shown: String,
-}
-
-/// The deep link that opens the session of the check prepared in `work` on its surface: the
-/// session that its `SessionStart` hook registered or the thread that `gui-queue` found. The Claude
-/// desktop app's link takes the app's own ID of the session, which its record in `home` maps to
-/// Claude Code's. Claude Code for VS Code's link also carries a prompt, the check's message as
-/// `inbox` renders it; the others carry no text. Codex for VS Code has none.
-pub fn link(work: &Path, home: &Path) -> io::Result<Link> {
+/// The deep link that opens the session of the check prepared in `work` on its surface, as an OS
+/// notification would carry it: the session that its `SessionStart` hook registered or the thread
+/// that `gui-queue` found. The Claude desktop app's link takes the app's own ID of the session,
+/// which its record in `home` maps to Claude Code's. Claude Code for VS Code's link also carries a
+/// prompt, which the extension puts in the prompt box without sending: the `inbox` check's, never
+/// the message, so the message comes through `inbox`. Codex for VS Code has none.
+pub fn link(work: &Path, home: &Path) -> io::Result<String> {
     let (check, text) = read_check(work)?;
     let surface = Surface::parse(&text("surface")?)
         .ok_or_else(|| invalid(format!("{CHECK} has no known surface")))?;
-    let source = Source::open(work.join("source"))?;
     let session = match surface.agent() {
-        Agent::Claude => source
+        Agent::Claude => Source::open(work.join("source"))?
             .registration()?
             .map(|registration| registration.session_id),
         Agent::Codex => check["thread"].as_str().map(String::from),
     }
     .ok_or_else(|| invalid("the check has no session yet".to_owned()))?;
-    let plain = |url: String| Link {
-        shown: url.clone(),
-        url,
-    };
     Ok(match surface {
         Surface::ClaudeDesktop => {
             let session = desktop_session(home, &session)?
                 .ok_or_else(|| invalid("the Claude app has no record of the session".to_owned()))?;
-            plain(format!(
-                "claude://code/continue?session={}",
-                encode(&session)
-            ))
+            format!("claude://code/continue?session={}", encode(&session))
         }
-        Surface::ClaudeVsCode => {
-            let msg_id = check["msg_id"]
-                .as_str()
-                .ok_or_else(|| invalid("the check's message was never added".to_owned()))?;
-            let prompt = agent_inbox::render(&[source.handed(msg_id)?]);
-            let base = format!(
-                "vscode://anthropic.claude-code/open?session={}&prompt=",
-                encode(&session)
-            );
-            Link {
-                url: format!("{base}{}", encode(&prompt)),
-                shown: format!("{base}<the message>"),
-            }
-        }
-        Surface::CodexDesktop => plain(format!("codex://threads/{}", encode(&session))),
+        Surface::ClaudeVsCode => format!(
+            "vscode://anthropic.claude-code/open?session={}&prompt={}",
+            encode(&session),
+            encode(&Kind::Idle.prompt())
+        ),
+        Surface::CodexDesktop => format!("codex://threads/{}", encode(&session)),
         Surface::CodexVsCode => {
             return Err(invalid("Codex for VS Code has no deep link".to_owned()));
         }
@@ -1123,7 +1113,6 @@ mod tests {
             inbox: PathBuf::from("/bin/agent-inbox"),
             channel: PathBuf::from("/bin/agent-channel"),
             hook: PathBuf::from("/bin/agent-hook"),
-            plugin: PathBuf::from("/p/mod"),
             user_mcp_servers: vec![
                 "alpha".to_owned(),
                 "skald".to_owned(),
@@ -1285,7 +1274,7 @@ mod tests {
                             json!({ "type": "command", "command": words.join(" ") })
                         };
                         let confirm = handler(&["--confirm", "/work/source"]);
-                        let mut settings = json!({
+                        let settings = json!({
                             "hooks": wake::hooks(wake, &handler, source, &[("Stop", confirm)]),
                             "enabledMcpjsonServers": ["skald"],
                             "permissions": { "allow": [
@@ -1293,9 +1282,6 @@ mod tests {
                             ] },
                             "maxEffortLevel": "low",
                         });
-                        if wake == Wake::Mod {
-                            settings["env"] = json!({ "CLAUDE_CODE_PLUGIN_DIRS": "/p/mod" });
-                        }
                         let settings = claude_off(settings);
                         let mut files = vec![
                             (".mcp.json", server("/bin/agent-inbox")),
@@ -1396,28 +1382,39 @@ mod tests {
     }
 
     #[test]
-    fn writes_a_vs_code_profile_only_for_a_bypass_session() {
-        let written = |surface, bypass| {
+    fn writes_a_vs_code_profile_only_for_the_mod_and_a_bypass_session() {
+        let plugin = Path::new("/p/mod");
+        let written = |surface, path, bypass| {
             let work = tempfile::tempdir().unwrap();
-            let profile = vscode_profile(work.path(), surface, bypass).unwrap();
+            let profile = vscode_profile(work.path(), surface, path, plugin, bypass).unwrap();
             profile.map(|profile| {
                 assert_eq!(profile, work.path().join("vscode"));
                 json_at(profile.join("User/settings.json"))
             })
         };
         assert_eq!(
-            written(Surface::ClaudeVsCode, true),
+            written(Surface::ClaudeVsCode, GuiPath::Wake(Wake::Mod), false),
+            Some(json!({ "claudeCode.environmentVariables": [
+                { "name": "CLAUDE_CODE_PLUGIN_DIRS", "value": "/p/mod" }
+            ] }))
+        );
+        assert_eq!(
+            written(Surface::ClaudeVsCode, GuiPath::Wake(Wake::Socket), true),
             Some(json!({
                 "claudeCode.allowDangerouslySkipPermissions": true,
                 "claudeCode.initialPermissionMode": "bypassPermissions",
             }))
         );
-        for (surface, bypass) in [
-            (Surface::ClaudeVsCode, false),
-            (Surface::ClaudeDesktop, true),
-            (Surface::CodexVsCode, true),
+        for (surface, path, bypass) in [
+            (Surface::ClaudeVsCode, GuiPath::Wake(Wake::Socket), false),
+            (Surface::ClaudeDesktop, GuiPath::Wake(Wake::Mod), false),
+            (Surface::ClaudeVsCode, GuiPath::Inbox, false),
         ] {
-            assert_eq!(written(surface, bypass), None, "{surface:?}");
+            assert_eq!(
+                written(surface, path, bypass),
+                None,
+                "{path:?} on {surface:?}"
+            );
         }
     }
 
@@ -1815,13 +1812,14 @@ mod tests {
                 })
                 .unwrap();
         };
+        let token = token();
 
         let desktop = tempfile::tempdir().unwrap();
         prepared(
             desktop.path(),
             Surface::ClaudeDesktop,
             GuiPath::Wake(Wake::Socket),
-            &token(),
+            &token,
             false,
         );
         assert_eq!(error(desktop.path()), "the check has no session yet");
@@ -1846,17 +1844,12 @@ mod tests {
             r#"{"cliSessionId":"cli-1","sessionId":"local_s 1/é","title":"t"}"#,
         )
         .unwrap();
-        let url = "claude://code/continue?session=local_s%201%2F%C3%A9";
         assert_eq!(
             link(desktop.path()).unwrap(),
-            Link {
-                url: url.to_owned(),
-                shown: url.to_owned()
-            }
+            "claude://code/continue?session=local_s%201%2F%C3%A9"
         );
 
         let vscode = tempfile::tempdir().unwrap();
-        let token = token();
         prepared(
             vscode.path(),
             Surface::ClaudeVsCode,
@@ -1865,19 +1858,16 @@ mod tests {
             false,
         );
         register(vscode.path(), "abc-1");
-        assert_eq!(error(vscode.path()), "the check's message was never added");
-        let message = add(vscode.path()).unwrap();
-        hand_over(vscode.path());
-        let base = "vscode://anthropic.claude-code/open?session=abc-1&prompt=";
+        add(vscode.path()).unwrap();
         let vscode_link = link(vscode.path()).unwrap();
         assert_eq!(
-            vscode_link.url,
-            format!("{base}{}", encode(&agent_inbox::render(&[message])))
+            vscode_link,
+            format!(
+                "vscode://anthropic.claude-code/open?session=abc-1&prompt={}",
+                encode(&Kind::Idle.prompt())
+            )
         );
-        assert!(vscode_link.url.contains(&token));
-        assert!(!vscode_link.url.contains([' ', '\n']));
-        assert_eq!(vscode_link.shown, format!("{base}<the message>"));
-        assert!(!vscode_link.shown.contains(&token));
+        assert!(!vscode_link.contains(&token));
 
         let codex = tempfile::tempdir().unwrap();
         prepared(
@@ -1889,14 +1879,7 @@ mod tests {
         );
         assert_eq!(error(codex.path()), "the check has no session yet");
         set_thread(codex.path(), "019a-thread").unwrap();
-        let url = "codex://threads/019a-thread";
-        assert_eq!(
-            link(codex.path()).unwrap(),
-            Link {
-                url: url.to_owned(),
-                shown: url.to_owned()
-            }
-        );
+        assert_eq!(link(codex.path()).unwrap(), "codex://threads/019a-thread");
 
         let codex_vscode = tempfile::tempdir().unwrap();
         prepared(

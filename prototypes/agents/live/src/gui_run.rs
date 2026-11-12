@@ -41,7 +41,6 @@ pub fn prepare(path: GuiPath, surface: Surface, busy: bool, bypass: bool) -> Res
         inbox: binary(&exe, INBOX_BIN)?,
         channel: binary(&exe, CHANNEL_BIN)?,
         hook: binary(&exe, HOOK_BIN)?,
-        plugin: crate::wake_run::plugin()?,
         user_mcp_servers: mcp_servers(&user_codex_config()),
         user_claude: UserClaude::read(
             &user_json(home.join(".claude/settings.json")),
@@ -53,7 +52,7 @@ pub fn prepare(path: GuiPath, surface: Surface, busy: bool, bypass: bool) -> Res
         .tempdir()?
         .keep();
     let prepared = gui::prepare(&work, surface, path, &binaries, &version, &token(), busy)?;
-    let profile = gui::vscode_profile(&work, surface, bypass)?;
+    let profile = gui::vscode_profile(&work, surface, path, &crate::wake_run::plugin()?, bypass)?;
     println!("{version}");
     println!("project: {}", prepared.project.display());
     if let Some(profile) = profile {
@@ -99,11 +98,11 @@ pub fn result(work: &Path, token: &str) -> Result<bool> {
 }
 
 /// Opens the deep link to the session of the GUI check prepared in `work`, as a click on an OS
-/// notification would, and prints it without the text it carries.
+/// notification would, and prints it.
 pub fn link(work: &Path) -> Result<bool> {
     let link = gui::link(work, &home()?)?;
-    let opened = std::process::Command::new("open").arg(&link.url).status()?;
-    println!("opened: {}", link.shown);
+    let opened = std::process::Command::new("open").arg(&link).status()?;
+    println!("opened: {link}");
     Ok(opened.success())
 }
 
