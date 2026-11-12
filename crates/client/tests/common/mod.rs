@@ -122,6 +122,31 @@ impl Server {
     }
 }
 
+impl Server {
+    /// What every table but `_sqlx_migrations` holds, one XML document per table, whatever its
+    /// schema; byte strings in base64.
+    pub fn rows(&self) -> Vec<String> {
+        let runtime = Runtime::new().expect("start a tokio runtime");
+        runtime
+            .block_on(async {
+                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                let tables: Vec<(String,)> = sqlx::query_as(
+                    "SELECT query_to_xml(format('SELECT * FROM %I.%I', table_schema, table_name),
+                                         true, false, '')::text
+                     FROM information_schema.tables
+                     WHERE table_type = 'BASE TABLE'
+                       AND table_schema NOT IN ('pg_catalog', 'information_schema')
+                       AND table_name <> '_sqlx_migrations'",
+                )
+                .fetch_all(&mut conn)
+                .await?;
+                conn.close().await?;
+                Ok::<_, sqlx::Error>(tables.into_iter().map(|(table,)| table).collect())
+            })
+            .expect("read the database's rows")
+    }
+}
+
 impl Drop for Server {
     fn drop(&mut self) {
         // Stops the server and closes its connections, so the database can be dropped.

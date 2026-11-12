@@ -21,6 +21,9 @@ ureq = { version = "3.5", default-features = false }
 
 [dev-dependencies]
 axum = "0.8.9"
+base64 = "0.23"
+curve25519-dalek = "5"
+skald-crypto = { path = "../crypto" }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-server = { path = "../server" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }

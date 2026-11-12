@@ -7,47 +7,29 @@
 #[allow(dead_code)]
 #[path = "../../../server/tests/common/browser.rs"]
 mod browser;
+#[allow(dead_code)]
 mod cloud;
 #[allow(dead_code)]
 #[path = "../common/mod.rs"]
 mod common;
+#[allow(dead_code)]
 mod machine;
+#[allow(dead_code)]
 mod relay;
 
 use std::thread;
 use std::time::{Duration, Instant};
 
 use browser::{Browser, Page};
-use cloud::{APPROVE, Cloud, DENY, Grant};
-use machine::{Finished, Machine, Run};
+use cloud::{APPROVE, Cloud, DENY, WAIT, shown_grant};
+use machine::{Finished, Machine};
 use skald_github_stand_in::User;
-
-/// How long a test waits for the server to see what it expects.
-const WAIT: Duration = Duration::from_secs(60);
 
 /// The polls of the token endpoint the machine sent so far, by when they came.
 fn polls(cloud: &Cloud) -> Vec<Instant> {
     let mut sent = cloud.relay.sent();
     sent.retain(|request| request.head.starts_with("post /auth/token "));
     sent.into_iter().map(|request| request.at).collect()
-}
-
-/// Waits until device authorization has given `run` its grant after the `before` it gave earlier
-/// and `run` shows its verification page's address and code; gives the grant.
-fn shown_grant(cloud: &Cloud, run: &mut Run, before: usize) -> Grant {
-    let deadline = Instant::now() + WAIT;
-    while cloud.grants().len() <= before {
-        run.assert_running();
-        assert!(
-            Instant::now() < deadline,
-            "no device authorization: {}",
-            run.shown()
-        );
-        thread::sleep(Duration::from_millis(50));
-    }
-    let grant = cloud.last_grant();
-    run.wait_to_show(&[&grant.verification_uri, &grant.user_code]);
-    grant
 }
 
 /// Waits until the machine has polled `count` times in all.

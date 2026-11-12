@@ -2,7 +2,8 @@
 //! database, behind a recording relay; and the person who approves or denies a machine's code on
 //! its verification page in headless Chrome.
 
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
@@ -10,7 +11,11 @@ use skald_server::{CALLBACK_PATH, ClientSecret, GitHubApp, Settings, SignInSetti
 
 use super::browser::{Page, Visit};
 use super::common::Server;
+use super::machine::Run;
 use super::relay::{Relay, strings_named};
+
+/// How long a test waits for the server to see what it expects.
+pub const WAIT: Duration = Duration::from_secs(60);
 
 /// The fake OAuth App's client ID and secret.
 const CLIENT_ID: &str = "Ov23li0standin0cli";
@@ -119,6 +124,12 @@ impl Cloud {
     /// The `GET /session` answer to a request with the session token `token`, straight to the
     /// server: the status and the body.
     pub fn session_of(&self, token: &str) -> (u16, Value) {
+        self.get_as("/session", token)
+    }
+
+    /// The answer to `GET <path>` with the session token `token`, straight to the server: the
+    /// status and the body.
+    pub fn get_as(&self, path: &str, token: &str) -> (u16, Value) {
         let version = skald_proto::PROTOCOL_VERSION.to_string();
         let agent = ureq::Agent::config_builder()
             .proxy(None)
@@ -126,17 +137,22 @@ impl Cloud {
             .build()
             .new_agent();
         let mut response = agent
-            .get(format!("{}/session", self.server.url))
+            .get(format!("{}{path}", self.server.url))
             .header(skald_proto::VERSION_HEADER, version)
             .header("authorization", format!("Bearer {token}"))
             .call()
-            .expect("GET /session");
+            .unwrap_or_else(|err| panic!("GET {path}: {err}"));
         let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
-            .expect("read the session");
+            .unwrap_or_else(|err| panic!("read GET {path}: {err}"));
         (status, serde_json::from_str(&body).unwrap_or(Value::Null))
+    }
+
+    /// What every table of the server's database holds, one XML document per table.
+    pub fn rows(&self) -> Vec<String> {
+        self.server.rows()
     }
 
     /// The GitHub login of the account a request with `token` acts as; fails if it acts as none.
@@ -179,4 +195,22 @@ impl Cloud {
         );
         visit
     }
+}
+
+/// Waits until device authorization has given `run` its grant after the `before` it gave earlier
+/// and `run` shows its verification page's address and code; gives the grant.
+pub fn shown_grant(cloud: &Cloud, run: &mut Run, before: usize) -> Grant {
+    let deadline = Instant::now() + WAIT;
+    while cloud.grants().len() <= before {
+        run.assert_running();
+        assert!(
+            Instant::now() < deadline,
+            "no device authorization: {}",
+            run.shown()
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    let grant = cloud.last_grant();
+    run.wait_to_show(&[&grant.verification_uri, &grant.user_code]);
+    grant
 }

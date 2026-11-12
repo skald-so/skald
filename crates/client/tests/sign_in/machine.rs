@@ -3,9 +3,9 @@
 //! that is removed on drop. Several machines run on one this way.
 
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -18,12 +18,17 @@ pub const STATE_DIR: &str = "SKALD_STATE_DIR";
 pub const KEY_STORAGE: &str = "SKALD_KEY_STORAGE";
 /// The sign-in command.
 pub const SIGN_IN: &str = "sign-in";
+/// The setting of the host name the client reads, which names its device unless the user gives a
+/// name; set to an empty value, the host name is empty.
+pub const HOST_NAME: &str = "SKALD_HOST_NAME";
 
 /// How long a run may take before the test fails.
 pub const RUN_LIMIT: Duration = Duration::from_secs(90);
 
 pub struct Machine {
     root: PathBuf,
+    /// The host name the client reads, if set; otherwise the system's.
+    host_name: Option<String>,
 }
 
 impl Machine {
@@ -39,7 +44,16 @@ impl Machine {
         for dir in ["home", "state", "tmp", "bin"] {
             fs::create_dir_all(root.join(dir)).expect("create a machine's directory");
         }
-        Machine { root }
+        Machine {
+            root,
+            host_name: None,
+        }
+    }
+
+    /// The machine with the host name `name`.
+    pub fn with_host_name(mut self, name: &str) -> Self {
+        self.host_name = Some(name.to_owned());
+        self
     }
 
     /// Everything the machine has on disk: its home, its state directory and its temporary files.
@@ -59,19 +73,34 @@ impl Machine {
 
     /// Starts `skald` with `args`.
     pub fn start(&self, args: &[&str]) -> Run {
-        let mut child = Command::new(CLIENT)
+        self.spawn(args, Stdio::null())
+    }
+
+    /// Starts `skald` with `args` and its input open, for [`Run::answer`].
+    pub fn start_asking(&self, args: &[&str]) -> Run {
+        self.spawn(args, Stdio::piped())
+    }
+
+    fn spawn(&self, args: &[&str], stdin: Stdio) -> Run {
+        let mut command = Command::new(CLIENT);
+        command
             .args(args)
             .env_clear()
             .env("PATH", self.root.join("bin"))
             .env("HOME", self.root.join("home"))
             .env("TMPDIR", self.root.join("tmp"))
             .env(STATE_DIR, self.state_dir())
-            .env(KEY_STORAGE, "file")
-            .stdin(Stdio::null())
+            .env(KEY_STORAGE, "file");
+        if let Some(name) = &self.host_name {
+            command.env(HOST_NAME, name);
+        }
+        let mut child = command
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("run skald");
+        let input = child.stdin.take();
         let stdout = Arc::new(Mutex::new(Vec::new()));
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let readers = vec![
@@ -80,11 +109,17 @@ impl Machine {
         ];
         Run {
             child,
+            input,
             started: Instant::now(),
             stdout,
             stderr,
             readers,
         }
+    }
+
+    /// Every file under [`Machine::root`].
+    pub fn files(&self) -> Vec<PathBuf> {
+        files(&self.root)
     }
 
     /// Every file under [`Machine::root`] whose bytes hold `secret`.
@@ -161,6 +196,8 @@ fn collect(mut from: impl Read + Send + 'static, into: &Arc<Mutex<Vec<u8>>>) -> 
 /// A running `skald`; killed on drop.
 pub struct Run {
     child: Child,
+    /// Its input, if open.
+    input: Option<ChildStdin>,
     started: Instant,
     stdout: Arc<Mutex<Vec<u8>>>,
     stderr: Arc<Mutex<Vec<u8>>>,
@@ -192,6 +229,14 @@ impl Run {
             String::from_utf8_lossy(&stdout),
             String::from_utf8_lossy(&stderr)
         )
+    }
+
+    /// Types `text` on its input, then closes it.
+    pub fn answer(&mut self, text: &str) {
+        let mut input = self.input.take().expect("a run started asking");
+        input
+            .write_all(text.as_bytes())
+            .expect("type on skald's input");
     }
 
     /// Fails if it has exited.
