@@ -143,7 +143,7 @@ impl Receipts {
         until: Instant,
         mut seen: impl FnMut(&Receipt),
     ) -> io::Result<()> {
-        while Instant::now() < until {
+        while !until.saturating_duration_since(Instant::now()).is_zero() {
             match self.listener.accept() {
                 Ok((stream, _)) => {
                     // macOS refuses these on a connection its peer already closed; what it sent
@@ -165,10 +165,12 @@ impl Receipts {
                         seen(&receipt);
                     }
                 }
-                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                Err(error) => {
+                    if error.kind() != ErrorKind::WouldBlock {
+                        return Err(error);
+                    }
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                Err(error) => return Err(error),
             }
         }
         Ok(())
