@@ -18,10 +18,10 @@ use crate::state::{self, State};
 /// The client ID of the CLI on the device flow's endpoints.
 const CLIENT_ID: &str = "skald";
 /// The secret that holds the session token.
-const SESSION_TOKEN: &str = "session_token";
+pub const SESSION_TOKEN: &str = "session_token";
 /// The server of the session token, kept with it so that no write between the secrets and the state
 /// ever sends a token to another server.
-const SESSION_SERVER: &str = "session_server";
+pub const SESSION_SERVER: &str = "session_server";
 /// How much longer polls wait after `slow_down` (RFC 8628, §3.5).
 const SLOW_DOWN: Duration = Duration::from_secs(5);
 

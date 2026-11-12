@@ -2,6 +2,7 @@
 
 mod connection;
 mod device;
+mod devices;
 mod secrets;
 mod sign_in;
 mod state;
@@ -89,6 +90,12 @@ enum Command {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
     },
+    /// Lists the devices of the account this machine signed in to, from the server of its session.
+    ///
+    /// Each device is checked against the account's master key this machine pinned: a device with
+    /// a valid certificate shows by its certificate's name, kind and date issued; any other, such
+    /// as one only the server signed, is listed apart as not linked, by its ID only.
+    Devices,
 }
 
 /// An answer to a question.
@@ -132,13 +139,23 @@ fn main() -> ExitCode {
                     Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
                 sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())
             });
-            match result {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(err) => {
-                    eprintln!("skald: {err}");
-                    ExitCode::FAILURE
-                }
-            }
+            exit(result)
+        }
+        Command::Devices => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| devices::run(&dir, cli.key_storage, speaks, timeout));
+            exit(result)
+        }
+    }
+}
+
+/// Exits as `result` says, printing its error.
+fn exit(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("skald: {err}");
+            ExitCode::FAILURE
         }
     }
 }

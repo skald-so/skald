@@ -1,7 +1,7 @@
 //! A recording relay between a machine and the server: it forwards every byte both ways and keeps
 //! them, so a test sees what the machine sent and what the server answered, as on the wire. It can
 //! also lose the server's answer to a request, or hold requests until several have come, as a
-//! network or a race would.
+//! network or a race would, and rewrite the body of an answer, as a compromised server would.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -34,6 +34,9 @@ pub enum Lose {
     Withhold,
 }
 
+/// Gives the body the machine gets instead of the body of an answer the server sent.
+pub type Rewrite = Arc<dyn Fn(&str) -> String + Send + Sync>;
+
 /// What the relay does to requests and answers beyond forwarding them.
 #[derive(Default)]
 struct Rules {
@@ -47,6 +50,10 @@ struct Rules {
     lost: usize,
     /// Requests whose line starts so wait until `count` of them have come, or until `until`.
     hold: Option<Hold>,
+    /// The answers to requests whose line starts so get their bodies rewritten.
+    rewrites: Vec<(String, Rewrite)>,
+    /// The connections whose next answer gets its body rewritten, and what of it came so far.
+    rewriting: HashMap<usize, (Rewrite, Vec<u8>)>,
 }
 
 struct Hold {
@@ -68,6 +75,10 @@ enum Fate {
     Forward,
     Close,
     Withhold,
+    /// Kept until the whole answer has come, to be rewritten.
+    Keep,
+    /// These bytes go to the machine instead.
+    Send(Vec<u8>),
 }
 
 impl Shared {
@@ -85,6 +96,14 @@ impl Shared {
         {
             rules.lose = None;
             rules.losing.insert(connection, how);
+        }
+        let rewrite = rules
+            .rewrites
+            .iter()
+            .find(|(request, _)| starts(request))
+            .map(|(_, rewrite)| Arc::clone(rewrite));
+        if let Some(rewrite) = rewrite {
+            rules.rewriting.insert(connection, (rewrite, Vec::new()));
         }
         let held = match &mut rules.hold {
             Some(hold) if starts(&hold.request) => {
@@ -110,23 +129,31 @@ impl Shared {
         }
     }
 
-    /// What becomes of a read the server sent on `connection`.
-    fn answering(&self, connection: usize) -> Fate {
+    /// What becomes of `chunk`, a read the server sent on `connection`.
+    fn answering(&self, connection: usize, chunk: &[u8]) -> Fate {
         let mut rules = self.rules.lock().expect("the relay's rules");
         if rules.withholding.contains(&connection) {
             return Fate::Withhold;
         }
-        match rules.losing.remove(&connection) {
-            None => Fate::Forward,
-            Some(how) => {
-                rules.lost += 1;
-                match how {
-                    Lose::Close => Fate::Close,
-                    Lose::Withhold => {
-                        rules.withholding.insert(connection);
-                        Fate::Withhold
-                    }
+        if let Some(how) = rules.losing.remove(&connection) {
+            rules.lost += 1;
+            return match how {
+                Lose::Close => Fate::Close,
+                Lose::Withhold => {
+                    rules.withholding.insert(connection);
+                    Fate::Withhold
                 }
+            };
+        }
+        let Some((rewrite, answer)) = rules.rewriting.get_mut(&connection) else {
+            return Fate::Forward;
+        };
+        answer.extend_from_slice(chunk);
+        match rewritten(answer, rewrite.as_ref()) {
+            None => Fate::Keep,
+            Some(bytes) => {
+                rules.rewriting.remove(&connection);
+                Fate::Send(bytes)
             }
         }
     }
@@ -184,6 +211,15 @@ impl Relay {
             held: 0,
             until: Instant::now() + limit,
         });
+    }
+
+    /// From now on, gives the machine the body `rewrite` makes of the body of each answer with
+    /// status 200 to a request whose line starts with `request`, such as `GET /devices`; replaces
+    /// an earlier rewrite of the same request.
+    pub fn rewrite(&self, request: &str, rewrite: impl Fn(&str) -> String + Send + Sync + 'static) {
+        let mut rules = self.shared.rules.lock().expect("the relay's rules");
+        rules.rewrites.retain(|(earlier, _)| earlier != request);
+        rules.rewrites.push((request.to_owned(), Arc::new(rewrite)));
     }
 
     /// How many requests came to the hold.
@@ -306,12 +342,18 @@ fn pipe(
             if to_server {
                 shared.sending(connection, &buffer[..count]);
             } else {
-                match shared.answering(connection) {
+                match shared.answering(connection, &buffer[..count]) {
                     Fate::Forward => {}
-                    Fate::Withhold => continue,
+                    Fate::Withhold | Fate::Keep => continue,
                     Fate::Close => {
                         let _ = to.shutdown(Shutdown::Both);
                         break;
+                    }
+                    Fate::Send(bytes) => {
+                        if to.write_all(&bytes).is_err() {
+                            break;
+                        }
+                        continue;
                     }
                 }
             }
@@ -321,6 +363,75 @@ fn pipe(
         }
         let _ = to.shutdown(Shutdown::Write);
     });
+}
+
+/// The answer `answer` with its body rewritten by `rewrite` if its status is 200, and whatever came
+/// after it; `None` until the whole answer has come.
+fn rewritten(answer: &[u8], rewrite: &(dyn Fn(&str) -> String + Send + Sync)) -> Option<Vec<u8>> {
+    let end = answer.windows(4).position(|four| four == b"\r\n\r\n")?;
+    let head = String::from_utf8_lossy(&answer[..end]).into_owned();
+    let mut lines = head.split("\r\n");
+    let status = lines.next().unwrap_or_default();
+    let headers: Vec<(String, &str)> = lines
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, value)| (name.trim().to_lowercase(), value.trim()))
+        .collect();
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(found, _)| found == name)
+            .map(|(_, value)| *value)
+    };
+    let rest = &answer[end + 4..];
+    let (body, after) = if header("transfer-encoding")
+        .is_some_and(|value| value.contains("chunked"))
+    {
+        dechunked(rest)?
+    } else {
+        let length: usize = header("content-length").map_or(Some(0), |value| value.parse().ok())?;
+        if rest.len() < length {
+            return None;
+        }
+        (rest[..length].to_vec(), length)
+    };
+    let body = if status.split(' ').nth(1) == Some("200") {
+        rewrite(&String::from_utf8_lossy(&body)).into_bytes()
+    } else {
+        body
+    };
+    let mut out = format!("{status}\r\n");
+    for (name, value) in &headers {
+        if name != "content-length" && name != "transfer-encoding" {
+            out.push_str(&format!("{name}: {value}\r\n"));
+        }
+    }
+    out.push_str(&format!("content-length: {}\r\n\r\n", body.len()));
+    let mut out = out.into_bytes();
+    out.extend_from_slice(&body);
+    out.extend_from_slice(&rest[after..]);
+    Some(out)
+}
+
+/// The body of `chunks`, a chunked body without trailers, and how many bytes it took; `None` until
+/// its last chunk has come.
+fn dechunked(chunks: &[u8]) -> Option<(Vec<u8>, usize)> {
+    let mut body = Vec::new();
+    let mut at = 0;
+    loop {
+        let line = chunks[at..].windows(2).position(|two| two == b"\r\n")?;
+        let size = String::from_utf8_lossy(&chunks[at..at + line]).into_owned();
+        let size = usize::from_str_radix(size.split(';').next().unwrap_or_default().trim(), 16)
+            .expect("a chunk size");
+        at += line + 2;
+        if chunks.len() < at + size + 2 {
+            return None;
+        }
+        body.extend_from_slice(&chunks[at..at + size]);
+        at += size + 2;
+        if size == 0 {
+            return Some((body, at));
+        }
+    }
 }
 
 /// Where each request line starts in `text`, a connection's bytes to the server.
