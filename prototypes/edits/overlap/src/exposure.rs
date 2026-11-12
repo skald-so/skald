@@ -89,25 +89,29 @@ impl View {
     /// The groups of machines that fingerprints they share link, largest first: two machines are in
     /// one group when a chain of machines, each sharing a fingerprint with the next, joins them.
     pub fn groups(&self) -> Vec<usize> {
+        // Each machine links to another of its group, or to itself at the group's root.
         let mut group: Vec<usize> = (0..self.machines.len()).collect();
-        fn root(group: &mut [usize], mut i: usize) -> usize {
-            while group[i] != i {
-                group[i] = group[group[i]];
-                i = group[i];
+        fn root(group: &[usize], i: usize) -> usize {
+            if group[i] == i {
+                i
+            } else {
+                root(group, group[i])
             }
-            i
         }
         let mut first = BTreeMap::<Fingerprint, usize>::new();
         for (i, machine) in self.machines.iter().enumerate() {
-            for fingerprint in &machine.fingerprints {
-                let other = *first.entry(*fingerprint).or_insert(i);
-                let (a, b) = (root(&mut group, i), root(&mut group, other));
+            // The machines that first published one of its fingerprints, each once.
+            let others: BTreeSet<usize> = (machine.fingerprints.iter())
+                .map(|fingerprint| *first.entry(*fingerprint).or_insert(i))
+                .collect();
+            for other in others {
+                let (a, b) = (root(&group, i), root(&group, other));
                 group[a] = b;
             }
         }
         let mut sizes = BTreeMap::<usize, usize>::new();
         for i in 0..group.len() {
-            *sizes.entry(root(&mut group, i)).or_default() += 1;
+            *sizes.entry(root(&group, i)).or_default() += 1;
         }
         let mut sizes: Vec<usize> = sizes.into_values().collect();
         sizes.sort_unstable_by(|a, b| b.cmp(a));
