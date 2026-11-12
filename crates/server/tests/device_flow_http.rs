@@ -14,7 +14,6 @@ use common::device_flow::{
 use common::sign_in::{SESSION, START};
 use common::spec::{operation_violations, spec};
 use common::{Response, Server, TestDb, get_url, post_form};
-use skald_github_stand_in::User;
 
 /// The verification page.
 const PAGE: &str = "/device";
@@ -38,37 +37,6 @@ fn assert_oauth_error(response: &Response, error: &str) {
     assert_eq!(response.status, 400, "{}", text(response));
     assert_eq!(json(response)["error"], error, "{}", text(response));
     assert_eq!(response.header("cache-control"), Some("no-store"));
-}
-
-/// The `name=value` of the cookie `name` that `response` sets.
-fn cookie_set(response: &Response, name: &str) -> String {
-    response
-        .header_values("set-cookie")
-        .into_iter()
-        .filter_map(|cookie| cookie.split(';').next())
-        .find(|pair| pair.starts_with(&format!("{name}=")))
-        .unwrap_or_else(|| panic!("no cookie {name}: {:?}", response.headers))
-        .to_owned()
-}
-
-/// Signs `user` in on `flow`'s server by plain HTTP, as a browser follows the redirects; gives the
-/// `Cookie` header of the web session.
-fn web_cookie(flow: &DeviceFlow, user: &User) -> String {
-    let stand = &flow.stand;
-    let started = stand.server.get(START);
-    let github = get_url(&stand.github.sign_in_url(user.id), &[]);
-    let at_github = get_url(
-        started.header("location").expect("to GitHub"),
-        &[("cookie", &cookie_set(&github, "stand_in_user"))],
-    );
-    let callback = at_github.header("location").expect("back from GitHub");
-    let local = callback.replacen(&stand.public, stand.server.base(), 1);
-    let signed_in = get_url(
-        &local,
-        &[("cookie", &cookie_set(&started, "skald_sign_in"))],
-    );
-    assert_eq!(signed_in.status, 200, "{}", text(&signed_in));
-    cookie_set(&signed_in, "skald_session")
 }
 
 /// `POST /device` of `fields` to `flow`'s server with the request headers `headers`, checked
@@ -216,7 +184,7 @@ fn verification_page_without_a_session_links_to_the_sign_in() {
 fn decisions_from_elsewhere_or_without_a_session_are_refused() {
     let flow = DeviceFlow::start();
     let ada = flow.stand.user(3_120_664_601, "ada-origin-standin");
-    let cookie = web_cookie(&flow, &ada);
+    let cookie = flow.web_cookie(&ada);
     let grant = flow.authorize();
     let origin = flow.stand.public.clone();
     let approve = [
@@ -272,7 +240,7 @@ fn decisions_from_elsewhere_or_without_a_session_are_refused() {
 fn web_and_device_sessions_open_only_their_own_kind() {
     let flow = DeviceFlow::start();
     let ada = flow.stand.user(3_120_664_602, "ada-kinds-standin");
-    let cookie = web_cookie(&flow, &ada);
+    let cookie = flow.web_cookie(&ada);
     let grant = flow.authorize();
     let headers = [
         ("cookie", cookie.as_str()),
@@ -307,7 +275,7 @@ fn web_and_device_sessions_open_only_their_own_kind() {
 fn database_failures_answer_500() {
     let flow = DeviceFlow::start();
     let ada = flow.stand.user(3_120_664_603, "ada-down-standin");
-    let cookie = web_cookie(&flow, &ada);
+    let cookie = flow.web_cookie(&ada);
     let grant = flow.authorize();
     let origin = flow.stand.public.clone();
 
@@ -373,7 +341,7 @@ fn approve(flow: &DeviceFlow, headers: &[(&str, &str)], user_code: &str) -> u16 
 fn wrong_codes_hold_codes_back_only_within_their_window() {
     let flow = DeviceFlow::start();
     let ada = flow.stand.user(3_120_664_604, "ada-window-standin");
-    let cookie = web_cookie(&flow, &ada);
+    let cookie = flow.web_cookie(&ada);
     let headers = [
         ("cookie", cookie.as_str()),
         ("origin", flow.stand.public.as_str()),
@@ -405,7 +373,7 @@ fn wrong_codes_at_once_count_at_most_one_past_the_limit() {
     const ROUNDS: usize = 10;
     let flow = DeviceFlow::start();
     let ada = flow.stand.user(3_120_664_605, "ada-burst-standin");
-    let cookie = web_cookie(&flow, &ada);
+    let cookie = flow.web_cookie(&ada);
     let headers = [
         ("cookie", cookie.as_str()),
         ("origin", flow.stand.public.as_str()),

@@ -13,7 +13,7 @@ use serde_json::Value;
 use skald_github_stand_in::User;
 
 use super::browser::{Page, Visit};
-use super::sign_in::{Account, CLIENT_SECRET, SESSION, SignIn};
+use super::sign_in::{Account, CLIENT_SECRET, SESSION, START, SignIn};
 use super::spec::{operation_violations, spec};
 use super::{Response, get_url, post_form};
 
@@ -206,6 +206,26 @@ impl DeviceFlow {
         );
     }
 
+    /// Signs `user` in on the server by plain HTTP, as a browser follows the redirects; gives the
+    /// `Cookie` header of the web session.
+    pub fn web_cookie(&self, user: &User) -> String {
+        let stand = &self.stand;
+        let started = stand.server.get(START);
+        let github = get_url(&stand.github.sign_in_url(user.id), &[]);
+        let at_github = get_url(
+            started.header("location").expect("to GitHub"),
+            &[("cookie", &cookie_set(&github, "stand_in_user"))],
+        );
+        let callback = at_github.header("location").expect("back from GitHub");
+        let local = callback.replacen(&stand.public, stand.server.base(), 1);
+        let signed_in = get_url(
+            &local,
+            &[("cookie", &cookie_set(&started, "skald_sign_in"))],
+        );
+        assert_eq!(signed_in.status, 200, "{}", text(&signed_in));
+        cookie_set(&signed_in, "skald_session")
+    }
+
     /// Signs `page`'s browser in to the server as `user` and gives their account.
     pub fn signed_in(&self, page: &Page, user: &User) -> Account {
         self.stand.sign_in(page, user);
@@ -268,6 +288,17 @@ impl DeviceFlow {
         assert_eq!(page.count(APPROVE), 1, "the page asks to approve");
         assert_eq!(page.count(DENY), 1, "the page offers to deny");
     }
+}
+
+/// The `name=value` of the cookie `name` that `response` sets.
+pub fn cookie_set(response: &Response, name: &str) -> String {
+    response
+        .header_values("set-cookie")
+        .into_iter()
+        .filter_map(|cookie| cookie.split(';').next())
+        .find(|pair| pair.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("no cookie {name}: {:?}", response.headers))
+        .to_owned()
 }
 
 /// Clicks `button` on the page in `page`, submitting the code first if the page asks for it; gives

@@ -16,6 +16,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
 mod device_flow;
+mod devices;
 mod github;
 mod protocol;
 mod sign_in;
@@ -76,6 +77,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
         .route(
+            "/account/master",
+            get(devices::master)
+                .put(devices::give_master)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
             "/auth/device",
             post(device_flow::authorize).layer(checked(Statement::Header)),
         )
@@ -88,6 +95,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             device_flow::VERIFICATION_PATH,
             get(device_flow::page).post(device_flow::decide),
+        )
+        .route(
+            "/devices",
+            get(devices::list)
+                .post(devices::register)
+                .layer(checked(Statement::Header)),
         )
         .route("/health", get(health))
         .route("/openapi.json", get(openapi_spec))
