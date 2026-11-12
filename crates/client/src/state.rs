@@ -230,6 +230,20 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn created_directory_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = TestDir::new("state-mode");
+        let dir = parent.join("a/skald");
+        create_dir(&dir).expect("create");
+        let mode = fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+        // An existing directory stays as it is.
+        create_dir(&dir).expect("exists");
+    }
+
     #[test]
     fn errors_say_what_failed() {
         assert_eq!(

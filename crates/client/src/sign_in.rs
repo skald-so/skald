@@ -171,7 +171,7 @@ fn device_flow(connection: &mut Connection) -> Result<String, Error> {
     let body = connection.post_form("/auth/device", &[("client_id", CLIENT_ID)])?;
     let grant: Authorization = serde_json::from_slice(&body)
         .map_err(|_| Error::Unexpected("a device authorization without its codes".to_owned()))?;
-    let deadline = Instant::now() + Duration::from_secs(grant.expires_in);
+    let deadline = deadline(grant.expires_in)?;
     println!(
         "To sign this machine in, open {} in a browser on any device and enter the code {}",
         printable(&grant.verification_uri),
@@ -210,6 +210,13 @@ fn device_flow(connection: &mut Connection) -> Result<String, Error> {
     }
 }
 
+/// When codes that live `expires_in` seconds from now expire.
+fn deadline(expires_in: u64) -> Result<Instant, Error> {
+    Instant::now()
+        .checked_add(Duration::from_secs(expires_in))
+        .ok_or_else(|| Error::Unexpected("a code lifetime too long".to_owned()))
+}
+
 /// What a poll of the token endpoint tells the client to do.
 #[derive(Debug, PartialEq)]
 enum Poll {
@@ -229,7 +236,10 @@ fn poll(answer: Result<Vec<u8>, connection::Error>, interval: Duration) -> Resul
         }
         Err(connection::Error::OAuth { error, description }) => match error.as_str() {
             "authorization_pending" => Ok(Poll::Wait(interval)),
-            "slow_down" => Ok(Poll::Wait(interval + SLOW_DOWN)),
+            "slow_down" => interval
+                .checked_add(SLOW_DOWN)
+                .map(Poll::Wait)
+                .ok_or_else(|| Error::Unexpected("a polling interval too long".to_owned())),
             "access_denied" => Err(Error::Denied),
             "expired_token" => Err(Error::Expired),
             _ => Err(connection::Error::OAuth { error, description }.into()),
@@ -270,6 +280,15 @@ mod tests {
             poll(oauth("slow_down"), SECOND).unwrap(),
             Poll::Wait(Duration::from_secs(6))
         );
+    }
+
+    #[test]
+    fn overflowing_lifetime_or_interval_is_an_unexpected_answer() {
+        let error = deadline(u64::MAX).expect_err("too long");
+        assert!(matches!(error, Error::Unexpected(_)), "{error:?}");
+        assert!(deadline(60).is_ok_and(|at| at > Instant::now()));
+        let error = poll(oauth("slow_down"), Duration::MAX).expect_err("too long");
+        assert!(matches!(error, Error::Unexpected(_)), "{error:?}");
     }
 
     #[test]
