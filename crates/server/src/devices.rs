@@ -199,26 +199,15 @@ pub(crate) async fn register(
         let account = account(&state.db, &headers).await?;
         let checked = Checked::of(parse(&body)?)?;
         let device = checked.device.to_string();
-        let inserted = sqlx::query(
-            "INSERT INTO devices (id, account_id, kind, signing, hpke, name)
-             VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(&device)
-        .bind(&account)
-        .bind(CLIENT)
-        .bind(checked.signing.as_slice())
-        .bind(checked.hpke.as_slice())
-        .bind(&checked.name)
-        .execute(&state.db)
-        .await
-        .map_err(|err| Refusal::Database("register a device", err))?;
-        if inserted.rows_affected() == 1 {
-            return taken(true, Device::new(device, None));
-        }
-        // The ID was taken: by this registration, if it is the same.
-        let same: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
-            "SELECT cert FROM devices WHERE id = $1::uuid AND account_id = $2::uuid AND kind = $3
-               AND signing = $4 AND hpke = $5 AND name = $6",
+        // A new ID is inserted. A taken one is updated to itself, and so returned, only if this
+        // registration is the one it has: `xmax` is `0` only in the row of an insert.
+        let stored: Option<(bool, Option<Vec<u8>>)> = sqlx::query_as(
+            "INSERT INTO devices AS d (id, account_id, kind, signing, hpke, name)
+             VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6)
+             ON CONFLICT (id) DO UPDATE SET id = d.id
+             WHERE (d.account_id, d.kind, d.signing, d.hpke, d.name)
+                 = (EXCLUDED.account_id, EXCLUDED.kind, EXCLUDED.signing, EXCLUDED.hpke, EXCLUDED.name)
+             RETURNING d.xmax = 0, d.cert",
         )
         .bind(&device)
         .bind(&account)
@@ -228,9 +217,9 @@ pub(crate) async fn register(
         .bind(&checked.name)
         .fetch_optional(&state.db)
         .await
-        .map_err(|err| Refusal::Database("read a device", err))?;
-        let (cert,) = same.ok_or(Refusal::DeviceTaken)?;
-        taken(false, Device::new(device, cert))
+        .map_err(|err| Refusal::Database("register a device", err))?;
+        let (created, cert) = stored.ok_or(Refusal::DeviceTaken)?;
+        taken(created, Device::new(device, cert))
     })
     .await
 }
