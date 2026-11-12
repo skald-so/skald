@@ -126,8 +126,8 @@ Preliminary answers to the open questions of edit comparison, from the evidence 
 
 ### Hunk and symbol level
 - **Hunks:** each boundary between lines of the merge base that a change touches, fingerprinted with the lines on either side of it, without line numbers ([Hunk fingerprints](#hunk-fingerprints)). They go in one set with the path fingerprints, and the server compares them alike.
-  - Noise: on the measured merges, 3, 9 and 6 merges warned without a conflict, against 73, 39 and 28 at file level. In files, most warnings without a conflict are the same change on both sides, which the exact check clears: 166 of 267, 866 of 936 and 162 of 300. Common lines, such as `}` before an empty line, match too.
-  - Misses: no conflicted merge. 3, 3 and 0 conflicted files, each in a renamed path or in a merge with two merge bases, have no warning at any level. Conflicts with upstream commits only one machine has pulled match at file level only; that machine meets them when it pulls.
+  - Noise: on the measured merges of diesel, drizzle-orm and netbox, 3, 9 and 6 merges warned without a conflict, against 73, 39 and 28 at file level. In files, most warnings without a conflict are the same change on both sides, which the exact check clears: 166 of 267, 866 of 936 and 162 of 300. Common lines, such as `}` before an empty line, match too.
+  - Misses: no conflicted merge. 3, 3 and 0 conflicted files, each in a renamed path or in a merge with two merge bases, have no warning at any level. Conflicts with upstream commits only one machine has pulled match at file level only; the other machine meets them when it pulls.
   - Cost: most of a publication's fingerprints and bytes, up to 3.5 MB on the largest measured side; a fingerprint per changed line shows the server the size of the edits.
 - **Symbols:** the innermost function, method or type enclosing each changed line, named with the symbols that enclose it, found with tree-sitter in Rust, TypeScript and Python ([Symbol fingerprints](#symbol-fingerprints)).
   - Noise: edits to distant lines of one function, which merge cleanly, are what the level is for; 6, 17 and 5 merges warned without a conflict.
@@ -293,7 +293,7 @@ Line endings of one edit
 | input | LF | LF | 4 | 4 | 4 |
 | false | LF | CRLF | 4 | 13 | 4 |
 
-- **Windows:** the `Windows` job of [`.github/workflows/edits-windows.yml`](../../.github/workflows/edits-windows.yml), on `windows-latest`, runs the tests of `spellings.rs` and the check ([infrastructure.md](infrastructure.md), "PR checks"). Its check in run [43152461016](https://github.com/skald-so/skald/actions/runs/43152461016):
+- **Windows:** the `Windows` job of [`.github/workflows/edits-windows.yml`](../../.github/workflows/edits-windows.yml), on `windows-latest`, runs the tests of `spellings.rs` and the check ([infrastructure.md](infrastructure.md), "PR checks"). Its check in run [43200655188](https://github.com/skald-so/skald/actions/runs/43200655188):
 
 Machine: windows x86_64, 4 CPUs
 Git: git version 2.56.0.windows.4
@@ -461,15 +461,15 @@ Cost on the largest sides; times are not compared on a rerun
 
 | Repository | Merge | Parent | File | Hunk | Symbol | Bytes | Time, ms |
 |---|---|---|---|---|---|---|---|
-| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 17811 |
-| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15649 |
-| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15430 |
-| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 14874 |
-| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 9230 |
-| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 5301 |
-| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 2526 |
-| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 7165 |
-| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 9791 |
+| diesel | `bb9ad76bf82b` | 2 | 1230 | 20052 | 4983 | 840480 | 19053 |
+| diesel | `99d16581814d` | 2 | 1088 | 16944 | 4563 | 723040 | 15884 |
+| diesel | `490b14383695` | 1 | 1071 | 16558 | 4443 | 706304 | 15306 |
+| drizzle-orm | `3cd1d0194bba` | 2 | 857 | 51338 | 3881 | 1794432 | 14538 |
+| drizzle-orm | `bdea1eee33ee` | 2 | 531 | 47777 | 1938 | 1607872 | 10732 |
+| drizzle-orm | `240dd1c51cc3` | 2 | 279 | 40173 | 622 | 1314368 | 5012 |
+| netbox | `d883be9e56e9` | 1 | 135 | 107898 | 181 | 3462848 | 3204 |
+| netbox | `0b002c1b6e72` | 2 | 383 | 105425 | 1957 | 3448480 | 8123 |
+| netbox | `6f2ba5c75c31` | 1 | 502 | 98168 | 2147 | 3226144 | 12026 |
 
 Warnings and conflicts by class, in files
 
@@ -556,7 +556,7 @@ Paths that share a fingerprint once case is folded and Unicode normalized
 - **Conflicts without a file-level warning:** each listed one is in a merge where one side renamed the conflict's file or its directory, by `git diff -M` from the merge base, or in the merge with two merge bases. The edit sets list a rename by both of its paths ([File fingerprints](#file-fingerprints)) and do not follow it; `git merge-tree` follows renames and names the paths after them. Each of these merges has a file-level warning on another file.
 - **Reservation TTL:** a TTL shorter than the median, 61.8, 116.7 and 51.7 hours, ends before at least half of the sides are merged.
 - **Intents:** at hunk level, 33 of 58, 33 of 505 and 14 of 102 warnings where both sides only add lines conflict: insertions at one place can conflict, so an intent of only adding lines does not rule a conflict out.
-- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 2526 to 17811 ms on this Mac.
+- **Cost:** on each of the largest sides, hunk fingerprints are most of the fingerprints; the side with the most hunk fingerprints, 107898, publishes 3462848 bytes. Computing the fingerprints of these sides took 3204 to 19053 ms on this Mac.
 - **Noise by class,** at file level: other files hold 452 of diesel's 479 warnings without a conflict, 1076 of drizzle-orm's 1094 and 716 of netbox's 726; lockfiles, migrations and generated code hold the rest.
 - **Lockfiles:** diesel has no lockfile warning; drizzle-orm has 9 of 19 without a conflict, netbox 0 of 5. Left out, they hide conflicts: conflicts without a file-level warning rise from 3 to 13 on drizzle-orm and from 0 to 5 on netbox.
 - **Migrations:** 4, 6 and 9 warnings, none of them with a conflict; no conflict of the measured merges is of a migration. Left out, they hide no conflict at any level.
