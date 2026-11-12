@@ -1,6 +1,7 @@
 //! `skald status`: each row of "Server answers" in `docs/protocol/README.md` against a `skald-server`
 //! whose range is set to versions 2–3, and the answers the protocol does not define, from a stub.
 
+#[allow(dead_code)]
 mod common;
 
 use std::net::TcpListener;

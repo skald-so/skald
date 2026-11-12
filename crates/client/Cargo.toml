@@ -10,17 +10,22 @@ name = "skald"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
+gethostname = "1"
 keyring-core = "1"
 rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+skald-crypto = { path = "../crypto" }
 skald-proto = { path = "../proto" }
 tungstenite = "0.30"
 ureq = { version = "3.5", default-features = false }
+zeroize = "1"
 
 [dev-dependencies]
 axum = "0.8.9"
+curve25519-dalek = "5"
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-server = { path = "../server" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }

@@ -180,6 +180,24 @@ pub struct Connection {
     latest: Option<NonZeroU64>,
 }
 
+/// The body of a request.
+#[derive(Clone, Copy)]
+enum Body<'a> {
+    /// None: a `GET`.
+    None,
+    /// A form: a `POST`.
+    Form(&'a [(&'a str, &'a str)]),
+    /// JSON.
+    Json(Method, &'a [u8]),
+}
+
+/// The method of a request with a JSON body.
+#[derive(Clone, Copy)]
+pub enum Method {
+    Post,
+    Put,
+}
+
 /// The server's answer to one request.
 enum Answer<T> {
     /// The server served the request.
@@ -261,49 +279,50 @@ impl Connection {
 
     /// `GET <path>`; the body of the answer that serves it.
     pub fn get(&mut self, path: &str) -> Result<Vec<u8>, Error> {
-        self.http(path, None, None)
+        self.http(path, None, Body::None)
     }
 
     /// `GET <path>` as the session of `token`, sent as `Authorization: Bearer <token>`.
     pub fn get_as(&mut self, path: &str, token: &str) -> Result<Vec<u8>, Error> {
-        self.http(path, Some(token), None)
+        self.http(path, Some(token), Body::None)
     }
 
     /// `POST <path>` with the form `form`; the body of the answer that serves it.
     pub fn post_form(&mut self, path: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, Error> {
-        self.http(path, None, Some(form))
+        self.http(path, None, Body::Form(form))
     }
 
-    /// A `GET`, or a `POST` of `form` if given, to `path`, with the session of `token` if given.
-    fn http(
+    /// `<method> <path>` with the JSON `json` as the session of `token`.
+    pub fn send_json_as(
         &mut self,
+        method: Method,
         path: &str,
-        token: Option<&str>,
-        form: Option<&[(&str, &str)]>,
+        token: &str,
+        json: &[u8],
     ) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), Body::Json(method, json))
+    }
+
+    /// A request to `path` with `body`, with the session of `token` if given.
+    fn http(&mut self, path: &str, token: Option<&str>, body: Body<'_>) -> Result<Vec<u8>, Error> {
         let url = format!("{}{path}", self.base);
         let agent = self.agent.clone();
         let timeout = self.timeout;
         let bearer = token.map(|token| format!("Bearer {token}"));
         self.exchange(|version| {
             let version = version.to_string();
-            let sent = match form {
-                Some(form) => {
-                    let request = agent.post(&url).header(VERSION_HEADER, &version);
-                    match &bearer {
-                        Some(bearer) => request.header("authorization", bearer),
-                        None => request,
-                    }
-                    .send_form(form.iter().copied())
+            let bearer = bearer.as_deref();
+            let sent = match body {
+                Body::None => with_headers(agent.get(&url), &version, bearer).call(),
+                Body::Form(form) => {
+                    with_headers(agent.post(&url), &version, bearer).send_form(form.iter().copied())
                 }
-                None => {
-                    let request = agent.get(&url).header(VERSION_HEADER, &version);
-                    match &bearer {
-                        Some(bearer) => request.header("authorization", bearer),
-                        None => request,
-                    }
-                    .call()
+                Body::Json(method, json) => match method {
+                    Method::Post => with_headers(agent.post(&url), &version, bearer),
+                    Method::Put => with_headers(agent.put(&url), &version, bearer),
                 }
+                .content_type("application/json")
+                .send(json),
             };
             let mut response = sent.map_err(|err| unanswered(err, timeout))?;
             let status = response.status().as_u16();
@@ -422,6 +441,19 @@ fn best_of(speaks: VersionRange, supported: &[u64]) -> Option<NonZeroU64> {
         .filter(|&&version| speaks.contains(version))
         .max()
         .and_then(|&version| NonZeroU64::new(version))
+}
+
+/// `request` stating `version`, with the session of `bearer`, `Bearer <token>`, if given.
+fn with_headers<B>(
+    request: ureq::RequestBuilder<B>,
+    version: &str,
+    bearer: Option<&str>,
+) -> ureq::RequestBuilder<B> {
+    let request = request.header(VERSION_HEADER, version);
+    match bearer {
+        Some(bearer) => request.header("authorization", bearer),
+        None => request,
+    }
 }
 
 /// The server's current version, from `Skald-Protocol-Latest`.
