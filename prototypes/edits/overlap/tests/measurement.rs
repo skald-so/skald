@@ -7,7 +7,7 @@ mod common;
 use std::fs;
 use std::sync::Mutex;
 
-use common::Repo;
+use common::{Repo, rows, with_lines};
 use edit_overlap::harness::{DATE, Machine};
 use edit_overlap::noise::{self, Class, Signal};
 use edit_overlap::replay::{self, Counts, Level, Measured, Replay, Repository};
@@ -39,12 +39,9 @@ fn renaming_branch(
     }
     for &(path, line, text) in edits {
         let file = fs::read_to_string(machine.dir().join(path)).unwrap_or_default();
-        let mut lines: Vec<String> = file.lines().map(|line| format!("{line}\n")).collect();
-        if lines.len() < line {
-            lines.resize(line, String::new());
-        }
-        lines[line - 1] = text.lines().map(|line| format!("{line}\n")).collect();
-        machine.write(path, &lines.concat()).unwrap();
+        machine
+            .write(path, &with_lines(&file, &[(line, text)]))
+            .unwrap();
     }
     machine.git(&["add", "--all"]).unwrap();
     let (seconds, zone) = DATE.split_once(' ').unwrap();
@@ -216,17 +213,6 @@ fn replays(maintainer: &Machine) -> Vec<Replay> {
     progress.sort();
     assert_eq!(progress, (1..=merges.len()).collect::<Vec<_>>());
     replays
-}
-
-/// The rows of the table `title` of `report`.
-fn rows(report: &str, title: &str) -> Vec<String> {
-    let lines: Vec<&str> = report.lines().collect();
-    let start = lines.iter().position(|line| *line == title).unwrap();
-    lines[start + 4..]
-        .iter()
-        .take_while(|line| line.starts_with('|'))
-        .map(|line| line.to_string())
-        .collect()
 }
 
 /// The message of `commit`.
@@ -515,6 +501,11 @@ fn report_gives_a_repository_without_merges_and_lifetimes() {
         times: Vec::new(),
         tree: Default::default(),
     }]);
+    // The report goes right after the lines of the header, without an empty line of its own.
+    assert!(
+        report.starts_with("Repositories\n\n| Repository |"),
+        "{report}"
+    );
     assert_eq!(
         rows(&report, "Repositories"),
         [format!(

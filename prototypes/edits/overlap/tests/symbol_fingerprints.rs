@@ -7,7 +7,9 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{PAIRS, Repo, Seen, Space, assert_holds_none, names, paths, symbols};
+use common::{
+    ALICE_AND_BOB, Clones, PAIRS, Repo, Seen, Space, assert_holds_none, names, paths, symbols,
+};
 use edit_overlap::harness::Machine;
 use tempfile::TempDir;
 
@@ -233,14 +235,10 @@ fn two_machines(
     edit: impl FnOnce(&Repo, &Machine, &Machine),
     then: impl FnOnce(&mut Space),
 ) {
-    let tmp = TempDir::new().unwrap();
-    let repo = fixture.repo(&tmp, extra);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    edit(&repo, &a, &b);
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
-    then(&mut space);
+    let clones = Clones::new(|tmp| fixture.repo(tmp, extra), ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    edit(&clones.repo, a, b);
+    then(&mut clones.published());
 }
 
 /// Alice comments the lines `alice` of the file of `fixture` and commits; Bob comments the lines

@@ -12,7 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use common::{
-    INVENTORY, Repo, Space, assert_holds_none, bytes, inventory, inventory_with, lines, long_lines,
+    ALICE_AND_BOB, Clones, INVENTORY, PAIRS, Repo, Space, assert_holds_none, bytes,
+    change_uncommitted, exchanged, inventory, inventory_with, lines, long_lines, reserving,
 };
 use edit_overlap::harness::Machine;
 use edit_overlap::{Check, Conflict, Edits, Publication, git};
@@ -42,6 +43,15 @@ fn clean() -> Check {
     }
 }
 
+/// Asserts that Alice, checking Bob, finds the first of `checks`, and Bob, checking Alice, the
+/// second.
+fn assert_checks(space: &mut Space, checks: [Check; 2]) {
+    for ((machine, other), check) in PAIRS.into_iter().zip(checks) {
+        let want = BTreeMap::from([(other.to_owned(), check)]);
+        assert_eq!(space.check(machine), want, "{machine}");
+    }
+}
+
 #[test]
 fn snapshot_commits_the_working_tree_and_leaves_the_repository_as_it_is() {
     let tmp = TempDir::new().unwrap();
@@ -51,18 +61,8 @@ fn snapshot_commits_the_working_tree_and_leaves_the_repository_as_it_is() {
         .write("src/inventory.rs", &inventory(&[(2, "    let items = 1;")]))
         .unwrap();
     machine.commit("count one").unwrap();
-    machine
-        .write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
-        .unwrap();
-    machine.git(&["add", "src/warehouse.rs"]).unwrap();
-    machine
-        .write("src/warehouse.rs", "pub struct Warehouse(u64);\n")
-        .unwrap();
+    change_uncommitted(&machine);
     machine.delete("docs/guide.md").unwrap();
-    machine.write("notes/todo-list.md", "- ship\n").unwrap();
-    machine
-        .write("target/build-output.bin", "ignored\n")
-        .unwrap();
     let state = |machine: &Machine| {
         let git_dir: BTreeSet<_> = std::fs::read_dir(machine.dir().join(".git"))
             .unwrap()
@@ -144,17 +144,11 @@ fn snapshot_takes_an_edit_that_keeps_the_size_and_time_of_the_file() {
 
 #[test]
 fn edits_to_the_same_lines_conflict_with_their_files_and_lines() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     // Committed on one machine; uncommitted and untracked on the other, with a clean change above
     // the conflict that shifts its lines.
-    a.write(
-        "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 10;")]),
-    )
-    .unwrap();
+    a.write("src/inventory.rs", &reserving(10)).unwrap();
     a.write("notes/plan.md", "- count\n- reserve\n").unwrap();
     a.commit("reserve ten").unwrap();
     b.write(
@@ -166,59 +160,47 @@ fn edits_to_the_same_lines_conflict_with_their_files_and_lines() {
     )
     .unwrap();
     b.write("notes/plan.md", "- count\n- release\n").unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     let conflicts: &[(&str, &[&str])] = &[
         // A file both sides add: `git merge-tree` types it as a content conflict.
         ("CONFLICT (contents)", &["notes/plan.md"]),
         ("CONFLICT (contents)", &["src/inventory.rs"]),
     ];
-    assert_eq!(
-        space.check("alice-laptop"),
-        BTreeMap::from([(
-            "bob-desktop".into(),
+    assert_checks(
+        &mut space,
+        [
             conflicted(
                 conflicts,
-                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[7..8])]
-            )
-        )])
-    );
-    assert_eq!(
-        space.check("bob-desktop"),
-        BTreeMap::from([(
-            "alice-laptop".into(),
+                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[7..8])],
+            ),
             conflicted(
                 conflicts,
-                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[10..11])]
-            )
-        )])
+                &[("notes/plan.md", &[2..3]), ("src/inventory.rs", &[10..11])],
+            ),
+        ],
     );
 }
 
 #[test]
 fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
-    let tmp = TempDir::new().unwrap();
     // Markers of 32 characters in Rust files, as git's own repository sets for some files, and
     // of 7 in the others; `-diff` makes `git diff` show any file as binary, without hunks.
     let order = "x\n}\n\nx\n}\ny\ny\n\n";
     let gap = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n";
     let blocks =
         "}\n    y();\n    y();\nfn f() {\n    y();\n    y();\n    z();\n    z();\nfn f() {\n";
-    let repo = Repo::create_with(
-        &tmp,
-        &[
-            (
-                ".gitattributes",
-                "* -diff\nsrc/*.rs conflict-marker-size=32\n",
-            ),
-            ("notes/order.txt", order),
-            ("notes/gap.txt", gap),
-            ("src/blocks.rs", blocks),
-        ],
-    );
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let files = [
+        (
+            ".gitattributes",
+            "* -diff\nsrc/*.rs conflict-marker-size=32\n",
+        ),
+        ("notes/order.txt", order),
+        ("notes/gap.txt", gap),
+        ("src/blocks.rs", blocks),
+    ];
+    let clones = Clones::new(|tmp| Repo::create_with(tmp, &files), ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     // `git diff` joins hunks up to 3 lines apart into one, colors its output, runs an external
     // diff that fails, and diffs with the histogram algorithm; it slides hunks with the indent
     // heuristic by default.
@@ -266,8 +248,7 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
     lines.splice(0..0, ["    y();", "    y();", "    y();", "fn f() {"]);
     b.write("src/blocks.rs", &(lines.join("\n") + "\n"))
         .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     let conflicts: &[(&str, &[&str])] = &[
         ("CONFLICT (contents)", &["notes/gap.txt"]),
@@ -276,10 +257,9 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
         ("CONFLICT (contents)", &["src/blocks.rs"]),
         ("CONFLICT (contents)", &["src/inventory.rs"]),
     ];
-    assert_eq!(
-        space.check("alice-laptop"),
-        BTreeMap::from([(
-            "bob-desktop".into(),
+    assert_checks(
+        &mut space,
+        [
             conflicted(
                 conflicts,
                 &[
@@ -287,15 +267,9 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
                     ("notes/order.txt", &[4..5]),
                     ("notes/plan.md", &[2..3]),
                     ("src/blocks.rs", &[1..2]),
-                    ("src/inventory.rs", &[8..9])
-                ]
-            )
-        )])
-    );
-    assert_eq!(
-        space.check("bob-desktop"),
-        BTreeMap::from([(
-            "alice-laptop".into(),
+                    ("src/inventory.rs", &[8..9]),
+                ],
+            ),
             conflicted(
                 conflicts,
                 &[
@@ -303,37 +277,24 @@ fn conflicting_lines_are_found_whatever_the_repository_attributes_and_config() {
                     ("notes/order.txt", &[3..5]),
                     ("notes/plan.md", &[2..3]),
                     ("src/blocks.rs", &[1..6]),
-                    ("src/inventory.rs", &[8..9])
-                ]
-            )
-        )])
+                    ("src/inventory.rs", &[8..9]),
+                ],
+            ),
+        ],
     );
 }
 
 #[test]
 fn conflicting_lines_are_found_after_an_unstaged_deletion_of_the_attributes() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create_with(
-        &tmp,
-        &[(".gitattributes", "src/*.rs conflict-marker-size=32\n")],
-    );
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let attributes = [(".gitattributes", "src/*.rs conflict-marker-size=32\n")];
+    let clones = Clones::new(|tmp| Repo::create_with(tmp, &attributes), ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     // `git check-attr` still reads the deleted file from the index; `git merge-tree` reads the
     // working tree only, so it writes markers of 7 characters.
     a.delete(".gitattributes").unwrap();
-    a.write(
-        "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 10;")]),
-    )
-    .unwrap();
-    b.write(
-        "src/inventory.rs",
-        &inventory(&[(7, "    let reserved = 20;")]),
-    )
-    .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    a.write("src/inventory.rs", &reserving(10)).unwrap();
+    b.write("src/inventory.rs", &reserving(20)).unwrap();
+    let mut space = clones.published();
 
     assert_eq!(
         space.check("alice-laptop"),
@@ -349,10 +310,8 @@ fn conflicting_lines_are_found_after_an_unstaged_deletion_of_the_attributes() {
 
 #[test]
 fn edits_to_distant_lines_of_one_file_merge_cleanly() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     a.write("src/inventory.rs", &inventory(&[(2, "    let items = 1;")]))
         .unwrap();
     a.commit("count one").unwrap();
@@ -361,54 +320,33 @@ fn edits_to_distant_lines_of_one_file_merge_cleanly() {
         &inventory(&[(12, "    let released = 3;")]),
     )
     .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     // The server reports the overlap; the check clears it.
-    assert_eq!(
-        space.check("alice-laptop"),
-        BTreeMap::from([("bob-desktop".into(), clean())])
-    );
-    assert_eq!(
-        space.check("bob-desktop"),
-        BTreeMap::from([("alice-laptop".into(), clean())])
-    );
+    assert_checks(&mut space, [clean(), clean()]);
 }
 
 #[test]
 fn modify_delete_conflict_is_found() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
     a.delete("src/warehouse.rs").unwrap();
     b.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
         .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
 
     let conflict = conflicted(
         &[("CONFLICT (modify/delete)", &["src/warehouse.rs"])],
         &[("src/warehouse.rs", &[])],
     );
-    assert_eq!(
-        space.check("alice-laptop"),
-        BTreeMap::from([("bob-desktop".into(), conflict.clone())])
-    );
-    assert_eq!(
-        space.check("bob-desktop"),
-        BTreeMap::from([("alice-laptop".into(), conflict)])
-    );
+    assert_checks(&mut space, [conflict.clone(), conflict]);
 }
 
 #[test]
 fn rename_conflicts_are_found() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (c, c_client) = repo.machine("carol-server");
-    let (d, d_client) = repo.machine("dave-laptop");
+    let names = ["alice-laptop", "bob-desktop", "carol-server", "dave-laptop"];
+    let clones = Clones::new(Repo::create, names);
+    let [a, b, c, d] = &clones.machines;
     a.rename("docs/guide.md", "docs/handbook.md").unwrap();
     a.commit("rename the guide").unwrap();
     b.rename("docs/guide.md", "docs/manual.md").unwrap();
@@ -416,13 +354,7 @@ fn rename_conflicts_are_found() {
     // An edit of the old path follows the rename.
     d.write("docs/guide.md", "# Guide\n\nRead the docs.\n")
         .unwrap();
-    let mut space = Space::new(&[
-        (&a, &a_client),
-        (&b, &b_client),
-        (&c, &c_client),
-        (&d, &d_client),
-    ]);
-    space.publish();
+    let mut space = clones.published();
 
     assert_eq!(
         space.check("alice-laptop"),
@@ -458,11 +390,9 @@ fn rename_conflicts_are_found() {
 
 #[test]
 fn machines_on_different_bases_get_the_right_result() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let (maintainer, _) = repo.machine("maintainer");
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let (maintainer, _) = clones.repo.machine("maintainer");
     // Bob's change to line 2 is merged upstream, after lines added on top; Alice pulls both and
     // changes line 2 again, Bob does not pull.
     b.write("src/inventory.rs", &inventory(&[(2, "    let items = 1;")]))
@@ -495,39 +425,24 @@ fn machines_on_different_bases_get_the_right_result() {
         (12, "    let released = 3;"),
     ];
     b.write("src/inventory.rs", &inventory(&b_edits)).unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
-    space.publish();
+    let mut space = clones.published();
     assert!(git::has_commit(a.dir(), &git::merge_base(b.dir()).unwrap()).unwrap());
     assert!(!git::has_commit(b.dir(), &git::merge_base(a.dir()).unwrap()).unwrap());
 
     let conflicts: &[(&str, &[&str])] = &[("CONFLICT (contents)", &["src/inventory.rs"])];
-    assert_eq!(
-        space.check("alice-laptop"),
-        BTreeMap::from([(
-            "bob-desktop".into(),
-            conflicted(conflicts, &[("src/inventory.rs", &[10..11])])
-        )])
-    );
-    assert_eq!(
-        space.check("bob-desktop"),
-        BTreeMap::from([(
-            "alice-laptop".into(),
-            conflicted(conflicts, &[("src/inventory.rs", &[7..8])])
-        )])
+    assert_checks(
+        &mut space,
+        [
+            conflicted(conflicts, &[("src/inventory.rs", &[10..11])]),
+            conflicted(conflicts, &[("src/inventory.rs", &[7..8])]),
+        ],
     );
 
     // Without the edit of line 7, the bases' lines on top and Bob's merged change merge cleanly.
     b.write("src/inventory.rs", &inventory(&[b_edits[0], b_edits[2]]))
         .unwrap();
     space.publish();
-    assert_eq!(
-        space.check("alice-laptop"),
-        BTreeMap::from([("bob-desktop".into(), clean())])
-    );
-    assert_eq!(
-        space.check("bob-desktop"),
-        BTreeMap::from([("alice-laptop".into(), clean())])
-    );
+    assert_checks(&mut space, [clean(), clean()]);
 }
 
 #[test]
@@ -540,15 +455,16 @@ fn a_request_with_a_base_that_is_not_an_object_id_is_refused() {
     assert_eq!(error.to_string(), "not an object ID: \"--all\"");
 }
 
-/// A bundle of `machine`'s `HEAD` in the references `refs`, in their order, without the
-/// upstream's default branch.
-fn bundle_of(machine: &Machine, refs: &[&str]) -> Vec<u8> {
-    machine
-        .write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
+/// The error that Bob's unbundle gives for a bundle of Alice's `HEAD` in the references `refs`,
+/// in their order, without the upstream's default branch.
+fn unbundle_error(refs: &[&str]) -> String {
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    a.write("src/warehouse.rs", "pub struct Warehouse(u32);\n")
         .unwrap();
-    machine.commit("count").unwrap();
+    a.commit("count").unwrap();
     for name in refs {
-        machine.git(&["update-ref", name, "HEAD"]).unwrap();
+        a.git(&["update-ref", name, "HEAD"]).unwrap();
     }
     let without = format!("^{}", git::UPSTREAM_HEAD);
     let args: Vec<&str> = ["bundle", "create", "--quiet", "-"]
@@ -556,17 +472,13 @@ fn bundle_of(machine: &Machine, refs: &[&str]) -> Vec<u8> {
         .chain(refs.iter().copied())
         .chain([without.as_str()])
         .collect();
-    machine.git(&args).unwrap()
+    let bundle = a.git(&args).unwrap();
+    git::unbundle(b.dir(), &bundle).unwrap_err().to_string()
 }
 
 #[test]
 fn a_bundle_with_another_reference_is_refused() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, _) = repo.machine("alice-laptop");
-    let (b, _) = repo.machine("bob-desktop");
-    let bundle = bundle_of(&a, &["refs/heads/main"]);
-    let error = git::unbundle(b.dir(), &bundle).unwrap_err().to_string();
+    let error = unbundle_error(&["refs/heads/main"]);
     assert!(
         error.starts_with("a bundle with another reference: ")
             && error.ends_with(" refs/heads/main"),
@@ -576,13 +488,8 @@ fn a_bundle_with_another_reference_is_refused() {
 
 #[test]
 fn a_bundle_with_two_references_is_refused() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, _) = repo.machine("alice-laptop");
-    let (b, _) = repo.machine("bob-desktop");
     // The bundle's own reference first.
-    let bundle = bundle_of(&a, &[git::BUNDLE_REF, "refs/heads/main"]);
-    let error = git::unbundle(b.dir(), &bundle).unwrap_err().to_string();
+    let error = unbundle_error(&[git::BUNDLE_REF, "refs/heads/main"]);
     assert!(
         error.starts_with("a bundle without exactly one reference: "),
         "{error}"
@@ -591,18 +498,10 @@ fn a_bundle_with_two_references_is_refused() {
 
 #[test]
 fn server_receives_and_keeps_nothing_of_the_exchanged_changes() {
-    let tmp = TempDir::new().unwrap();
-    let repo = Repo::create(&tmp);
-    let (a, a_client) = repo.machine("alice-laptop");
-    let (b, b_client) = repo.machine("bob-desktop");
-    let a_text = inventory(&[(7, "    let reserved = 10;")]);
-    let b_text = inventory(&[(7, "    let reserved = 20;"), (12, "    let released = 3;")]);
-    a.write("src/inventory.rs", &a_text).unwrap();
-    a.commit("reserve ten").unwrap();
-    b.write("src/inventory.rs", &b_text).unwrap();
-    b.write("notes/todo-list.md", "- ship the reservations\n")
-        .unwrap();
-    let mut space = Space::new(&[(&a, &a_client), (&b, &b_client)]);
+    let clones = Clones::new(Repo::create, ALICE_AND_BOB);
+    let [a, b] = &clones.machines;
+    let texts = exchanged(a, b);
+    let mut space = clones.space();
     let edits = space.publish();
     let received = space.server.received().to_vec();
     let kept = space.server.kept().clone();
@@ -623,11 +522,7 @@ fn server_receives_and_keeps_nothing_of_the_exchanged_changes() {
     let mut needles: BTreeSet<&str> = edits.iter().flat_map(Edits::paths).collect();
     assert!(needles.contains("notes/todo-list.md"));
     needles.extend(needles.clone().iter().flat_map(|path| path.split('/')));
-    needles.extend(long_lines([
-        a_text.as_str(),
-        b_text.as_str(),
-        "- ship the reservations\n",
-    ]));
+    needles.extend(long_lines(texts.iter().map(String::as_str)));
     assert!(needles.contains("let reserved = 20;"));
     let received = received
         .iter()

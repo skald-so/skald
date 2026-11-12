@@ -1,10 +1,12 @@
 # Code that script/mutants skips in the edit comparison prototype's workspace; the tests cannot catch
 # its mutants.
-# The entry points of the commands: the measurement and the exposure of fingerprints, which measure
-# the repositories they name over the network, the scripted sessions, which play on them with the
-# tools they build over the network, and the check of spellings, which prints what it finds;
-# script/test runs none of them, and the library code they call is tested.
+# The entry points of the commands and what they share, their temporary directory, output and
+# progress: the measurement and the exposure of fingerprints, which measure the repositories they
+# name over the network, the scripted sessions, which play on them with the tools they build over
+# the network, and the check of spellings, which prints what it finds; script/test runs none of
+# them, and the library code they call is tested.
 exclude_globs = [
+  "overlap/src/bin/common/mod.rs",
   "overlap/src/bin/exposure.rs",
   "overlap/src/bin/measure.rs",
   "overlap/src/bin/sessions.rs",
