@@ -100,8 +100,16 @@ exec "$real_ssh" -F "$tmp/ssh_config" "\$@"
 EOF
 chmod +x "$tmp/bin/ssh"
 export PATH="$tmp/bin:$PATH"
-eval "$(ssh-agent -s -a "$tmp/agent.sock")" >/dev/null
-agent_pid=$SSH_AGENT_PID
+# Only the test's agent: the caller's is never used or stopped, and the test stops if its own does not
+# start.
+unset SSH_AUTH_SOCK SSH_AGENT_PID
+agent=$(ssh-agent -s -a "$tmp/agent.sock")
+eval "$agent" >/dev/null
+agent_pid=${SSH_AGENT_PID:-}
+if [[ -z $agent_pid || ${SSH_AUTH_SOCK:-} != "$tmp/agent.sock" ]]; then
+  echo "deploy-staging-test: ssh-agent did not start on $tmp/agent.sock" >&2
+  exit 1
+fi
 ssh-add -q "$tmp/client" 2>/dev/null
 echo "staging $host_key" >"$tmp/known_hosts"
 # pinned_ssh <options...>: SSH to the test's sshd as the deploy key's command, the host key pinned.
