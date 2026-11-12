@@ -42,9 +42,11 @@ impl Driver {
 pub struct Visit {
     /// The page's URL afterwards; `about:blank` when its page failed to load.
     pub url: String,
-    /// The status of the last response, if any.
+    /// The status of the last response of the navigation itself, after its redirects and before any
+    /// followed refresh, if any.
     pub status: Option<u16>,
-    /// Every URL the page requested on the way, redirects included, in order.
+    /// Every URL the page requested on the way, redirects and followed refreshes included, in
+    /// order.
     pub navigations: Vec<String>,
     /// Why the navigation failed, if it did.
     pub error: Option<String>,
@@ -245,19 +247,20 @@ pub struct Page<'a> {
 impl Page<'_> {
     /// Navigates to `url` as a person typing it, and waits for the page to load.
     pub fn goto(&self, url: &str) -> Visit {
-        self.goto_until(url, "load")
+        self.goto_with(url, false)
     }
 
-    /// Navigates to `url` and waits until the network has been idle for 0.5 s: past redirects a
-    /// page script makes once loaded.
+    /// Navigates to `url` as [`Page::goto`] does, then follows each page that refreshes itself
+    /// with `<meta http-equiv="refresh">`, such as the sign-in callback's, until a page without one
+    /// has loaded. The visit's status stays that of the navigation to `url`.
     pub fn goto_settled(&self, url: &str) -> Visit {
-        self.goto_until(url, "networkidle")
+        self.goto_with(url, true)
     }
 
-    fn goto_until(&self, url: &str, wait_until: &str) -> Visit {
+    fn goto_with(&self, url: &str, settle: bool) -> Visit {
         let visit = self.browser.call(
             "goto",
-            json!({ "page": self.id, "url": url, "waitUntil": wait_until }),
+            json!({ "page": self.id, "url": url, "settle": settle }),
         );
         serde_json::from_value(visit).expect("a visit")
     }
