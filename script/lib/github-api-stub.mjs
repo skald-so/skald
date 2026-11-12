@@ -1,14 +1,16 @@
-// A stand-in for the GitHub API that release-plz opens and updates a Release PR through, for
-// script/release-plz-test. It keeps the PRs in memory and serves the calls release-plz makes for a
-// Release PR: its PRs, their commits and labels, branch refs, and commits made with the GraphQL
-// mutation createCommitOnBranch. Every request goes to <log> as a JSON line; after each request
-// <pulls> holds the PRs as JSON.
-// Usage: node github-api-stub.mjs <log> <pulls> <port file>; it listens on 127.0.0.1 and writes its
-// port to <port file> once it accepts connections.
+// A stand-in for the GitHub API that release-plz opens and updates a Release PR and tags a release
+// through, for script/release-plz-test. It keeps the PRs in memory and serves the calls release-plz
+// makes for a Release PR: its PRs, their commits and labels, branch refs, and commits made with the
+// GraphQL mutation createCommitOnBranch; and for a release: the PRs merged as a commit, tag objects
+// and tag refs. Every request goes to <log> as a JSON line, with the status and the body of its
+// reply; after each request <pulls> holds the PRs as JSON. <merges> has a line `<commit> <branch>`
+// for each PR merged as <commit> from <branch>; it is read on each request.
+// Usage: node github-api-stub.mjs <log> <pulls> <port file> <merges>; it listens on 127.0.0.1 and
+// writes its port to <port file> once it accepts connections.
 import fs from 'node:fs';
 import http from 'node:http';
 
-const [log, pullsFile, portFile] = process.argv.slice(2);
+const [log, pullsFile, portFile, mergesFile] = process.argv.slice(2);
 const pulls = [];
 let commits = 0;
 const oid = () => (++commits).toString(16).padStart(40, '0');
@@ -60,6 +62,17 @@ function reply(req, body) {
     const commit = { message: 'chore: release', author: { name: 'skald-release', email: 'app@example.com', date: '2026-01-01T00:00:00Z' } };
     return [200, [{ sha: oid(), commit, author: bot, committer: bot }]];
   }
+  if ((match = repo.match(/^\/commits\/([0-9a-f]{40})\/pulls$/))) {
+    const merges = fs.existsSync(mergesFile) ? fs.readFileSync(mergesFile, 'utf8') : '';
+    const merged = merges.split('\n').map((line) => line.split(' '));
+    return [200, merged.filter(([commit]) => commit === match[1]).map(([, head], i) => ({
+      ...pull(9000 + i, { title: 'merged', head, base: 'dev' }),
+      state: 'closed',
+    }))];
+  }
+  if (repo === '/git/tags' && req.method === 'POST') {
+    return [201, { sha: oid(), tag: json.tag, object: { sha: json.object, type: json.type } }];
+  }
   if ((match = repo.match(/^\/issues\/(\d+)\/labels$/))) {
     return [200, (json.labels ?? []).map((name, i) => ({ id: i + 1, name }))];
   }
@@ -75,13 +88,14 @@ const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => (body += chunk));
   req.on('end', () => {
-    fs.appendFileSync(log, `${JSON.stringify({ method: req.method, url: req.url, body })}\n`);
     let status, json;
     try {
       [status, json] = reply(req, body);
     } catch (error) {
       [status, json] = [400, { message: String(error) }];
     }
+    const line = { method: req.method, url: req.url, body, status, response: json };
+    fs.appendFileSync(log, `${JSON.stringify(line)}\n`);
     fs.writeFileSync(pullsFile, JSON.stringify(pulls));
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(json === null ? '' : JSON.stringify(json));
