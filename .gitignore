@@ -10,3 +10,6 @@ CLAUDE.local.md
 /prototypes/edits/target
 /prototypes/agents/target
 /script/jscpd/node_modules
+# Claude Code writes it into the mod's plugin directory when a session loads the plugin; the
+# `.claude-plugin/types/` it writes there ignores itself.
+/prototypes/agents/mod/tsconfig.json
