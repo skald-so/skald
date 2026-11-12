@@ -53,7 +53,14 @@ pub enum Call {
     /// Calls the server's `reply` tool for the conversation's last message, with its secret and
     /// each other message as seen.
     Reply,
+    /// Schedules [`LOOP_PROMPT`] every minute with Claude Code's `CronCreate`, as `/loop 1m` does.
+    /// Once the script ends, each turn a scheduled prompt starts calls `inbox`.
+    Cron,
 }
+
+/// The prompt a [`Call::Cron`] schedules.
+pub const LOOP_PROMPT: &str = "Call the inbox tool of the skald MCP server and reply with only \
+    the check token from the message, or NONE if there is none.";
 
 /// What an `ack` call of the stub gives for each message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +80,7 @@ impl Call {
             Self::Shell => Some(SHELL),
             Self::Quick => Some(QUICK),
             Self::Pause => Some(PAUSE),
-            Self::Inbox | Self::Ack(_) | Self::InboxSeen | Self::Reply => None,
+            Self::Inbox | Self::Ack(_) | Self::InboxSeen | Self::Reply | Self::Cron => None,
         }
     }
 
@@ -88,7 +95,7 @@ impl Call {
                 .collect()
         };
         match self {
-            Self::Shell | Self::Quick | Self::Pause => None,
+            Self::Shell | Self::Quick | Self::Pause | Self::Cron => None,
             Self::Inbox => Some((INBOX, json!({}))),
             Self::InboxSeen => Some((INBOX, json!({ "seen": seen(&held) }))),
             Self::Ack(with) => {
@@ -401,12 +408,24 @@ fn messages(script: &[Call], body: &Value) -> Response {
                 .count()
         })
     });
-    let (block, delta, stop_reason) = match script.get(step) {
+    // After a `Cron` script, a turn that a scheduled prompt starts calls `inbox`.
+    let fired = (step >= script.len()
+        && script.contains(&Call::Cron)
+        && body["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .is_some_and(|last| !last.to_string().contains("tool_result")))
+    .then_some(Call::Inbox);
+    let (block, delta, stop_reason) = match script.get(step).or(fired.as_ref()) {
         Some(call) => {
-            let (name, input) = match (call.command(), call.server_tool(body)) {
-                (Some(command), _) => ("Bash".to_owned(), json!({ "command": command })),
-                (None, Some((tool, input))) => (format!("mcp__{SERVER}__{tool}"), input),
-                (None, None) => unreachable!("a call runs a command or a tool"),
+            let (name, input) = match (call, call.command(), call.server_tool(body)) {
+                (Call::Cron, ..) => (
+                    "CronCreate".to_owned(),
+                    json!({ "cron": "* * * * *", "prompt": LOOP_PROMPT, "recurring": true }),
+                ),
+                (_, Some(command), _) => ("Bash".to_owned(), json!({ "command": command })),
+                (_, None, Some((tool, input))) => (format!("mcp__{SERVER}__{tool}"), input),
+                (_, None, None) => unreachable!("a call runs a command or a tool"),
             };
             let id = format!("toolu_stub_{step}");
             (
@@ -1116,5 +1135,39 @@ mod tests {
             arguments,
             json!({ "acks": [{ "msg_id": "m1", "ack": "s1" }] })
         );
+    }
+
+    #[test]
+    fn schedules_the_loop_prompt_and_calls_inbox_in_each_scheduled_turn() {
+        let script = [Call::Cron];
+        let mut log = StubLog::default();
+        let (block, stop) = streamed_block(&answer(&script, &messages_request(0, true), &mut log));
+        assert_eq!(
+            block,
+            json!({ "type": "tool_use", "id": "toolu_stub_0", "name": "CronCreate",
+                "input": { "cron": "* * * * *", "prompt": LOOP_PROMPT, "recurring": true } })
+        );
+        assert_eq!(stop, "tool_use");
+        // The request after the result ends the turn.
+        let mut after = messages_request(1, true);
+        let mut body: Value = serde_json::from_slice(&after.body).unwrap();
+        body["messages"].as_array_mut().unwrap().last_mut().unwrap()["content"] =
+            json!([{ "type": "tool_result", "tool_use_id": 0, "content": "x" }]);
+        after.body = body.to_string().into_bytes();
+        let (block, _) = streamed_block(&answer(&script, &after, &mut log));
+        assert_eq!(block["text"], DONE);
+        // A scheduled prompt starts a turn: it calls inbox.
+        body["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "role": "user", "content": [{ "type": "text", "text": LOOP_PROMPT }] }));
+        after.body = body.to_string().into_bytes();
+        let (block, _) = streamed_block(&answer(&script, &after, &mut log));
+        assert_eq!(block["name"], "mcp__skald__inbox");
+        // Another script never calls inbox after it ends.
+        let (block, _) = streamed_block(&answer(&[Call::Quick], &after, &mut log));
+        assert_eq!(block["text"], DONE);
+        assert_eq!(Call::Cron.command(), None);
+        assert_eq!(Call::Cron.server_tool(&body), None);
     }
 }

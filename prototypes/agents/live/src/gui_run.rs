@@ -15,7 +15,7 @@ use agent_live::gui::{self, Binaries, GuiPath, Installed, Surface};
 use agent_live::hook::HOOK_BIN;
 use agent_live::limits::{mcp_servers, quiet_app_server};
 use agent_live::wake::Wake;
-use agent_live::{Agent, INBOX_BIN, binary, channel::CHANNEL_BIN, seconds, token};
+use agent_live::{Agent, INBOX_BIN, binary, channel::CHANNEL_BIN, queue, seconds, token};
 use agent_source::Source;
 use serde_json::json;
 
@@ -119,21 +119,13 @@ pub fn queue(work: &Path, cli: bool) -> Result<bool> {
     let source = Source::open(work.join("source"))?;
     let handed = agent_queue::hand_over(&source, &thread, Agent::Codex.command_for(&codex))?;
     println!("handed over: {}", handed.len());
-    if !handed.is_empty() {
-        // Codex's own sign that a session took it: the message leaves the thread's queue.
-        let started = Instant::now();
-        while started.elapsed() < QUEUED {
-            let queued = client.call("thread/queue/list", json!({ "threadId": thread }))?;
-            if queued["data"].as_array().is_some_and(Vec::is_empty) {
-                source.record(&message.msg_id, "queue-taken", None)?;
-                println!(
-                    "taken from the queue: {}",
-                    seconds(started.elapsed().as_millis() as u64)
-                );
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(300));
-        }
+    if !handed.is_empty()
+        && let Some(after) = queue::taken(&mut client, &thread, &source, &message.msg_id, QUEUED)?
+    {
+        println!(
+            "taken from the queue: {}",
+            seconds(after.as_millis() as u64)
+        );
     }
     Ok(!handed.is_empty())
 }

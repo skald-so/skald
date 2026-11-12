@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use agent_live::channel::{Files, PtySession, Sent, extra_environment, stub_environment};
 use agent_live::hook::HOOK_BIN;
 use agent_live::wake::{self, Bypass, Wake, WakeBinaries, WakeCheck, held_notice};
-use agent_live::{Agent, Call, Kind, Options, channel, model_use, token};
+use agent_live::{Agent, Call, INBOX_BIN, Kind, Options, binary, channel, model_use, token};
 use agent_socket::{FROM, Receipts, hand_over};
 use agent_source::Source;
 
@@ -21,6 +21,9 @@ use crate::run::{finish, read_lines, side_by_side, start_with};
 
 /// The longest wait for a turn or for the session to register.
 const TURN: Duration = Duration::from_secs(120);
+
+/// The longest wait for the loop's scheduled prompt to get the message.
+const LOOP: Duration = Duration::from_secs(200);
 
 /// How long a held message is watched before it goes again with the token.
 const HELD: Duration = Duration::from_secs(5);
@@ -32,11 +35,13 @@ fn plugin() -> Result<PathBuf> {
     )?)
 }
 
-/// The stub's script of a `kind` session: the busy one runs the shell command.
-fn script(kind: Kind) -> &'static [Call] {
-    match kind {
-        Kind::Idle => &[],
-        Kind::Busy => &[Call::Shell],
+/// The stub's script of a `kind` session of `wake`: the busy one runs the shell command; the loop
+/// schedules its prompt.
+fn script(wake: Wake, kind: Kind) -> &'static [Call] {
+    match (wake, kind) {
+        (Wake::Loop, _) => &[Call::Cron],
+        (_, Kind::Idle) => &[],
+        (_, Kind::Busy) => &[Call::Shell],
     }
 }
 
@@ -47,11 +52,12 @@ pub fn wake(wake: Wake, options: &Options) -> Result<bool> {
     let bins = WakeBinaries {
         hook,
         plugin: plugin()?,
+        inbox: binary(&std::env::current_exe()?, INBOX_BIN)?,
     };
     let prepare = |name: &str, kind: Kind| -> Result<Prepared> {
         let files = Files::new(&work.path().join(name));
         let args = wake::session(&files, wake, kind, &bins, options.model)?;
-        let stub = options.stub(script(kind))?;
+        let stub = options.stub(script(wake, kind))?;
         let env = Env::of(
             &files,
             stub.as_ref(),
@@ -65,14 +71,16 @@ pub fn wake(wake: Wake, options: &Options) -> Result<bool> {
 
     // Idle: once session a registered, a message comes, then another once that turn ended; with
     // --all, session b runs at the same time and gets nothing.
-    let b = options.all.then(|| prepare("b", Kind::Idle)).transpose()?;
+    let b = (options.all && wake != Wake::Loop)
+        .then(|| prepare("b", Kind::Idle))
+        .transpose()?;
     let a = prepare("a", Kind::Idle)?;
     let (session_a, session_b) = side_by_side(
         || -> Result<(PtySession, Option<Added>, Option<Added>)> {
             let mut a = a.start()?;
             let first = arrive(&mut a, wake, Kind::Idle)?;
             let second = match &first {
-                Some(_) if options.all => arrive(&mut a, wake, Kind::Idle)?,
+                Some(_) if options.all && wake != Wake::Loop => arrive(&mut a, wake, Kind::Idle)?,
                 _ => None,
             };
             Ok((a.end()?, first, second))
@@ -93,7 +101,7 @@ pub fn wake(wake: Wake, options: &Options) -> Result<bool> {
         "{}",
         check.received("idle session", &session_a, first_sent.as_ref(), false, "")
     );
-    if options.all {
+    if options.all && wake != Wake::Loop {
         let second = sent(&second)?;
         println!(
             "{}",
@@ -114,7 +122,7 @@ pub fn wake(wake: Wake, options: &Options) -> Result<bool> {
         println!("{}", check.other(&session_b, registered, token_a));
     }
 
-    if options.all {
+    if options.all && wake != Wake::Loop {
         // Busy: the message comes once the agent starts the shell command.
         let mut c = prepare("c", Kind::Busy)?.start()?;
         let added = arrive(&mut c, wake, Kind::Busy)?;
@@ -162,13 +170,19 @@ fn arrive(live: &mut Live, wake: Wake, kind: Kind) -> Result<Option<Added>> {
     if kind == Kind::Busy && !live.wait(TURN, PtySession::shell_started)? {
         return Ok(None);
     }
+    // The loop's first turn schedules the prompt; the message comes after it.
+    if wake == Wake::Loop && !live.wait(TURN, turn_ended)? {
+        return Ok(None);
+    }
     let turns = live.session().replies().len();
     let added = live.add(&token())?;
     if wake == Wake::Socket {
         hand_over(live.source(), true, FROM)?;
     }
     live.watch(added.token());
-    live.wait(TURN, |s| {
+    // A scheduled prompt runs within about a minute and a half.
+    let limit = if wake == Wake::Loop { LOOP } else { TURN };
+    live.wait(limit, |s| {
         s.got(added.token()) && turn_ended(s) && s.replies().len() > turns
     })?;
     Ok(Some(added))
@@ -310,7 +324,8 @@ mod tests {
                 .join(".claude-plugin/plugin.json")
                 .is_file()
         );
-        assert_eq!(script(Kind::Idle), []);
-        assert_eq!(script(Kind::Busy), [Call::Shell]);
+        assert_eq!(script(Wake::Socket, Kind::Idle), []);
+        assert_eq!(script(Wake::Mod, Kind::Busy), [Call::Shell]);
+        assert_eq!(script(Wake::Loop, Kind::Idle), [Call::Cron]);
     }
 }

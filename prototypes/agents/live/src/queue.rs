@@ -3,8 +3,12 @@
 //! reaches only a session that keeps running after its turn, so the binary runs Codex's terminal UI
 //! in a pseudo-terminal, as the Channels check runs Claude Code.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+use agent_app_server::{Client, Transport};
+use agent_source::Source;
 
 use serde_json::{Value, json};
 
@@ -87,6 +91,31 @@ pub fn thread(text: &str) -> Option<String> {
         .into_iter::<Value>()
         .map_while(Result::ok)
         .find_map(|input| input["session_id"].as_str().map(String::from))
+}
+
+/// Polls `thread/queue/list` of `client`, an app-server on the session's config home that offers
+/// the experimental methods, at least once, until `thread`'s queue is empty or `limit` passes: Codex's own sign that
+/// a session took the queued message `msg_id` of `source`. Records it as the message's
+/// `queue-taken` signal and returns how long it took.
+pub fn taken<T: Transport, W: Write>(
+    client: &mut Client<T, W>,
+    thread: &str,
+    source: &Source,
+    msg_id: &str,
+    limit: Duration,
+) -> io::Result<Option<Duration>> {
+    let started = Instant::now();
+    loop {
+        let queued = client.call("thread/queue/list", json!({ "threadId": thread }))?;
+        if queued["data"].as_array().is_some_and(Vec::is_empty) {
+            source.record(msg_id, "queue-taken", None)?;
+            return Ok(Some(started.elapsed()));
+        }
+        if started.elapsed() >= limit {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
 }
 
 /// The tokens a session used, from the line Codex's terminal UI prints in `screen`, its output,

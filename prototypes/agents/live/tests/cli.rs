@@ -109,6 +109,8 @@ fn wrong_arguments_print_the_usage() {
         &["socket", "codex"],
         &["rewake", "claude", "--verbose"],
         &["mod", "codex"],
+        &["loop", "claude", "--verbose"],
+        &["gui", "loop", "codex-desktop"],
         &["ack"],
         &["ack", "gemini"],
         &["ack", "codex", "--verbose"],
@@ -1006,7 +1008,7 @@ fn hook_commands(settings: &serde_json::Value, event: &str) -> Vec<Vec<String>> 
 fn wake_sessions_get_only_their_environment_and_register_on_session_start() {
     let handler = Path::new(env!("CARGO_BIN_EXE_live-check")).with_file_name("agent-hook");
     let handler = handler.to_str().unwrap();
-    for (wake, all) in [("socket", 4), ("rewake", 3), ("mod", 3)] {
+    for (wake, all) in [("socket", 4), ("rewake", 3), ("mod", 3), ("loop", 1)] {
         for (flags, sessions) in runs(1, all) {
             let real = flags.contains(&"--real");
             let checked = checked_sessions(
@@ -1047,6 +1049,14 @@ fn wake_sessions_get_only_their_environment_and_register_on_session_start() {
                     .filter(|command| command.get(1).is_some_and(|arg| arg == "--wait"))
                     .count();
                 assert_eq!(rewake, if wake == "rewake" { 2 } else { 0 }, "{at}");
+                // The loop's prompt calls inbox, and `/loop` needs the slash commands.
+                let looped = session.args[0].starts_with("/loop 1m ");
+                assert_eq!(looped, wake == "loop", "{at}");
+                assert_eq!(
+                    session.args.contains(&"--disable-slash-commands".to_owned()),
+                    !looped,
+                    "{at}"
+                );
                 let plugin = session.args.iter().position(|arg| arg == "--plugin-dir");
                 assert_eq!(plugin.is_some(), wake == "mod", "{at}");
                 if let Some(at_plugin) = plugin {

@@ -336,6 +336,8 @@ impl GuiPath {
             Self::Hook(hook) => hook.prompt(kind),
             // Only a reply, as for the `Stop` hook: a loaded channel pushes the message itself.
             Self::Channel => Hook::Stop.prompt(Kind::Idle),
+            // The loop's prompt schedules the polling.
+            Self::Wake(Wake::Loop) => Wake::Loop.prompt(kind).unwrap_or_default(),
             // The first turn, which makes the thread or starts the session; the message's own
             // turn asks for the token.
             Self::Queue | Self::Read | Self::Wake(_) => queue::prompt(kind),
@@ -807,7 +809,7 @@ mod tests {
         Surface::CodexDesktop,
         Surface::CodexVsCode,
     ];
-    const PATHS: [GuiPath; 10] = [
+    const PATHS: [GuiPath; 11] = [
         GuiPath::Inbox,
         GuiPath::Channel,
         GuiPath::Hook(Hook::PostToolUse),
@@ -817,6 +819,7 @@ mod tests {
         GuiPath::Wake(Wake::Socket),
         GuiPath::Wake(Wake::Rewake),
         GuiPath::Wake(Wake::Mod),
+        GuiPath::Wake(Wake::Loop),
         GuiPath::Read,
     ];
 
@@ -1173,6 +1176,10 @@ mod tests {
             for path in [GuiPath::Queue, GuiPath::Read, GuiPath::Wake(Wake::Socket)] {
                 assert_eq!(path.prompt(busy), queue::prompt(kind));
             }
+            assert_eq!(
+                GuiPath::Wake(Wake::Loop).prompt(busy),
+                format!("/loop 1m {}", crate::LOOP_PROMPT)
+            );
         }
     }
 

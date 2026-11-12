@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 
 use crate::channel::{Files, PtySession, Sent, turn_of};
 use crate::hook::Hook;
-use crate::{Agent, Checks, Kind, Options, pretty};
+use agent_inbox::INBOX;
+
+use crate::{Agent, Checks, Kind, LOOP_PROMPT, Options, SERVER, pretty};
 
 /// A path that wakes an idle session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,11 +25,13 @@ pub enum Wake {
     Rewake,
     /// The mod in `prototypes/agents/mod`, loaded with `--plugin-dir`.
     Mod,
+    /// `/loop 1m` polling the `inbox` tool: each minute a scheduled prompt starts a turn.
+    Loop,
 }
 
 impl Wake {
     pub fn parse(name: &str) -> Option<Self> {
-        [Self::Socket, Self::Rewake, Self::Mod]
+        [Self::Socket, Self::Rewake, Self::Mod, Self::Loop]
             .into_iter()
             .find(|wake| wake.name() == name)
     }
@@ -38,12 +42,16 @@ impl Wake {
             Self::Socket => "socket",
             Self::Rewake => "rewake",
             Self::Mod => "mod",
+            Self::Loop => "loop",
         }
     }
 
     /// The prompt of a `kind` session: none for an idle one, which only the path wakes; a busy one
     /// runs `sleep 20`, during which the message comes.
     pub fn prompt(self, kind: Kind) -> Option<String> {
+        if self == Self::Loop {
+            return Some(format!("/loop 1m {LOOP_PROMPT}"));
+        }
         (kind == Kind::Busy).then(|| Hook::PostToolUse.prompt(Kind::Busy))
     }
 }
@@ -55,6 +63,8 @@ pub struct WakeBinaries {
     pub hook: PathBuf,
     /// The mod's plugin directory.
     pub plugin: PathBuf,
+    /// `agent-inbox`, which the loop's prompt calls.
+    pub inbox: PathBuf,
 }
 
 /// How long the `asyncRewake` hook waits for a message before it ends without waking the session.
@@ -144,24 +154,47 @@ pub fn session(
         })),
     )?;
     let mut args: Vec<String> = wake.prompt(kind).into_iter().collect();
-    let tools = if kind == Kind::Busy { "Bash" } else { "" };
-    args.extend(
-        [
-            "--setting-sources",
-            "local",
-            "--strict-mcp-config",
-            "--settings",
-            &settings.to_string_lossy(),
-            "--disable-slash-commands",
-            "--tools",
-            tools,
-            "--permission-mode",
-            "dontAsk",
-            "--effort",
-            "low",
-        ]
-        .map(String::from),
-    );
+    let settings = settings.to_string_lossy();
+    let mut flags = vec![
+        "--setting-sources",
+        "local",
+        "--strict-mcp-config",
+        "--settings",
+        &settings,
+    ];
+    // `/loop` is a bundled skill: the loop's session keeps slash commands.
+    if wake != Wake::Loop {
+        flags.push("--disable-slash-commands");
+    }
+    let tools = match (wake, kind) {
+        (Wake::Loop, _) => "CronCreate",
+        (_, Kind::Busy) => "Bash",
+        (_, Kind::Idle) => "",
+    };
+    flags.extend([
+        "--tools",
+        tools,
+        "--permission-mode",
+        "dontAsk",
+        "--effort",
+        "low",
+    ]);
+    args.extend(flags.into_iter().map(String::from));
+    if wake == Wake::Loop {
+        // The scheduled prompt calls inbox.
+        let servers = files.dir.join("mcp.json");
+        let server = json!({ "command": bins.inbox, "args": [files.source] });
+        fs::write(
+            &servers,
+            pretty(&json!({ "mcpServers": { SERVER: server } })),
+        )?;
+        args.extend([
+            "--mcp-config".to_owned(),
+            servers.to_string_lossy().into_owned(),
+            "--allowedTools".to_owned(),
+            format!("CronCreate mcp__{SERVER}__{INBOX}"),
+        ]);
+    }
     if kind == Kind::Busy {
         args.extend(["--allowedTools".to_owned(), "Bash(sleep:*)".to_owned()]);
     }
@@ -357,11 +390,17 @@ mod tests {
         WakeBinaries {
             hook: "/bin/agent-hook".into(),
             plugin: "/p/mod".into(),
+            inbox: "/bin/agent-inbox".into(),
         }
     }
 
     #[test]
     fn parses_the_paths_and_prompts_only_the_busy_case() {
+        assert_eq!(Wake::parse("loop"), Some(Wake::Loop));
+        assert_eq!(
+            Wake::Loop.prompt(Kind::Idle).unwrap(),
+            format!("/loop 1m {LOOP_PROMPT}")
+        );
         for wake in [Wake::Socket, Wake::Rewake, Wake::Mod] {
             assert_eq!(Wake::parse(wake.name()), Some(wake));
             assert_eq!(wake.prompt(Kind::Idle), None);
@@ -465,6 +504,26 @@ mod tests {
         assert_eq!(
             read_json(files.project.join(".skald/mod.json")),
             json!({ "handler": "/bin/agent-hook", "source": files.source })
+        );
+        let looped = session(&files, Wake::Loop, Kind::Idle, &bins(), None).unwrap();
+        assert_eq!(looped[0], format!("/loop 1m {LOOP_PROMPT}"));
+        assert!(
+            !looped.contains(&"--disable-slash-commands".to_owned()),
+            "{looped:?}"
+        );
+        let mcp = tmp.path().join("mcp.json");
+        assert_eq!(
+            looped[looped.len() - 4..],
+            [
+                "--mcp-config",
+                mcp.to_str().unwrap(),
+                "--allowedTools",
+                "CronCreate mcp__skald__inbox"
+            ]
+        );
+        assert_eq!(
+            read_json(&mcp),
+            json!({ "mcpServers": { "skald": { "command": "/bin/agent-inbox", "args": [files.source] } } })
         );
     }
 

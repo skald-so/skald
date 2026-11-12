@@ -203,7 +203,7 @@ fn usage() -> ExitCode {
          live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check app-server codex [--all] [--real] [--model <model>] [--keep]\n       \
-         live-check <socket|rewake|mod> claude [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check <socket|rewake|mod|loop> claude [--all] [--real] [--model <model>] [--keep]\n       \
          live-check <ack|transcript> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check resend claude [--all] [--model <model>] [--keep]\n       \
          live-check limits <claude|codex> [--keep]\n       \
@@ -213,7 +213,7 @@ fn usage() -> ExitCode {
          live-check gui inbox <codex-desktop|codex-vscode>\n       \
          live-check gui <post-tool-use|stop|queue> <codex-desktop|codex-vscode> [--busy]\n       \
          live-check gui user-prompt-submit <codex-desktop|codex-vscode>\n       \
-         live-check gui <socket|rewake|mod> <claude-desktop|claude-vscode> [--busy]\n       \
+         live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vscode> [--busy]\n       \
          live-check gui socket <claude-desktop|claude-vscode> --bypass\n       \
          live-check gui read <codex-desktop|codex-vscode> [--busy]\n       \
          live-check gui-socket <check-dir> [--no-auth] [--listen <seconds>]\n       \
