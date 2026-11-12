@@ -205,9 +205,20 @@ impl Running {
         events
     }
 
-    /// Waits for the client to exit on its own, its stdin still open.
+    /// Waits for the client to exit on its own, its stdin still open, and returns its output and
+    /// every event it printed. No deadline: it would bound the client's whole run, from its start,
+    /// which a loaded machine can stretch past any fixed one.
     fn stop_after_exit(self) -> (Output, Vec<Value>) {
-        self.exit()
+        let Self {
+            child,
+            stdin,
+            events,
+            mut seen,
+        } = self;
+        let output = child.wait_with_output().unwrap();
+        drop(stdin);
+        seen.extend(events.iter());
+        (output, seen)
     }
 
     /// Waits up to 10 s for the client to exit, and returns its output and every event it printed.
