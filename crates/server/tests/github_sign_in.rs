@@ -369,10 +369,7 @@ fn return_address_stays_on_this_server() {
                 .all(|url| url.starts_with(&server) || url.starts_with(&github)),
             "return_to {to:?}: the browser left the server: {visit:?}"
         );
-        assert!(
-            visit.last().starts_with(&server),
-            "return_to {to:?}: {visit:?}"
-        );
+        assert_eq!(visit.last(), server, "return_to {to:?}: {visit:?}");
     }
     assert!(
         browser.hits(elsewhere).is_empty(),
