@@ -8,13 +8,14 @@ use axum::extract::State;
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router, middleware};
 use serde::Serialize;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
+mod device_flow;
 mod github;
 mod protocol;
 mod sign_in;
@@ -74,8 +75,20 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
     let checked =
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
-        .route("/auth/github", get(sign_in::start))
+        .route(
+            "/auth/device",
+            post(device_flow::authorize).layer(checked(Statement::Header)),
+        )
+        .route(sign_in::START_PATH, get(sign_in::start))
         .route(CALLBACK_PATH, get(sign_in::callback))
+        .route(
+            "/auth/token",
+            post(device_flow::token).layer(checked(Statement::Header)),
+        )
+        .route(
+            device_flow::VERIFICATION_PATH,
+            get(device_flow::page).post(device_flow::decide),
+        )
         .route("/health", get(health))
         .route("/openapi.json", get(openapi_spec))
         .route(
@@ -108,6 +121,18 @@ fn problem(status: StatusCode, kind: &str, title: &str, detail: &str) -> Respons
         body.to_string(),
     )
         .into_response()
+}
+
+/// The answer when the database fails at `doing`, such as `read a session`; the failure also goes
+/// to the server's output.
+fn database_failed(doing: &str, err: impl std::fmt::Display) -> Response {
+    eprintln!("skald-server: cannot {doing}: {err}");
+    problem(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "server-error",
+        "The server failed",
+        "The database failed.",
+    )
 }
 
 /// `Health` and `HealthUnavailable` in the spec.
