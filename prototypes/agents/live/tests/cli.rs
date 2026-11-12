@@ -93,6 +93,11 @@ fn wrong_arguments_print_the_usage() {
         &["gui", "channel", "codex-desktop"],
         &["gui", "stop", "codex-vscode"],
         &["gui", "inbox", "claude-vscode", "--keep"],
+        &["gui", "inbox", "claude-vscode", "--busy", "--busy"],
+        &["gui", "channel", "claude-vscode", "--busy"],
+        &["gui", "inbox", "codex-vscode", "--busy"],
+        &["gui-add"],
+        &["gui-add", "dir", "token"],
         &["gui-result"],
         &["gui-result", "dir"],
     ] {
@@ -646,14 +651,27 @@ fn home_with_claude_code_for_vs_code() -> tempfile::TempDir {
     home
 }
 
+/// Runs `live-check <args>` with only `home` as `HOME` and `tmp` as `TMPDIR`; it must succeed.
+/// Returns its output and the lines of its stdout.
+fn succeeded(home: &Path, tmp: &Path, args: &[&str]) -> (Output, Vec<String>) {
+    let output = live_check_in(home, tmp, args);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let stdout = String::from_utf8(output.stdout.clone()).unwrap();
+    let lines = stdout.lines().map(String::from).collect();
+    (output, lines)
+}
+
+/// The check file of the GUI check prepared in `work`.
+fn gui_check(work: &str) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(Path::new(work).join("check.json")).unwrap()).unwrap()
+}
+
 #[test]
 fn gui_prepares_a_check_without_showing_its_token_and_passes_only_on_it() {
     let home = home_with_claude_code_for_vs_code();
     let tmp = tempfile::tempdir().unwrap();
-    let output = live_check_in(home.path(), tmp.path(), &["gui", "inbox", "claude-vscode"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let lines: Vec<&str> = stdout.lines().collect();
+    let (output, lines) = succeeded(home.path(), tmp.path(), &["gui", "inbox", "claude-vscode"]);
+    let stdout = lines.join("\n");
     let [version, project, prompt, then] = lines.as_slice() else {
         panic!("{stdout}");
     };
@@ -670,11 +688,10 @@ fn gui_prepares_a_check_without_showing_its_token_and_passes_only_on_it() {
     assert_eq!(*project, format!("project: {work}/project"));
     assert!(Path::new(work).join("project/.mcp.json").exists());
 
-    let check: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(Path::new(work).join("check.json")).unwrap())
-            .unwrap();
+    let check = gui_check(work);
     let token = check["token"].as_str().unwrap();
     assert!(!stdout.contains(token), "the token is shown");
+    assert!(!stderr(&output).contains(token), "the token is shown");
 
     let result = |token: &str| live_check_in(home.path(), tmp.path(), &["gui-result", work, token]);
     let waiting = result(token);
@@ -695,8 +712,46 @@ fn gui_prepares_a_check_without_showing_its_token_and_passes_only_on_it() {
     let stdout = String::from_utf8(read.stdout).unwrap();
     assert_eq!(
         stdout,
-        "claude-vscode: Claude Code for VS Code 2.1.322\n  the reported token matches; the message \
-         is handed over\ninbox on claude-vscode with the real model: pass\n"
+        "claude-vscode: Claude Code for VS Code 2.1.322, no session transcript\n  the reported \
+         token matches; the message is handed over\ninbox on claude-vscode with the real model: \
+         pass\n"
+    );
+}
+
+#[test]
+fn gui_adds_the_busy_case_message_without_showing_its_token() {
+    let home = home_with_claude_code_for_vs_code();
+    let tmp = tempfile::tempdir().unwrap();
+    let args = ["gui", "post-tool-use", "claude-vscode", "--busy"];
+    let (_, lines) = succeeded(home.path(), tmp.path(), &args);
+    let [_, _, prompt, add, _] = lines.as_slice() else {
+        panic!("{lines:?}");
+    };
+    assert_eq!(
+        *prompt,
+        format!(
+            "prompt: {}",
+            agent_live::hook::Hook::PostToolUse.prompt(agent_live::Kind::Busy)
+        )
+    );
+    let work = add
+        .strip_prefix("once the shell command runs: live-check gui-add ")
+        .expect("the command that adds the message");
+    let source = Source::open(Path::new(work).join("source")).unwrap();
+    assert!(source.take().unwrap().is_empty(), "added before gui-add");
+
+    let (added, lines) = succeeded(home.path(), tmp.path(), &["gui-add", work]);
+    let check = gui_check(work);
+    let token = check["token"].as_str().unwrap();
+    let [msg_id] = lines.as_slice() else {
+        panic!("{lines:?}");
+    };
+    assert_eq!(msg_id, check["msg_id"].as_str().unwrap());
+    assert!(!msg_id.contains(token) && !stderr(&added).contains(token));
+    assert_eq!(source.state(msg_id).unwrap(), Some(State::Waiting));
+    assert_failed(
+        &live_check_in(home.path(), tmp.path(), &["gui-add", work]),
+        "live-check: the check's message is already added",
     );
 }
 

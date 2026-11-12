@@ -1,7 +1,8 @@
 //! The GUI live checks: a path on a Claude Code or Codex session in a desktop app or an IDE
 //! extension that a developer or reviewer drives. [`prepare`] makes the temporary project with the
-//! surface's config and the message source with the check's message; [`result`] takes the token
-//! they read from the agent's reply. Neither shows the token before the reported one.
+//! surface's config and the message source; [`add`] adds the check's message during a busy
+//! session; [`result`] takes the token they read from the agent's reply. None shows the token
+//! before the reported one.
 
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -12,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::hook::Hook;
 use crate::{
-    Agent, Kind, QUICK, SERVER, add_message, channel, handed_over, inbox_tool, pretty, shell_quote,
-    verdict,
+    Agent, Kind, QUICK, SERVER, add_message, channel, handed_over, handover_delay, inbox_tool,
+    pretty, shell_quote, verdict,
 };
 
 /// The file, in a check's directory, that holds what [`result`] needs, the token too.
@@ -60,17 +61,13 @@ impl Surface {
     }
 
     /// The surface's version line, read from the app's or extension's metadata in `installed`:
-    /// the app's or extension's version and the version of the agent it runs.
+    /// the app's or extension's version and, but for the Claude app, which downloads Claude Code
+    /// when it starts, the version of the agent it runs; [`result`] adds the Claude Code version
+    /// a session ran.
     pub fn version(self, installed: &Installed) -> io::Result<String> {
         let version = match self {
             Self::ClaudeDesktop => {
-                let app = bundle_version(&installed.app("Claude.app"))?;
-                let code = newest_version(
-                    &installed
-                        .home
-                        .join("Library/Application Support/Claude/claude-code"),
-                )?;
-                format!("Claude {app}, Claude Code {code}, the newest the app downloaded")
+                format!("Claude {}", bundle_version(&installed.app("Claude.app"))?)
             }
             // The extension's version is that of the Claude Code it bundles.
             Self::ClaudeVsCode => {
@@ -107,7 +104,7 @@ const CODEX_APP: &str = "com.openai.codex";
 pub struct Installed {
     /// The apps' directory, such as `/Applications`.
     pub applications: PathBuf,
-    /// The user's home: VS Code's extensions and the Claude app's downloads of Claude Code.
+    /// The user's home, with VS Code's extensions.
     pub home: PathBuf,
 }
 
@@ -161,19 +158,6 @@ fn codex_package(dir: &Path) -> io::Result<String> {
         .ok_or_else(|| invalid(format!("{} has no version", path.display())))
 }
 
-/// The newest of the versions, such as `2.1.317`, that name the directories in `dir`.
-fn newest_version(dir: &Path) -> io::Result<String> {
-    let parse = |name: &str| -> Option<Vec<u64>> {
-        name.split('.').map(|part| part.parse().ok()).collect()
-    };
-    fs::read_dir(dir)?
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter_map(|name| Some((parse(&name)?, name)))
-        .max()
-        .map(|(_, name)| name)
-        .ok_or_else(|| invalid(format!("{} holds no version", dir.display())))
-}
-
 /// The only directory in `dir`, such as an extension's platform in its `bin`.
 fn only_dir(dir: &Path) -> io::Result<PathBuf> {
     let dirs: Vec<PathBuf> = fs::read_dir(dir)?
@@ -188,6 +172,39 @@ fn only_dir(dir: &Path) -> io::Result<PathBuf> {
             dirs.len()
         ))),
     }
+}
+
+/// The Claude Code versions that sessions in `project` ran, in the order their transcripts in
+/// `home`'s `.claude/projects/` give them: the `version` of each entry. None without a transcript.
+pub fn session_versions(home: &Path, project: &Path) -> io::Result<Vec<String>> {
+    // Claude Code names a project's directory after its real path, with `-` for each character
+    // but letters and digits.
+    let key: String = fs::canonicalize(project)?
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let dir = home.join(".claude/projects").join(key);
+    let mut versions = Vec::new();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(versions);
+    };
+    let mut transcripts: Vec<PathBuf> = entries
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    transcripts.sort();
+    for transcript in transcripts {
+        for line in fs::read_to_string(transcript)?.lines() {
+            let version = serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|entry| entry["version"].as_str().map(String::from));
+            if let Some(version) = version.filter(|version| !versions.contains(version)) {
+                versions.push(version);
+            }
+        }
+    }
+    Ok(versions)
 }
 
 fn read_json(path: &Path) -> io::Result<Value> {
@@ -233,11 +250,18 @@ impl GuiPath {
         self == Self::Inbox || surface.agent() == Agent::Claude
     }
 
-    /// The prompt the developer or reviewer types.
-    pub fn prompt(self) -> String {
+    /// Whether the GUI check has a busy case on `surface`: `inbox` and the hooks on Claude Code's.
+    pub fn runs_busy_on(self, surface: Surface) -> bool {
+        self != Self::Channel && surface.agent() == Agent::Claude
+    }
+
+    /// The prompt the developer or reviewer types: in the busy case, with a shell command during
+    /// which the message comes.
+    pub fn prompt(self, busy: bool) -> String {
+        let kind = if busy { Kind::Busy } else { Kind::Idle };
         match self {
-            Self::Inbox => Kind::Idle.prompt(),
-            Self::Hook(hook) => hook.prompt(Kind::Idle),
+            Self::Inbox => kind.prompt(),
+            Self::Hook(hook) => hook.prompt(kind),
             // Only a reply, as for the `Stop` hook: a loaded channel pushes the message itself.
             Self::Channel => Hook::Stop.prompt(Kind::Idle),
         }
@@ -264,6 +288,13 @@ pub struct Binaries {
 /// model.
 pub const CODEX_MODEL: &str = "gpt-5.5";
 
+/// The rule that allows the busy case's shell command.
+const BUSY_SHELL: &str = "Bash(sleep:*)";
+
+/// Claude Code's lowest effort: `maxEffortLevel` caps the effort the surface would pick, and the
+/// lowest across settings files wins.
+const LOW: &str = "low";
+
 /// Writes the config that attaches `path`, on the source in `source`, to `surface`'s sessions in
 /// `project`. Only files in `project` change the surface's config: the surfaces take no flags.
 pub fn write_config(
@@ -283,7 +314,8 @@ pub fn write_config(
                     // Without them, Claude Code asks a person to approve the server and each call.
                     json!({
                         "enabledMcpjsonServers": [SERVER],
-                        "permissions": { "allow": [inbox_tool()] },
+                        "permissions": { "allow": [inbox_tool(), BUSY_SHELL] },
+                        "maxEffortLevel": LOW,
                     })
                 }
                 GuiPath::Channel => {
@@ -291,7 +323,7 @@ pub fn write_config(
                         project.join(".mcp.json"),
                         pretty(&server(&binaries.channel)),
                     )?;
-                    json!({ "enabledMcpjsonServers": [SERVER] })
+                    json!({ "enabledMcpjsonServers": [SERVER], "maxEffortLevel": LOW })
                 }
                 GuiPath::Hook(hook) => {
                     // The shell form: Claude Code runs it through the shell.
@@ -302,8 +334,9 @@ pub fn write_config(
                         json!([{ "hooks": [{ "type": "command", "command": command }] }]);
                     json!({
                         "hooks": { hook.event(): handlers },
-                        // Without it, Claude Code asks a person to approve the command.
-                        "permissions": { "allow": [format!("Bash({QUICK})")] },
+                        // Without it, Claude Code asks a person to approve the commands.
+                        "permissions": { "allow": [format!("Bash({QUICK})"), BUSY_SHELL] },
+                        "maxEffortLevel": LOW,
                     })
                 }
             };
@@ -340,7 +373,7 @@ pub struct Prepared {
 
 /// Prepares the GUI check of `path` on `surface`, whose version line is `version`, in `work`: the
 /// project with the surface's config, the source with a message that holds `token`, and the
-/// [`CHECK`] file for [`result`].
+/// [`CHECK`] file for [`add`] and [`result`]. In the `busy` case the message waits for [`add`].
 pub fn prepare(
     work: &Path,
     surface: Surface,
@@ -348,23 +381,54 @@ pub fn prepare(
     binaries: &Binaries,
     version: &str,
     token: &str,
+    busy: bool,
 ) -> io::Result<Prepared> {
     let project = work.join("project");
     let source = work.join("source");
     write_config(&project, surface, path, binaries, &source)?;
-    let message = path.add_message(&Source::open(&source)?, token)?;
+    fs::create_dir_all(&source)?;
     let check = json!({
         "surface": surface.name(),
         "path": path.name(),
         "version": version,
-        "msg_id": message.msg_id,
         "token": token,
+        "busy": busy,
     });
     fs::write(work.join(CHECK), pretty(&check))?;
+    if !busy {
+        add(work)?;
+    }
     Ok(Prepared {
         project,
-        prompt: path.prompt(),
+        prompt: path.prompt(busy),
     })
+}
+
+/// The [`CHECK`] file of the check prepared in `work`, and its string `key`.
+fn read_check(work: &Path) -> io::Result<(Value, impl Fn(&str) -> io::Result<String>)> {
+    let check = read_json(&work.join(CHECK))?;
+    let copy = check.clone();
+    let text = move |key: &str| {
+        copy[key]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| invalid(format!("{CHECK} has no {key}")))
+    };
+    Ok((check, text))
+}
+
+/// Adds the message of the check prepared in `work`, with its token, once.
+pub fn add(work: &Path) -> io::Result<Message> {
+    let (mut check, text) = read_check(work)?;
+    if check.get("msg_id").is_some() {
+        return Err(invalid("the check's message is already added".to_owned()));
+    }
+    let path = GuiPath::parse(&text("path")?)
+        .ok_or_else(|| invalid(format!("{CHECK} has no known path")))?;
+    let message = path.add_message(&Source::open(work.join("source"))?, &text("token")?)?;
+    check["msg_id"] = message.msg_id.clone().into();
+    fs::write(work.join(CHECK), pretty(&check))?;
+    Ok(message)
 }
 
 /// The outcome of a GUI check.
@@ -380,35 +444,61 @@ pub struct Outcome {
 }
 
 /// The outcome of the GUI check prepared in `work`, given the token the developer or reviewer read
-/// from the agent's reply: it passes when the token matches and the message is handed over.
-pub fn result(work: &Path, reported: &str) -> io::Result<Outcome> {
-    let check = read_json(&work.join(CHECK))?;
-    let text = |key: &str| {
-        check[key]
-            .as_str()
-            .map(String::from)
-            .ok_or_else(|| invalid(format!("{CHECK} has no {key}")))
-    };
+/// from the agent's reply: it passes when the token matches and the message is handed over. On
+/// Claude Code's surfaces the version line adds the Claude Code version the session ran, from its
+/// transcript in `home`.
+pub fn result(work: &Path, reported: &str, home: &Path) -> io::Result<Outcome> {
+    let (check, text) = read_check(work)?;
     let token = text("token")?;
-    let state = Source::open(work.join("source"))?.state(&text("msg_id")?)?;
+    let surface = Surface::parse(&text("surface")?)
+        .ok_or_else(|| invalid(format!("{CHECK} has no known surface")))?;
+    let source = Source::open(work.join("source"))?;
+    let message = match check["msg_id"].as_str() {
+        Some(msg_id) => Some((msg_id.to_owned(), source.state(msg_id)?)),
+        None => None,
+    };
     let matches = reported.trim() == token;
-    let pass = matches && handed_over(state);
+    let pass = matches
+        && message
+            .as_ref()
+            .is_some_and(|(_, state)| handed_over(*state));
     let reported = if matches {
         "matches".to_owned()
     } else {
         format!("differs from the check token {token}")
     };
-    let message = match state {
-        Some(State::HandedOver { .. }) => "handed over".to_owned(),
-        other => format!("not handed over (state {other:?})"),
+    let message = match message {
+        None => "never added".to_owned(),
+        Some((msg_id, state @ Some(State::HandedOver { .. }))) => {
+            let mut text = "handed over".to_owned();
+            if check["busy"] == true {
+                let added_at_ms = source.handed(&msg_id)?.added_at_ms;
+                let delay = handover_delay(state, added_at_ms);
+                text.push_str(&format!(" {delay} after it was added"));
+            }
+            text
+        }
+        Some((_, other)) => format!("not handed over (state {other:?})"),
     };
+    let mut version = text("version")?;
+    if surface.agent() == Agent::Claude {
+        let ran = session_versions(home, &work.join("project"))?;
+        if ran.is_empty() {
+            version.push_str(", no session transcript");
+        } else {
+            version.push_str(&format!(
+                ", the session ran Claude Code {}",
+                ran.join(" and ")
+            ));
+        }
+    }
     Ok(Outcome {
-        version: text("version")?,
+        version,
         details: format!("  the reported token {reported}; the message is {message}"),
         verdict: format!(
             "{} on {} with the real model: {}",
             text("path")?,
-            text("surface")?,
+            surface.name(),
             verdict(pass)
         ),
         pass,
@@ -436,8 +526,7 @@ mod tests {
 
     /// The metadata recorded on the test machine, in `tests/surfaces/`, where the surfaces keep
     /// it: the apps' `Info.plist`, the bundled Codex CLIs' `codex-package.json` and VS Code's list
-    /// of extensions, each shortened; the Claude app's downloads of Claude Code as empty
-    /// directories, with one more that names no version.
+    /// of extensions, each shortened.
     fn recorded() -> (tempfile::TempDir, Installed) {
         let root = tempfile::tempdir().unwrap();
         let surfaces = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/surfaces");
@@ -468,12 +557,6 @@ mod tests {
         );
         // A file next to the platform's directory, as the extension's `bin` may hold.
         fs::write(codex.join("bin/README"), "").unwrap();
-        let downloads = installed
-            .home
-            .join("Library/Application Support/Claude/claude-code");
-        for version in ["2.1.309", "2.1.317", "2.1.99", "latest"] {
-            fs::create_dir_all(downloads.join(version)).unwrap();
-        }
         (root, installed)
     }
 
@@ -487,7 +570,7 @@ mod tests {
         assert_eq!(
             versions,
             [
-                "claude-desktop: Claude 4.23118.0, Claude Code 2.1.317, the newest the app downloaded",
+                "claude-desktop: Claude 4.23118.0",
                 "claude-vscode: Claude Code for VS Code 2.1.322",
                 "codex-desktop: ChatGPT 26.1027.51404, codex 0.166.0-alpha.5.1",
                 "codex-vscode: Codex for VS Code 26.1021.22027, codex 0.164.0-alpha.11.1",
@@ -519,13 +602,6 @@ mod tests {
         fs::write(&list, "[]").unwrap();
         let error = Surface::ClaudeVsCode.version(&installed).unwrap_err();
         assert!(error.to_string().contains("not installed"), "{error}");
-        let downloads = installed
-            .home
-            .join("Library/Application Support/Claude/claude-code");
-        fs::remove_dir_all(&downloads).unwrap();
-        fs::create_dir_all(downloads.join("latest")).unwrap();
-        let error = Surface::ClaudeDesktop.version(&installed).unwrap_err();
-        assert!(error.to_string().contains("holds no version"), "{error}");
     }
 
     #[test]
@@ -576,6 +652,11 @@ mod tests {
                     path == GuiPath::Inbox || claude,
                     "{path:?} on {surface:?}"
                 );
+                assert_eq!(
+                    path.runs_busy_on(surface),
+                    path != GuiPath::Channel && claude,
+                    "{path:?} on {surface:?}"
+                );
             }
         }
     }
@@ -618,7 +699,8 @@ mod tests {
                     "type": "command",
                     "command": "'/bin/agent-hook' '/work/source'",
                 }] }] },
-                "permissions": { "allow": ["Bash(true)"] },
+                "permissions": { "allow": ["Bash(true)", "Bash(sleep:*)"] },
+                "maxEffortLevel": "low",
             }))
         };
         let codex = "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"low\"\n\n\
@@ -639,7 +721,8 @@ mod tests {
                             ".claude/settings.local.json",
                             pretty(&json!({
                                 "enabledMcpjsonServers": ["skald"],
-                                "permissions": { "allow": ["mcp__skald__inbox"] },
+                                "permissions": { "allow": ["mcp__skald__inbox", "Bash(sleep:*)"] },
+                                "maxEffortLevel": "low",
                             })),
                         ),
                     ],
@@ -647,7 +730,10 @@ mod tests {
                         (".mcp.json", server("/bin/agent-channel")),
                         (
                             ".claude/settings.local.json",
-                            pretty(&json!({ "enabledMcpjsonServers": ["skald"] })),
+                            pretty(&json!({
+                                "enabledMcpjsonServers": ["skald"],
+                                "maxEffortLevel": "low",
+                            })),
                         ),
                     ],
                     (Agent::Claude, GuiPath::Hook(Hook::PostToolUse)) => {
@@ -671,21 +757,35 @@ mod tests {
 
     #[test]
     fn prompts_as_the_cli_checks() {
-        assert_eq!(GuiPath::Inbox.prompt(), Kind::Idle.prompt());
+        for (busy, kind) in [(false, Kind::Idle), (true, Kind::Busy)] {
+            assert_eq!(GuiPath::Inbox.prompt(busy), kind.prompt());
+            for hook in [Hook::PostToolUse, Hook::Stop] {
+                assert_eq!(GuiPath::Hook(hook).prompt(busy), hook.prompt(kind));
+            }
+        }
         assert_eq!(
-            GuiPath::Hook(Hook::PostToolUse).prompt(),
-            Hook::PostToolUse.prompt(Kind::Idle)
-        );
-        assert_eq!(
-            GuiPath::Hook(Hook::Stop).prompt(),
+            GuiPath::Channel.prompt(false),
             Hook::Stop.prompt(Kind::Idle)
         );
-        assert_eq!(GuiPath::Channel.prompt(), Hook::Stop.prompt(Kind::Idle));
     }
 
-    /// Prepares `path`'s check on `surface` in `work` with `token`.
-    fn prepared(work: &Path, surface: Surface, path: GuiPath, token: &str) -> Prepared {
-        prepare(work, surface, path, &binaries(), "a version line", token).unwrap()
+    /// Prepares `path`'s check on `surface` in `work` with `token`, in the `busy` case or not.
+    fn prepared(work: &Path, surface: Surface, path: GuiPath, token: &str, busy: bool) -> Prepared {
+        prepare(
+            work,
+            surface,
+            path,
+            &binaries(),
+            "a version line",
+            token,
+            busy,
+        )
+        .unwrap()
+    }
+
+    /// A home without transcripts.
+    fn no_home() -> &'static Path {
+        Path::new("/nonexistent/home")
     }
 
     /// Marks every waiting message of the check in `work` handed over, as a path does.
@@ -710,9 +810,9 @@ mod tests {
         ] {
             let work = tempfile::tempdir().unwrap();
             let token = token();
-            let prepared = prepared(work.path(), surface, path, &token);
+            let prepared = prepared(work.path(), surface, path, &token, false);
             assert_eq!(prepared.project, work.path().join("project"));
-            assert_eq!(prepared.prompt, path.prompt());
+            assert_eq!(prepared.prompt, path.prompt(false));
             assert!(!files(&prepared.project).is_empty());
             let source = Source::open(work.path().join("source")).unwrap();
             let taken = source.take().unwrap();
@@ -727,16 +827,102 @@ mod tests {
             assert_eq!(check["msg_id"], taken[0].msg_id);
             assert_eq!(check["surface"], surface.name());
             assert_eq!(check["path"], path.name());
+            assert!(add(work.path()).is_err(), "added twice");
         }
+    }
+
+    #[test]
+    fn adds_the_busy_case_message_only_when_asked() {
+        let work = tempfile::tempdir().unwrap();
+        let token = token();
+        let path = GuiPath::Hook(Hook::Stop);
+        let prepared = prepared(work.path(), Surface::ClaudeVsCode, path, &token, true);
+        assert_eq!(prepared.prompt, path.prompt(true));
+        let source = Source::open(work.path().join("source")).unwrap();
+        assert!(source.take().unwrap().is_empty());
+        let never = result(work.path(), &token, no_home()).unwrap();
+        assert!(!never.pass);
+        assert_eq!(
+            never.details,
+            "  the reported token matches; the message is never added"
+        );
+
+        let message = add(work.path()).unwrap();
+        assert_eq!(message.text, channel::text(&token));
+        assert_eq!(json_at(work.path().join(CHECK))["msg_id"], message.msg_id);
+        assert!(add(work.path()).is_err(), "added twice");
+        let taken = source.take().unwrap();
+        assert_eq!(taken, std::slice::from_ref(&message));
+        source.handed_over(&[message.msg_id]).unwrap();
+        let read = result(work.path(), &token, no_home()).unwrap();
+        assert!(read.pass);
+        let delay = read
+            .details
+            .strip_prefix("  the reported token matches; the message is handed over ")
+            .and_then(|rest| rest.strip_suffix(" s after it was added"))
+            .expect("the handover's delay");
+        assert!(delay.parse::<f64>().is_ok(), "{delay}");
+    }
+
+    #[test]
+    fn reads_the_claude_code_version_a_session_ran() {
+        let home = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let token = token();
+        prepared(
+            work.path(),
+            Surface::ClaudeDesktop,
+            GuiPath::Inbox,
+            &token,
+            false,
+        );
+        let project = fs::canonicalize(work.path().join("project")).unwrap();
+        let key: String = project.to_string_lossy().replace(['/', '_', '.'], "-");
+        let transcripts = home.path().join(".claude/projects").join(key);
+        fs::create_dir_all(&transcripts).unwrap();
+        let recorded = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/surfaces/claude-desktop-transcript.jsonl");
+        fs::copy(&recorded, transcripts.join("a.jsonl")).unwrap();
+        fs::write(transcripts.join("b.txt"), r#"{"version":"9.9.9"}"#).unwrap();
+
+        let outcome = result(work.path(), &token, home.path()).unwrap();
+        assert_eq!(
+            outcome.version,
+            "a version line, the session ran Claude Code 2.1.317"
+        );
+        fs::write(transcripts.join("b.jsonl"), r#"{"version":"2.1.321"}"#).unwrap();
+        assert_eq!(
+            session_versions(home.path(), &work.path().join("project")).unwrap(),
+            ["2.1.317", "2.1.321"]
+        );
+        let none = result(work.path(), &token, no_home()).unwrap();
+        assert_eq!(none.version, "a version line, no session transcript");
+
+        let codex = tempfile::tempdir().unwrap();
+        prepared(
+            codex.path(),
+            Surface::CodexDesktop,
+            GuiPath::Inbox,
+            &token,
+            false,
+        );
+        let outcome = result(codex.path(), &token, home.path()).unwrap();
+        assert_eq!(outcome.version, "a version line");
     }
 
     #[test]
     fn passes_only_when_the_reported_token_matches_and_the_message_is_handed_over() {
         let work = tempfile::tempdir().unwrap();
         let token = token();
-        prepared(work.path(), Surface::ClaudeVsCode, GuiPath::Inbox, &token);
+        prepared(
+            work.path(),
+            Surface::CodexVsCode,
+            GuiPath::Inbox,
+            &token,
+            false,
+        );
 
-        let waiting = result(work.path(), &token).unwrap();
+        let waiting = result(work.path(), &token, no_home()).unwrap();
         assert!(!waiting.pass);
         assert_eq!(
             waiting.details,
@@ -745,11 +931,11 @@ mod tests {
         assert_eq!(waiting.version, "a version line");
         assert_eq!(
             waiting.verdict,
-            "inbox on claude-vscode with the real model: fail"
+            "inbox on codex-vscode with the real model: fail"
         );
 
         hand_over(work.path());
-        let wrong = result(work.path(), "NONE").unwrap();
+        let wrong = result(work.path(), "NONE", no_home()).unwrap();
         assert!(!wrong.pass);
         assert_eq!(
             wrong.details,
@@ -759,7 +945,7 @@ mod tests {
             )
         );
 
-        let read = result(work.path(), &format!(" {token}\n")).unwrap();
+        let read = result(work.path(), &format!(" {token}\n"), no_home()).unwrap();
         assert!(read.pass);
         assert_eq!(
             read.details,
@@ -767,16 +953,16 @@ mod tests {
         );
         assert_eq!(
             read.verdict,
-            "inbox on claude-vscode with the real model: pass"
+            "inbox on codex-vscode with the real model: pass"
         );
     }
 
     #[test]
     fn result_fails_without_a_prepared_check() {
         let work = tempfile::tempdir().unwrap();
-        assert!(result(work.path(), "tok").is_err());
+        assert!(result(work.path(), "tok", no_home()).is_err());
         fs::write(work.path().join(CHECK), "{}").unwrap();
-        let error = result(work.path(), "tok").unwrap_err();
+        let error = result(work.path(), "tok", no_home()).unwrap_err();
         assert!(error.to_string().contains("has no token"), "{error}");
     }
 }

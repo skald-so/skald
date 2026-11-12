@@ -76,16 +76,22 @@ fn main() -> ExitCode {
             };
             ended(subscription::status_line(&options))
         }
-        ["gui", path, surface] => {
+        ["gui", path, surface, busy @ ..] => {
             let (Some(path), Some(surface)) = (GuiPath::parse(path), Surface::parse(surface))
             else {
                 return usage();
             };
+            let busy = match busy {
+                [] => false,
+                ["--busy"] if path.runs_busy_on(surface) => true,
+                _ => return usage(),
+            };
             if !path.runs_on(surface) {
                 return usage();
             }
-            ended(gui_run::prepare(path, surface))
+            ended(gui_run::prepare(path, surface, busy))
         }
+        ["gui-add", work] => ended(gui_run::add(Path::new(work))),
         ["gui-result", work, token] => ended(gui_run::result(Path::new(work), token)),
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
@@ -152,8 +158,10 @@ fn usage() -> ExitCode {
          live-check app-server codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check limits <claude|codex> [--keep]\n       \
          live-check status-line claude [--model <model>] [--keep]\n       \
-         live-check gui <inbox|channel|post-tool-use|stop> <claude-desktop|claude-vscode>\n       \
+         live-check gui <inbox|post-tool-use|stop> <claude-desktop|claude-vscode> [--busy]\n       \
+         live-check gui channel <claude-desktop|claude-vscode>\n       \
          live-check gui inbox <codex-desktop|codex-vscode>\n       \
+         live-check gui-add <check-dir>\n       \
          live-check gui-result <check-dir> <token>\n       \
          live-check timed-hook <log> <handler> [<arg>...]"
     );
