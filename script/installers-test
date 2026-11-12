@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Tests the installers of a release, made by script/release-installers from installers/: served over
+# HTTP as GitHub serves release files (script/lib/serve.mjs), the one of this OS, install.sh on
+# macOS and Linux or install.ps1 on Windows, run as a user runs it, downloads the release's archive
+# for this machine's target and installs skald, so a new shell runs it and prints the release's
+# version. install.sh also adds skald to PATH once when run twice, and its template installs nothing.
+#   script/installers-test: against a stand-in release whose skald prints its version and target,
+#     on macOS and Linux; script/test runs this.
+#   script/installers-test <dir> <tag> <target>: against the release files of <tag> in <dir>,
+#     whose skald prints its version; <target> is the one this machine's archive is built for. The
+#     release workflow's dry run runs this on each runner. On Windows it adds skald to the user's
+#     PATH in the registry, as install.ps1 does, and restores that PATH afterwards.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+failures=0
+
+fail() {
+  echo "installers-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+if [[ $# -ne 0 && $# -ne 3 ]]; then
+  echo "usage: $0 [<dir> <tag> <target>]" >&2
+  exit 2
+fi
+
+tmp=$(mktemp -d)
+server=
+cleanup() {
+  if [[ -n $server ]]; then
+    kill "$server" 2>/dev/null || true
+    wait "$server" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+if [[ $# -eq 3 ]]; then
+  release=$1 tag=$2 target=$3
+  expected="skald ${tag#v}"
+else
+  # The stand-in release: an archive of each macOS and Linux target, laid out as dist lays it out,
+  # with a skald that prints its target too, and the installers.
+  version=$(awk -F'"' '/^\[/ { section = $0 } section == "[workspace.package]" && /^version *=/ { print $2; exit }' \
+    "$root/Cargo.toml")
+  tag=v$version
+  case $(uname -s)/$(uname -m) in
+    Darwin/arm64) target=aarch64-apple-darwin ;;
+    Darwin/x86_64) target=x86_64-apple-darwin ;;
+    Linux/aarch64) target=aarch64-unknown-linux-gnu ;;
+    Linux/x86_64) target=x86_64-unknown-linux-gnu ;;
+    *)
+      echo "installers-test: no stand-in release for $(uname -s) on $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+  release=$tmp/release
+  mkdir -p "$release"
+  for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+    mkdir "$tmp/skald-client-$t"
+    printf '#!/bin/sh\necho "skald %s %s"\n' "$version" "$t" >"$tmp/skald-client-$t/skald"
+    chmod 755 "$tmp/skald-client-$t/skald"
+    tar -czf "$release/skald-client-$t.tar.gz" -C "$tmp" "skald-client-$t"
+  done
+  "$root/script/release-installers" "$tag" "$release"
+  expected="skald $version $target"
+fi
+
+node "$root/script/lib/serve.mjs" "$release" >"$tmp/requests" &
+server=$!
+for _ in $(seq 50); do
+  [[ ! -s $tmp/requests ]] || break
+  sleep 0.1
+done
+port=$(head -n 1 "$tmp/requests")
+[[ $port =~ ^[0-9]+$ ]] || {
+  echo "installers-test: the server of the release files did not start" >&2
+  exit 1
+}
+url=http://127.0.0.1:$port
+
+# requested <archive>: the installer downloaded <archive>, and no other archive.
+requested() {
+  local archives
+  archives=$(tail -n +2 "$tmp/requests" | grep -E '\.(tar\.gz|zip)$' | sort -u | tr '\n' ' ')
+  [[ $archives == "/$1 " ]] || fail "the installer downloads $1 for $target, not: ${archives:-nothing}"
+}
+
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*)
+    # In PowerShell: the user's PATH in the registry, and a new shell's PATH from it.
+    user_path='(Get-Item HKCU:\Environment).GetValue("Path", "", "DoNotExpandEnvironmentNames")'
+    new_shell='$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")'
+    saved=$(powershell -NoProfile -Command "$user_path" | tr -d '\r')
+    restore() {
+      SAVED=$saved powershell -NoProfile -Command \
+        'Set-ItemProperty -Path HKCU:\Environment -Name Path -Type ExpandString -Value $env:SAVED'
+      cleanup
+    }
+    trap restore EXIT
+    if powershell -NoProfile -Command "$new_shell; Get-Command skald" >/dev/null 2>&1; then
+      fail "a new shell runs skald before the installer runs"
+    fi
+    mkdir "$tmp/local"
+    if ! LOCALAPPDATA=$(cygpath -w "$tmp/local") SKALD_DOWNLOAD_URL=$url powershell -NoProfile \
+      -ExecutionPolicy Bypass -Command 'irm "$env:SKALD_DOWNLOAD_URL/install.ps1" | iex'; then
+      fail "install.ps1 failed"
+    fi
+    requested "skald-client-$target.zip"
+    output=$("$tmp/local/Programs/skald/skald.exe" --version 2>&1 | tr -d '\r') || true
+    [[ $output == "$expected" ]] || fail "the installed skald.exe prints '$output', not '$expected'"
+    output=$(powershell -NoProfile -Command "$new_shell; skald --version" 2>&1 | tr -d '\r') || true
+    [[ $output == "$expected" ]] || fail "a new shell's skald --version prints '$output', not '$expected'"
+    ;;
+  *)
+    home=$tmp/home
+    mkdir "$home"
+    # A new shell of the user: the system's PATH, and the user's profiles in $home.
+    clean=(env -i "HOME=$home" PATH=/usr/bin:/bin)
+    if "${clean[@]}" bash -lc 'command -v skald' >/dev/null 2>&1; then
+      fail "a new shell runs skald before the installer runs"
+    fi
+    # As a user runs it: curl | sh.
+    for run in 1 2; do
+      if ! "${clean[@]}" "SKALD_DOWNLOAD_URL=$url" sh -c \
+        'curl -fsSL "$SKALD_DOWNLOAD_URL/install.sh" | sh'; then
+        fail "install.sh failed, run $run"
+      fi
+    done
+    requested "skald-client-$target.tar.gz"
+    output=$("$home/.local/bin/skald" --version 2>&1) || true
+    [[ $output == "$expected" ]] || fail "the installed skald prints '$output', not '$expected'"
+    shells=('sh -lc' 'bash -lc' 'bash -ic')
+    if "${clean[@]}" sh -c 'command -v zsh' >/dev/null; then shells+=('zsh -c'); fi
+    for shell in "${shells[@]}"; do
+      # shellcheck disable=SC2086 # the shell and its options
+      output=$("${clean[@]}" $shell 'skald --version' 2>/dev/null) || true
+      [[ $output == "$expected" ]] || fail "a new shell, $shell, prints '$output', not '$expected'"
+    done
+    for profile in "$home"/.profile "$home"/.bashrc "$home"/.zshenv; do
+      [[ -f $profile ]] || continue
+      count=$(grep -c '\.local/bin' "$profile" || true)
+      [[ $count == 1 ]] || fail "${profile#"$home"/} adds skald to PATH $count times after two runs"
+    done
+
+    # The template, not made for a release, stops before it installs anything.
+    mkdir "$tmp/template"
+    if env -i "HOME=$tmp/template" PATH=/usr/bin:/bin "SKALD_DOWNLOAD_URL=$url" \
+      sh "$root/installers/install.sh" 2>/dev/null; then
+      fail "the template of install.sh runs"
+    fi
+    [[ -z $(ls -A "$tmp/template") ]] || fail "the template of install.sh changes the home directory"
+    ;;
+esac
+
+if ((failures > 0)); then
+  echo "installers-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "installers-test: all cases passed"

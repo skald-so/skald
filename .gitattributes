@@ -3,3 +3,8 @@
 
 # Prettier and the generated API client check compare bytes: keep the web UI in LF on every platform.
 web/** text=auto eol=lf
+
+# Bash runs the scripts on Windows runners too, and a release's installers are the same bytes on
+# every platform: LF only.
+script/** text eol=lf
+installers/** text eol=lf

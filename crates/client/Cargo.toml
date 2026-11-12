@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# dist builds and releases this package only: dist-workspace.toml.
+[package.metadata.dist]
+dist = true
+
 [[bin]]
 name = "skald"
 path = "src/main.rs"

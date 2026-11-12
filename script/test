@@ -7,8 +7,8 @@
 #            delivery prototypes in prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  copied code in script/; tests of the scripts in script/, of the edge image workflow, of
-#            the Release PR workflow and its release tags, and of the release workflow; Renovate
-#            config validation
+#            the Release PR workflow and its release tags, of the release workflow and its release
+#            notes, and of the installers in installers/ on this machine; Renovate config validation
 #   rust and tooling both: the Release PR and the release tags on fixture repositories, with
 #            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
@@ -207,7 +207,11 @@ if checks rust || checks tooling; then
   script/release-tag-test
 fi
 
-# The release workflow: what it publishes to GitHub Releases, on which events and with which rules.
+# The release workflow: what it publishes to GitHub Releases, on which events and with which rules;
+# its publishing step, the release notes, and the installers against a stand-in release.
 if checks tooling; then
   script/release-workflow-test
+  script/release-step-test
+  script/release-notes-test
+  script/installers-test
 fi

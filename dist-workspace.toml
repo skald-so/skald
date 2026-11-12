@@ -1,0 +1,28 @@
+# dist: builds the release archives of skald and a checksum of each, run by
+# .github/workflows/release.yml. Docs: https://axodotdev.github.io/cargo-dist/book/reference/config.html
+# The workflow is this repository's own, not one dist generates, so dist manages no CI and no
+# installers: installers/ holds install.sh and install.ps1.
+
+[workspace]
+members = ["cargo:."]
+
+[dist]
+# The dist the workflow builds; dist refuses to run under another version.
+cargo-dist-version = "0.34.0"
+# Only skald, crates/client: `dist = true` in its Cargo.toml. skald-server ships as the image.
+dist = false
+# Only the package's own crates, not the whole workspace.
+precise-builds = true
+targets = [
+  "aarch64-apple-darwin",
+  "aarch64-pc-windows-msvc",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+]
+# gzip, not xz: every tar unpacks it.
+unix-archive = ".tar.gz"
+checksum = "sha256"
+installers = []
+source-tarball = false
