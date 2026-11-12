@@ -450,6 +450,24 @@ fn merges_with_several_merge_bases_are_counted() {
     let replays = replays(&maintainer);
     let bases: Vec<usize> = replays.iter().map(|replay| replay.bases).collect();
     assert_eq!(bases, [2, 1, 1, 1]);
+    // The replay takes the first merge base `git merge-base --all` gives, Alice's commit or
+    // Bob's. From it, both sides change the other's file, the same way.
+    let last = &replays[0];
+    let dir = maintainer.dir();
+    let [first, other] = [&last.parents[0], &last.parents[1]];
+    let all = git::run(dir, &["merge-base", "--all", first, other]).unwrap();
+    let all: Vec<&str> = std::str::from_utf8(&all).unwrap().lines().collect();
+    assert_eq!(all.len(), 2);
+    assert_eq!(last.base, all[0]);
+    let alice_commit = git::line(dir, &["rev-parse", "origin/cross-a^1"]).unwrap();
+    let file = if last.base == alice_commit {
+        ".gitignore"
+    } else {
+        "docs/guide.md"
+    };
+    let file: std::collections::BTreeSet<String> = [file.to_owned()].into();
+    assert_eq!(last.warnings[Level::File as usize], file);
+    assert_eq!(last.same, file);
     let repository = Repository {
         name: "cross",
         url: "https://example.com/cross",
@@ -578,4 +596,57 @@ fn the_same_change_on_both_sides_is_counted() {
         (counts.warnings, counts.same)
     });
     assert_eq!(same, [(2, 1), (1, 1), (1, 1)]);
+}
+
+#[test]
+fn measure_fetches_a_repository_at_its_commit_and_replays_its_merges() {
+    let tmp = TempDir::new().unwrap();
+    let maintainer = fixture(&tmp);
+    let dir = maintainer.dir();
+    let upstream = dir.parent().unwrap().join("upstream.git");
+    // Fetched at the merge before the last one, whose history has 11 merges of two parents.
+    let commit = git::line(dir, &["rev-parse", "HEAD^1"]).unwrap();
+    let leak = |text: String| -> &'static str { Box::leak(text.into_boxed_str()) };
+    let repository = |merges| Repository {
+        name: "fixture",
+        url: leak(upstream.to_str().unwrap().to_owned()),
+        commit: leak(commit.clone()),
+        merges,
+    };
+    let fetched = TempDir::new().unwrap();
+    let eleven = repository(11);
+    let measured = replay::measure(fetched.path(), &eleven, 2, |_| ()).unwrap();
+    let replayed: Vec<&str> = measured.replays.iter().map(|r| r.merge.as_str()).collect();
+    assert_eq!(replayed, replay::merges(dir, &commit, 100).unwrap());
+    assert_eq!(measured.times.len(), replay::LARGEST);
+    let other = TempDir::new().unwrap();
+    assert!(replay::measure(other.path(), &repository(12), 2, |_| ()).is_err());
+}
+
+#[test]
+fn the_header_names_the_machine_and_the_git_version() {
+    let tmp = TempDir::new().unwrap();
+    let header = replay::header(tmp.path()).unwrap();
+    let version = git::line(tmp.path(), &["version"]).unwrap();
+    let cpus = std::thread::available_parallelism().unwrap().get();
+    let os = format!("{} {}, ", std::env::consts::OS, std::env::consts::ARCH);
+    let lines: Vec<&str> = header.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].starts_with(&format!("Machine: {os}")));
+    assert!(lines[0].ends_with(&format!(", {cpus} CPUs")));
+    assert_eq!(lines[1], format!("Git: {version}"));
+    assert_eq!(lines[2], "");
+    // On macOS the machine names the CPU that `sysctl` gives.
+    if cfg!(target_os = "macos") {
+        let output = std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let cpu = String::from_utf8(output.stdout).unwrap();
+        let cpu = cpu.trim();
+        assert!(!cpu.is_empty());
+        assert_eq!(lines[0], format!("Machine: {os}{cpu}, {cpus} CPUs"));
+    }
 }

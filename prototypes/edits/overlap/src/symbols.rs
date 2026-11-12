@@ -113,7 +113,8 @@ impl Language {
 
 /// The innermost symbol enclosing each line of `source`, a file in `language`: the first item for
 /// its first line. A line outside every symbol has none.
-pub fn innermost(language: Language, source: &[u8]) -> Result<Vec<Option<Symbol>>> {
+#[cfg(test)]
+fn innermost(language: Language, source: &[u8]) -> Result<Vec<Option<Symbol>>> {
     let (symbols, lines) = index(language, source)?;
     Ok(lines
         .into_iter()
@@ -136,7 +137,7 @@ pub fn enclosing(
 }
 
 /// The symbols of `source`, a file in `language`, and for each of its lines the index of the
-/// innermost one enclosing it, as [`innermost`] gives them.
+/// innermost one enclosing it, or none for a line outside every symbol.
 fn index(language: Language, source: &[u8]) -> Result<(Vec<Symbol>, Vec<Option<usize>>)> {
     let mut parser = Parser::new();
     parser.set_language(&language.grammar())?;

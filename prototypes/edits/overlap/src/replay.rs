@@ -244,6 +244,69 @@ pub struct Measured<'r> {
     pub times: Vec<Duration>,
 }
 
+/// Fetches `repository` at its commit into a bare repository in `tmp`, replays its merges on
+/// `jobs` threads, calling `progress` as [`replay_all`] does, then times its largest sides one
+/// after another. Fails when the repository has fewer merges than `repository` says.
+pub fn measure<'r>(
+    tmp: &Path,
+    repository: &'r Repository,
+    jobs: usize,
+    progress: impl Fn(usize) + Sync,
+) -> Result<Measured<'r>> {
+    let dir = tmp.join(format!("{}.git", repository.name));
+    let path = dir.to_str().ok_or("a path that is not UTF-8")?;
+    git::run(tmp, &["init", "--quiet", "--bare", path])?;
+    let (url, commit) = (repository.url, repository.commit);
+    git::run(&dir, &["fetch", "--quiet", "--no-tags", url, commit])?;
+    let scope = git::scope_of(&dir, commit)?;
+    let merges = merges(&dir, commit, repository.merges)?;
+    if merges.len() != repository.merges {
+        return Err(format!(
+            "{} has {} merges of two parents, not {}",
+            repository.name,
+            merges.len(),
+            repository.merges
+        )
+        .into());
+    }
+    let replays = replay_all(&dir, &scope, &merges, jobs, progress)?;
+    let times = cost(&dir, &scope, &replays)?;
+    Ok(Measured {
+        repository,
+        replays,
+        times,
+    })
+}
+
+/// Where macOS keeps `sysctl`, which names its CPU; it is not in the default search path of a
+/// command without a `PATH`.
+const SYSCTL: &str = "/usr/sbin/sysctl";
+
+/// The operating system, the architecture, the CPU where `sysctl` names it, as on macOS, and the
+/// number of CPUs.
+pub fn machine() -> String {
+    let cpu = std::process::Command::new(SYSCTL)
+        .args(["-n", "machdep.cpu.brand_string"])
+        .env_clear()
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    let cpus = std::thread::available_parallelism().map_or(0, |cpus| cpus.get());
+    format!(
+        "{} {}, {}{cpus} CPUs",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        cpu.map(|cpu| format!("{cpu}, ")).unwrap_or_default()
+    )
+}
+
+/// The lines [`report`] goes after: the [`machine`] and the version of `git`, run in `dir`.
+pub fn header(dir: &Path) -> Result<String> {
+    let git = git::line(dir, &["version"])?;
+    Ok(format!("Machine: {}\nGit: {git}\n\n", machine()))
+}
+
 /// What a level finds on replayed merges, counted in files and in merges.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Counts {
