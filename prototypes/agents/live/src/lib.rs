@@ -690,11 +690,17 @@ pub struct Run {
     pub stderr: PathBuf,
 }
 
-/// Why a session ended badly, if it did: it was stopped after `timeout`, or its CLI failed.
-pub fn session_failure(timed_out: bool, timeout: Duration, status: ExitStatus) -> Option<String> {
+/// Why a session ended badly, if it did: it was stopped after `timeout`, or its CLI failed but
+/// not as `expected`.
+pub fn session_failure(
+    timed_out: bool,
+    timeout: Duration,
+    status: ExitStatus,
+    expected: bool,
+) -> Option<String> {
     if timed_out {
         Some(format!("timed out after {} s", timeout.as_secs()))
-    } else if status.success() {
+    } else if status.success() || expected {
         None
     } else {
         Some(status.to_string())
@@ -1799,17 +1805,23 @@ mod tests {
         let ok = ExitStatus::from_raw(0);
         let failed = ExitStatus::from_raw(1 << 8);
         let killed = ExitStatus::from_raw(9);
-        assert_eq!(session_failure(false, timeout, ok), None);
+        assert_eq!(session_failure(false, timeout, ok, false), None);
         assert_eq!(
-            session_failure(false, timeout, failed),
+            session_failure(false, timeout, failed, false),
             Some("exit status: 1".to_owned())
         );
         assert_eq!(
-            session_failure(true, timeout, killed),
+            session_failure(true, timeout, killed, false),
             Some("timed out after 300 s".to_owned())
         );
         assert_eq!(
-            session_failure(true, timeout, ok),
+            session_failure(true, timeout, ok, false),
+            Some("timed out after 300 s".to_owned())
+        );
+        // A failing exit the check expects is none; a timeout still is one.
+        assert_eq!(session_failure(false, timeout, failed, true), None);
+        assert_eq!(
+            session_failure(true, timeout, killed, true),
             Some("timed out after 300 s".to_owned())
         );
     }

@@ -225,8 +225,9 @@ struct Recorded {
 }
 
 /// Puts stand-ins for `claude` and `codex` in `bin`: they answer `--version` and otherwise record
-/// their arguments and environment in `record/<cli>-<pid>` and end the session without output.
-fn stand_ins(bin: &Path, record: &Path) {
+/// their arguments and environment in `record/<cli>-<pid>` and end the session without output,
+/// with the status `exit`.
+fn stand_ins(bin: &Path, record: &Path, exit: u8) {
     for cli in ["claude", "codex"] {
         let script = format!(
             "#!/bin/sh\n\
@@ -234,7 +235,8 @@ fn stand_ins(bin: &Path, record: &Path) {
              dir='{}/{cli}-'$$\n\
              mkdir \"$dir\"\n\
              printf '%s\\n' \"$@\" >\"$dir/args\"\n\
-             env >\"$dir/env\"\n",
+             env >\"$dir/env\"\n\
+             exit {exit}\n",
             record.display()
         );
         let path = bin.join(cli);
@@ -294,6 +296,19 @@ fn sessions_of(
     command: &[&str],
     flags: &[&str],
 ) -> (Vec<Recorded>, String, tempfile::TempDir) {
+    let (output, path, dir) = with_stand_ins(command, flags, 0);
+    // The stand-in ends each session at once, so the check fails.
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    (recorded(&dir.path().join("record"), agent.cli()), path, dir)
+}
+
+/// Runs `live-check <command> <flags>` as [`sessions_of`] does, with stand-ins that end each
+/// session with the status `exit`; returns its output, its `PATH` and the run's directory.
+fn with_stand_ins(
+    command: &[&str],
+    flags: &[&str],
+    exit: u8,
+) -> (Output, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let (bin, record, tmp) = (
         dir.path().join("bin"),
@@ -303,7 +318,7 @@ fn sessions_of(
     for dir in [&bin, &record, &tmp] {
         fs::create_dir(dir).unwrap();
     }
-    stand_ins(&bin, &record);
+    stand_ins(&bin, &record, exit);
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
         .args(command)
@@ -315,9 +330,7 @@ fn sessions_of(
         .envs(SIGN_IN)
         .output()
         .expect("live-check runs");
-    // The stand-in ends each session at once, so the check fails.
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    (recorded(&record, agent.cli()), path, dir)
+    (output, path, dir)
 }
 
 /// The sessions of one run of `live-check`, as the stand-in CLI recorded them.
@@ -1178,6 +1191,20 @@ fn wake_sessions_get_only_their_environment_and_register_on_session_start() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn a_session_meant_to_fail_is_not_reported_as_failed() {
+    for agent in [Agent::Claude, Agent::Codex] {
+        let (output, _, _dir) = with_stand_ins(&["transcript", agent.cli(), "--all"], &[], 1);
+        let errors = stderr(&output);
+        // Session a's CLI should succeed; session b's stub fails each request.
+        assert!(
+            errors.contains("live-check: session a exit status: 1; see "),
+            "{errors}"
+        );
+        assert!(!errors.contains("session b"), "{errors}");
     }
 }
 

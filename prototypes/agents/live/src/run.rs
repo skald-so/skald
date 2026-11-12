@@ -262,7 +262,9 @@ pub(crate) fn run_session(
         }
     }
     let status = child.wait()?;
-    if let Some(failure) = session_failure(timed_out, TIMEOUT, status) {
+    // A session on a stub that fails each request is meant to fail.
+    let expected = stub.is_some_and(Stub::fails);
+    if let Some(failure) = session_failure(timed_out, TIMEOUT, status, expected) {
         eprintln!(
             "live-check: session {} {failure}; see {}",
             run.name,

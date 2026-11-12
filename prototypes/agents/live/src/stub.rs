@@ -209,6 +209,7 @@ impl StubLog {
 #[derive(Debug)]
 pub struct Stub {
     addr: SocketAddr,
+    script: &'static [Call],
     log: Arc<Mutex<StubLog>>,
     stop: Arc<AtomicBool>,
 }
@@ -231,7 +232,17 @@ impl Stub {
                 thread::spawn(move || serve(stream, script, &log));
             }
         });
-        Ok(Self { addr, log, stop })
+        Ok(Self {
+            addr,
+            script,
+            log,
+            stop,
+        })
+    }
+
+    /// Whether it fails each request to the model: its script starts with [`Call::Fail`].
+    pub fn fails(&self) -> bool {
+        self.script.first() == Some(&Call::Fail)
     }
 
     /// The base URL of the stub.
@@ -811,6 +822,13 @@ mod tests {
             )
         );
         assert_eq!(log.requests.len(), 2);
+    }
+
+    #[test]
+    fn tells_a_stub_that_fails_each_request() {
+        assert!(Stub::start(&[Call::Fail]).unwrap().fails());
+        assert!(!Stub::start(&[Call::Quick, Call::Fail]).unwrap().fails());
+        assert!(!Stub::start(&[]).unwrap().fails());
     }
 
     #[test]
