@@ -749,8 +749,8 @@ const CLASSED_PAIRS: [[Branch; 2]; 9] = [
             &[("app/migrations/0002_bob.py", 1, MIGRATION)],
         ),
     ],
-    // Migrations of different numbers in one directory, and the same line of another
-    // migration: a conflict.
+    // Migrations of different numbers in one directory, one of the same number in another, and
+    // the same line of another migration: a conflict.
     [
         (
             "shared-a",
@@ -765,6 +765,7 @@ const CLASSED_PAIRS: [[Branch; 2]; 9] = [
             2,
             &[
                 ("app/migrations/0004_bob.py", 1, MIGRATION),
+                ("lib/migrations/0003_bob.py", 1, MIGRATION),
                 ("app/migrations/0001_initial.py", 1, "initial = None"),
             ],
         ),
