@@ -2,5 +2,6 @@
 *
 !Cargo.toml
 !Cargo.lock
+!repository.rs
 !api/openapi.json
 !crates/

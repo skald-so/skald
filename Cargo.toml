@@ -6,3 +6,16 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+
+# The repository as a package, for release-plz: it counts a PR toward a package only when the PR
+# changes the package's files, and this package has every file outside the crates. Its CHANGELOG.md
+# is the one of the release: release-plz.toml.
+[package]
+name = "skald-repository"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "repository.rs"

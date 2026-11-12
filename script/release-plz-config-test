@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Tests release-plz.toml against the workspace: the root package's changelog_include lists every
+# other crate of the workspace, so CHANGELOG.md lists the PRs that change only a crate, a new crate
+# included. script/release-plz-test runs release-plz with the config on the crates there are.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+# The crates of the workspace but the root package, one name per line.
+crates=$(cargo metadata --no-deps --offline --format-version 1 --manifest-path "$root/Cargo.toml" |
+  jq -r --arg root "$root/Cargo.toml" '.packages[] | select(.manifest_path != $root) | .name' | sort)
+# The names in changelog_include, one per line.
+included=$(awk '
+  /^changelog_include *= *\[/ { inside = 1 }
+  inside { line = $0; while (match(line, /"[^"]*"/)) { print substr(line, RSTART + 1, RLENGTH - 2); line = substr(line, RSTART + RLENGTH) } }
+  inside && /\]/ { inside = 0 }
+' "$root/release-plz.toml" | sort)
+
+if [[ -z $crates || $included != "$crates" ]]; then
+  echo "release-plz-config-test: changelog_include in release-plz.toml must list the crates" \
+    "$(paste -sd ' ' - <<<"$crates"); it lists: $(paste -sd ' ' - <<<"$included")" >&2
+  exit 1
+fi
+echo "release-plz-config-test: all cases passed"

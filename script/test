@@ -2,9 +2,9 @@
 # Builds the workspace and runs every check. Exits 0 only if all of them pass.
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     copied code in crates/ and prototypes/ (script/duplicates); build, fmt, clippy, tests
-#            with PostgreSQL, cargo-deny; the MLS prototypes in prototypes/mls
-#            and their benchmarks' smoke run, natively and in WASM; the delivery prototypes in
-#            prototypes/agents; the edit comparison prototype in prototypes/edits;
+#            with PostgreSQL, cargo-deny; the crates release-plz.toml lists; the MLS prototypes in
+#            prototypes/mls and their benchmarks' smoke run, natively and in WASM; the delivery
+#            prototypes in prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  copied code in script/; tests of the scripts in script/, of the edge image workflow and
 #            of the Release PR workflow; the Release PR on fixture repositories, with release-plz;
@@ -106,6 +106,7 @@ if checks rust; then
 
   cargo deny --locked check advisories licenses
   script/deny-test
+  script/release-plz-config-test
   script/image-test
 
   # The MLS prototypes: a workspace of their own, apart from the product crates (script/deny-test).
