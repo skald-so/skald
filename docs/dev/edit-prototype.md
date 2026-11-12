@@ -7,7 +7,7 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
 - Run: `cargo test --manifest-path prototypes/edits/Cargo.toml`; it needs `git` ([CONTRIBUTING.md](../../CONTRIBUTING.md), "Requirements"). `script/test` runs it.
-- Commands: each runs with `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin <command>`, in a temporary directory, deleted at the end, also on an error. It prints its findings in Markdown after the machine and the git version; progress goes to the standard error. A rerun gives the same tables, times aside. `script/test` runs none of them; their tests run the same code on fixture repositories ([Scenarios](#scenarios)).
+- Commands: each runs with `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin <command>`, in a temporary directory, deleted at the end, also on an error. It prints its findings in Markdown after the machine and the git version; progress, where a command shows any, goes to the standard error; `spellings` shows none. A rerun gives the same tables, times aside. `script/test` runs none of them; their tests run the same code on fixture repositories ([Scenarios](#scenarios)).
 
 ## Scenarios
 | Scenario | Checks |
