@@ -6,8 +6,9 @@
 #            prototypes in prototypes/mls and their benchmarks' smoke run, natively and in WASM; the
 #            delivery prototypes in prototypes/agents; the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
-#   tooling  copied code in script/; tests of the scripts in script/, of the edge image workflow and
-#            of the Release PR workflow and its release tags; Renovate config validation
+#   tooling  copied code in script/; tests of the scripts in script/, the staging deploy's against a
+#            local sshd, of the edge image and staging deploy workflow and of the Release PR workflow
+#            and its release tags; Renovate config validation
 #   rust and tooling both: the Release PR and the release tags on fixture repositories, with
 #            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
@@ -75,6 +76,15 @@ if checks rust; then
       "and git check-attr --source: https://git-scm.com" >&2
     exit 1
   fi
+fi
+if checks tooling; then
+  for tool in ssh ssh-keygen sshd; do
+    if ! command -v "$tool" >/dev/null && [[ ! -x /usr/sbin/$tool ]]; then
+      echo "script/test: $tool is missing; the staging deploy's test runs a local sshd: https://www.openssh.com" \
+        "(Debian and Ubuntu: the openssh-client and openssh-server packages)" >&2
+      exit 1
+    fi
+  done
 fi
 if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
@@ -170,6 +180,7 @@ if checks tooling; then
   script/changed-parts-test
   script/mutants-test
   script/tag-edge-test
+  script/deploy-staging-test
   script/edge-workflow-test
   script/release-plz-workflow-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.

@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# Tests script/deploy-staging on a scratch repository against a local sshd whose key runs a stand-in
+# for the deploy command, as on staging: for the head of dev on origin it runs exactly
+# `deploy <digest>` over SSH with the key, pins the host key and passes only when the deploy passes;
+# for an older commit, staging stays; another host key, an unauthorized key, an unreachable address,
+# malformed input or secrets and an origin without dev fail without a deploy. Its output shows the
+# commit, the digest and the deploy's output, never a secret or the address, and it leaves no file.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/dev-origin.sh"
+tmp=$(mktemp -d)
+sshd_pid=
+trap '[[ -z $sshd_pid ]] || kill "$sshd_pid" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "deploy-staging-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+digest=sha256:$(printf '%064d' 1)
+
+# The keys: the host's, another host's, the deploy key and a key the host does not authorize.
+for key in host other-host client stranger; do
+  ssh-keygen -q -t ed25519 -N '' -C "$key" -f "$tmp/$key"
+done
+
+# The stand-in for the deploy command, the key's forced command: it records SSH's command in
+# $tmp/command, prints the deploy's steps and exits with the code in $tmp/deploy-status, 0 without it.
+cat >"$tmp/deploy" <<EOF
+#!/bin/sh
+printf '%s' "\$SSH_ORIGINAL_COMMAND" >"$tmp/command"
+echo "deploy: digest \${SSH_ORIGINAL_COMMAND#deploy }"
+if [ -e "$tmp/deploy-status" ]; then
+  echo "deploy: health check: HTTP 502"
+  echo "deploy: FAILED: health check"
+  exit "\$(cat "$tmp/deploy-status")"
+fi
+echo "deploy: health check: ok"
+echo "deploy: passed"
+EOF
+chmod +x "$tmp/deploy"
+printf 'restrict,command="%s" %s\n' "$tmp/deploy" "$(cat "$tmp/client.pub")" >"$tmp/authorized_keys"
+
+# sshd as this user on a free local port, only with the deploy key.
+sshd=$(command -v sshd || echo /usr/sbin/sshd)
+cat >"$tmp/sshd_config" <<EOF
+ListenAddress 127.0.0.1
+HostKey $tmp/host
+AuthorizedKeysFile $tmp/authorized_keys
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+StrictModes no
+PidFile $tmp/sshd.pid
+EOF
+port=
+for _ in $(seq 20); do
+  candidate=$((20000 + RANDOM % 40000))
+  "$sshd" -D -e -f "$tmp/sshd_config" -o "Port=$candidate" >"$tmp/sshd.log" 2>&1 &
+  sshd_pid=$!
+  for _ in $(seq 50); do
+    if grep -q 'Server listening' "$tmp/sshd.log"; then
+      port=$candidate
+      break 2
+    fi
+    kill -0 "$sshd_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill "$sshd_pid" 2>/dev/null || true
+  wait "$sshd_pid" 2>/dev/null || true
+  sshd_pid=
+done
+if [[ -z $port ]]; then
+  echo "deploy-staging-test: sshd did not start:" >&2
+  cat "$tmp/sshd.log" >&2
+  exit 1
+fi
+
+dev_origin "$tmp"
+
+# SSH reads nothing of the user's: an empty home, no agent.
+mkdir "$tmp/home" "$tmp/run"
+export HOME=$tmp/home
+unset SSH_AUTH_SOCK
+
+key=$(base64 <"$tmp/client" | tr -d '\n')
+host_key=$(cut -d ' ' -f 1,2 "$tmp/host.pub")
+address=127.0.0.1
+destination=ssh://$(id -un)@$address:$port
+
+# run <args...>: runs script/deploy-staging in the clone with the secrets in $key, $host_key and
+# $destination, setting $status, $output and $command, the command the deploy got.
+run() {
+  rm -f "$tmp/command"
+  status=0
+  output=$(cd "$tmp/clone" && TMPDIR=$tmp/run STAGING_SSH_KEY=$key STAGING_SSH_HOST_KEY=$host_key \
+    STAGING_SSH_DESTINATION=$destination "$root/script/deploy-staging" "$@" 2>&1) || status=$?
+  command=$(cat "$tmp/command" 2>/dev/null || true)
+  [[ -z $(ls -A "$tmp/run") ]] || fail "$*: left files: $(ls -A "$tmp/run")"
+  rm -rf "${tmp:?}/run/"*
+}
+
+# expect_secret_free <case>: the last output names no secret and not the address.
+expect_secret_free() {
+  local value
+  for value in "$key" "$host_key" "$destination" "${host_key#* }" "$address"; do
+    [[ -z $value || $output != *"$value"* ]] || fail "$1: the output shows a secret or the address: $output"
+  done
+}
+
+# expect_refused <case>: the last run failed without a deploy.
+expect_refused() {
+  [[ $status -ne 0 ]] || fail "$1: exit code 0, output: $output"
+  [[ -z $command ]] || fail "$1: deployed: $command"
+  expect_secret_free "$1"
+}
+
+run "$head" "$digest"
+[[ $status -eq 0 ]] || fail "head of dev: exit code $status, output: $output"
+[[ $command == "deploy $digest" ]] || fail "head of dev: the deploy got '$command'"
+[[ $output == *"deploying $head, $digest"* ]] || fail "head of dev: no commit and digest: $output"
+[[ $output == *"deploy: health check: ok"* ]] || fail "head of dev: no health check result: $output"
+[[ $output == *"staging runs $head, $digest"* ]] || fail "head of dev: no result: $output"
+expect_secret_free "head of dev"
+
+run "$older" "$digest"
+[[ $status -eq 0 ]] || fail "older commit: exit code $status, output: $output"
+[[ -z $command ]] || fail "older commit: deployed: $command"
+[[ $output == *"dev has moved on to $head"* ]] || fail "older commit: output: $output"
+
+echo 1 >"$tmp/deploy-status"
+run "$head" "$digest"
+[[ $command == "deploy $digest" ]] || fail "failed deploy: the deploy got '$command'"
+command=
+expect_refused "failed deploy"
+[[ $output == *"deploy: health check: HTTP 502"* && $output == *"FAILED"* ]] ||
+  fail "failed deploy: no health check result or failure: $output"
+rm "$tmp/deploy-status"
+
+right_host_key=$host_key
+host_key=$(cut -d ' ' -f 1,2 "$tmp/other-host.pub")
+run "$head" "$digest"
+expect_refused "another host key"
+host_key=$right_host_key
+
+right_key=$key
+key=$(base64 <"$tmp/stranger" | tr -d '\n')
+run "$head" "$digest"
+expect_refused "an unauthorized key"
+key=$right_key
+
+right_destination=$destination
+destination=ssh://$(id -un)@$address:1
+run "$head" "$digest"
+expect_refused "an unreachable address"
+destination=$right_destination
+
+run "$head"
+expect_refused "one argument"
+run "$head" "$digest" extra
+expect_refused "three arguments"
+run "${head:0:7}" "$digest"
+expect_refused "short commit"
+run "$head" "${digest#sha256:}"
+expect_refused "digest without algorithm"
+run "$head" "sha256:${digest: -63}"
+expect_refused "short digest"
+run "$head" "$digest; echo injected"
+expect_refused "digest with a command"
+
+for secret in key host_key destination; do
+  right=${!secret}
+  printf -v "$secret" '%s' ''
+  run "$head" "$digest"
+  expect_refused "no $secret"
+  printf -v "$secret" '%s' "$right"
+done
+
+key=$(printf 'not a key' | base64)
+run "$head" "$digest"
+expect_refused "a key that is not a private key"
+key=$right_key
+
+host_key="$right_host_key; echo injected"
+run "$head" "$digest"
+expect_refused "a malformed host key"
+host_key=$right_host_key
+
+destination=${right_destination#ssh://}
+run "$head" "$digest"
+expect_refused "a destination that is not an ssh:// URL"
+destination="-oProxyCommand=true $right_destination"
+run "$head" "$digest"
+expect_refused "a destination with an option"
+destination=$right_destination
+
+git -C "$tmp/clone" push --quiet origin --delete dev
+run "$head" "$digest"
+expect_refused "origin without dev"
+
+if [[ $failures -ne 0 ]]; then
+  echo "deploy-staging-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "deploy-staging-test: all cases passed"
