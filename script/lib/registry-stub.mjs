@@ -15,6 +15,8 @@
 //   signatures  every cosign sign or attest: {command, ref, ours, tag, byDigest, digest, key}
 //   attestations  GitHub Artifact Attestations of the image, which the test adds: {name, digest}
 //   unsupported every call this stand-in cannot answer
+//   lookupError when true, every lookup of the image, of a tag, a digest or the tag list, fails
+//               with a server error, not with not found
 // Usage: node registry-stub.mjs <state> <tool> <args...>
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -32,6 +34,13 @@ const unsupported = () => {
   state.unsupported.push(`${tool} ${args.join(' ')}`);
   err(`registry-stub: the test's stand-in ${tool} cannot run: ${tool} ${args.join(' ')}`);
   status = 1;
+};
+// A failed lookup: the error that ends the call.
+class LookupError extends Error {}
+const lookup = (ref) => {
+  if (state.lookupError) {
+    throw new LookupError(`${tool}: ${ref}: unexpected status from GET request to https://ghcr.io/v2/: 503 Service Unavailable`);
+  }
 };
 const notFound = (ref) => {
   err(`${tool}: ${ref}: not found: MANIFEST_UNKNOWN: manifest unknown`);
@@ -60,6 +69,7 @@ const ours = (ref) => parse(ref).repo === state.image;
 function resolve(ref) {
   const r = parse(ref);
   if (r.repo !== state.image) return null;
+  lookup(ref);
   if (r.digest) return state.manifests.includes(r.digest) ? r.digest : null;
   return state.tags[r.tag ?? 'latest'] ?? null;
 }
@@ -189,7 +199,10 @@ function copy(source, destination) {
   if (!digest) return notFound(source);
   write(String(destination).replace(/^docker:\/\//, ''), digest);
 }
-const listTags = () => out(Object.keys(state.tags).join('\n'));
+const listTags = () => {
+  lookup(state.image);
+  out(Object.keys(state.tags).join('\n'));
+};
 
 function docker(list) {
   const [command, ...rest] = list;
@@ -303,7 +316,10 @@ function skopeo([command, ...rest]) {
     const format = last(o, '--format', '-f');
     return out(format ? digest : JSON.stringify({ Name: parse(a).repo, Digest: digest, RepoTags: Object.keys(state.tags) }));
   }
-  if (command === 'list-tags') return out(JSON.stringify({ Repository: parse(a).repo, Tags: Object.keys(state.tags) }));
+  if (command === 'list-tags') {
+    lookup(a);
+    return out(JSON.stringify({ Repository: parse(a).repo, Tags: Object.keys(state.tags) }));
+  }
   if (command === 'copy') return copy(a, b);
   return unsupported();
 }
@@ -404,6 +420,7 @@ function gh([command, ...rest]) {
     const method = String(last(o, '-X', '--method') ?? 'GET').toUpperCase();
     const route = String(o.positional[0] ?? '');
     if (method !== 'GET' || !/\/packages\/container\/skald-server\/versions(\?|$)/.test(route)) return unsupported();
+    lookup(route);
     const digests = [...new Set(Object.values(state.tags))];
     const body = JSON.stringify(
       digests.map((digest, i) => ({
@@ -436,8 +453,15 @@ function gh([command, ...rest]) {
 }
 
 const tools = { docker, crane, skopeo, regctl, oras, cosign, gh };
-if (tools[tool]) tools[tool](args);
-else {
+if (tools[tool]) {
+  try {
+    tools[tool](args);
+  } catch (e) {
+    if (!(e instanceof LookupError)) throw e;
+    err(e.message);
+    status = 1;
+  }
+} else {
   unsupported();
   status = 7;
 }

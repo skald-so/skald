@@ -19,8 +19,9 @@
 //     (id-token); and one job that pushes the release image with docker/build-push-action:
 //     packages, and its attestations, with an OIDC token; script/release-image-test tests that job;
 //     no job that does not attest requests an OIDC token; actions are pinned to
-//     commits and Docker images to digests; tools are installed by taiki-e/install-action at exact
-//     versions it checks against checksums, never downloaded by a step or run from an expression;
+//     commits and Docker images to digests; tools, cosign included, are installed by
+//     taiki-e/install-action at exact versions it checks against checksums, never downloaded by a
+//     step, by an installer action such as sigstore/cosign-installer, or run from an expression;
 //     no job restores a cache.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -303,7 +304,7 @@ for (const entry of jobs) {
     if (uses && !(uses.startsWith('./') || /@[0-9a-f]{40}$/.test(uses) || /^docker:\/\/.+@sha256:[0-9a-f]{64}$/.test(uses))) {
       fail(`${where(s)}: ${uses} is not pinned to a commit or a digest`);
     }
-    if (/^(cargo-bins\/cargo-binstall|release-plz\/action)@/i.test(uses)) fail(`${where(s)}: ${uses} downloads tools without checksums`);
+    if (/^(cargo-bins\/cargo-binstall|release-plz\/action|sigstore\/cosign-installer)@/i.test(uses)) fail(`${where(s)}: ${uses} downloads tools without checksums`);
     if (/^taiki-e\/install-action@/i.test(uses)) {
       const tools = String(w.tool ?? '').split(/[,\s]+/).filter(Boolean);
       if (tools.length === 0 || !tools.every((t) => /^[a-z0-9_-]+@[0-9]+\.[0-9]+\.[0-9]+$/.test(t))) {

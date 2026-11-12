@@ -18,13 +18,15 @@
 //       actions/attest-build-provenance attests the build provenance of that digest, pushed before,
 //       as ghcr.io/skald-so/skald-server;
 //     - when GHCR already has the version's tag, it is not pushed again: the tag keeps its digest;
+//     - when the lookup of the version's tag fails other than with not found, the run fails and
+//       pushes, signs and attests nothing;
 //     - the dry run, on a PR and on a manual run on dev and on a tag ref, builds the image from that
 //       definition and pushes, signs and attests nothing.
 //   - The rules of the release pipeline for the jobs that touch the image: a job that pushes or
 //     signs writes packages, one that signs or attests requests an OIDC token, one that attests
 //     writes attestations, and none writes anything else, unless it also creates the GitHub
 //     Release; no other job writes packages; cosign is installed before it runs, by
-//     sigstore/cosign-installer or taiki-e/install-action at an exact version; no build imports a
+//     taiki-e/install-action at an exact version it checks against a checksum; no build imports a
 //     cache; the workflow names no :latest.
 //   - docs/dev/infrastructure.md: the GHCR row of "Channels" names the version tags; "Trust in
 //     builds" covers release images, not :edge; it says GHCR tags can be moved, so an image is
@@ -162,13 +164,16 @@ for (const [key, job] of Object.entries(jobs)) {
   const steps = job.steps ?? [];
   const first = steps.findIndex((s) => lines(s).some((l) => /\bcosign\b/.test(l)));
   if (first < 0) continue;
+  // sigstore/cosign-installer checks only its bootstrap version against a checksum; any other, by
+  // its signature alone.
   const installer = steps.slice(0, first).find(
     (s) =>
-      (action(s) === 'sigstore/cosign-installer' && /^v\d+\.\d+\.\d+$/.test(String(s.with?.['cosign-release'] ?? ''))) ||
-      (action(s) === 'taiki-e/install-action' && /(^|[,\s])cosign@\d+\.\d+\.\d+($|[,\s])/.test(String(s.with?.tool ?? ''))),
+      action(s) === 'taiki-e/install-action' &&
+      /(^|[,\s])cosign@\d+\.\d+\.\d+($|[,\s])/.test(String(s.with?.tool ?? '')) &&
+      !(s.with?.checksum === false || String(s.with?.checksum).toLowerCase() === 'false'),
   );
   if (!installer) {
-    fail(`job ${key} runs cosign without installing it before, by sigstore/cosign-installer with cosign-release at an exact vX.Y.Z or by taiki-e/install-action at cosign@X.Y.Z`);
+    fail(`job ${key} runs cosign without installing it before by taiki-e/install-action at cosign@X.Y.Z, checked against its checksum`);
   }
 }
 
@@ -244,10 +249,12 @@ const git = (cwd, ...args) => {
   return r.stdout.trim();
 };
 
-// run <event name> <ref> <workspace version> <registry tags>: runs the jobs on a stand-in GHCR that
-// holds <registry tags>, each tag to its digest; {state, sha, work, problems}: the registry and
-// daemon afterwards, the commit run, the checkout's path, and the steps that failed or could not run.
-function run(eventName, ref, version, registryTags) {
+// run <event name> <ref> <workspace version> <registry tags> [<lookup error>]: runs the jobs on a
+// stand-in GHCR that holds <registry tags>, each tag to its digest, and with <lookup error> fails
+// every lookup of the image with an error other than not found; {state, sha, work, problems}: the
+// registry and daemon afterwards, the commit run, the checkout's path, and the steps that failed or
+// could not run.
+function run(eventName, ref, version, registryTags, lookupError = false) {
   const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-image-test-')));
   const problems = [];
   try {
@@ -280,6 +287,7 @@ function run(eventName, ref, version, registryTags) {
         signatures: [],
         attestations: [],
         unsupported: [],
+        lookupError,
       }),
     );
     const state = () => JSON.parse(fs.readFileSync(stateFile, 'utf8'));
@@ -463,7 +471,7 @@ function run(eventName, ref, version, registryTags) {
               'docker/setup-buildx-action',
               'docker/setup-qemu-action',
               'docker/login-action',
-              'sigstore/cosign-installer',
+              'taiki-e/install-action',
             ].includes(kind)
           ) {
             problems.push(`${where}: the test has no stand-in for ${kind}`);
@@ -566,6 +574,22 @@ if (Object.keys(forms).length === 2 && new Set(Object.values(forms)).size !== 1)
     if (state.tags[tag] !== before) fail(`${label}: the tag ${tag} moves to ${state.tags[tag]}`);
   }
   for (const e of state.elsewhere) fail(`${label}: ${e.tool} writes to another image: ${e.ref}`);
+  for (const u of state.unsupported) fail(`${label}: the stand-ins cannot run: ${u}`);
+}
+
+// A lookup of the version's tag that fails other than with not found: the tag may exist, so the run
+// fails and pushes, signs and attests nothing.
+{
+  const label = 'a push of v1.2.3 when the lookup of the tag fails other than with not found';
+  const { state, problems } = run('push', 'refs/tags/v1.2.3', '1.2.3', { ...previously }, true);
+  if (problems.length === 0) fail(`${label}: the run passes`);
+  for (const w of state.writes) fail(`${label}: ${w.tool} pushes ${w.ref}`);
+  for (const e of state.elsewhere) fail(`${label}: ${e.tool} pushes ${e.ref}`);
+  for (const s of state.signatures) fail(`${label}: cosign ${s.command} ${s.ref}`);
+  for (const a of state.attestations) fail(`${label}: it attests ${a.name}@${a.digest}`);
+  for (const [tag, digest] of Object.entries(previously)) {
+    if (state.tags[tag] !== digest) fail(`${label}: the tag ${tag} moves to ${state.tags[tag]}`);
+  }
   for (const u of state.unsupported) fail(`${label}: the stand-ins cannot run: ${u}`);
 }
 

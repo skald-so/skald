@@ -71,7 +71,7 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 - **Image:** on a push of a `v*` tag, a job of the same workflow builds the `skald-server` image at the tag's commit from `crates/server/Dockerfile`, the definition `script/image-test` tests, with no cache, and pushes it to GHCR as `:X.Y.Z`, or `:X.Y.Z-beta.N` for a beta. It does not retag `:edge`.
   - A version GHCR already has is not pushed again: the job fails before it builds. It moves no tag, and there is no `:latest`.
   - It signs the pushed digest with cosign, keyless, and attests its build provenance with `actions/attest`; a dry run builds the image and pushes, signs and attests nothing.
-  - This job writes packages, and attestations with an OIDC token. No other job of the workflow writes.
+  - This job writes packages, and attestations with an OIDC token. No other job writes packages.
 - **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture, check it against its `.sha256` and install `skald` so a new shell runs it. On a mismatch or a missing or empty checksum they stop and install nothing. dist's own installers are not used.
   - `install.sh`: into `~/.local/bin`. Unless that directory is on the running shell's `PATH` already, it adds it to `PATH` in `~/.profile`, in `~/.bash_profile` if there is one, in `~/.bashrc` if bash is installed, and in `.zshenv` if zsh is installed.
   - `install.ps1`: into `%LOCALAPPDATA%\Programs\skald`, added to the user's `PATH`.
