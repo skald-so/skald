@@ -24,7 +24,7 @@ A human takes one action per release: merging the Release PR.
 - `dev` — the main and default branch; PRs from people and agents go here.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
-  - `Windows`, the edit comparison prototype's job, is not required: its workflow runs only for PRs that change the prototype, and a required check whose workflow does not run keeps a PR waiting.
+  - `Windows`, the edit comparison prototype's job, is not required: its workflow runs only for PRs that change the prototype or the workflow, and a required check whose workflow does not run keeps a PR waiting.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest release; only CI moves it.
   - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.

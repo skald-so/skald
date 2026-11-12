@@ -183,9 +183,9 @@ Open questions of edit comparison, and how the prototype answers them:
 One file gets one fingerprint on every machine, whatever its system's spelling of its path.
 
 - **Form:** the path relative to the repository root with `/` separators, as git gives it, each character lowercased with Rust's `char::to_lowercase`, in Unicode NFC. Hunks take the lines on either side of a boundary, and symbols their names, with LF in place of each CRLF: [`fingerprint.rs`](../../prototypes/edits/overlap/src/fingerprint.rs), [`paths.rs`](../../prototypes/edits/overlap/src/paths.rs).
-  - Git gives a tracked file's path as the index holds it, the same on every clone. Spellings differ for new files, which git lists as the file system names them, and for the paths an agent's tools give.
+  - Git gives a tracked file's path as the index holds it, the same on every clone. Spellings differ for new files, whose names git reads from the file system, and for the paths an agent's tools give.
   - Line endings matter where two machines' bases store a file's lines with different endings, such as before and after a commit that renormalizes it: the boundaries' lines come from each machine's base.
-- **Case:** folded. A case-insensitive file system, the default on macOS and Windows, holds one file where a case-sensitive one can hold two; with case kept, a file two machines add in two cases, one file on macOS, would get two fingerprints. Folded, two files of one repository that differ only in case share a fingerprint: a false match where a case-sensitive file system holds both. No path of the measured repositories shares a fingerprint with another: none in the tree at each one's commit or among the paths the replayed sides change ([Results](#results), the last table).
+- **Case:** folded. A case-insensitive file system, the default on macOS and Windows, holds one file where a case-sensitive one can hold two; with case kept, one file that two machines add in two cases would get two fingerprints, where macOS and Windows hold one file. Folded, two files of one repository that differ only in case share a fingerprint: a false match where a case-sensitive file system holds both. No path of the measured repositories shares a fingerprint with another: none in the tree at each one's commit or among the paths the replayed sides change ([Results](#results), the last table).
 - **Paths an agent's tools give:** `paths::relative` maps a path to the path of its file relative to the root of the repository's worktree that holds it, with `/` separators.
   - A relative path is taken from the machine's worktree. Each component that exists is resolved with `std::fs::canonicalize`: symbolic links, `..`, drive letters and both separators on Windows, and the case the directory holds on macOS and Windows. Components from the first that does not resolve on, such as a deleted file's name, stay as given; `..` drops the one before it.
   - The worktree is the one `git rev-parse --show-toplevel` gives for the deepest directory that exists; it must share the machine's `git rev-parse --git-common-dir`, so another worktree of the repository maps, another repository does not.
@@ -248,9 +248,62 @@ Line endings of one edit
 | true | CRLF | LF | 4 | 4 | 4 |
 | input | LF | LF | 4 | 4 | 4 |
 | false | LF | CRLF | 4 | 13 | 4 |
-- **Windows:** the `Windows` job of [`.github/workflows/edits-windows.yml`](../../.github/workflows/edits-windows.yml), on `windows-latest`, runs the tests of `spellings.rs` and the check ([infrastructure.md](infrastructure.md), "PR checks"). Its check in run @@RUN@@:
 
-@@WIN@@
+- **Windows:** the `Windows` job of [`.github/workflows/edits-windows.yml`](../../.github/workflows/edits-windows.yml), on `windows-latest`, runs the tests of `spellings.rs` and the check ([infrastructure.md](infrastructure.md), "PR checks"). Its check in run [43152461016](https://github.com/skald-so/skald/actions/runs/43152461016):
+
+Machine: windows x86_64, 4 CPUs
+Git: git version 2.56.0.windows.4
+
+File system: case-insensitive: yes; Unicode normalization-insensitive: no
+`git init` sets: `core.ignorecase` true, `core.precomposeunicode` unset
+
+Case-only rename of `README.md` to `Readme.md`
+
+| `core.ignorecase` | Rename | Edit set | Path fingerprints |
+|---|---|---|---|
+| true | git mv | `README.md`, `Readme.md` | 1 |
+| true | file system | none | 0 |
+| false | git mv | the rename fails | - |
+| false | file system | `Readme.md` | 1 |
+
+File names in NFC and NFD: `café.md`, by the form of each name
+
+| `core.precomposeunicode` | File | Edit set | Index | Path fingerprints |
+|---|---|---|---|---|
+| true | written in NFC | NFC | NFC | 1 |
+| true | written in NFD | NFD | NFD | 1 |
+| true | checked out from a commit in NFD | none | NFD | 0 |
+| false | written in NFC | NFC | NFC | 1 |
+| false | written in NFD | NFD | NFD | 1 |
+| false | checked out from a commit in NFD | none | NFD | 0 |
+
+Paths an agent's tools give
+
+| Spelling | File | Maps to | The file's path fingerprint |
+|---|---|---|---|
+| relative | `src/inventory.rs` | `src/inventory.rs` | yes |
+| relative, with `.` and `..` | `src/inventory.rs` | `src/inventory.rs` | yes |
+| relative, with backslashes | `src/inventory.rs` | `src/inventory.rs` | yes |
+| absolute, as the temporary directory spells it | `src/inventory.rs` | `src/inventory.rs` | yes |
+| absolute, resolved by the file system | `src/inventory.rs` | `src/inventory.rs` | yes |
+| through a symbolic link to the clone | `src/inventory.rs` | `src/inventory.rs` | yes |
+| from another worktree | `src/inventory.rs` | `src/inventory.rs` | yes |
+| in another case | `src/inventory.rs` | `src/inventory.rs` | yes |
+| with the file name in NFD | `docs/café.md` | `docs/café.md`, NFD | yes |
+| absolute, with a lowercase drive letter | `src/inventory.rs` | `src/inventory.rs` | yes |
+| absolute, with forward slashes | `src/inventory.rs` | `src/inventory.rs` | yes |
+| a deleted file | `docs/guide.md` | `docs/guide.md` | yes |
+| outside the repository | `src/inventory.rs` | no worktree of the repository | no |
+| in another repository | `src/inventory.rs` | no worktree of the repository | no |
+
+Line endings of one edit
+
+| `core.autocrlf` | Checkout of an LF file | Stored once written with CRLF | Fingerprints of an edit written with LF | Of the edit written with CRLF | Shared |
+|---|---|---|---|---|---|
+| true | CRLF | LF | 4 | 4 | 4 |
+| input | LF | LF | 4 | 4 | 4 |
+| false | LF | CRLF | 4 | 13 | 4 |
+
 - **Findings,** from the two outputs above:
   - Case-only rename: on macOS and Windows, with `core.ignorecase` true, as `git init` sets it there, `git mv` lists both paths, which share one path fingerprint; a rename outside git, as `mv` or an editor makes it, changes nothing git lists, so the machine publishes nothing for it. With `core.ignorecase` false, `git mv` fails, and a rename outside git lists the new name, with the old name's fingerprint.
   - On a case-sensitive file system, as the `Rust` job checks on Linux with `a_case_only_rename_gets_one_path_fingerprint`: with `core.ignorecase` true a rename outside git lists only the old name, as deleted; otherwise both names. One path fingerprint each time.
