@@ -2,7 +2,7 @@
 
 The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)): machines learn that they edit the same thing from a server that sees only HMAC fingerprints.
 
-- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness, the [measurement](#measurement)'s replay of real merges and classes of files, with its command, `measure`, the [path normalization](#path-normalization) with its check of spellings, `spellings`, and the [scripted sessions](#edits-via-bash-and-generators) with their pinned tools, with their command, `sessions`.
+- Code: [`prototypes/edits/`](../../prototypes/edits), a cargo workspace apart from the product crates. `edit-overlap` holds the fingerprints, the hunks, the symbols, the client, the server stand-in, the exact check, the stand-in for end-to-end encrypted messages, the scenario harness, the [measurement](#measurement)'s replay of real merges and classes of files, with its command, `measure`, the [path normalization](#path-normalization) with its check of spellings, `spellings`, the [scripted sessions](#edits-via-bash-and-generators) with their pinned tools, with their command, `sessions`, and [what the server learns](#what-the-server-learns) and what a holder of the space key recovers with its dictionary, with their command, `exposure`.
 - Harness: a test repository in a bare upstream; each machine is a local clone of it. Machines edit their working trees, commit and push branches; a maintainer's clone merges a branch with a merge commit. The harness's commits carry a fixed date, so they get the same hashes on every run; the client's snapshot commits keep the current time. Everything runs through the `git` CLI. Its environment holds only `PATH`, a fixed identity, for the harness's commands the fixed date, and switches that turn off the global and system config and the system attributes; without `HOME` and `XDG_CONFIG_HOME` git finds no global ignore or attributes file. No credentials or config of the parent's environment reach it.
 - Server stand-in: in-process, without the space key. It keeps each machine's latest fingerprints and tells a machine which other machines share fingerprints with it, and which; the machine maps them back to its paths, changed lines and symbols.
 - Messages stand-in: in-process inboxes for the end-to-end encrypted messages between machines; they bypass the server stand-in.
@@ -90,6 +90,10 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository` | With this machine's toolchain, `node`, `npm` and `python3` pinned at their versions, a fixture generator crate that `cargo install` builds, an npm package and a wheel installed offline, and a session on the fixture, whose toolchain file names a toolchain rustup cannot install: the tools' versions; the generator's step; in the clone, the pinned versions of `rustc`, `cargo` and `rustfmt`; the `CARGO_HOME` the generator's build script got, the npm cache and configs the package's install script got, and pip's cache, all the command's own; the environment of the shell commands: only `PATH`, of the toolchain, the installed tools, the linked ones and the system's directories, and the variables of `tools::isolation`, besides what the shell sets |
 | `a_tool_of_another_version_is_refused` | Another version pinned for `rustc`, `cargo`, `rustfmt`, `node`, `npm`, `python3`, or a tool cargo, npm or pip installs: the command fails |
 | `a_session_on_a_repository_that_is_not_measured_fails` | A session that names no measured repository fails before anything is set up |
+| `the_dictionary_recovers_a_fixture_path_and_symbol_name_with_the_key_only` | [What the server learns](#what-the-server-learns): a machine edits a function and a method of `src/main.rs` and the guide. With the key and the fixed dictionary, the fingerprints the server keeps give `src/main.rs`, its `function_item main` and its `impl_item Config > function_item new`, not the guide; without the key or with another key, nothing |
+| `a_clone_recovers_the_paths_and_symbols_it_holds` | The same machine also adds a file and a function: a clone at the commit before gives the paths and symbols it holds, not the new ones; without the key or with another key, nothing |
+| `exposure_gives_what_the_server_learns_of_the_replays` | The [measurement](#measurement)'s fixture, its merges an hour apart: the tables of the machines, the fingerprints they share, how many machines publish each fingerprint, the busiest hours, what the dictionary and a clone at the oldest merge recover, and a change of the key at each merge |
+| `exposure_gives_what_a_holder_of_the_key_recovers` | Two branches that edit `src/main.rs`, one adding `README.md`, merged, as two repositories: what the dictionary and a clone at the oldest merge recover, and the fingerprints each repository shares with the other |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
 
@@ -119,7 +123,7 @@ Open questions of edit comparison, and how the prototype answers them:
   - Forks and mirrors share it, so their machines overlap.
   - Repositories with byte-identical root commits share it: the same tree, message, author and time.
   - A shallow clone takes its shallow boundary for the root, so it gets another scope than a full clone. Open: a scope for shallow clones.
-- **Publication:** each machine sends the fingerprints of its whole edit set, its [hunks](#hunk-fingerprints) and its [symbols](#symbol-fingerprints), which replace its earlier ones. The server sees the machine, how many fingerprints it sends and when that changes, and which machines share fingerprints.
+- **Publication:** each machine sends the fingerprints of its whole edit set, its [hunks](#hunk-fingerprints) and its [symbols](#symbol-fingerprints), which replace its earlier ones. The server sees the machine, how many fingerprints it sends and when that changes, and which machines share fingerprints: [What the server learns](#what-the-server-learns).
 
 ## Exact check
 - **Exchange:** on an overlap, a machine asks the other for its changes over an end-to-end encrypted message; the request carries the asker's merge base with the upstream's default branch.
@@ -710,3 +714,140 @@ When each source learns of a changed file, from its first change, in files
   - Edits outside an agent's tool calls, such as a file watcher or a build script that writes files, are not in the sessions.
   - The declarations follow a rule, the files each step names; what an agent declares before it edits is not measured.
   - The npm installs pin the tools, not their dependencies: drizzle-kit's, such as `tsx`, `esbuild` and `@drizzle-team/brocli`, resolve to the newest matching versions on each run, so a later rerun may run other code.
+
+## What the server learns
+What the fingerprints of the [measured merges](#measurement) show the server without the space key, and a holder of the key with them.
+
+- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin exposure`; it needs `git` and HTTPS access to GitHub, no account. It fetches each measured repository at its commit into a temporary directory, deleted at the end, also on an error, replays its merges as the measurement does, on every CPU, and prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables. `script/test` does not run it; its tests compute the tables on fixture repositories ([Scenarios](#scenarios)). Code: [`exposure.rs`](../../prototypes/edits/overlap/src/exposure.rs), [`dictionary.rs`](../../prototypes/edits/overlap/src/dictionary.rs).
+- **Machines:** each side of a replayed merge that has fingerprints; the sides of several merges with one parent and one merge base are one machine, until the latest of the merges. A machine publishes its side's fingerprints at least once at each of its commits after the merge base along its first-parent history, at the commit's author date, and stops at the merge. Its size is that of its last publication.
+- **The server, without the key:** it sees each publication's machine, time and fingerprints, and cannot tell their levels apart.
+  - Shared: the fingerprints both machines of a merge publish.
+  - Groups: machines that a chain of machines, each sharing a fingerprint with the next, links.
+  - Recurrence: how many machines publish each fingerprint, and whether another measured repository publishes it too.
+  - Hours: the commits of all machines, each once, by hour of the day in UTC, and the 8 consecutive hours with the most.
+- **A holder of the key:** it also needs the scope, the least root commit, which every clone and every reader of a public repository has. It computes the fingerprints of candidates and looks them up among the repository's distinct fingerprints at the path and symbol levels; it tries no hunks.
+  - The fixed dictionary: [`dictionary/paths.txt`](../../prototypes/edits/overlap/dictionary/paths.txt), 158 common paths, such as `README.md`, `Cargo.toml` and `.github/workflows/ci.yml`, and [`dictionary/names.txt`](../../prototypes/edits/overlap/dictionary/names.txt), 118 common names of functions, methods, types and modules, such as `main`, `new`, `__init__` and `Config`; none of them taken from the measured repositories. On each path it recovers in a language with symbols, it tries each name with each kind of symbol of the language, alone and inside a type, trait, interface, module or `impl` block of each name.
+  - A clone at the oldest merge replayed, as a removed member or a revoked device may keep: each path of its tree, and each symbol of its files.
+- **A change of the key,** at each merge's time in turn: the machines that publish before and after it publish their fingerprints again under the new key; the merges whose two machines share fingerprints and both publish again overlap under neither key until both have.
+
+### Results
+
+Machine: macos aarch64, Apple M3 Max, 14 CPUs
+Git: git version 2.50.1 (Apple Git-155)
+
+What the server sees of each machine
+
+| Repository | Machines | Publications, at least | Publications per machine, median | Fingerprints per machine, median | 90th percentile | Most |
+|---|---|---|---|---|---|---|
+| diesel | 492 | 3294 | 2 | 92 | 1213 | 26265 |
+| drizzle-orm | 451 | 3180 | 3 | 106 | 3529 | 56076 |
+| netbox | 556 | 5363 | 3 | 79 | 15449 | 108214 |
+
+Machines that share fingerprints
+
+| Repository | Merges | Whose two machines share fingerprints | Shared, median | 90th percentile | Most | Groups of machines linked by shared fingerprints | Machines in the largest | Machines that share none |
+|---|---|---|---|---|---|---|---|---|
+| diesel | 300 | 123 (41.0%) | 2 | 17 | 2872 | 1 | 492 (100.0%) | 0 (0.0%) |
+| drizzle-orm | 300 | 78 (26.0%) | 6 | 777 | 7946 | 2 | 450 (99.7%) | 1 (0.2%) |
+| netbox | 300 | 61 (20.3%) | 10 | 316 | 89848 | 1 | 556 (100.0%) | 0 (0.0%) |
+
+How many machines publish each fingerprint
+
+| Repository | Fingerprints | 1 machine | 2 to 9 | 10 or more | Most | Published in another repository too |
+|---|---|---|---|---|---|---|
+| diesel | 50231 | 4852 (9.6%) | 36383 (72.4%) | 8996 (17.9%) | 320 | 0 |
+| drizzle-orm | 116761 | 13122 (11.2%) | 84685 (72.5%) | 18954 (16.2%) | 137 | 0 |
+| netbox | 1295359 | 603516 (46.5%) | 687901 (53.1%) | 3942 (0.3%) | 171 | 0 |
+
+When the machines publish: their commits, each once, by hour of the day, UTC
+
+| Repository | Commits | Busiest hours | Commits in them |
+|---|---|---|---|
+| diesel | 938 | 07:00 to 15:00 | 552 (58.8%) |
+| drizzle-orm | 1096 | 09:00 to 17:00 | 763 (69.6%) |
+| netbox | 2347 | 13:00 to 21:00 | 1548 (65.9%) |
+
+What a holder of the space key recovers: with the fixed dictionary, and with a clone at the oldest merge replayed
+
+| Repository | Path fingerprints | Recovered with the dictionary | With the clone | Symbol fingerprints | Recovered with the dictionary | With the clone |
+|---|---|---|---|---|---|---|
+| diesel | 1496 | 14 (0.9%) | 945 (63.1%) | 7055 | 0 (0.0%) | 2730 (38.6%) |
+| drizzle-orm | 1180 | 11 (0.9%) | 422 (35.7%) | 5781 | 0 (0.0%) | 1397 (24.1%) |
+| netbox | 1959 | 17 (0.8%) | 1240 (63.2%) | 13248 | 0 (0.0%) | 4234 (31.9%) |
+
+What the fixed dictionary recovers
+
+| Repository | Path | Symbol | Machines that publish it |
+|---|---|---|---|
+| diesel | `.github/ISSUE_TEMPLATE/config.yml` | - | 9 |
+| diesel | `.github/dependabot.yml` | - | 7 |
+| diesel | `.github/pull_request_template.md` | - | 9 |
+| diesel | `.github/workflows/ci.yml` | - | 96 |
+| diesel | `.github/workflows/release.yml` | - | 27 |
+| diesel | `.gitignore` | - | 11 |
+| diesel | `CHANGELOG.md` | - | 320 |
+| diesel | `CONTRIBUTING.md` | - | 24 |
+| diesel | `Cargo.toml` | - | 36 |
+| diesel | `README.md` | - | 25 |
+| diesel | `SECURITY.md` | - | 9 |
+| diesel | `deny.toml` | - | 16 |
+| diesel | `docker-compose.yml` | - | 14 |
+| diesel | `rust-toolchain` | - | 33 |
+| drizzle-orm | `.github/workflows/codeql.yml` | - | 9 |
+| drizzle-orm | `.gitignore` | - | 31 |
+| drizzle-orm | `.nvmrc` | - | 11 |
+| drizzle-orm | `CONTRIBUTING.md` | - | 21 |
+| drizzle-orm | `README.md` | - | 12 |
+| drizzle-orm | `dprint.json` | - | 12 |
+| drizzle-orm | `package.json` | - | 53 |
+| drizzle-orm | `pnpm-lock.yaml` | - | 114 |
+| drizzle-orm | `pnpm-workspace.yaml` | - | 22 |
+| drizzle-orm | `tsconfig.json` | - | 2 |
+| drizzle-orm | `turbo.json` | - | 13 |
+| netbox | `.github/ISSUE_TEMPLATE/config.yml` | - | 4 |
+| netbox | `.github/pull_request_template.md` | - | 4 |
+| netbox | `.github/workflows/ci.yml` | - | 33 |
+| netbox | `.github/workflows/codeql.yml` | - | 9 |
+| netbox | `.github/workflows/release.yml` | - | 11 |
+| netbox | `.gitignore` | - | 6 |
+| netbox | `.pre-commit-config.yaml` | - | 20 |
+| netbox | `.readthedocs.yaml` | - | 7 |
+| netbox | `CHANGELOG.md` | - | 2 |
+| netbox | `CONTRIBUTING.md` | - | 12 |
+| netbox | `README.md` | - | 11 |
+| netbox | `SECURITY.md` | - | 8 |
+| netbox | `docs/index.md` | - | 2 |
+| netbox | `mkdocs.yml` | - | 49 |
+| netbox | `pyproject.toml` | - | 68 |
+| netbox | `requirements.txt` | - | 94 |
+| netbox | `ruff.toml` | - | 9 |
+
+A change of the space key at the time of each merge replayed
+
+| Repository | Changes | Machines that publish again, median | Most | Their bytes, median | Most | Overlaps of merges lost until both machines publish again, median | Most |
+|---|---|---|---|---|---|---|---|
+| diesel | 300 | 24 | 51 | 2149408 | 4832832 | 4 | 17 |
+| drizzle-orm | 300 | 24 | 49 | 2465440 | 9197056 | 2 | 7 |
+| netbox | 300 | 8 | 20 | 4217664 | 14271232 | 1 | 4 |
+
+### Findings
+- **Without the key,** the server learns from the fingerprints alone:
+  - How much each machine edits: a median of 92, 106 and 79 fingerprints, at most 26265, 56076 and 108214.
+  - Which machines edit the same thing, and how much: the two machines of 41.0%, 26.0% and 20.3% of the merges share fingerprints, a median of 2, 6 and 10, at most 2872, 7946 and 89848.
+  - Which machines work on one repository: shared fingerprints link every machine of diesel and netbox into one group, and all but one of drizzle-orm's; no fingerprint is published in two of the repositories. A file's fingerprints recur in each machine that edits it, over months: 17.9%, 16.2% and 0.3% of the fingerprints are published by 10 machines or more, the most by 320, 137 and 171. Diesel's 320 include the path of `CHANGELOG.md`: a server that guesses which files a project edits most can name such fingerprints without the key.
+  - When each machine works: the time of each publication. The busiest 8 hours of the day, UTC, hold 58.8%, 69.6% and 65.9% of the commits: a team's working hours and time zone.
+- **With the key and the scope,** the fixed dictionary recovers 14, 11 and 17 paths, 0.9%, 0.9% and 0.8%: common files at the root and in `.github/`, such as `CHANGELOG.md`, `Cargo.toml`, `package.json`, `pnpm-lock.yaml` and `pyproject.toml`. It recovers no symbol: none of the paths it recovers is a source file in a language with symbols.
+- **A clone** at the oldest merge, 6, 29 and 20 months older than the newest, recovers 63.1%, 35.7% and 63.2% of the paths and 38.6%, 24.1% and 31.9% of the symbols: those it already holds under the same path and name.
+- **When the key must change:** whenever a member is removed or a device revoked, as the history key rotates ([architecture.md, "Cryptography"](architecture.md#cryptography)).
+  - Every device of the space holds the key. A removed member or a revoked device keeps it, and the scope of each repository it had a clone of, so it recovers the paths and symbols of its old clones and those it can guess.
+  - It needs the fingerprints: from the server, compromised or colluding, or as overlaps. The server stand-in tells any machine that publishes which machines share its fingerprints, so a device that still publishes learns which machines edit each path it fingerprints. The server must stop taking a revoked device's publications.
+  - Each change also stops the recurrence of a file's fingerprints across it, so a scheduled change limits how long the server links the machines that edit one file.
+- **What a change costs,** at the time of each measured merge:
+  - Every machine publishes all its fingerprints again under the new key: a median of 24, 24 and 8 machines, at most 51, 49 and 20; a median of 2149408, 2465440 and 4217664 bytes, at most 4832832, 9197056 and 14271232.
+  - Fingerprints under the old key and the new one never match: the overlaps of a median of 4, 2 and 1 merges, at most 17, 7 and 4, are lost until both machines publish again. A machine offline at the change publishes again only once it is back.
+  - The server still links each machine's fingerprints across the change, by the machine that publishes them.
+- **Open:**
+  - A machine publishes at each scan, more often than once per commit ([Edits via Bash and generators](#edits-via-bash-and-generators)); the sizes of its publications between its commits are not measured.
+  - Hunk fingerprints of common lines, such as `}` before an empty line ([Hunk fingerprints](#hunk-fingerprints)), match a dictionary of lines; not tried.
+  - Dictionaries a key holder could build: from a fork's or a mirror's tree, from the names of directories and types, from the paths of related repositories; not tried.
+  - A key per repository instead of per space: whether a change could then cover only the repositories a removed member or a revoked device had.
