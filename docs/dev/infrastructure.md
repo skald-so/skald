@@ -75,7 +75,7 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 ## Channels
 | What | Where |
 |---|---|
-| `skald` binary: macOS, Linux, Windows; x86_64 and arm64 | GitHub Releases + checksums |
+| `skald` binary: macOS, Linux, Windows; x86_64 and arm64 | GitHub Releases + checksums. Linux artifacts carry libdbus's license, `vendor/dbus/COPYING` of libdbus-sys |
 | `install.sh`, `install.ps1` | GitHub Releases. The command with a code on the website downloads them and runs `skald connect` |
 | `npx skald-so` | npm |
 | `skald-server` image | GHCR. Every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |
