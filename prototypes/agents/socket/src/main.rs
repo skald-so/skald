@@ -16,17 +16,9 @@ fn main() -> ExitCode {
     let Some((dir, options)) = args.split_first() else {
         return usage();
     };
-    let (auth, listen) = match options.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        [] => (true, None),
-        ["--no-auth"] => (false, None),
-        ["--listen", seconds] => (true, Some(seconds)),
-        ["--no-auth", "--listen", seconds] => (false, Some(seconds)),
-        _ => return usage(),
-    };
-    let listen = match listen.map(str::parse::<u64>) {
-        None => None,
-        Some(Ok(seconds)) => Some(Duration::from_secs(seconds)),
-        Some(Err(_)) => return usage(),
+    let flags: Vec<&str> = options.iter().map(String::as_str).collect();
+    let Some((auth, listen)) = agent_socket::options(&flags) else {
+        return usage();
     };
     match run(Path::new(dir), auth, listen) {
         Ok(()) => ExitCode::SUCCESS,

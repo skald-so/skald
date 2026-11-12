@@ -37,24 +37,9 @@ fn main() -> ExitCode {
                 .map_err(Into::into),
         ),
         ["inbox", agent, options @ ..] => agent_check(agent, options, run::inbox),
-        ["channel", "claude", options @ ..] => {
-            let Some(options) = Options::parse(options) else {
-                return usage();
-            };
-            ended(pty::channel(&options))
-        }
-        ["queue", "codex", options @ ..] => {
-            let Some(options) = Options::parse(options) else {
-                return usage();
-            };
-            ended(pty::queue(&options))
-        }
-        ["app-server", "codex", options @ ..] => {
-            let Some(options) = Options::parse(options) else {
-                return usage();
-            };
-            ended(app::app_server(&options))
-        }
+        ["channel", "claude", options @ ..] => check(options, pty::channel),
+        ["queue", "codex", options @ ..] => check(options, pty::queue),
+        ["app-server", "codex", options @ ..] => check(options, app::app_server),
         [path, "claude", options @ ..] if Wake::parse(path).is_some() => {
             let (Some(wake), Some(options)) = (Wake::parse(path), Options::parse(options)) else {
                 return usage();
@@ -104,17 +89,8 @@ fn main() -> ExitCode {
             ended(gui_run::prepare(path, surface, busy, bypass))
         }
         ["gui-socket", work, flags @ ..] => {
-            let (auth, listen) = match flags {
-                [] => (true, None),
-                ["--no-auth"] => (false, None),
-                ["--listen", seconds] => (true, Some(*seconds)),
-                ["--no-auth", "--listen", seconds] => (false, Some(*seconds)),
-                _ => return usage(),
-            };
-            let listen = match listen.map(str::parse::<u64>) {
-                None => None,
-                Some(Ok(seconds)) => Some(std::time::Duration::from_secs(seconds)),
-                Some(Err(_)) => return usage(),
+            let Some((auth, listen)) = agent_socket::options(flags) else {
+                return usage();
             };
             ended(gui_run::socket(Path::new(work), auth, listen))
         }
@@ -167,15 +143,23 @@ fn main() -> ExitCode {
     }
 }
 
+/// The check `run` with `options`; the usage for other options.
+fn check(options: &[&str], run: impl FnOnce(&Options) -> Result<bool>) -> ExitCode {
+    match Options::parse(options) {
+        Some(options) => ended(run(&options)),
+        None => usage(),
+    }
+}
+
 /// The check `run` of the agent named `agent` with `options`; the usage for anything else.
 fn agent_check(
     agent: &str,
     options: &[&str],
     run: impl FnOnce(Agent, &Options) -> Result<bool>,
 ) -> ExitCode {
-    match (Agent::parse(agent), Options::parse(options)) {
-        (Some(agent), Some(options)) => ended(run(agent, &options)),
-        _ => usage(),
+    match Agent::parse(agent) {
+        Some(agent) => check(options, |options| run(agent, options)),
+        None => usage(),
     }
 }
 

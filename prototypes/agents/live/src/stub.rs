@@ -188,6 +188,20 @@ impl StubLog {
         self.requests.iter().any(|body| body.contains(token))
     }
 
+    /// Whether `token` reached the model of a session: in a request to `stub`, if the session ran
+    /// on one, or else in the real model's replies, as `replied` tells.
+    pub fn reached(stub: Option<&Self>, token: &str, replied: impl FnOnce() -> bool) -> bool {
+        match stub {
+            Some(stub) => stub.saw(token),
+            None => replied(),
+        }
+    }
+
+    /// Whether `stub`, if the session ran on one, got no credential but the placeholder.
+    pub fn clean(stub: Option<&Self>) -> bool {
+        stub.is_none_or(|stub| stub.failure().is_none())
+    }
+
     /// Why the session fails whatever the CLI did: a credential other than the placeholder.
     pub fn failure(&self) -> Option<String> {
         (!self.credentials.is_empty()).then(|| {
@@ -578,6 +592,8 @@ fn responses(script: &[Call], body: &Value) -> Response {
 mod tests {
     use std::io::Read;
 
+    use agent_testing::owned;
+
     use crate::tests::read_json;
 
     use super::*;
@@ -869,14 +885,8 @@ mod tests {
 
     #[test]
     fn finds_credentials_other_than_the_placeholder() {
-        let headers = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
-            pairs
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect()
-        };
         assert!(
-            foreign_credentials(&headers(&[
+            foreign_credentials(&owned(&[
                 ("X-Api-Key", PLACEHOLDER),
                 ("Authorization", &format!("Bearer {PLACEHOLDER}")),
                 ("Content-Type", "application/json"),
@@ -885,7 +895,7 @@ mod tests {
             .is_empty()
         );
         assert_eq!(
-            foreign_credentials(&headers(&[
+            foreign_credentials(&owned(&[
                 ("X-Api-Key", "sk-ant-secret"),
                 ("Authorization", "Bearer sk-secret"),
                 ("Proxy-Authorization", PLACEHOLDER),

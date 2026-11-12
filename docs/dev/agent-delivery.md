@@ -19,12 +19,12 @@ For the adapters:
 - **Claude Code adapter and plugin:** the socket on each surface, registered by the plugin's `SessionStart` hook, and Channels on the CLI; the hooks and `inbox` as fallbacks ([Waking an idle session](#waking-an-idle-session), [Channels](#channels), [Claude Code hooks](#claude-code-hooks)).
 - **Codex adapter:** `codex queue` and the hooks, with `inbox` as the fallback, on the CLI, the desktop app and the VS Code extension; setup in [Codex hooks](#codex-hooks), [`codex queue`](#codex-queue), [MCP `inbox`](#mcp-inbox) and, on the desktop app and the extension, [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions).
 - **Codex threads without a person:** the app-server; setup in [Codex app-server](#codex-app-server).
-- **`read`:** issued when the session file shows the message in an entry that went to the model and a later entry of the model's own, read by the client, with a `Stop` hook as the fallback; then by construction, vendor signals and the agent's `ack`; an unconfirmed message goes again by the next path ([Read confirmations](#read-confirmations)).
+- **`read`:** the session file, read by the client with a `Stop` hook as the fallback, then the other layers in the recommended order of [Read confirmations](#read-confirmations).
 - **Daily e2e with real CLIs** ([infrastructure.md, "PR checks"](infrastructure.md#pr-checks)): Claude Code and Codex installed, and a pseudo-terminal for Channels and `codex queue`, whose dialogs code answers. On the [model stub](#model-stub) the checks need no key; on the real model, an Anthropic API key and an OpenAI API key with access to `gpt-5.5`. The desktop apps and IDE extensions need a person or an agent driving them.
 - **Subscription limits:** Claude Code shows them and a local program may read them; Codex shows them only on a ChatGPT sign-in ([Subscription limits](#subscription-limits)).
 
 ### Reruns
-On 2026-11-12, each live check ran without `--real`, as `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check <command>`, with the flags its row gives. The `--all` and `--real` results in each path's section were taken on Claude Code 2.1.322 and Codex 0.162.1; the busy GUI results, on the versions [Results](#results) gives.
+On 2026-11-12, each live check ran without `--real`, as `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check <command>`, with the flags its row gives.
 
 | Command | Version | Result |
 |---|---|---|
@@ -57,7 +57,7 @@ Each path's section answers, for each agent:
 | Needs | CLI version, sign-in kinds, settings, flags and prompts to the user |
 
 ## Prototypes
-- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks), and the helper of the [wake paths](#waking-an-idle-session) and [read confirmations](#read-confirmations); `agent-socket` the Claude Code [socket](#waking-an-idle-session) client; `agent-transcript` the reader of the [session file](#read-confirmations); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
+- Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks), and the helper of the [wake paths](#waking-an-idle-session) and [read confirmations](#read-confirmations); `agent-socket` the Claude Code [socket](#waking-an-idle-session) client; `agent-transcript` the reader of the [session file](#read-confirmations); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared fixtures, assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Codex runs on an OpenAI API key, by the owner's choice: no check signs it in with ChatGPT.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
 - Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
@@ -198,7 +198,7 @@ Claude Code needs:
 - an interactive session; the check uses a pseudo-terminal;
 - the server in a config file given with `--mcp-config` and named in `--dangerously-load-development-channels server:<name>`, or a plugin's server, `plugin:<plugin>@<marketplace>`;
 - the development channel warning answered at each start, and the trust dialog in a new directory;
-- a sign-in: an API key and a Claude account both work ([docs](https://code.claude.com/docs/en/channels.md): claude.ai or Console, not Bedrock, Vertex or Foundry); on claude.ai Team and Enterprise, an owner turns on `channelsEnabled`.
+- a sign-in, as for [MCP `inbox`](#mcp-inbox) ([docs](https://code.claude.com/docs/en/channels.md): claude.ai or Console, not Bedrock, Vertex or Foundry); on claude.ai Team and Enterprise, an owner turns on `channelsEnabled`.
 
 The Claude Code plugin can ship the channel: the server goes in the plugin's `.mcp.json`. Checked by hand on the stub, with the plugin loaded by `--plugin-dir` as `skald@inline` and a message waiting:
 - `--channels plugin:skald@inline`: the startup notice says "not on the approved channels allowlist"; the message is handed over and never reaches the model;
@@ -209,7 +209,6 @@ During the research preview, `--channels` accepts only plugins on Anthropic's al
 Findings:
 - Channels reach an idle and a busy session without a prompt or a tool call, so they can be the primary path.
 - A lost event cannot be seen: Claude Code drops the events of a channel it did not load, such as one started without the flag (D), a plugin off the allowlist or an organization without `channelsEnabled`. A message marked handed over may be lost. A way for the session to confirm receipt, such as a tool the agent calls, was not checked.
-- Unattended sessions need the dialogs answered by code, as the check does.
 
 ## Claude Code hooks
 `agent-hook <source-dir>`: a command hook for `PostToolUse` and `Stop`. It reads the hook input on stdin, takes the waiting messages and prints them as `hookSpecificOutput.additionalContext`, the text of [MCP `inbox`](#mcp-inbox). On `Stop` the turn goes on with them; Claude Code labels it "Stop hook feedback", where `decision: "block"` would show a hook error ([docs](https://code.claude.com/docs/en/hooks.md#stop-decision-control)). With none waiting, or on another event, it prints nothing, so `Stop` lets the turn end.
@@ -247,7 +246,7 @@ Results on 2026-11-11, on Claude Code 2.1.322; the handler is the debug build:
 Claude Code needs:
 - the hook in settings: a file given with `--settings`, the project's or user's settings, or a plugin's `hooks/hooks.json`;
 - the check's flags: those above;
-- a sign-in: an API key and a Claude account both work.
+- a sign-in, as for [MCP `inbox`](#mcp-inbox).
 
 The Claude Code plugin can ship the hooks. Checked by hand on the stub: the hooks moved from the settings file into a plugin's `hooks/hooks.json`, with the handler in the plugin's `bin/` as `${CLAUDE_PLUGIN_ROOT}/bin/agent-hook`, and the plugin loaded by `--plugin-dir` as `skald@inline`. Both checks pass.
 
@@ -301,7 +300,7 @@ Codex needs:
 - the hook in a config layer: `-c`, the `config.toml` or `hooks.json` of the user (`~/.codex/`) or of a trusted project (`<repo>/.codex/`), or a plugin's `hooks/hooks.json`;
 - a person's trust in `/hooks` for each new or changed hook, which Codex saves in the user's config, or `--dangerously-bypass-hook-trust` for one invocation; managed hooks from `requirements.toml` need none;
 - the check's flags: those above;
-- a sign-in: a model provider's API key and an OpenAI API key work.
+- a sign-in, as for [MCP `inbox`](#mcp-inbox).
 
 Findings:
 - Codex does not cap `Stop` continuations. Checked by hand on the stub: a `Stop` hook that always continued ran 5,191 times in 120 s, until the session was killed. The handler continues only while messages wait, so a steady stream of messages keeps the turn going.
@@ -311,9 +310,7 @@ Codex 0.162.1 has `codex queue --thread <thread> --message <text>`: it queues a 
 
 `agent-queue <source-dir> <thread>`: takes the waiting messages and runs `codex queue --thread <thread> --message <text>` with the text of [MCP `inbox`](#mcp-inbox) for all of them. It marks them handed over once the command succeeds and puts them back if it fails.
 
-A `codex exec` session takes a queued message when its turn ends and exits, aborting the message's turn: checked by hand on the stub, the message left the queue and never reached the model, though `codex queue` succeeded. So `live-check queue codex` runs Codex's terminal UI in a pseudo-terminal of 200×50, as the [Channels](#channels) check runs Claude Code:
-- `Stop` and `PreToolUse` hooks append their input to a file: the check reads the session's thread (`session_id`), the agent's replies and when it starts a shell command;
-- it ends each session with Ctrl-C twice.
+A `codex exec` session takes a queued message when its turn ends and exits, aborting the message's turn: checked by hand on the stub, the message left the queue and never reached the model, though `codex queue` succeeded. So `live-check queue codex` runs Codex's terminal UI in a pseudo-terminal as the [Channels](#channels) check runs Claude Code; the hooks append their input to the file, and the check also reads the session's thread (`session_id`) there.
 
 Its sessions, each with its own source and stub:
 - **A, idle:** the prompt asks the agent to reply `OK`. Once that turn ends, a message with a random token is added and `agent-queue` queues it. A passes when the message is handed over and the token reached the model.
@@ -346,7 +343,7 @@ Codex needs:
 - a running interactive session with a thread: the terminal UI makes the thread at the first prompt;
 - the session's thread ID;
 - `codex queue` run with the session's config home;
-- a sign-in for the session: a model provider's API key and an OpenAI API key work. `codex queue` itself needs none: on the stub it ran with an empty config home.
+- a sign-in for the session, as for [MCP `inbox`](#mcp-inbox). `codex queue` itself needs none: on the stub it ran with an empty config home.
 
 Findings:
 - `codex queue` can be the path to an idle Codex session, which hooks do not reach.
@@ -367,7 +364,7 @@ The threads it starts run without a person under the most restrictive settings t
 `live-check app-server codex` runs each client in its own temporary directory with its own source:
 - **A, idle:** a message waits; the client starts a thread on an app-server of its own. A passes when the message went in a `turn/start`, is handed over, the token reached the model and the turn answered.
 - **C, busy, with `--all`:** the client starts its thread with a prompt to run `sleep 20`, then reply `OK`; the stub runs it. The message is added once the command starts. C passes as A does, but with the message in a `turn/steer` into that turn.
-- **D, a session a person works in, with `--all`:** an app-server listens on a Unix socket; Codex's terminal UI joins it with `--remote` in a pseudo-terminal of 200×50, with a prompt to reply `OK`. Once that turn ends, the client resumes the session's thread, found with `thread/list` by its directory and first prompt. D passes as A does, when the token reached the model in that thread and the terminal UI showed it.
+- **D, a session a person works in, with `--all`:** an app-server listens on a Unix socket; Codex's terminal UI joins it with `--remote` in a pseudo-terminal as in [`codex queue`](#codex-queue), with a prompt to reply `OK`. Once that turn ends, the client resumes the session's thread, found with `thread/list` by its directory and first prompt. D passes as A does, when the token reached the model in that thread and the terminal UI showed it.
 - **B, with `--all`:** before D's client, another client starts a thread of its own on that app-server, with its own message. B passes as A does, when its token reached neither D's thread nor D's terminal UI.
 
 App-server options: `--disable plugins`, then with `-c` `notify=[]`, `skills.include_instructions=false`, `model_reasoning_effort="low"` and `model` with `--model`; the one that listens also trusts D's project. The app-server has no option that ignores the user's config. Environment: on the stub, that of [Model stub](#model-stub), and `TERM` for the terminal UI; with `--real`, that of [Session config](#session-config). With `--real` the app-server loads the user's `config.toml` and starts its MCP servers; `-c mcp_servers={}` does not stop them (checked by hand on the stub); `-c mcp_servers.<name>.enabled=false` stops the server `<name>`.
@@ -435,7 +432,7 @@ Results on 2026-11-12, Claude Code 2.1.322; the real model is `claude-opus-5-5` 
 
 In each `--all` run B got nothing and the second message to A came as the first did. The socket's bypass session runs as the desktop app and VS Code run Claude Code, `-p --input-format stream-json --permission-mode bypassPermissions`: without the token, the receipt was `held`, the output had the `peer_message_hold` notice and the message did not reach the model; with the token it did.
 
-GUI checks: `live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vscode> [--busy]`, and `gui socket claude-vscode --bypass`, as in [GUI live check](#gui-live-check); the message comes with `gui-socket <dir> [--no-auth] [--listen <seconds>]` for the socket, `gui-add <dir>` for the others. The project's settings turn off the user's plugins (`enabledPlugins`), the claude.ai connectors (`disableClaudeAiConnectors`) and the user's MCP servers' tools (`permissions.deny`, by the name Claude Code gives a server's tools). Results on 2026-11-12, Claude 5.1231.2 running Claude Code 2.1.321 and Claude Code for VS Code 2.1.322, one run each; the delay is from adding to the handover:
+GUI checks: `live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vscode> [--busy]`, and `gui socket claude-vscode --bypass`, as in [GUI live check](#gui-live-check); the message comes with `gui-socket <dir> [--no-auth] [--listen <seconds>]` for the socket, `gui-add <dir>` for the others. Results on 2026-11-12, Claude 5.1231.2 running Claude Code 2.1.321 and Claude Code for VS Code 2.1.322, one run each; the delay is from adding to the handover:
 
 | Surface | Path | Result |
 |---|---|---|
@@ -463,7 +460,7 @@ GUI checks: `live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vsco
 | Needs | A `SessionStart` hook; the token for a session that bypasses permission prompts; no `crossSessionInbound: refuse` | The hook in settings | The plugin: `--plugin-dir` on the CLI, the profile's variable in VS Code, an installed plugin in the desktop app, whose marketplace `claude plugin marketplace add` declares in the user's `~/.claude/settings.json` | A model turn per tick, on the user's subscription; the session ends the loop after 7 days |
 
 Other ways, checked once by hand on the surfaces:
-- **ChatGPT scheduled task, Codex desktop app:** a task on the session's thread, every minute, with the prompt to call `inbox`. A message added between ticks was handed over 85.8 s later; the window marks the prompt "Sent by scheduled task". Like `/loop`, each tick is a model turn. The check's task was deleted; Scheduled then listed none.
+- **ChatGPT scheduled task, Codex desktop app:** a task on the session's thread, every minute, with the prompt to call `inbox`. A message added between ticks was handed over 85.8 s later; the window marks the prompt "Sent by scheduled task". The check's task was deleted; Scheduled then listed none.
 - **Deep links, for an OS notification** (`live-check gui-link <dir>` opens the check session's link):
   - Desktop app: `claude://code/continue?session=<id>` opens the session. `<id>` is the app's own ID, `local_<uuid>`, whose record in `~/Library/Application Support/Claude/claude-code-sessions/` holds Claude Code's as `cliSessionId`; with Claude Code's ID it opens nothing. `claude://code/needs-input?session=` opened nothing for an idle session.
   - VS Code: `vscode://anthropic.claude-code/open?session=<id>&prompt=<text>` asks "Allow 'Claude Code for VS Code' extension to open this URI?", then resumes the session with the prompt in the prompt box, unsent. With the session already open it says "Session is already open. Your prompt was not applied". The URL goes to the VS Code instance macOS picks: with two running, it opened in the other one, in an empty window, as a new session. The check's prompt asks the agent to call `inbox`; sent by hand, it handed the message over.
@@ -477,7 +474,7 @@ Findings:
 - `/loop` and scheduled tasks cost a model turn per minute even with no message: a fallback only.
 
 Open questions:
-- The socket in the desktop app's bypass mode: whether it holds a message without the token and drops it after 5 minutes, as VS Code did. Not run: the mode needs the app's setting.
+- The socket in the desktop app's bypass mode: whether it holds a message without the token and drops it after 5 minutes, as VS Code did.
 - `claude://code/needs-input?session=` for a session waiting on a permission prompt: whether it opens that session.
 - Whether a project's settings can declare the mod's marketplace, so that the desktop app's install changes no user settings.
 - Whether a socket line that carries only a fixed prompt to call `inbox`, as for deep links, wakes the session and keeps the message's text out of Claude Code's teammate framing.
@@ -556,7 +553,6 @@ Security points:
 - A mod's and a deep link's prompt is the user's own, with the user's authority; the check's mod submits the message itself. Each must carry only a fixed prompt to call `inbox`, never the message; a URL also lands in logs and history.
 - The session file holds the user's whole conversation. The client reads only the registered session's file, only `msg_id`s of entries that went to the model, and keeps no line.
 - The ack secret is in the session file and in the source's `waiting/` and `handed/` files, in the default mode: it proves the model saw the message only while no other local process reads them.
-- `/loop` and scheduled tasks spend the user's tokens each minute.
 
 Open questions:
 - The read confirmations of `codex queue` in a busy session and with a second session on the Codex surfaces; resending after `codex queue`. Not run.
@@ -564,7 +560,7 @@ Open questions:
 - What makes the agent act on a message it got: it acted on socket messages and declined `rewake` ones on both GUI surfaces, which the CLI acted on.
 
 ## Subscription limits
-Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. On Claude Code the limits exist and a local program can read them so. Codex has them only on a ChatGPT sign-in. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
+Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
 
 | Agent | Source | What it shows | Needs a model turn | Sign-in with limits | Local program reads it | Prototype |
 |---|---|---|---|---|---|---|
@@ -606,7 +602,7 @@ Results on 2026-11-12, on Claude Code 2.1.322 and Codex 0.162.1, each run as `en
 Findings:
 - Claude Code: `-p /usage` gives every limit the user sees, without a model turn, in about 3 s. Anthropic marks the `usage_report` type experimental; the text shows the reset as a local date without a year.
 - Each `/usage` makes Claude Code ask Anthropic's usage endpoint, which Anthropic rate-limits; then `/usage` shows the data it fetched within the last 60 minutes, or an error ([docs](https://code.claude.com/docs/en/costs.md#using-the-usage-command)).
-- The status line runs only in an interactive session and takes the user's one `statusLine` setting. In the run its `seven_day` was a point below that of `/usage`.
+- The status line runs only in an interactive session and takes the user's one `statusLine` setting.
 - After a model response, the Codex app-server also sends `account/rateLimits/updated` with the windows of the response's rate limit headers, even on another model provider: checked by hand on the stub, which sent `x-codex-primary-*` and `x-codex-secondary-*` headers. `/status` still showed "data not available yet", and `account/rateLimits/read` refused, "codex account authentication required".
 
 ### Open questions
@@ -626,7 +622,7 @@ Surfaces, each running its own copy of the agent; the apps and extensions update
 
 The surfaces take no CLI flags, so a check attaches a path only with files in the project:
 - Claude Code reads the project's `.mcp.json` and `.claude/settings.local.json`, as the CLI does ([docs](https://code.claude.com/docs/en/desktop.md#shared-configuration)). The check writes the server to `.mcp.json` and, to settings, `enabledMcpjsonServers` and `permissions.allow` with `mcp__skald__inbox` for `inbox`; `enabledMcpjsonServers` for Channels; for a hook, the hook in the shell form and `permissions.allow` with `Bash(true)`. `permissions.allow` also holds `Bash(sleep:*)` for the busy case. Each settings file has `maxEffortLevel: "low"`, which caps the effort, the lowest across settings files winning: both surfaces showed Opus 5.5 at Low, the desktop app in `/status` and VS Code in its prompt box.
-- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and, for `inbox`, the server with `default_tools_approval_mode = "approve"`; for a hook, the hook as a top-level dotted key, `hooks.<event>=[{hooks=[{type="command",command="<handler> --codex <source>"}]}]`; for `codex queue`, nothing more. For each path it also turns off plugins, `[features] plugins = false`, and each MCP server of the user's `~/.codex/config.toml`, `[mcp_servers."<name>"] enabled = false`: it reads that file and keeps only the table headers' names. Without them, a Codex for VS Code session started the user's servers, and one asked macOS for automation access. With them, the session gets none of their tools and the desktop app starts none; Codex for VS Code still starts the user's servers right after `thread/start`, as the panel asks for their status with `mcpServerStatus/list`, which ignores the project's `enabled = false`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use. The check picks no model.
+- Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and, for `inbox`, the server with `default_tools_approval_mode = "approve"`; for a hook, the hook as a top-level dotted key, `hooks.<event>=[{hooks=[{type="command",command="<handler> --codex <source>"}]}]`; for `codex queue`, nothing more. For each path it also turns off plugins, `[features] plugins = false`, and each MCP server of the user's `~/.codex/config.toml`, `[mcp_servers."<name>"] enabled = false`: it reads that file and keeps only the table headers' names. Without them, a Codex for VS Code session started the user's servers, and one asked macOS for automation access. With them, the session gets none of their tools and the desktop app starts none; Codex for VS Code still starts the user's servers right after `thread/start`, as the panel asks for their status with `mcpServerStatus/list`, which ignores the project's `enabled = false`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use.
 
 ### GUI live check
 `live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel`, `socket`, `rewake`, `mod` or `loop` on the Claude Code ones, `user-prompt-submit`, `queue` or `read` on the Codex ones; the [wake paths](#waking-an-idle-session) and [`read`](#read-confirmations) have their own commands there:
@@ -643,7 +639,7 @@ Steps, each on a new session in the check's project; Return did not always send 
 - **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. For a hook, Review hooks as on the desktop app, from the hooks icon in the composer; the new chat button, top right of the panel. Close that window.
 - **Codex desktop app:** `open -a /Applications/ChatGPT.app <dir>/project`. "Trust this folder?": Trust folder; the app chooses the folder as the project. Type the prompt; the send button, right of the composer. For a hook, first send "Reply with only OK.": the untrusted hook does not run, and a hooks icon with a dot appears in the composer. It opens "Review hooks", which lists each new hook with its source ("This project"), event, command and timeout (600 s); check the hook, Allow selected; then New chat and the check's prompt.
 
-The Claude Code surfaces also load the user's config: the desktop session's `/status` listed the user's MCP servers, and Claude Code for VS Code connected each session to Remote Control and to the Claude in Chrome extension. Each check's project settings on them turn off the user's plugins, the claude.ai connectors and the tools of the user's MCP servers. No surface shows a turn's tokens.
+The Claude Code surfaces also load the user's config: the desktop session's `/status` listed the user's MCP servers, and Claude Code for VS Code connected each session to Remote Control and to the Claude in Chrome extension. Each check's project settings on them turn off the user's plugins (`enabledPlugins`), the claude.ai connectors (`disableClaudeAiConnectors`) and the tools of the user's MCP servers (`permissions.deny`, by the name Claude Code gives a server's tools). No surface shows a turn's tokens.
 
 The runs leave on the user's Mac:
 - trust of each `skald-live-*` project in `~/.claude.json`. On the Codex surfaces, the project trust in `~/.codex/config.toml` and the hook trust that Review hooks saves there, `[hooks.state."<project>/.codex/config.toml:<event, such as post_tool_use>:0:0"]` with `trusted_hash = "sha256:…"`, were deleted after the runs;
@@ -694,7 +690,7 @@ Not run:
 | Needs | `.mcp.json`; `enabledMcpjsonServers` and the allow rule in settings; workspace trust; a Claude account | The hook in settings; `Bash(true)` allowed for `PostToolUse`; workspace trust; a Claude account | No way on either surface: [Channels on the surfaces](#channels-on-the-surfaces) | `.codex/config.toml` with the server and its approval mode; folder trust; a model the sign-in can use as the composer's model; an OpenAI API key | The hook in `.codex/config.toml`; folder trust; a person's trust in Review hooks for each new or changed hook, saved in `~/.codex/config.toml`; a model the sign-in can use; an OpenAI API key | A chat with a thread; its thread ID; `codex queue` on the user's config home, from the bundled CLI or, on the desktop app, the CLI 0.162.1: both store it in `queue_1.sqlite`, which the surface's app-server reads. Nothing in the project |
 
 Findings:
-- On both Claude Code surfaces `inbox` and the hooks work from project files alone, idle and busy; Channels do not, so nothing there reaches an idle session without a prompt.
+- On both Claude Code surfaces `inbox` and the hooks work from project files alone, idle and busy; Channels do not. The socket, `rewake`, a mod and `/loop` reach an idle session there without a prompt: [Waking an idle session](#waking-an-idle-session).
 - On both Codex surfaces `codex queue` reaches an idle session without a prompt, as on the CLI; the hooks work as on the CLI once a person trusts each in Review hooks; `inbox` works from project files, on a model the sign-in can use.
 
 Security points, Codex surfaces:

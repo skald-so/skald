@@ -60,6 +60,25 @@ pub fn lines(registration: &Registration, messages: &[Message], auth: bool, from
     lines
 }
 
+/// The options `[--no-auth] [--listen <seconds>]` of a handover in `flags`: whether it sends the
+/// session's messaging token, and for how long it keeps a reply address; none if `flags` are not
+/// these options.
+pub fn options(flags: &[&str]) -> Option<(bool, Option<Duration>)> {
+    let (auth, listen) = match flags {
+        [] => (true, None),
+        ["--no-auth"] => (false, None),
+        ["--listen", seconds] => (true, Some(*seconds)),
+        ["--no-auth", "--listen", seconds] => (false, Some(*seconds)),
+        _ => return None,
+    };
+    let listen = match listen.map(str::parse::<u64>) {
+        None => None,
+        Some(Ok(seconds)) => Some(Duration::from_secs(seconds)),
+        Some(Err(_)) => return None,
+    };
+    Some((auth, listen))
+}
+
 /// Takes the waiting messages of `source` and writes them to the socket of the session it
 /// registered, with the token if `auth`, from `from`. Returns the messages handed over; writes
 /// nothing when none wait. Fails, leaving them waiting, without a registered socket.

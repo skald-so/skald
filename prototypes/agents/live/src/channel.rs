@@ -11,8 +11,8 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 use crate::{
-    Agent, Call, Checks, Options, PLACEHOLDER, SENDER, SERVER, SHELL, StubLog, Usage, handed_over,
-    handover_delay, pretty, shell_quote,
+    Agent, Call, Checks, Options, PLACEHOLDER, SENDER, SERVER, SHELL, StubLog, Usage, claude_flags,
+    handed_over, handover_delay, mcp_config, model_flag, pretty, shell_quote,
 };
 
 /// The channel server's binary, next to `live-check`.
@@ -104,9 +104,8 @@ impl Files {
 }
 
 /// Writes the session's MCP and settings files into `files.dir` and returns the arguments of an
-/// interactive `case` session. Only these files and the arguments change Claude Code's config:
-/// no project or user settings, only the channel server, no skills, the lowest effort, and no tool
-/// but the busy session's `sleep`, without asking.
+/// interactive `case` session, which only they configure ([`claude_flags`]): only the channel
+/// server, and no tool but the busy session's `sleep`, without asking.
 pub fn session(
     files: &Files,
     channel: &Path,
@@ -115,11 +114,7 @@ pub fn session(
 ) -> io::Result<Vec<String>> {
     fs::create_dir_all(&files.project)?;
     let servers = files.dir.join("mcp.json");
-    let server = json!({ "command": channel, "args": [files.source] });
-    fs::write(
-        &servers,
-        pretty(&json!({ "mcpServers": { SERVER: server } })),
-    )?;
+    fs::write(&servers, pretty(&mcp_config(channel, &files.source)))?;
     // Each event's input goes to one file.
     let hook = json!([{ "hooks": [{ "type": "command", "command": files.record() }] }]);
     let settings = files.dir.join("settings.json");
@@ -137,31 +132,17 @@ pub fn session(
         Case::Busy => "Bash",
         Case::Idle | Case::Unloaded => "",
     };
-    args.extend(
-        [
-            "--setting-sources",
-            "local",
-            "--strict-mcp-config",
-            "--mcp-config",
-            &servers.to_string_lossy(),
-            "--settings",
-            &settings.to_string_lossy(),
-            "--disable-slash-commands",
-            "--tools",
-            tools,
-            "--permission-mode",
-            "dontAsk",
-            "--effort",
-            "low",
-        ]
-        .map(String::from),
-    );
+    let config = [
+        "--mcp-config",
+        &servers.to_string_lossy(),
+        "--settings",
+        &settings.to_string_lossy(),
+    ];
+    args.extend(claude_flags(&config, false, tools, true));
     if case == Case::Busy {
         args.extend(["--allowedTools".to_owned(), format!("Bash({}:*)", "sleep")]);
     }
-    if let Some(model) = model {
-        args.extend(["--model".to_owned(), model.to_owned()]);
-    }
+    args.extend(model_flag("--model", model));
     if case.loads_channel() {
         args.extend([
             "--dangerously-load-development-channels".to_owned(),
@@ -331,12 +312,17 @@ pub enum HookEvent {
     Stopped(String),
 }
 
-/// The hook events in the hooks file's `text`: the inputs of the hooks, one JSON object each. A
-/// partly written last object is left for later.
-pub fn hook_events(text: &str) -> Vec<HookEvent> {
+/// The hook inputs in the hooks file's `text`, one JSON object each. A partly written last object is
+/// left for later.
+pub fn hook_inputs(text: &str) -> impl Iterator<Item = Value> + '_ {
     serde_json::Deserializer::from_str(text)
         .into_iter::<Value>()
         .map_while(Result::ok)
+}
+
+/// The hook events in the hooks file's `text` ([`hook_inputs`]).
+pub fn hook_events(text: &str) -> Vec<HookEvent> {
+    hook_inputs(text)
         .filter_map(|input| {
             let text = |key: &str| input[key].as_str().unwrap_or_default().to_owned();
             match input["hook_event_name"].as_str() {
@@ -397,10 +383,9 @@ impl PtySession {
     /// Whether `token` reached the model: in a request to the stub, or in a reply of the real
     /// model.
     pub fn got(&self, token: &str) -> bool {
-        match &self.stub {
-            Some(stub) => stub.saw(token),
-            None => self.replies().iter().any(|reply| reply.contains(token)),
-        }
+        StubLog::reached(self.stub.as_ref(), token, || {
+            self.replies().iter().any(|reply| reply.contains(token))
+        })
     }
 
     /// Records, at `now_ms`, the tokens of `tokens` that reached the model for the first time.
@@ -448,9 +433,7 @@ impl PtySession {
 
     /// Whether the stub got no credential but the placeholder.
     pub(crate) fn clean(&self) -> bool {
-        self.stub
-            .as_ref()
-            .is_none_or(|stub| stub.failure().is_none())
+        StubLog::clean(self.stub.as_ref())
     }
 
     pub fn summary(&self) -> String {
@@ -640,6 +623,8 @@ fn reached(yes: bool) -> &'static str {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use agent_testing::{opened, owned};
+
     use crate::tests::read_json;
 
     use super::*;
@@ -663,8 +648,7 @@ pub(crate) mod tests {
 
     #[test]
     fn adds_a_message_that_asks_for_the_token() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let message = add_message(&source, "tok-1").unwrap();
         assert_eq!(message.sender, "live-check of skald");
         assert_eq!(
@@ -760,12 +744,6 @@ pub(crate) mod tests {
 
     #[test]
     fn the_session_s_environment_adds_only_the_terminal_and_on_the_real_model_the_child_mark() {
-        let owned = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
-            pairs
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect()
-        };
         assert_eq!(
             extra_environment(false),
             owned(&[("TERM", "xterm-256color")])
@@ -920,30 +898,36 @@ pub(crate) mod tests {
         ] }] })
     }
 
+    /// A request recorded from Claude Code 2.1.322, shortened: the shell command's call and result,
+    /// then `after`.
+    fn after_the_shell_command(after: &[Value]) -> Value {
+        let mut messages = vec![
+            json!({ "role": "user", "content": "Run the shell command" }),
+            json!({ "role": "assistant", "content": [{ "type": "tool_use", "id": "t" }] }),
+            json!({ "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t" }] }),
+        ];
+        messages.extend_from_slice(after);
+        json!({ "messages": messages })
+    }
+
     /// A request recorded from Claude Code 2.1.322, shortened: the message arrived while the
     /// command ran.
     fn after_the_command(token: &str) -> Value {
-        json!({ "messages": [
-            { "role": "user", "content": "Run the shell command" },
-            { "role": "assistant", "content": [{ "type": "tool_use", "id": "t" }] },
-            { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t" }] },
-            { "role": "system", "content": [{ "type": "text", "text": format!(
+        after_the_shell_command(&[
+            json!({ "role": "system", "content": [{ "type": "text", "text": format!(
                 "A message arrived from skald while you were working:\n\
-                 <channel source=\"skald\">{token}</channel>") }] }
-        ] })
+                 <channel source=\"skald\">{token}</channel>") }] }),
+        ])
     }
 
     /// A request recorded from Claude Code 2.1.322, shortened: the message started a turn after
     /// the command's.
     fn after_the_turn(token: &str) -> Value {
-        json!({ "messages": [
-            { "role": "user", "content": "Run the shell command" },
-            { "role": "assistant", "content": [{ "type": "tool_use", "id": "t" }] },
-            { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t" }] },
-            { "role": "assistant", "content": [{ "type": "text", "text": "NONE" }] },
-            { "role": "user", "content": [{ "type": "text", "text": format!(
-                "<channel source=\"skald\">{token}</channel>") }] }
-        ] })
+        after_the_shell_command(&[
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "NONE" }] }),
+            json!({ "role": "user", "content": [{ "type": "text", "text": format!(
+                "<channel source=\"skald\">{token}</channel>") }] }),
+        ])
     }
 
     fn sent(token: &str, at_ms: Option<u64>) -> Sent {

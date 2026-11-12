@@ -1,6 +1,6 @@
 [package]
 name = "agent-testing"
-description = "Assertions and recorded exchanges the delivery prototypes' tests share."
+description = "Fixtures, assertions and recorded exchanges the delivery prototypes' tests share."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,4 +8,7 @@ publish.workspace = true
 
 [dependencies]
 agent-source = { path = "../source" }
+rmcp = { version = "3.9", default-features = false, features = ["client"] }
 serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["sync"] }

@@ -3,26 +3,14 @@
 use std::process::ExitCode;
 
 use agent_channel::ChannelServer;
-use agent_source::Source;
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let mut args = std::env::args_os().skip(1);
-    let (Some(dir), None) = (args.next(), args.next()) else {
-        eprintln!("usage: agent-channel <source-dir>");
-        return ExitCode::from(2);
-    };
-    let source = match Source::open(&dir) {
+    let source = match agent_source::from_args("agent-channel") {
         Ok(source) => source,
-        Err(error) => {
-            eprintln!(
-                "agent-channel: cannot open the source {}: {error}",
-                dir.display()
-            );
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
     let server = ChannelServer::new(source);
     let stopped = server.clone();

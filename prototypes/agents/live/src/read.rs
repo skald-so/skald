@@ -9,7 +9,7 @@ use std::path::Path;
 
 use agent_inbox::render;
 use agent_source::{Ack, Message, Record, Source, State};
-use agent_transcript::{read_seen, read_written};
+use agent_transcript::{read_written, record_seen};
 use serde_json::json;
 
 use crate::{
@@ -184,17 +184,12 @@ pub fn read_session_file(agent: Agent, source: &Source) -> io::Result<usize> {
     let Some(path) = session_file(source)? else {
         return Ok(0);
     };
-    let handed: Vec<String> = source
-        .handed_messages()?
-        .into_iter()
-        .map(|message| message.msg_id)
-        .collect();
-    let seen = read_seen(agent.session_file(), Path::new(&path), &handed)?;
-    for found in &seen {
-        let detail = found.at_ms.map(|at| format!("entry at {at}"));
-        source.record(&found.msg_id, "session-file", detail.as_deref())?;
-    }
-    Ok(seen.len())
+    record_seen(
+        agent.session_file(),
+        Path::new(&path),
+        source,
+        "session-file",
+    )
 }
 
 /// Whether the session file that `source`'s registration names holds `msg_id` in an entry that
@@ -534,6 +529,7 @@ impl ReadCheck {
 #[cfg(test)]
 mod tests {
     use agent_source::Registration;
+    use agent_testing::opened;
 
     use crate::tests::{read_json, replied, stubbed};
     use crate::{DONE, Event};
@@ -609,8 +605,7 @@ mod tests {
 
     #[test]
     fn refuses_the_acks_of_an_agent_that_never_saw_the_message() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (_dir, source) = opened();
         let message = source.add_with_ack("alice", "hi").unwrap();
         source
             .handed_over(&[source.take().unwrap()[0].msg_id.clone()])

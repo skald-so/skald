@@ -9,7 +9,8 @@ use std::process::{Child, Command, Output, Stdio};
 
 use agent_source::Source;
 use agent_testing::{
-    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, one_waiting, stderr,
+    assert_carries_once, assert_failed, assert_handed_over, assert_waiting, one_waiting, opened,
+    stderr,
 };
 use serde_json::Value;
 
@@ -124,8 +125,7 @@ fn quiet(output: &Output) {
 /// Asserts that `cli`'s `event` hook, with `input`, adds each waiting message to the context once
 /// and nothing once they are handed over.
 fn adds_each_waiting_message_once(cli: &Cli, input: &str, event: &str) {
-    let dir = tempfile::tempdir().unwrap();
-    let source = Source::open(dir.path()).unwrap();
+    let (dir, source) = opened();
     let messages = [
         source.add("alice of skald", "first").unwrap(),
         source.add("bob", "second").unwrap(),
@@ -157,8 +157,7 @@ fn user_prompt_submit_on_codex_adds_each_waiting_message_to_the_context_once() {
 #[test]
 fn stop_keeps_the_turn_going_with_the_waiting_messages_and_then_lets_it_end() {
     for cli in [&CLAUDE, &CODEX] {
-        let dir = tempfile::tempdir().unwrap();
-        let source = Source::open(dir.path()).unwrap();
+        let (dir, source) = opened();
         let messages = [source.add("alice", "the token").unwrap()];
         // The output keeps the turn going: the agent gets the messages.
         assert_carries_once(
@@ -429,16 +428,16 @@ fn confirms_the_messages_the_session_file_shows_and_drops_their_repeats() {
 }
 
 /// A temporary directory, its path, and the source in it.
-fn opened() -> (tempfile::TempDir, String, Source) {
-    let dir = tempfile::tempdir().unwrap();
+fn opened_with_path() -> (tempfile::TempDir, String, Source) {
+    let (dir, source) = opened();
     let path = dir.path().to_string_lossy().into_owned();
-    (dir, path.clone(), Source::open(path).unwrap())
+    (dir, path, source)
 }
 
 #[test]
 fn confirm_only_records_what_the_session_file_shows_and_hands_nothing_over() {
     for cli in [&CLAUDE, &CODEX] {
-        let (dir, path, source) = opened();
+        let (dir, path, source) = opened_with_path();
         let shown = source.add("alice", "shown").unwrap();
         source
             .handed_over(&[source.take().unwrap()[0].msg_id.clone()])
@@ -477,7 +476,7 @@ fn confirm_only_records_what_the_session_file_shows_and_hands_nothing_over() {
 
 #[test]
 fn takes_counts_and_releases_messages_for_the_mod() {
-    let (_dir, path, source) = opened();
+    let (_dir, path, source) = opened_with_path();
     let path = path.as_str();
     let count = |expected: &str| {
         let output = run(&["--count", path], "", &[]);
@@ -513,7 +512,7 @@ fn takes_counts_and_releases_messages_for_the_mod() {
 
 #[test]
 fn wait_hands_a_message_over_on_stderr_and_exits_2_to_wake_the_session() {
-    let (_dir, path, source) = opened();
+    let (_dir, path, source) = opened_with_path();
     let path = path.as_str();
     // Nothing comes: the wait ends with exit code 0.
     let started = std::time::Instant::now();

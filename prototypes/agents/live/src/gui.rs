@@ -15,7 +15,8 @@ use crate::hook::Hook;
 use crate::wake::{self, Wake};
 use crate::{
     Agent, Kind, QUICK, SENDER, SERVER, add_message, channel, codex_hook, handed_over,
-    handover_delay, inbox_tool, pretty, queue, read, server_tools, shell_quote, verdict,
+    handover_delay, inbox_tool, mcp_config, pretty, queue, read, server_tools, shell_quote,
+    verdict,
 };
 
 /// The file, in a check's directory, that holds what [`result`] needs, the token too.
@@ -488,7 +489,7 @@ pub fn write_config(
     fs::create_dir_all(project)?;
     match surface.agent() {
         Agent::Claude => {
-            let server = |command: &Path| json!({ "mcpServers": { SERVER: { "command": command, "args": [source] } } });
+            let server = |command: &Path| mcp_config(command, source);
             let mut settings = match path {
                 GuiPath::Inbox => {
                     fs::write(project.join(".mcp.json"), pretty(&server(&binaries.inbox)))?;
