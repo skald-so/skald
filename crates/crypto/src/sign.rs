@@ -21,9 +21,12 @@ impl SigningKey {
     /// # Panics
     /// If the operating system's random generator fails.
     pub fn generate() -> Self {
-        let mut secret = Zeroizing::new([0; 32]);
-        getrandom::fill(secret.as_mut()).expect("the operating system's random generator failed");
-        Self::from_bytes(&secret)
+        Self::from_bytes(&random_secret())
+    }
+
+    /// The 32-byte secret, as [`SigningKey::from_bytes`] takes it, for the device's key storage.
+    pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.0.to_bytes())
     }
 
     /// The Ed25519 public key.
@@ -41,6 +44,16 @@ impl fmt::Debug for SigningKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("SigningKey(..)")
     }
+}
+
+/// 32 bytes from the operating system's cryptographically secure generator, zeroed on drop.
+///
+/// # Panics
+/// If the operating system's random generator fails.
+pub(crate) fn random_secret() -> Zeroizing<[u8; 32]> {
+    let mut secret = Zeroizing::new([0; 32]);
+    getrandom::fill(secret.as_mut()).expect("the operating system's random generator failed");
+    secret
 }
 
 /// A signature does not verify.

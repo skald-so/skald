@@ -1,5 +1,6 @@
 //! `skald sign-in` against stubs of the device flow's endpoints: the answers a `skald-server` gives
-//! only in time or in a fault, a stored session on another server, and the default state directory.
+//! only in time or in a fault, a stored session on another server, the default state directory, a
+//! device ID the server has taken and a name given to a named device.
 
 #[allow(dead_code)]
 mod common;
@@ -53,12 +54,23 @@ fn unauthorized() -> String {
     )
 }
 
-/// A stub that signs every machine in: each code is approved at its first poll.
+/// The answer to a device's registration: taken, without a certificate.
+fn registered() -> String {
+    response(
+        "201 Created",
+        "application/json",
+        r#"{"device":"0190a1b2-c3d4-8e5f-8a9b-0c1d2e3f4a5b","cert":null}"#,
+    )
+}
+
+/// A stub that signs every machine in: each code is approved at its first poll, and each device's
+/// registration is taken.
 fn approving(path: &str) -> String {
     match path {
         "/auth/device" => grant(60),
         "/auth/token" => token(),
         "/session" => session(),
+        "/devices" => registered(),
         _ => response("404 Not Found", "text/plain", ""),
     }
 }
@@ -70,6 +82,16 @@ fn denying(path: &str) -> String {
         "/auth/token" => oauth_error("access_denied"),
         _ => response("404 Not Found", "text/plain", ""),
     }
+}
+
+/// The answer to a device's registration when the server has its ID with other keys or `name`, or
+/// on another account.
+fn device_taken() -> String {
+    response(
+        "409 Conflict",
+        "application/problem+json",
+        r#"{"type":"https://skald.so/problems/device-taken","title":"Device ID taken","status":409,"detail":"Taken."}"#,
+    )
 }
 
 /// The requests to `path` among `stub`'s.
@@ -174,13 +196,17 @@ fn other_errors_of_the_token_endpoint_stop_the_sign_in() {
         "/auth/device" => grant(60),
         _ => oauth_error("invalid_grant"),
     });
-    let machine = Machine::new();
 
-    let finished = machine.sign_in(&stub.url).finish();
+    fails_saying(&stub, "invalid_grant");
 
-    assert!(!finished.success, "{finished:?}");
-    assert!(finished.stderr.contains("invalid_grant"), "{finished:?}");
     assert_eq!(requests_to(&stub, "/auth/token").len(), 1);
+}
+
+/// Signs a new machine in on `stub`; fails unless the run fails and its stderr holds `part`.
+fn fails_saying(stub: &Stub, part: &str) {
+    let finished = Machine::new().sign_in(&stub.url).finish();
+    assert!(!finished.success, "{finished:?}");
+    assert!(finished.stderr.contains(part), "{finished:?}");
 }
 
 /// Runs `skald sign-in` against `server` with the file key storage, the environment `env` and
@@ -261,4 +287,44 @@ fn token_goes_only_to_the_server_it_came_from_even_when_the_state_names_another(
         "only the new session's token"
     );
     assert_eq!(requests_to(&first, "/auth/device").len(), 2);
+}
+
+#[test]
+fn device_id_the_server_has_taken_stops_the_sign_in() {
+    let stub = Stub::start(|path| match path {
+        "/devices" => device_taken(),
+        path => approving(path),
+    });
+
+    fails_saying(&stub, "other keys or name");
+}
+
+#[test]
+fn name_of_a_named_device_does_not_change_and_it_registers_once() {
+    let stub = Stub::start(approving);
+    let machine = Machine::new();
+    let sign_in = |name: &str| {
+        let args = ["sign-in", "--server", &stub.url, "--name", name];
+        machine.start(&args).finish()
+    };
+    let first = sign_in("Ada's laptop");
+    assert!(first.success, "{first:?}");
+    assert_eq!(requests_to(&stub, "/devices").len(), 1, "registered");
+
+    let renamed = sign_in("Ada's desktop");
+
+    assert!(!renamed.success, "{renamed:?}");
+    assert!(renamed.stderr.contains("named"), "{renamed:?}");
+    assert_eq!(
+        requests_to(&stub, "/session").len(),
+        1,
+        "the run that renames asks the server"
+    );
+    let again = sign_in("Ada's laptop");
+    assert!(again.success, "{again:?}");
+    assert_eq!(
+        requests_to(&stub, "/devices").len(),
+        1,
+        "registered once only"
+    );
 }

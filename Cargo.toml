@@ -20,3 +20,8 @@ publish = false
 
 [lib]
 path = "repository.rs"
+
+# The profile dist builds the release binaries with: dist-workspace.toml.
+[profile.dist]
+inherits = "release"
+lto = "thin"

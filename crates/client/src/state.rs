@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
+use skald_proto::DeviceId;
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
@@ -20,6 +21,22 @@ const MIGRATIONS: &[&str] = &[
         server TEXT NOT NULL,
         account TEXT,
         github_login TEXT
+    ) STRICT",
+    // The machine's own device: its ID and `name`, set at its first sign-in, whether the server
+    // took its registration, and how it is linked: `new` until it knows, `sent` with the master
+    // public key it pinned and the certificate it issued with that key until the server takes
+    // them, then `certified`; `waiting` for linking by another device. At most one row.
+    "CREATE TABLE device (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        device TEXT NOT NULL,
+        name TEXT NOT NULL,
+        registered INTEGER NOT NULL DEFAULT 0 CHECK (registered IN (0, 1)),
+        link TEXT NOT NULL DEFAULT 'new'
+            CHECK (link IN ('new', 'sent', 'certified', 'waiting')),
+        master BLOB CHECK (length(master) = 32),
+        cert BLOB,
+        CHECK ((link IN ('sent', 'certified')) = (master IS NOT NULL AND cert IS NOT NULL)),
+        CHECK (link IN ('sent', 'certified') OR (master IS NULL AND cert IS NULL))
     ) STRICT",
 ];
 
@@ -60,12 +77,39 @@ pub struct Session {
     pub account: Option<(String, String)>,
 }
 
+/// The machine's own device, as the state holds it.
+#[derive(Debug, PartialEq)]
+pub struct Device {
+    pub id: DeviceId,
+    /// Its certificate's `name`.
+    pub name: String,
+    /// Whether the server took its registration.
+    pub registered: bool,
+    pub link: Link,
+}
+
+/// How the device is linked to its account.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Link {
+    /// Not yet: it has not learned whether it is the account's first device.
+    New,
+    /// As the account's first device: it created the master key, pinned its public key `master`
+    /// and issued its certificate `cert`, in CBOR, with it; the server has not taken them yet.
+    Sent { master: [u8; 32], cert: Vec<u8> },
+    /// The server took the master key and the certificate: the device holds its certificate.
+    Certified { master: [u8; 32], cert: Vec<u8> },
+    /// It waits for linking by another device of the account.
+    Waiting,
+}
+
 /// Why the state cannot be used.
 #[derive(Debug)]
 pub enum Error {
     Sqlite(rusqlite::Error),
     /// A newer client wrote the state: it has more migrations than this one knows.
     Newer(u32),
+    /// The state holds what this client does not read, for the reason it holds.
+    Malformed(String),
 }
 
 impl std::fmt::Display for Error {
@@ -76,6 +120,7 @@ impl std::fmt::Display for Error {
                 f,
                 "a newer skald wrote the local state (schema version {version}); update skald"
             ),
+            Error::Malformed(what) => write!(f, "the local state is malformed: {what}"),
         }
     }
 }
@@ -141,6 +186,84 @@ impl State {
     /// Forgets the session.
     pub fn end_session(&self) -> Result<(), Error> {
         self.db.execute("DELETE FROM session", [])?;
+        Ok(())
+    }
+
+    /// The machine's own device, once it has one.
+    pub fn device(&self) -> Result<Option<Device>, Error> {
+        let row = self
+            .db
+            .query_row(
+                "SELECT device, name, registered, link, master, cert FROM device",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, bool>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<Vec<u8>>>(4)?,
+                        row.get::<_, Option<Vec<u8>>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, name, registered, link, master, cert)) = row else {
+            return Ok(None);
+        };
+        let id = id
+            .parse()
+            .map_err(|err| Error::Malformed(format!("the device ID: {err}")))?;
+        let pinned = || -> Result<([u8; 32], Vec<u8>), Error> {
+            let master = master
+                .and_then(|master| master.try_into().ok())
+                .ok_or_else(|| Error::Malformed("the pinned master key".to_owned()))?;
+            let cert = cert.ok_or_else(|| Error::Malformed("the certificate".to_owned()))?;
+            Ok((master, cert))
+        };
+        let link = match link.as_str() {
+            "new" => Link::New,
+            "sent" => pinned().map(|(master, cert)| Link::Sent { master, cert })?,
+            "certified" => pinned().map(|(master, cert)| Link::Certified { master, cert })?,
+            "waiting" => Link::Waiting,
+            other => return Err(Error::Malformed(format!("the device's link {other:?}"))),
+        };
+        Ok(Some(Device {
+            id,
+            name,
+            registered,
+            link,
+        }))
+    }
+
+    /// Records the machine's own device, new and not registered yet.
+    pub fn add_device(&self, id: DeviceId, name: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO device (id, device, name) VALUES (1, ?1, ?2)",
+            params![id.to_string(), name],
+        )?;
+        Ok(())
+    }
+
+    /// Records that the server took the device's registration.
+    pub fn set_registered(&self) -> Result<(), Error> {
+        self.db.execute("UPDATE device SET registered = 1", [])?;
+        Ok(())
+    }
+
+    /// Records how the device is linked.
+    pub fn set_link(&self, link: &Link) -> Result<(), Error> {
+        let (name, pinned) = match link {
+            Link::New => ("new", None),
+            Link::Sent { master, cert } => ("sent", Some((master, cert))),
+            Link::Certified { master, cert } => ("certified", Some((master, cert))),
+            Link::Waiting => ("waiting", None),
+        };
+        let (master, cert) = pinned.unzip();
+        self.db.execute(
+            "UPDATE device SET link = ?1, master = ?2, cert = ?3",
+            params![name, master.map(|master| master.as_slice()), cert],
+        )?;
         Ok(())
     }
 }
@@ -216,6 +339,72 @@ mod tests {
     }
 
     #[test]
+    fn device_is_kept_across_opens_with_how_it_is_linked() {
+        let dir = TestDir::new("state-device");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.device().unwrap(), None);
+        let id = DeviceId::from_signing_key(&[7; 32]);
+        state.add_device(id, "ada-laptop").unwrap();
+        assert!(state.add_device(id, "again").is_err(), "one device");
+        let new = Device {
+            id,
+            name: "ada-laptop".to_owned(),
+            registered: false,
+            link: Link::New,
+        };
+        assert_eq!(state.device().unwrap().as_ref(), Some(&new));
+        state.set_registered().unwrap();
+
+        let (master, cert) = ([9; 32], vec![1, 2, 3]);
+        for link in [
+            Link::Sent {
+                master,
+                cert: cert.clone(),
+            },
+            Link::Certified { master, cert },
+            Link::Waiting,
+            Link::New,
+        ] {
+            state.set_link(&link).unwrap();
+            let state = State::open(&dir).unwrap();
+            let device = state.device().unwrap().expect("a device");
+            assert!(device.registered);
+            assert_eq!((device.id, device.name.as_str()), (id, "ada-laptop"));
+            assert_eq!(device.link, link);
+        }
+    }
+
+    #[test]
+    fn device_of_a_state_that_breaks_its_schema_is_refused() {
+        let dir = TestDir::new("state-device-malformed");
+        let state = State::open(&dir).unwrap();
+        state
+            .db
+            .execute(
+                "INSERT INTO device (id, device, name) VALUES (1, 'not an ID', 'ada')",
+                [],
+            )
+            .unwrap();
+        let error = state.device().expect_err("malformed");
+        assert!(matches!(error, Error::Malformed(_)), "{error:?}");
+        // A sent master key needs its certificate, and a short one is no key.
+        let id = DeviceId::from_signing_key(&[7; 32]).to_string();
+        state
+            .db
+            .execute("UPDATE device SET device = ?1", [&id])
+            .unwrap();
+        for update in [
+            "UPDATE device SET link = 'sent'",
+            "UPDATE device SET link = 'sent', master = zeroblob(32)",
+            "UPDATE device SET link = 'sent', master = zeroblob(31), cert = x'01'",
+            "UPDATE device SET master = zeroblob(32), cert = x'01'",
+            "UPDATE device SET link = 'linked'",
+        ] {
+            assert!(state.db.execute(update, []).is_err(), "{update}");
+        }
+    }
+
+    #[test]
     fn state_of_a_newer_client_is_refused() {
         let dir = TestDir::new("state-newer");
         let newer = MIGRATIONS.len() as u32 + 1;
@@ -249,6 +438,10 @@ mod tests {
         assert_eq!(
             Error::Newer(7).to_string(),
             "a newer skald wrote the local state (schema version 7); update skald"
+        );
+        assert_eq!(
+            Error::Malformed("the device ID".to_owned()).to_string(),
+            "the local state is malformed: the device ID"
         );
         let error = Error::Sqlite(rusqlite::Error::InvalidQuery);
         assert!(

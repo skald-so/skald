@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Tests script/release-notes on a CHANGELOG.md as release-plz writes it: it prints the section of the
+# version asked for, a stable release's or a beta's, without its heading and the blank lines around
+# it, and nothing of the other sections; it fails for a version without a section, one of two
+# sections and an empty section, and without a CHANGELOG.md.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "release-notes-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+cat >"$tmp/CHANGELOG.md" <<'EOF'
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+## [0x3x0](https://github.com/skald-so/skald/compare/v0.2.0...v0x3x0) - 2026-12-10
+
+- *(client)* not a version ([#40](https://github.com/skald-so/skald/pull/40))
+
+## [0.2.0](https://github.com/skald-so/skald/compare/v0.1.10...v0.2.0) - 2026-12-01
+
+### Added
+
+- *(client)* stable feature ([#30](https://github.com/skald-so/skald/pull/30))
+
+## [0.2.0-beta.1](https://github.com/skald-so/skald/compare/v0.1.10...v0.2.0-beta.1) - 2026-11-20
+
+### Added
+
+- *(client)* beta feature ([#20](https://github.com/skald-so/skald/pull/20))
+
+## [0.1.10](https://github.com/skald-so/skald/compare/v0.1.1...v0.1.10) - 2026-11-15
+
+### Fixed
+
+- *(server)* tenth fix ([#10](https://github.com/skald-so/skald/pull/10))
+
+## [0.1.1](https://github.com/skald-so/skald/compare/v0.1.0...v0.1.1) - 2026-11-14
+
+### Fixed
+
+- *(server)* first fix ([#2](https://github.com/skald-so/skald/pull/2))
+
+## [0.1.0](https://github.com/skald-so/skald/releases/tag/v0.1.0) - 2026-11-12
+
+### Added
+
+- *(server)* first feature ([#1](https://github.com/skald-so/skald/pull/1))
+
+## [0.0.9](https://github.com/skald-so/skald/releases/tag/v0.0.9) - 2026-11-01
+
+## [0.0.8](https://github.com/skald-so/skald/releases/tag/v0.0.8) - 2026-10-01
+
+- *(server)* twice ([#3](https://github.com/skald-so/skald/pull/3))
+
+## [0.0.8](https://github.com/skald-so/skald/releases/tag/v0.0.8) - 2026-10-01
+
+- *(server)* twice ([#3](https://github.com/skald-so/skald/pull/3))
+EOF
+
+# expect_notes <version> <line>...: the notes of <version> are exactly these lines.
+expect_notes() {
+  local version=$1 expected actual
+  shift
+  expected=$(printf '%s\n' "$@")
+  if ! actual=$("$root/script/release-notes" "$version" "$tmp/CHANGELOG.md" 2>&1); then
+    fail "$version: it fails: $actual"
+  elif [[ $actual != "$expected" ]]; then
+    fail "$version: the notes are '$actual', not '$expected'"
+  fi
+}
+
+# expect_failure <case> <version> [<changelog>]: it fails and prints nothing to stdout; <changelog>
+# is the fixture by default.
+expect_failure() {
+  local output
+  if output=$("$root/script/release-notes" "$2" "${3:-$tmp/CHANGELOG.md}" 2>/dev/null) ||
+    [[ -n $output ]]; then
+    fail "$1: it does not fail, and prints '$output'"
+  fi
+}
+
+expect_notes 0.2.0 '### Added' '' '- *(client)* stable feature ([#30](https://github.com/skald-so/skald/pull/30))'
+expect_notes 0.2.0-beta.1 '### Added' '' '- *(client)* beta feature ([#20](https://github.com/skald-so/skald/pull/20))'
+expect_notes 0.1.1 '### Fixed' '' '- *(server)* first fix ([#2](https://github.com/skald-so/skald/pull/2))'
+expect_notes 0.1.10 '### Fixed' '' '- *(server)* tenth fix ([#10](https://github.com/skald-so/skald/pull/10))'
+expect_notes 0.1.0 '### Added' '' '- *(server)* first feature ([#1](https://github.com/skald-so/skald/pull/1))'
+expect_failure 'a version without a section' 0.4.0
+expect_failure 'a prefix of a version' 0.2
+expect_failure 'a version whose dots match only other characters' 0.3.0
+expect_failure 'two sections of a version' 0.0.8
+expect_failure 'an empty section' 0.0.9
+expect_failure 'no CHANGELOG.md' 0.1.0 "$tmp/missing.md"
+
+if ((failures > 0)); then
+  echo "release-notes-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "release-notes-test: all cases passed"

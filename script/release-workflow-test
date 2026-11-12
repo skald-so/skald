@@ -1,0 +1,350 @@
+#!/usr/bin/env node
+// Tests the release workflow, .github/workflows/release.yml, which builds skald with dist and
+// publishes it to GitHub Releases, and the local workflows it calls:
+//   - it runs on pushes of tags, on PRs and on manual runs (workflow_dispatch), on nothing else; a
+//     push of vX.Y.Z or vX.Y.Z-beta.N starts it; a PR into dev that changes it or the release config
+//     starts its dry run;
+//   - only a push of a v* tag publishes: for any other push, a PR and a manual run, on a tag ref
+//     too, every job that can publish is skipped, whatever the run's inputs, variables and step
+//     outputs; a job can publish when its token writes anything, it reads a secret other than
+//     GITHUB_TOKEN, or it calls a workflow of another repository;
+//   - a release is published with all its files at once: one step of all workflows writes GitHub
+//     Releases, a `gh release create` of the release workflow that names the files, is no draft and
+//     takes its notes from a file or a text, not from GitHub; it can mark a beta as a prerelease; on
+//     a push of a release tag it may run;
+//   - the dry run has jobs on a runner of each OS and architecture, macOS, Linux and Windows on
+//     x86_64 and arm64, for PRs and manual runs;
+//   - the rules of the release pipeline: every job's permissions are set; only the job that creates
+//     the release writes, and only contents; no job requests an OIDC token; actions are pinned to
+//     commits and Docker images to digests; tools are installed by taiki-e/install-action at exact
+//     versions it checks against checksums, never downloaded by a step or run from an expression;
+//     no job restores a cache.
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  commands,
+  event,
+  jobsFor,
+  pathTriggers,
+  permissions,
+  readWorkflow,
+  runsFor,
+  stepSkipped,
+  triggers,
+  words,
+} from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const releaseFile = '.github/workflows/release.yml';
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-workflow-test: ${what}`);
+  failures++;
+};
+const done = () => {
+  if (failures > 0) {
+    console.error(`release-workflow-test: ${failures} case(s) failed`);
+    process.exit(1);
+  }
+  console.log('release-workflow-test: all cases passed');
+};
+
+if (!fs.existsSync(path.join(root, releaseFile))) {
+  console.error(`release-workflow-test: ${releaseFile} is missing`);
+  process.exit(1);
+}
+
+const workflowDir = path.join(root, '.github/workflows');
+const workflows = Object.fromEntries(
+  fs
+    .readdirSync(workflowDir)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .map((f) => [`.github/workflows/${f}`, readWorkflow(path.join(workflowDir, f))]),
+);
+const release = workflows[releaseFile];
+
+// The release workflow and the local workflows it calls, each once.
+const files = [releaseFile];
+for (let i = 0; i < files.length; i++) {
+  for (const job of Object.values(workflows[files[i]]?.jobs ?? {})) {
+    const called = typeof job.uses === 'string' && job.uses.startsWith('./') ? job.uses.slice(2).split('@')[0] : null;
+    if (called && !files.includes(called)) {
+      if (workflows[called]) files.push(called);
+      else fail(`${files[i]} calls ${called}, which is missing`);
+    }
+  }
+}
+// Every job of those workflows, as {file, key, job, workflow}.
+const jobs = files.flatMap((file) =>
+  Object.entries(workflows[file].jobs ?? {}).map(([key, job]) => ({ file, key, job, workflow: workflows[file] })),
+);
+const steps = (entry) => (entry.job.steps ?? []).map((step, index) => ({ ...entry, step, index }));
+const where = (s) => `${s.file} job ${s.key}${s.step ? ` step ${s.step.name ?? s.step.id ?? s.index + 1}` : ''}`;
+const writes = (p) => (p ? Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope) : []);
+
+// The triggers.
+const on = triggers(release);
+const events = Object.keys(on).sort();
+if (JSON.stringify(events) !== JSON.stringify(['pull_request', 'push', 'workflow_dispatch'])) {
+  fail(`it runs on pushes, PRs and manual runs and on nothing else, not on: ${events.join(', ') || 'nothing'}`);
+}
+if (!('workflow_dispatch' in on)) fail('the dry run runs on demand: no workflow_dispatch');
+for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
+  if (!runsFor(release, event('push', `refs/tags/${tag}`))) fail(`a push of the tag ${tag} does not start it`);
+}
+// The release config: dist's own file, or the workspace's Cargo.toml.
+const config = ['dist-workspace.toml', 'dist.toml'].find((f) => fs.existsSync(path.join(root, f))) ?? 'Cargo.toml';
+const pr = on.pull_request;
+if (pr) {
+  if (!runsFor(release, event('pull_request', 'refs/pull/7/merge'))) fail('a PR into dev does not start the dry run');
+  if (pr.paths === undefined && pr['paths-ignore'] === undefined) {
+    fail('the dry run runs on every PR, not only on those that change the release config or workflow');
+  }
+  for (const file of [releaseFile, config]) {
+    if (!pathTriggers(pr, file)) fail(`a PR that changes ${file} does not start the dry run`);
+  }
+}
+
+// Only a push of a v* tag publishes.
+const secrets = (job) => {
+  const text = JSON.stringify(job);
+  const read = [...text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((m) => m[1]).filter((s) => s !== 'GITHUB_TOKEN');
+  return job.secrets === 'inherit' ? ['inherit', ...read] : read;
+};
+// publisher <job>: why the job can publish, or null.
+const publisher = (workflow, job) => {
+  const p = permissions(workflow, job);
+  if (p === null) return 'its permissions are not set';
+  if (writes(p).length > 0) return `its token writes ${writes(p).join(', ')}`;
+  if (secrets(job).length > 0) return `it reads the secrets ${secrets(job).join(', ')}`;
+  if (typeof job.uses === 'string' && !job.uses.startsWith('./')) return `it calls ${job.uses}`;
+  return null;
+};
+const quiet = [
+  ['push', 'refs/heads/dev'],
+  ['push', 'refs/heads/main'],
+  ['push', 'refs/heads/v1.2.3'],
+  ['push', 'refs/tags/1.2.3'],
+  ['push', 'refs/tags/release-1.2.3'],
+  ['push', 'refs/tags/skald-v1.2.3'],
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
+  ...events
+    .filter((e) => !['push', 'pull_request', 'workflow_dispatch'].includes(e))
+    .flatMap((e) => [
+      [e, 'refs/heads/dev'],
+      [e, 'refs/tags/v1.2.3'],
+    ]),
+];
+for (const [name, ref] of quiet) {
+  const states = jobsFor(release, event(name, ref));
+  for (const [key, job] of Object.entries(release.jobs ?? {})) {
+    const why = publisher(release, job);
+    if (why && !states[key].skipped) fail(`a ${name} on ${ref} publishes nothing, but job ${key} may run and ${why}`);
+  }
+}
+
+// What writes GitHub Releases, in every workflow: {file, key, step, index, kind, line}.
+const releaseActions =
+  /^(softprops\/action-gh-release|ncipollo\/release-action|actions\/create-release|actions\/upload-release-asset|svenstaro\/upload-release-action|marvinpinto\/action-automatic-releases|taiki-e\/create-gh-release-action|taiki-e\/upload-rust-binary-action|AButler\/upload-release-assets|xresloader\/upload-to-github-release|meeDamian\/github-release|elgohr\/Github-Release-Action)@/i;
+const releaseWrites = [];
+for (const [file, workflow] of Object.entries(workflows)) {
+  for (const [key, job] of Object.entries(workflow.jobs ?? {})) {
+    (job.steps ?? []).forEach((step, index) => {
+      const at = { file, key, step, index };
+      const uses = String(step.uses ?? '');
+      if (releaseActions.test(uses)) releaseWrites.push({ ...at, kind: uses.split('@')[0] });
+      if (
+        /^actions\/github-script@/i.test(uses) &&
+        /\b(createRelease|updateRelease|deleteRelease|uploadReleaseAsset|deleteReleaseAsset|updateReleaseAsset)\b/.test(
+          String(step.with?.script ?? ''),
+        )
+      ) {
+        releaseWrites.push({ ...at, kind: 'actions/github-script' });
+      }
+      for (const line of commands(step.run)) {
+        const gh = line.match(/\bgh\s+release\s+(create|upload|edit|delete|delete-asset)\b/);
+        if (gh) releaseWrites.push({ ...at, kind: `gh release ${gh[1]}`, line });
+        else if (
+          /\bgh\s+api\b/.test(line) &&
+          /releases/.test(line) &&
+          /(-X|--method)[\s=]*['"]?(POST|PATCH|PUT|DELETE)|\s(-f|-F|--field|--raw-field|--input)\b/i.test(line)
+        ) {
+          releaseWrites.push({ ...at, kind: 'gh api', line });
+        } else if (
+          /uploads\.github\.com/.test(line) ||
+          (/\/releases\b/.test(line) &&
+            /\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b/i.test(line) &&
+            /(-X|--request|-Method)[\s=]*['"]?(POST|PATCH|PUT|DELETE)|--data|--upload-file|\s-T\s/i.test(line))
+        ) {
+          releaseWrites.push({ ...at, kind: 'HTTP', line });
+        }
+      }
+    });
+  }
+}
+const creates = releaseWrites.filter((w) => w.kind === 'gh release create');
+if (releaseWrites.length !== 1 || creates.length !== 1 || creates[0].file !== releaseFile) {
+  fail(
+    `one step of all workflows writes GitHub Releases, a gh release create in ${releaseFile}, not: ${
+      releaseWrites.map((w) => `${w.kind} in ${where(w)}`).join('; ') || 'none'
+    }`,
+  );
+}
+const creator = creates.find((w) => w.file === releaseFile);
+if (creator) {
+  // The command's words up to the end of the command.
+  const args = words(creator.line.replace(/^[\s\S]*?\bgh\s+release\s+create\b/, '').split(/\s(?:&&|\|\||;|\||#)/)[0]);
+  const valued = new Set(['-t', '--title', '-n', '--notes', '-F', '--notes-file', '--target', '--discussion-category', '--notes-start-tag', '-R', '--repo']);
+  const positional = [];
+  const flags = [];
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i];
+    // A variable whose value in the step's or the job's env holds a flag, such as one that adds
+    // --prerelease for a beta, is that flag, not a file.
+    const variable = w.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/)?.[1];
+    const value = variable && String((creator.step.env ?? {})[variable] ?? (release.jobs[creator.key].env ?? {})[variable] ?? '');
+    if (value && /(^|['"\s])--?[A-Za-z]/.test(value)) {
+      const held = value.match(/--?[A-Za-z][A-Za-z-]*(=\w+)?/g) ?? [];
+      flags.push(...held.map((f) => f.split('=')[0]));
+      if (held.some((f) => f === '--draft' || f === '--draft=true' || f === '-d')) {
+        fail(`the release is published with all its files at once, not as a draft: ${where(creator)}`);
+      }
+    } else if (!w.startsWith('-')) positional.push(w);
+    else {
+      flags.push(w.split('=')[0]);
+      if (!w.includes('=') && valued.has(w)) i++;
+      if (w === '--draft=true' || w === '--draft' || w === '-d' || (/^-[A-Za-z]{2,}$/.test(w) && w.includes('d'))) {
+        fail(`the release is published with all its files at once, not as a draft: ${where(creator)}`);
+      }
+    }
+  }
+  if (positional.length < 2) {
+    fail(`gh release create names the release's files, so it publishes them with the release: ${where(creator)}`);
+  }
+  if (!flags.some((f) => ['-n', '--notes', '-F', '--notes-file'].includes(f)) || flags.some((f) => ['--generate-notes', '--notes-from-tag'].includes(f))) {
+    fail(`the release's notes are given, the version's CHANGELOG section, not made by GitHub: ${where(creator)}`);
+  }
+  if (!/--prerelease\b/.test(JSON.stringify(creator.step)) && !flags.includes('-p')) {
+    fail(`gh release create can mark a beta as a prerelease: ${where(creator)}`);
+  }
+  for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
+    const state = jobsFor(release, event('push', `refs/tags/${tag}`))[creator.key];
+    if (stepSkipped(creator.step, state)) fail(`a push of the tag ${tag} cannot publish its release: ${where(creator)}`);
+  }
+}
+
+// Permissions.
+for (const file of files) {
+  const w = writes(permissions(workflows[file], {}));
+  if (w.length > 0) fail(`${file}: the workflow's token writes ${w.join(', ')}; only the job that creates the release writes`);
+}
+for (const entry of jobs) {
+  const p = permissions(entry.workflow, entry.job);
+  if (p === null) {
+    fail(`${where(entry)}: its permissions are not set`);
+    continue;
+  }
+  const w = writes(p);
+  const isCreator = creator && entry.file === creator.file && entry.key === creator.key;
+  if (isCreator && JSON.stringify(w) !== '["contents"]') {
+    fail(`${where(entry)}: the job that creates the release writes contents and nothing else, not: ${w.join(', ') || 'nothing'}`);
+  }
+  if (!isCreator && w.length > 0) fail(`${where(entry)}: only the job that creates the release writes; this one writes ${w.join(', ')}`);
+}
+for (const file of files) {
+  if (JSON.stringify(workflows[file]).includes('"id-token"')) fail(`${file}: a job requests an OIDC token; none publishes by OIDC, signs or attests`);
+}
+
+// Actions, tools and caches.
+const download =
+  /\b(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm|Start-BitsTransfer)\b|\bcargo[ -]binstall\b|\bcargo\s+(\+\S+\s+)?install\b|\b(pip3?|pipx)\s+install\b|\bgo\s+install\b|\bgem\s+install\b|\bnpm\s+(install|i)\s+(-g|--global)\b/i;
+const caches = /^(actions\/cache|Swatinem\/rust-cache|mozilla-actions\/sccache-action)(\/[a-z]+)?@/i;
+const cacheEnv = (env) => Object.keys(env ?? {}).filter((k) => /^(RUSTC_WRAPPER|SCCACHE_|CARGO_BUILD_RUSTC_WRAPPER)/.test(k));
+for (const file of files) {
+  if (cacheEnv(workflows[file].env).length > 0) fail(`${file}: the workflow sets ${cacheEnv(workflows[file].env).join(', ')}; release builds restore no cache`);
+}
+for (const entry of jobs) {
+  if (typeof entry.job.uses === 'string' && !/^\.\/|@[0-9a-f]{40}$/.test(entry.job.uses)) {
+    fail(`${where(entry)}: the workflow it calls is not pinned to a commit: ${entry.job.uses}`);
+  }
+  if (cacheEnv(entry.job.env).length > 0) fail(`${where(entry)}: it sets ${cacheEnv(entry.job.env).join(', ')}; release builds restore no cache`);
+  for (const s of steps(entry)) {
+    const uses = String(s.step.uses ?? '');
+    const w = s.step.with ?? {};
+    if (uses && !(uses.startsWith('./') || /@[0-9a-f]{40}$/.test(uses) || /^docker:\/\/.+@sha256:[0-9a-f]{64}$/.test(uses))) {
+      fail(`${where(s)}: ${uses} is not pinned to a commit or a digest`);
+    }
+    if (/^(cargo-bins\/cargo-binstall|release-plz\/action)@/i.test(uses)) fail(`${where(s)}: ${uses} downloads tools without checksums`);
+    if (/^taiki-e\/install-action@/i.test(uses)) {
+      const tools = String(w.tool ?? '').split(/[,\s]+/).filter(Boolean);
+      if (tools.length === 0 || !tools.every((t) => /^[a-z0-9_-]+@[0-9]+\.[0-9]+\.[0-9]+$/.test(t))) {
+        fail(`${where(s)}: taiki-e/install-action installs each tool at an exact version, not: ${w.tool ?? 'none'}`);
+      }
+      if (w.checksum === false || w.checksum === 'false') fail(`${where(s)}: taiki-e/install-action checks checksums`);
+    }
+    if (caches.test(uses)) fail(`${where(s)}: ${uses} restores a cache`);
+    for (const key of ['cache', 'cache-from', 'cache-dependency-path', 'enable-cache', 'cache-provider']) {
+      const v = w[key];
+      if (v !== undefined && v !== false && v !== 'false' && v !== '') fail(`${where(s)}: it restores a cache, ${key}: ${v}`);
+    }
+    if (/^actions\/setup-go@/i.test(uses) && !(w.cache === false || w.cache === 'false')) {
+      fail(`${where(s)}: actions/setup-go restores a cache unless cache is false`);
+    }
+    if (cacheEnv(s.step.env).length > 0) fail(`${where(s)}: it sets ${cacheEnv(s.step.env).join(', ')}; release builds restore no cache`);
+    for (const line of commands(s.step.run)) {
+      if (download.test(line)) fail(`${where(s)}: it downloads or installs a tool without a checksum: ${line.trim()}`);
+      if (/^\s*\$\{\{/.test(line)) fail(`${where(s)}: it runs a command taken from an expression: ${line.trim()}`);
+      if (/\bsccache\b/.test(line)) fail(`${where(s)}: it runs sccache; release builds restore no cache`);
+    }
+  }
+}
+
+// The dry run's runners.
+const platform = (label) => {
+  const l = String(label).toLowerCase();
+  if (/^ubuntu-(latest|\d+\.\d+)$/.test(l)) return 'Linux x86_64';
+  if (/^ubuntu-(latest|\d+\.\d+)-arm$/.test(l)) return 'Linux arm64';
+  if (/^windows-(latest|\d{4})$/.test(l)) return 'Windows x86_64';
+  if (/^windows-11-arm$/.test(l)) return 'Windows arm64';
+  if (/^macos-\d+-intel$|^macos-13$|^macos-(latest|\d+)-large$/.test(l)) return 'macOS x86_64';
+  if (/^macos-(latest|1[4-9]|[2-9]\d)$|^macos-(latest|\d+)-xlarge$/.test(l)) return 'macOS arm64';
+  return null;
+};
+// labels <job>: the runner labels the job may run on, from its runs-on and a matrix in the file.
+const labels = (job) => {
+  const matrix = job.strategy?.matrix;
+  const fromMatrix = (keys) => {
+    if (!matrix || typeof matrix !== 'object') return [];
+    const [first, ...rest] = keys;
+    const values = [...[].concat(matrix[first] ?? []), ...[].concat(matrix.include ?? []).map((i) => i?.[first])];
+    return values.flatMap((v) => rest.reduce((xs, k) => xs.flatMap((x) => [].concat(x?.[k] ?? [])), [].concat(v ?? [])));
+  };
+  const runsOn = job['runs-on'];
+  const raw = typeof runsOn === 'object' && !Array.isArray(runsOn) ? runsOn?.labels : runsOn;
+  return [].concat(raw ?? []).flatMap((label) => {
+    const text = String(label).trim();
+    const m = text.match(/^\$\{\{\s*matrix\.([A-Za-z0-9_.-]+)\s*\}\}$/);
+    if (m) return fromMatrix(m[1].split('.'));
+    return text.includes('${{') ? [] : [text];
+  });
+};
+const all = ['Linux x86_64', 'Linux arm64', 'macOS x86_64', 'macOS arm64', 'Windows x86_64', 'Windows arm64'];
+for (const [name, ref] of [
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+]) {
+  const states = jobsFor(release, event(name, ref));
+  const covered = new Set(
+    Object.entries(release.jobs ?? {})
+      .filter(([key]) => !states[key].skipped)
+      .flatMap(([, job]) => labels(job).map(platform))
+      .filter(Boolean),
+  );
+  const missing = all.filter((p) => !covered.has(p));
+  if (missing.length > 0) fail(`the dry run of a ${name} has no job on a runner of: ${missing.join(', ')}`);
+}
+
+done();

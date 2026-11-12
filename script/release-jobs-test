@@ -1,0 +1,75 @@
+#!/usr/bin/env node
+// Tests the release workflow, .github/workflows/release.yml, beyond script/release-workflow-test:
+//   - a PR that changes any file of the release starts the dry run: the workflow, dist's settings
+//     (dist-workspace.toml, Cargo.toml with [profile.dist], the Cargo.toml of each package that sets
+//     [package.metadata.dist]), the installers, and the scripts its steps run with those they run;
+//   - the job that creates the release needs, directly or through other jobs, every job that runs
+//     script/installers-test, and those jobs check every target the build jobs build: no release
+//     is published before each target's installer passed.
+import fs from 'node:fs';
+import path from 'node:path';
+import { commands, needsOf, pathTriggers, readWorkflow, triggers } from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const releaseFile = '.github/workflows/release.yml';
+const release = readWorkflow(path.join(root, releaseFile));
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-jobs-test: ${what}`);
+  failures++;
+};
+
+const jobs = release.jobs ?? {};
+const runs = (job) => (job.steps ?? []).flatMap((step) => commands(step.run));
+
+// The dry run's paths.
+const files = [releaseFile, 'dist-workspace.toml', 'Cargo.toml', 'installers/install.sh', 'installers/install.ps1'];
+for (const crate of fs.readdirSync(path.join(root, 'crates'))) {
+  const manifest = `crates/${crate}/Cargo.toml`;
+  const text = fs.existsSync(path.join(root, manifest)) ? fs.readFileSync(path.join(root, manifest), 'utf8') : '';
+  if (/^\[package\.metadata\.dist\]/m.test(text)) files.push(manifest);
+}
+if (!files.includes('crates/client/Cargo.toml')) fail('crates/client/Cargo.toml sets no [package.metadata.dist]');
+// The scripts the steps run, and those script/installers-test runs.
+const scripts = new Set(Object.values(jobs).flatMap(runs).flatMap((line) => line.match(/\bscript\/[A-Za-z0-9_./-]+/g) ?? []));
+if (scripts.has('script/installers-test')) scripts.add('script/lib/serve.mjs');
+files.push(...scripts);
+const pr = triggers(release).pull_request;
+if (!pr) fail('no PR starts the dry run');
+for (const file of files) {
+  if (pr && !pathTriggers(pr, file)) fail(`a PR that changes ${file} does not start the dry run`);
+}
+
+// The release waits for every installer check.
+const creator = Object.keys(jobs).find((key) => runs(jobs[key]).some((line) => /\bgh\s+release\s+create\b/.test(line)));
+const checkers = Object.keys(jobs).filter((key) => runs(jobs[key]).some((line) => /\bscript\/installers-test\b/.test(line)));
+const builders = Object.keys(jobs).filter((key) => runs(jobs[key]).some((line) => /\bdist\s+build\b/.test(line)));
+const needed = (key, seen = new Set()) => {
+  for (const n of needsOf(jobs[key])) {
+    if (!seen.has(n)) {
+      seen.add(n);
+      needed(n, seen);
+    }
+  }
+  return seen;
+};
+const targets = (keys) =>
+  [...new Set(keys.flatMap((key) => [].concat(jobs[key].strategy?.matrix?.include ?? []).map((i) => i?.target)))].sort();
+if (!creator) fail('no job runs gh release create');
+if (checkers.length === 0) fail('no job runs script/installers-test');
+if (builders.length === 0) fail('no job runs dist build');
+for (const key of checkers) {
+  if (creator && !needed(creator).has(key)) fail(`job ${creator} creates the release without needing job ${key}, which checks the installers`);
+  for (const b of builders) if (!needed(key).has(b)) fail(`job ${key} checks the installers without needing job ${b}, which builds them`);
+}
+const built = targets(builders);
+const checked = targets(checkers);
+if (built.length !== 6 || JSON.stringify(built) !== JSON.stringify(checked)) {
+  fail(`the installers are checked on ${checked.join(', ') || 'no target'}, not on every target built: ${built.join(', ') || 'none'}`);
+}
+
+if (failures > 0) {
+  console.error(`release-jobs-test: ${failures} case(s) failed`);
+  process.exit(1);
+}
+console.log('release-jobs-test: all cases passed');
