@@ -138,6 +138,61 @@ async function navigation(tab, navigate) {
   return { url: tab.url(), status, navigations, error };
 }
 
+/** How long `followRefreshes` waits in all, as long as playwright-core waits for a navigation. */
+const REFRESH_TIMEOUT = 30_000;
+
+/**
+ * Waits until `tab` stops navigating by itself: until its document has loaded and holds no
+ * `<meta http-equiv="refresh">`, such as the sign-in callback's page. A document that holds one is
+ * followed to the document its refresh commits, an error page included.
+ */
+async function followRefreshes(tab) {
+  const deadline = Date.now() + REFRESH_TIMEOUT;
+  // At least 1 ms: a timeout of 0 is none to playwright-core.
+  const left = () => Math.max(deadline - Date.now(), 1);
+  let documents = 0;
+  let committed = () => {};
+  const count = (frame) => {
+    if (frame !== tab.mainFrame()) return;
+    documents += 1;
+    committed();
+  };
+  tab.on("framenavigated", count);
+  try {
+    for (;;) {
+      const seen = documents;
+      await tab.waitForLoadState("load", { timeout: left() });
+      // A navigation that replaces the document fails the evaluation: its document comes next.
+      const refreshes = await tab
+        .evaluate(
+          () => document.querySelector('meta[http-equiv="refresh" i]') !== null,
+        )
+        .catch(() => true);
+      if (documents !== seen) continue;
+      if (!refreshes) return;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `${tab.url()} did not stop refreshing within ${REFRESH_TIMEOUT} ms`,
+              ),
+            ),
+          left(),
+        );
+        committed = () => {
+          clearTimeout(timer);
+          committed = () => {};
+          resolve();
+        };
+        if (documents !== seen) committed();
+      });
+    }
+  } finally {
+    tab.off("framenavigated", count);
+  }
+}
+
 /** Clicks what `selector` finds in `tab` and waits for the navigation it starts to load. */
 function click(tab, selector) {
   return navigation(tab, async () => {
@@ -159,11 +214,12 @@ const ops = {
   },
 
   /**
-   * Navigates the page to `url`, as a person typing it, and waits for `waitUntil`, default `load`.
-   * Gives the final URL, the status of the last response, the URLs the main frame requested on the
-   * way, redirects included, and the navigation error, if any.
+   * Navigates the page to `url`, as a person typing it, and waits for it to load; with `settle`,
+   * also for the documents its refreshes open, as `followRefreshes` does. Gives the final URL, the
+   * status of the last response of the navigation to `url`, before any refresh, the URLs the main
+   * frame requested on the way, redirects and refreshes included, and the navigation error, if any.
    */
-  async goto({ page: id, url, waitUntil = "load" }) {
+  async goto({ page: id, url, settle = false }) {
     // Each navigation gets a new tab of the browser: Chrome commits its error page for an empty
     // error response, such as a 404 without a body, after goto gave up on it, and that commit
     // would interrupt the next navigation in the same tab.
@@ -171,7 +227,11 @@ const ops = {
     const tab = await found.context.newPage();
     found.page.close().catch(() => {});
     found.page = tab;
-    return navigation(tab, () => tab.goto(url, { waitUntil }));
+    return navigation(tab, async () => {
+      const response = await tab.goto(url, { waitUntil: "load" });
+      if (settle) await followRefreshes(tab);
+      return response;
+    });
   },
 
   /**
