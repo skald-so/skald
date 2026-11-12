@@ -16,7 +16,7 @@
 - GitHub and Google sign-in, linked sign-in methods, device flow, device certificate.
 - Key verification without trusting the server: the device key signed with the SSH key from GitHub, cross-signing, key change warnings, fingerprints, DNS root of trust.
 - Encrypted history, recovery key, new device linking.
-- Claude Code and Codex adapters: MCP, hooks, Channels.
+- Claude Code and Codex adapters: [Delivery to agents](architecture.md#delivery-to-agents).
 - Gemini, Cursor, OpenCode and Copilot adapters.
 - Presence, receipts, loop protection, `accept / hold / refuse`.
 - Web UI `app.skald.so`, non-secret sections: quotas, devices, sessions, members and invites, connecting machines.
