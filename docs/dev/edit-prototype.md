@@ -87,8 +87,8 @@ The edit comparison prototype ([roadmap.md, "Preparation"](roadmap.md#preparatio
 | `a_pipe_in_a_command_is_escaped_in_the_table` | A command line with a pipe gets an escaped one in the table of steps |
 | `a_setup_that_changes_the_worktree_fails` | A setup that leaves an untracked file fails; one that leaves only an ignored file does not |
 | `an_edit_of_text_the_file_does_not_hold_once_or_a_failing_command_fails` | An edit tool call of text its file holds twice or not at all, and a command line that fails, fail the session; with text the file holds once, it changes the file |
-| `run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository` | With the toolchain's own versions pinned, a fixture generator crate that `cargo install` builds and a session on the fixture: the tools' versions, the generator's step, and the environment of the shell commands: only `PATH`, of the toolchain, the generator and the system's directories, and a `CARGO_HOME` in the command's directory, besides what the shell sets |
-| `a_tool_of_another_version_is_refused` | Another version pinned for `rustc`, `cargo`, `rustfmt` or the generator: the command fails |
+| `run_sets_up_the_pinned_tools_and_plays_each_session_on_its_repository` | With this machine's toolchain, `node`, `npm` and `python3` pinned at their versions, a fixture generator crate that `cargo install` builds, an npm package and a wheel installed offline, and a session on the fixture, whose toolchain file names a toolchain rustup cannot install: the tools' versions; the generator's step; in the clone, the pinned versions of `rustc`, `cargo` and `rustfmt`; the `CARGO_HOME` the generator's build script got, the npm cache and configs the package's install script got, and pip's cache, all the command's own; the environment of the shell commands: only `PATH`, of the toolchain, the installed tools, the linked ones and the system's directories, and the variables of `tools::isolation`, besides what the shell sets |
+| `a_tool_of_another_version_is_refused` | Another version pinned for `rustc`, `cargo`, `rustfmt`, `node`, `npm`, `python3`, or a tool cargo, npm or pip installs: the command fails |
 | `a_session_on_a_repository_that_is_not_measured_fails` | A session that names no measured repository fails before anything is set up |
 
 `<language>`: `rust`, `typescript` and `python`, each on a file in that language with a function, and a type with two methods, the first named as the function.
@@ -550,18 +550,26 @@ Paths that share a fingerprint once case is folded and Unicode normalized
 ## Edits via Bash and generators
 Which source of a machine's edits catches the files an agent changes with shell commands and generators, and when.
 
-- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin sessions`; it needs `git`, the pinned Rust toolchain with `rustfmt`, a C compiler and HTTPS access to GitHub and crates.io, no account. In a temporary directory, deleted at the end, also on an error, it sets up the tools, fetches each [measured repository](#measurement) at its commit, plays its session and prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables. `script/test` does not run it; it plays a session on a fixture repository ([Scenarios](#scenarios)).
+- **Command:** `cargo run --release --manifest-path prototypes/edits/Cargo.toml --bin sessions`; it needs `git`, a C compiler, the pinned Rust toolchain with `rustfmt`, Node.js with npm, and Python 3, and HTTPS access to GitHub, crates.io, the npm registry, PyPI and dprint's plugins, no account. In a temporary directory, deleted at the end, also on an error, it sets up the tools, fetches each [measured repository](#measurement) at its commit, plays its session and prints the tables below in Markdown, with the machine and the git version; progress goes to the standard error. A rerun gives the same tables. `script/test` does not run it; it plays a session on a fixture repository ([Scenarios](#scenarios)).
 - **Sessions:** one per measured repository, scripted in [`sessions.rs`](../../prototypes/edits/overlap/src/bin/sessions.rs); no agent CLI runs. The table of steps gives each one. A step is one of:
   - an edit tool call, which hooks see: an edit, which replaces text its file holds once, or a write of a whole file;
   - a shell command line, run by `/bin/sh -c` in a directory of the worktree, as an agent's shell tool runs it: in-place edits with `sed -i`, moves with `mv`, deletions with `rm`, the formatter, the lockfile rewrite and the code generator;
   - a restore with `git checkout --`.
-  - diesel's session runs Diesel CLI, which writes a migration and then the schema, `rustfmt` and `cargo update --offline`; those of drizzle-orm and netbox run shell commands only.
-- **Tools:** each version pinned and recorded; another one fails the command ([`tools.rs`](../../prototypes/edits/overlap/src/tools.rs)).
-  - Rust toolchain: `rustc`, `cargo` and `rustfmt`, each by the line `--version` prints. They run from the toolchain's own directory, which `rustc --print sysroot` gives in the temporary directory: diesel's `rust-toolchain` file names another version, which a rustup proxy started in its clone switches to.
-  - Code generator: Diesel CLI from crates.io, built by `cargo install --locked` with the lockfile it is published with, for SQLite only, with SQLite built from its bundled C source.
-  - Cargo cache: a `CARGO_HOME` in the temporary directory, never the machine's. The generator's build fills it, and diesel's session's setup `cargo fetch --locked` fills it at the versions of `diesel_compile_tests/Cargo.lock`; the lockfile rewrite runs offline from it.
-  - Shell commands: `/bin/sh` and the commands of `/usr/bin` and `/bin`, the system's. macOS's `sed`, `mv` and `rm` print no version, so the command records the system's name and release instead of pinning them.
-  - Each shell command gets only `PATH`, of the toolchain, the generator and the system's directories, and `CARGO_HOME`.
+  - Formatters, lockfile rewrites and code generators, each the repository's own where it has one:
+
+    | Repository | Formatter | Lockfile rewrite | Code generator |
+    |---|---|---|---|
+    | diesel | `rustfmt` | `cargo update --offline` of `diesel_compile_tests/Cargo.lock` | Diesel CLI: a migration, then the schema |
+    | drizzle-orm | `dprint fmt`, its `lint:fix` | `pnpm install --lockfile-only --offline` | drizzle-kit: a migration from a new schema |
+    | netbox | `ruff check --fix`, its pre-commit linter with fixes | `yarn remove --offline` in `netbox/project-static` | its `yarn bundle:scripts`: `dist/` with esbuild |
+- **Tools** ([`tools.rs`](../../prototypes/edits/overlap/src/tools.rs)); the table of tools gives each version:
+  - Pinned, each by a line its `--version` prints; another version fails the command: the Rust toolchain, Node.js, npm, Python 3, and the tools cargo, npm and pip install.
+  - Recorded only: the shell commands, `/bin/sh` and the commands of `/usr/bin` and `/bin`, the system's, by the system's name and release, since macOS's `sed`, `mv` and `rm` print no version; and git, which runs the restores, by the version in the header.
+  - Rust toolchain: `rustc`, `cargo` and `rustfmt` run from the toolchain's own directory, which `rustc --print sysroot` gives in the temporary directory: diesel's `rust-toolchain` file names another version, which a rustup proxy started in its clone switches to.
+  - Node.js, npm and Python 3: those this process's `PATH` gives, linked into the temporary directory; nothing else of their directories is on the sessions' `PATH`.
+  - Installed into the temporary directory: Diesel CLI by `cargo install --locked`, from crates.io with the lockfile it is published with, for SQLite only, with SQLite built from its bundled C source; pnpm, yarn, dprint, drizzle-kit and drizzle-orm by `npm install --prefix`; ruff by `pip` in a virtual environment. Their versions are those the repositories use: drizzle-orm's and netbox's `packageManager`, the `dprint` of drizzle-orm's lockfile, the versions drizzle-orm's own drizzle-kit and drizzle-orm packages have at its commit, and the ruff of netbox's `pyproject.toml`.
+  - Homes, configs and caches: in the temporary directory, never the machine's: a `HOME` with its XDG directories, `CARGO_HOME`, npm's cache and empty user and global configs, pnpm's store, the caches of yarn, dprint, pip and ruff, no pip config, and `NODE_PATH`, the npm installs' modules, from which drizzle-kit's schema imports drizzle-orm (`tools::isolation`). The installs fill them over HTTPS, and so do the sessions' setups: diesel's `cargo fetch --locked` at the versions of `diesel_compile_tests/Cargo.lock`; drizzle-orm's `pnpm install --resolution-only`, which fills pnpm's metadata, with its lockfile put back, and dprint's plugins; netbox's `yarn install --frozen-lockfile`, whose `node_modules` netbox ignores. The lockfile rewrites run offline from them.
+  - Each shell command gets only `PATH`, of the toolchain, the installed tools, the linked ones and the system's directories, and those variables.
 - **Changes:** after each step, a snapshot of the working tree, as the [exact check](#exact-check) takes it; a step's changes are the files that differ between the snapshots before and after it. A changed file: one that differs from the commit at the end of the session. Ignored files are no changes, as in the [edit set](#file-fingerprints).
 - **Sources:**
   - Diff, every 3 steps: the edit set, scanned after every third step and after the last, as on a timer.
@@ -584,7 +592,17 @@ Tools
 | rustc | rustc 1.99.1 (58cf8f9c3 2026-10-13) |
 | cargo | cargo 1.99.1 (5f94df478 2026-08-27) |
 | rustfmt | rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13) |
+| node | v26.13.0 |
+| npm | 11.20.0 |
+| python3 | Python 3.13.2 |
 | diesel | Version: 2.3.14 |
+| pnpm | 10.6.3 |
+| yarn | 1.22.22 |
+| dprint | dprint 0.46.3 |
+| drizzle-kit | drizzle-kit: v0.31.11 |
+| drizzle-kit | drizzle-orm: v0.45.4 |
+| pip | pip 24.3.1 |
+| ruff | ruff 0.17.4 |
 | the shell and its commands | the system's: Darwin 25.5.0 |
 
 Steps
@@ -605,21 +623,30 @@ Steps
 | diesel | 12 | edit tool | edit `examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` |
 | diesel | 13 | restore | `git checkout -- examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` | `examples/sqlite/getting_started_step_1/README.md` |
 | drizzle-orm | 1 | edit tool | edit `drizzle-orm/src/logger.ts` | `drizzle-orm/src/logger.ts` | `drizzle-orm/src/logger.ts` |
-| drizzle-orm | 2 | in-place edit | `sed -i.bak -e "s/'DrizzleError'/'DrizzleOrmError'/" drizzle-orm/src/errors.ts && rm drizzle-orm/src/errors.ts.bak` | `drizzle-orm/src/errors.ts` | `drizzle-orm/src/errors.ts` |
+| drizzle-orm | 2 | in-place edit | `sed -i.bak -e "s/'DrizzleError'/\"DrizzleOrmError\"/" drizzle-orm/src/errors.ts && rm drizzle-orm/src/errors.ts.bak` | `drizzle-orm/src/errors.ts` | `drizzle-orm/src/errors.ts` |
 | drizzle-orm | 3 | in-place edit | `sed -i.bak -e 's/DrizzleError/DrizzleOrmError/g' drizzle-orm/src/*-core/dialect.ts && rm drizzle-orm/src/*-core/dialect.ts.bak` | `drizzle-orm/src/gel-core/dialect.ts`, `drizzle-orm/src/mysql-core/dialect.ts`, `drizzle-orm/src/pg-core/dialect.ts`, `drizzle-orm/src/singlestore-core/dialect.ts`, `drizzle-orm/src/sqlite-core/dialect.ts` | none |
 | drizzle-orm | 4 | move | in `drizzle-orm/src`: `mv casing.ts casing-cache.ts` | `drizzle-orm/src/casing-cache.ts`, `drizzle-orm/src/casing.ts` | `drizzle-orm/src/casing-cache.ts`, `drizzle-orm/src/casing.ts` |
 | drizzle-orm | 5 | edit tool | edit `drizzle-orm/src/casing-cache.ts` | `drizzle-orm/src/casing-cache.ts` | `drizzle-orm/src/casing-cache.ts` |
-| drizzle-orm | 6 | deletion | `rm changelogs/drizzle-orm/0.30.5.md` | `changelogs/drizzle-orm/0.30.5.md` | `changelogs/drizzle-orm/0.30.5.md` |
-| drizzle-orm | 7 | edit tool | edit `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` |
-| drizzle-orm | 8 | restore | `git checkout -- drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` |
+| drizzle-orm | 6 | formatter | `dprint fmt` | `drizzle-orm/src/errors.ts`, `drizzle-orm/src/logger.ts` | none |
+| drizzle-orm | 7 | deletion | `rm changelogs/drizzle-orm/0.30.5.md` | `changelogs/drizzle-orm/0.30.5.md` | `changelogs/drizzle-orm/0.30.5.md` |
+| drizzle-orm | 8 | edit tool | edit `package.json` | `package.json` | `package.json` |
+| drizzle-orm | 9 | lockfile rewrite | `pnpm install --lockfile-only --offline --ignore-scripts --silent` | `pnpm-lock.yaml` | none |
+| drizzle-orm | 10 | edit tool | write `integration-tests/session/schema.ts` | `integration-tests/session/schema.ts` | `integration-tests/session/schema.ts` |
+| drizzle-orm | 11 | code generator | `drizzle-kit generate --dialect sqlite --schema integration-tests/session/schema.ts --out integration-tests/session/drizzle --name init > /dev/null` | `integration-tests/session/drizzle/0000_init.sql`, `integration-tests/session/drizzle/meta/0000_snapshot.json`, `integration-tests/session/drizzle/meta/_journal.json` | `integration-tests/session/schema.ts` |
+| drizzle-orm | 12 | edit tool | edit `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` |
+| drizzle-orm | 13 | restore | `git checkout -- drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` | `drizzle-orm/src/utils.ts` |
 | netbox | 1 | edit tool | edit `netbox/utilities/string.py` | `netbox/utilities/string.py` | `netbox/utilities/string.py` |
 | netbox | 2 | in-place edit | `grep -rl remove_linebreaks netbox \| xargs sed -i.bak -e 's/remove_linebreaks/strip_linebreaks/g' && find netbox -name '*.bak' -delete` | `netbox/account/views.py`, `netbox/utilities/string.py` | none |
 | netbox | 3 | edit tool | write `netbox/utilities/tests/test_linebreaks.py` | `netbox/utilities/tests/test_linebreaks.py` | `netbox/utilities/tests/test_linebreaks.py` |
 | netbox | 4 | move | in `netbox/utilities`: `mv socks.py proxy_socks.py` | `netbox/utilities/proxy_socks.py`, `netbox/utilities/socks.py` | `netbox/utilities/proxy_socks.py`, `netbox/utilities/socks.py` |
 | netbox | 5 | in-place edit | `sed -i.bak -e 's/trailing_slash/with_trailing_slash/g' netbox/netbox/settings.py && rm netbox/netbox/settings.py.bak` | `netbox/netbox/settings.py` | `netbox/netbox/settings.py` |
-| netbox | 6 | deletion | `rm netbox/utilities/tests/test_string.py` | `netbox/utilities/tests/test_string.py` | `netbox/utilities/tests/test_string.py` |
-| netbox | 7 | edit tool | edit `README.md` | `README.md` | `README.md` |
-| netbox | 8 | restore | `git checkout -- README.md` | `README.md` | `README.md` |
+| netbox | 6 | formatter | `ruff check --fix --quiet netbox/` | `netbox/utilities/tests/test_linebreaks.py` | none |
+| netbox | 7 | deletion | `rm netbox/utilities/tests/test_string.py` | `netbox/utilities/tests/test_string.py` | `netbox/utilities/tests/test_string.py` |
+| netbox | 8 | lockfile rewrite | in `netbox/project-static`: `yarn remove -W typeface-roboto-mono --offline --ignore-scripts --non-interactive --silent` | `netbox/project-static/package.json`, `netbox/project-static/yarn.lock` | none |
+| netbox | 9 | edit tool | edit `netbox/project-static/src/clipboard.ts` | `netbox/project-static/src/clipboard.ts` | `netbox/project-static/src/clipboard.ts` |
+| netbox | 10 | code generator | in `netbox/project-static`: `yarn --silent bundle:scripts > /dev/null` | `netbox/project-static/dist/netbox.js`, `netbox/project-static/dist/netbox.js.map` | none |
+| netbox | 11 | edit tool | edit `README.md` | `README.md` | `README.md` |
+| netbox | 12 | restore | `git checkout -- README.md` | `README.md` | `README.md` |
 
 Changed files each source misses, by kind of command, in files and % of the files
 
@@ -634,18 +661,24 @@ Changed files each source misses, by kind of command, in files and % of the file
 | diesel | code generator | 4 | 0 (0%) | 0 (0%) | 2 (50%) | 2 (50%) |
 | diesel | restore | 0 | - | - | - | - |
 | diesel | any | 11 | 0 (0%) | 0 (0%) | 7 (64%) | 3 (27%) |
-| drizzle-orm | edit tool | 2 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
+| drizzle-orm | edit tool | 4 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
 | drizzle-orm | in-place edit | 6 | 0 (0%) | 0 (0%) | 6 (100%) | 5 (83%) |
 | drizzle-orm | move | 2 | 0 (0%) | 0 (0%) | 1 (50%) | 0 (0%) |
 | drizzle-orm | deletion | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 0 (0%) |
+| drizzle-orm | formatter | 2 | 0 (0%) | 0 (0%) | 1 (50%) | 0 (0%) |
+| drizzle-orm | lockfile rewrite | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 1 (100%) |
+| drizzle-orm | code generator | 3 | 0 (0%) | 0 (0%) | 3 (100%) | 3 (100%) |
 | drizzle-orm | restore | 0 | - | - | - | - |
-| drizzle-orm | any | 10 | 0 (0%) | 0 (0%) | 8 (80%) | 5 (50%) |
-| netbox | edit tool | 2 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
+| drizzle-orm | any | 16 | 0 (0%) | 0 (0%) | 12 (75%) | 9 (56%) |
+| netbox | edit tool | 3 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
 | netbox | in-place edit | 3 | 0 (0%) | 0 (0%) | 2 (67%) | 1 (33%) |
 | netbox | move | 2 | 0 (0%) | 0 (0%) | 2 (100%) | 0 (0%) |
 | netbox | deletion | 1 | 0 (0%) | 0 (0%) | 1 (100%) | 0 (0%) |
+| netbox | formatter | 1 | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) |
+| netbox | lockfile rewrite | 2 | 0 (0%) | 0 (0%) | 2 (100%) | 2 (100%) |
+| netbox | code generator | 2 | 0 (0%) | 0 (0%) | 2 (100%) | 2 (100%) |
 | netbox | restore | 0 | - | - | - | - |
-| netbox | any | 7 | 0 (0%) | 0 (0%) | 5 (71%) | 1 (14%) |
+| netbox | any | 12 | 0 (0%) | 0 (0%) | 9 (75%) | 5 (42%) |
 
 When each source learns of a changed file, from its first change, in files
 
@@ -655,23 +688,23 @@ When each source learns of a changed file, from its first change, in files
 | diesel | diff, after each step | 11 | 0 | 11 | 0 | 0 | 0 | 0 |
 | diesel | hooks | 11 | 0 | 2 | 0 | 2 | 7 | 1 |
 | diesel | declarations | 11 | 6 | 0 | 0 | 2 | 3 | 2 |
-| drizzle-orm | diff, every 3 steps | 10 | 0 | 0 | 10 | 0 | 0 | 0 |
-| drizzle-orm | diff, after each step | 10 | 0 | 10 | 0 | 0 | 0 | 0 |
-| drizzle-orm | hooks | 10 | 0 | 1 | 0 | 1 | 8 | 1 |
-| drizzle-orm | declarations | 10 | 5 | 0 | 0 | 0 | 5 | 1 |
-| netbox | diff, every 3 steps | 7 | 0 | 0 | 7 | 0 | 0 | 0 |
-| netbox | diff, after each step | 7 | 0 | 7 | 0 | 0 | 0 | 0 |
-| netbox | hooks | 7 | 0 | 2 | 0 | 0 | 5 | 1 |
-| netbox | declarations | 7 | 6 | 0 | 0 | 0 | 1 | 1 |
+| drizzle-orm | diff, every 3 steps | 16 | 0 | 0 | 16 | 0 | 0 | 0 |
+| drizzle-orm | diff, after each step | 16 | 0 | 16 | 0 | 0 | 0 | 0 |
+| drizzle-orm | hooks | 16 | 0 | 3 | 0 | 1 | 12 | 1 |
+| drizzle-orm | declarations | 16 | 7 | 0 | 0 | 0 | 9 | 1 |
+| netbox | diff, every 3 steps | 12 | 0 | 0 | 12 | 0 | 0 | 0 |
+| netbox | diff, after each step | 12 | 0 | 12 | 0 | 0 | 0 | 0 |
+| netbox | hooks | 12 | 0 | 3 | 0 | 0 | 9 | 1 |
+| netbox | declarations | 12 | 7 | 0 | 0 | 0 | 5 | 1 |
 
 - **Findings,** from the output above:
-  - Diff: it misses no changed file in any session or kind of command, the code generator's 4 on diesel included. On its schedule it learns of each one at the next scan, 11, 10 and 7 files; scanned after each step, at the edit. It reports no file that is not changed at the end, such as a restored one.
-  - Hooks: they miss 7 of 11 changed files on diesel, 8 of 10 on drizzle-orm and 5 of 7 on netbox: those only shell commands change. They learn of a file a command changes only when an edit tool call names it too: drizzle-orm's `casing-cache.ts`, edited after its move, and diesel's `up.sql` and `down.sql`, which Diesel CLI creates and edit tool calls then write, at a later tool call; netbox's `string.py`, edited before `sed` changes it, before the edit. Each session's restored file stays in their report.
-  - Declarations: they miss 3 of 11, 5 of 10 and 1 of 7: the files no word of a command line names. On diesel, the lockfile `cargo update` rewrites and Diesel CLI's `schema.rs` and `migrations/.diesel_lock`; on drizzle-orm, the 5 `dialect.ts` files of a glob; on netbox, `account/views.py`, from `grep | xargs`. They learn of 6, 5 and 6 files before the edit. They also report each session's restored file, and on diesel `lib.rs`: `rustfmt`, named with `lib.rs`, changed only `models.rs`, a module `lib.rs` declares.
+  - Diff: it misses no changed file in any session or kind of command, the code generators' included: 4 on diesel, 3 on drizzle-orm, 2 on netbox. On its schedule it learns of each one at the next scan, 11, 16 and 12 files; scanned after each step, at the edit. It reports no file that is not changed at the end, such as a restored one.
+  - Hooks: they miss 7 of 11 changed files on diesel, 12 of 16 on drizzle-orm and 9 of 12 on netbox: those only shell commands change. They learn of a file a command changes only when an edit tool call names it too, before or after the command: at a later tool call, diesel's `up.sql` and `down.sql`, which Diesel CLI creates and edit tool calls then write, and drizzle-orm's `casing-cache.ts`, edited after its move; earlier, netbox's `string.py`, edited before `sed` changes it, and the files of edit tool calls that the formatters change, drizzle-orm's `logger.ts` and netbox's `test_linebreaks.py`. Each session's restored file stays in their report.
+  - Declarations: they miss 3 of 11, 9 of 16 and 5 of 12: the files no word of a command line names. The lockfiles the package managers rewrite, `Cargo.lock`, `pnpm-lock.yaml` and `yarn.lock`, and netbox's `package.json`, which `yarn remove` rewrites too; the files the code generators write, but diesel's `up.sql` and `down.sql`, which later edit tool calls name; the 5 `dialect.ts` files of a glob on drizzle-orm; `account/views.py`, from `grep | xargs`, on netbox. They learn of 6, 7 and 7 files before the edit, and of diesel's `up.sql` and `down.sql` at a later tool call. They also report each session's restored file, and on diesel `lib.rs`: `rustfmt`, named with `lib.rs`, changed only `models.rs`, a module `lib.rs` declares.
+  - Formatters: each changed only files that earlier steps of its session had changed, though `dprint fmt` and `ruff check --fix` were given the whole repository and `netbox/`.
   - Diesel CLI's `migration generate` leaves `migrations/.diesel_lock`, an untracked file that is not ignored, in the edit set to the end of the session.
-  - Answer on these sessions: only the diff learns of every changed file; scanned after each step, at the edit. Hooks learn only of the files edit tool calls name; declarations, before the edit, only of the files a command line names.
+  - Answer on these sessions: only the diff learns of every changed file; scanned after each step, at the edit. Hooks learn only of the files edit tool calls name; declarations, of the files each step names, most of them before the edit.
 - **Open:**
-  - The drizzle-orm and netbox sessions run no formatter, package manager or code generator: theirs, such as `pnpm` and Django's `makemigrations`, need npm or pip, which the command does not run.
   - Steps stand for tool calls; time is not measured: what a scan after each tool call costs on a large worktree, and how often a timer scans.
   - A hook on the shell tool could take the files its command line names, as the declarations here do, at the edit.
   - Edits outside an agent's tool calls, such as a file watcher or a build script that writes files, are not in the sessions.
