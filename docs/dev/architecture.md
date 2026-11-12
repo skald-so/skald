@@ -75,7 +75,7 @@
   - each new history key encrypts the previous one, so members read older history through this key chain;
   - formats: [protocol spec](../protocol/membership.md#history).
 - **Signatures:** Ed25519.
-- **Key storage:** Keychain, libsecret or Windows Credential Manager; otherwise a file with 0600 permissions.
+- **Key storage:** Keychain, the Secret Service or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
 - What the server sees: [threat model](../threat-model.md#the-server-sees); what it does not see: [threat model](../threat-model.md#the-server-does-not-see); trade-offs: [threat model](../threat-model.md#trade-offs).
 

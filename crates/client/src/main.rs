@@ -1,8 +1,14 @@
 //! The `skald` client binary.
 
 mod connection;
+mod secrets;
+mod sign_in;
+mod state;
+#[cfg(test)]
+mod test_dir;
 
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -35,6 +41,23 @@ struct Cli {
     )]
     timeout: Option<NonZeroU64>,
 
+    /// The directory of the local state and of the secrets file [default: the platform's directory
+    /// for application state, such as ~/.local/state/skald].
+    #[arg(long, env = "SKALD_STATE_DIR", value_name = "DIR", global = true)]
+    state_dir: Option<PathBuf>,
+
+    /// Where secrets, such as the session token, go: auto keeps them in the system's key storage,
+    /// or in a 0600 file in the state directory when the system has none; file keeps them only in
+    /// the file.
+    #[arg(
+        long,
+        env = "SKALD_KEY_STORAGE",
+        value_name = "STORAGE",
+        global = true,
+        default_value = "auto"
+    )]
+    key_storage: secrets::Storage,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -43,6 +66,13 @@ struct Cli {
 enum Command {
     /// Shows whether the server is reachable and speaks a compatible protocol version.
     Status {
+        /// The server's URL, such as http://localhost:8080.
+        #[arg(long, value_name = "URL")]
+        server: String,
+    },
+    /// Signs this machine in to the server: its person approves a code in a browser on any device.
+    /// Run again, checks the session with the server and says which account it is signed in to.
+    SignIn {
         /// The server's URL, such as http://localhost:8080.
         #[arg(long, value_name = "URL")]
         server: String,
@@ -57,6 +87,20 @@ fn main() -> ExitCode {
         .map_or(TIMEOUT, |seconds| Duration::from_secs(seconds.get()));
     match cli.command {
         Command::Status { server } => status(&server, speaks, timeout),
+        Command::SignIn { server } => {
+            let result = state::dir(cli.state_dir).and_then(|dir| {
+                let mut connection =
+                    Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
+                sign_in::run(&mut connection, &dir, cli.key_storage).map_err(|err| err.to_string())
+            });
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("skald: {err}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
     }
 }
 

@@ -16,7 +16,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - `curl`, `jq` and `openssl`: the tests run them.
 - Python 3 with its `venv` module: the edit comparison prototype's tests install a package with `pip` in a virtual environment.
 - The MLS prototypes' WASM tests: the `wasm32-unknown-unknown` target, `rustup target add wasm32-unknown-unknown`, and `wasm-bindgen-cli` of the `wasm-bindgen` version in `prototypes/mls/Cargo.lock`: `cargo install wasm-bindgen-cli --version <version> --locked`. They run in Node.js.
-- Google Chrome: the web tests ([web/README.md](web/README.md)) and the server's sign-in tests run it headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
+- Google Chrome: the web tests ([web/README.md](web/README.md)) and the server's and the client's sign-in tests run it headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
 
 ## Running locally
 The root `Cargo.toml` is a package too, for release-plz: in the root, `cargo build`, `cargo test` and `cargo clippy` cover the crates only with `--workspace` or `-p <crate>`.
@@ -44,7 +44,9 @@ Then open `http://127.0.0.1:8080/auth/github`. Without the client ID and secret,
 `skald`:
 ```sh
 cargo run -p skald-client -- --version
+cargo run -p skald-client -- sign-in --server http://127.0.0.1:8080
 ```
+`SKALD_STATE_DIR` sets the directory of its local state and secrets file; `SKALD_KEY_STORAGE=file` keeps its secrets in that file instead of the system's key storage.
 
 Web UI: [web/README.md](web/README.md).
 

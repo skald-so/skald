@@ -1,5 +1,6 @@
 //! The person's browser: headless Chrome driven by playwright-core through `browser.mjs`, so cookies
 //! act as in a browser. Needs Node.js, `npm ci` in `web/` and Google Chrome, or `SKALD_CHROME`.
+//! The client's tests include this file too, so its paths start from the `crates/` directory.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -112,10 +113,10 @@ impl Hit {
 impl Browser {
     /// Starts the driver and Chrome.
     pub fn launch() -> Self {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut child = Command::new("node")
-            .arg(dir.join("tests/common/browser.mjs"))
-            .arg(dir.join("../../web"))
+            .arg(crates.join("server/tests/common/browser.mjs"))
+            .arg(crates.join("../web"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

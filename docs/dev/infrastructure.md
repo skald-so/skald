@@ -38,7 +38,7 @@ A human takes one action per release: merging the Release PR.
 All checks except e2e, the PR title, the CLA and the edit comparison prototype's Windows job run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md); it exempts bots, `*[bot]`.
-- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of the server's GitHub sign-in also in headless Chrome; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
+- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of the server's GitHub sign-in and of the client's sign-in also in headless Chrome; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
@@ -75,7 +75,7 @@ All checks except e2e, the PR title, the CLA and the edit comparison prototype's
 ## Channels
 | What | Where |
 |---|---|
-| `skald` binary: macOS, Linux, Windows; x86_64 and arm64 | GitHub Releases + checksums |
+| `skald` binary: macOS, Linux, Windows; x86_64 and arm64 | GitHub Releases + checksums. Linux artifacts carry libdbus's license, `vendor/dbus/COPYING` of libdbus-sys |
 | `install.sh`, `install.ps1` | GitHub Releases. The command with a code on the website downloads them and runs `skald connect` |
 | `npx skald-so` | npm |
 | `skald-server` image | GHCR. Every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |

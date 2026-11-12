@@ -44,6 +44,8 @@ pub enum Error {
     },
     /// The server refused the request for another reason, given in `detail`.
     Refused { status: u16, detail: String },
+    /// An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5), such as `authorization_pending`.
+    OAuth { error: String, description: String },
     /// An answer the protocol does not define.
     Unexpected(String),
 }
@@ -93,6 +95,13 @@ impl fmt::Display for Error {
                 "the server refused the request with {status}: {}",
                 printable(detail)
             ),
+            Error::OAuth { error, description } => {
+                write!(f, "the server refused the request: {}", printable(error))?;
+                if !description.is_empty() {
+                    write!(f, ": {}", printable(description))?;
+                }
+                Ok(())
+            }
             Error::Unexpected(answer) => {
                 write!(
                     f,
@@ -106,7 +115,7 @@ impl fmt::Display for Error {
 
 /// `text` with its control characters escaped, such as `\u{1b}` for ESC: the server's text must not
 /// drive the terminal.
-fn printable(text: &str) -> String {
+pub fn printable(text: &str) -> String {
     text.chars()
         .map(|char| {
             if char.is_control() {
@@ -178,9 +187,27 @@ enum Answer<T> {
     /// The server refused it.
     Refused {
         status: u16,
-        problem_json: bool,
+        content: Content,
         body: Vec<u8>,
     },
+}
+
+/// The media type of a refusal's body.
+#[derive(Clone, Copy, PartialEq)]
+enum Content {
+    /// `application/problem+json`: a problem details object.
+    Problem,
+    /// `application/json`: an OAuth error answer, on the device flow's endpoints.
+    Json,
+    Other,
+}
+
+/// The fields of an OAuth error answer the client reads.
+#[derive(Deserialize)]
+struct OAuthError {
+    error: String,
+    #[serde(default)]
+    error_description: String,
 }
 
 /// The fields of a problem details object the client reads.
@@ -227,20 +254,61 @@ impl Connection {
         self.latest.filter(|&latest| latest > self.version)
     }
 
+    /// The server's base URL, without a trailing `/`.
+    pub fn server(&self) -> &str {
+        &self.base
+    }
+
     /// `GET <path>`; the body of the answer that serves it.
     pub fn get(&mut self, path: &str) -> Result<Vec<u8>, Error> {
+        self.http(path, None, None)
+    }
+
+    /// `GET <path>` as the session of `token`, sent as `Authorization: Bearer <token>`.
+    pub fn get_as(&mut self, path: &str, token: &str) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), None)
+    }
+
+    /// `POST <path>` with the form `form`; the body of the answer that serves it.
+    pub fn post_form(&mut self, path: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, Error> {
+        self.http(path, None, Some(form))
+    }
+
+    /// A `GET`, or a `POST` of `form` if given, to `path`, with the session of `token` if given.
+    fn http(
+        &mut self,
+        path: &str,
+        token: Option<&str>,
+        form: Option<&[(&str, &str)]>,
+    ) -> Result<Vec<u8>, Error> {
         let url = format!("{}{path}", self.base);
         let agent = self.agent.clone();
         let timeout = self.timeout;
+        let bearer = token.map(|token| format!("Bearer {token}"));
         self.exchange(|version| {
-            let mut response = agent
-                .get(&url)
-                .header(VERSION_HEADER, version.to_string())
-                .call()
-                .map_err(|err| unanswered(err, timeout))?;
+            let version = version.to_string();
+            let sent = match form {
+                Some(form) => {
+                    let request = agent.post(&url).header(VERSION_HEADER, &version);
+                    match &bearer {
+                        Some(bearer) => request.header("authorization", bearer),
+                        None => request,
+                    }
+                    .send_form(form.iter().copied())
+                }
+                None => {
+                    let request = agent.get(&url).header(VERSION_HEADER, &version);
+                    match &bearer {
+                        Some(bearer) => request.header("authorization", bearer),
+                        None => request,
+                    }
+                    .call()
+                }
+            };
+            let mut response = sent.map_err(|err| unanswered(err, timeout))?;
             let status = response.status().as_u16();
             let latest = latest(response.headers());
-            let problem_json = is_problem(response.headers());
+            let content = content(response.headers());
             let body = response
                 .body_mut()
                 .read_to_vec()
@@ -250,7 +318,7 @@ impl Connection {
             } else {
                 Answer::Refused {
                     status,
-                    problem_json,
+                    content,
                     body,
                 }
             })
@@ -280,7 +348,7 @@ impl Connection {
                 Err(HandshakeError::Failure(tungstenite::Error::Http(response))) => {
                     Ok(Answer::Refused {
                         status: response.status().as_u16(),
-                        problem_json: is_problem(response.headers()),
+                        content: content(response.headers()),
                         body: response.body().clone().unwrap_or_default(),
                     })
                 }
@@ -300,18 +368,29 @@ impl Connection {
         mut send: impl FnMut(NonZeroU64) -> Result<Answer<T>, Error>,
     ) -> Result<T, Error> {
         loop {
-            let (status, problem_json, body) = match send(self.version)? {
+            let (status, content, body) = match send(self.version)? {
                 Answer::Served(value, latest) => {
                     self.latest = latest;
                     return Ok(value);
                 }
                 Answer::Refused {
                     status,
-                    problem_json,
+                    content,
                     body,
-                } => (status, problem_json, body),
+                } => (status, content, body),
             };
-            let problem = problem_json
+            if content == Content::Json
+                && let Ok(OAuthError {
+                    error,
+                    error_description,
+                }) = serde_json::from_slice(&body)
+            {
+                return Err(Error::OAuth {
+                    error,
+                    description: error_description,
+                });
+            }
+            let problem = (content == Content::Problem)
                 .then(|| serde_json::from_slice::<Problem>(&body).ok())
                 .flatten()
                 .ok_or_else(|| Error::Unexpected(format!("HTTP {status}")))?;
@@ -350,12 +429,19 @@ fn latest(headers: &HeaderMap) -> Option<NonZeroU64> {
     parse_version(headers.get(LATEST_HEADER)?.to_str().ok()?)
 }
 
-/// Whether the body is a problem details object.
-fn is_problem(headers: &HeaderMap) -> bool {
-    headers
+/// The media type of the body, from `Content-Type`.
+fn content(headers: &HeaderMap) -> Content {
+    let media = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("application/problem+json"))
+        .unwrap_or_default();
+    if media.starts_with("application/problem+json") {
+        Content::Problem
+    } else if media.starts_with("application/json") {
+        Content::Json
+    } else {
+        Content::Other
+    }
 }
 
 #[cfg(test)]
@@ -377,6 +463,22 @@ mod tests {
         }
         let error = io_error(io::Error::from(io::ErrorKind::ConnectionReset), SECOND);
         assert!(matches!(error, Error::Unreachable(_)), "{error:?}");
+    }
+
+    #[test]
+    fn oauth_error_shows_its_description_if_any() {
+        let error = |description: &str| Error::OAuth {
+            error: "invalid_grant".to_owned(),
+            description: description.to_owned(),
+        };
+        assert_eq!(
+            error("").to_string(),
+            "the server refused the request: invalid_grant"
+        );
+        assert_eq!(
+            error("Unknown code.\u{1b}").to_string(),
+            "the server refused the request: invalid_grant: Unknown code.\\u{1b}"
+        );
     }
 
     #[test]
