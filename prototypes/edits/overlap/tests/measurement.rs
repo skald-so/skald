@@ -183,15 +183,21 @@ fn fixture(tmp: &TempDir) -> Machine {
     maintainer
         .git(&["push", "--quiet", "origin", "HEAD:main"])
         .unwrap();
-    for [(a, a_hours, a_edits), (b, b_hours, b_edits)] in PAIRS {
-        branch(&alice, a, a_hours, a_edits);
-        branch(&bob, b, b_hours, b_edits);
+    merge_pairs([&alice, &bob, &maintainer], &PAIRS);
+    maintainer
+}
+
+/// Each pair of `pairs` in turn: Alice's branch and Bob's from the default branch, merged by the
+/// maintainer, Alice's first, Bob's resolving any conflict to the default branch's side.
+fn merge_pairs([alice, bob, maintainer]: [&Machine; 3], pairs: &[[Branch; 2]]) {
+    for &[(a, a_hours, a_edits), (b, b_hours, b_edits)] in pairs {
+        branch(alice, a, a_hours, a_edits);
+        branch(bob, b, b_hours, b_edits);
         maintainer.merge(a).unwrap();
         maintainer
             .merge_with(b, &["--strategy-option=ours"])
             .unwrap();
     }
-    maintainer
 }
 
 /// The merges of the fixture replayed on 3 threads, the newest first.
@@ -815,14 +821,7 @@ const CLASSED_PAIRS: [[Branch; 2]; 8] = [
 /// Returns the maintainer's clone, whose `HEAD` is the last merge.
 fn classed_fixture(tmp: &TempDir) -> Machine {
     let [alice, bob, maintainer] = clones_with(tmp, &CLASSED_FILES);
-    for [(a, a_hours, a_edits), (b, b_hours, b_edits)] in CLASSED_PAIRS {
-        branch(&alice, a, a_hours, a_edits);
-        branch(&bob, b, b_hours, b_edits);
-        maintainer.merge(a).unwrap();
-        maintainer
-            .merge_with(b, &["--strategy-option=ours"])
-            .unwrap();
-    }
+    merge_pairs([&alice, &bob, &maintainer], &CLASSED_PAIRS);
     let renames = [("src/schema.rs", "src/tables.rs")];
     renaming_branch(&alice, "rename-a", 1, &renames, &[]);
     branch(
