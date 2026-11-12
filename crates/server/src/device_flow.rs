@@ -28,9 +28,9 @@ const USER_CODE_LENGTH: usize = 8;
 /// How many wrong user codes an account may type within [`WRONG_CODE_WINDOW`] before the page
 /// refuses its codes, right ones included (RFC 8628, §5.1).
 const WRONG_CODE_LIMIT: i64 = 10;
-const WRONG_CODE_WINDOW: Duration = Duration::from_secs(15 * 60);
+const WRONG_CODE_WINDOW: Duration = Duration::from_secs(900);
 /// How long expired codes are kept, so that polls for them answer `expired_token`.
-const EXPIRED_KEPT: Duration = Duration::from_secs(60 * 60);
+const EXPIRED_KEPT: Duration = Duration::from_secs(3_600);
 /// The verification page's content security policy: no scripts, its forms only to this server,
 /// never in a frame.
 const PAGE_POLICY: &str = "default-src 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -150,23 +150,23 @@ pub(crate) async fn authorize(State(state): State<AppState>, body: Bytes) -> Res
         let device_code = random_token();
         let user_code = user_code();
         let typed = typed_code(&user_code).expect("a user code is typed as it is");
-        let stored = sqlx::query(
+        let stored = sqlx::query_as::<_, (bool,)>(
             "WITH expired AS (
                  DELETE FROM device_codes WHERE expires_at <= now() - make_interval(secs => $5)
              )
              INSERT INTO device_codes (device_code_hash, user_code_hash, expires_at, poll_interval)
              VALUES ($1, $2, now() + make_interval(secs => $3), $4)
-             ON CONFLICT DO NOTHING",
+             ON CONFLICT DO NOTHING RETURNING true",
         )
         .bind(digest(&device_code))
         .bind(digest(&typed))
         .bind(lifetime as f64)
         .bind(i32::try_from(interval).expect("the polling interval fits in an integer"))
         .bind(EXPIRED_KEPT.as_secs_f64())
-        .execute(&state.db)
+        .fetch_optional(&state.db)
         .await;
         match stored {
-            Ok(done) if done.rows_affected() == 1 => {
+            Ok(Some((true,))) => {
                 let public = &settings.public_url;
                 let verification_uri = public.at(VERIFICATION_PATH);
                 let query = url::form_urlencoded::Serializer::new(String::new())
