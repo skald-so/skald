@@ -101,7 +101,11 @@ impl Server {
         });
         let addr = listener.local_addr().expect("the server's address");
         runtime.spawn(async move {
-            axum::serve(listener, skald_server::app(pool, versions))
+            let settings = skald_server::Settings {
+                versions,
+                sign_in: None,
+            };
+            axum::serve(listener, skald_server::app(pool, settings))
                 .await
                 .expect("serve the API");
         });
