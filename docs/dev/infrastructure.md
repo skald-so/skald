@@ -38,7 +38,7 @@ A human takes one action per release: merging the Release PR.
 All checks except e2e, the PR title, the CLA, the edit comparison prototype's Windows job and the release dry run run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md); it exempts bots, `*[bot]`.
-- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of `script/check-github-sign-in` among them, some also in headless Chrome ([CONTRIBUTING.md](../../CONTRIBUTING.md#requirements)); the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
+- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of `script/check-github-sign-in` among them, some also in headless Chrome ([CONTRIBUTING.md](../../CONTRIBUTING.md#requirements)); `skald-crypto`'s tests, `skald-proto`'s of ID generation and the MLS prototypes' natively and in WASM, in Node.js (`script/wasm-test` for the crates), with `clippy` of `skald-proto` and `skald-crypto` in WASM; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.

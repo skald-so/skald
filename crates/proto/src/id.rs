@@ -4,7 +4,6 @@ use std::fmt;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
@@ -102,19 +101,30 @@ impl<K: Kind> Id<K> {
 }
 
 impl<K: Issued> Id<K> {
-    /// A new UUIDv7: the current Unix time in milliseconds and random bits from the operating
-    /// system's cryptographically secure generator.
+    /// A new UUIDv7: the current Unix time in milliseconds and random bits from the
+    /// cryptographically secure generator of the operating system, or in WASM of the browser or
+    /// Node.js.
     ///
     /// # Panics
-    /// If the operating system's random generator fails.
+    /// If the random generator fails.
     pub fn generate() -> Self {
         let mut random = [0; 16];
-        getrandom::fill(&mut random).expect("the operating system's random generator failed");
-        let unix_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_millis());
-        Self::from_bytes(v7(u64::try_from(unix_ms).unwrap_or(u64::MAX), random))
+        getrandom::fill(&mut random).expect("the random generator failed");
+        Self::from_bytes(v7(unix_ms(), random))
     }
+}
+
+/// The current Unix time in milliseconds; 0 before the Unix epoch.
+fn unix_ms() -> u64 {
+    // `SystemTime` panics in WASM: there the time comes from JavaScript's clock, in whole
+    // milliseconds well below 2^53; `as` saturates a time before the epoch to 0.
+    #[cfg(target_arch = "wasm32")]
+    let unix_ms = js_sys::Date::now() as u128;
+    #[cfg(not(target_arch = "wasm32"))]
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    u64::try_from(unix_ms).unwrap_or(u64::MAX)
 }
 
 impl DeviceId {
