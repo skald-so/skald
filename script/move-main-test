@@ -9,7 +9,8 @@
 #     from main or one of an older release, is refused: the script fails and main stays; so is a
 #     tag origin does not have;
 #   - it checks main as origin has it when it runs: in a checkout made before main moved on to a
-#     newer release, an older release's tag is refused.
+#     newer release, an older release's tag is refused; so is one whose check passed while main
+#     moved on to a newer release before the push, and main stays at the newer release.
 # The checkouts are made as actions/checkout makes them by default: the tag's commit alone, one
 # commit deep. The fixtures' git reaches only local repositories.
 set -euo pipefail
@@ -164,6 +165,31 @@ origin moved-apart "$c1"
 checkout moved-apart v0.41.0
 git -C "$origin" update-ref refs/heads/main "$s1"
 expect_refused "$case" v0.41.0
+
+# The move checks while main is at v0.40.5; git, first on PATH, moves main on to v0.41.0 just before
+# the move pushes.
+case="an older release's tag after main moved on between the check and the push"
+origin raced "$c1"
+checkout raced v0.40.6
+real_git=$(command -v git)
+mkdir "$tmp/raced-bin"
+cat >"$tmp/raced-bin/git" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ \$arg == push ]]; then
+    "$real_git" -C "$origin" update-ref refs/heads/main "$c4"
+    break
+  fi
+done
+exec "$real_git" "\$@"
+EOF
+chmod +x "$tmp/raced-bin/git"
+before=$(refs | grep -v '^refs/heads/main ')
+PATH="$tmp/raced-bin:$PATH" move "$case" v0.40.6
+[[ $status != 0 ]] || fail "$case: script/move-main v0.40.6 exits 0"
+[[ $(git -C "$origin" rev-parse refs/heads/main) == "$c4" ]] ||
+  fail "$case: main is at $(git -C "$origin" rev-parse refs/heads/main), not at the newer release's commit, $c4"
+[[ $(refs | grep -v '^refs/heads/main ') == "$before" ]] || fail "$case: other refs of origin changed"
 
 if ((failures > 0)); then
   echo "move-main-test: $failures case(s) failed" >&2

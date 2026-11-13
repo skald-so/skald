@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Moves main on origin to the commit of the release tag <tag>, forward only: it fails and changes
-# nothing unless that commit descends from main as origin has it now, or origin has no such tag.
+# nothing when origin has no such tag or that commit does not descend from main as origin has it now.
 # Runs in a checkout of the tag, shallow too; the release workflow runs it with the deploy key after
 # a stable release is published.
 # Usage: script/move-main <tag>
