@@ -4,9 +4,9 @@
 
 mod common;
 
-use common::hex;
+use common::{assert_field_problem, hex};
 use skald_proto::{
-    AccountId, Cbor, DecodeError, DeviceId, FieldProblem, Mode, Role, Roster, RosterBody, SpaceId,
+    AccountId, Cbor, DeviceId, FieldProblem, Mode, Role, Roster, RosterBody, SpaceId,
 };
 
 /// `n` copies of the hex byte `byte`.
@@ -64,15 +64,6 @@ fn roster() -> Vec<u8> {
 
 fn hex_of(bytes: &[u8]) -> String {
     common::to_hex(bytes)
-}
-
-fn assert_field_problem(result: Result<RosterBody, DecodeError>, problem: &FieldProblem) {
-    match result {
-        Err(DecodeError::Field {
-            problem: actual, ..
-        }) => assert_eq!(&actual, problem),
-        other => panic!("expected {problem:?}, got {other:?}"),
-    }
 }
 
 #[test]

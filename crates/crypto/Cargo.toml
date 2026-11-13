@@ -11,4 +11,3 @@ getrandom = "0.4"
 skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
-
