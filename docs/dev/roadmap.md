@@ -24,7 +24,7 @@
 - Service and CI agents: HPKE, scoped tokens, rotation, GitHub Action, tasks from issue and PR comments.
 - `ask_user` and attachments.
 - Notifications to Telegram, Slack or a webhook.
-- Restricted mode for tasks from other people.
+- Running tasks from other people.
 - Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis.
 - One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code, Codex and the agents of [agents.md](agents.md#setup-by-skald-connect), new device confirmation, invite by link, Claude Code plugin.
 - Admin rights transfer, "only one admin" warning, account deletion.

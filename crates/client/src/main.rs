@@ -9,6 +9,7 @@ mod sign_out;
 mod state;
 #[cfg(test)]
 mod test_dir;
+mod update;
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -101,6 +102,21 @@ enum Command {
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
     /// account resumes the same device.
     SignOut,
+    /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
+    /// archive for this machine, checks it against the release's checksum and replaces this skald
+    /// with it. A beta or an older release is never installed; a skald installed from npm is left
+    /// to npm.
+    Update {
+        /// The base URL of GitHub's REST API, for tests.
+        #[arg(
+            long,
+            env = "SKALD_GITHUB_API_URL",
+            value_name = "URL",
+            hide = true,
+            default_value = update::GITHUB_API_URL
+        )]
+        github_api_url: String,
+    },
 }
 
 /// An answer to a question.
@@ -156,6 +172,7 @@ fn main() -> ExitCode {
                 .and_then(|dir| sign_out::run(&dir, cli.key_storage, speaks, timeout));
             exit(result)
         }
+        Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
 }
 

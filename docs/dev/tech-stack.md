@@ -7,7 +7,8 @@ Versions as of 2026-11-09.
 | Layer | Choice |
 |---|---|
 | HTTP, WebSocket | axum 0.8 + tokio; SSE and long-poll as fallbacks |
-| Client HTTP, WebSocket | ureq 3 and tungstenite 0.29, blocking; plain HTTP until the client's one-shot mode and helper add HTTPS and `HTTPS_PROXY` ([Network](architecture.md#network)) |
+| Client HTTP, WebSocket | ureq 3 and tungstenite 0.30, blocking; to the server, plain HTTP until the client's one-shot mode and helper add HTTPS and `HTTPS_PROXY` ([Network](architecture.md#network)). `skald update` uses HTTPS, with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8; `SSL_CERT_FILE` replaces them), and `HTTPS_PROXY` |
+| Client updates | `skald update` compares versions with semver 1 and unpacks the release archives with flate2 1 and tar 0.4 (`.tar.gz`) and zip 9 (`.zip`) |
 | Database | PostgreSQL 19 (in production, from 19.1), sqlx 0.9: `SKIP LOCKED`, `LISTEN/NOTIFY` |
 | Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage) |
 | MLS | mls-rs 0.57 with mls-rs-crypto-rustcrypto 0.23: [choice](mls-prototypes.md#choice) |
