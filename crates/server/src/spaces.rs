@@ -266,7 +266,7 @@ pub(crate) async fn store(
     let db = &state.db;
     let found = find(db, &space, &account).await?;
     // An account that does not get the space learns nothing of it, unless it may store the
-    // revision: an admin's retry of a revision that took its account out.
+    // revision and sends it again: an admin's retry of a revision that took its account out.
     let hide = |refusal| {
         if found.gets {
             refusal
@@ -310,7 +310,7 @@ pub(crate) async fn store(
         })));
     }
     if let Some(stored) = stored(db, found.id, number).await? {
-        return again(found.id, number, &sent, &stored);
+        return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
     insert(db, found.id, &roster, &sent).await
