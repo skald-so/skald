@@ -32,6 +32,7 @@ changelog_include = [
   "skald-crypto",
   "skald-github-stand-in",
   "skald-mcp",
+  "skald-oidc-stand-in",
   "skald-proto",
   "skald-server",
 ]

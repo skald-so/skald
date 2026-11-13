@@ -2,16 +2,13 @@
 
 use std::fmt;
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use serde::Deserialize;
-use ureq::Agent;
-use ureq::tls::{Certificate, RootCerts, TlsConfig};
+use serde::de::DeserializeOwned;
 use url::Url;
 
-/// How long a request to GitHub may take.
-const TIMEOUT: Duration = Duration::from_secs(15);
+use crate::http_client::{agent, json_body};
+
 /// The REST API version the server reads the user with.
 const API_VERSION: &str = "2022-11-28";
 
@@ -51,7 +48,7 @@ pub(crate) fn http_url(text: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-/// The OAuth App's client secret; never printed.
+/// An OAuth client's secret: a GitHub OAuth App's or an OIDC client's; never printed.
 #[derive(Clone)]
 pub struct ClientSecret(String);
 
@@ -143,21 +140,11 @@ impl GitHubApp {
 }
 
 /// The JSON body of a `200` answer of GitHub's `endpoint`.
-fn read<T: for<'de> Deserialize<'de>>(
+fn read<T: DeserializeOwned>(
     endpoint: &str,
     response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<T, Refusal> {
-    let failed = |reason: String| Refusal::GitHub(format!("GitHub's {endpoint} {reason}"));
-    let mut response = response.map_err(|err| failed(format!("is unreachable: {err}")))?;
-    let status = response.status();
-    if status != 200 {
-        return Err(failed(format!("answered {status}")));
-    }
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|err| failed(format!("gave an unreadable answer: {err}")))?;
-    serde_json::from_str(&body).map_err(|err| failed(format!("gave an unexpected answer: {err}")))
+    json_body(response).map_err(|reason| Refusal::GitHub(format!("GitHub's {endpoint} {reason}")))
 }
 
 /// `text` from GitHub, such as an error code, cut to printable ASCII for the server's output.
@@ -168,43 +155,9 @@ fn printable(text: &str) -> String {
         .collect()
 }
 
-/// The HTTP client for GitHub: no redirects, HTTPS checked against the platform's root
-/// certificates, which it loads at its first use.
-fn agent() -> &'static Agent {
-    static AGENT: OnceLock<Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        let tls = TlsConfig::builder()
-            .root_certs(RootCerts::Specific(Arc::new(platform_roots())))
-            .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .build();
-        Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .timeout_global(Some(TIMEOUT))
-            .user_agent(concat!("skald-server/", env!("CARGO_PKG_VERSION")))
-            .tls_config(tls)
-            .build()
-            .new_agent()
-    })
-}
-
-/// The platform's root certificates; those it cannot load are left out.
-fn platform_roots() -> Vec<Certificate<'static>> {
-    rustls_native_certs::load_native_certs()
-        .certs
-        .iter()
-        .map(|cert| Certificate::from_der(cert.as_ref()).to_owned())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn loads_the_platform_root_certificates() {
-        assert!(!platform_roots().is_empty());
-    }
 
     #[test]
     fn github_url_drops_the_trailing_slash() {

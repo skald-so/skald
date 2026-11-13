@@ -2898,6 +2898,17 @@ name = "skald-mcp"
 version = "0.1.0-beta.1"
 
 [[package]]
+name = "skald-oidc-stand-in"
+version = "0.1.0-beta.1"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "ring",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "skald-proto"
 version = "0.1.0-beta.1"
 dependencies = [
@@ -2922,6 +2933,7 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "jsonschema",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde",
@@ -2930,6 +2942,7 @@ dependencies = [
  "sha2 0.11.1",
  "skald-crypto",
  "skald-github-stand-in",
+ "skald-oidc-stand-in",
  "skald-proto",
  "sqlx",
  "tokio",

@@ -19,12 +19,15 @@ mod accounts;
 mod device_flow;
 mod devices;
 mod github;
+mod http_client;
+mod oidc;
 mod protocol;
 mod refusal;
 mod sign_in;
 mod spaces;
 
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
+pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings};
 pub use protocol::Versions;
 use protocol::{Stated, Statement};
 pub use sign_in::{CALLBACK_PATH, PublicUrl, SignInSettings};
