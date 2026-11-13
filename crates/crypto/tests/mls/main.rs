@@ -7,20 +7,15 @@
 //! state the previous step sealed, as one-shot mode does.
 
 mod channels;
-// Built only with the `acceptance` feature until the code they test lands.
-#[cfg(feature = "acceptance")]
 mod commit_checks;
-#[cfg(feature = "acceptance")]
 mod commits;
 mod fixtures;
 mod foreign;
-#[cfg(feature = "acceptance")]
 mod foreign_member;
 mod framing;
 mod key_packages;
 mod messages;
 mod profile;
-#[cfg(feature = "acceptance")]
 mod removing;
 mod sealed;
 mod steps;
