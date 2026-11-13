@@ -70,12 +70,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(web)* add the SPA skeleton with a generated API client ([#12](https://github.com/skald-so/skald/pull/12))
 - *(server)* connect to PostgreSQL and apply migrations at start ([#11](https://github.com/skald-so/skald/pull/11))
 - *(server)* serve a health check and the OpenAPI spec ([#10](https://github.com/skald-so/skald/pull/10))
+- *(client)* name accounts by their usernames and set them in the CLI ([#146](https://github.com/skald-so/skald/pull/146))
+- *(client)* list the account's devices, checked against the pinned master key ([#123](https://github.com/skald-so/skald/pull/123))
 
 ### Fixed
 
 - *(web)* give the generated client checks time on a loaded machine ([#101](https://github.com/skald-so/skald/pull/101))
 - *(deps)* update rust crate tungstenite to 0.30 ([#55](https://github.com/skald-so/skald/pull/55))
 - *(web)* make the kit and cabinet tests deterministic ([#43](https://github.com/skald-so/skald/pull/43))
+- *(server)* start test servers without a port race ([#127](https://github.com/skald-so/skald/pull/127))
+- *(server)* make the browser sign-in tests hold under load ([#112](https://github.com/skald-so/skald/pull/112))
 
 ### Other
 

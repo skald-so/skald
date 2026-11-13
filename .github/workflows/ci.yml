@@ -59,11 +59,12 @@ jobs:
         run: >-
           awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/"/, "", $3); print "version=" $3 }'
           prototypes/mls/Cargo.lock | tee -a "$GITHUB_OUTPUT"
-      # release-plz: the Release PR tests, also in the Rust part.
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: >-
-            cargo-deny@0.20.2,wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }},release-plz@0.4.3
+          tool: cargo-deny@0.20.2,wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
+      # release-plz: the Release PR tests, also in the Rust part.
+      - name: Install release-plz
+        uses: ./.github/actions/install-release-plz
       # The WASM tests run in Node.js; the server's and the client's sign-in tests
       # drive the runner's Google Chrome with the playwright-core of web/.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -136,7 +137,9 @@ jobs:
           rustup default stable
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
-          tool: cargo-mutants@27.1.0,release-plz@0.4.3
+          tool: cargo-mutants@27.1.0
+      - name: Install release-plz
+        uses: ./.github/actions/install-release-plz
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
