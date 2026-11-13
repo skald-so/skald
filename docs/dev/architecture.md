@@ -44,6 +44,7 @@
 ## Network
 - Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
+- `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`.
 - Agent address: [protocol spec](../protocol/README.md#agent-address).

@@ -16,7 +16,7 @@ use skald_proto::{
 
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
-use crate::devices::{signed_in_with_secrets, text};
+use crate::devices::{signed_in_with_secrets, text, to_session};
 use crate::secrets;
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -63,7 +63,7 @@ pub fn create(
     let keys = device::known_keys(&stored, Some(&device))
         .map_err(text)?
         .ok_or_else(|| device::Error::MissingKeys.to_string())?;
-    let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+    let mut connection = to_session(&server, speaks, timeout)?;
 
     let mut existing = None;
     for space in state.spaces().map_err(text)? {

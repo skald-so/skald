@@ -12,7 +12,7 @@ use serde::Deserialize;
 use skald_crypto::{ChainProblem, DeviceCheckError, check_device};
 use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, VersionRange};
 
-use crate::connection::{Connection, printable};
+use crate::connection::{self, Connection, printable};
 use crate::secrets;
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -56,7 +56,7 @@ pub fn run(
         return Ok(());
     };
 
-    let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+    let mut connection = to_session(&server, speaks, timeout)?;
     let body = connection.get_as("/devices", &token).map_err(text)?;
     let devices: Devices = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
@@ -118,6 +118,27 @@ pub fn signed_in_with_secrets(
         .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
         .clone();
     Ok((state, session.server, token, stored))
+}
+
+/// A connection to `server`, the server of the machine's stored session, as [`Connection::new`]
+/// gives it; a URL in plain HTTP to another machine asks to sign in again over HTTPS.
+pub fn to_session(
+    server: &str,
+    speaks: VersionRange,
+    timeout: Duration,
+) -> Result<Connection, String> {
+    Connection::new(server, speaks, timeout).map_err(|err| match err {
+        connection::Error::Cleartext(_) => stored_cleartext(server),
+        err => err.to_string(),
+    })
+}
+
+/// What a command says of a session stored for `server`, plain HTTP to another machine.
+pub fn stored_cleartext(server: &str) -> String {
+    format!(
+        "{server:?}, the server of this machine's session, is plain HTTP to another machine: sign \
+         in again with an https:// URL: run skald sign-in --server <URL>"
+    )
 }
 
 /// Each name that two or more of the `linked` certificates hold, with their devices, in the order

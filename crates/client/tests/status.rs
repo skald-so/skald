@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use common::{Output, Server, Stub, response, skald, skald_with_timeout};
+use common::{Output, Server, Stub, cleartext, elsewhere, response, skald, skald_with_timeout};
 use skald_proto::PROTOCOL_VERSION;
 
 /// The range the server accepts: N = 3, N−1 = 2.
@@ -303,21 +303,14 @@ fn url_other_than_https_or_http_is_refused() {
     }
 }
 
-/// `0.0.0.0` is no address of this machine, yet on Linux and macOS a connection to it reaches this
-/// machine's listeners: the stub would get any request the client sent.
 #[test]
 fn http_to_another_machine_is_refused_before_any_request() {
     let stub = Stub::start(|_| response("200 OK", "application/json", "{}"));
-    let port = stub.url.rsplit(':').next().expect("the stub's port");
-    let url = format!("http://0.0.0.0:{port}");
+    let url = elsewhere(&stub);
 
     let output = status(&url, Some("3"));
 
-    let stderr = format!(
-        "skald: {url:?} is plain HTTP to another machine: use https://; plain http:// goes only to \
-         this machine: localhost, 127.0.0.0/8 or [::1]\n"
-    );
-    assert_output(&output, false, "", &stderr);
+    assert_output(&output, false, "", &cleartext(&url));
     assert_eq!(stub.requests(), Vec::<String>::new());
 }
 
