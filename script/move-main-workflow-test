@@ -1,0 +1,291 @@
+#!/usr/bin/env node
+// Tests the job that moves main to a stable release, the one job of all workflows whose steps run
+// script/move-main (script/move-main-test), in .github/workflows/release.yml:
+//   - it may run on a push of a stable release's tag, vX.Y.Z, and is skipped for a beta's,
+//     vX.Y.Z-beta.N, for any other push, for a PR and for a manual run, on a tag ref too, whatever
+//     the run's inputs, variables and step outputs;
+//   - it runs only after every job that publishes the release succeeds: when any of them fails, it
+//     is skipped; a job publishes when its permissions are not set, its token writes anything, it
+//     reads a secret other than GITHUB_TOKEN or it calls a workflow of another repository;
+//   - its step that runs script/move-main runs on a push of a stable release's tag and gives it the
+//     tag;
+//   - it runs in a GitHub environment no other job of any workflow names;
+//   - it reads one secret, the deploy key, in one of its steps: no other step of the job, the job's
+//     own settings, and no other job of any workflow read it, and no step of the job reads all
+//     secrets at once;
+//   - the rules of the release pipeline: its permissions are set, its token writes nothing and it
+//     requests no OIDC token, as it pushes with the deploy key;
+//   - only this job moves main: no other step of any workflow runs script/move-main or pushes to
+//     main with git, gh or an HTTP call.
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  commands,
+  condition,
+  event,
+  isUnknown,
+  jobsFor,
+  needsOf,
+  permissions,
+  readWorkflow,
+  stepSkipped,
+  template,
+  truth,
+  unknown,
+  words,
+} from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const releaseFile = '.github/workflows/release.yml';
+let failures = 0;
+const fail = (what) => {
+  console.error(`move-main-workflow-test: ${what}`);
+  failures++;
+};
+const done = () => {
+  if (failures > 0) {
+    console.error(`move-main-workflow-test: ${failures} case(s) failed`);
+    process.exit(1);
+  }
+  console.log('move-main-workflow-test: all cases passed');
+};
+
+const workflowDir = path.join(root, '.github/workflows');
+const workflows = Object.fromEntries(
+  fs
+    .readdirSync(workflowDir)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .map((f) => [`.github/workflows/${f}`, readWorkflow(path.join(workflowDir, f))]),
+);
+const release = workflows[releaseFile];
+if (!release) {
+  console.error(`move-main-workflow-test: ${releaseFile} is missing`);
+  process.exit(1);
+}
+// Every job of every workflow, as {file, key, job, workflow}.
+const jobs = Object.entries(workflows).flatMap(([file, workflow]) =>
+  Object.entries(workflow.jobs ?? {}).map(([key, job]) => ({ file, key, job, workflow })),
+);
+const where = (entry, step, index) => `${entry.file} job ${entry.key}${step ? ` step ${step.name ?? step.id ?? index + 1}` : ''}`;
+const movesMain = (line) => /(^|[\s;&|(/])script\/move-main(\s|$|["';&|)])/.test(line);
+const runsMoveMain = (step) => commands(step.run).some(movesMain);
+
+// The job that moves main.
+const movers = jobs.filter((entry) => (entry.job.steps ?? []).some(runsMoveMain));
+if (movers.length !== 1 || movers[0].file !== releaseFile) {
+  fail(`one job of all workflows runs script/move-main, in ${releaseFile}, not: ${movers.map((e) => where(e)).join(', ') || 'none'}`);
+  done();
+}
+const mover = movers[0];
+const key = mover.key;
+const job = mover.job;
+
+// The events it runs and is skipped on.
+const stable = event('push', 'refs/tags/v1.2.3');
+if (jobsFor(release, stable)[key].skipped) fail(`a push of the tag v1.2.3, a stable release's, skips job ${key}`);
+const quiet = [
+  ['push', 'refs/tags/v1.2.3-beta.1'],
+  ['push', 'refs/tags/v0.41.0-beta.12'],
+  ['push', 'refs/heads/dev'],
+  ['push', 'refs/heads/main'],
+  ['push', 'refs/heads/v1.2.3'],
+  ['push', 'refs/tags/1.2.3'],
+  ['push', 'refs/tags/release-1.2.3'],
+  ['push', 'refs/tags/skald-v1.2.3'],
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+  ['workflow_dispatch', 'refs/heads/main'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
+];
+for (const [name, ref] of quiet) {
+  if (!jobsFor(release, event(name, ref))[key].skipped) fail(`a ${name} on ${ref} leaves main where it is, but job ${key} may run`);
+}
+
+// The jobs that publish the release.
+const secretsOf = (value) => {
+  const text = JSON.stringify(value ?? null);
+  return [...text.matchAll(/secrets\s*(?:\.\s*([A-Za-z0-9_]+)|\[\s*'([^']+)'\s*\])/gi)]
+    .map((m) => m[1] ?? m[2])
+    .filter((s) => s.toUpperCase() !== 'GITHUB_TOKEN');
+};
+// expressions <value>: the expressions in it: each ${{ }} and each condition (`if`).
+const expressions = (value) => {
+  const found = [];
+  const walk = (v, k) => {
+    if (typeof v === 'string') {
+      found.push(...[...v.matchAll(/\$\{\{([\s\S]*?)\}\}/g)].map((m) => m[1]));
+      if (k === 'if' && !v.includes('${{')) found.push(v);
+    } else if (Array.isArray(v)) v.forEach((x) => walk(x));
+    else if (v && typeof v === 'object') Object.entries(v).forEach(([key, x]) => walk(x, key));
+  };
+  walk(value);
+  return found;
+};
+// readsAllSecrets <value>: it names the secrets context other than by a secret's name, or passes
+// every secret to a called workflow.
+const readsAllSecrets = (value) =>
+  value?.secrets === 'inherit' ||
+  expressions(value).some((e) => /\bsecrets\b/i.test(e.replace(/\bsecrets\s*(?:\.\s*[A-Za-z0-9_]+|\[\s*'[^']+'\s*\])/gi, '')));
+const writes = (p) => (p ? Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope) : []);
+const publisher = (workflow, j) => {
+  const p = permissions(workflow, j);
+  if (p === null) return 'its permissions are not set';
+  if (writes(p).length > 0) return `its token writes ${writes(p).join(', ')}`;
+  if (secretsOf(j).length > 0 || j.secrets === 'inherit') return 'it reads secrets';
+  if (typeof j.uses === 'string' && !j.uses.startsWith('./')) return `it calls ${j.uses}`;
+  return null;
+};
+const onStable = jobsFor(release, stable);
+const publishers = Object.entries(release.jobs ?? {})
+  .filter(([k, j]) => k !== key && !onStable[k].skipped && publisher(release, j))
+  .map(([k]) => k);
+if (publishers.length === 0) fail('no job publishes the release on a push of the tag v1.2.3');
+
+// skippedAfter <failed>: on a push of v1.2.3, job <failed> fails; true when job $key is then
+// skipped whatever the other jobs do.
+const usesStatus = (value) => typeof value === 'string' && /\b(success|always|failure|cancelled)\s*\(/i.test(value);
+const skippedAfter = (failed) => {
+  const results = {};
+  const visit = (k) => {
+    if (k in results) return results[k];
+    if (onStable[k].skipped) return (results[k] = 'skipped');
+    if (k === failed) return (results[k] = 'failure');
+    const j = release.jobs[k];
+    const direct = needsOf(j);
+    direct.forEach(visit);
+    const ancestors = new Set();
+    const collect = (n) => {
+      for (const d of needsOf(release.jobs[n])) {
+        if (!ancestors.has(d)) {
+          ancestors.add(d);
+          collect(d);
+        }
+      }
+    };
+    collect(k);
+    const known = (n) => typeof results[n] === 'string';
+    const needs = {};
+    for (const n of direct) needs[n] = { ...onStable[k].scope.contexts.needs[n], result: known(n) ? results[n] : unknown() };
+    const bad = direct.some((n) => ['failure', 'skipped', 'cancelled'].includes(results[n]));
+    const success = bad ? false : direct.every((n) => results[n] === 'success') ? true : unknown();
+    const scope = {
+      contexts: { ...onStable[k].scope.contexts, needs },
+      status: {
+        success,
+        always: true,
+        failure: [...ancestors].some((n) => results[n] === 'failure') ? true : unknown(),
+        cancelled: false,
+      },
+    };
+    const skipped =
+      (!usesStatus(j.if) && truth(success) === false) || (j.if !== undefined && truth(condition(j.if, scope)) === false);
+    results[k] = skipped ? 'skipped' : unknown();
+    return results[k];
+  };
+  return visit(key) === 'skipped';
+};
+for (const p of publishers) {
+  if (!skippedAfter(p)) fail(`job ${key} moves main only after every job that publishes the release succeeds, but it may run when job ${p} fails`);
+}
+
+// The step that runs script/move-main, and its argument.
+const moveSteps = (job.steps ?? []).map((step, index) => ({ step, index })).filter(({ step }) => runsMoveMain(step));
+if (moveSteps.length !== 1) fail(`one step of job ${key} runs script/move-main, not ${moveSteps.length}`);
+for (const { step, index } of moveSteps) {
+  if (stepSkipped(step, onStable[key])) fail(`${where(mover, step, index)}: a push of the tag v1.2.3 skips it`);
+  const lines = commands(step.run).filter(movesMain);
+  if (lines.length !== 1) fail(`${where(mover, step, index)}: it runs script/move-main ${lines.length} times, not once`);
+  for (const line of lines) {
+    // Each ${{ }} of the line is one word.
+    const held = [];
+    const rest = line
+      .replace(/^[\s\S]*?script\/move-main/, '')
+      .replace(/\$\{\{[\s\S]*?\}\}/g, (m) => `__expression${held.push(m) - 1}__`);
+    const args = words(rest.split(/\s(?:&&|\|\||;|\||#|>|2>)/)[0]).map((w) =>
+      w.replace(/__expression(\d+)__/g, (_, i) => held[Number(i)]),
+    );
+    if (args.length !== 1) {
+      fail(`${where(mover, step, index)}: script/move-main takes one argument, the tag, not: ${args.join(' ') || 'none'}`);
+      continue;
+    }
+    const arg = args[0].replace(/^"(.*)"$/, '$1');
+    const variable = arg.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$/)?.[1];
+    // The tag is the pushed ref's name, or an output of a job it needs, such as the plan's tag,
+    // which only the run knows.
+    let source = arg;
+    let value;
+    if (variable === 'GITHUB_REF_NAME') value = 'v1.2.3';
+    else if (variable) {
+      source = (step.env ?? {})[variable] ?? (job.env ?? {})[variable] ?? (release.env ?? {})[variable];
+      value = source === undefined ? null : template(source, onStable[key].scope);
+    } else value = template(arg, onStable[key].scope);
+    const fromNeeds = /^\s*\$\{\{\s*needs\.[A-Za-z0-9_-]+\.outputs\.[A-Za-z0-9_-]+\s*\}\}\s*$/.test(String(source ?? ''));
+    if (value === null || (isUnknown(value) && !fromNeeds)) {
+      fail(`${where(mover, step, index)}: script/move-main gets ${arg}, which is not the tag`);
+    } else if (!isUnknown(value) && value !== 'v1.2.3') {
+      fail(`${where(mover, step, index)}: on a push of the tag v1.2.3, script/move-main gets '${value}', not the tag`);
+    }
+  }
+}
+
+// The environment.
+const envName = (j) => (j.environment && typeof j.environment === 'object' ? j.environment.name : j.environment);
+const environment = envName(job);
+if (typeof environment !== 'string' || environment.trim() === '' || environment.includes('${{')) {
+  fail(`job ${key} runs in a GitHub environment of its own, named in the workflow, not: ${JSON.stringify(environment ?? null)}`);
+} else {
+  for (const entry of jobs) {
+    if (entry === mover) continue;
+    const other = envName(entry.job);
+    if (typeof other === 'string' && (other.toLowerCase() === environment.toLowerCase() || other.includes('${{'))) {
+      fail(`${where(entry)}: only job ${key} names the environment ${environment}, but this one names ${other}`);
+    }
+  }
+}
+
+// The deploy key.
+const secrets = [...new Set(secretsOf(job))];
+if (secrets.length !== 1) fail(`job ${key} reads one secret, the deploy key, not: ${secrets.join(', ') || 'none'}`);
+const { steps: _steps, ...settings } = job;
+if (secretsOf(settings).length > 0 || readsAllSecrets(settings)) {
+  fail(`job ${key}: its own settings read secrets, so every step does; only one step reads the deploy key`);
+}
+const readers = (job.steps ?? []).map((step, index) => ({ step, index })).filter(({ step }) => secretsOf(step).length > 0);
+if (readers.length !== 1) {
+  fail(`one step of job ${key} reads the deploy key, not: ${readers.map(({ step, index }) => where(mover, step, index)).join(', ') || 'none'}`);
+}
+(job.steps ?? []).forEach((step, index) => {
+  if (readsAllSecrets(step)) fail(`${where(mover, step, index)}: it reads all secrets at once`);
+});
+for (const secret of secrets) {
+  for (const entry of jobs) {
+    if (entry !== mover && secretsOf(entry.job).some((s) => s.toLowerCase() === secret.toLowerCase())) {
+      fail(`${where(entry)}: only job ${key} reads the secret ${secret}`);
+    }
+  }
+}
+
+// The rules of the release pipeline.
+const p = permissions(release, job);
+if (p === null) fail(`job ${key}: its permissions are not set`);
+else {
+  if (writes(p).length > 0) fail(`job ${key}: it pushes with the deploy key; its token writes nothing, not ${writes(p).join(', ')}`);
+  if ('id-token' in p) fail(`job ${key}: it attests nothing and requests no OIDC token`);
+}
+
+// Nothing else moves main.
+const pushesMain = (line) =>
+  (/\bgit\b.*\bpush\b/.test(line) && /(^|[\s:+'"/])main(\s|$|['"])|refs\/heads\/main\b/.test(line)) ||
+  (/\b(gh\s+api|curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b/i.test(line) &&
+    /(git\/refs\/heads\/main|branches\/main|\/merges\b|merge-upstream)/.test(line));
+for (const entry of jobs) {
+  (entry.job.steps ?? []).forEach((step, index) => {
+    if (entry === mover && runsMoveMain(step)) return;
+    for (const line of commands(step.run)) {
+      if (movesMain(line) || pushesMain(line)) fail(`${where(entry, step, index)}: only job ${key} moves main, but this step does: ${line.trim()}`);
+    }
+  });
+}
+
+done();

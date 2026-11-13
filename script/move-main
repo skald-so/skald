@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Moves main on origin to the commit of the release tag <tag>, forward only: it fails and changes
+# nothing when origin has no such tag or that commit does not descend from main as origin has it now.
+# Runs in a checkout of the tag, shallow too; the release workflow runs it with the deploy key after
+# a stable release is published.
+# Usage: script/move-main <tag>
+set -euo pipefail
+
+if [[ $# -ne 1 || -z $1 ]]; then
+  echo "usage: $0 <tag>" >&2
+  exit 2
+fi
+tag=$1
+
+# The tag and main as origin has them now, with the history between them.
+unshallow=()
+[[ $(git rev-parse --is-shallow-repository) == false ]] || unshallow=(--unshallow)
+if ! git fetch --quiet --no-tags "${unshallow[@]}" origin \
+  "+refs/tags/$tag:refs/tags/$tag" "+refs/heads/main:refs/remotes/origin/main"; then
+  echo "move-main: origin has no tag $tag or no main" >&2
+  exit 1
+fi
+commit=$(git rev-parse --verify --quiet "refs/tags/$tag^{commit}")
+main=$(git rev-parse --verify --quiet refs/remotes/origin/main)
+
+if ! git merge-base --is-ancestor "$main" "$commit"; then
+  echo "move-main: $tag, $commit, does not descend from main, $main; main stays" >&2
+  exit 1
+fi
+# Without --force, git refuses the push unless it fast-forwards the main origin has at that moment.
+git push --quiet origin "$commit:refs/heads/main"
+echo "move-main: main is at $tag, $commit"

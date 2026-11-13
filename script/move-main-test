@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# Tests script/move-main on fixture repositories. `script/move-main <tag>`, run in a checkout of the
+# release tag <tag> whose remote origin is the repository, moves main on origin to the tag's commit
+# when that commit descends from main as origin has it now; the release workflow runs it with the
+# deploy key (script/move-main-workflow-test).
+#   - main moves forward to the tag's commit, a lightweight or an annotated tag's, and to a tag a
+#     few releases ahead; nothing else on origin changes;
+#   - main only moves forward: a tag whose commit does not descend from main, one on a branch apart
+#     from main or one of an older release, is refused: the script fails and main stays; so is a
+#     tag origin does not have;
+#   - it checks main as origin has it when it runs: in a checkout made before main moved on to a
+#     newer release, an older release's tag is refused; so is one whose check passed while main
+#     moved on to a newer release before the push, and main stays at the newer release.
+# The checkouts are made as actions/checkout makes them by default: the tag's commit alone, one
+# commit deep. The fixtures' git reaches only local repositories.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+failures=0
+
+fail() {
+  echo "move-main-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+if [[ ! -x $root/script/move-main ]]; then
+  echo "move-main-test: script/move-main is missing or not executable" >&2
+  exit 1
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# The fixtures' git, isolated from the user's config and from any repository around $tmp; it
+# reaches no remote but a local one, so nothing is pushed anywhere else.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_CEILING_DIRECTORIES=$(cd "$tmp" && pwd -P)
+export GIT_ALLOW_PROTOCOL=file
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+export GIT_TERMINAL_PROMPT=0
+
+# The fixture: dev with the scripts of this working tree, released as v0.40.5 and v0.40.6, then
+# v0.41.0 as an annotated tag; a branch apart from dev with v0.40.7 on it.
+#   c1 v0.40.5 ── c2 ── c3 v0.40.6 ── c4 v0.41.0 (annotated)   dev
+#                  └─ s1 v0.40.7                               hotfix
+work=$tmp/work
+git init --quiet --initial-branch dev "$work"
+# The scripts: those in script/ and the helpers they source.
+mkdir "$work/script"
+find "$root/script" -maxdepth 1 -type f -exec cp {} "$work/script/" \;
+cp -R "$root/script/lib" "$work/script/lib"
+# commit <title>: commits a change titled <title> on the current branch; prints its commit.
+commit() {
+  printf -- '- %s\n' "$1" >>"$work/CHANGELOG.md"
+  git -C "$work" add --all
+  git -C "$work" commit --quiet --message "$1"
+  git -C "$work" rev-parse HEAD
+}
+c1=$(commit "chore: release v0.40.5")
+git -C "$work" tag v0.40.5
+c2=$(commit "feat(client): add the change alpha")
+c3=$(commit "chore: release v0.40.6")
+git -C "$work" tag v0.40.6
+c4=$(commit "chore: release v0.41.0")
+git -C "$work" tag --annotate --message v0.41.0 v0.41.0
+git -C "$work" checkout --quiet -b hotfix "$c2"
+s1=$(commit "fix(server): fix the change bravo apart from dev")
+git -C "$work" tag v0.40.7
+git -C "$work" checkout --quiet dev
+git init --quiet --bare "$tmp/template.git"
+git -C "$work" push --quiet "$tmp/template.git" dev hotfix 'refs/tags/*'
+
+# origin <case> <main>: sets $origin to a new repository of its own, the fixture's, with main at
+# <main>.
+origin() {
+  origin=$tmp/$1.git
+  cp -R "$tmp/template.git" "$origin"
+  git -C "$origin" update-ref refs/heads/main "$2"
+}
+
+# checkout <case> <tag>: sets $checkout to a checkout of <tag> from $origin as actions/checkout
+# makes it: the tag's commit alone, one commit deep, detached, origin its remote.
+checkout() {
+  checkout=$tmp/$1
+  git init --quiet "$checkout"
+  git -C "$checkout" remote add origin "file://$origin"
+  git -C "$checkout" fetch --quiet --no-tags --depth=1 origin "+refs/tags/$2:refs/tags/$2"
+  git -C "$checkout" checkout --quiet --detach "refs/tags/$2"
+}
+
+# refs: origin's refs, a `<ref> <object>` line each.
+refs() {
+  git -C "$origin" for-each-ref --format='%(refname) %(objectname)'
+}
+
+# move <case> <tag>: runs script/move-main <tag> in $checkout, with its own copy of the scripts;
+# sets $status to its exit code.
+move() {
+  status=0
+  (cd "$checkout" && script/move-main "$2") >"$tmp/$1.log" 2>&1 || status=$?
+}
+
+# expect_moved <case> <tag> <commit>: the move exits 0, main is at <commit> and no other ref of
+# origin changed.
+expect_moved() {
+  local before after
+  before=$(refs | grep -v '^refs/heads/main ')
+  move "$1" "$2"
+  after=$(refs | grep -v '^refs/heads/main ')
+  [[ $status == 0 ]] || fail "$1: script/move-main $2 exits $status: $(tail -n 5 "$tmp/$1.log")"
+  [[ $(git -C "$origin" rev-parse refs/heads/main) == "$3" ]] ||
+    fail "$1: main is at $(git -C "$origin" rev-parse refs/heads/main), not at the commit of $2, $3"
+  [[ $before == "$after" ]] || fail "$1: other refs of origin changed: $(diff <(echo "$before") <(echo "$after") || true)"
+}
+
+# expect_refused <case> <tag>: the move fails, and origin's refs, main among them, stay.
+expect_refused() {
+  local before
+  before=$(refs)
+  move "$1" "$2"
+  [[ $status != 0 ]] || fail "$1: script/move-main $2 exits 0"
+  [[ $(refs) == "$before" ]] || fail "$1: origin's refs changed: $(diff <(echo "$before") <(refs) || true)"
+}
+
+case="a release tag on the next commit of main"
+origin forward "$c2"
+checkout forward v0.40.6
+expect_moved "$case" v0.40.6 "$c3"
+
+case="a release tag a few releases ahead of main"
+origin ahead "$c1"
+checkout ahead v0.41.0
+expect_moved "$case" v0.41.0 "$c4"
+
+case="an annotated release tag"
+origin annotated "$c3"
+checkout annotated v0.41.0
+expect_moved "$case" v0.41.0 "$c4"
+
+case="a release tag on a branch apart from main"
+origin apart "$c3"
+checkout apart v0.40.7
+expect_refused "$case" v0.40.7
+
+case="the tag of an older release"
+origin older "$c3"
+checkout older v0.40.5
+expect_refused "$case" v0.40.5
+
+case="a tag origin does not have"
+origin missing "$c1"
+checkout missing v0.40.6
+expect_refused "$case" v0.41.1
+
+# The checkout is made while main is at v0.40.5; main then moves on to v0.41.0.
+case="an older release's tag after main moved on since the checkout"
+origin moved-on "$c1"
+checkout moved-on v0.40.6
+git -C "$origin" update-ref refs/heads/main "$c4"
+expect_refused "$case" v0.40.6
+
+case="a tag after main moved on to a branch apart from it since the checkout"
+origin moved-apart "$c1"
+checkout moved-apart v0.41.0
+git -C "$origin" update-ref refs/heads/main "$s1"
+expect_refused "$case" v0.41.0
+
+# The move checks while main is at v0.40.5; git, first on PATH, moves main on to v0.41.0 just before
+# the move pushes.
+case="an older release's tag after main moved on between the check and the push"
+origin raced "$c1"
+checkout raced v0.40.6
+real_git=$(command -v git)
+mkdir "$tmp/raced-bin"
+cat >"$tmp/raced-bin/git" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ \$arg == push ]]; then
+    "$real_git" -C "$origin" update-ref refs/heads/main "$c4"
+    break
+  fi
+done
+exec "$real_git" "\$@"
+EOF
+chmod +x "$tmp/raced-bin/git"
+before=$(refs | grep -v '^refs/heads/main ')
+PATH="$tmp/raced-bin:$PATH" move "$case" v0.40.6
+[[ $status != 0 ]] || fail "$case: script/move-main v0.40.6 exits 0"
+[[ $(git -C "$origin" rev-parse refs/heads/main) == "$c4" ]] ||
+  fail "$case: main is at $(git -C "$origin" rev-parse refs/heads/main), not at the newer release's commit, $c4"
+[[ $(refs | grep -v '^refs/heads/main ') == "$before" ]] || fail "$case: other refs of origin changed"
+
+if ((failures > 0)); then
+  echo "move-main-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "move-main-test: all cases passed"
