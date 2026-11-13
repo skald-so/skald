@@ -3,11 +3,10 @@
 use std::num::NonZeroU64;
 use std::str::FromStr;
 
-use axum::Json;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use serde::Serialize;
 use skald_proto::{
     LATEST_HEADER, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem, VersionRange, parse_version,
@@ -145,10 +144,5 @@ fn refusal(versions: Versions, problem: VersionProblem, stated: &str) -> Respons
         ),
         supported: versions.supported(),
     };
-    (
-        status,
-        [(header::CONTENT_TYPE, "application/problem+json")],
-        Json(problem),
-    )
-        .into_response()
+    crate::problem_details(status, problem)
 }

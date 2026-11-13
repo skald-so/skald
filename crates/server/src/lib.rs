@@ -130,10 +130,15 @@ fn problem(status: StatusCode, kind: &str, title: &str, detail: &str) -> Respons
         "status": status.as_u16(),
         "detail": detail,
     });
+    problem_details(status, body)
+}
+
+/// The problem details object `body` with `status`.
+fn problem_details(status: StatusCode, body: impl Serialize) -> Response {
     (
         status,
         [(header::CONTENT_TYPE, "application/problem+json")],
-        body.to_string(),
+        Json(body),
     )
         .into_response()
 }

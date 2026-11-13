@@ -12,7 +12,7 @@ use std::thread;
 use common::device_flow::{DeviceFlow, json, text};
 use common::devices::{
     DEVICES, Device, Key, MASTER, Machine, account_id, assert_refused, assert_taken, b64, cert_of,
-    devices_of, machine, master_of, request,
+    devices_of, machine, master_of,
 };
 use common::get_url;
 use serde_json::{Value, json};
@@ -192,7 +192,7 @@ fn requests_without_a_valid_session_are_refused() {
             ("get", DEVICES, None),
             ("get", MASTER, None),
         ] {
-            let response = request(&flow, method, path, &headers, body, true);
+            let response = flow.request(method, path, &headers, body, true);
             assert_eq!(
                 response.status,
                 401,
@@ -221,7 +221,7 @@ fn requests_state_the_protocol_version() {
         ("get", DEVICES, None),
         ("get", MASTER, None),
     ] {
-        let response = request(&flow, method, path, &headers, body, false);
+        let response = flow.request(method, path, &headers, body, false);
         assert_eq!(response.status, 400, "{method} {path}: {}", text(&response));
         assert_eq!(
             json(&response)["type"],
@@ -588,11 +588,11 @@ fn master_key_and_devices_go_only_to_the_account_sessions() {
     // The web session of the account's person.
     let web = [("cookie", first.cookie.as_str())];
     assert_eq!(
-        master_of(&request(&flow, "get", MASTER, &web, None, true)),
+        master_of(&flow.request("get", MASTER, &web, None, true)),
         master_key
     );
     assert_eq!(
-        devices_of(&request(&flow, "get", DEVICES, &web, None, true)),
+        devices_of(&flow.request("get", DEVICES, &web, None, true)),
         devices
     );
 
@@ -601,11 +601,11 @@ fn master_key_and_devices_go_only_to_the_account_sessions() {
     assert_eq!(other.devices(), BTreeMap::new());
     let web = [("cookie", other.cookie.as_str())];
     assert_eq!(
-        master_of(&request(&flow, "get", MASTER, &web, None, true)),
+        master_of(&flow.request("get", MASTER, &web, None, true)),
         None
     );
     assert_eq!(
-        devices_of(&request(&flow, "get", DEVICES, &web, None, true)),
+        devices_of(&flow.request("get", DEVICES, &web, None, true)),
         BTreeMap::new()
     );
 }

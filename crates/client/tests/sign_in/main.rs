@@ -50,7 +50,7 @@ fn sign_in(cloud: &Cloud, page: &Page, machine: &Machine, user: &User) -> (Finis
     cloud.decide(page, user, &grant, APPROVE);
     let finished = run.finish();
     assert!(finished.success, "{finished:?}");
-    let token = cloud.tokens().last().cloned().expect("a session token");
+    let token = cloud.last_token();
     (finished, token)
 }
 

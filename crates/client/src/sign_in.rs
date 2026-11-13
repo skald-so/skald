@@ -225,10 +225,9 @@ fn session(
 ) -> Result<(String, AccountId), Error> {
     let server = connection.server().to_owned();
     let session = state.session()?;
-    let token = stored.get(SESSION_TOKEN).cloned();
+    let token = token_for(stored, &server).cloned();
     if let (Some(session), Some(token)) = (session, token)
         && session.server == server
-        && stored.get(SESSION_SERVER) == Some(&server)
     {
         match connection.get_as("/session", &token) {
             Ok(body) => {
@@ -300,6 +299,15 @@ pub fn open(dir: &Path, storage: secrets::Storage) -> Result<(State, Secrets), E
     })?;
     let state = State::open(dir)?;
     Ok((state, Secrets::new(dir, storage)))
+}
+
+/// The session token `stored`, the secrets, keep for `server`: a token goes only to the server it
+/// came from.
+pub fn token_for<'s>(stored: &'s secrets::Map, server: &str) -> Option<&'s String> {
+    let kept_for = stored.get(SESSION_SERVER).map(String::as_str);
+    stored
+        .get(SESSION_TOKEN)
+        .filter(|_| kept_for == Some(server))
 }
 
 /// Forgets the machine's session: deletes its token from `stored`, the secrets, and the session

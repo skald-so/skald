@@ -14,7 +14,7 @@ use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, VersionRange};
 
 use crate::connection::{Connection, printable};
 use crate::secrets;
-use crate::sign_in::{self, SESSION_SERVER, SESSION_TOKEN};
+use crate::sign_in;
 use crate::state::{self, Link};
 
 /// What `skald devices` says when the machine has no session.
@@ -50,10 +50,8 @@ pub fn run(
         .map_err(text)?
         .ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
     let stored = secrets.load().map_err(text)?;
-    let token = match stored.get(SESSION_TOKEN) {
-        Some(token) if stored.get(SESSION_SERVER) == Some(&session.server) => token,
-        _ => return Err(NOT_SIGNED_IN.to_owned()),
-    };
+    let token =
+        sign_in::token_for(&stored, &session.server).ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
 
     let Some(state::Device {
         id: this,

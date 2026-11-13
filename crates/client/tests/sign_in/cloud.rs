@@ -2,6 +2,7 @@
 //! database, behind a recording relay; and the person who approves or denies a machine's code on
 //! its verification page in headless Chrome.
 
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
-use skald_proto::{Cbor, Cert, DeviceId};
+use skald_proto::{AccountId, Cbor, Cert, DeviceId};
 use skald_server::{CALLBACK_PATH, ClientSecret, GitHubApp, Settings, SignInSettings};
 
 use super::browser::{Page, Visit};
@@ -32,6 +33,10 @@ pub const DENY: &str = "role=button[name=/deny/i]";
 const SUBMIT: &str = "role=button >> nth=0";
 /// A link or button of the verification page that signs a browser without a session in.
 const SIGN_IN: &str = "a:has-text('sign in'), button:has-text('sign in')";
+
+/// The requests that register a device and give the account's master key, as their lines start.
+pub const REGISTER: &str = "POST /devices ";
+pub const GIVE_MASTER: &str = "PUT /account/master ";
 
 /// What device authorization gave the machine, as the relay saw it.
 #[derive(Clone, Debug)]
@@ -151,6 +156,22 @@ impl Cloud {
         strings_named(&self.relay.answered(), "access_token")
     }
 
+    /// The session token the server gave last.
+    pub fn last_token(&self) -> String {
+        self.tokens().last().cloned().expect("a session token")
+    }
+
+    /// The files of `machine` that hold a session token the server gave, each with that token.
+    pub fn token_files(&self, machine: &Machine) -> Vec<(PathBuf, String)> {
+        let mut found = Vec::new();
+        for token in self.tokens() {
+            for file in machine.files_holding(&token) {
+                found.push((file, token.clone()));
+            }
+        }
+        found
+    }
+
     /// The `GET /session` answer to a request with the session token `token`, straight to the
     /// server: the status and the body.
     pub fn session_of(&self, token: &str) -> (u16, Value) {
@@ -241,9 +262,28 @@ impl Cloud {
         run.finish()
     }
 
+    /// A new machine with the host name `host`, signed in as the first device of `user`'s account
+    /// as [`Cloud::signed_in`] signs it in; gives it and what its sign-in printed.
+    pub fn first_machine(&self, page: &Page, user: &User, host: &str) -> (Machine, Finished) {
+        let machine = Machine::new().with_host_name(host);
+        let first = [machine::FIRST_DEVICE, machine::YES];
+        let finished = self.signed_in(page, &machine, user, &first);
+        (machine, finished)
+    }
+
     /// What every table of the server's database holds, one XML document per table.
     pub fn rows(&self) -> Vec<String> {
         self.server.rows()
+    }
+
+    /// The account a request with `token` acts as, from the server; fails if it acts as none.
+    pub fn account_of(&self, token: &str) -> AccountId {
+        let (status, body) = self.session_of(token);
+        assert_eq!(status, 200, "GET /session: {body}");
+        body["account"]
+            .as_str()
+            .and_then(|id| id.parse().ok())
+            .unwrap_or_else(|| panic!("an account ID: {body}"))
     }
 
     /// The GitHub login of the account a request with `token` acts as; fails if it acts as none.

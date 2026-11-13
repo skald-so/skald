@@ -32,28 +32,17 @@ use std::fs;
 use std::path::PathBuf;
 
 use browser::Browser;
-use cloud::{Cloud, Device, certified, ids};
-use machine::{Finished, Machine, SIGN_IN};
+use cloud::{Cloud, Device, GIVE_MASTER, REGISTER, certified, ids};
+use machine::{
+    DEVICES, FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED, SIGN_IN, SIGN_OUT, THIS_DEVICE, YES,
+};
 use skald_github_stand_in::User;
 use skald_proto::{Cert, DeviceId};
 
-/// The sign-out command, and what it says once done.
-const SIGN_OUT: &str = "sign-out";
+/// What sign-out says once done.
 const SIGNED_OUT: &str = "signed out";
-/// The device list command, and the command it names when it asks to sign in.
-const DEVICES: &str = "devices";
+/// The command the device list names when it asks to sign in.
 const ASKS_TO_SIGN_IN: &str = "skald sign-in";
-/// What the device list says on the current device's line, and above the devices not linked.
-const THIS_DEVICE: &str = "this device";
-const NOT_LINKED: &str = "not linked";
-/// The flag that answers whether this is the account's first device, and its answers.
-const FIRST_DEVICE: &str = "--first-device";
-const YES: &str = "yes";
-const NO: &str = "no";
-
-/// The requests that register a device and give the account's master key, as their lines start.
-const REGISTER: &str = "POST /devices ";
-const GIVE_MASTER: &str = "PUT /account/master ";
 
 /// The paths a machine reads with its session.
 const READS: [&str; 3] = ["/session", "/devices", "/account/master"];
@@ -89,8 +78,7 @@ fn setup(user: (u64, &str)) -> (Cloud, Browser, Ada) {
     let cloud = Cloud::start(120, 1);
     let browser = Browser::launch();
     let ada = cloud.user(user.0, user.1);
-    let machine = Machine::new().with_host_name("ada-workstation");
-    let signed_in = cloud.signed_in(&browser.page(), &machine, &ada, &[FIRST_DEVICE, YES]);
+    let (machine, signed_in) = cloud.first_machine(&browser.page(), &ada, "ada-workstation");
     assert!(signed_in.success, "{signed_in:?}");
 
     let token = token_of(&cloud, &machine).expect("a session token");
@@ -170,12 +158,7 @@ fn assert_lists_itself_as_linked(machine: &Machine, device: DeviceId) {
 /// The session token the server gave that a file of `machine` holds; `None` if none does. Fails if
 /// several files or tokens are found.
 fn token_of(cloud: &Cloud, machine: &Machine) -> Option<String> {
-    let mut found = Vec::new();
-    for token in cloud.tokens() {
-        for file in machine.files_holding(&token) {
-            found.push((file, token.clone()));
-        }
-    }
+    let mut found = cloud.token_files(machine);
     assert!(found.len() <= 1, "files holding a session token: {found:?}");
     found.pop().map(|(_, token)| token)
 }

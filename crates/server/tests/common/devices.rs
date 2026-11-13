@@ -27,7 +27,7 @@ use skald_proto::{AccountId, Cbor, CertBody, DeviceId, DeviceKind, Unknown};
 
 use super::device_flow::{DeviceFlow, json, text};
 use super::sign_in::Account;
-use super::{Response, delete_url, get_url, post_form, send};
+use super::{Response, post_form};
 
 /// Registers a device: `POST`; the account's devices: `GET`.
 pub const DEVICES: &str = "/devices";
@@ -174,34 +174,6 @@ pub fn machine<'f>(flow: &'f DeviceFlow, user: &User) -> Machine<'f> {
     }
 }
 
-/// `<method> <path>` to `flow`'s server, `method` in lowercase, with the request headers `headers`
-/// and the JSON `body` if given, stating the protocol version if `stated`; checked against the spec.
-pub fn request(
-    flow: &DeviceFlow,
-    method: &str,
-    path: &str,
-    headers: &[(&str, &str)],
-    body: Option<&[u8]>,
-    stated: bool,
-) -> Response {
-    let version = skald_proto::PROTOCOL_VERSION.to_string();
-    let mut all = headers.to_vec();
-    if stated {
-        all.push((skald_proto::VERSION_HEADER, &version));
-    }
-    let url = format!("{}{path}", flow.stand.server.base());
-    let response = match body {
-        Some(body) => {
-            all.push(("content-type", "application/json"));
-            send(method, &url, &all, body)
-        }
-        None if method == "delete" => delete_url(&url, &all),
-        None => get_url(&url, &all),
-    };
-    flow.conforms(method, path, &response);
-    response
-}
-
 impl Machine<'_> {
     /// `<method> <path>` with this machine's session and the JSON `body` if given.
     fn send(&self, method: &str, path: &str, body: Option<&Value>) -> Response {
@@ -214,7 +186,7 @@ impl Machine<'_> {
     fn send_raw(&self, method: &str, path: &str, body: Option<&[u8]>) -> Response {
         let bearer = format!("Bearer {}", self.token);
         let headers = [("authorization", bearer.as_str())];
-        request(self.flow, method, path, &headers, body, true)
+        self.flow.request(method, path, &headers, body, true)
     }
 
     /// `POST /devices` of `registration`.
