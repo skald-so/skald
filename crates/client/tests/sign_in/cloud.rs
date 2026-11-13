@@ -269,6 +269,11 @@ impl Cloud {
         self.server.rows()
     }
 
+    /// Runs `sql` on the server's database.
+    pub fn execute(&self, sql: &str) {
+        self.server.execute(sql);
+    }
+
     /// The account a request with `token` acts as, from the server; fails if it acts as none.
     pub fn account_of(&self, token: &str) -> AccountId {
         let (status, body) = self.session_of(token);
