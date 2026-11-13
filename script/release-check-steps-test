@@ -8,7 +8,8 @@
 //     stops it before it checks anything.
 //   - Every step runs when a file of the release fails to download: the check names that file,
 //     still verifies the attestation of its checksum file, the image and the npm package, and
-//     prints how many steps failed.
+//     prints how many steps failed. A file whose download breaks off part way fails only as one
+//     that cannot be downloaded, not also as one that does not match its checksum.
 //   - .github/workflows/release-check.yml: on a push of a release tag, a Linux runner, which has
 //     docker with buildx, runs every step, so the release is verified.
 import { spawn, spawnSync } from 'node:child_process';
@@ -86,11 +87,17 @@ try {
     requests: [],
   };
 
-  // proxy <url> <unserved>: a server in front of the stand-in at <url> that answers 404 for the
-  // path <unserved> and passes on every other request.
-  const proxy = (url, unserved) =>
+  // proxy <url> <unserved> <partial>: a server in front of the stand-in at <url> that answers 404
+  // for the path <unserved>, or with <partial> sends part of it and breaks off, and passes on every
+  // other request.
+  const proxy = (url, unserved, partial) =>
     new Promise((resolve) => {
       const server = http.createServer(async (request, response) => {
+        if (request.url === unserved && partial) {
+          const whole = Buffer.from(await (await fetch(url + request.url)).arrayBuffer());
+          response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': whole.length });
+          return response.write(whole.subarray(0, whole.length >> 1), () => response.destroy());
+        }
         if (request.url === unserved) return response.writeHead(404).end();
         const answer = await fetch(url + request.url, { method: request.method, headers: { 'user-agent': request.headers['user-agent'] ?? '' } });
         response.writeHead(answer.status, { 'content-type': answer.headers.get('content-type') ?? 'application/octet-stream' });
@@ -104,11 +111,12 @@ try {
       );
     });
 
-  // check <steps> [<unserved>]: script/release-check <tag> run with SKALD_RELEASE_CHECK_STEPS=<steps>;
-  // the release's file <unserved>, if any, fails to download.
-  const check = async (steps, unserved) => {
+  // check <steps> [<unserved> [<partial>]]: script/release-check <tag> run with
+  // SKALD_RELEASE_CHECK_STEPS=<steps>; the release's file <unserved>, if any, fails to download, with
+  // <partial> after part of it arrives.
+  const check = async (steps, unserved, partial = false) => {
     const server = await serve(world);
-    const releases = unserved ? await proxy(server.url, `/download/${tag}/${unserved}`) : server;
+    const releases = unserved ? await proxy(server.url, `/download/${tag}/${unserved}`, partial) : server;
     try {
       const dir = fs.mkdtempSync(path.join(scratch, 'run-'));
       const bin = path.join(dir, 'bin');
@@ -188,6 +196,16 @@ try {
   };
   for (const [what, ran] of Object.entries(later)) {
     if (!ran) fail(`${label}, the check still checks ${what}, but did not: ${tail(r.output)}`);
+  }
+
+  // The archive's download breaks off part way: the partial file is not checked against its checksum.
+  world.requests.length = 0;
+  r = await check('all', unserved, true);
+  const partialLabel = `when the download of ${unserved} breaks off part way`;
+  const named = r.output.split('\n').filter((l) => l.startsWith(`release-check: ${unserved}: failed:`));
+  if (r.status === 0) fail(`${partialLabel}, the check fails, but exits 0: ${tail(r.output)}`);
+  if (named.length !== 1 || !named[0].startsWith(`release-check: ${unserved}: failed: cannot download`)) {
+    fail(`${partialLabel}, the only failure naming it is 'cannot download', not: ${named.join(' | ') || tail(r.output)}`);
   }
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true });
