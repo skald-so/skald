@@ -7,12 +7,12 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use serde_json::{Map, Value};
 use skald_proto::{AccountId, Name};
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::sign_in::{digest, not_signed_in, random_token, signed_in};
-use crate::{AppState, database_failed, problem};
+use crate::AppState;
+use crate::refusal::{Refusal, account, answer, parse};
+use crate::sign_in::{digest, random_token};
 
 /// The provider of GitHub methods; an OIDC provider is named by its issuer.
 pub(crate) const GITHUB: &str = "github";
@@ -89,55 +89,13 @@ struct UsernameRequest {
     username: String,
 }
 
-/// Why the server refuses a username.
-enum Refusal {
-    NotSignedIn,
-    /// A malformed body, or a username that is no `name`, for the reason it holds.
-    Invalid(&'static str, String),
-    Reserved,
-    Taken,
-    /// The database failed at what it holds, such as `read a session`.
-    Database(&'static str, sqlx::Error),
-}
-
-impl IntoResponse for Refusal {
-    fn into_response(self) -> Response {
-        let conflict = StatusCode::CONFLICT;
-        match self {
-            Refusal::NotSignedIn => not_signed_in(),
-            Refusal::Invalid(kind, detail) => {
-                problem(StatusCode::BAD_REQUEST, kind, "Invalid request", &detail)
-            }
-            Refusal::Reserved => problem(
-                conflict,
-                "username-reserved",
-                "Username reserved",
-                "No account takes this username.",
-            ),
-            Refusal::Taken => problem(
-                conflict,
-                "username-taken",
-                "Username taken",
-                "Another account has this username.",
-            ),
-            Refusal::Database(doing, err) => database_failed(doing, err),
-        }
-    }
-}
-
-/// The username in the JSON `body`, a `UsernameRequest` object, checked to be a `name`.
+/// The username in the JSON `body`, a `UsernameRequest`, checked to be a `name`.
 fn requested(body: &[u8]) -> Result<Name, Refusal> {
-    let invalid = |err: serde_json::Error| {
-        Refusal::Invalid("invalid-request", format!("not a valid body: {err}"))
-    };
-    // An object only: serde would also take a struct from an array of its fields.
-    let object: Map<String, Value> = serde_json::from_slice(body).map_err(invalid)?;
-    let request: UsernameRequest =
-        serde_json::from_value(Value::Object(object)).map_err(invalid)?;
+    let request: UsernameRequest = parse(body)?;
     request
         .username
         .parse()
-        .map_err(|err| Refusal::Invalid("invalid-username", format!("the username {err}")))
+        .map_err(|err| Refusal::Username(format!("the username {err}")))
 }
 
 /// `PUT /account/username`: sets the username of the session's account, web or device, unless it
@@ -147,27 +105,23 @@ pub(crate) async fn set_username(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let set = async {
-        let session = signed_in(&state.db, &headers)
-            .await
-            .map_err(|err| Refusal::Database("read a session", err))?
-            .ok_or(Refusal::NotSignedIn)?;
+    answer(async {
+        let account = account(&state.db, &headers).await?;
         let username = requested(&body)?;
         // Of two accounts setting one username at once, the second waits for the first to commit
         // and breaks the uniqueness.
         sqlx::query("UPDATE accounts SET username = $1 WHERE id = $2::uuid")
             .bind(username.as_str())
-            .bind(&session.account)
+            .bind(&account)
             .execute(&state.db)
             .await
             .map_err(|err| match err.as_database_error().map(|db| db.kind()) {
-                Some(sqlx::error::ErrorKind::UniqueViolation) => Refusal::Taken,
+                Some(sqlx::error::ErrorKind::UniqueViolation) => Refusal::UsernameTaken,
                 // The username is a `name`, so the only check it breaks is the reserved one.
-                Some(sqlx::error::ErrorKind::CheckViolation) => Refusal::Reserved,
+                Some(sqlx::error::ErrorKind::CheckViolation) => Refusal::UsernameReserved,
                 _ => Refusal::Database("set a username", err),
             })?;
         Ok(StatusCode::NO_CONTENT.into_response())
-    };
-    set.await
-        .unwrap_or_else(|refusal: Refusal| refusal.into_response())
+    })
+    .await
 }

@@ -1,0 +1,94 @@
+//! Why the JSON API refuses a request, and the steps its handlers share: the session's account and
+//! the request's body.
+
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde::de::DeserializeOwned;
+use serde_json::{Map, Value};
+use sqlx::PgPool;
+
+use crate::sign_in::{not_signed_in, signed_in};
+use crate::{database_failed, problem};
+
+/// Why the server refuses a request.
+pub(crate) enum Refusal {
+    NotSignedIn,
+    /// A malformed or invalid body, for the reason it holds.
+    Invalid(String),
+    /// A certificate the server does not take, for the reason it holds.
+    Cert(String),
+    /// A username that is no `name`, for the reason it holds.
+    Username(String),
+    DeviceTaken,
+    MasterKeyTaken,
+    UsernameReserved,
+    UsernameTaken,
+    /// The database failed at what it holds, such as `read a session`.
+    Database(&'static str, sqlx::Error),
+}
+
+impl IntoResponse for Refusal {
+    fn into_response(self) -> Response {
+        let bad = StatusCode::BAD_REQUEST;
+        let conflict = StatusCode::CONFLICT;
+        match self {
+            Refusal::NotSignedIn => not_signed_in(),
+            Refusal::Invalid(detail) => problem(bad, "invalid-request", "Invalid request", &detail),
+            Refusal::Cert(detail) => {
+                problem(bad, "invalid-certificate", "Invalid certificate", &detail)
+            }
+            Refusal::Username(detail) => {
+                problem(bad, "invalid-username", "Invalid username", &detail)
+            }
+            Refusal::DeviceTaken => problem(
+                conflict,
+                "device-taken",
+                "Device ID taken",
+                "The server has this device ID with other keys or name, or on another account.",
+            ),
+            Refusal::MasterKeyTaken => problem(
+                conflict,
+                "master-key-taken",
+                "The account has a master key",
+                "The account has another master key, or took another certificate with it.",
+            ),
+            Refusal::UsernameReserved => problem(
+                conflict,
+                "username-reserved",
+                "Username reserved",
+                "No account takes this username.",
+            ),
+            Refusal::UsernameTaken => problem(
+                conflict,
+                "username-taken",
+                "Username taken",
+                "Another account has this username.",
+            ),
+            Refusal::Database(doing, err) => database_failed(doing, err),
+        }
+    }
+}
+
+/// What a handler answers: a response, or why it refuses.
+pub(crate) type Answer = Result<Response, Refusal>;
+
+/// Runs a handler's `answer`, which gives a response or why it refuses.
+pub(crate) async fn answer(answer: impl Future<Output = Answer>) -> Response {
+    answer.await.unwrap_or_else(IntoResponse::into_response)
+}
+
+/// The ID of the account of the request's session.
+pub(crate) async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, Refusal> {
+    let session = signed_in(db, headers)
+        .await
+        .map_err(|err| Refusal::Database("read a session", err))?;
+    Ok(session.ok_or(Refusal::NotSignedIn)?.account)
+}
+
+/// The JSON object `body` as a `T`.
+pub(crate) fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
+    let invalid = |err: serde_json::Error| Refusal::Invalid(format!("not a valid body: {err}"));
+    // An object only: serde would also take a struct from an array of its fields.
+    let object: Map<String, Value> = serde_json::from_slice(body).map_err(invalid)?;
+    serde_json::from_value(Value::Object(object)).map_err(invalid)
+}

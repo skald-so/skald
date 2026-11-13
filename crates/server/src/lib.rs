@@ -20,6 +20,7 @@ mod device_flow;
 mod devices;
 mod github;
 mod protocol;
+mod refusal;
 mod sign_in;
 
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
