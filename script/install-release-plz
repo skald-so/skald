@@ -4,7 +4,8 @@
 # release-plz with the dependencies of its Cargo.lock. Does nothing when that release-plz is there
 # already. In a GitHub Actions job, adds its directory to the PATH of the later steps.
 # --cache-key prints, as `key=` and `path=` lines for $GITHUB_OUTPUT, the key of that build, its
-# version, its crates' versions and the patch's SHA-256, and its directory; it installs nothing.
+# version, its crates' versions and the SHA-256 of the patch and of this script, and its directory;
+# it installs nothing.
 # Usage: script/install-release-plz [--cache-key]
 set -euo pipefail
 
@@ -30,7 +31,7 @@ if [[ ${1:-} == --cache-key ]]; then
     read -r name version _ <<<"$crate"
     key+=-$name-$version
   done
-  echo "key=$key-$(sha256 "$patch_file")"
+  echo "key=$key-$(sha256 "$patch_file")-$(sha256 "$root/script/install-release-plz")"
   echo "path=$release_plz_root"
   exit 0
 fi
