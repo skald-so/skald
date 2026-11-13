@@ -3,11 +3,11 @@
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     copied code in crates/ and prototypes/ (script/duplicates); build, fmt, clippy, tests
 #            with PostgreSQL, those of script/check-github-sign-in among them, and, for the server's
-#            GitHub sign-in and the client's sign-in, headless Chrome; the tests of skald-crypto and
-#            skald-proto's of ID generation in WASM (script/wasm-test); cargo-deny; the MLS
-#            prototypes in prototypes/mls and their benchmarks' smoke run, natively and in WASM; the
-#            delivery prototypes in prototypes/agents; the edit comparison prototype in
-#            prototypes/edits;
+#            GitHub sign-in and the client's sign-in, headless Chrome; clippy of skald-proto and
+#            skald-crypto in WASM, the tests of skald-crypto and skald-proto's of ID generation there
+#            (script/wasm-test); cargo-deny; the MLS prototypes in prototypes/mls and their
+#            benchmarks' smoke run, natively and in WASM; the delivery prototypes in prototypes/agents;
+#            the edit comparison prototype in prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  copied code in script/; tests of the scripts in script/, the staging deploy's against a
 #            local sshd and the staging status check's on recorded GitHub API responses, of the edge
@@ -52,7 +52,8 @@ if checks rust && ! command -v cargo-deny >/dev/null; then
   exit 1
 fi
 if checks rust; then
-  # The MLS prototypes' WASM tests run in Node.js with the wasm-bindgen of their Cargo.lock.
+  # The WASM tests of the workspace and of the MLS prototypes run in Node.js with one wasm-bindgen,
+  # that of the prototypes' Cargo.lock (script/wasm-test checks the workspace's).
   wasm_bindgen=$(awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/"/, "", $3); print $3 }' \
     prototypes/mls/Cargo.lock)
   if [[ ! -d $(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown ]]; then
@@ -65,7 +66,7 @@ if checks rust; then
     exit 1
   fi
   if ! command -v node >/dev/null; then
-    echo "script/test: node is missing; the MLS prototypes' WASM tests run in Node.js: https://nodejs.org" >&2
+    echo "script/test: node is missing; the WASM tests run in Node.js: https://nodejs.org" >&2
     exit 1
   fi
   if ! python3 -c 'import ensurepip, venv' 2>/dev/null; then
@@ -144,6 +145,9 @@ if checks rust; then
   web_packages
   postgres_wait
   cargo test --workspace --locked
+  # The code only WASM builds: skald-proto's clock, for one.
+  cargo clippy --target wasm32-unknown-unknown -p skald-proto -p skald-crypto --all-targets --locked \
+    -- -D warnings
   script/wasm-test
 
   script/deny check advisories licenses
