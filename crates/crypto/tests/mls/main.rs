@@ -8,6 +8,9 @@ mod channels;
 mod fixtures;
 mod foreign;
 mod framing;
+// Built only with the `acceptance` feature until the code it tests lands.
+#[cfg(feature = "acceptance")]
+mod key_packages;
 mod messages;
 mod profile;
 mod sealed;
