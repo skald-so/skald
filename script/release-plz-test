@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # Tests the Release PR release-plz keeps open, on fixture repositories: copies of this working tree,
-# released as 0.40.5 and tagged v0.40.5, with PRs squash-merged after the tag, their titles their
-# commits. release-plz runs with the repository's own config and without GitHub: the Release PR goes
-# to a stand-in for the GitHub API, script/lib/github-api-stub.mjs.
+# released as 0.40.5 and tagged v0.40.5 or not released yet, with PRs squash-merged since, their
+# titles their commits. release-plz runs with the repository's own config and without GitHub: the
+# Release PR goes to a stand-in for the GitHub API, script/lib/github-api-stub.mjs.
 #   - The Release PR sets one version for every crate of the workspace, in Cargo.toml and
 #     Cargo.lock, and adds the titles of the PRs merged since the last release tag, whatever they
 #     change, to one CHANGELOG.md in the root, once each.
 #   - A 0.x version: a breaking change (`!`) bumps the minor version, any other PR the patch version.
 #   - A beta, vX.Y.Z-beta.N: a PR sets its version in [workspace.package] of Cargo.toml, and the
 #     Release PR keeps it.
+#   - Before the first release tag, with no tag or a beta's alone: the Release PR keeps the version
+#     in Cargo.toml and lists the PRs merged so far, those that change only a crate too, and not
+#     those that change only prototypes/. Beta tags do not count: a release lists its betas' PRs too.
 #   - The Release PR targets dev and its title passes script/check-pr-title; a later push updates the
 #     open Release PR and opens no other.
 set -euo pipefail
@@ -24,11 +27,14 @@ fail() {
 
 if [[ $(release-plz --version 2>/dev/null) != "release-plz $release_plz_version" ]]; then
   echo "release-plz-test: release-plz $release_plz_version is missing; install it:" \
-    "cargo install release-plz --version $release_plz_version --locked" >&2
+    "script/install-release-plz" >&2
   exit 1
 fi
 
-tmp=$(mktemp -d)
+# release-plz copies a fixture into TMPDIR. A TMPDIR through a symlink, as /var on macOS, makes it
+# count every commit for the root package: the real path, as on Linux.
+tmp=$(cd "$(mktemp -d)" && pwd -P)
+export TMPDIR=$tmp
 stub=
 trap '[[ -z $stub ]] || { kill "$stub" && wait "$stub"; } 2>/dev/null || true; rm -rf "$tmp"' EXIT
 
@@ -84,15 +90,20 @@ release() {
   git -C "$1" tag "v$2"
 }
 
-# fixture <name>: sets $dir to a new fixture repository on dev: the tree with a PR merged before
-# the release v0.40.5.
+# unreleased <name>: sets $dir to a new fixture repository on dev: the tree, never released.
 pr=100
-fixture() {
+unreleased() {
   dir=$tmp/$1
   cp -R "$tmp/tree" "$dir"
   git -C "$dir" init --quiet --initial-branch dev
   git -C "$dir" add --all
   git -C "$dir" commit --quiet --message "chore: import the repository (#$((++pr)))"
+}
+
+# fixture <name>: sets $dir to a new fixture repository on dev: the tree with a PR merged before
+# the release v0.40.5.
+fixture() {
+  unreleased "$1"
   merge "$dir" "feat(client): add the change before the release (#$((++pr)))" crates/client/src/main.rs
   release "$dir" 0.40.5
 }
@@ -134,21 +145,42 @@ heading() {
   echo "^## (.*[^0-9.])?${1//./\\.}([^0-9A-Za-z.+-].*)?\$"
 }
 
-# expect_section <case> <version> <summary>...: CHANGELOG.md in $dir has one section for <version>
-# and it lists each PR of <summary>; the file lists each of them once.
-expect_section() {
-  local summary count
+# section <case> <version>: writes the section of <version> in CHANGELOG.md of $dir to $tmp/section.
+# Fails the case, and is false, when the file has no section for <version>, or more than one.
+section() {
+  local count
   count=$(grep -cE "$(heading "$2")" "$dir/CHANGELOG.md" 2>/dev/null || true)
   if [[ $count != 1 ]]; then
     fail "$1: CHANGELOG.md has ${count:-no} sections for $2"
-    return
+    return 1
   fi
   awk -v heading="$(heading "$2")" '/^## / { inside = $0 ~ heading } inside' "$dir/CHANGELOG.md" \
     >"$tmp/section"
+}
+
+# expect_listed <case> <version> <summary>...: CHANGELOG.md in $dir has one section for <version>
+# and it lists each PR of <summary> once.
+expect_listed() {
+  local summary count
+  section "$1" "$2" || return 0
   for summary in "${@:3}"; do
-    grep -qiF -- "$summary" "$tmp/section" || fail "$1: the section of $2 does not list '$summary'"
-    count=$(grep -ciF -- "$summary" "$dir/CHANGELOG.md" || true)
-    [[ $count -le 1 ]] || fail "$1: CHANGELOG.md lists '$summary' $count times"
+    count=$(grep -ciF -- "$summary" "$tmp/section" || true)
+    if [[ $count == 0 ]]; then
+      fail "$1: the section of $2 does not list '$summary'"
+    elif [[ $count != 1 ]]; then
+      fail "$1: the section of $2 lists '$summary' $count times"
+    fi
+  done
+}
+
+# expect_section <case> <version> <summary>...: as expect_listed, and the file lists each of them
+# once.
+expect_section() {
+  local summary count
+  expect_listed "$@"
+  for summary in "${@:3}"; do
+    count=$(grep -ciF -- "$summary" "$dir/CHANGELOG.md" 2>/dev/null || true)
+    [[ ${count:-0} -le 1 ]] || fail "$1: CHANGELOG.md lists '$summary' $count times"
   done
 }
 
@@ -159,7 +191,7 @@ expect_not_in_section() {
     >"$tmp/section" 2>/dev/null || true
   for summary in "${@:3}"; do
     if grep -qiF -- "$summary" "$tmp/section"; then
-      fail "$1: the section of $2 lists '$summary', merged before the last release"
+      fail "$1: the section of $2 lists '$summary'"
     fi
   done
 }
@@ -239,6 +271,45 @@ if update "$case"; then
     expect_version "$case" 0.41.0-beta.2
     expect_files "$case"
     expect_section "$case" 0.41.0-beta.2 "fix the change romeo"
+  fi
+fi
+
+# The first Release PR, with no release tag: the version in Cargo.toml, and the PRs so far, those
+# that change only a crate too, but not one that changes only prototypes/.
+unreleased first-release
+merge "$dir" "feat(client): add the change uniform (#$((++pr)))" crates/client/src/main.rs
+merge "$dir" "fix(server): fix the change victor (#$((++pr)))" crates/server/src/main.rs
+merge "$dir" "docs(protocol): describe the change whiskey (#$((++pr)))" docs/protocol/README.md
+merge "$dir" "feat(prototypes): try the change x-ray (#$((++pr)))" prototypes/edits/Cargo.toml
+case="the first Release PR, with no release tag"
+if update "$case"; then
+  expect_version "$case" 0.40.5
+  expect_files "$case"
+  expect_section "$case" 0.40.5 "add the change uniform" "fix the change victor" \
+    "describe the change whiskey"
+  expect_not_in_section "$case" 0.40.5 "try the change x-ray"
+fi
+
+# A beta, then the release, with no release tag before them: the beta's section lists the PRs so
+# far, one that changes only a crate too; its tag does not count, so the release's lists them again.
+unreleased first-beta
+merge "$dir" "feat(client): add the change yankee (#$((++pr)))" crates/client/src/main.rs
+set_version "$dir" 0.41.0-beta.1
+git -C "$dir" commit --quiet --all --message "chore: set the version of the first beta (#$((++pr)))"
+case="a beta's version set, with no release tag"
+if update "$case"; then
+  expect_version "$case" 0.41.0-beta.1
+  expect_files "$case"
+  expect_section "$case" 0.41.0-beta.1 "add the change yankee"
+  release "$dir" 0.41.0-beta.1
+  merge "$dir" "fix(crypto): fix the change zulu (#$((++pr)))" crates/crypto/src/lib.rs
+  set_version "$dir" 0.41.0
+  git -C "$dir" commit --quiet --all --message "chore: set the version of the release (#$((++pr)))"
+  case="the release's version set, with the tag of its beta alone"
+  if update "$case"; then
+    expect_version "$case" 0.41.0
+    expect_files "$case"
+    expect_listed "$case" 0.41.0 "add the change yankee" "fix the change zulu"
   fi
 fi
 

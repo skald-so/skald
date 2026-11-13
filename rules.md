@@ -1,10 +1,11 @@
 # Rules
 
-1. **Documentation is as concise and clean as possible.**
+1. **Documentation, commit messages, PR descriptions and PR comments are as concise and clean as possible.**
    - Facts and decisions only: no intros, filler, repetition or reasoning.
    - Short sentences and lists, one idea per item.
    - Each fact lives in one place; everywhere else links to it.
    - Outdated content is deleted, not marked.
+   - A PR description or comment says what changed, what was decided and what is open, in a few bullets: no restated task, plan or diff, no check logs beyond a red check's failures.
 2. **Work is done only when `script/test` passes in full.**
    - Tests cover required behavior in the same iteration and catch every breakage of it.
    - Required behavior is what the Definition of done or a spec asks for.

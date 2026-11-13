@@ -43,6 +43,8 @@
 
 ## Network
 - Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
+- The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
+- `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`.
 - Agent address: [protocol spec](../protocol/README.md#agent-address).
@@ -91,8 +93,8 @@
 - `skald send` sends a message and `skald enqueue` a task; the MCP server has both as tools, with `claim` and `complete` for tasks.
 - `skald connect` asks only whether the machine takes its own account's tasks. What it takes from others, [per queue](../protocol/queues.md#running-a-task), the user turns on and changes at any time with `skald serve`, only in the CLI on the machine:
   - `skald serve`: each queue's settings;
-  - `skald serve <queue> --dir <folder> --member read-only`, and `--service` for service agents;
-  - `skald serve <queue> --member approve --in session`;
+  - `skald serve <queue> --dir <folder> --peer read-only`, and `--service` for service agents;
+  - `skald serve <queue> --peer approve --in session`;
   - `skald serve <queue> --off`.
 - `skald approve` lists the tasks waiting for the user's yes and answers them.
 - The web UI shows each device's queues and tiers from its presence.
