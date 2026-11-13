@@ -39,7 +39,7 @@ $$;
 ALTER TABLE accounts ADD COLUMN username text UNIQUE
     CHECK (username COLLATE "C" ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$' AND NOT username_reserved(username));
 
--- Each existing account gets the username its GitHub login makes, the earliest account first.
+-- Each existing account gets the username its GitHub login makes.
 DO $$
 DECLARE
     account record;
