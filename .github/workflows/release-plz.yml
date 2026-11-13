@@ -31,9 +31,10 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      # Built before the App token exists: the build scripts of its dependencies never see it.
+      # Before the App token exists: the build scripts of its dependencies never see it, and the
+      # cache gets nothing it could have touched.
       - name: Install release-plz
-        run: script/install-release-plz
+        uses: ./.github/actions/install-release-plz
       # A token of the GitHub App skald-release: the workflows that run on tags start on a tag it
       # creates, unlike on one created with the job's own token. It reads the PRs of the public
       # repository without a permission for them. Revoked when the job ends.
@@ -85,9 +86,10 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      # Built before the App token exists: the build scripts of its dependencies never see it.
+      # Before the App token exists: the build scripts of its dependencies never see it, and the
+      # cache gets nothing it could have touched.
       - name: Install release-plz
-        run: script/install-release-plz
+        uses: ./.github/actions/install-release-plz
       # A token of the GitHub App skald-release: PR checks run on a PR it opens, unlike on one opened
       # with the job's own token. Revoked when the job ends.
       - id: app-token

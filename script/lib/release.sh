@@ -5,6 +5,8 @@
 
 # The workflow that tags the merge of a Release PR and keeps the Release PR open.
 release_workflow=.github/workflows/release-plz.yml
+# The action its jobs and CI's install release-plz with.
+release_install_action=.github/actions/install-release-plz
 # The GitHub environment with the App's secrets; only dev deploys from it, only the release-plz
 # jobs use it.
 release_environment=release-plz
@@ -14,7 +16,8 @@ release_app_key_secret=RELEASE_APP_PRIVATE_KEY
 # The release-plz the workflows run and the fixture tests run: release-plz built by
 # script/install-release-plz from these crates on crates.io, each checked against the SHA-256 of
 # its .crate file, with script/lib/release-plz.patch. It goes into a directory of its own, first on
-# PATH here.
+# PATH here. A change to the patch or to the build bumps the +skald.N: an installed release-plz of
+# this version is kept.
 release_plz_version=0.4.3+skald.1
 release_plz_crates=(
   "release-plz 0.4.3 69bbc232e23322cfaf77a60540e69e2dbd83879e843c4fc9d6ad1ead97d257f6"

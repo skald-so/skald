@@ -1,0 +1,25 @@
+name: Install release-plz
+description: >-
+  The release-plz of script/install-release-plz, restored from the Actions cache, or on a miss built,
+  each crate checked against its SHA-256, and saved to the cache right after the build.
+# A job runs this before it creates any token, so the cache holds only what the build made. The key
+# names the runner's OS and architecture, the build's version, its crates' versions and the patch's
+# SHA-256. script/release-plz-workflow-test tests this file.
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: script/install-release-plz --cache-key >>"$GITHUB_OUTPUT"
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.path }}
+        key: release-plz-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.key }}
+    - shell: bash
+      run: script/install-release-plz
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.key.outputs.path }}
+        key: ${{ steps.restore.outputs.cache-primary-key }}

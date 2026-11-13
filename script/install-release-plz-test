@@ -2,7 +2,9 @@
 # Tests script/install-release-plz with stand-ins for curl and cargo:
 #   - a crate that does not match its SHA-256 fails the run, and nothing is built or installed;
 #   - with the release-plz of script/lib/release.sh installed, it downloads and builds nothing, and in
-#     a GitHub Actions job it puts that release-plz's directory on the PATH of the later steps.
+#     a GitHub Actions job it puts that release-plz's directory on the PATH of the later steps;
+#   - --cache-key prints the key of the build, with its version, its crates' versions and the
+#     patch's SHA-256, and its directory, and installs nothing.
 # The download of the real crates, the patch and the build run in CI, before the release-plz tests.
 set -euo pipefail
 
@@ -35,12 +37,29 @@ echo "cargo \$*" >>"$tmp/calls.log"
 EOF
 chmod +x "$tmp/bin/curl" "$tmp/bin/cargo"
 
-# run_install: runs script/install-release-plz; sets $status and $output.
+# run_install [<option>]: runs script/install-release-plz; sets $status and $output.
 run_install() {
   rm -f "$tmp/calls.log"
   status=0
-  output=$(PATH="$tmp/bin:$PATH" "$root/script/install-release-plz" 2>&1) || status=$?
+  output=$(PATH="$tmp/bin:$PATH" "$root/script/install-release-plz" "$@" 2>&1) || status=$?
 }
+
+case="the cache key"
+run_install --cache-key
+[[ $status == 0 ]] || fail "$case: the run fails: $output"
+key=$(sed -n 's/^key=//p' <<<"$output")
+patch_sum=$(openssl dgst -sha256 -r "$root/script/lib/release-plz.patch")
+parts=("$release_plz_version" "${patch_sum%% *}")
+for crate in "${release_plz_crates[@]}"; do
+  read -r name version _ <<<"$crate"
+  parts+=("$name-$version")
+done
+for part in "${parts[@]}"; do
+  [[ $key == *"$part"* ]] || fail "$case: the key does not name $part: $output"
+done
+[[ $(grep -c . <<<"$output") == 2 && $(sed -n 's/^path=//p' <<<"$output") == "$release_plz_root" ]] ||
+  fail "$case: it does not print the key and the path $release_plz_root alone: $output"
+[[ ! -e $tmp/calls.log && ! -e $release_plz_root ]] || fail "$case: it downloads, builds or installs"
 
 case="a crate that does not match its SHA-256"
 run_install
