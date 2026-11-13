@@ -88,13 +88,14 @@ impl Cloud {
             let github_url = stand_in.url().parse().expect("the stand-in's address");
             let sign_in = SignInSettings {
                 public_url: public.parse().expect("a public address"),
-                github: GitHubApp {
+                github: Some(GitHubApp {
                     client_id: CLIENT_ID.to_owned(),
                     client_secret: ClientSecret::new(CLIENT_SECRET.to_owned())
                         .expect("a client secret"),
                     api_url: github_url,
                     url: stand_in.url().parse().expect("the stand-in's address"),
-                },
+                }),
+                google: None,
                 state_lifetime: Duration::from_secs(600),
                 device_code_lifetime: Duration::from_secs(lifetime),
                 device_poll_interval: Duration::from_secs(interval),
