@@ -24,7 +24,7 @@ A human takes one action per release: merging the Release PR.
 - `dev` — the main and default branch; PRs from people and agents go here.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
-  - `Windows`, the edit comparison prototype's job, and the jobs of the release dry run are not required.
+  - Not required: `Client on Windows`, `Windows` (the edit comparison prototype's job) and the jobs of the release dry run.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest stable release; only CI moves it ("Release", "Main").
   - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.
@@ -35,14 +35,14 @@ A human takes one action per release: merging the Release PR.
 - Branch rules are GitHub rulesets; no person bypasses them, admins included.
 
 ## PR checks
-All checks except e2e, the PR title, the CLA, the edit comparison prototype's Windows job and the release dry run run via `script/test`, the same script agents and people use.
+All checks except e2e, the PR title, the CLA, the Windows jobs and the release dry run run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md); it exempts bots, `*[bot]`.
 - **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of `script/check-github-sign-in` among them, some also in headless Chrome ([CONTRIBUTING.md](../../CONTRIBUTING.md#requirements)); the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the edge image and staging deploy workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow's job `Client on Windows` (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test` and `script/release-tag-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
@@ -51,6 +51,8 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
   - The release workflow's job `move-main` takes the deploy key that moves `main` from `MAIN_DEPLOY_KEY`, the only secret of the environment `move-main`. Only `v*` tags deploy from it; only that job uses it, and only its step that runs `script/move-main` reads the key. The key has write access and is the repository's only deploy key.
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
 - **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald` and installs it on every runner, and builds the `skald-server` image, as for a release, and publishes nothing. It also runs the tests of `skald update` on macOS and Windows; `script/test` runs them on Linux. A PR that changes the workflow, dist's settings (`dist-workspace.toml`, `Cargo.toml`, `crates/client/Cargo.toml`), `installers/`, the scripts the workflow runs or `skald update` and its tests starts it, and so does a manual run (`workflow_dispatch`).
+- **Client on Windows:** the client's tests, `cargo test -p skald-client --locked`, on `windows-2025` with the runner image's PostgreSQL and Google Chrome, in the Rust part, outside `script/test`: `.github/workflows/ci.yml`.
+  - Windows runs only the tests of code whose behavior depends on the OS: today the client's. The other crates' logic does not depend on it, and the server runs only on Linux.
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.

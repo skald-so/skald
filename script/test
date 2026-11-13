@@ -9,11 +9,12 @@
 #            prototypes/edits;
 #            the skald-server image, built and tested with PostgreSQL in containers (script/image-test)
 #   tooling  copied code in script/; tests of the scripts in script/, the staging deploy's against a
-#            local sshd and the staging status check's on recorded GitHub API responses, of the edge
-#            image and staging deploy workflow, of the Release PR workflow and its release tags, of
-#            the release workflow, its release notes, the attestations of its files and its image, the
-#            move of main to a stable release, on fixture repositories too, and of the installers in
-#            installers/ on this machine; Renovate config validation
+#            local sshd and the staging status check's on recorded GitHub API responses, of the CI
+#            workflow's job of the client on Windows, of the edge image and staging deploy workflow,
+#            of the Release PR workflow and its release tags, of the release workflow, its release
+#            notes, the attestations of its files and its image, the move of main to a stable
+#            release, on fixture repositories too, and of the installers in installers/ on this
+#            machine; Renovate config validation
 #   rust and tooling both: the Release PR and the release tags on fixture repositories, with
 #            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
@@ -191,6 +192,7 @@ if checks tooling; then
   script/tag-edge-test
   script/deploy-staging-test
   script/staging-status-test
+  script/ci-workflow-test
   script/edge-workflow-test
   script/release-plz-workflow-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.

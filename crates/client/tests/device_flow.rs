@@ -229,11 +229,14 @@ fn state_directory_defaults_to_the_platforms() {
     let stub = Stub::start(approving);
     let machine = Machine::new();
     let home = machine.root().join("home");
+    let local = home.join("AppData").join("Local");
 
-    let (success, stderr) = sign_in_with(&stub.url, &[("HOME", &home)]);
+    let (success, stderr) = sign_in_with(&stub.url, &[("HOME", &home), ("LOCALAPPDATA", &local)]);
 
     assert!(success, "{stderr}");
-    let dir = if cfg!(target_os = "macos") {
+    let dir = if cfg!(windows) {
+        local.join("skald")
+    } else if cfg!(target_os = "macos") {
         home.join("Library/Application Support/skald")
     } else {
         home.join(".local/state/skald")
