@@ -10,10 +10,17 @@ import type {
   HealthUnavailable,
   MasterKey,
   MasterKeyRequest,
+  NewChannel,
   Problem,
   Protocol,
   ProtocolProblem,
+  RosterRevisionRequest,
+  RosterRevisions,
   Session,
+  Space,
+  SpaceRequest,
+  Spaces,
+  StoredRosterRevision,
 } from "./skald.schemas";
 
 export type getMasterKeyResponse200 = {
@@ -511,4 +518,482 @@ export const getSession = async (
     status: res.status,
     headers: res.headers,
   } as getSessionResponse;
+};
+
+export type getSpacesResponse200 = {
+  data: Spaces;
+  status: 200;
+};
+
+export type getSpacesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getSpacesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getSpacesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getSpacesResponseSuccess = getSpacesResponse200 & {
+  headers: Headers;
+};
+export type getSpacesResponseError = (
+  getSpacesResponse400 | getSpacesResponse401 | getSpacesResponse500
+) & {
+  headers: Headers;
+};
+
+export type getSpacesResponse =
+  getSpacesResponseSuccess | getSpacesResponseError;
+
+export const getGetSpacesUrl = () => {
+  return `/spaces`;
+};
+
+/**
+ * @summary The account's spaces
+ */
+export const getSpaces = async (
+  options?: RequestInit,
+): Promise<getSpacesResponse> => {
+  const res = await fetch(getGetSpacesUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getSpacesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getSpacesResponse;
+};
+
+export type createSpaceResponse200 = {
+  data: Space;
+  status: 200;
+};
+
+export type createSpaceResponse201 = {
+  data: Space;
+  status: 201;
+};
+
+export type createSpaceResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type createSpaceResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type createSpaceResponse409 = {
+  data: Problem;
+  status: 409;
+};
+
+export type createSpaceResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type createSpaceResponseSuccess = (
+  createSpaceResponse200 | createSpaceResponse201
+) & {
+  headers: Headers;
+};
+export type createSpaceResponseError = (
+  | createSpaceResponse400
+  | createSpaceResponse401
+  | createSpaceResponse409
+  | createSpaceResponse500
+) & {
+  headers: Headers;
+};
+
+export type createSpaceResponse =
+  createSpaceResponseSuccess | createSpaceResponseError;
+
+export const getCreateSpaceUrl = () => {
+  return `/spaces`;
+};
+
+/**
+ * The server issues the space's ID; the session's account creates and owns it, and stores its revision 1 (docs/protocol/membership.md, "Roster").
+ * @summary Create a space
+ */
+export const createSpace = async (
+  spaceRequest: SpaceRequest,
+  options?: RequestInit,
+): Promise<createSpaceResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getCreateSpaceUrl(), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(spaceRequest),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createSpaceResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as createSpaceResponse;
+};
+
+export type createChannelResponse201 = {
+  data: NewChannel;
+  status: 201;
+};
+
+export type createChannelResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type createChannelResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type createChannelResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type createChannelResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type createChannelResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type createChannelResponseSuccess = createChannelResponse201 & {
+  headers: Headers;
+};
+export type createChannelResponseError = (
+  | createChannelResponse400
+  | createChannelResponse401
+  | createChannelResponse403
+  | createChannelResponse404
+  | createChannelResponse500
+) & {
+  headers: Headers;
+};
+
+export type createChannelResponse =
+  createChannelResponseSuccess | createChannelResponseError;
+
+export const getCreateChannelUrl = (space: string) => {
+  return `/spaces/${space}/channels`;
+};
+
+/**
+ * The server issues a channel ID for the space; a roster revision adds only channels whose IDs the server issued for its space.
+ * @summary A new channel ID
+ */
+export const createChannel = async (
+  space: string,
+  options?: RequestInit,
+): Promise<createChannelResponse> => {
+  const res = await fetch(getCreateChannelUrl(space), {
+    ...options,
+    method: "POST",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: createChannelResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as createChannelResponse;
+};
+
+export type getSpaceDevicesResponse200 = {
+  data: Devices;
+  status: 200;
+};
+
+export type getSpaceDevicesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getSpaceDevicesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getSpaceDevicesResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type getSpaceDevicesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getSpaceDevicesResponseSuccess = getSpaceDevicesResponse200 & {
+  headers: Headers;
+};
+export type getSpaceDevicesResponseError = (
+  | getSpaceDevicesResponse400
+  | getSpaceDevicesResponse401
+  | getSpaceDevicesResponse404
+  | getSpaceDevicesResponse500
+) & {
+  headers: Headers;
+};
+
+export type getSpaceDevicesResponse =
+  getSpaceDevicesResponseSuccess | getSpaceDevicesResponseError;
+
+export const getGetSpaceDevicesUrl = (space: string) => {
+  return `/spaces/${space}/devices`;
+};
+
+/**
+ * @summary The space's devices
+ */
+export const getSpaceDevices = async (
+  space: string,
+  options?: RequestInit,
+): Promise<getSpaceDevicesResponse> => {
+  const res = await fetch(getGetSpaceDevicesUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getSpaceDevicesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getSpaceDevicesResponse;
+};
+
+export type getRosterRevisionsResponse200 = {
+  data: RosterRevisions;
+  status: 200;
+};
+
+export type getRosterRevisionsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getRosterRevisionsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getRosterRevisionsResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type getRosterRevisionsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getRosterRevisionsResponseSuccess =
+  getRosterRevisionsResponse200 & {
+    headers: Headers;
+  };
+export type getRosterRevisionsResponseError = (
+  | getRosterRevisionsResponse400
+  | getRosterRevisionsResponse401
+  | getRosterRevisionsResponse404
+  | getRosterRevisionsResponse500
+) & {
+  headers: Headers;
+};
+
+export type getRosterRevisionsResponse =
+  getRosterRevisionsResponseSuccess | getRosterRevisionsResponseError;
+
+export const getGetRosterRevisionsUrl = (space: string) => {
+  return `/spaces/${space}/revisions`;
+};
+
+/**
+ * @summary The space's roster revisions
+ */
+export const getRosterRevisions = async (
+  space: string,
+  options?: RequestInit,
+): Promise<getRosterRevisionsResponse> => {
+  const res = await fetch(getGetRosterRevisionsUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getRosterRevisionsResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getRosterRevisionsResponse;
+};
+
+export type storeRosterRevisionResponse200 = {
+  data: StoredRosterRevision;
+  status: 200;
+};
+
+export type storeRosterRevisionResponse201 = {
+  data: StoredRosterRevision;
+  status: 201;
+};
+
+export type storeRosterRevisionResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type storeRosterRevisionResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type storeRosterRevisionResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type storeRosterRevisionResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type storeRosterRevisionResponse409 = {
+  data: Problem;
+  status: 409;
+};
+
+export type storeRosterRevisionResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type storeRosterRevisionResponseSuccess = (
+  storeRosterRevisionResponse200 | storeRosterRevisionResponse201
+) & {
+  headers: Headers;
+};
+export type storeRosterRevisionResponseError = (
+  | storeRosterRevisionResponse400
+  | storeRosterRevisionResponse401
+  | storeRosterRevisionResponse403
+  | storeRosterRevisionResponse404
+  | storeRosterRevisionResponse409
+  | storeRosterRevisionResponse500
+) & {
+  headers: Headers;
+};
+
+export type storeRosterRevisionResponse =
+  storeRosterRevisionResponseSuccess | storeRosterRevisionResponseError;
+
+export const getStoreRosterRevisionUrl = (space: string) => {
+  return `/spaces/${space}/revisions`;
+};
+
+/**
+ * The server stores revision 1, then revision n+1 only after revision n, as the bytes it got (docs/protocol/membership.md, "Roster"). Only a session of the space's creator stores revision 1, which lists that account as an admin; only a session of an admin in revision n stores revision n+1. Its `signer` is a device of the session's account with a certificate on the server.
+ * @summary Store a roster revision
+ */
+export const storeRosterRevision = async (
+  space: string,
+  rosterRevisionRequest: RosterRevisionRequest,
+  options?: RequestInit,
+): Promise<storeRosterRevisionResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getStoreRosterRevisionUrl(space), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(rosterRevisionRequest),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: storeRosterRevisionResponse["data"] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as storeRosterRevisionResponse;
 };
