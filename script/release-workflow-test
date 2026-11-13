@@ -16,9 +16,12 @@
 //     x86_64 and arm64, for PRs and manual runs;
 //   - the rules of the release pipeline: every job's permissions are set; only the job that creates
 //     the release writes: contents, and the attestations of its files, with an OIDC token
-//     (id-token); no job that does not attest requests an OIDC token; actions are pinned to
-//     commits and Docker images to digests; tools are installed by taiki-e/install-action at exact
-//     versions it checks against checksums, never downloaded by a step or run from an expression;
+//     (id-token); and one job that pushes the release image with docker/build-push-action:
+//     packages, and its attestations, with an OIDC token; script/release-image-test tests that job;
+//     no job that does not attest requests an OIDC token; actions are pinned to
+//     commits and Docker images to digests; tools, cosign included, are installed by
+//     taiki-e/install-action at exact versions it checks against checksums, never downloaded by a
+//     step, by an installer action such as sigstore/cosign-installer, or run from an expression;
 //     no job restores a cache.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -240,8 +243,14 @@ if (creator) {
 // Permissions.
 for (const file of files) {
   const w = writes(permissions(workflows[file], {}));
-  if (w.length > 0) fail(`${file}: the workflow's token writes ${w.join(', ')}; only the job that creates the release writes`);
+  if (w.length > 0) fail(`${file}: the workflow's token writes ${w.join(', ')}; only the job that creates the release and the image's write`);
 }
+// The job that publishes the release image: a step pushes it with docker/build-push-action.
+const off = (v) => v === undefined || v === null || v === false || v === '' || String(v).toLowerCase() === 'false';
+const pushesImage = (job) =>
+  (job.steps ?? []).some((step) => /^docker\/build-push-action@/i.test(String(step.uses ?? '')) && !off(step.with?.push));
+const imageJobs = jobs.filter((entry) => pushesImage(entry.job));
+if (imageJobs.length > 1) fail(`one job pushes the release image, not: ${imageJobs.map(where).join(', ')}`);
 for (const entry of jobs) {
   const p = permissions(entry.workflow, entry.job);
   if (p === null) {
@@ -250,6 +259,7 @@ for (const entry of jobs) {
   }
   const w = writes(p);
   const isCreator = creator && entry.file === creator.file && entry.key === creator.key;
+  const isImage = imageJobs.length === 1 && imageJobs[0] === entry && !isCreator;
   if (isCreator && JSON.stringify([...w].sort()) !== '["attestations","contents","id-token"]') {
     fail(
       `${where(entry)}: the job that creates the release writes contents, and attestations with an OIDC token (id-token), and nothing else, not: ${
@@ -257,7 +267,16 @@ for (const entry of jobs) {
       }`,
     );
   }
-  if (!isCreator && w.length > 0) fail(`${where(entry)}: only the job that creates the release writes; this one writes ${w.join(', ')}`);
+  if (isImage && JSON.stringify([...w].sort()) !== '["attestations","id-token","packages"]') {
+    fail(
+      `${where(entry)}: the job that pushes the release image writes packages, and attestations with an OIDC token (id-token), and nothing else, not: ${
+        w.join(', ') || 'nothing'
+      }`,
+    );
+  }
+  if (!isCreator && !isImage && w.length > 0) {
+    fail(`${where(entry)}: only the job that creates the release and the one that pushes the image write; this one writes ${w.join(', ')}`);
+  }
   const attestsHere = (entry.job.steps ?? []).some((step) => /^actions\/(attest-build-provenance|attest)@/i.test(String(step.uses ?? '')));
   if ('id-token' in p && !attestsHere) fail(`${where(entry)}: it requests an OIDC token, but attests nothing`);
 }
@@ -285,7 +304,7 @@ for (const entry of jobs) {
     if (uses && !(uses.startsWith('./') || /@[0-9a-f]{40}$/.test(uses) || /^docker:\/\/.+@sha256:[0-9a-f]{64}$/.test(uses))) {
       fail(`${where(s)}: ${uses} is not pinned to a commit or a digest`);
     }
-    if (/^(cargo-bins\/cargo-binstall|release-plz\/action)@/i.test(uses)) fail(`${where(s)}: ${uses} downloads tools without checksums`);
+    if (/^(cargo-bins\/cargo-binstall|release-plz\/action|sigstore\/cosign-installer)@/i.test(uses)) fail(`${where(s)}: ${uses} downloads tools without checksums`);
     if (/^taiki-e\/install-action@/i.test(uses)) {
       const tools = String(w.tool ?? '').split(/[,\s]+/).filter(Boolean);
       if (tools.length === 0 || !tools.every((t) => /^[a-z0-9_-]+@[0-9]+\.[0-9]+\.[0-9]+$/.test(t))) {

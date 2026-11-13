@@ -6,7 +6,9 @@
 //     push of vX.Y.Z or vX.Y.Z-beta.N runs one;
 //   - the attesting steps are actions/attest-build-provenance or actions/attest, in the job that
 //     creates the release and before the step that creates it, so no release is published before its
-//     files are attested; a failed attestation fails the job: no continue-on-error;
+//     files are attested; a failed attestation fails the job: no continue-on-error; the one exception
+//     is a step that attests only an image by its digest, in a job that pushes it with
+//     docker/build-push-action: the release image's, which script/release-image-test tests;
 //   - the job that attests has the token permissions attestations: write and id-token: write;
 //   - every file of the release is attested: the job that creates the release, run as GitHub runs it
 //     on a push of a stable and of a beta tag, with a stand-in gh and the files the build jobs make,
@@ -60,21 +62,35 @@ for (const [eventName, ref] of quiet) {
     if (!stepSkipped(step, states[key])) fail(`a ${eventName} on ${ref} attests nothing, but ${name(key, step, index)} may run`);
   }
 }
-for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
-  const states = jobsFor(release, event('push', `refs/tags/${tag}`));
-  if (attesting.length > 0 && attesting.every(({ key, step }) => stepSkipped(step, states[key]))) {
-    fail(`a push of the tag ${tag} attests nothing: every step that attests is skipped`);
-  }
-}
 
 // Where the attesting steps are, and their job's token.
 const creators = Object.entries(jobs).filter(([, job]) => (job.steps ?? []).some(createsRelease));
 const [creatorKey, creator] = creators.length === 1 ? creators[0] : [null, null];
 if (!creator) fail(`not one job of ${releaseFile} runs gh release create`);
 const publishAt = creator ? creator.steps.findIndex(createsRelease) : -1;
+// attestsImageOnly <job> <step>: the step attests only an image, by its digest, and its job pushes
+// one with docker/build-push-action.
+const set = (v) => v !== undefined && v !== null && v !== '';
+const off = (v) => !set(v) || v === false || String(v).toLowerCase() === 'false';
+const attestsImageOnly = (job, step) =>
+  set(step.with?.['subject-name']) &&
+  set(step.with?.['subject-digest']) &&
+  !set(step.with?.['subject-path']) &&
+  !set(step.with?.['subject-checksums']) &&
+  (job.steps ?? []).some((s) => /^docker\/build-push-action@/i.test(String(s.uses ?? '')) && !off(s.with?.push));
+// The steps that attest the release's files: all but the image's.
+const imageStep = ({ key, step }) => key !== creatorKey && attestsImageOnly(jobs[key], step);
+const fileAttesting = attesting.filter((a) => !imageStep(a));
+for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
+  const states = jobsFor(release, event('push', `refs/tags/${tag}`));
+  if (attesting.length > 0 && fileAttesting.every(({ key, step }) => stepSkipped(step, states[key]))) {
+    fail(`a push of the tag ${tag} attests nothing: every step that attests the release's files is skipped`);
+  }
+}
 for (const { key, step, index } of attesting) {
-  if (creator && key !== creatorKey) fail(`${name(key, step, index)} attests outside job ${creatorKey}, which creates the release`);
-  else if (creator && index > publishAt) fail(`${name(key, step, index)} attests after the release is created`);
+  if (creator && key !== creatorKey && !imageStep({ key, step })) {
+    fail(`${name(key, step, index)} attests outside job ${creatorKey}, which creates the release`);
+  } else if (creator && key === creatorKey && index > publishAt) fail(`${name(key, step, index)} attests after the release is created`);
   const ignored = step['continue-on-error'];
   if (ignored !== undefined && ignored !== false && ignored !== 'false') {
     fail(`${name(key, step, index)}: a failed attestation fails the job, not continue-on-error: ${ignored}`);

@@ -42,14 +42,14 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the edge image and staging deploy workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the edge image and staging deploy workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`); the installers against a stand-in release on the machine that runs them (`script/installers-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test` and `script/release-tag-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
   - The release-plz workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
   - The App: installed only on `skald-so/skald`; contents and pull requests read-write, metadata read; webhook off; it bypasses no ruleset but the creation of `v*` tags ("Branches").
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
-- **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald` and installs it on every runner, as for a release, and publishes nothing. A PR that changes the workflow, dist's settings (`dist-workspace.toml`, `Cargo.toml`, `crates/client/Cargo.toml`), `installers/` or the scripts the workflow runs starts it, and so does a manual run (`workflow_dispatch`).
+- **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald` and installs it on every runner, and builds the `skald-server` image, as for a release, and publishes nothing. A PR that changes the workflow, dist's settings (`dist-workspace.toml`, `Cargo.toml`, `crates/client/Cargo.toml`), `installers/` or the scripts the workflow runs starts it, and so does a manual run (`workflow_dispatch`).
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
@@ -67,7 +67,11 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
   - GitHub Releases hold `skald` only; `skald-server` ships as the image.
   - Linux binaries are built on Ubuntu 22.04: they need glibc 2.35 or later.
   - Before it publishes, the job that creates the release attests every file of the release, the installers and checksums included, with `actions/attest`; a dry run attests nothing.
-  - Only that job writes: contents, and attestations with an OIDC token.
+  - That job writes contents, and attestations with an OIDC token.
+- **Image:** on a push of a `v*` tag, a job of the same workflow builds the `skald-server` image at the tag's commit from `crates/server/Dockerfile`, the definition `script/image-test` tests, with no cache, and pushes it to GHCR as `:X.Y.Z`, or `:X.Y.Z-beta.N` for a beta. It does not retag `:edge`.
+  - A version GHCR already has is not pushed again: the job fails before it builds. It moves no tag, and there is no `:latest`.
+  - It signs the pushed digest with cosign, keyless, and attests its build provenance with `actions/attest`; a dry run builds the image and pushes, signs and attests nothing.
+  - This job writes packages, and attestations with an OIDC token. No other job writes packages.
 - **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture, check it against its `.sha256` and install `skald` so a new shell runs it. On a mismatch or a missing or empty checksum they stop and install nothing. dist's own installers are not used.
   - `install.sh`: into `~/.local/bin`. Unless that directory is on the running shell's `PATH` already, it adds it to `PATH` in `~/.profile`, in `~/.bash_profile` if there is one, in `~/.bashrc` if bash is installed, and in `.zshenv` if zsh is installed.
   - `install.ps1`: into `%LOCALAPPDATA%\Programs\skald`, added to the user's `PATH`.
@@ -90,7 +94,7 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 | `skald` binary: macOS, Linux, Windows; x86_64 and arm64 | GitHub Releases + checksums. Linux artifacts carry libdbus's license, `vendor/dbus/COPYING` of libdbus-sys |
 | `install.sh`, `install.ps1` | GitHub Releases. The command with a code on the website downloads them and runs `skald connect` |
 | `npx skald-so` | npm |
-| `skald-server` image | GHCR. Every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |
+| `skald-server` image | GHCR. Each release publishes `:X.Y.Z`, a beta `:X.Y.Z-beta.N` ("Release", "Image"); every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |
 | Claude Code plugin | Monorepo: `/plugin marketplace add skald-so/skald` |
 | Website and docs | GitHub Pages, built from `docs/` |
 
@@ -99,7 +103,10 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 - Verify a release file, here of `vX.Y.Z`, in the directory with it and its `.sha256`:
   - checksum: `sha256sum -c skald-client-<target>.tar.gz.sha256` (macOS: `shasum -a 256 -c …`; Windows: compare `(Get-FileHash skald-client-<target>.zip).Hash` with the `.sha256`);
   - attestation, with gh 2.97.0 or later: `gh attestation verify <file> --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`. An attestation made on any other ref, or by another workflow or repository, fails it.
-- Images are signed with cosign, without stored keys.
+- Release images are signed with cosign, keyless, and get a build provenance attestation from the release workflow at the release tag ("Release", "Image"). `:edge` and the commit tags of `dev` are not signed or attested.
+- GHCR tags can be moved, so a self-hoster verifies an image by its digest and signature, and pulls it by that digest: `docker buildx imagetools inspect ghcr.io/skald-so/skald-server:X.Y.Z` prints the digest; then, here for `vX.Y.Z`:
+  - signature: `cosign verify ghcr.io/skald-so/skald-server@sha256:<digest> --certificate-identity https://github.com/skald-so/skald/.github/workflows/release.yml@refs/tags/vX.Y.Z --certificate-oidc-issuer https://token.actions.githubusercontent.com`;
+  - attestation, as a release file's: `gh attestation verify oci://ghcr.io/skald-so/skald-server@sha256:<digest> --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`.
 - Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums.
 - dist is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
 - Releases are immutable, a repository setting: a published release's files and checksums never change.
