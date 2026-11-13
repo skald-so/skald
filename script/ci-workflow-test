@@ -3,6 +3,8 @@
 //   - one job of a PR into dev runs `cargo test -p skald-client --locked --no-fail-fast` on a
 //     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
 //     client, none left out;
+//   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
+//     last command's, so a command after it would hide a failing test;
 //   - it is gated like the job that runs script/test's Rust part: it needs the job of
 //     script/changed-parts and runs exactly when that job's rust output is true, whatever the other
 //     outputs are;
@@ -73,6 +75,17 @@ if (tests.length !== 1) fail(`the test step of job ${key} runs cargo test ${test
 const args = cargoTest(tests[0] ?? '') ?? [];
 if (args.join(' ') !== '-p skald-client --locked --no-fail-fast') {
   fail(`job ${key} runs cargo test ${args.join(' ')}, not cargo test -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
+}
+const last = commands(testStep.run)
+  .map((line) => line.trim())
+  .filter((line) => line !== '' && !line.startsWith('#'))
+  .at(-1);
+if (last !== 'cargo test -p skald-client --locked --no-fail-fast') {
+  fail(`the test step of job ${key} ends with ${last ?? 'nothing'}, not with cargo test: its exit code is the step's last command's, so a failing test would not fail the step`);
+}
+// A custom shell, {0} for the script, decides the exit code itself.
+if (String(testStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell ?? '').includes('{0}')) {
+  fail(`the test step of job ${key} runs in a custom shell, which may hide a failing test`);
 }
 // The server's URL: in the step's or the job's env, or set in PowerShell before cargo test runs.
 const url = /^postgres(ql)?:\/\/[^@\s/]+@127\.0\.0\.1:5432$/;
