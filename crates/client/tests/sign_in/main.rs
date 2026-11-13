@@ -2,7 +2,7 @@
 //! `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, with a test
 //! playing the person on the verification page in headless Chrome. A recording relay before the
 //! server shows what the machine sent and got. Each machine keeps its state in a directory of its
-//! own and its secrets in the 0600 file there, never in the system's key storage.
+//! own and its secrets in a file there, never in the system's key storage.
 
 #[allow(dead_code)]
 #[path = "../../../server/tests/common/browser.rs"]

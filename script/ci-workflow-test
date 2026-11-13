@@ -13,6 +13,8 @@
 //     through SKALD_TEST_DATABASE_URL;
 //   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
 //     Manager; no other job of any workflow and no script sets it;
+//   - a step after the tests, also when they fail, fails the job when they left a skald-update-* or
+//     skald-client-* directory in the temporary directory;
 //   - every action is pinned to a commit, a checkout keeps no credentials, and the job's token reads
 //     contents at most.
 import fs from 'node:fs';
@@ -114,6 +116,26 @@ if (
   fail(`job ${key} does not install the packages of web/ with npm ci before its tests: the sign-in tests drive Chrome with its playwright-core`);
 }
 if (!before.some((step) => String(step.uses ?? '').startsWith('actions/checkout@'))) fail(`job ${key} does not check out the repository before its tests`);
+
+// The check that the tests left no directories, after them, also when they fail.
+const patterns = ["'skald-update-*'", "'skald-client-*'"];
+const checkStep = steps.slice(testIndex + 1).find((step) => patterns.every((p) => commands(step.run).join('\n').includes(p)));
+if (!checkStep) {
+  fail(`no step of job ${key} after its tests checks that they left no ${patterns.join(' or ')} directory`);
+} else {
+  const text = commands(checkStep.run).join('\n');
+  if (!text.includes('[IO.Path]::GetTempPath()')) fail(`the check of job ${key} for directories left does not look in the temporary directory, [IO.Path]::GetTempPath()`);
+  if (!/^\s*if \(\$left\) \{ exit 1 \}\s*$/m.test(text)) fail(`the check of job ${key} for directories left does not fail when there is one`);
+  if (checkStep['continue-on-error']) fail(`a failure of the check of job ${key} for directories left does not fail the job: continue-on-error`);
+  if ((checkStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell) !== 'pwsh') fail(`the check of job ${key} for directories left does not run in pwsh`);
+  // It runs whether the tests passed or failed.
+  for (const failure of [false, true]) {
+    const scope = { ...states[key].scope, status: { success: !failure, always: true, failure, cancelled: false } };
+    if (truth(condition(checkStep.if ?? 'success()', scope)) !== true) {
+      fail(`the check of job ${key} for directories left does not run when the tests ${failure ? 'fail' : 'pass'}`);
+    }
+  }
+}
 
 // The gate: as the Rust part's job.
 const rustJob = Object.keys(jobs).find((k) =>

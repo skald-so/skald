@@ -3,7 +3,7 @@
 //! "Roster"). Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on
 //! PostgreSQL, behind the recording relay, which can lose the server's answers and rewrite them; a
 //! test plays the person on the verification page in headless Chrome. Each machine keeps its state
-//! in a directory of its own and its secrets in the 0600 file there.
+//! in a directory of its own and its secrets in a file there.
 //!
 //! The CLI, as these tests use it:
 //! - `skald create-space <name>`: creates a team space with the name on the server of the machine's

@@ -118,6 +118,19 @@ jobs:
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
           cargo test -p skald-client --locked --no-fail-fast
+      # The tests remove the directories they make in the temporary directory, also when one fails:
+      # any left, listed with what it holds, fails the job.
+      - name: Check that the tests left no directories
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $left = Get-ChildItem -Directory -Path ([IO.Path]::GetTempPath()) |
+            Where-Object { $_.Name -like 'skald-update-*' -or $_.Name -like 'skald-client-*' }
+          foreach ($dir in $left) {
+            "left: $($dir.FullName)"
+            Get-ChildItem -Recurse -Name -Path $dir.FullName
+          }
+          if ($left) { exit 1 }
 
   tooling:
     name: Tooling

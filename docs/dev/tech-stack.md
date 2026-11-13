@@ -15,7 +15,7 @@ Versions as of 2026-11-09.
 | HPKE, signatures | hpke 0.15, ed25519-dalek 3, x25519-dalek 3 |
 | PAKE | CPace in `crypto` on curve25519-dalek 5 and sha2 0.11, checked against its draft's test vectors: [link code](../protocol/membership.md#link-code) |
 | Hashes, randomness | sha2 0.11; getrandom 0.4 for the random bits of UUIDv7 IDs, for signing-key seeds, X25519 private keys, the MLS state's key and its nonces, for session tokens, sign-in `state` and the device flow's device and user codes; zeroize 1 clears the seeds |
-| Keys | keyring-core 1 with the keyring project's stores: apple-native-keyring-store 1 (Keychain), dbus-secret-service-keyring-store 1 (the Secret Service; the Linux client builds in libdbus, under AFL-2.1), windows-native-keyring-store 1. Fallback: a 0600 file |
+| Keys | keyring-core 1 with the keyring project's stores: apple-native-keyring-store 1 (Keychain), dbus-secret-service-keyring-store 1 (the Secret Service; the Linux client builds in libdbus, under AFL-2.1), windows-native-keyring-store 1. Fallback: a file ([architecture.md](architecture.md#cryptography)) |
 | Local state | SQLite, bundled with rusqlite 0.39, the newest that sqlx 0.9 allows: [deny.toml](../../deny.toml) |
 | MCP | rmcp 3.9, stdio |
 | Authentication | GitHub OAuth over the server's HTTP client; OIDC over it too, with no OIDC or JOSE crate: the server's own code reads the metadata, keys and ID tokens with serde_json and base64, and ring 0.17 verifies RS256 and ES256; device flow (RFC 8628) |

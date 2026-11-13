@@ -2,6 +2,10 @@
 //! with nothing on it and a home, a state directory and a temporary directory of its own, all under
 //! one directory that is removed on drop. Several machines run on one this way.
 
+#[allow(dead_code)]
+#[path = "../../src/test_dir.rs"]
+mod test_dir;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -11,10 +15,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::common::CLIENT;
+use test_dir::TestDir;
 
 /// The setting of the directory of the local state and of the secrets file.
 pub const STATE_DIR: &str = "SKALD_STATE_DIR";
-/// The setting of the key storage; `file` keeps secrets in the 0600 file, never in the system's.
+/// The setting of the key storage; `file` keeps secrets in the secrets file, never in the system's.
 pub const KEY_STORAGE: &str = "SKALD_KEY_STORAGE";
 /// The sign-in command; its flags of the server's address and of a `name` the user gives.
 pub const SIGN_IN: &str = "sign-in";
@@ -52,27 +57,28 @@ pub fn bare_skald() -> Command {
 }
 
 pub struct Machine {
-    root: PathBuf,
     /// The host name the client reads, if set; otherwise the system's.
     host_name: Option<String>,
+    /// Removed on drop.
+    root: TestDir,
 }
 
 impl Machine {
     pub fn new() -> Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let root = std::env::temp_dir().join(format!(
+        // Removed on drop from here on: also when making the machine fails, before it exists.
+        let root = TestDir::named(&format!(
             "skald-client-sign-in-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let _ = fs::remove_dir_all(&root);
         for dir in ["home", "state", "tmp", "bin"] {
-            fs::create_dir_all(root.join(dir)).expect("create a machine's directory");
+            fs::create_dir(root.join(dir)).expect("create a machine's directory");
         }
         Machine {
-            root,
             host_name: None,
+            root,
         }
     }
 
@@ -191,12 +197,6 @@ impl Machine {
             })
         });
         all
-    }
-}
-
-impl Drop for Machine {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

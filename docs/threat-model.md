@@ -112,7 +112,7 @@ An attacker holding a device or its keys, before the device is revoked.
 - After its revocation: what [a revoked device](#a-revoked-device) does.
 
 **Defenses:**
-- Keys live in the OS key store, or a file with 0600 permissions ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
+- Keys live in the OS key store, or a file in the state directory ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - Clients warn when an account's device set changes, so the devices it certifies or revokes show ([Device checks](protocol/membership.md#device-checks)).
 - Its settings of what it runs are its own: it changes them on no other device ([Running a task](protocol/queues.md#running-a-task)).
 - Another `client` or `browser` device of the account revokes it ([Revocation](protocol/membership.md#revocation)): see [A revoked device](#a-revoked-device).

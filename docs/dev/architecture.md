@@ -77,7 +77,7 @@
   - each new history key encrypts the previous one, so members read older history through this key chain;
   - formats: [protocol spec](../protocol/membership.md#history).
 - **Signatures:** Ed25519.
-- **Key storage:** Keychain, the Secret Service or Windows Credential Manager; otherwise a file with 0600 permissions.
+- **Key storage:** Keychain, the Secret Service or Windows Credential Manager; otherwise a file in the state directory, with 0600 permissions on Unix; on Windows it has the access rights it inherits from the directory.
 - **Local state:** SQLite with a file lock held by the helper.
 - **MLS state:** a device's groups, KeyPackages' private keys and history keys are stored only sealed, under a key in key storage; the store overwrites the previous sealed state and deletes it securely, so no older one is kept.
 - What the server sees: [threat model](../threat-model.md#the-server-sees); what it does not see: [threat model](../threat-model.md#the-server-does-not-see); trade-offs: [threat model](../threat-model.md#trade-offs).

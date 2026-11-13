@@ -28,16 +28,21 @@ fn version_prints_workspace_version() {
     assert!(output.stderr.is_empty(), "unexpected stderr");
 }
 
-/// `skald --help` names this platform's default state directory, and no other platform's.
-#[test]
-fn help_names_the_platforms_state_directory() {
+/// What `skald --help` prints.
+fn help() -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_skald"))
         .arg("--help")
         .output()
         .expect("run skald");
 
     assert!(output.status.success(), "exit status: {}", output.status);
-    let help = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    String::from_utf8(output.stdout).expect("stdout is UTF-8")
+}
+
+/// `skald --help` names this platform's default state directory, and no other platform's.
+#[test]
+fn help_names_the_platforms_state_directory() {
+    let help = help();
     let defaults = [
         (cfg!(windows), r"[default: %LOCALAPPDATA%\skald]"),
         (
@@ -52,4 +57,22 @@ fn help_names_the_platforms_state_directory() {
     for (this_platform, default) in defaults {
         assert_eq!(help.contains(default), this_platform, "{default}: {help}");
     }
+}
+
+/// `skald --help` says how the secrets file is kept on this platform, and not as on another: with
+/// 0600 permissions on Unix, with the access rights of the state directory on Windows.
+#[test]
+fn help_says_how_the_platform_keeps_the_secrets_file() {
+    let help = help();
+    let kept = [
+        (cfg!(unix), "The file has 0600 permissions"),
+        (
+            cfg!(windows),
+            "The file has the access rights it inherits from the state directory",
+        ),
+    ];
+    for (this_platform, how) in kept {
+        assert_eq!(help.contains(how), this_platform, "{how}: {help}");
+    }
+    assert_eq!(help.contains("0600"), cfg!(unix), "{help}");
 }
