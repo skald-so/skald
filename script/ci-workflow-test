@@ -149,7 +149,7 @@ for (const file of fs.readdirSync(path.join(root, 'script'), { recursive: true }
   if (file !== 'ci-workflow-test' && fs.statSync(full).isFile() && fs.readFileSync(full, 'utf8').includes(realKeys)) fail(`script/${file} sets ${realKeys}`);
 }
 
-// The rules of every job.
+// The rules of every workflow, for this job: pinned actions, no kept credentials, a read-only token.
 for (const step of steps) {
   const uses = String(step.uses ?? '');
   if (uses && !uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(uses)) fail(`job ${key} uses ${uses}, not pinned to a commit`);
