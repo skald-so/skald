@@ -2933,6 +2933,7 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "jsonschema",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde",

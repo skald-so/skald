@@ -10,6 +10,7 @@ axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
 getrandom = "0.4"
+ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 serde = { version = "1.0", features = ["derive"] }
@@ -28,13 +29,3 @@ serde_urlencoded = "0.7"
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
 tungstenite = "0.30"
-
-[features]
-# Builds the acceptance tests of the OIDC code, written before that code.
-# Remove this feature and the [[test]] entry below with that code.
-acceptance = []
-
-[[test]]
-name = "oidc"
-path = "tests/oidc/main.rs"
-required-features = ["acceptance"]

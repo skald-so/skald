@@ -1,7 +1,8 @@
 # cargo-mutants settings for script/mutants.
-# The GitHub stand-in is test code: script/mutants runs only the mutated crate's tests, so only the
-# stand-in's own tests could catch its mutants, while the tests that rely on it are other crates'.
-exclude_globs = ["crates/github-stand-in/**"]
+# The GitHub and OIDC stand-ins are test code: script/mutants runs only the mutated crate's tests, so
+# only a stand-in's own tests could catch its mutants, while the tests that rely on it are other
+# crates'.
+exclude_globs = ["crates/github-stand-in/**", "crates/oidc-stand-in/**"]
 # The client's wrapper of the system's key storage: tests touch the system's only with
 # SKALD_TEST_REAL_KEY_STORAGE=1, which script/mutants never sets, so none reaches it; the logic
 # around it runs against a stand-in.
