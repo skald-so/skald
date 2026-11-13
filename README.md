@@ -85,7 +85,7 @@ skald update               # update to the latest stable release, never a beta; 
 
 ## Self-hosting
 
-- For now, the server runs from source, with PostgreSQL and a GitHub OAuth App of your own for sign-in: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
+- For now, run the server from source, with PostgreSQL and a GitHub OAuth App of your own for sign-in: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
 - The server image is `ghcr.io/skald-so/skald-server`, tag `0.1.0`.
 
 ## Contributing
