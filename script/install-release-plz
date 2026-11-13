@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Installs the release-plz of script/lib/release.sh into its directory there: downloads its crates
+# from crates.io, checks each against its SHA-256, applies script/lib/release-plz.patch and builds
+# release-plz with the dependencies of its Cargo.lock. Does nothing when that release-plz is there
+# already. In a GitHub Actions job, adds its directory to the PATH of the later steps.
+# Usage: script/install-release-plz
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+bin=$release_plz_root/bin
+
+if [[ $("$bin/release-plz" --version 2>/dev/null) != "release-plz $release_plz_version" ]]; then
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  for crate in "${release_plz_crates[@]}"; do
+    read -r name version checksum <<<"$crate"
+    file=$tmp/$name-$version.crate
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 \
+      --output "$file" "https://static.crates.io/crates/$name/$name-$version.crate"
+    if command -v sha256sum >/dev/null; then
+      sum=$(sha256sum "$file")
+    else
+      sum=$(shasum -a 256 "$file")
+    fi
+    if [[ ${sum%% *} != "$checksum" ]]; then
+      echo "install-release-plz: $name $version from crates.io does not match its SHA-256" >&2
+      exit 1
+    fi
+    tar -xzf "$file" -C "$tmp"
+  done
+  patch -s -p1 -d "$tmp" <"$root/script/lib/release-plz.patch"
+  read -r name version _ <<<"${release_plz_crates[0]}"
+  cargo install --locked --force --root "$release_plz_root" --path "$tmp/$name-$version"
+fi
+
+if [[ -n ${GITHUB_PATH:-} ]]; then
+  echo "$bin" >>"$GITHUB_PATH"
+fi

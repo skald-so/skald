@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Tests script/install-release-plz with stand-ins for curl and cargo:
+#   - a crate that does not match its SHA-256 fails the run, and nothing is built or installed;
+#   - with the release-plz of script/lib/release.sh installed, it downloads and builds nothing, and in
+#     a GitHub Actions job it puts that release-plz's directory on the PATH of the later steps.
+# The download of the real crates, the patch and the build run in CI, before the release-plz tests.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+export CARGO_HOME=$tmp/cargo
+unset GITHUB_PATH
+source "$root/script/lib/release.sh"
+failures=0
+
+fail() {
+  echo "install-release-plz-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# The stand-ins log their calls; curl saves a file that is not the crate.
+mkdir "$tmp/bin"
+cat >"$tmp/bin/curl" <<EOF
+#!/usr/bin/env bash
+echo "curl \$*" >>"$tmp/calls.log"
+while [[ \$# -gt 0 ]]; do
+  [[ \$1 != --output ]] || echo "not the crate" >"\$2"
+  shift
+done
+EOF
+cat >"$tmp/bin/cargo" <<EOF
+#!/usr/bin/env bash
+echo "cargo \$*" >>"$tmp/calls.log"
+EOF
+chmod +x "$tmp/bin/curl" "$tmp/bin/cargo"
+
+# run_install: runs script/install-release-plz; sets $status and $output.
+run_install() {
+  rm -f "$tmp/calls.log"
+  status=0
+  output=$(PATH="$tmp/bin:$PATH" "$root/script/install-release-plz" 2>&1) || status=$?
+}
+
+case="a crate that does not match its SHA-256"
+run_install
+[[ $status != 0 ]] || fail "$case: the run passes"
+grep -qF "does not match its SHA-256" <<<"$output" || fail "$case: it does not say so: $output"
+! grep -q '^cargo' "$tmp/calls.log" 2>/dev/null || fail "$case: it runs cargo: $(cat "$tmp/calls.log")"
+[[ ! -e $release_plz_root/bin/release-plz ]] || fail "$case: it installs release-plz"
+
+case="release-plz $release_plz_version installed already"
+mkdir -p "$release_plz_root/bin"
+printf '#!/usr/bin/env bash\necho "release-plz %s"\n' "$release_plz_version" \
+  >"$release_plz_root/bin/release-plz"
+chmod +x "$release_plz_root/bin/release-plz"
+export GITHUB_PATH=$tmp/github-path
+run_install
+[[ $status == 0 ]] || fail "$case: the run fails: $output"
+[[ ! -s $tmp/calls.log ]] || fail "$case: it downloads or builds: $(cat "$tmp/calls.log")"
+[[ $(cat "$GITHUB_PATH" 2>/dev/null) == "$release_plz_root/bin" ]] ||
+  fail "$case: GITHUB_PATH does not have $release_plz_root/bin alone: $(cat "$GITHUB_PATH" 2>/dev/null)"
+
+if ((failures > 0)); then
+  echo "install-release-plz-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "install-release-plz-test: all cases passed"

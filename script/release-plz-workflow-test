@@ -6,8 +6,8 @@
 # requests, so the PR checks run on the Release PR; only the release-plz jobs use the App's
 # environment and secrets, in this workflow and in all others; every job's own token reads
 # contents at most and no job requests an OIDC token; actions are pinned to commits, and tools are
-# installed by taiki-e/install-action at exact versions it checks against checksums, release-plz at
-# the version script/release-plz-test runs.
+# installed by taiki-e/install-action at exact versions it checks against checksums, release-plz by
+# script/install-release-plz, the one script/release-plz-test runs, before the App token exists.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -31,8 +31,8 @@ if [[ ! -f $root/$release_workflow ]]; then
 fi
 workflow=$(to_json "$root/$release_workflow")
 
-# check <what> <jq filter>: the filter is true for the workflow. The filter gets $env, $id_secret,
-# $key_secret and $version, and these definitions:
+# check <what> <jq filter>: the filter is true for the workflow. The filter gets $env, $id_secret
+# and $key_secret, and these definitions:
 #   effective(job)  the permissions of the job's own token;
 #   releases        the jobs that run release-plz, as {key, value} entries;
 #   opener          the job that runs `release-plz release-pr`;
@@ -52,8 +52,7 @@ definitions='
 '
 check() {
   jq --exit-status --arg env "$release_environment" --arg id_secret "$release_app_id_secret" \
-    --arg key_secret "$release_app_key_secret" --arg version "$release_plz_version" \
-    "$definitions $2" <<<"$workflow" >/dev/null 2>&1 || fail "$1"
+    --arg key_secret "$release_app_key_secret" "$definitions $2" <<<"$workflow" >/dev/null 2>&1 || fail "$1"
 }
 
 # The trigger and the order of runs.
@@ -131,8 +130,8 @@ check "no job requests an OIDC token" '[.. | objects | has("id-token")] | any | 
 # Actions and tools.
 check "every action is pinned to a commit" \
   '[.. | objects | .uses? // empty | strings] | all(startswith("./") or test("@[0-9a-f]{40}$"))'
-check "no step installs a tool without a checksum: no release-plz/action, cargo-binstall, curl,
-    wget or cargo install" \
+check "no step installs a tool but taiki-e/install-action and script/install-release-plz, which check
+    checksums: no release-plz/action, cargo-binstall, curl, wget or cargo install" \
   '[.jobs[].steps[]?] | all((.uses // "" | test("^(release-plz/action|cargo-bins/cargo-binstall)@")
     | not) and (.run // "" | test("\\b(curl|wget|cargo[ -]binstall|cargo +install)\\b") | not))'
 check "taiki-e/install-action installs each tool at an exact version and checks its checksum" \
@@ -140,10 +139,9 @@ check "taiki-e/install-action installs each tool at an exact version and checks 
     | all((.tool // "" | split("[,\\s]+"; null) | map(select(. != ""))
       | length > 0 and all(test("^[a-z0-9_-]+@[0-9]+\\.[0-9]+\\.[0-9]+$")))
       and (.checksum | . != false and . != "false"))'
-check "release-plz $release_plz_version is installed before release-plz runs" \
-  'opener.steps | (index_of((.uses // "" | startswith("taiki-e/install-action@"))
-    and (.with.tool // "" | split("[,\\s]+"; null) | any(. == "release-plz@\($version)")))
-    < index_of(.run // "" | test("release-plz\\s+release-pr")))'
+check "script/install-release-plz installs release-plz before the App token is created" \
+  'opener.steps | index_of(.run // "" | test("^\\s*script/install-release-plz\\s*$"))
+    < index_of(.uses // "" | startswith("actions/create-github-app-token@"))'
 
 # No other workflow uses the environment or the App's secrets.
 for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do

@@ -201,6 +201,7 @@ if checks tooling; then
   script/ci-workflow-test
   script/edge-workflow-test
   script/release-plz-workflow-test
+  script/install-release-plz-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.
   npx --yes --package renovate@44.225.1 -- renovate-config-validator --strict --no-global renovate.json
 fi

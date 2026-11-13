@@ -1,10 +1,10 @@
 name: Release PR and tag
 
 # Every push to dev tags the merge of a Release PR, then opens the Release PR or updates the open
-# one, with release-plz and release-plz.toml: `release` tags the commit vX.Y.Z or vX.Y.Z-beta.N and
-# publishes nothing; `release-pr` sets the next version and adds the PRs merged since the last
-# release to CHANGELOG.md. script/release-plz-workflow-test and script/release-tag-workflow-test
-# test this file.
+# one, with the release-plz of script/install-release-plz and release-plz.toml: `release` tags the
+# commit vX.Y.Z or vX.Y.Z-beta.N and publishes nothing; `release-pr` sets the next version and adds
+# the PRs merged since the last release to CHANGELOG.md. script/release-plz-workflow-test and
+# script/release-tag-workflow-test test this file.
 on:
   push:
     branches: [dev]
@@ -21,15 +21,6 @@ jobs:
     # The App's secrets; only dev deploys from it.
     environment: release-plz
     steps:
-      # A token of the GitHub App skald-release: the workflows that run on tags start on a tag it
-      # creates, unlike on one created with the job's own token. It reads the PRs of the public
-      # repository without a permission for them. Revoked when the job ends.
-      - id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
       # The whole history and the tags: a version already tagged gets no tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,9 +31,18 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      # Built before the App token exists: the build scripts of its dependencies never see it.
+      - name: Install release-plz
+        run: script/install-release-plz
+      # A token of the GitHub App skald-release: the workflows that run on tags start on a tag it
+      # creates, unlike on one created with the job's own token. It reads the PRs of the public
+      # repository without a permission for them. Revoked when the job ends.
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          tool: release-plz@0.4.3
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
       # Only the merge of a PR the App opened from a branch of this repository is tagged: release-plz
       # alone takes any PR from a branch named release-plz-* for a Release PR. Not a Release PR's
       # merge, exit code 1: nothing to tag; an error fails the step. release-plz tags through the
@@ -73,15 +73,6 @@ jobs:
       group: ${{ github.workflow }}-release-pr
       cancel-in-progress: false
     steps:
-      # A token of the GitHub App skald-release: PR checks run on a PR it opens, unlike on one opened
-      # with the job's own token. Revoked when the job ends.
-      - id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
       # The latest dev, not the pushed commit, with the whole history and the tags: the last release
       # is the last vX.Y.Z tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -94,9 +85,18 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      # Built before the App token exists: the build scripts of its dependencies never see it.
+      - name: Install release-plz
+        run: script/install-release-plz
+      # A token of the GitHub App skald-release: PR checks run on a PR it opens, unlike on one opened
+      # with the job's own token. Revoked when the job ends.
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          tool: release-plz@0.4.3
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
       # It commits and moves the PR branch through the GitHub API, so the checkout needs no
       # credentials.
       - name: Open or update the Release PR

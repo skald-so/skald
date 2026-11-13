@@ -8,7 +8,8 @@
 #     commit and sees an already tagged version; release-plz release runs only after
 #     script/release-pr-merged exits 0 for it (script/release-tag-test), with a token of the GitHub
 #     App narrowed to writing contents, so the workflows that run on tags start; release-plz is
-#     installed at the version script/release-tag-test runs;
+#     installed by script/install-release-plz, the one script/release-tag-test runs, before the
+#     App token exists;
 #   - the job that opens the Release PR runs after the tagging job, on the latest dev and its tags,
 #     so runs that end out of order never leave the Release PR behind;
 #   - every release-plz command line in every workflow is `release-plz release-pr` or
@@ -50,7 +51,7 @@ workflow=$(json "$root/$release_workflow")
 tagger=${taggers[0]#* }
 
 # check <what> <jq filter>: the filter is true for the workflow. The filter gets $tagger, the tagging
-# job's key, $id_secret, $key_secret and $version, and these definitions:
+# job's key, $id_secret and $key_secret, and these definitions:
 #   tagging          the tagging job;
 #   opener_key       the key of the job that runs release-plz release-pr;
 #   needs($key)      the keys of the jobs that job needs, directly or not;
@@ -75,8 +76,7 @@ definitions='
 '
 check() {
   jq --exit-status --arg tagger "$tagger" --arg id_secret "$release_app_id_secret" \
-    --arg key_secret "$release_app_key_secret" --arg version "$release_plz_version" \
-    "$definitions $2" <<<"$workflow" >/dev/null 2>&1 || fail "$1"
+    --arg key_secret "$release_app_key_secret" "$definitions $2" <<<"$workflow" >/dev/null 2>&1 || fail "$1"
 }
 
 # When the tagging job runs.
@@ -134,10 +134,9 @@ check "release-plz release runs with the App token, created before it, not the j
 check "the tagging job's checkout keeps no credentials but the App token" \
   'token_step[0].id as $id | checkout(tagging)[0].with
     | .["persist-credentials"] == false or .token == "${{ steps.\($id).outputs.token }}"'
-check "release-plz $release_plz_version is installed before release-plz release" \
-  'index_of((.uses // "" | startswith("taiki-e/install-action@"))
-    and (.with.tool // "" | split("[,\\s]+"; null) | any(. == "release-plz@\($version)")))
-    < index_of(is_release)'
+check "script/install-release-plz installs release-plz before the App token is created" \
+  'index_of(.run // "" | test("^\\s*script/install-release-plz\\s*$"))
+    < index_of(.uses // "" | startswith("actions/create-github-app-token@"))'
 
 # The Release PR after the tags.
 check "the job that opens the Release PR runs after the tagging job" \

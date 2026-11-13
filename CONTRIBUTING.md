@@ -9,7 +9,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
-- release-plz of the version in `script/lib/release.sh`, for the Release PR tests: `cargo install release-plz --version <version> --locked`.
+- release-plz, patched, for the Release PR tests: `script/install-release-plz` builds it into `skald/` in `CARGO_HOME`, `~/.cargo` by default, and the tests run that one.
 - dist of the version in `dist-workspace.toml`, only to build the release archives by hand, `dist build`; `script/test` does not run it: `cargo install cargo-dist --version <version> --locked`.
 - Docker: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots.
 - Node.js 26 with npm.

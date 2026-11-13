@@ -1,7 +1,7 @@
 # The names the release-plz workflow and its tests share, sourced by script/release-plz-test,
-# script/release-plz-workflow-test and the release tag tests. The GitHub App skald-release, its
-# environment and its secrets are set up on GitHub under these names; a rename changes them here and
-# in the workflow.
+# script/release-plz-workflow-test, script/install-release-plz and the release tag tests. The GitHub
+# App skald-release, its environment and its secrets are set up on GitHub under these names; a
+# rename changes them here and in the workflow.
 
 # The workflow that tags the merge of a Release PR and keeps the Release PR open.
 release_workflow=.github/workflows/release-plz.yml
@@ -11,8 +11,17 @@ release_environment=release-plz
 # The App's ID and private key, secrets of that environment.
 release_app_id_secret=RELEASE_APP_ID
 release_app_key_secret=RELEASE_APP_PRIVATE_KEY
-# The release-plz the workflow installs and the fixture tests run.
-release_plz_version=0.4.3
+# The release-plz the workflows run and the fixture tests run: release-plz built by
+# script/install-release-plz from these crates on crates.io, each checked against the SHA-256 of
+# its .crate file, with script/lib/release-plz.patch. It goes into a directory of its own, first on
+# PATH here.
+release_plz_version=0.4.3+skald.1
+release_plz_crates=(
+  "release-plz 0.4.3 69bbc232e23322cfaf77a60540e69e2dbd83879e843c4fc9d6ad1ead97d257f6"
+  "release_plz_core 0.43.0 6a4ca8c2e8465bf8f282cf057af2972794ed2973f8db0a6658e26923c43de480"
+)
+release_plz_root=${CARGO_HOME:-$HOME/.cargo}/skald/release-plz-$release_plz_version
+PATH=$release_plz_root/bin:$PATH
 
 # copy_tree <repository> <dir>: copies the working tree of <repository> as script/test sees it into a
 # new <dir>, for the release fixtures: tracked and new files, without ignored ones and without .git.
