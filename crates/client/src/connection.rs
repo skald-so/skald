@@ -1,13 +1,17 @@
 //! The client's connection to a Skald server: it states the protocol version on every request and
 //! WebSocket opening request and acts on the answers as `docs/protocol/README.md`, "Server answers",
-//! says.
+//! says. It goes over HTTPS and WSS, or in plain HTTP and WS to this machine only:
+//! `docs/dev/architecture.md`, "Network".
 
 use std::fmt;
 use std::io;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::num::NonZeroU64;
+use std::sync::Arc;
 use std::time::Duration;
 
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use serde::Deserialize;
 use skald_proto::{
     LATEST_HEADER, VERSION_HEADER, VersionProblem, VersionRange, describe_versions, parse_version,
@@ -16,6 +20,8 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::handshake::HandshakeError;
 use tungstenite::http::{HeaderMap, HeaderValue, Uri, header};
 use tungstenite::stream::MaybeTlsStream;
+
+use crate::tls::Roots;
 
 /// How long a request to the server may take by default.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
@@ -28,6 +34,9 @@ pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 pub enum Error {
     /// The server URL is not one the client connects to.
     Url(String),
+    /// The server URL is plain HTTP to another machine: what the client sends would cross the
+    /// network in the clear.
+    Cleartext(String),
     /// No answer from the server.
     Unreachable(String),
     /// No answer from the server within the timeout.
@@ -55,7 +64,7 @@ impl Error {
     pub fn reached(&self) -> bool {
         !matches!(
             self,
-            Error::Url(_) | Error::Unreachable(_) | Error::Timeout(_)
+            Error::Url(_) | Error::Cleartext(_) | Error::Unreachable(_) | Error::Timeout(_)
         )
     }
 
@@ -70,7 +79,12 @@ impl fmt::Display for Error {
         match self {
             Error::Url(url) => write!(
                 f,
-                "{url:?} is not a server URL the client connects to: it must start with http://"
+                "{url:?} is not a server URL the client connects to: use https://"
+            ),
+            Error::Cleartext(url) => write!(
+                f,
+                "{url:?} is plain HTTP to another machine: use https://; plain http:// goes only \
+                 to this machine: localhost, 127.0.0.0/8 or [::1]"
             ),
             Error::Unreachable(cause) => {
                 write!(f, "cannot reach the server: {}", printable(cause))
@@ -135,12 +149,70 @@ fn unanswered(err: ureq::Error, timeout: Duration) -> Error {
     }
 }
 
+/// How the client reaches a server.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Scheme {
+    /// `https://`, to any host: over TLS.
+    Https,
+    /// `http://` to this machine: in the clear, never crossing a network.
+    Loopback,
+}
+
+/// How the client reaches the server at `server`: over `https://` to any host, over `http://` only
+/// to this machine.
+fn scheme(server: &str) -> Result<Scheme, Error> {
+    let not_a_server = || Error::Url(server.to_owned());
+    let uri: Uri = server.parse().map_err(|_| not_a_server())?;
+    let host = uri.host().filter(|host| !host.is_empty());
+    match (uri.scheme_str(), host) {
+        (Some("https"), Some(_)) => Ok(Scheme::Https),
+        (Some("http"), Some(host)) if loopback(host) => Ok(Scheme::Loopback),
+        (Some("http"), Some(_)) => Err(Error::Cleartext(server.to_owned())),
+        _ => Err(not_a_server()),
+    }
+}
+
+/// Whether `host`, as a URL has it, is this machine: `localhost`, an address in `127.0.0.0/8` or
+/// `[::1]`.
+fn loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.strip_prefix('[').and_then(|ip| ip.strip_suffix(']')) {
+        Some(ip) => ip.parse::<Ipv6Addr>().is_ok_and(|ip| ip.is_loopback()),
+        None => host.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback()),
+    }
+}
+
+/// The URL of the WebSocket at `path` on the server at `base`: `wss://` over TLS, otherwise
+/// `ws://`.
+fn websocket_url(base: &str, path: &str, tls: bool) -> String {
+    let (_, rest) = base.split_once("://").expect("a server URL has a scheme");
+    let scheme = if tls { "wss" } else { "ws" };
+    format!("{scheme}://{rest}{path}")
+}
+
+/// The host of `uri`, an IPv6 address without its brackets.
+fn host(uri: &Uri) -> &str {
+    let host = uri.host().unwrap_or_default();
+    host.trim_start_matches('[').trim_end_matches(']')
+}
+
+/// The port of `uri`: its own, or its scheme's, 443 for `wss://` and 80 for `ws://`.
+fn port(uri: &Uri) -> u16 {
+    let default = if uri.scheme_str() == Some("wss") {
+        443
+    } else {
+        80
+    };
+    uri.port_u16().unwrap_or(default)
+}
+
 /// A TCP connection to the host and port of `uri` whose connect, reads and writes each fail after
 /// `timeout`.
 fn connect(uri: &Uri, timeout: Duration) -> Result<TcpStream, Error> {
-    let host = uri.host().unwrap_or_default();
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let addrs = (host, uri.port_u16().unwrap_or(80))
+    let host = host(uri);
+    let addrs = (host, port(uri))
         .to_socket_addrs()
         .map_err(|err| Error::Unreachable(err.to_string()))?;
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("no address for {host}"));
@@ -167,9 +239,25 @@ fn io_error(err: io::Error, timeout: Duration) -> Error {
     }
 }
 
+/// `stream`, a connection to the server of `uri`, under TLS by `config`; the handshake runs on its
+/// first read or write.
+fn over_tls(
+    config: &Arc<ClientConfig>,
+    uri: &Uri,
+    stream: TcpStream,
+) -> Result<StreamOwned<ClientConnection, TcpStream>, Error> {
+    let name = ServerName::try_from(host(uri).to_owned())
+        .map_err(|err| Error::Unreachable(err.to_string()))?;
+    let client = ClientConnection::new(Arc::clone(config), name)
+        .map_err(|err| Error::Unreachable(err.to_string()))?;
+    Ok(StreamOwned::new(client, stream))
+}
+
 /// A connection to the server at one base URL.
 pub struct Connection {
     base: String,
+    /// The TLS config of its WebSockets, to an `https://` server.
+    tls: Option<Arc<ClientConfig>>,
     speaks: VersionRange,
     timeout: Duration,
     agent: ureq::Agent,
@@ -242,23 +330,29 @@ struct Problem {
 }
 
 impl Connection {
-    /// A connection to the server at `server`, such as `http://localhost:8080`, speaking `speaks`.
-    /// A request fails if the server does not answer it within `timeout`.
+    /// A connection to the server at `server`, such as `https://api.skald.so` or, on this machine,
+    /// `http://localhost:8080`, speaking `speaks`. A request fails if the server does not answer it
+    /// within `timeout`.
     pub fn new(server: &str, speaks: VersionRange, timeout: Duration) -> Result<Self, Error> {
-        if !server.starts_with("http://") {
-            return Err(Error::Url(server.to_owned()));
-        }
-        let agent = ureq::Agent::config_builder()
+        let roots = match scheme(server)? {
+            Scheme::Https => Some(Roots::load()),
+            Scheme::Loopback => None,
+        };
+        let mut config = ureq::Agent::config_builder()
             .proxy(None)
             .http_status_as_error(false)
-            .timeout_global(Some(timeout))
-            .build()
-            .new_agent();
+            // A redirect could take a request to another host, in the clear.
+            .max_redirects(0)
+            .timeout_global(Some(timeout));
+        if let Some(roots) = &roots {
+            config = config.tls_config(roots.ureq());
+        }
         Ok(Connection {
             base: server.trim_end_matches('/').to_owned(),
+            tls: roots.map(|roots| roots.rustls()),
             speaks,
             timeout,
-            agent,
+            agent: config.build().new_agent(),
             version: speaks.latest(),
             latest: None,
         })
@@ -355,8 +449,9 @@ impl Connection {
     /// Opens a WebSocket at `path`, offering the subprotocol `skald.<n>`. The connect and each read
     /// and write of the socket, after the opening too, fail after the connection's timeout.
     pub fn open_websocket(&mut self, path: &str) -> Result<WebSocket, Error> {
-        let url = format!("{}{path}", self.base.replacen("http://", "ws://", 1));
+        let url = websocket_url(&self.base, path, self.tls.is_some());
         let timeout = self.timeout;
+        let tls = self.tls.clone();
         self.exchange(|version| {
             let mut request = url
                 .as_str()
@@ -367,7 +462,11 @@ impl Connection {
             request
                 .headers_mut()
                 .insert(header::SEC_WEBSOCKET_PROTOCOL, offer);
-            let stream = MaybeTlsStream::Plain(connect(request.uri(), timeout)?);
+            let stream = connect(request.uri(), timeout)?;
+            let stream = match &tls {
+                Some(config) => MaybeTlsStream::Rustls(over_tls(config, request.uri(), stream)?),
+                None => MaybeTlsStream::Plain(stream),
+            };
             match tungstenite::client(request, stream) {
                 Ok((socket, response)) => Ok(Answer::Served(socket, latest(response.headers()))),
                 // A blocking stream is interrupted only when a read or write times out.
@@ -519,6 +618,116 @@ mod tests {
             error("Unknown code.\u{1b}").to_string(),
             "the server refused the request: invalid_grant: Unknown code.\\u{1b}"
         );
+    }
+
+    #[test]
+    fn https_goes_to_any_host_and_http_only_to_this_machine() {
+        for server in [
+            "https://api.skald.so",
+            "https://api.skald.so/",
+            "HTTPS://API.SKALD.SO",
+            "https://203.0.113.7:8443",
+            "https://[2001:db8::1]",
+            "https://localhost:8443",
+        ] {
+            assert_eq!(scheme(server).ok(), Some(Scheme::Https), "{server}");
+        }
+        for server in [
+            "http://localhost:8080",
+            "http://LocalHost",
+            "http://127.0.0.1:8080/",
+            "http://127.0.0.0",
+            "http://127.255.255.255:1",
+            "http://[::1]:8080",
+            "http://[0:0:0:0:0:0:0:1]",
+            "http://someone@localhost",
+        ] {
+            assert_eq!(scheme(server).ok(), Some(Scheme::Loopback), "{server}");
+        }
+    }
+
+    #[test]
+    fn http_to_another_machine_is_cleartext() {
+        for server in [
+            "http://api.skald.so",
+            "http://0.0.0.0:8080",
+            "http://10.0.0.1",
+            "http://126.255.255.255",
+            "http://128.0.0.1",
+            "http://127.1",
+            "http://127.0.0.01",
+            "http://[::]",
+            "http://[::2]",
+            "http://[::ffff:127.0.0.1]",
+            "http://localhost.skald.test",
+            "http://127.0.0.1.skald.test",
+            "http://localhost@skald.test",
+            "http://localhost.",
+        ] {
+            let error = scheme(server).expect_err(server);
+            assert!(
+                matches!(&error, Error::Cleartext(url) if url == server),
+                "{error:?}"
+            );
+            assert!(!error.reached());
+        }
+        assert_eq!(
+            Error::Cleartext("http://api.skald.so".to_owned()).to_string(),
+            "\"http://api.skald.so\" is plain HTTP to another machine: use https://; plain http:// \
+             goes only to this machine: localhost, 127.0.0.0/8 or [::1]"
+        );
+    }
+
+    #[test]
+    fn other_urls_are_no_server_urls() {
+        for server in [
+            "",
+            "api.skald.so",
+            "localhost:8080",
+            "ws://localhost:8080",
+            "wss://api.skald.so",
+            "ftp://api.skald.so",
+            "https://",
+            "http://",
+            "http:///ws",
+            "https://:443",
+            "http://:8080",
+            "http://@:8080",
+            "https://api skald so",
+        ] {
+            let error = scheme(server).expect_err(server);
+            assert!(
+                matches!(&error, Error::Url(url) if url == server),
+                "{error:?}"
+            );
+            assert!(!error.reached());
+        }
+        assert_eq!(
+            Error::Url("ftp://api.skald.so".to_owned()).to_string(),
+            "\"ftp://api.skald.so\" is not a server URL the client connects to: use https://"
+        );
+    }
+
+    #[test]
+    fn websocket_goes_over_tls_to_an_https_server() {
+        assert_eq!(
+            websocket_url("https://api.skald.so", "/ws", true),
+            "wss://api.skald.so/ws"
+        );
+        assert_eq!(
+            websocket_url("HTTPS://api.skald.so:8443/base", "/ws", true),
+            "wss://api.skald.so:8443/base/ws"
+        );
+        assert_eq!(
+            websocket_url("http://127.0.0.1:8080", "/ws", false),
+            "ws://127.0.0.1:8080/ws"
+        );
+        let port_of = |url: &str| port(&url.parse().unwrap());
+        assert_eq!(port_of("wss://api.skald.so/ws"), 443);
+        assert_eq!(port_of("ws://localhost/ws"), 80);
+        assert_eq!(port_of("wss://api.skald.so:8443/ws"), 8443);
+        assert_eq!(port_of("ws://localhost:8080/ws"), 8080);
+        assert_eq!(host(&"wss://[::1]:8443/ws".parse().unwrap()), "::1");
     }
 
     #[test]

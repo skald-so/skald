@@ -1,7 +1,8 @@
 //! `skald sign-in` against stubs of the device flow's endpoints: the answers a `skald-server` gives
 //! only in time or in a fault, a stored session on another server, the default state directory, a
 //! device ID the server has taken and a name given to a named device. Then `skald devices` without
-//! a session, with a token for another server and with the server's error answers.
+//! a session, with a token for another server and with the server's error answers. Last, a server
+//! in plain HTTP on another machine, given or stored by an older skald.
 
 #[allow(dead_code)]
 mod common;
@@ -431,4 +432,71 @@ fn devices_show_the_servers_error_answers() {
     sign_in_first(&machine, &unlisting);
 
     devices_fail_saying(&machine, &[], &["a device list without its devices"]);
+}
+
+/// The error of a server URL `url` in plain HTTP to another machine.
+fn cleartext(url: &str) -> String {
+    format!(
+        "skald: {url:?} is plain HTTP to another machine: use https://; plain http:// goes only to \
+         this machine: localhost, 127.0.0.0/8 or [::1]\n"
+    )
+}
+
+/// The URL of `stub` at `0.0.0.0`, no address of this machine; yet on Linux and macOS a connection
+/// to it reaches the stub, which would get any request sent there.
+fn elsewhere(stub: &Stub) -> String {
+    let port = stub.url.rsplit(':').next().expect("the stub's port");
+    format!("http://0.0.0.0:{port}")
+}
+
+#[test]
+fn sign_in_to_plain_http_on_another_machine_is_refused_before_any_request() {
+    let stub = Stub::start(approving);
+    let machine = Machine::new();
+    let url = elsewhere(&stub);
+
+    let finished = machine.sign_in(&url).finish();
+
+    assert!(!finished.success, "{finished:?}");
+    assert_eq!(finished.stdout, "");
+    assert_eq!(finished.stderr, cleartext(&url));
+    assert_eq!(stub.requests(), Vec::<String>::new());
+    assert_eq!(machine.files(), Vec::<std::path::PathBuf>::new());
+}
+
+#[test]
+fn session_an_older_skald_stored_for_plain_http_on_another_machine_is_never_used() {
+    let stub = Stub::start(|path| certifying(path, registered));
+    let machine = Machine::new();
+    sign_in_first(&machine, &stub);
+    // As an older skald stored it: the state and the secrets name the same server.
+    let url = elsewhere(&stub);
+    let state = rusqlite::Connection::open(machine.state_dir().join("state.sqlite3")).unwrap();
+    state
+        .execute("UPDATE session SET server = ?1", [&url])
+        .unwrap();
+    drop(state);
+    let file = machine.state_dir().join("secrets.json");
+    let mut secrets: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    secrets["session_server"] = url.clone().into();
+    fs::write(&file, secrets.to_string()).unwrap();
+    let stored = (machine.state_bytes(), fs::read(&file).unwrap());
+    let before = stub.requests().len();
+
+    for args in [
+        &[DEVICES][..],
+        &["sign-out"],
+        &["set-username", "ada-elsewhere"],
+        &["create-space", "acme"],
+    ] {
+        let finished = machine.start(args).finish();
+
+        assert!(!finished.success, "{args:?}: {finished:?}");
+        assert_eq!(finished.stdout, "", "{args:?}");
+        assert_eq!(finished.stderr, cleartext(&url), "{args:?}");
+    }
+    assert_eq!(stub.requests().len(), before);
+    assert_eq!((machine.state_bytes(), fs::read(&file).unwrap()), stored);
+    assert_eq!(machine.files_holding(TOKEN), vec![file]);
 }

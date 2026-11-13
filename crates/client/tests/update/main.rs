@@ -12,6 +12,8 @@
 //! package's launcher writes it beside the `skald` it unpacks.
 
 mod release;
+#[path = "../common/tls.rs"]
+mod tls;
 
 use std::fmt;
 use std::fs;
