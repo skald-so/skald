@@ -10,12 +10,13 @@ mod common;
 mod machine;
 
 use std::fs;
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use common::{CLIENT, Stub, response};
-use machine::{DEVICES, FIRST_DEVICE, KEY_STORAGE, Machine, NAME, SERVER, SIGN_IN, STATE_DIR, YES};
+use common::{Stub, response};
+use machine::{
+    DEVICES, FIRST_DEVICE, KEY_STORAGE, Machine, NAME, SERVER, SIGN_IN, STATE_DIR, YES, bare_skald,
+};
 
 const TOKEN: &str = "tok-stub-0123456789abcdefghijkl";
 const LOGIN: &str = "ada-stub-login";
@@ -211,11 +212,10 @@ fn fails_saying(stub: &Stub, part: &str) {
 }
 
 /// Runs `skald sign-in` against `server` with the file key storage, the environment `env` and
-/// nothing else; gives whether it succeeded and its stderr.
+/// nothing else but what [`bare_skald`] keeps; gives whether it succeeded and its stderr.
 fn sign_in_with(server: &str, env: &[(&str, &std::path::Path)]) -> (bool, String) {
-    let output = Command::new(CLIENT)
+    let output = bare_skald()
         .args([SIGN_IN, SERVER, server])
-        .env_clear()
         .env(KEY_STORAGE, "file")
         .envs(env.iter().copied())
         .output()
