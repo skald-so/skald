@@ -750,3 +750,71 @@ fn device_follows_only_spaces_it_has_an_anchor_for() {
         "acme's members are shown: {other:?}"
     );
 }
+
+/// `skald members` gives the warnings of `skald devices` for each member's devices: of a device on
+/// Bob's account with two certificates of different bodies, naming the device, and of Bob's linked
+/// devices with one name, naming both.
+#[test]
+fn members_warn_of_two_bodies_and_shared_names() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_120_681_801, "ada-checks", "ada-workstation");
+    let bob = world.sign_up(4_120_681_802, "bob-doubles", "bob-workstation");
+    let acme = space(cloud, &ada, &bob, None);
+    // Issued by Bob's device, each a valid certificate alone.
+    let made_up = |name: &str| {
+        let key = SigningKey::generate();
+        let device = DeviceId::from_signing_key(&key.public_key());
+        let body = CertBody {
+            account: bob.account,
+            device,
+            kind: DeviceKind::Client,
+            signing: key.public_key(),
+            hpke: SigningKey::generate().public_key(),
+            issuer: Some(bob.device),
+            issued: now(),
+            ssh: None,
+            name: name.to_owned(),
+            unknown: Unknown::default(),
+        };
+        (key, body)
+    };
+    let (twice_key, mut body) = made_up("bob-first-body");
+    let twice = body.device;
+    let one = issue(&body, &bob.key, &twice_key).expect("a certificate");
+    body.name = "bob-second-body".to_owned();
+    let two = issue(&body, &bob.key, &twice_key).expect("a certificate");
+    let (namesake_key, body) = made_up(bob.host);
+    let namesake = body.device;
+    let same_name = issue(&body, &bob.key, &namesake_key).expect("a certificate");
+    add_devices(
+        cloud,
+        acme.id(),
+        vec![
+            entry(twice, &one),
+            entry(twice, &two),
+            entry(namesake, &same_name),
+        ],
+    );
+
+    let shown = members(&ada.machine, ACME);
+
+    let id = |device: DeviceId| device.to_string().to_lowercase();
+    let warned = warnings(&shown);
+    let of = |device: DeviceId| -> Vec<&String> {
+        warned
+            .iter()
+            .filter(|line| line.contains(&id(device)))
+            .collect()
+    };
+    assert_eq!(of(twice).len(), 1, "no warning of two bodies: {shown:?}");
+    let shared = of(namesake);
+    assert_eq!(shared.len(), 1, "no warning of a shared name: {shown:?}");
+    assert!(
+        shared[0].contains(&id(bob.device)) && shared[0].contains(bob.host),
+        "the warning of a shared name names not both devices: {shown:?}"
+    );
+    assert_device(&shown, bob.device, bob.host);
+    assert_device(&shown, namesake, bob.host);
+    assert_hidden(&shown, &["bob-first-body", "bob-second-body"]);
+}

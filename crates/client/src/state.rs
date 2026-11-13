@@ -697,6 +697,67 @@ mod tests {
         }
     }
 
+    /// Another run accepts revisions of a space while `accepted` reads it, between its reads of the
+    /// last accepted revision and of the hashes: the read holds the revision and the hashes from
+    /// before, or both from after.
+    #[test]
+    fn accepted_revision_and_hashes_are_read_at_once() {
+        use rusqlite::trace::{TraceEvent, TraceEventCodes};
+        use std::cell::RefCell;
+
+        thread_local! {
+            /// The state directory and the space of the other run, until it runs.
+            static OTHER_RUN: RefCell<Option<(PathBuf, SpaceId)>> = const { RefCell::new(None) };
+            /// What the other run's accepting gave.
+            static RAN: RefCell<Option<Result<bool, String>>> = const { RefCell::new(None) };
+        }
+        fn other_run(event: TraceEvent<'_>) {
+            let TraceEvent::Stmt(_, sql) = event else {
+                return;
+            };
+            if !sql.contains("SELECT revision, hash") {
+                return;
+            }
+            let Some((dir, id)) = OTHER_RUN.with(|run| run.borrow_mut().take()) else {
+                return;
+            };
+            let accepted = State::open(&dir)
+                .and_then(|state| {
+                    state.db.busy_timeout(std::time::Duration::ZERO)?;
+                    state.accept(id, &[1], &[(1, [1; 32])], &[2])
+                })
+                .map_err(|err| err.to_string());
+            RAN.with(|ran| *ran.borrow_mut() = Some(accepted));
+        }
+
+        let dir = TestDir::new("state-accepted-at-once");
+        let state = State::open(&dir).unwrap();
+        let acme = SpaceId::generate();
+        state.add_space(acme, "acme", &[1]).unwrap();
+        OTHER_RUN.with(|run| *run.borrow_mut() = Some((dir.to_path_buf(), acme)));
+        state
+            .db
+            .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(other_run));
+
+        let read = state.accepted(acme).unwrap().expect("acme");
+
+        state.db.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        let ran = RAN.with(|ran| ran.borrow().clone());
+        assert!(ran.is_some(), "no other run");
+        let before = Accepted {
+            last: vec![1],
+            hashes: BTreeMap::new(),
+        };
+        let after = Accepted {
+            last: vec![2],
+            hashes: [(1, [1; 32])].into_iter().collect(),
+        };
+        assert!(
+            read == before || read == after,
+            "{read:?}, the other run: {ran:?}"
+        );
+    }
+
     #[test]
     fn device_of_an_older_state_takes_its_sessions_account() {
         let dir = TestDir::new("state-device-account");
