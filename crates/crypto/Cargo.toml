@@ -20,6 +20,10 @@ skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
 
+[features]
+# The acceptance tests of channel groups, until the code they test exists: tests/mls/main.rs.
+acceptance = []
+
 # In WASM: the random generator of the browser or Node.js.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
