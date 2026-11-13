@@ -3,8 +3,8 @@ description: >-
   The release-plz of script/install-release-plz, restored from the Actions cache, or on a miss built,
   each crate checked against its SHA-256, and saved to the cache right after the build.
 # A job runs this before it creates any token, so the cache holds only what the build made. The key
-# names the runner's OS and architecture, the build's version, its crates' versions and the patch's
-# SHA-256. script/release-plz-workflow-test tests this file.
+# names the runner's OS and architecture, the build's version, its crates' versions and the SHA-256
+# of the patch and of script/install-release-plz. script/release-plz-workflow-test tests this file.
 runs:
   using: composite
   steps:
