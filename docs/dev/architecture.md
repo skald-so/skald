@@ -33,7 +33,7 @@
 ## Membership
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
 - **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
-- **Handle:** the creator of a space is its first admin; its handle is its account's username, as the server gives it when the space is created.
+- **Handle:** a space creator's handle is its account's username, as the server gives it when the space is created.
 - **Invite:**
   - an admin's device signs it: [protocol spec](../protocol/membership.md#invite);
   - its secret travels only in the link's fragment and never reaches the server;

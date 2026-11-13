@@ -579,3 +579,41 @@ fn account_without_a_github_sign_in_method_gets_its_username_as_handle() {
     assert_creates(&cloud, &ada, "acme", &handle);
     assert_ne!(handle, ada.user.login, "the handle is the GitHub login");
 }
+
+/// A revision 1 the server refuses drops its space: the run fails saying why, and the device no
+/// longer lists the space. The account has the space on the server without a revision already, so
+/// the server answers the request that creates it with 200, which the relay rewrites to give the
+/// device a space the server does not have; the server refuses its revision 1.
+#[test]
+fn refused_revision_1_drops_its_space_and_says_why() {
+    let (cloud, browser) = setup();
+    let ada = account(
+        &cloud,
+        &browser,
+        4_120_671_801,
+        "ada-refused-standin",
+        "ada-workstation",
+    );
+    let id = cloud.account_of(&ada.token);
+    cloud.execute(&format!(
+        "INSERT INTO spaces (id, name, creator_id) VALUES ('{}', 'acme', '{id}')",
+        SpaceId::generate()
+    ));
+    let unknown = SpaceId::generate().to_string();
+    cloud.relay.rewrite(CREATE, move |body| {
+        let mut answer: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        answer["space"] = json!(unknown);
+        answer.to_string()
+    });
+    let since = cloud.relay.mark();
+
+    let refused = create_space(&ada.machine, "acme");
+
+    assert!(!refused.success, "{refused:?}");
+    assert_eq!(cloud.count_sent(since, STORE), 1, "no revision 1 was sent");
+    assert!(
+        says_why(&cloud, since, &refused, &[]),
+        "it does not say why: {refused:?}"
+    );
+    assert_eq!(line_of(&spaces(&ada.machine), "acme"), None);
+}
