@@ -53,7 +53,7 @@ cargo run -p skald-client -- sign-in --server http://127.0.0.1:8080
 Web UI: [web/README.md](web/README.md).
 
 ## Tests
-`./script/test` builds everything and runs all checks; exit code 0 only if all of them pass. It starts its own PostgreSQL container and removes it afterwards. CI runs the same script.
+`./script/test` builds everything and runs all checks; exit code 0 only if all of them pass. It starts its own PostgreSQL container and removes it afterwards. CI runs the same script. To run only the parts your changes touch: [infrastructure.md](docs/dev/infrastructure.md#pr-checks), "Path filters".
 
 `./script/mutants origin/dev` mutates the Rust code changed on your branch and runs the tests of each mutated crate; it lists every mutant no test catches (rule 2 in [rules.md](rules.md)).
 

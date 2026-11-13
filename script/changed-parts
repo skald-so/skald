@@ -1,39 +1,68 @@
 #!/usr/bin/env bash
-# Prints which parts of script/test the changes from <base> to HEAD touch, as `<part>=true|false`
-# lines for $GITHUB_OUTPUT. CI checks only those parts; script/test alone checks all of them.
-#   rust     crates/ (with the skald-server image definition), Cargo.toml, Cargo.lock, deny.toml,
-#            prototypes/
-#   web      web/; its package.json and package-lock.json also rust: the server's sign-in tests
-#            drive Chrome with its playwright-core
-#   none     docs/, Markdown files in the root
-#   all      any other path: the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
-# Usage: script/changed-parts <base>, in the repository to check.
+# Prints which parts of script/test the changes touch, as `<part>=true|false` lines for
+# $GITHUB_OUTPUT. CI checks only those parts of a PR, and script/test with SKALD_TEST_SINCE only
+# those of the working tree; script/test alone checks all of them. The paths and their parts:
+#   crates/ (with the skald-server image definition), Cargo.toml, Cargo.lock: workspace, wasm,
+#     image, repository
+#   deny.toml: repository
+#   prototypes/mls/, prototypes/agents/, prototypes/edits/: mls, agents and edits, each with
+#     repository; prototypes/mls/Cargo.lock also wasm: the crates' WASM tests take its wasm-bindgen
+#   any other path in prototypes/: every part of the Rust code, all but tooling and web
+#   web/: web; its package.json and package-lock.json also workspace: the server's and the client's
+#     sign-in tests drive Chrome with its playwright-core
+#   docs/, Markdown files in the root: none
+#   any other path: all; the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
+# Usage, in the repository to check:
+#   script/changed-parts <base>          the changes from <base> to HEAD, as CI checks a PR
+#   script/changed-parts --since <base>  the changes from where HEAD branched off <base> to the
+#                                        working tree, uncommitted and untracked files included
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: $0 <base>" >&2
+# --no-renames lists both paths of a moved file. Unusual names stay quoted and check everything.
+if [[ $# -eq 1 && $1 != -* ]]; then
+  paths=$(git -c core.quotePath=false diff --name-only --no-renames "$1" HEAD)
+elif [[ $# -eq 2 && $1 == --since ]]; then
+  fork=$(git merge-base "$2" HEAD)
+  paths=$(git -c core.quotePath=false diff --name-only --no-renames "$fork")
+  untracked=$(git -c core.quotePath=false ls-files --others --exclude-standard)
+  paths+=$'\n'$untracked
+else
+  echo "usage: $0 [--since] <base>" >&2
   exit 2
 fi
 
-# --no-renames lists both paths of a moved file. Unusual names stay quoted and check everything.
-paths=$(git -c core.quotePath=false diff --name-only --no-renames "$1" HEAD)
+parts='workspace wasm image mls agents edits repository tooling web'
+for part in $parts; do printf -v "$part" false; done
+# mark <part>...: the changes touch these parts.
+mark() { for part in "$@"; do printf -v "$part" true; done; }
 
-rust=false web=false tooling=false
 while IFS= read -r path; do
   if [[ -z $path ]]; then
     continue
   elif [[ $path == web/package.json || $path == web/package-lock.json ]]; then
-    web=true rust=true
+    mark web workspace
   elif [[ $path == web/* ]]; then
-    web=true
-  elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock || $path == deny.toml ||
-    $path == prototypes/* ]]; then
-    rust=true
+    mark web
+  elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock ]]; then
+    mark workspace wasm image repository
+  elif [[ $path == deny.toml ]]; then
+    mark repository
+  elif [[ $path == prototypes/mls/Cargo.lock ]]; then
+    mark mls wasm repository
+  elif [[ $path == prototypes/mls/* ]]; then
+    mark mls repository
+  elif [[ $path == prototypes/agents/* ]]; then
+    mark agents repository
+  elif [[ $path == prototypes/edits/* ]]; then
+    mark edits repository
+  elif [[ $path == prototypes/* ]]; then
+    mark workspace wasm image mls agents edits repository
   elif [[ $path == docs/* || ($path == *.md && $path != */*) ]]; then
     continue
   else
-    rust=true web=true tooling=true
+    # $parts unquoted: one word per part.
+    mark $parts
   fi
 done <<<"$paths"
 
-printf 'rust=%s\nweb=%s\ntooling=%s\n' "$rust" "$web" "$tooling"
+for part in $parts; do echo "$part=${!part}"; done
