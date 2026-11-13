@@ -1,4 +1,4 @@
-//! The helpers' setup of a test's database (`common`): a step PostgreSQL fails by resetting the
+//! The helpers' connections and databases (`common`): a step PostgreSQL fails by resetting the
 //! connection is tried again, a few times; any other error is not; a server that fails to start
 //! drops the database it made, as one that stops does.
 
@@ -6,6 +6,7 @@
 mod common;
 
 use std::cell::Cell;
+use std::future::{Ready, ready};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 
@@ -16,25 +17,32 @@ fn io_error(kind: io::ErrorKind) -> sqlx::Error {
     sqlx::Error::Io(io::Error::from(kind))
 }
 
+/// What [`retried_on_reset`] gives for `step`, whose result is ready at once.
+fn retried<T>(step: impl FnMut() -> Ready<Result<T, sqlx::Error>>) -> Result<T, sqlx::Error> {
+    tokio::runtime::Runtime::new()
+        .expect("start a tokio runtime")
+        .block_on(retried_on_reset("a step", step))
+}
+
 #[test]
 fn only_a_reset_is_retried_and_only_a_few_times() {
     // Resets, then success.
     let calls = Cell::new(0);
-    let result = retried_on_reset("a step", || {
+    let result = retried(|| {
         calls.set(calls.get() + 1);
-        if calls.get() < 3 {
+        ready(if calls.get() < 3 {
             Err(io_error(io::ErrorKind::ConnectionReset))
         } else {
             Ok(calls.get())
-        }
+        })
     });
     assert_eq!(result.ok(), Some(3));
 
     // Resets only: the last one is the error.
     let calls = Cell::new(0);
-    let result: Result<(), _> = retried_on_reset("a step", || {
+    let result: Result<(), _> = retried(|| {
         calls.set(calls.get() + 1);
-        Err(io_error(io::ErrorKind::ConnectionReset))
+        ready(Err(io_error(io::ErrorKind::ConnectionReset)))
     });
     assert_eq!(calls.get(), SETUP_ATTEMPTS);
     assert!(
@@ -51,9 +59,9 @@ fn only_a_reset_is_retried_and_only_a_few_times() {
     ];
     for error in others {
         let calls = Cell::new(0);
-        let result: Result<(), _> = retried_on_reset("a step", || {
+        let result: Result<(), _> = retried(|| {
             calls.set(calls.get() + 1);
-            Err(error())
+            ready(Err(error()))
         });
         assert!(result.is_err());
         assert_eq!(calls.get(), 1, "{result:?}");

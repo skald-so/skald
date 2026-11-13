@@ -2,11 +2,12 @@
 //! database, or against a stub that gives canned answers.
 
 use std::env;
+use std::future::Future;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -96,10 +97,11 @@ impl Server {
         let runtime = Runtime::new().expect("start a tokio runtime");
         let db = TestDb::create(&runtime);
         let url = db.url();
-        let pool = retried_on_reset("connect to the test database", || {
-            runtime.block_on(skald_server::connect(&url))
-        })
-        .expect("connect to the test database");
+        let pool = runtime
+            .block_on(retried_on_reset("connect to the test database", || {
+                skald_server::connect(&url)
+            }))
+            .expect("connect to the test database");
         let listener = runtime.block_on(async {
             skald_server::MIGRATOR
                 .run(&pool)
@@ -131,7 +133,7 @@ impl Server {
         let runtime = Runtime::new().expect("start a tokio runtime");
         runtime
             .block_on(async {
-                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                let mut conn = connect(&self.db.url()).await?;
                 sqlx::raw_sql("SET xmlbinary = hex")
                     .execute(&mut conn)
                     .await?;
@@ -156,7 +158,7 @@ impl Server {
         let runtime = Runtime::new().expect("start a tokio runtime");
         runtime
             .block_on(async {
-                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                let mut conn = connect(&self.db.url()).await?;
                 sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut conn).await?;
                 conn.close().await
             })
@@ -172,28 +174,27 @@ impl Drop for Server {
     }
 }
 
-/// How many times a step of a test database's setup is tried while PostgreSQL resets its
-/// connection, and the wait before the first retry, doubled before each next one: 1.5 s in all.
+/// How many times a connection is tried while PostgreSQL resets it, and the wait before the first
+/// retry, doubled before each next one: 1.5 s in all.
 pub const SETUP_ATTEMPTS: u32 = 5;
 const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
 
 /// The result of `step`, `what`, tried again while PostgreSQL resets its connection, up to
-/// [`SETUP_ATTEMPTS`] times. On Windows PostgreSQL starts a process for each new connection, and
-/// one that fails to start under load closes the connection unread, which Windows reports as
-/// reset; PostgreSQL itself goes on. Any other error is returned at once.
-pub fn retried_on_reset<T>(
+/// [`SETUP_ATTEMPTS`] times; any other error is returned at once. Under the load of the client's
+/// tests PostgreSQL on Windows now and then resets a new connection and goes on serving the others.
+pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
-    mut step: impl FnMut() -> Result<T, sqlx::Error>,
+    mut step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
     let mut wait = SETUP_RETRY_WAIT;
     let mut attempt = 1;
     loop {
-        match step() {
+        match step().await {
             Err(sqlx::Error::Io(err))
                 if err.kind() == io::ErrorKind::ConnectionReset && attempt < SETUP_ATTEMPTS =>
             {
                 eprintln!("{what}: PostgreSQL reset the connection: {err}; again in {wait:?}");
-                thread::sleep(wait);
+                tokio::time::sleep(wait).await;
                 wait *= 2;
                 attempt += 1;
             }
@@ -202,13 +203,19 @@ pub fn retried_on_reset<T>(
     }
 }
 
+/// A new connection to the database at `url`, tried again while PostgreSQL resets it. Only
+/// opening it is: a statement may have run when its connection resets.
+async fn connect(url: &str) -> Result<PgConnection, sqlx::Error> {
+    retried_on_reset("connect to PostgreSQL", || PgConnection::connect(url)).await
+}
+
 /// The names of the test databases this process has on the PostgreSQL server.
 pub fn test_databases() -> Vec<String> {
     let runtime = Runtime::new().expect("start a tokio runtime");
     let prefix = format!("{}{}_", TestDb::PREFIX, process::id());
     runtime
         .block_on(async {
-            let mut conn = PgConnection::connect(&format!("{}/postgres", server())).await?;
+            let mut conn = connect(&format!("{}/postgres", server())).await?;
             let names: Vec<(String,)> = sqlx::query_as("SELECT datname FROM pg_database")
                 .fetch_all(&mut conn)
                 .await?;
@@ -241,9 +248,6 @@ impl TestDb {
 
     fn create(runtime: &Runtime) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        // One at a time: the tests of a binary start together, and so would their `CREATE
-        // DATABASE`s, each copying the template database.
-        static CREATING: Mutex<()> = Mutex::new(());
         let name = format!(
             "{}{}_{}",
             Self::PREFIX,
@@ -255,18 +259,14 @@ impl TestDb {
             server: server(),
             name,
         };
-        let one_at_a_time = CREATING.lock().unwrap_or_else(PoisonError::into_inner);
-        retried_on_reset("create a test database", || {
-            db.admin(
-                runtime,
-                &[
-                    format!("DROP DATABASE IF EXISTS {}", db.name),
-                    format!("CREATE DATABASE {}", db.name),
-                ],
-            )
-        })
+        db.admin(
+            runtime,
+            &[
+                format!("DROP DATABASE IF EXISTS {}", db.name),
+                format!("CREATE DATABASE {}", db.name),
+            ],
+        )
         .expect("create a test database");
-        drop(one_at_a_time);
         db
     }
 
@@ -278,7 +278,7 @@ impl TestDb {
     /// like `CREATE DATABASE`, cannot share a transaction.
     fn admin(&self, runtime: &Runtime, statements: &[String]) -> Result<(), sqlx::Error> {
         runtime.block_on(async {
-            let mut conn = PgConnection::connect(&format!("{}/postgres", self.server)).await?;
+            let mut conn = connect(&format!("{}/postgres", self.server)).await?;
             for sql in statements {
                 sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
                     .execute(&mut conn)
@@ -293,9 +293,7 @@ impl Drop for TestDb {
     fn drop(&mut self) {
         let runtime = Runtime::new().expect("start a tokio runtime");
         let statement = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
-        if let Err(err) = retried_on_reset("drop a test database", || {
-            self.admin(&runtime, std::slice::from_ref(&statement))
-        }) {
+        if let Err(err) = self.admin(&runtime, &[statement]) {
             eprintln!("cannot drop the test database {}: {err}", self.name);
         }
     }
