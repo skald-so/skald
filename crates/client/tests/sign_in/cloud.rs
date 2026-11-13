@@ -264,6 +264,17 @@ impl Cloud {
         (machine, finished)
     }
 
+    /// Waits until the relay has lost an answer of the server to `request`, for up to [`WAIT`],
+    /// then kills `run`, which sent it.
+    pub fn kill_once_lost(&self, run: Run, request: &str) {
+        let deadline = Instant::now() + WAIT;
+        while self.relay.lost() == 0 {
+            assert!(Instant::now() < deadline, "no {request}: {}", run.shown());
+            thread::sleep(Duration::from_millis(50));
+        }
+        drop(run);
+    }
+
     /// What every table of the server's database holds, one XML document per table.
     pub fn rows(&self) -> Vec<String> {
         self.server.rows()

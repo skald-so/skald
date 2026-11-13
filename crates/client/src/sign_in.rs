@@ -43,9 +43,9 @@ struct Token {
 
 /// The session's account, from `GET /session`.
 #[derive(Deserialize)]
-struct Account {
-    account: String,
-    username: String,
+pub struct Account {
+    pub account: String,
+    pub username: String,
 }
 
 /// Why a sign-in failed.

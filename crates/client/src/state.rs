@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use skald_proto::DeviceId;
+use skald_proto::{DeviceId, SpaceId};
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
@@ -46,6 +46,16 @@ const MIGRATIONS: &[&str] = &[
     // older than this column has no username until its next sign-in or `skald set-username`.
     "ALTER TABLE session DROP COLUMN github_login;
     ALTER TABLE session ADD COLUMN username TEXT;",
+    // The spaces the device accepted a revision of: each one's ID and name, its anchor (revision 1
+    // of a space it created) and the last revision it accepted, as their CBOR bytes, and the
+    // revision it signed that the server has not taken yet, if any.
+    "CREATE TABLE space (
+        space TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        anchor BLOB NOT NULL,
+        accepted BLOB NOT NULL,
+        pending BLOB
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -113,6 +123,19 @@ pub enum Link {
     Certified { master: [u8; 32], cert: Vec<u8> },
     /// It waits for linking by another device of the account.
     Waiting,
+}
+
+/// A space the device accepted a revision of, as the state holds it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Space {
+    pub id: SpaceId,
+    pub name: String,
+    /// Its anchor, in CBOR: revision 1 of a space the device created.
+    pub anchor: Vec<u8>,
+    /// The last revision the device accepted, in CBOR.
+    pub accepted: Vec<u8>,
+    /// The revision the device signed that the server has not taken yet, in CBOR.
+    pub pending: Option<Vec<u8>>,
 }
 
 /// Why the state cannot be used.
@@ -292,6 +315,64 @@ impl State {
         )?;
         Ok(())
     }
+
+    /// The spaces the device accepted a revision of, by name.
+    pub fn spaces(&self) -> Result<Vec<Space>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT space, name, anchor, accepted, pending FROM space ORDER BY name")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, name, anchor, accepted, pending) = row?;
+            let id = id
+                .parse()
+                .map_err(|err| Error::Malformed(format!("the space ID {id:?}: {err}")))?;
+            Ok(Space {
+                id,
+                name,
+                anchor,
+                accepted,
+                pending,
+            })
+        })
+        .collect()
+    }
+
+    /// Records the space `id` named `name` that the device created, with its revision 1 `first`,
+    /// in CBOR, as its anchor and last accepted revision, and as pending until the server takes it.
+    pub fn add_space(&self, id: SpaceId, name: &str, first: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO space (space, name, anchor, accepted, pending) VALUES (?1, ?2, ?3, ?3, ?3)",
+            params![id.to_string(), name, first],
+        )?;
+        Ok(())
+    }
+
+    /// Records that the server took the pending revision of the space `id`.
+    pub fn set_taken(&self, id: SpaceId) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE space SET pending = NULL WHERE space = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the space `id`.
+    pub fn remove_space(&self, id: SpaceId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM space WHERE space = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
 }
 
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
@@ -414,6 +495,49 @@ mod tests {
             state.device().unwrap().unwrap().account.as_deref(),
             Some("0190")
         );
+    }
+
+    #[test]
+    fn spaces_are_kept_across_opens_with_their_pending_revision_until_taken() {
+        let dir = TestDir::new("state-spaces");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.spaces().unwrap(), vec![]);
+        let (globex, acme) = (SpaceId::generate(), SpaceId::generate());
+        state.add_space(globex, "globex", &[2, 2]).unwrap();
+        state.add_space(acme, "acme", &[1, 1]).unwrap();
+        assert!(
+            state.add_space(SpaceId::generate(), "acme", &[3]).is_err(),
+            "one name"
+        );
+        assert!(state.add_space(acme, "other", &[3]).is_err(), "one ID");
+        state.set_taken(acme).unwrap();
+
+        let space = |id, name: &str, bytes: &[u8], pending: bool| Space {
+            id,
+            name: name.to_owned(),
+            anchor: bytes.to_vec(),
+            accepted: bytes.to_vec(),
+            pending: pending.then(|| bytes.to_vec()),
+        };
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.spaces().unwrap(),
+            vec![
+                space(acme, "acme", &[1, 1], false),
+                space(globex, "globex", &[2, 2], true),
+            ]
+        );
+        state.remove_space(globex).unwrap();
+        assert_eq!(
+            state.spaces().unwrap(),
+            vec![space(acme, "acme", &[1, 1], false)]
+        );
+        state
+            .db
+            .execute("UPDATE space SET space = 'not an ID'", [])
+            .unwrap();
+        let error = state.spaces().expect_err("malformed");
+        assert!(matches!(error, Error::Malformed(_)), "{error:?}");
     }
 
     #[test]
