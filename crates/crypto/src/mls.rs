@@ -393,6 +393,19 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_history_key_is_the_epochs_mls_exporter_secret() {
+        let mut device = device();
+        let channel = ChannelId::from_bytes([5; 16]);
+        device.create_group(channel).unwrap();
+        let group = device.group(channel).unwrap();
+        assert_eq!(group.current_epoch(), 0);
+        let exported = group.export_secret(b"skald history", b"", 16).unwrap();
+        let key = device.history_key(channel, 0).expect("epoch 0's key");
+        assert_eq!(key.to_bytes().as_slice(), exported.as_bytes());
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn each_error_says_what_failed() {
         let channel = ChannelId::from_bytes([4; 16]);
         let messages: BTreeSet<String> = [
