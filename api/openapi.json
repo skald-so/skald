@@ -213,6 +213,113 @@
         }
       }
     },
+    "/account/username": {
+      "put": {
+        "operationId": "putUsername",
+        "summary": "Set the account's username",
+        "description": "Sets the username of the session's account, from a web or a device session. A refused username leaves the old one.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsernameRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Set: the account has this username.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body, or a username that is not a `name` of an agent address.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The username is reserved, or another account has it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/device": {
       "post": {
         "operationId": "authorizeDevice",
@@ -580,7 +687,7 @@
       "get": {
         "operationId": "getDeviceVerificationPage",
         "summary": "The device flow's verification page",
-        "description": "Opened by the person's browser at `verification_uri` or `verification_uri_complete`. With a web session, it names the account's GitHub login, says that approving signs a machine in to that account and asks for the user code, filled in from `user_code`, with the buttons Approve and Deny, which submit `POST /device`. Opening it decides nothing.",
+        "description": "Opened by the person's browser at `verification_uri` or `verification_uri_complete`. With a web session, it names the account's username, says that approving signs a machine in to that account and asks for the user code, filled in from `user_code`, with the buttons Approve and Deny, which submit `POST /device`. Opening it decides nothing.",
         "parameters": [
           {
             "name": "user_code",
@@ -1618,13 +1725,16 @@
       },
       "Session": {
         "type": "object",
-        "required": ["account", "github_login"],
+        "required": ["account", "username"],
         "properties": {
           "account": {
             "$ref": "#/components/schemas/AccountId"
           },
+          "username": {
+            "$ref": "#/components/schemas/Username"
+          },
           "github_login": {
-            "description": "The GitHub login of the account's user as of its latest sign-in, for display.",
+            "description": "The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one.",
             "type": "string"
           }
         },
@@ -1639,6 +1749,23 @@
         },
         "minItems": 1,
         "maxItems": 2
+      },
+      "Username": {
+        "description": "An account's username: a `name` of an agent address (docs/protocol/README.md, \"Agent address\"), unique on the server; `skald`, `admin`, `support` and `root` are reserved.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 63,
+        "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+      },
+      "UsernameRequest": {
+        "type": "object",
+        "required": ["username"],
+        "properties": {
+          "username": {
+            "$ref": "#/components/schemas/Username"
+          }
+        },
+        "additionalProperties": false
       }
     }
   }

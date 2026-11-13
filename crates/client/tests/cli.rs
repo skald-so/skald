@@ -27,3 +27,29 @@ fn version_prints_workspace_version() {
     );
     assert!(output.stderr.is_empty(), "unexpected stderr");
 }
+
+/// `skald --help` names this platform's default state directory, and no other platform's.
+#[test]
+fn help_names_the_platforms_state_directory() {
+    let output = Command::new(env!("CARGO_BIN_EXE_skald"))
+        .arg("--help")
+        .output()
+        .expect("run skald");
+
+    assert!(output.status.success(), "exit status: {}", output.status);
+    let help = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    let defaults = [
+        (cfg!(windows), r"[default: %LOCALAPPDATA%\skald]"),
+        (
+            cfg!(target_os = "macos"),
+            "[default: ~/Library/Application Support/skald]",
+        ),
+        (
+            !cfg!(any(windows, target_os = "macos")),
+            "[default: $XDG_STATE_HOME/skald or ~/.local/state/skald]",
+        ),
+    ];
+    for (this_platform, default) in defaults {
+        assert_eq!(help.contains(default), this_platform, "{default}: {help}");
+    }
+}
