@@ -4,7 +4,7 @@
 use skald_crypto::{MlsDevice, SealedState};
 use skald_proto::{ChannelId, DeviceId};
 
-use crate::fixtures::{load, new_state};
+use crate::fixtures::{NOW, admitted, load, new_state};
 
 /// The bytes of a KeyPackage, Commit, Welcome or message the crate gives.
 pub fn bytes(value: impl AsRef<[u8]>) -> Vec<u8> {
@@ -25,7 +25,7 @@ pub fn with_key_packages(seed: u8, count: usize) -> (SealedState, Vec<Vec<u8>>) 
     let packages = (0..count)
         .map(|_| {
             step(seed, &mut state, |device| {
-                bytes(device.key_package().expect("a KeyPackage"))
+                bytes(device.key_package(NOW).expect("a KeyPackage"))
             })
         })
         .collect();
@@ -36,13 +36,13 @@ pub fn with_key_packages(seed: u8, count: usize) -> (SealedState, Vec<Vec<u8>>) 
 pub fn creator(seed: u8, channel: ChannelId) -> SealedState {
     let (mut state, _) = with_key_packages(seed, 1);
     step(seed, &mut state, |device| {
-        device.create_group(channel).expect("a new group");
+        device.create_group(channel, NOW).expect("a new group");
     });
     state
 }
 
-/// Device `seed` adds the devices of `key_packages` to `channel`'s group and commits; gives the
-/// Commit.
+/// Device `seed` adds the devices of `key_packages` to `channel`'s group and commits, the tests'
+/// devices admitted; gives the Commit.
 pub fn add(
     seed: u8,
     state: &mut SealedState,
@@ -52,7 +52,7 @@ pub fn add(
     step(seed, state, |device| {
         bytes(
             device
-                .add_devices(channel, key_packages)
+                .add_devices(channel, key_packages, admitted(), NOW)
                 .expect("a Commit of the Adds"),
         )
     })
@@ -73,7 +73,9 @@ pub fn stored(seed: u8, state: &mut SealedState, channel: ChannelId) -> Vec<u8> 
 /// Device `seed` joins from `welcome`, the caller's checks passing; gives the channel joined.
 pub fn join(seed: u8, state: &mut SealedState, welcome: &[u8]) -> ChannelId {
     step(seed, state, |device| {
-        device.join(welcome, |_| true).expect("the device joins")
+        device
+            .join(welcome, NOW, |_| true)
+            .expect("the device joins")
     })
 }
 
