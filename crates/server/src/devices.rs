@@ -4,7 +4,8 @@
 
 use axum::Json;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{FromRequestParts, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -21,7 +22,7 @@ use crate::{AppState, database_failed, problem};
 const CLIENT: &str = "client";
 
 /// Why the server refuses a request.
-enum Refusal {
+pub(crate) enum Refusal {
     NotSignedIn,
     /// A malformed or invalid body, for the reason it holds.
     Invalid(String),
@@ -29,6 +30,15 @@ enum Refusal {
     Cert(String),
     DeviceTaken,
     MasterKeyTaken,
+    /// No such space, or the session's account does not get it.
+    NoSpace,
+    /// The session's account may not do this in the space, for the reason it holds.
+    NotAllowed(String),
+    /// A roster revision the server does not store, for the reason it holds.
+    Roster(String),
+    SpaceNameTaken,
+    /// A roster revision out of order or with a taken number, for the reason it holds.
+    RevisionConflict(String),
     /// The database failed at what it holds, such as `read a session`.
     Database(&'static str, sqlx::Error),
 }
@@ -54,13 +64,37 @@ impl IntoResponse for Refusal {
                 "The account has a master key",
                 "The account has another master key, or took another certificate with it.",
             ),
+            Refusal::NoSpace => problem(
+                StatusCode::NOT_FOUND,
+                "no-space",
+                "No such space",
+                "No such space, or the session's account does not get it.",
+            ),
+            Refusal::NotAllowed(detail) => {
+                problem(StatusCode::FORBIDDEN, "not-allowed", "Not allowed", &detail)
+            }
+            Refusal::Roster(detail) => {
+                problem(bad, "invalid-roster", "Invalid roster revision", &detail)
+            }
+            Refusal::SpaceNameTaken => problem(
+                StatusCode::CONFLICT,
+                "space-name-taken",
+                "Space name taken",
+                "Another space has this name, or the account's space with it has a revision.",
+            ),
+            Refusal::RevisionConflict(detail) => problem(
+                StatusCode::CONFLICT,
+                "revision-conflict",
+                "Revision out of order",
+                &detail,
+            ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }
     }
 }
 
 /// What a handler answers: a response, or why it refuses.
-type Answer = Result<Response, Refusal>;
+pub(crate) type Answer = Result<Response, Refusal>;
 
 /// The ID of the account of the request's session.
 async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, Refusal> {
@@ -70,16 +104,32 @@ async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, Refusal> {
     Ok(session.ok_or(Refusal::NotSignedIn)?.account)
 }
 
+/// The ID of the account of the request's session, as a handler's argument.
+pub(crate) struct SignedIn(pub String);
+
+impl FromRequestParts<AppState> for SignedIn {
+    type Rejection = Refusal;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
+        Ok(SignedIn(account(&state.db, &parts.headers).await?))
+    }
+}
+
 /// The JSON `body` as a `T`.
-fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
+pub(crate) fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
     serde_json::from_slice(body).map_err(|err| Refusal::Invalid(format!("not a valid body: {err}")))
 }
 
 /// The bytes of `text`, base64url without padding; `field` names it in the refusal.
-fn bytes(text: &str, field: &str) -> Result<Vec<u8>, Refusal> {
+pub(crate) fn bytes(text: &str, field: &str) -> Result<Vec<u8>, Refusal> {
     URL_SAFE_NO_PAD
         .decode(text)
         .map_err(|_| Refusal::Invalid(format!("{field}: not base64url without padding")))
+}
+
+/// `bytes` in base64url without padding.
+pub(crate) fn base64(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// The public key of 32 bytes in `text`, as [`bytes`] reads it.
@@ -90,7 +140,7 @@ fn key(text: &str, field: &str) -> Result<[u8; 32], Refusal> {
 }
 
 /// `200`, or `201` once `created`, with `body` in JSON.
-fn taken(created: bool, body: impl Serialize) -> Answer {
+pub(crate) fn taken(created: bool, body: impl Serialize) -> Answer {
     let status = if created {
         StatusCode::CREATED
     } else {
@@ -115,15 +165,26 @@ impl Device {
     fn new(device: String, cert: Option<Vec<u8>>) -> Self {
         Device {
             device,
-            cert: cert.map(|cert| URL_SAFE_NO_PAD.encode(cert)),
+            cert: cert.as_deref().map(base64),
         }
     }
 }
 
 /// `Devices` in the spec.
 #[derive(Serialize)]
-struct Devices {
+pub(crate) struct Devices {
     devices: Vec<Device>,
+}
+
+impl Devices {
+    /// The devices `found`, each an ID and its certificate as the device sent it.
+    pub(crate) fn of(found: Vec<(String, Option<Vec<u8>>)>) -> Self {
+        let devices = found
+            .into_iter()
+            .map(|(device, cert)| Device::new(device, cert))
+            .collect();
+        Devices { devices }
+    }
 }
 
 /// `MasterKey` in the spec.
@@ -135,7 +196,7 @@ struct MasterKey {
 impl MasterKey {
     fn new(master: Option<&[u8]>) -> Self {
         MasterKey {
-            master: master.map(|master| URL_SAFE_NO_PAD.encode(master)),
+            master: master.map(base64),
         }
     }
 }
@@ -236,11 +297,7 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         .fetch_all(&state.db)
         .await
         .map_err(|err| Refusal::Database("read the devices", err))?;
-        let devices = found
-            .into_iter()
-            .map(|(device, cert)| Device::new(device, cert))
-            .collect();
-        Ok(Json(Devices { devices }).into_response())
+        Ok(Json(Devices::of(found)).into_response())
     })
     .await
 }

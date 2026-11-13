@@ -32,4 +32,5 @@ mod channels;
 mod checks;
 mod create;
 mod order;
+mod retry;
 mod rosters;
