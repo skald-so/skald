@@ -2,6 +2,9 @@
 //! bytes, hex, base64 or base64url with or without padding, or a list of byte values such as a JSON
 //! array.
 
+use std::fs;
+use std::path::PathBuf;
+
 use base64::Engine as _;
 use base64::alphabet::STANDARD;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
@@ -41,6 +44,18 @@ pub fn private_key(
     candidates(bytes)
         .into_iter()
         .find(|candidate| public_of(candidate) == *public)
+}
+
+/// The Ed25519 private key whose public key is `public`, from `holders`, the files of a machine that
+/// hold its session token: its secrets file, the one such file.
+// The device key tests, which include this module, read their keys otherwise.
+#[allow(dead_code)]
+pub fn signing_key(holders: &[PathBuf], public: &[u8; 32]) -> SigningKey {
+    assert_eq!(holders.len(), 1, "the secrets file: {holders:?}");
+    let secrets = fs::read(&holders[0]).expect("read the secrets file");
+    let seed =
+        private_key(&secrets, public, ed25519).expect("the secrets file holds the signing key");
+    SigningKey::from_bytes(&seed)
 }
 
 /// Every 32 bytes in `bytes`, in any of the encodings above, that look random, as a private key
