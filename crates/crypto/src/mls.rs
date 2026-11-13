@@ -688,6 +688,103 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_refused_commits_welcome_is_never_handed_out_later() {
+        let channel = ChannelId::from_bytes([10; 16]);
+        let no_device: [&[u8]; 0] = [];
+        let mut creator = seeded(18);
+        let first = seeded(19).key_package().unwrap();
+        let second = seeded(20).key_package().unwrap();
+
+        creator.create_group(channel).unwrap();
+        // A Commit refused at epoch 0, then one at epoch 1; after each, a Commit that adds no
+        // device.
+        for (package, epoch) in [(&first, 1), (&second, 2)] {
+            creator.add_devices(channel, &[package]).unwrap();
+            creator = reloaded(&creator);
+            creator.commit_refused(channel).unwrap();
+            creator = reloaded(&creator);
+            if epoch == 1 {
+                // The group of epoch 0 is dropped: the creator forms a new one.
+                creator.create_group(channel).unwrap();
+            }
+            creator.add_devices(channel, &no_device).unwrap();
+            creator = reloaded(&creator);
+            assert!(
+                creator.commit_stored(channel).unwrap().is_none(),
+                "the Welcome of the Commit refused before epoch {epoch}"
+            );
+            assert_eq!(creator.epoch(channel).unwrap(), epoch);
+            assert_eq!(creator.members(channel).unwrap().len(), 1);
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_creator_whose_first_commit_is_refused_holds_no_history_key_of_the_dropped_group() {
+        let channel = ChannelId::from_bytes([11; 16]);
+        let mut kept = seeded(21);
+        let mut refused = seeded(22);
+        let package = refused.key_package().unwrap();
+        let other = seeded(23).key_package().unwrap();
+
+        refused.create_group(channel).unwrap();
+        refused.add_devices(channel, &[&other]).unwrap();
+        refused = reloaded(&refused);
+        refused.commit_refused(channel).unwrap();
+        refused = reloaded(&refused);
+        for epoch in 0..2 {
+            assert!(
+                refused.history_key(channel, epoch).is_none(),
+                "epoch {epoch}"
+            );
+        }
+
+        kept.create_group(channel).unwrap();
+        kept.add_devices(channel, &[&package]).unwrap();
+        let welcome = kept.commit_stored(channel).unwrap().unwrap();
+        refused.join(&welcome, |_| true).unwrap();
+        refused = reloaded(&refused);
+        assert!(refused.history_key(channel, 0).is_none());
+        assert_eq!(
+            refused.history_key(channel, 1).unwrap().to_bytes(),
+            kept.history_key(channel, 1).unwrap().to_bytes()
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_welcome_names_its_signer_at_any_leaf() {
+        let channel = ChannelId::from_bytes([12; 16]);
+        let mut creator = seeded(24);
+        let mut adder = seeded(25);
+        let mut joiner = seeded(26);
+        let adder_package = adder.key_package().unwrap();
+        let joiner_package = joiner.key_package().unwrap();
+
+        creator.create_group(channel).unwrap();
+        creator.add_devices(channel, &[&adder_package]).unwrap();
+        let welcome = creator.commit_stored(channel).unwrap().unwrap();
+        adder.join(&welcome, |_| true).unwrap();
+        adder = reloaded(&adder);
+        adder.add_devices(channel, &[&joiner_package]).unwrap();
+        adder = reloaded(&adder);
+        let welcome = adder.commit_stored(channel).unwrap().unwrap();
+
+        let mut seen = None;
+        joiner
+            .join(&welcome, |joining| {
+                seen = Some(joining.clone());
+                true
+            })
+            .unwrap();
+        let joining = seen.expect("the Welcome reached the caller");
+        assert_eq!(joining.members.len(), 3);
+        assert_eq!(joining.signer, joining.members[1]);
+        assert_eq!(joining.signer.device, adder.id());
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn only_a_private_message_is_decrypted() {
         let channel = ChannelId::from_bytes([8; 16]);
         let mut creator = seeded(14);
