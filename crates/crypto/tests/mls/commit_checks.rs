@@ -4,20 +4,25 @@
 //! a KeyPackage whose lifetime does not hold at the caller's time or spans more than 60 days is
 //! refused and leaves the state as it was. A Welcome is refused if a leaf of its tree has a
 //! lifetime that spans more than 60 days, whether or not it still holds; one whose members' leaves
-//! only expired joins. The Commits and Welcomes the crate would not make come from a member on
-//! mls-rs of the tests' own.
+//! only expired joins. A device whose own Commit is pending keeps it and its Welcome through
+//! another device's Commit it refuses, and commits nothing else until the server stores or refuses
+//! it. The Commits and Welcomes the crate would not make come from a member on mls-rs of the
+//! tests' own.
 
 use std::time::Duration;
 
 use mls_rs::{ExtensionList, Group, MlsMessage, client_builder::MlsConfig, time::MlsTime};
-use skald_crypto::{MlsDevice, Processed, SealedState};
+use skald_crypto::{MlsDevice, MlsError, Processed, SealedState};
 use skald_proto::ChannelId;
 
-use crate::commits::{Seen, assert_in, devices, process, process_at, try_process};
+use crate::commits::{Seen, assert_in, devices, process, process_at, try_process, try_remove};
 use crate::fixtures::{NOW, admitted, device_id, load, new_state, signing_key};
 use crate::foreign;
 use crate::foreign_member::{SUITE, commit, index_of, other_key, with_foreign_member};
-use crate::steps::{bytes, channel_of, creator, step, with_key_packages};
+use crate::steps::{
+    add, bytes, channel_of, creator, history_key, join, receive, send, step, stored,
+    with_key_packages,
+};
 
 const HOUR: u64 = 3_600;
 const DAY: u64 = 24 * HOUR;
@@ -336,4 +341,74 @@ fn a_welcome_with_a_leaf_spanning_more_than_sixty_days_is_refused_and_one_with_l
         .expect("a Welcome whose leaves only expired joins"),
         channel
     );
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_pending_commit_and_its_welcome_outlast_refused_commits_and_block_another_commit() {
+    let channel = ChannelId::generate();
+    let ours = [87, 88];
+    let (mut states, mut group) = with_foreign_member(channel, &ours, 89);
+    let (mut joiner, packages) = with_key_packages(90, 1);
+    let pending = add(87, &mut states[0], channel, &[&packages[0]]);
+
+    let empty = commit(&mut group, |builder| builder);
+    let (seen, outcome) = try_process(87, &mut states[0], channel, &empty, NOW, false);
+    assert_eq!(
+        seen.expect("the caller sees the Commit").sender,
+        device_id(89)
+    );
+    assert!(
+        matches!(outcome, Err(MlsError::Refused)),
+        "the caller refuses the epoch: {outcome:?}"
+    );
+    let spanning = commit(&mut group, |builder| {
+        builder
+            .add_member(foreign_key_package(91, NOW, 365 * DAY))
+            .expect("mls-rs adds the KeyPackage")
+    });
+    let outcome = try_process(87, &mut states[0], channel, &spanning, NOW, true).1;
+    assert!(
+        matches!(outcome, Err(MlsError::Lifetime)),
+        "a leaf spanning 365 days: {outcome:?}"
+    );
+    let outcome = try_remove(87, &mut states[0], channel, &[88], b"");
+    assert!(
+        outcome.is_err(),
+        "a Remove is refused: a Commit is pending already"
+    );
+    let outcome = step(87, &mut states[0], |device| {
+        device.commit_empty(channel, b"", NOW)
+    });
+    assert!(
+        outcome.is_err(),
+        "an empty Commit is refused: a Commit is pending already"
+    );
+
+    let welcome = stored(87, &mut states[0], channel);
+    assert_in(
+        87,
+        &states[0],
+        channel,
+        2,
+        &[87, 88, 89, 90],
+        "the pending Commit merged",
+    );
+    assert_eq!(
+        process(88, &mut states[1], channel, &pending).added,
+        devices(&[90])
+    );
+    assert_eq!(
+        history_key(87, &states[0], channel, 2),
+        history_key(88, &states[1], channel, 2)
+    );
+    assert_eq!(join(90, &mut joiner, &welcome), channel);
+    let message = send(87, &mut states[0], channel, b"in epoch 2");
+    for (seed, state) in [(88, &mut states[1]), (90, &mut joiner)] {
+        assert_eq!(
+            receive(seed, state, channel, &message),
+            Some((device_id(87), b"in epoch 2".to_vec())),
+            "device {seed}"
+        );
+    }
 }
