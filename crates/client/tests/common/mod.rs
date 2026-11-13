@@ -148,6 +148,18 @@ impl Server {
             })
             .expect("read the database's rows")
     }
+
+    /// Runs `sql`, one or more statements, on the server's database, as an operator would.
+    pub fn execute(&self, sql: &str) {
+        let runtime = Runtime::new().expect("start a tokio runtime");
+        runtime
+            .block_on(async {
+                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut conn).await?;
+                conn.close().await
+            })
+            .unwrap_or_else(|err| panic!("run {sql:?} on the database: {err}"));
+    }
 }
 
 impl Drop for Server {

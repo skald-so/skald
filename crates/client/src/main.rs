@@ -4,6 +4,7 @@ mod connection;
 mod device;
 mod devices;
 mod secrets;
+mod set_username;
 mod sign_in;
 mod sign_out;
 mod state;
@@ -110,6 +111,14 @@ enum Command {
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
     /// account resumes the same device.
     SignOut,
+    /// Sets the username of the account this machine signed in to, on the server of its session.
+    /// The server refuses a username that is invalid, reserved or another account's, and the
+    /// account keeps its old one.
+    SetUsername {
+        /// The new username, such as ada-lovelace.
+        #[arg(value_name = "USERNAME", allow_hyphen_values = true)]
+        username: String,
+    },
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -178,6 +187,12 @@ fn main() -> ExitCode {
         Command::SignOut => {
             let result = state::dir(cli.state_dir)
                 .and_then(|dir| sign_out::run(&dir, cli.key_storage, speaks, timeout));
+            exit(result)
+        }
+        Command::SetUsername { username } => {
+            let result = state::dir(cli.state_dir).and_then(|dir| {
+                set_username::run(&dir, cli.key_storage, speaks, timeout, &username)
+            });
             exit(result)
         }
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),

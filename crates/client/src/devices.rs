@@ -15,9 +15,9 @@ use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, VersionRange};
 use crate::connection::{Connection, printable};
 use crate::secrets;
 use crate::sign_in;
-use crate::state::{self, Link};
+use crate::state::{self, Link, State};
 
-/// What `skald devices` says when the machine has no session.
+/// What `skald devices` and `skald set-username` say when the machine has no session.
 const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
 
 /// `Devices` in the API spec.
@@ -41,17 +41,7 @@ pub fn run(
     speaks: VersionRange,
     timeout: Duration,
 ) -> Result<(), String> {
-    if !dir.is_dir() {
-        return Err(NOT_SIGNED_IN.to_owned());
-    }
-    let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
-    let session = state
-        .session()
-        .map_err(text)?
-        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
-    let stored = secrets.load().map_err(text)?;
-    let token =
-        sign_in::token_for(&stored, &session.server).ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
+    let (state, server, token) = signed_in(dir, storage)?;
 
     let Some(state::Device {
         id: this,
@@ -66,8 +56,8 @@ pub fn run(
         return Ok(());
     };
 
-    let mut connection = Connection::new(&session.server, speaks, timeout).map_err(text)?;
-    let body = connection.get_as("/devices", token).map_err(text)?;
+    let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+    let body = connection.get_as("/devices", &token).map_err(text)?;
     let devices: Devices = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
     let ids: Vec<DeviceId> = devices
@@ -102,6 +92,24 @@ pub fn run(
         );
     }
     Ok(())
+}
+
+/// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the
+/// server of its session and the session token; [`NOT_SIGNED_IN`] if it has no session.
+pub fn signed_in(dir: &Path, storage: secrets::Storage) -> Result<(State, String, String), String> {
+    if !dir.is_dir() {
+        return Err(NOT_SIGNED_IN.to_owned());
+    }
+    let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
+    let session = state
+        .session()
+        .map_err(text)?
+        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
+    let stored = secrets.load().map_err(text)?;
+    let token = sign_in::token_for(&stored, &session.server)
+        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
+        .clone();
+    Ok((state, session.server, token))
 }
 
 /// Each name that two or more of the `linked` certificates hold, with their devices, in the order
