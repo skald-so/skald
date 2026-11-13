@@ -2,6 +2,7 @@
 //! Each test binary uses a subset of them.
 #![allow(dead_code)]
 
+pub mod accounts;
 pub mod browser;
 pub mod device_flow;
 pub mod devices;
@@ -50,6 +51,22 @@ pub fn start_failure(args: &[&str]) -> String {
         "exit status: {status}, stderr: {stderr:?}"
     );
     stderr
+}
+
+/// Runs `skald-server` with `args` and the environment variables `envs` until it exits; gives
+/// whether it succeeded and everything it printed, stdout then stderr.
+pub fn run(args: &[&str], envs: &[(&str, &str)]) -> (bool, String) {
+    let output = Command::new(SERVER)
+        .args(args)
+        .envs(envs.iter().copied())
+        .output()
+        .expect("run skald-server");
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (output.status.success(), printed)
 }
 
 /// Waits for `child` to exit, killing it after `timeout`.
@@ -179,6 +196,14 @@ impl Server {
         self.get_with(path, &[])
     }
 
+    /// Checks that its health check answers ok.
+    #[track_caller]
+    pub fn assert_healthy(&self) {
+        let health = self.get("/health");
+        assert_eq!(health.status, 200);
+        assert_eq!(health.body, br#"{"status":"ok"}"#);
+    }
+
     /// `GET <path>` with the request headers `headers`.
     pub fn get_with(&self, path: &str, headers: &[(&str, &str)]) -> Response {
         get_url(&format!("{}{path}", self.base), headers)
@@ -301,6 +326,17 @@ pub fn stored_forms(secret: &str) -> Vec<String> {
         }
     }
     forms
+}
+
+/// Checks that none of `rows`, a database's, holds any of `secrets` in a form of [`stored_forms`].
+#[track_caller]
+pub fn assert_holds_none(rows: &[String], secrets: &[String]) {
+    for secret in secrets {
+        for form in stored_forms(secret) {
+            let found: Vec<_> = rows.iter().filter(|row| row.contains(&form)).collect();
+            assert!(found.is_empty(), "{secret:?} as {form:?} in {found:?}");
+        }
+    }
 }
 
 /// Appends what `pipe` gives to `output` until it closes.

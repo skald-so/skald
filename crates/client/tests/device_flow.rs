@@ -480,6 +480,7 @@ fn session_an_older_skald_stored_for_plain_http_on_another_machine_is_never_used
         &[DEVICES][..],
         &["set-username", "ada-elsewhere"],
         &["create-space", "acme"],
+        &["members", "acme"],
     ] {
         let finished = machine.start(args).finish();
 
@@ -494,6 +495,17 @@ fn session_an_older_skald_stored_for_plain_http_on_another_machine_is_never_used
             "{args:?}"
         );
     }
+    // `spaces` shows what the state holds and says why it did not ask the server.
+    let finished = machine.start(&["spaces"]).finish();
+    assert!(finished.success, "{finished:?}");
+    assert_eq!(
+        finished.stderr,
+        format!(
+            "skald: the spaces show their last accepted revisions: {url:?}, the server of this \
+             machine's session, is plain HTTP to another machine: sign in again with an https:// \
+             URL: run skald sign-in --server <URL>\n"
+        )
+    );
     assert_eq!(stub.requests().len(), before);
     assert_eq!((machine.state_bytes(), fs::read(&file).unwrap()), stored);
     assert_eq!(machine.files_holding(TOKEN), vec![file]);

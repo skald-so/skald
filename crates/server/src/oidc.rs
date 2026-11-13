@@ -1,7 +1,9 @@
 //! An OpenID Connect provider, given by its issuer: its metadata (OpenID Connect Discovery 1.0, §4),
-//! its keys from the metadata's `jwks_uri`, and the checks of the ID tokens it signs (OpenID Connect
-//! Core 1.0, §3.1.3.7). Nothing here is specific to one provider.
+//! its keys from the metadata's `jwks_uri`, the authorization code flow's requests (OpenID Connect
+//! Core 1.0, §3.1.2 and §3.1.3) with PKCE (RFC 7636), and the checks of the ID tokens it signs
+//! (§3.1.3.7). Nothing here is specific to one provider.
 
+use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -15,13 +17,15 @@ use serde::de::DeserializeOwned;
 use url::{Host, Url};
 
 use crate::github::ClientSecret;
-use crate::http_client::{agent, json_body};
+use crate::http_client::{agent, json_body, printable};
 
 /// The metadata's path under the issuer.
 const METADATA_PATH: &str = "/.well-known/openid-configuration";
 /// How far, in seconds, `exp` may have passed and `iat` be ahead: the provider's clock and the
 /// server's differ.
 const CLOCK_SKEW: f64 = 60.0;
+/// The scopes a sign-in asks for: `openid` for the ID token, `email` for its `email`.
+const SCOPES: &str = "openid email";
 
 /// An OIDC provider's settings.
 #[derive(Debug, Clone)]
@@ -43,8 +47,20 @@ pub enum OidcError {
     Issuer(String),
     /// The provider is unreachable, or its metadata or keys are malformed.
     Provider(String),
+    /// The token endpoint refused the code: wrong, expired, used or not of the PKCE verifier.
+    Code,
     /// The ID token fails a check.
     Token(String),
+}
+
+impl fmt::Display for OidcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OidcError::Issuer(reason) | OidcError::Provider(reason) => f.write_str(reason),
+            OidcError::Code => f.write_str("the provider refused the code"),
+            OidcError::Token(reason) => write!(f, "the ID token: {reason}"),
+        }
+    }
 }
 
 /// The person an ID token names.
@@ -167,6 +183,8 @@ impl Jwk {
 #[derive(Deserialize)]
 struct Metadata {
     issuer: String,
+    authorization_endpoint: String,
+    token_endpoint: String,
     jwks_uri: String,
     id_token_signing_alg_values_supported: Vec<String>,
 }
@@ -174,6 +192,8 @@ struct Metadata {
 /// An OIDC provider, discovered; it checks the ID tokens it signs.
 pub struct OidcProvider {
     settings: OidcSettings,
+    authorization_endpoint: Url,
+    token_endpoint: Url,
     jwks_uri: Url,
     /// The algorithms of the metadata that the server verifies.
     algs: Vec<Alg>,
@@ -186,16 +206,7 @@ impl OidcProvider {
     /// The provider of `settings`: checks the issuer, reads its metadata and its keys. Blocks.
     pub fn discover(settings: OidcSettings) -> Result<OidcProvider, OidcError> {
         let issuer = &settings.issuer;
-        let url = provider_url(issuer)
-            .and_then(|url| {
-                let bare = url.username().is_empty()
-                    && url.password().is_none()
-                    && url.query().is_none()
-                    && url.fragment().is_none();
-                bare.then_some(url)
-                    .ok_or("an issuer has no user, query or fragment".to_owned())
-            })
-            .map_err(|reason| OidcError::Issuer(format!("the issuer {issuer:?}: {reason}")))?;
+        let url = issuer_url(issuer).map_err(OidcError::Issuer)?;
         let metadata_url = format!("{}{METADATA_PATH}", url.as_str().trim_end_matches('/'));
         let metadata: Metadata = fetch("metadata", &metadata_url).map_err(OidcError::Provider)?;
         if metadata.issuer != *issuer {
@@ -203,8 +214,14 @@ impl OidcProvider {
                 "the provider's metadata names another issuer".to_owned(),
             ));
         }
-        let jwks_uri = provider_url(&metadata.jwks_uri)
-            .map_err(|reason| OidcError::Provider(format!("the metadata's jwks_uri: {reason}")))?;
+        let endpoint = |name: &str, text: &str| {
+            provider_url(text)
+                .map_err(|reason| OidcError::Provider(format!("the metadata's {name}: {reason}")))
+        };
+        let authorization_endpoint =
+            endpoint("authorization_endpoint", &metadata.authorization_endpoint)?;
+        let token_endpoint = endpoint("token_endpoint", &metadata.token_endpoint)?;
+        let jwks_uri = endpoint("jwks_uri", &metadata.jwks_uri)?;
         let mut algs = Vec::new();
         for alg in &metadata.id_token_signing_alg_values_supported {
             algs.extend(Alg::named(alg));
@@ -217,11 +234,86 @@ impl OidcProvider {
         let keys = read_keys(&jwks_uri).map_err(OidcError::Provider)?;
         Ok(OidcProvider {
             settings,
+            authorization_endpoint,
+            token_endpoint,
             jwks_uri,
             algs,
             keys: RwLock::new(Arc::new(keys)),
             read_at: Mutex::new(Instant::now()),
         })
+    }
+
+    /// The authorization request (OpenID Connect Core 1.0, §3.1.2.1) of a sign-in that the provider
+    /// sends back to `redirect_uri` with `state`, its ID token with `nonce`, and whose PKCE
+    /// `challenge` is S256's: asking for `openid` and `email` only.
+    pub(crate) fn authorization_url(
+        &self,
+        redirect_uri: &str,
+        state: &str,
+        nonce: &str,
+        challenge: &str,
+    ) -> Url {
+        let mut url = self.authorization_endpoint.clone();
+        url.query_pairs_mut()
+            .append_pair("client_id", &self.settings.client_id)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("response_type", "code")
+            .append_pair("scope", SCOPES)
+            .append_pair("state", state)
+            .append_pair("nonce", nonce)
+            .append_pair("code_challenge", challenge)
+            .append_pair("code_challenge_method", "S256");
+        url
+    }
+
+    /// The ID token the token endpoint gives for `code`, which the provider sent to `redirect_uri`,
+    /// with the client's ID and secret and the PKCE `verifier` (OpenID Connect Core 1.0, §3.1.3.1).
+    /// Blocks. The access token it also gives is dropped.
+    pub(crate) fn exchange(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        verifier: &str,
+    ) -> Result<String, OidcError> {
+        #[derive(Deserialize)]
+        struct Answer {
+            id_token: Option<String>,
+            error: Option<String>,
+        }
+        let failed = |reason: String| {
+            OidcError::Provider(format!(
+                "the provider's token endpoint at {} {reason}",
+                self.token_endpoint
+            ))
+        };
+        let response = agent()
+            .post(self.token_endpoint.as_str())
+            .header("accept", "application/json")
+            .send_form([
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", redirect_uri),
+                ("client_id", self.settings.client_id.as_str()),
+                ("client_secret", self.settings.client_secret.expose()),
+                ("code_verifier", verifier),
+            ]);
+        let mut response = response.map_err(|err| failed(format!("is unreachable: {err}")))?;
+        let status = response.status();
+        let body = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|err| failed(format!("gave an unreadable answer: {err}")))?;
+        let answer: Option<Answer> = serde_json::from_str(&body).ok();
+        let (id_token, error) =
+            answer.map_or((None, None), |answer| (answer.id_token, answer.error));
+        match (status.as_u16(), id_token, error) {
+            (200, Some(id_token), None) => Ok(id_token),
+            (400, _, Some(error)) if error == "invalid_grant" => Err(OidcError::Code),
+            (_, _, error) => Err(failed(format!(
+                "answered {status} without an ID token: {}",
+                printable(error.as_deref().unwrap_or("no error"))
+            ))),
+        }
     }
 
     /// The person `id_token` names, if it passes every check for the sign-in of `nonce`. Blocks
@@ -297,6 +389,21 @@ impl OidcProvider {
 /// Whether the keys, last read at `read_at`, may be read again at `now`.
 fn due(read_at: Instant, now: Instant, key_refresh: Duration) -> bool {
     now.saturating_duration_since(read_at) >= key_refresh
+}
+
+/// `issuer` as a URL, if it is an issuer: https, or http on a loopback address, with no user, query
+/// or fragment.
+pub fn issuer_url(issuer: &str) -> Result<Url, String> {
+    provider_url(issuer)
+        .and_then(|url| {
+            let bare = url.username().is_empty()
+                && url.password().is_none()
+                && url.query().is_none()
+                && url.fragment().is_none();
+            bare.then_some(url)
+                .ok_or("an issuer has no user, query or fragment".to_owned())
+        })
+        .map_err(|reason| format!("the issuer {issuer:?}: {reason}"))
 }
 
 /// `text` as a provider's URL: https, or http on a loopback address.
@@ -414,7 +521,7 @@ fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
-    use skald_oidc_stand_in::{Key as StandInKey, Provider, signed};
+    use skald_oidc_stand_in::{Client, Fault, Key as StandInKey, Provider, signed};
 
     use super::*;
 
@@ -613,5 +720,53 @@ mod tests {
             oidc.check(&critical, NONCE),
             Err(OidcError::Token(..))
         ));
+    }
+
+    #[test]
+    fn a_refused_code_is_told_from_the_token_endpoints_failures() {
+        let provider = Provider::start(&[StandInKey::ec()]);
+        let redirect_uri = "http://127.0.0.1:9/callback";
+        provider.register(Client {
+            client_id: CLIENT_ID.to_owned(),
+            client_secret: "secret".to_owned(),
+            redirect_uri: redirect_uri.to_owned(),
+        });
+        let oidc = OidcProvider::discover(settings(provider.issuer())).expect("discovered");
+        let verifier = "v".repeat(43);
+        let exchange = || oidc.exchange("4/0Aunknown", redirect_uri, &verifier);
+
+        // The stand-in refuses a code it did not issue with `invalid_grant`.
+        assert!(matches!(exchange(), Err(OidcError::Code)));
+        for status in [400, 401, 500, 503] {
+            provider.set_faults(&[Fault::TokenStatus { status }]);
+            let result = exchange();
+            assert!(
+                matches!(result, Err(OidcError::Provider(..))),
+                "{status}: {result:?}"
+            );
+        }
+        provider.set_faults(&[]);
+        let refused = OidcProvider::discover(OidcSettings {
+            client_secret: ClientSecret::new("another".to_owned()).expect("a secret"),
+            ..settings(provider.issuer())
+        })
+        .expect("discovered");
+        let result = refused.exchange("4/0Aunknown", redirect_uri, &verifier);
+        assert!(
+            matches!(result, Err(OidcError::Provider(..))),
+            "a refused client secret: {result:?}"
+        );
+    }
+
+    #[test]
+    fn an_error_shows_its_reason() {
+        let reason = "the provider's keys at https://idp.example/keys answered 500";
+        assert_eq!(OidcError::Provider(reason.to_owned()).to_string(), reason);
+        assert_eq!(OidcError::Issuer(reason.to_owned()).to_string(), reason);
+        assert_eq!(
+            OidcError::Token("expired".to_owned()).to_string(),
+            "the ID token: expired"
+        );
+        assert_eq!(OidcError::Code.to_string(), "the provider refused the code");
     }
 }

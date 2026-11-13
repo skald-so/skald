@@ -137,7 +137,7 @@ struct DeviceAuthorization {
 
 /// `POST /auth/device`: device authorization (RFC 8628, §3.1).
 pub(crate) async fn authorize(State(state): State<AppState>, body: Bytes) -> Response {
-    let Some(settings) = state.sign_in.as_deref() else {
+    let Some((settings, _)) = sign_in::github(&state) else {
         return off();
     };
     if let Err(refusal) = machine_form(&body) {
@@ -203,7 +203,7 @@ struct DeviceToken {
 
 /// `POST /auth/token`: the token endpoint (RFC 8628, §3.4).
 pub(crate) async fn token(State(state): State<AppState>, body: Bytes) -> Response {
-    if state.sign_in.is_none() {
+    if sign_in::github(&state).is_none() {
         return off();
     }
     let device_code = match device_code(&body) {
@@ -371,7 +371,7 @@ pub(crate) async fn page(
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if state.sign_in.is_none() {
+    if sign_in::github(&state).is_none() {
         return off();
     }
     let user_code = param(query.as_deref(), "user_code").unwrap_or_default();
@@ -421,7 +421,7 @@ pub(crate) async fn decide(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(settings) = state.sign_in.as_deref() else {
+    let Some((settings, _)) = sign_in::github(&state) else {
         return off();
     };
     let again = format!("<a href=\"{VERIFICATION_PATH}\">Try again</a>");
