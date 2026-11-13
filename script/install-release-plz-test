@@ -52,15 +52,17 @@ done
 EOF
 chmod +x "$tmp/bin/curl" "$tmp/bin/cargo"
 
-# run_install [<option>]: runs script/install-release-plz; sets $status and $output.
+# run_install <root> [<option>]: runs <root>/script/install-release-plz; sets $status and $output.
 run_install() {
+  local script=$1/script/install-release-plz
+  shift
   rm -f "$tmp/calls.log"
   status=0
-  output=$(PATH="$tmp/bin:$PATH" "$root/script/install-release-plz" "$@" 2>&1) || status=$?
+  output=$(PATH="$tmp/bin:$PATH" "$script" "$@" 2>&1) || status=$?
 }
 
 case="the cache key"
-run_install --cache-key
+run_install "$root" --cache-key
 [[ $status == 0 ]] || fail "$case: the run fails: $output"
 key=$(sed -n 's/^key=//p' <<<"$output")
 patch_sum=$(openssl dgst -sha256 -r "$root/script/lib/release-plz.patch")
@@ -79,7 +81,7 @@ done
 [[ ! -e $tmp/calls.log && ! -e $release_plz_root ]] || fail "$case: it downloads, builds or installs"
 
 case="a crate that does not match its SHA-256"
-run_install
+run_install "$root"
 [[ $status != 0 ]] || fail "$case: the run passes"
 grep -qF "does not match its SHA-256" <<<"$output" || fail "$case: it does not say so: $output"
 ! grep -q '^cargo' "$tmp/calls.log" 2>/dev/null || fail "$case: it runs cargo: $(cat "$tmp/calls.log")"
@@ -114,12 +116,7 @@ cat >"$copy/script/lib/release-plz.patch" <<'EOF'
 -unpatched
 +patched
 EOF
-run_install_copy() {
-  rm -f "$tmp/calls.log"
-  status=0
-  output=$(PATH="$tmp/bin:$PATH" "$copy/script/install-release-plz" "$@" 2>&1) || status=$?
-}
-run_install_copy
+run_install "$copy"
 [[ $status == 0 ]] || fail "$case: the run fails: $output"
 for crate in standin-plz/1.2.3 standin_core/4.5.6; do
   name=${crate%/*} version=${crate#*/}
@@ -147,10 +144,10 @@ done
   fail "$case: the build does not see the patch applied"
 
 case="a change to the script alone"
-run_install_copy --cache-key
+run_install "$copy" --cache-key
 key=$(sed -n 's/^key=//p' <<<"$output")
 echo "# a change" >>"$copy/script/install-release-plz"
-run_install_copy --cache-key
+run_install "$copy" --cache-key
 [[ -n $key && $(sed -n 's/^key=//p' <<<"$output") != "$key" ]] || fail "$case: it keeps the cache key"
 
 case="release-plz $release_plz_version installed already"
@@ -159,7 +156,7 @@ printf '#!/usr/bin/env bash\necho "release-plz %s"\n' "$release_plz_version" \
   >"$release_plz_root/bin/release-plz"
 chmod +x "$release_plz_root/bin/release-plz"
 export GITHUB_PATH=$tmp/github-path
-run_install
+run_install "$root"
 [[ $status == 0 ]] || fail "$case: the run fails: $output"
 [[ ! -s $tmp/calls.log ]] || fail "$case: it downloads or builds: $(cat "$tmp/calls.log")"
 [[ $(cat "$GITHUB_PATH" 2>/dev/null) == "$release_plz_root/bin" ]] ||
