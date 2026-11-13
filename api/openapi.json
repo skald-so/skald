@@ -687,7 +687,7 @@
       "get": {
         "operationId": "getDeviceVerificationPage",
         "summary": "The device flow's verification page",
-        "description": "Opened by the person's browser at `verification_uri` or `verification_uri_complete`. With a web session, it names the account's GitHub login, says that approving signs a machine in to that account and asks for the user code, filled in from `user_code`, with the buttons Approve and Deny, which submit `POST /device`. Opening it decides nothing.",
+        "description": "Opened by the person's browser at `verification_uri` or `verification_uri_complete`. With a web session, it names the account's username, says that approving signs a machine in to that account and asks for the user code, filled in from `user_code`, with the buttons Approve and Deny, which submit `POST /device`. Opening it decides nothing.",
         "parameters": [
           {
             "name": "user_code",
