@@ -121,7 +121,7 @@ A recipient device drops, without a receipt:
   - `refuse`: the device issues `refused`.
 - The [trust level](membership.md#trust-levels) of the sending device sets how the text reaches the agent's session:
   - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;
-  - `member` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
+  - `peer` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
 - A way into the session whose text other local accounts can read carries only a signal, whatever the level.
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.

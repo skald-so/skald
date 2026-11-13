@@ -259,11 +259,11 @@ A recipient device sets the level of each message it accepts from the sending de
 | Level | The sending device |
 |---|---|
 | `own` | A `client` or `browser` device of the recipient's account |
-| `member` | A `client` or `browser` device of an account the recipient's space roster lists as a member |
+| `peer` | A `client` or `browser` device of another account the recipient's space roster lists as a member |
 | `service` | A `service` device |
 
 - The level comes from the sending device's valid certificate, its `account` and `kind`, and the roster of the recipient's space; never from the content, and no setting changes it.
-- `own` is above `member`, which is above `service`.
+- `own` is above `peer`, which is above `service`.
 
 ## Roster
 A space's roster lists its members, service agents and channels, and holds its policy. Every revision is a full snapshot, signed by an admin's device.
@@ -337,7 +337,7 @@ A space's policy travels in its roster, so an admin's device signs every change.
 
 ```cddl
 policy = {
-  1 => [member: mode, service: mode],  ; ceilings: per trust level
+  1 => [peer: mode, service: mode],  ; ceilings: per trust level
   2 => uint .ge 86400,     ; history: the history key's longest age, in seconds
   * int => any,            ; fields of later versions
 }
@@ -345,7 +345,7 @@ policy = {
 mode = &(read-only: 1, full: 2) / uint   ; other values: modes of later versions
 ```
 
-- `ceilings`: the most rights a task from a `member` or `service` sender gets without the approval of the claiming device's user, who can only lower them ([Running a task](queues.md#running-a-task)). An `own` task has no ceiling.
+- `ceilings`: the most rights a task from a `peer` or `service` sender gets without the approval of the claiming device's user, who can only lower them ([Running a task](queues.md#running-a-task)). An `own` task has no ceiling.
 - `mode`: `read-only` reads only the agent's folder and changes nothing, with no network; `full` has no limits. This version defines only these two; a device takes a mode it does not know as `read-only`.
 - `history`: [History key](#history-key).
 - A new space starts with `[read-only, read-only]` and 30 days.

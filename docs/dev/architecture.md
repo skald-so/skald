@@ -91,8 +91,8 @@
 - `skald send` sends a message and `skald enqueue` a task; the MCP server has both as tools, with `claim` and `complete` for tasks.
 - `skald connect` asks only whether the machine takes its own account's tasks. What it takes from others, [per queue](../protocol/queues.md#running-a-task), the user turns on and changes at any time with `skald serve`, only in the CLI on the machine:
   - `skald serve`: each queue's settings;
-  - `skald serve <queue> --dir <folder> --member read-only`, and `--service` for service agents;
-  - `skald serve <queue> --member approve --in session`;
+  - `skald serve <queue> --dir <folder> --peer read-only`, and `--service` for service agents;
+  - `skald serve <queue> --peer approve --in session`;
   - `skald serve <queue> --off`.
 - `skald approve` lists the tasks waiting for the user's yes and answers them.
 - The web UI shows each device's queues and tiers from its presence.
