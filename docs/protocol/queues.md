@@ -255,10 +255,10 @@ The device hands the agent the `request` with its `from` and the trust level of 
 |---|---|---|
 | Folder | The executor's directory | — |
 | `own` tasks | Taken or not | Asked when the device is connected |
-| The tier of `member` tasks, and of `service` tasks | `off`, `read-only`, `approve` or `full` | `off` |
-| Where `member` and `service` tasks run | The executor; at `approve` and `full`, the working session instead | The executor |
-| Templates `member` and `service` tasks may name | The built-in ones, and the team templates the user enables | The built-in ones |
-| `member` and `service` tasks without a template | Taken or not | Not taken |
+| The tier of `peer` tasks, and of `service` tasks | `off`, `read-only`, `approve` or `full` | `off` |
+| Where `peer` and `service` tasks run | The executor; at `approve` and `full`, the working session instead | The executor |
+| Templates `peer` and `service` tasks may name | The built-in ones, and the team templates the user enables | The built-in ones |
+| `peer` and `service` tasks without a template | Taken or not | Not taken |
 
 | Tier | A task of the level |
 |---|---|
@@ -270,9 +270,9 @@ The device hands the agent the `request` with its `from` and the trust level of 
 **Rights.**
 - An `own` task runs with full rights in an executor, or with the session's rights in a working session.
 - A task that runs at once gets the stricter of its tier and the [policy](membership.md#policy)'s ceiling for its sender's level: full rights only where both are `full`.
-- A working session gives a task the session's rights, so it takes a `member` or `service` task that runs at once only where the policy's ceiling for its level is `full`.
+- A working session gives a task the session's rights, so it takes a `peer` or `service` task that runs at once only where the policy's ceiling for its level is `full`.
 - The device puts in the executor's folder the files the task hands over, such as the material of a `review`.
-- A `test` task from a `member` sender runs only at `approve` or `full`.
+- A `test` task from a `peer` sender runs only at `approve` or `full`.
 - The agent CLI enforces the mode; Skald adds no sandbox of its own. A mode the agent cannot enforce is refused, not weakened.
 
 **Approval.**
