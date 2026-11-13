@@ -8,7 +8,8 @@ You host the server yourself: [Self-hosting](#self-hosting).
 
 ## Status
 
-[The latest release](https://github.com/skald-so/skald/releases/latest). No external audit has been done.
+- [The latest release](https://github.com/skald-so/skald/releases/latest). No external audit has been done.
+- The release signs machines in, keeps each device's keys and certificate, and creates and lists spaces and their members. It does not send messages or tasks or link a second device yet.
 
 ## Getting started
 
@@ -51,7 +52,7 @@ To run the server, see [Self-hosting](#self-hosting).
    ```
 
    - The command prints a URL and a code. Approve the code in a browser after signing in with GitHub. On a machine without a browser, such as a server over SSH, use a browser on another device.
-   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices). `no`: the device waits to be linked by a device already connected. `--first-device yes|no` gives the answer without asking.
+   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices). `no`: the device waits to be linked by a device already connected, which the client cannot do yet. `--first-device yes|no` gives the answer without asking.
 
 ### 3. Client commands
 
