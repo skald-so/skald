@@ -529,7 +529,8 @@ mod tests {
             .unwrap();
         drop(closed);
 
-        let error = connect(&uri, SECOND).expect_err("nothing listens");
+        // Windows refuses a connection to a closed port only after retrying it for about 2 s.
+        let error = connect(&uri, SECOND * 10).expect_err("nothing listens");
 
         assert!(matches!(error, Error::Unreachable(_)), "{error:?}");
     }
