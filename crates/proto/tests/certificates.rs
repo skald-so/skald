@@ -2,6 +2,9 @@
 //! encoded as `docs/protocol/README.md`, "Encoding", says. A certificate keeps its body's bytes as
 //! it got them. Malformed and truncated input is an error, never a panic.
 
+mod common;
+
+use common::assert_field_problem;
 use skald_proto::{
     AccountId, Cbor, Cert, CertBody, DecodeError, DeviceId, DeviceKind, FieldProblem, Unknown,
 };
@@ -152,15 +155,6 @@ fn fields_with(key: i64, value: Option<Vec<u8>>) -> Vec<(i64, Vec<u8>)> {
 
 fn cert_bytes(body: &[u8]) -> Vec<u8> {
     array(vec![bstr(body), bstr(&SIGNATURE), bstr(&PROOF)])
-}
-
-fn assert_field_problem(result: Result<CertBody, DecodeError>, problem: &FieldProblem) {
-    match result {
-        Err(DecodeError::Field {
-            problem: actual, ..
-        }) => assert_eq!(&actual, problem),
-        other => panic!("expected {problem:?}, got {other:?}"),
-    }
 }
 
 #[test]

@@ -315,7 +315,7 @@ A template sets the agent's instructions and the formats of a task's input and r
 
 - A task names its template in `sched`; a claim gets it only if it states that template ([Claims and leases](#claims-and-leases)).
 - The input travels in `request` as one part with `data`, the input object in the template's format; the result in `response` the same way. Other parts, such as text and files, travel beside them.
-- A claiming device takes a template's instructions and formats only from a template built into its client, `review`, `test` or `ask`, or from a team template signed by a valid `client` or `browser` device of an admin of the space, once its user enables it for the queue ([Running a task](#running-a-task)). It MUST NOT take them from the server unsigned. Team templates come in a later revision of this document; adding them needs no new protocol version.
+- A claiming device takes a template's instructions and formats only from a template built into its client, `review`, `test` or `ask`, or from a team template signed by an [admin's device](membership.md#roster) of the space, once its user enables it for the queue ([Running a task](#running-a-task)). It MUST NOT take them from the server unsigned. Team templates come in a later revision of this document; adding them needs no new protocol version.
 - A template grants no rights: [Running a task](#running-a-task).
 
 ## Problems
