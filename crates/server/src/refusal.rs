@@ -1,10 +1,11 @@
 //! Why the JSON API refuses a request, and the steps its handlers share: the session's account and
 //! the request's body.
 
+use std::collections::HashMap;
+
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
+use serde::de::{DeserializeOwned, IgnoredAny};
 use sqlx::PgPool;
 
 use crate::sign_in::{not_signed_in, signed_in};
@@ -88,7 +89,49 @@ pub(crate) async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, 
 /// The JSON object `body` as a `T`.
 pub(crate) fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
     let invalid = |err: serde_json::Error| Refusal::Invalid(format!("not a valid body: {err}"));
-    // An object only: serde would also take a struct from an array of its fields.
-    let object: Map<String, Value> = serde_json::from_slice(body).map_err(invalid)?;
-    serde_json::from_value(Value::Object(object)).map_err(invalid)
+    // An object only: serde would also take a struct from an array of its fields. `T` is read from
+    // the bytes, so a field given twice is refused.
+    serde_json::from_slice::<HashMap<String, IgnoredAny>>(body).map_err(invalid)?;
+    serde_json::from_slice(body).map_err(invalid)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        name: String,
+    }
+
+    /// Why `parse` refuses `body`.
+    fn refused(body: &str) -> String {
+        match parse::<Request>(body.as_bytes()) {
+            Err(Refusal::Invalid(detail)) => detail,
+            Ok(request) => panic!("{body} taken as {request:?}"),
+            Err(_) => panic!("{body} refused for another reason"),
+        }
+    }
+
+    #[test]
+    fn parse_takes_an_object_of_the_fields() {
+        let request: Request = parse(br#"{"name": "a"}"#).unwrap_or_else(|_| panic!("refused"));
+        assert_eq!(request.name, "a");
+    }
+
+    #[test]
+    fn parse_refuses_a_field_given_twice() {
+        let detail = refused(r#"{"name": "a", "name": "b"}"#);
+        assert!(detail.contains("duplicate field"), "{detail}");
+    }
+
+    #[test]
+    fn parse_refuses_anything_but_an_object() {
+        for body in [r#"["a"]"#, r#""a""#, "null", "not JSON", ""] {
+            refused(body);
+        }
+    }
 }
