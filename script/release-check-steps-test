@@ -6,11 +6,15 @@
 //     attestation, image, signature or provenance, it passes after it downloads the installer and
 //     the npm package, and runs no gh attestation, cosign or docker. Any value but all and install
 //     stops it before it checks anything.
+//   - Every step runs when a file of the release fails to download: the check names that file,
+//     still verifies the attestation of its checksum file, the image and the npm package, and
+//     prints how many steps failed.
 //   - .github/workflows/release-check.yml: on a push of a release tag, a Linux runner, which has
 //     docker with buildx, runs every step, so the release is verified.
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { imageName, serve } from './lib/release-check-stub.mjs';
@@ -82,9 +86,29 @@ try {
     requests: [],
   };
 
-  // check <steps>: script/release-check <tag> run with SKALD_RELEASE_CHECK_STEPS=<steps>.
-  const check = async (steps) => {
+  // proxy <url> <unserved>: a server in front of the stand-in at <url> that answers 404 for the
+  // path <unserved> and passes on every other request.
+  const proxy = (url, unserved) =>
+    new Promise((resolve) => {
+      const server = http.createServer(async (request, response) => {
+        if (request.url === unserved) return response.writeHead(404).end();
+        const answer = await fetch(url + request.url, { method: request.method, headers: { 'user-agent': request.headers['user-agent'] ?? '' } });
+        response.writeHead(answer.status, { 'content-type': answer.headers.get('content-type') ?? 'application/octet-stream' });
+        response.end(Buffer.from(await answer.arrayBuffer()));
+      });
+      server.listen(0, '127.0.0.1', () =>
+        resolve({
+          url: `http://127.0.0.1:${server.address().port}`,
+          close: () => new Promise((done) => (server.closeAllConnections(), server.close(done))),
+        }),
+      );
+    });
+
+  // check <steps> [<unserved>]: script/release-check <tag> run with SKALD_RELEASE_CHECK_STEPS=<steps>;
+  // the release's file <unserved>, if any, fails to download.
+  const check = async (steps, unserved) => {
     const server = await serve(world);
+    const releases = unserved ? await proxy(server.url, `/download/${tag}/${unserved}`) : server;
     try {
       const dir = fs.mkdtempSync(path.join(scratch, 'run-'));
       const bin = path.join(dir, 'bin');
@@ -105,7 +129,7 @@ try {
         HOME: path.join(dir, 'home'),
         TMPDIR: dir,
         SKALD_RELEASE_CHECK_STEPS: steps,
-        SKALD_RELEASES_URL: `${server.url}/download`,
+        SKALD_RELEASES_URL: `${releases.url}/download`,
         SKALD_GITHUB_API_URL: `${server.url}/api`,
         npm_config_registry: `${server.url}/npm/`,
         npm_config_userconfig: path.join(dir, 'npmrc'),
@@ -120,6 +144,7 @@ try {
       const ran = fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
       return { status, output, ran };
     } finally {
+      if (unserved) await releases.close();
       await server.close();
     }
   };
@@ -136,6 +161,33 @@ try {
   r = await check('verify');
   if (r.status !== 2 || world.requests.length > 0) {
     fail(`with SKALD_RELEASE_CHECK_STEPS=verify, no value it knows, it stops with status 2 before it checks anything, not ${r.status} after ${world.requests.length} request(s): ${tail(r.output)}`);
+  }
+
+  // Another machine's archive and its checksum, which no install downloads; the archive fails to
+  // download.
+  const other = target === 'x86_64-unknown-linux-gnu' ? 'aarch64-unknown-linux-gnu' : 'x86_64-unknown-linux-gnu';
+  const unserved = `skald-client-${other}.tar.gz`;
+  const otherBytes = Buffer.from("another machine's archive\n");
+  fs.writeFileSync(path.join(files, unserved), otherBytes);
+  fs.writeFileSync(path.join(files, `${unserved}.sha256`), `${crypto.createHash('sha256').update(otherBytes).digest('hex')} *${unserved}\n`);
+  world.requests.length = 0;
+  r = await check('all', unserved);
+  const lines = r.output.split('\n');
+  const label = `when ${unserved} fails to download`;
+  if (r.status === 0) fail(`${label}, the check fails, but exits 0: ${tail(r.output)}`);
+  if (!lines.some((l) => l.startsWith(`release-check: ${unserved}: failed: cannot download`))) {
+    fail(`${label}, the check names it in a line 'release-check: ${unserved}: failed: cannot download ...', not: ${tail(r.output)}`);
+  }
+  const later = {
+    [`the attestation of ${unserved}.sha256`]: r.ran.some(
+      (c) => c.tool === 'gh' && c.args[0] === 'attestation' && c.args.some((a) => a.endsWith(`${path.sep}${unserved}.sha256`)),
+    ),
+    'the image': r.ran.some((c) => c.tool === 'docker' && c.args.includes('imagetools')),
+    "the npm package's provenance": world.requests.some((q) => q.path.startsWith('/npm/-/npm/v1/attestations/')),
+    'how many steps failed': lines.some((l) => new RegExp(`^release-check: ${tag.replace(/\./g, '\\.')}: \\d+ step\\(s\\) failed$`).test(l)),
+  };
+  for (const [what, ran] of Object.entries(later)) {
+    if (!ran) fail(`${label}, the check still checks ${what}, but did not: ${tail(r.output)}`);
   }
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true });

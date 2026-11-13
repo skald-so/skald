@@ -216,6 +216,7 @@ if $verify; then
     : >"$tmp/output"
     if ! download "$releases_url/$tag/$name" "$file" 2>"$tmp/output"; then
       fail "$name" "cannot download $releases_url/$tag/$name"
+      rm -f "$file"
       continue
     fi
     if [[ $name == *.sha256 ]]; then
@@ -224,11 +225,14 @@ if $verify; then
         fail "$name" "the release has no ${name%.sha256}, the file it is the checksum of"
         continue
       fi
-      # The checked file is downloaded first: it sorts before its checksum.
-      read -r expected _ <"$file" || true
-      if command -v sha256sum >/dev/null; then actual=$(sha256sum "$checked"); else actual=$(shasum -a 256 "$checked"); fi
-      if [[ -z $expected || ${actual%% *} != "$(tr 'A-F' 'a-f' <<<"$expected")" ]]; then
-        fail "${name%.sha256}" "it does not match its checksum, $name"
+      # The checked file is downloaded first: it sorts before its checksum. One that failed to
+      # download has failed already.
+      if [[ -f $checked ]]; then
+        read -r expected _ <"$file" || true
+        if command -v sha256sum >/dev/null; then actual=$(sha256sum "$checked"); else actual=$(shasum -a 256 "$checked"); fi
+        if [[ -z $expected || ${actual%% *} != "$(tr 'A-F' 'a-f' <<<"$expected")" ]]; then
+          fail "${name%.sha256}" "it does not match its checksum, $name"
+        fi
       fi
     elif [[ $name == skald-client-* ]] && ! grep -qxF "$name.sha256" "$tmp/names"; then
       fail "$name" "the release has no checksum of it, $name.sha256"
