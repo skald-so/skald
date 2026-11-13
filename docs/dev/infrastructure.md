@@ -63,6 +63,10 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
 
 ## Release
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (the archives of `skald` and a checksum of each).
+  - release-plz is 0.4.3 with `script/lib/release-plz.patch`: it adds the PRs of `changelog_include` before the first release tag too; 0.4.3 adds them only once one exists.
+  - The patch goes once a release-plz release fixes [release-plz#3325](https://github.com/release-plz/release-plz/issues/3325): the workflows and the tests then run that release, without the patch and the build.
+  - `script/install-release-plz` builds it from its crates on crates.io, each checked against its SHA-256 in `script/lib/release.sh`, with the dependencies of its `Cargo.lock`.
+  - In CI, `.github/actions/install-release-plz` restores the build from the Actions cache under a key of the runner's OS and architecture, the versions and the SHA-256 of the patch and of `script/install-release-plz`; on a miss it builds it and saves it right after. A job runs it before it creates any token. The release-plz jobs run on `dev` and restore only caches saved on `dev`; a PR's runs restore those or their own.
 - **Release PR:** on every push to `dev`, `.github/workflows/release-plz.yml` runs release-plz with `release-plz.toml` on the latest `dev` and its tags; it opens the Release PR or updates the open one. Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
 - **Release tag:** on the push of a Release PR's merge, the same workflow first tags that commit `vX.Y.Z`, or `vX.Y.Z-beta.N` for a beta, with `release-plz release`. Its token is the App's, narrowed to contents, so the workflows that run on tags start.
   - A Release PR is one the App opened from a branch of `skald-so/skald`; `script/release-pr-merged` checks it through the GitHub API before release-plz runs.
@@ -96,7 +100,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
 - **Bumps in `0.x`:** of the PRs the CHANGELOG lists, one whose title has `!` bumps the minor version; any other, of any type, the patch version.
 - **Last release:** the last `vX.Y.Z` tag, not crates.io; beta tags do not count.
 - **CHANGELOG:** `CHANGELOG.md` in the root lists the titles of the PRs merged since the last release, except those of PRs that change only `prototypes/`: prototypes ship in no release, and they belong to no package of the workspace, whose files release-plz counts.
-- **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far, those that change only `prototypes/` included; the exception for them starts with the first release tag.
+- **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far. The exception for `prototypes/` holds from the commit that added the root package on: release-plz cannot list that package's files at earlier commits.
 - **The protocol** has its own version number: [protocol spec](../protocol/README.md#protocol-version).
 - **Cadence:** we release when ready, aiming for every 1–2 weeks. Fixes ship at any time.
 - **Betas:** `vX.Y.Z-beta.N`.
@@ -127,7 +131,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
   - signature: `cosign verify ghcr.io/skald-so/skald-server@sha256:<digest> --certificate-identity https://github.com/skald-so/skald/.github/workflows/release.yml@refs/tags/vX.Y.Z --certificate-oidc-issuer https://token.actions.githubusercontent.com`;
   - attestation, as a release file's: `gh attestation verify oci://ghcr.io/skald-so/skald-server@sha256:<digest> --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`.
 - The npm package's provenance, here of `vX.Y.Z`, with gh 2.97.0 or later: `npm pack skald-so@X.Y.Z`; `curl -fsSL https://registry.npmjs.org/-/npm/v1/attestations/skald-so@X.Y.Z | jq -c '.attestations[] | select(.predicateType == "https://slsa.dev/provenance/v1") | .bundle' >skald-so.jsonl`; then `gh attestation verify skald-so-X.Y.Z.tgz --bundle skald-so.jsonl --digest-alg sha512 --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`. Provenance made on any other ref, or by another workflow or repository, fails it.
-- Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums.
+- Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums; release-plz is built from checked sources ("Release").
 - dist is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
 - Releases are immutable, a repository setting: a published release's files and checksums never change.
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.

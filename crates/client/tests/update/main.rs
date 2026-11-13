@@ -15,6 +15,8 @@ mod release;
 #[allow(dead_code)]
 #[path = "../../src/test_dir.rs"]
 mod test_dir;
+#[path = "../common/tls.rs"]
+mod tls;
 
 use std::fmt;
 use std::fs;

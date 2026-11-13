@@ -34,7 +34,7 @@ fail() {
 
 if [[ $(release-plz --version 2>/dev/null) != "release-plz $release_plz_version" ]]; then
   echo "release-tag-test: release-plz $release_plz_version is missing; install it:" \
-    "cargo install release-plz --version $release_plz_version --locked" >&2
+    "script/install-release-plz" >&2
   exit 1
 fi
 if [[ ! -x $root/script/release-pr-merged ]]; then

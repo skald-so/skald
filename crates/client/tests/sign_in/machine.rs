@@ -6,6 +6,7 @@
 #[path = "../../src/test_dir.rs"]
 mod test_dir;
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -61,6 +62,8 @@ pub struct Machine {
     host_name: Option<String>,
     /// Removed on drop.
     root: TestDir,
+    /// The other settings of its runs, by name.
+    env: Vec<(String, OsString)>,
 }
 
 impl Machine {
@@ -79,7 +82,14 @@ impl Machine {
         Machine {
             host_name: None,
             root,
+            env: Vec::new(),
         }
+    }
+
+    /// The machine with the setting `name` set to `value` in its runs.
+    pub fn with_env(mut self, name: &str, value: impl Into<OsString>) -> Self {
+        self.env.push((name.to_owned(), value.into()));
+        self
     }
 
     /// The machine with the host name `name`.
@@ -129,6 +139,7 @@ impl Machine {
         if let Some(name) = &self.host_name {
             command.env(HOST_NAME, name);
         }
+        command.envs(self.env.iter().map(|(name, value)| (name, value)));
         let mut child = command
             .stdin(stdin)
             .stdout(Stdio::piped())

@@ -13,6 +13,7 @@ mod spaces;
 mod state;
 #[cfg(test)]
 mod test_dir;
+mod tls;
 mod update;
 
 use std::num::NonZeroU64;
@@ -88,7 +89,8 @@ struct Cli {
 enum Command {
     /// Shows whether the server is reachable and speaks a compatible protocol version.
     Status {
-        /// The server's URL, such as http://localhost:8080.
+        /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
+        /// http://localhost:8080.
         #[arg(long, value_name = "URL")]
         server: String,
     },
@@ -99,7 +101,8 @@ enum Command {
     /// registers the device. The account's first device creates the account's master key and
     /// issues its own certificate with it; any other device waits for linking.
     SignIn {
-        /// The server's URL, such as http://localhost:8080.
+        /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
+        /// http://localhost:8080.
         #[arg(long, value_name = "URL")]
         server: String,
         /// Whether this is the account's first device, for scripts [default: ask].
