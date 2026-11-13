@@ -1,6 +1,6 @@
-//! Linking a method: either method then signs in to the same account; a Google link lets the
-//! person choose the Google account; a method the account has already changes nothing; accounts
-//! never merge by email.
+//! Linking a method: either method then signs in to the same account, also when the person confirms
+//! on the provider's page; a Google link lets the person choose the Google account; a method the
+//! account has already changes nothing; accounts never merge by email.
 
 use ring::digest::{SHA256, digest};
 use skald_oidc_stand_in::{Endpoint, base64url};
@@ -8,8 +8,9 @@ use skald_oidc_stand_in::{Endpoint, base64url};
 use super::common::browser::Browser;
 use super::common::google::{CALLBACK, CLIENT_ID};
 use super::{
-    Method, assert_on_server, both, github_and_google, github_only, github_page, google_page,
-    link_github, link_google, linked_at, listed, methods,
+    LINK_GOOGLE, Method, assert_on_server, both, click_link, github_and_google, github_only,
+    github_page, google_page, held_github_link, link_github, link_google, linked_at, listed,
+    methods,
 };
 
 #[test]
@@ -161,4 +162,45 @@ fn google_and_github_users_with_one_email_stay_two_accounts() {
     assert_eq!(again.account, by_github.account);
     let (_, again) = google_page(&google, &browser, &ada);
     assert_eq!(again.account, by_google.account);
+}
+
+/// The link on the provider's page that asks to continue.
+const PROVIDERS_LINK: &str = "#authorize";
+
+#[test]
+fn link_completes_after_the_person_confirms_on_the_providers_page() {
+    let browser = Browser::launch();
+    let google = both(&[]);
+    let ada = google.person("110248495921238988050", "ada.confirm@example.com");
+    let bob = google.github_user(
+        5_310_448_051,
+        "bob-confirm-standin",
+        "bob.confirm@example.org",
+    );
+
+    // GitHub asks first. The person's click there opens the callback from GitHub's site, so the
+    // browser sends no `SameSite=Strict` session cookie with it.
+    let (page, who) = google_page(&google, &browser, &ada);
+    held_github_link(&google, &page, &bob);
+    let visit = page.click_settled(PROVIDERS_LINK);
+    assert_on_server(&google, &visit);
+    assert_eq!(methods(&google, &page), github_and_google(&bob));
+    assert_eq!(google.account(&page).account, who.account);
+
+    // Google's account chooser likewise.
+    let carol = google.person("110248495921238988051", "carol.confirm@example.com");
+    let dan = google.github_user(
+        5_310_448_052,
+        "dan-confirm-standin",
+        "dan.confirm@example.org",
+    );
+    let (page, who) = github_page(&google, &browser, &dan);
+    let visit = page.goto(&google.provider.asking_sign_in_url(&carol.subject));
+    assert_eq!(visit.status, Some(200), "stand-in sign-in: {visit:?}");
+    let visit = click_link(&google, &page, LINK_GOOGLE);
+    google.authorize_link(&page, &visit);
+    let visit = page.click_settled(PROVIDERS_LINK);
+    assert_on_server(&google, &visit);
+    assert_eq!(methods(&google, &page), github_and_google(&dan));
+    assert_eq!(google.account(&page), who);
 }

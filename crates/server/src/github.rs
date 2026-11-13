@@ -91,22 +91,28 @@ pub(crate) struct User {
 /// Why GitHub gave no user.
 #[derive(Debug)]
 pub(crate) enum Refusal {
-    /// GitHub refused the code: wrong, expired or used.
+    /// GitHub refused the code: wrong, expired, used or for another PKCE challenge.
     Code,
     /// GitHub failed, or refused the app.
     GitHub(String),
 }
 
 impl GitHubApp {
-    /// The user who authorized `code`, which GitHub gave the callback `redirect_uri`. Blocks; the
-    /// GitHub token it gets is dropped once it has read the user.
-    pub(crate) fn user(&self, code: &str, redirect_uri: &str) -> Result<User, Refusal> {
-        let token = self.token(code, redirect_uri)?;
+    /// The user who authorized `code`, which GitHub gave the callback `redirect_uri` for the PKCE
+    /// challenge of `verifier`. Blocks; the GitHub token it gets is dropped once it has read the
+    /// user.
+    pub(crate) fn user(
+        &self,
+        code: &str,
+        redirect_uri: &str,
+        verifier: &str,
+    ) -> Result<User, Refusal> {
+        let token = self.token(code, redirect_uri, verifier)?;
         self.user_of(&token)
     }
 
-    /// Exchanges `code` for a token at the token endpoint.
-    fn token(&self, code: &str, redirect_uri: &str) -> Result<String, Refusal> {
+    /// Exchanges `code` with `verifier` for a token at the token endpoint.
+    fn token(&self, code: &str, redirect_uri: &str, verifier: &str) -> Result<String, Refusal> {
         #[derive(Deserialize)]
         struct Answer {
             access_token: Option<String>,
@@ -120,6 +126,7 @@ impl GitHubApp {
                 ("client_secret", self.client_secret.expose()),
                 ("code", code),
                 ("redirect_uri", redirect_uri),
+                ("code_verifier", verifier),
             ]);
         let answer: Answer = read("token endpoint", response)?;
         match (answer.access_token, answer.error) {

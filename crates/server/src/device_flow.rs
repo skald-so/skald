@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use sqlx::PgPool;
@@ -319,31 +319,14 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
     Ok(answer)
 }
 
-/// A verification page of `status` with `title` and `body`, as [`sign_in::page`] serves pages,
-/// under [`PAGE_POLICY`]. Its referrer goes only to this server: under `no-referrer`, browsers
-/// state the origin of its form's submissions as `null`.
+/// A verification page of `status` with `title` and `body`, under [`PAGE_POLICY`].
 fn page_of(status: StatusCode, title: &str, body: &str) -> Response {
-    let mut response = sign_in::page(status, title, body);
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(PAGE_POLICY),
-    );
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("same-origin"),
-    );
-    response
+    sign_in::form_page(status, title, body, PAGE_POLICY)
 }
 
 /// The page's answer when the database fails.
 fn failed(doing: &str, err: sqlx::Error) -> Response {
-    eprintln!("skald-server: cannot {doing}: {err}");
-    page_of(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Failed",
-        "<p>The server failed. Try again later.</p>",
-    )
+    sign_in::form_page_failed(doing, err, PAGE_POLICY)
 }
 
 /// The link that signs in with GitHub and returns to the verification page with `user_code`.
@@ -426,10 +409,7 @@ pub(crate) async fn decide(
     };
     let again = format!("<a href=\"{VERIFICATION_PATH}\">Try again</a>");
     // The session cookie is `SameSite=Strict`, and browsers state the origin of every POST.
-    let origin = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok());
-    if origin != Some(settings.public_url.origin().as_str()) {
+    if !sign_in::from_this_server(settings, &headers) {
         return page_of(
             StatusCode::FORBIDDEN,
             "Refused",
