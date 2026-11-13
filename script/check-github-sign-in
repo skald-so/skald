@@ -203,7 +203,7 @@ verification_page() {
     echo "no answer from the sign-in start"
     return 1
   }
-  [[ $status == 30[1278] ]] || {
+  [[ $status == 30[12378] ]] || {
     echo "HTTP $status from the sign-in start, not a redirect"
     return 1
   }
