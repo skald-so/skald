@@ -5,7 +5,7 @@ use skald_crypto::MlsDevice;
 use skald_proto::ChannelId;
 
 use crate::fixtures::{
-    after, device_id, load, new_state, signing_key, state_key, state_with_groups,
+    NOW, after, device_id, load, new_state, signing_key, state_key, state_with_groups,
 };
 use crate::wire::{self, BASIC_CREDENTIAL, FROM_KEY_PACKAGE, PROFILE_SUITE};
 
@@ -62,7 +62,7 @@ fn assert_profile(seed: u8, bytes: &[u8]) -> wire::KeyPackage {
 fn a_key_package_keeps_to_the_mls_profile() {
     let mut device = load(1, &new_state(1));
     assert_eq!(device.id(), device_id(1));
-    let package = device.key_package().expect("a KeyPackage");
+    let package = device.key_package(NOW).expect("a KeyPackage");
     assert_profile(1, package.as_ref());
 }
 
@@ -74,7 +74,7 @@ fn a_device_makes_distinct_key_packages_and_keeps_their_keys_across_reloads() {
     let mut sizes = vec![sealed_size(&state)];
     for _ in 0..3 {
         state = after(2, &state, |device| {
-            let package = device.key_package().expect("a KeyPackage");
+            let package = device.key_package(NOW).expect("a KeyPackage");
             packages.push(assert_profile(2, package.as_ref()));
         });
         sizes.push(sealed_size(&state));
@@ -124,7 +124,7 @@ fn a_new_group_holds_the_history_key_of_epoch_zero_across_reloads() {
         .to_bytes();
 
     let two_groups = after(4, &one_group, |device| {
-        device.create_group(second).expect("a second group");
+        device.create_group(second, NOW).expect("a second group");
     });
     let device = load(4, &two_groups);
     assert_eq!(
@@ -168,7 +168,7 @@ fn creating_a_group_the_device_holds_is_refused_and_leaves_the_group_as_it_was()
         .to_bytes();
 
     let mut device = load(6, &state);
-    assert!(device.create_group(channel).is_err());
+    assert!(device.create_group(channel, NOW).is_err());
     let device = load(6, &device.seal());
     assert_eq!(
         *device

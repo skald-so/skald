@@ -4,7 +4,7 @@
 
 use skald_proto::ChannelId;
 
-use crate::fixtures::{device_id, load, signing_key};
+use crate::fixtures::{NOW, admitted, device_id, load, signing_key};
 use crate::foreign;
 use crate::steps::{
     add, bytes, channel_of, creator, history_key, join, receive, send, step, stored,
@@ -71,7 +71,7 @@ fn the_commit_merges_and_its_welcome_is_handed_out_only_once_the_server_stored_i
     assert_eq!(device.members(channel).expect("the group").len(), 1);
     assert!(device.history_key(channel, 1).is_none(), "no epoch 1 yet");
     assert!(
-        load(15, &joiner).join(&commit, |_| true).is_err(),
+        load(15, &joiner).join(&commit, NOW, |_| true).is_err(),
         "the Commit is no Welcome"
     );
 
@@ -136,7 +136,7 @@ fn a_creator_whose_first_commit_is_refused_ends_in_the_kept_group() {
     // Both creators accept the revision with the channel at once and form a group of it.
     for (seed, state) in [(first, &mut first_state), (second, &mut second_state)] {
         step(seed, state, |device| {
-            device.create_group(channel).expect("a new group");
+            device.create_group(channel, NOW).expect("a new group");
         });
     }
     add(
@@ -155,8 +155,11 @@ fn a_creator_whose_first_commit_is_refused_ends_in_the_kept_group() {
     // The server keeps the first creator's Commit and refuses the second's.
     let welcome = stored(first, &mut first_state, channel);
     assert!(
-        step(second, &mut second_state, |device| device
-            .join(&welcome, |_| true))
+        step(second, &mut second_state, |device| device.join(
+            &welcome,
+            NOW,
+            |_| true
+        ))
         .is_err(),
         "a Welcome for a group the device is a member of is refused"
     );
@@ -225,7 +228,7 @@ fn adding_to_a_channel_the_device_has_no_group_for_is_refused() {
     let (mut state, _) = with_key_packages(25, 1);
     assert!(
         step(25, &mut state, |device| device
-            .add_devices(channel, &[packages[0].as_slice()])
+            .add_devices(channel, &[packages[0].as_slice()], admitted(), NOW)
             .map(bytes))
         .is_err()
     );
@@ -260,11 +263,13 @@ fn a_malformed_or_truncated_key_package_is_refused_without_a_panic_and_changes_n
 
     let mut device = load(27, &state);
     for input in &inputs {
-        let added = device.add_devices(channel, &[input.as_slice()]).map(bytes);
+        let added = device
+            .add_devices(channel, &[input.as_slice()], admitted(), NOW)
+            .map(bytes);
         assert!(added.is_err(), "refused: {} bytes", input.len());
         assert!(
             device
-                .add_devices(channel, &[package, input.as_slice()])
+                .add_devices(channel, &[package, input.as_slice()], admitted(), NOW)
                 .map(bytes)
                 .is_err(),
             "one bad KeyPackage refuses the Add of all: {} bytes",
@@ -300,7 +305,7 @@ fn adding_a_key_package_that_breaks_the_profile_is_refused() {
         let package = foreign::key_package(32, identity);
         assert!(
             step(31, &mut state, |device| device
-                .add_devices(channel, &[package.as_slice()])
+                .add_devices(channel, &[package.as_slice()], admitted(), NOW)
                 .map(bytes))
             .is_err(),
             "an identity of {what} is refused"

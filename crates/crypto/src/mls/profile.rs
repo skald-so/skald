@@ -2,13 +2,14 @@
 //! ciphersuite, and leaves whose `basic` credential is the device ID derived from their signature
 //! key.
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use mls_rs::{
     CipherSuite, Client, ExtensionList, IdentityProvider,
     client_builder::MlsConfig,
     crypto::{SignaturePublicKey, SignatureSecretKey},
     error::IntoAnyError,
+    extension::{MlsCodecExtension as _, recommended::LastResortKeyPackageExt},
     identity::{CredentialType, SigningIdentity, basic::BasicCredential},
     time::MlsTime,
 };
@@ -16,14 +17,16 @@ use mls_rs_core::identity::MemberValidationContext;
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use skald_proto::DeviceId;
 
-use super::store::Store;
+use super::{key_package::LIFETIME, store::Store};
 use crate::SigningKey;
 
 /// `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`, `0x0001`.
-const SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
+pub(super) const SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 
 /// A client of device `id`, which signs with `signing` and keeps its state in `store`. mls-rs
-/// takes the Ed25519 key as the 64 bytes of the seed and the public key.
+/// takes the Ed25519 key as the 64 bytes of the seed and the public key. Its KeyPackages' lifetime
+/// runs [`LIFETIME`] from the time they are made at, and their capabilities list the `last_resort`
+/// extension, which a last-resort KeyPackage carries.
 pub(super) fn client(
     signing: &SigningKey,
     id: DeviceId,
@@ -41,6 +44,8 @@ pub(super) fn client(
         .group_state_storage(store.clone())
         .key_package_repo(store.clone())
         .signing_identity(identity, secret, SUITE)
+        .key_package_lifetime(Duration::from_secs(LIFETIME))
+        .extension_type(LastResortKeyPackageExt::extension_type())
         .build()
 }
 
