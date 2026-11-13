@@ -35,6 +35,7 @@ use common::browser::{Browser, Page, Visit};
 use common::sign_in::{
     CALLBACK as GITHUB_CALLBACK, CLIENT_ID as GITHUB_CLIENT_ID,
     CLIENT_SECRET as GITHUB_CLIENT_SECRET, Jar, SESSION, page_session, start_url,
+    to_github_callback,
 };
 use common::{Response, Server, TestDb, get_url, on_free_port};
 use skald_github_stand_in::{App, GitHub, User};
@@ -244,6 +245,15 @@ impl Google {
         let back = get_url(authorize, &[("cookie", &provider.header())]);
         let callback = back.header("location").expect("the provider goes back");
         let callback = callback.replacen(&self.public, self.server.base(), 1);
+        (jar, callback)
+    }
+
+    /// Runs a GitHub sign-in of `user` by plain HTTP, as `to_callback` does a Google one: the
+    /// cookies the start set and the callback URL on the server.
+    pub fn github_to_callback(&self, user: &User) -> (Jar, String) {
+        let (start, callback) = to_github_callback(&self.server, self.github(), &self.public, user);
+        let mut jar = Jar::default();
+        jar.take(&start);
         (jar, callback)
     }
 

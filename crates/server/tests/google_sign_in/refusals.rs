@@ -1,6 +1,6 @@
 //! Callbacks that sign no one in and create no account: a missing, wrong, expired or reused `state`,
-//! one from another browser, a provider error, a refused code, a refused client secret and an ID
-//! token with another sign-in's `nonce`.
+//! one from another browser or another provider's sign-in, a provider error, a refused code, a
+//! refused client secret and an ID token with another sign-in's `nonce`.
 
 use std::thread;
 use std::time::Duration;
@@ -8,8 +8,9 @@ use std::time::Duration;
 use skald_oidc_stand_in::{Endpoint, Fault, Person};
 
 use super::common::browser::{Browser, Page};
-use super::common::sign_in::{with_param, wrong_states};
-use super::{Google, Setup, WRONG_SECRET, param};
+use super::common::get_url;
+use super::common::sign_in::{Jar, with_param, wrong_states};
+use super::{CALLBACK, GITHUB_CALLBACK, Google, Setup, WRONG_SECRET, param};
 
 /// Opens each of `callbacks` in `page`'s browser as the browser is now: none signs anyone in.
 fn none_signs_in(google: &Google, page: &Page, callbacks: &[String]) {
@@ -130,6 +131,56 @@ fn reused_state_signs_no_one_in() {
     again.goto(&replay);
     google.assert_signed_out(&again);
     google.assert_no_account(&bob, "a reused state");
+}
+
+/// Opens `callback` by plain HTTP with the cookies of `jar`: it signs no one in.
+fn signs_no_one_in(google: &Google, jar: &Jar, callback: &str) {
+    let mut after = jar.clone();
+    after.take(&get_url(callback, &[("cookie", &jar.header())]));
+    let session = google.session_of(&after);
+    assert_eq!(session.status, 401, "GET {callback}: a session");
+}
+
+#[test]
+fn state_works_only_at_its_own_providers_callback() {
+    let google = Google::launch(Setup {
+        github: true,
+        ..Setup::default()
+    });
+    let ada = google.person("110248495921238986712", "ada.crossed@example.com");
+    let octo = google.github_user(
+        7_301_552_910,
+        "octo-crossed-standin",
+        "octo.crossed@example.com",
+    );
+
+    // A GitHub sign-in's `state`, with its cookie, at Google's callback.
+    let (github_jar, github_callback) = google.github_to_callback(&octo);
+    signs_no_one_in(
+        &google,
+        &github_jar,
+        &github_callback.replacen(GITHUB_CALLBACK, CALLBACK, 1),
+    );
+    // A Google sign-in's `state`, with its cookie, at GitHub's callback.
+    let (google_jar, google_callback) = google.to_callback(&ada);
+    signs_no_one_in(
+        &google,
+        &google_jar,
+        &google_callback.replacen(CALLBACK, GITHUB_CALLBACK, 1),
+    );
+    google.assert_no_account(&ada, "a Google state at GitHub's callback");
+
+    // Each still works at its own provider's callback.
+    let octo_session = google.session_of(&google.finish(&github_jar, &github_callback));
+    assert_eq!(
+        octo_session.status, 200,
+        "GitHub's sign-in after the crossing"
+    );
+    let ada_session = google.session_of(&google.finish(&google_jar, &google_callback));
+    assert_eq!(
+        ada_session.status, 200,
+        "Google's sign-in after the crossing"
+    );
 }
 
 /// Checks that a sign-in of `person` while the stand-in plays `fault` signs no one in and creates

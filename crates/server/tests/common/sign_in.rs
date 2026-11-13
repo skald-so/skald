@@ -160,15 +160,7 @@ impl SignIn {
     /// Runs a sign-in of `user` by plain HTTP, straight to the server whatever its public address,
     /// up to GitHub's redirect back: the start's answer and the callback URL on the server.
     pub fn to_callback(&self, user: &User) -> (Response, String) {
-        let start = self.server.get(START);
-        assert_eq!(start.status, 302, "GET {START}");
-        let signed_in = get_url(&self.github.sign_in_url(user.id), &[]);
-        let github = cookie_set(&signed_in, "stand_in_user");
-        let authorize = start.header("location").expect("a redirect to GitHub");
-        let back = get_url(authorize, &[("cookie", &github)]);
-        let callback = back.header("location").expect("GitHub goes back");
-        let callback = callback.replacen(&self.public, self.server.base(), 1);
-        (start, callback)
+        to_github_callback(&self.server, &self.github, &self.public, user)
     }
 
     /// Signs `page`'s browser in to GitHub as `user`, then to the server with GitHub.
@@ -228,6 +220,26 @@ impl SignIn {
         rows.retain(|row| row.contains(&user.login) || holds_number(row, &id));
         rows
     }
+}
+
+/// Runs a GitHub sign-in of `user` by plain HTTP at `server`, whose public address is `public`,
+/// straight to it, against `github`, up to GitHub's redirect back: the start's answer and the
+/// callback URL on the server.
+pub fn to_github_callback(
+    server: &Server,
+    github: &GitHub,
+    public: &str,
+    user: &User,
+) -> (Response, String) {
+    let start = server.get(START);
+    assert_eq!(start.status, 302, "GET {START}");
+    let signed_in = get_url(&github.sign_in_url(user.id), &[]);
+    let github = cookie_set(&signed_in, "stand_in_user");
+    let authorize = start.header("location").expect("a redirect to GitHub");
+    let back = get_url(authorize, &[("cookie", &github)]);
+    let callback = back.header("location").expect("GitHub goes back");
+    let callback = callback.replacen(public, server.base(), 1);
+    (start, callback)
 }
 
 /// The sign-in start `start`, such as `/auth/github`, under the public address `public`, with the
