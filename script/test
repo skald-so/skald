@@ -249,4 +249,5 @@ if checks tooling; then
   script/move-main-test
   script/release-check-workflow-test
   script/release-check-test
+  script/release-check-steps-test
 fi

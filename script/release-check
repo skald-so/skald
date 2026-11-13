@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# Checks a published release of skald in every channel of docs/dev/infrastructure.md, "Flow", as a
+# user gets it, and verifies it with the commands of "Trust in builds", pinned to the release's tag.
+# The release workflow runs it after each release is published, on a runner of each OS and
+# architecture; main moves only after it passes. Its steps:
+#   install.sh on macOS and Linux, install.ps1 on Windows: the release's installer installs skald,
+#     which prints the release's version;
+#   npx: `npx skald-so@<version>` runs skald, which prints the release's version;
+#   skald update: for a stable release with an earlier one, the release published before it, a beta
+#     included, the skald that release's installer installs updates itself with `skald update`, then
+#     prints the release's version;
+#   the verifications: the release is immutable; every file of the release matches its checksum, if
+#     it has one, and has an attestation of the release workflow at the tag; the image of the
+#     release's version is signed with cosign by that workflow at that tag and has its attestation;
+#     the npm package has its provenance and is under the dist-tag latest, or next for a beta.
+# It runs every step and exits 0 only if all of them pass. A failed step prints a line
+# `release-check: <step>: failed: <why>`, <step> the installer, npx, skald update, immutable, the
+# file's name, the image, provenance or dist-tag.
+# It needs bash, curl, jq, Node.js 22.11 or later with npm and npx, and gh signed in to GitHub; the
+# verifications also need gh 2.97.0 or later, cosign and docker with buildx.
+# Usage: script/release-check [<tag>]: the release <tag>, vX.Y.Z or vX.Y.Z-beta.N; with none, or an
+#   empty one, the newest release, betas included.
+#   SKALD_RELEASE_CHECK_STEPS=install: only the installer, npx and skald update, for a runner that
+#     has no tools for the verifications; one runner of the release workflow runs every step.
+#   SKALD_RELEASES_URL: where the releases' files are instead of
+#     https://github.com/skald-so/skald/releases/download, as <url>/<tag>/<file>.
+#   SKALD_GITHUB_API_URL: GitHub's API for skald update; npm_config_registry: npm's registry.
+set -euo pipefail
+
+if [[ $# -gt 1 ]]; then
+  echo "usage: $0 [<tag>]" >&2
+  exit 2
+fi
+case ${SKALD_RELEASE_CHECK_STEPS:-all} in
+  all) verify=true ;;
+  install) verify=false ;;
+  *)
+    echo "release-check: SKALD_RELEASE_CHECK_STEPS is all or install, not '$SKALD_RELEASE_CHECK_STEPS'" >&2
+    exit 2
+    ;;
+esac
+
+repository=skald-so/skald
+workflow=$repository/.github/workflows/release.yml
+image=ghcr.io/skald-so/skald-server
+issuer=https://token.actions.githubusercontent.com
+releases_url=${SKALD_RELEASES_URL:-https://github.com/$repository/releases/download}
+releases_url=${releases_url%/}
+registry=${npm_config_registry:-https://registry.npmjs.org/}
+registry=${registry%/}
+
+windows=false
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*) windows=true ;;
+esac
+# native <path>: the path as Windows programs take it there, unchanged elsewhere.
+native() {
+  if $windows; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
+
+tmp=$(cd "$(mktemp -d)" && pwd -P)
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+failures=0
+# fail <step> <why>: the step failed; the output of its last command, in $tmp/output, follows.
+fail() {
+  echo "release-check: $1: failed: $2" >&2
+  if [[ -s $tmp/output ]]; then sed 's/^/  /' "$tmp/output" >&2; fi
+  failures=$((failures + 1))
+}
+passed() { echo "release-check: $1: ok"; }
+# run <command>...: runs it with its output in $tmp/output.
+run() { "$@" >"$tmp/output" 2>&1; }
+# json <filter> <file>: jq's raw output, without the carriage returns of jq on Windows.
+json() { jq -r "$1" "$2" | tr -d '\r'; }
+# download <url> <file>
+download() { curl -fsSL --retry 3 "$1" -o "$2"; }
+
+for tool in curl jq gh node npm npx; do
+  command -v "$tool" >/dev/null || {
+    echo "release-check: $tool is missing" >&2
+    exit 1
+  }
+done
+
+# The releases, oldest first by publication, drafts left out: `<tag>` per line.
+if ! run gh api --paginate "repos/$repository/releases?per_page=100" \
+  --jq '.[] | select(.draft | not) | "\(.published_at)\t\(.tag_name)"'; then
+  fail releases "cannot list the releases of $repository"
+  exit 1
+fi
+tr -d '\r' <"$tmp/output" | sort | cut -f2 >"$tmp/releases"
+tag=${1:-}
+if [[ -z $tag ]]; then
+  tag=$(tail -n 1 "$tmp/releases")
+  if [[ -z $tag ]]; then
+    : >"$tmp/output"
+    fail releases "$repository has no release"
+    exit 1
+  fi
+  echo "release-check: the newest release is $tag"
+fi
+if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
+  echo "release-check: $tag is no release tag, vX.Y.Z or vX.Y.Z-beta.N" >&2
+  exit 2
+fi
+if ! run gh api "repos/$repository/releases/tags/$tag"; then
+  fail "$tag" "$repository has no release of the tag"
+  exit 1
+fi
+tr -d '\r' <"$tmp/output" >"$tmp/release.json"
+version=${tag#v}
+beta=false
+[[ $tag != *-* ]] || beta=true
+# The release published before it, if any.
+earlier=$(awk -v tag="$tag" '$0 == tag { print previous; exit } { previous = $0 }' "$tmp/releases")
+
+# install <tag> <dir> <step>: the installer of the release <tag> installs skald into <dir>, which
+# then prints that release's version; <step> names a failure. On Windows the user's PATH in the
+# registry, to which install.ps1 adds <dir>, is restored afterwards.
+install() {
+  local base=$releases_url/$1 installer=install.sh skald=$2/skald
+  if $windows; then installer=install.ps1 skald=$2/skald.exe; fi
+  mkdir -p "$2"
+  : >"$tmp/output"
+  if ! download "$base/$installer" "$2.$installer" 2>"$tmp/output"; then
+    fail "$3" "cannot download $base/$installer"
+    return 1
+  fi
+  # <dir> on PATH: install.sh then adds it to no profile.
+  if $windows; then
+    run env SKALD_DOWNLOAD_URL="$base" SKALD_INSTALL_DIR="$(native "$2")" \
+      powershell -NoProfile -ExecutionPolicy Bypass -File "$(native "$2.$installer")"
+  else
+    run env SKALD_DOWNLOAD_URL="$base" SKALD_INSTALL_DIR="$2" PATH="$2:$PATH" sh "$2.$installer"
+  fi || {
+    fail "$3" "$installer of $1 did not install skald"
+    return 1
+  }
+  prints "$skald" "${1#v}" "$3" "the skald that $installer of $1 installs"
+}
+# prints <skald> <version> <step> <what>: `<skald> --version` prints `skald <version>`.
+prints() {
+  local output
+  output=$("$1" --version 2>"$tmp/output" | tr -d '\r') || true
+  if [[ $output != "skald $2" ]]; then
+    fail "$3" "$4 prints '$output', not 'skald $2'"
+    return 1
+  fi
+}
+
+if $windows; then
+  user_path='(Get-Item HKCU:\Environment).GetValue("Path", "", "DoNotExpandEnvironmentNames")'
+  saved_path=$(powershell -NoProfile -Command "$user_path" | tr -d '\r')
+  restore() {
+    SAVED=$saved_path powershell -NoProfile -Command \
+      'Set-ItemProperty -Path HKCU:\Environment -Name Path -Type ExpandString -Value $env:SAVED'
+    cleanup
+  }
+  trap restore EXIT
+fi
+
+installer=install.sh
+if $windows; then installer=install.ps1; fi
+if install "$tag" "$tmp/install" "$installer"; then passed "$installer"; fi
+
+# npm has the version, which it may serve a while after it is published.
+npm_has() { run npm view "skald-so@$version" version --registry "$registry/" && [[ -n $(tr -d '\r\n' <"$tmp/output") ]]; }
+for _ in {1..30}; do
+  if npm_has; then break; fi
+  sleep 10
+done
+mkdir "$tmp/npx" "$tmp/npm-cache"
+output=$(cd "$tmp/npx" && SKALD_DOWNLOAD_URL=$releases_url/$tag npm_config_cache=$(native "$tmp/npm-cache") \
+  npx --yes --registry "$registry/" "skald-so@$version" --version 2>"$tmp/output" | tr -d '\r') || true
+if [[ $output == "skald $version" ]]; then
+  passed npx
+else
+  fail npx "npx skald-so@$version prints '$output', not 'skald $version'"
+fi
+
+if ! $beta && [[ -n $earlier ]]; then
+  skald=$tmp/update/skald
+  if $windows; then skald=$tmp/update/skald.exe; fi
+  if install "$earlier" "$tmp/update" "skald update"; then
+    if ! run "$skald" update; then
+      fail "skald update" "skald update of the skald of $earlier failed"
+    elif prints "$skald" "$version" "skald update" "after skald update, the skald of $earlier"; then
+      passed "skald update"
+    fi
+  fi
+fi
+
+if $verify; then
+  : >"$tmp/output"
+  gh_version=$(gh --version | head -n 1 | awk '{ print $3 }')
+  if [[ $(printf '%s\n' 2.97.0 "$gh_version" | sort -V | head -n 1) != 2.97.0 ]]; then
+    fail verifications "they need gh 2.97.0 or later, not ${gh_version:-none}"
+    exit 1
+  fi
+  verified=(--repo "$repository" --signer-workflow "$workflow" --source-ref "refs/tags/$tag")
+
+  : >"$tmp/output"
+  if [[ $(json .immutable "$tmp/release.json") == true ]]; then
+    passed immutable
+  else
+    fail immutable "the release $tag is not immutable"
+  fi
+
+  # Every file of the release, as a user downloads it.
+  mkdir "$tmp/files"
+  json '.assets[].name' "$tmp/release.json" >"$tmp/names"
+  while IFS= read -r name; do
+    file=$tmp/files/$name
+    : >"$tmp/output"
+    if ! download "$releases_url/$tag/$name" "$file" 2>"$tmp/output"; then
+      fail "$name" "cannot download $releases_url/$tag/$name"
+      continue
+    fi
+    if [[ $name == *.sha256 ]]; then
+      checked=$tmp/files/${name%.sha256}
+      if ! grep -qxF "${name%.sha256}" "$tmp/names"; then
+        fail "$name" "the release has no ${name%.sha256}, the file it is the checksum of"
+        continue
+      fi
+      # The checked file is downloaded first: it sorts before its checksum.
+      read -r expected _ <"$file" || true
+      if command -v sha256sum >/dev/null; then actual=$(sha256sum "$checked"); else actual=$(shasum -a 256 "$checked"); fi
+      if [[ -z $expected || ${actual%% *} != "$(tr 'A-F' 'a-f' <<<"$expected")" ]]; then
+        fail "${name%.sha256}" "it does not match its checksum, $name"
+      fi
+    elif [[ $name == skald-client-* ]] && ! grep -qxF "$name.sha256" "$tmp/names"; then
+      fail "$name" "the release has no checksum of it, $name.sha256"
+    fi
+    if run gh attestation verify "$file" "${verified[@]}"; then
+      passed "$name"
+    else
+      fail "$name" "it has no attestation of $workflow at refs/tags/$tag"
+    fi
+  done < <(sort "$tmp/names")
+
+  # The image of the version, by its digest.
+  if ! run docker buildx imagetools inspect "$image:$version" --format '{{json .Manifest}}'; then
+    fail "image $image:$version" "GHCR has no image of the version"
+  else
+    digest=$(tr -d '\r' <"$tmp/output" | jq -r .digest)
+    if run cosign verify "$image@$digest" --certificate-identity "https://github.com/$workflow@refs/tags/$tag" \
+      --certificate-oidc-issuer "$issuer"; then
+      passed "image signature"
+    else
+      fail "image $image@$digest" "its signature check failed: no cosign signature of $workflow at refs/tags/$tag"
+    fi
+    if run gh attestation verify "oci://$image@$digest" "${verified[@]}"; then
+      passed "image attestation"
+    else
+      fail "image $image@$digest" "it has no attestation of $workflow at refs/tags/$tag"
+    fi
+  fi
+
+  # The npm package: its dist-tag, and its provenance.
+  if ! run npm view skald-so dist-tags --json --registry "$registry/"; then
+    fail dist-tag "npm has no dist-tags of skald-so"
+  else
+    tr -d '\r' <"$tmp/output" >"$tmp/dist-tags.json"
+    dist_tag=latest
+    if $beta; then dist_tag=next; fi
+    found=$(json ".[\"$dist_tag\"] // \"\"" "$tmp/dist-tags.json")
+    if [[ $found == "$version" ]]; then
+      passed dist-tag
+    else
+      fail dist-tag "skald-so@$version is not under the dist-tag $dist_tag, which names '$found'"
+    fi
+  fi
+  mkdir "$tmp/npm"
+  package=$tmp/npm/skald-so-$version.tgz
+  if ! (cd "$tmp/npm" && run npm pack "skald-so@$version" --registry "$registry/" \
+    --cache "$(native "$tmp/npm-cache")") || [[ ! -f $package ]]; then
+    fail provenance "cannot download skald-so@$version from npm"
+  elif ! curl -fsSL --retry 3 "$registry/-/npm/v1/attestations/skald-so@$version" -o "$tmp/npm/attestations.json" \
+    2>"$tmp/output"; then
+    fail provenance "npm has no attestations of skald-so@$version"
+  else
+    json '.attestations[] | select(.predicateType == "https://slsa.dev/provenance/v1") | .bundle | tojson' \
+      "$tmp/npm/attestations.json" >"$tmp/npm/skald-so.jsonl"
+    if [[ ! -s $tmp/npm/skald-so.jsonl ]]; then
+      : >"$tmp/output"
+      fail provenance "npm has no provenance of skald-so@$version"
+    elif run gh attestation verify "$package" --bundle "$tmp/npm/skald-so.jsonl" --digest-alg sha512 "${verified[@]}"; then
+      passed provenance
+    else
+      fail provenance "skald-so@$version has no provenance of $workflow at refs/tags/$tag"
+    fi
+  fi
+fi
+
+if ((failures > 0)); then
+  echo "release-check: $tag: $failures step(s) failed" >&2
+  exit 1
+fi
+echo "release-check: $tag: every step passed"

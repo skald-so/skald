@@ -1,0 +1,148 @@
+#!/usr/bin/env node
+// Tests which steps of the release check, script/release-check, run where; script/release-check-test
+// tests the steps themselves.
+//   - SKALD_RELEASE_CHECK_STEPS=install runs only the installer, npx and skald update: against a
+//     stand-in release (script/lib/release-check-stub.mjs) that is not immutable and has no
+//     attestation, image, signature or provenance, it passes after it downloads the installer and
+//     the npm package, and runs no gh attestation, cosign or docker. Any value but all and install
+//     stops it before it checks anything.
+//   - .github/workflows/release-check.yml: on a push of a release tag, a Linux runner, which has
+//     docker with buildx, runs every step, so the release is verified.
+import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { imageName, serve } from './lib/release-check-stub.mjs';
+import { commands, event, isUnknown, open, readWorkflow, template } from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-check-steps-test: ${what}`);
+  failures++;
+};
+const runsCheck = (line) => /(^|[\s;&|(/"'])script\/release-check(?=$|[\s"';&|)])/.test(line);
+
+// The workflow: the steps each runner of the check runs on a push of a release tag.
+const workflow = readWorkflow(path.join(root, '.github/workflows/release-check.yml'));
+const tagPush = event('push', 'refs/tags/v1.2.3');
+const verifiers = [];
+for (const [key, job] of Object.entries(workflow.jobs ?? {})) {
+  for (const step of (job.steps ?? []).filter((s) => commands(s.run).some(runsCheck))) {
+    for (const combo of [].concat(job.strategy?.matrix?.include ?? [{}])) {
+      const scope = { contexts: { github: tagPush.github, inputs: open({ tag: 'v1.2.3' }), matrix: open(combo) }, status: {} };
+      const value = template(String(step.env?.SKALD_RELEASE_CHECK_STEPS ?? job.env?.SKALD_RELEASE_CHECK_STEPS ?? 'all'), scope);
+      const runner = template(String(job['runs-on']), scope);
+      if (isUnknown(value) || isUnknown(runner)) fail(`job ${key}: its runners and their steps are set in the workflow`);
+      else if (value === 'all' && /^ubuntu-/.test(runner)) verifiers.push(runner);
+    }
+  }
+}
+if (verifiers.length === 0) fail('on a push of a release tag, no Linux runner of the release check runs every step: nothing verifies the release');
+
+// The stand-in release v0.0.1, the first: its installers, the archive of this machine and its
+// checksum, and its npm package.
+const target = {
+  'Darwin/arm64': 'aarch64-apple-darwin',
+  'Darwin/x86_64': 'x86_64-apple-darwin',
+  'Linux/aarch64': 'aarch64-unknown-linux-gnu',
+  'Linux/x86_64': 'x86_64-unknown-linux-gnu',
+}[`${os.type()}/${os.machine()}`];
+if (!target) {
+  console.error(`release-check-steps-test: no stand-in release for ${os.type()} on ${os.machine()}`);
+  process.exit(1);
+}
+const tag = 'v0.0.1';
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-check-steps-test-')));
+const sh = (command, ...args) => {
+  const result = spawnSync(command, args, { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')}: ${result.stderr}`);
+  return result.stdout;
+};
+try {
+  const files = path.join(scratch, 'release');
+  const unpacked = path.join(scratch, 'archive', `skald-client-${target}`);
+  fs.mkdirSync(unpacked, { recursive: true });
+  fs.writeFileSync(path.join(unpacked, 'skald'), `#!/bin/sh\necho 'skald ${tag.slice(1)}'\n`, { mode: 0o755 });
+  const archive = path.join(files, `skald-client-${target}.tar.gz`);
+  fs.mkdirSync(files);
+  sh('tar', '-czf', archive, '-C', path.dirname(unpacked), path.basename(unpacked));
+  const sum = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+  fs.writeFileSync(`${archive}.sha256`, `${sum} *${path.basename(archive)}\n`);
+  sh(path.join(root, 'script/release-installers'), tag, files);
+  const npm = path.join(scratch, 'npm');
+  sh(path.join(root, 'script/release-npm'), tag, npm);
+  const tgz = path.join(npm, `skald-so-${tag.slice(1)}.tgz`);
+  const manifest = JSON.parse(sh('tar', '-xzOf', tgz, 'package/package.json'));
+  const world = {
+    releases: [{ tag, prerelease: false, immutable: false, dir: files }],
+    latest: tag,
+    npm: { versions: { [tag.slice(1)]: { tgz, manifest } }, distTags: { latest: tag.slice(1) }, provenance: {} },
+    requests: [],
+  };
+
+  // check <steps>: script/release-check <tag> run with SKALD_RELEASE_CHECK_STEPS=<steps>.
+  const check = async (steps) => {
+    const server = await serve(world);
+    try {
+      const dir = fs.mkdtempSync(path.join(scratch, 'run-'));
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      const state = path.join(dir, 'state.json');
+      const calls = path.join(dir, 'calls.jsonl');
+      fs.writeFileSync(calls, '');
+      const curl = sh('sh', '-c', 'command -v curl').trim();
+      fs.writeFileSync(state, JSON.stringify({ server: server.url, curl, calls, image: { name: imageName, tags: {} }, signatures: [], attestations: [] }));
+      const stub = path.join(root, 'script/lib/release-check-stub.mjs');
+      for (const tool of ['gh', 'cosign', 'docker', 'crane', 'curl', 'wget']) {
+        fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nexec node '${stub}' '${state}' ${tool} "$@"\n`, { mode: 0o755 });
+      }
+      fs.mkdirSync(path.join(dir, 'home'));
+      fs.writeFileSync(path.join(dir, 'npmrc'), '');
+      const env = {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        HOME: path.join(dir, 'home'),
+        TMPDIR: dir,
+        SKALD_RELEASE_CHECK_STEPS: steps,
+        SKALD_RELEASES_URL: `${server.url}/download`,
+        SKALD_GITHUB_API_URL: `${server.url}/api`,
+        npm_config_registry: `${server.url}/npm/`,
+        npm_config_userconfig: path.join(dir, 'npmrc'),
+        npm_config_update_notifier: 'false',
+      };
+      // Asynchronous, so the stand-in GitHub in this process answers.
+      const child = spawn(path.join(root, 'script/release-check'), [tag], { cwd: root, env });
+      let output = '';
+      child.stdout.on('data', (d) => (output += d));
+      child.stderr.on('data', (d) => (output += d));
+      const status = await new Promise((resolve) => child.on('close', (code) => resolve(code)));
+      const ran = fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      return { status, output, ran };
+    } finally {
+      await server.close();
+    }
+  };
+
+  const tail = (output) => output.trim().split('\n').slice(-6).join(' | ');
+  let r = await check('install');
+  if (r.status !== 0) fail(`with SKALD_RELEASE_CHECK_STEPS=install it verifies nothing and passes, but exits ${r.status}: ${tail(r.output)}`);
+  const verifying = r.ran.filter((c) => (c.tool === 'gh' && c.args[0] === 'attestation') || c.tool === 'cosign' || c.tool === 'docker');
+  if (verifying.length > 0) fail(`with SKALD_RELEASE_CHECK_STEPS=install it verifies nothing, but it ran: ${verifying.map((c) => `${c.tool} ${c.args.join(' ')}`).join('; ')}`);
+  for (const wanted of [`/download/${tag}/install.sh`, '/npm/skald-so']) {
+    if (!world.requests.some((q) => q.path === wanted)) fail(`with SKALD_RELEASE_CHECK_STEPS=install it installs the release, but it did not download ${wanted}`);
+  }
+  world.requests.length = 0;
+  r = await check('verify');
+  if (r.status !== 2 || world.requests.length > 0) {
+    fail(`with SKALD_RELEASE_CHECK_STEPS=verify, no value it knows, it stops with status 2 before it checks anything, not ${r.status} after ${world.requests.length} request(s): ${tail(r.output)}`);
+  }
+} finally {
+  fs.rmSync(scratch, { recursive: true, force: true });
+}
+
+if (failures > 0) {
+  console.error(`release-check-steps-test: ${failures} case(s) failed`);
+  process.exit(1);
+}
+console.log('release-check-steps-test: all cases passed');
