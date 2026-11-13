@@ -4,7 +4,7 @@
 
 use skald_proto::ChannelId;
 
-use crate::fixtures::{device_id, load};
+use crate::fixtures::{NOW, device_id, load};
 use crate::framing::{self, APPLICATION, COMMIT, PRIVATE_MESSAGE, PUBLIC_MESSAGE};
 use crate::steps::{add, channel_of, creator, receive, send, step, stored, with_key_packages};
 
@@ -94,7 +94,7 @@ fn a_message_of_another_channels_group_is_refused() {
     let (mut member, packages) = with_key_packages(82, 2);
     let mut sender = creator(81, channel);
     step(81, &mut sender, |device| {
-        device.create_group(other).expect("a second group");
+        device.create_group(other, NOW).expect("a second group");
     });
     let mut welcomes = Vec::new();
     for (group, package) in [(channel, &packages[0]), (other, &packages[1])] {
@@ -103,7 +103,9 @@ fn a_message_of_another_channels_group_is_refused() {
     }
     for welcome in &welcomes {
         step(82, &mut member, |device| {
-            device.join(welcome, |_| true).expect("the device joins");
+            device
+                .join(welcome, NOW, |_| true)
+                .expect("the device joins");
         });
     }
 
@@ -143,7 +145,9 @@ fn application_messages_are_private_messages_and_commits_public_messages() {
 
     let welcome = stored(83, &mut state, channel);
     step(84, &mut joiner, |device| {
-        device.join(&welcome, |_| true).expect("the device joins");
+        device
+            .join(&welcome, NOW, |_| true)
+            .expect("the device joins");
     });
     let plaintext = b"a plaintext the server never sees";
     let message = send(83, &mut state, channel, plaintext);

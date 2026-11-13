@@ -12,16 +12,17 @@ use mls_rs::{
         SigningIdentity,
         basic::{BasicCredential, BasicIdentityProvider},
     },
+    time::MlsTime,
 };
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use skald_proto::ChannelId;
 
-use crate::fixtures::signing_key;
+use crate::fixtures::{NOW, signing_key};
 
 /// The profile's ciphersuite, `0x0001`.
 const SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
-/// The lifetime of mls-rs's KeyPackages unless its client is given another.
-const DEFAULT_LIFETIME: Duration = Duration::from_secs(365 * 24 * 3_600);
+/// The longest lifetime of a KeyPackage a device adds: 60 days.
+const LIFETIME: Duration = Duration::from_secs(60 * 24 * 3_600);
 
 /// A client that signs with key `seed` and has a `basic` credential of `identity`, whatever it is,
 /// in ciphersuite `suite`, one with Ed25519 signatures; its KeyPackages' lifetime runs `lifetime`
@@ -50,26 +51,31 @@ pub fn client(
         .build()
 }
 
-/// A KeyPackage, in an `MLSMessage`, of a client with key `seed` and credential `identity`.
+/// A KeyPackage, in an `MLSMessage`, of a client with key `seed` and credential `identity`, made
+/// at the tests' time.
 pub fn key_package(seed: u8, identity: &[u8]) -> Vec<u8> {
-    client(seed, identity, SUITE, DEFAULT_LIFETIME)
-        .generate_key_package_message(ExtensionList::new(), ExtensionList::new(), None)
+    client(seed, identity, SUITE, LIFETIME)
+        .generate_key_package_message(
+            ExtensionList::new(),
+            ExtensionList::new(),
+            Some(MlsTime::from(NOW)),
+        )
         .and_then(|message| message.to_bytes())
         .expect("a KeyPackage of mls-rs")
 }
 
 /// The Welcome of `channel`'s group, which a client with key `seed` and credential `identity`
-/// creates, adds `key_packages` to and commits.
+/// creates, adds `key_packages` to and commits, at the tests' time.
 pub fn welcome(seed: u8, identity: &[u8], channel: ChannelId, key_packages: &[&[u8]]) -> Vec<u8> {
-    let mut group = client(seed, identity, SUITE, DEFAULT_LIFETIME)
+    let mut group = client(seed, identity, SUITE, LIFETIME)
         .create_group_with_id(
             channel.as_bytes().to_vec(),
             ExtensionList::new(),
             ExtensionList::new(),
-            None,
+            Some(MlsTime::from(NOW)),
         )
         .expect("a group of mls-rs");
-    let mut commit = group.commit_builder();
+    let mut commit = group.commit_builder().commit_time(MlsTime::from(NOW));
     for package in key_packages {
         let package = MlsMessage::from_bytes(package).expect("a KeyPackage message");
         commit = commit

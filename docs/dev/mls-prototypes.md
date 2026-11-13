@@ -312,7 +312,6 @@ Object sizes, the same on every run but OpenMLS's saved state ([OpenMLS](#openml
 - "MLS profile" says only that the server keeps the latest GroupInfo. Without a check, one member could give joiners and browsers a GroupInfo of another group.
 - [Envelope](../protocol/README.md#envelope) has a browser take the members from the latest GroupInfo, but names its checks of that GroupInfo's channel, epoch and members only in [Wraps](../protocol/membership.md#wraps), before the browser writes entries.
 - [Group changes](../protocol/membership.md#group-changes) says a joining device checks a GroupInfo's or a Welcome's members, but not what it does when one is not admitted. In the prototypes it refuses and joins by itself once a member has removed that device.
-- [KeyPackages](../protocol/membership.md#keypackages) bounds a device's own KeyPackages to 60 days, but not those it adds. RFC 9420, §7.2, asks applications to bound a lifetime's length.
 
 ## Comparison
 OpenMLS 0.9.2 against mls-rs 0.57.0. Facts from outside this repository were checked on 2026-11-11 at the linked sources.
@@ -404,7 +403,7 @@ The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls
 - **Signing key:** the device's Ed25519 key goes into `SignatureSecretKey` as the 64 bytes of the seed and the public key ("Signing key format").
 - **Sender:** the device reads the roster before processing, to take the credentials of the sender and the removed members from their leaf indexes ("Sender"). An external Commit's joiner comes from the new epoch's roster ("Processing an external Commit").
 - **Checks before saving:** a processed Commit's sender, Adds, Removes and `authenticated_data`, and a Welcome's signer and members, are checked before `write_to_storage()`; a failed check drops the group unsaved ("Reading before merging", "Checking a Welcome").
-- **Admission:** the `IdentityProvider` refuses devices that are not admitted only in the client that commits an Add; members remove such devices after processing ("Credential check").
+- **Admission:** only the device that commits an Add checks its KeyPackage against the admitted devices, before the Add; members remove such devices after processing ("Credential check").
 - **KeyPackages:** `key_package_lifetime` of 60 days from an hour back ("KeyPackage lifetime").
 - **GroupInfo:** `CommitOptions::with_allow_external_commit`; after an external Commit, `group_info_message_allowing_ext_commit(true)` ("GroupInfo", "External Commit").
 - **Rejoining:** `with_removal` of the old leaf, found by its signature key and accepted by `valid_successor`; the device drops its old state of the group before the build ("External Commit").

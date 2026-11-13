@@ -20,12 +20,6 @@ skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
 
-# Builds the acceptance tests of KeyPackage lifetimes and the checks before an Add
-# (tests/mls/key_packages.rs), which need code not written yet. Removed with the gate in
-# tests/mls/main.rs once that code lands.
-[features]
-acceptance = []
-
 # In WASM: the random generator of the browser or Node.js.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }

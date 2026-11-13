@@ -5,7 +5,7 @@
 use skald_crypto::{MemberDevice, SealedState};
 use skald_proto::ChannelId;
 
-use crate::fixtures::{device_id, load, signing_key};
+use crate::fixtures::{NOW, device_id, load, signing_key};
 use crate::foreign;
 use crate::framing::{self, WELCOME};
 use crate::steps::{
@@ -61,7 +61,7 @@ fn the_welcomes_signer_and_members_reach_the_caller_before_the_group_is_saved() 
 
     let mut seen = None;
     let joined = step(42, &mut joiners[0], |device| {
-        device.join(&welcome, |joining| {
+        device.join(&welcome, NOW, |joining| {
             seen = Some((
                 joining.channel,
                 joining.epoch,
@@ -94,7 +94,7 @@ fn a_welcome_the_caller_refuses_leaves_no_group() {
 
     let mut asked = false;
     let joined = step(45, &mut joiners[0], |device| {
-        let joined = device.join(&welcome, |_| {
+        let joined = device.join(&welcome, NOW, |_| {
             asked = true;
             false
         });
@@ -122,14 +122,14 @@ fn a_welcome_for_a_group_the_device_is_a_member_of_is_refused() {
 
     // Another device forms a group of the same channel and adds the member with a new KeyPackage.
     let package = step(47, &mut states[1], |device| {
-        bytes(device.key_package().expect("a KeyPackage"))
+        bytes(device.key_package(NOW).expect("a KeyPackage"))
     });
     let mut other = creator(48, channel);
     add(48, &mut other, channel, &[package.as_slice()]);
     let other_welcome = stored(48, &mut other, channel);
 
     let joined = step(47, &mut states[1], |device| {
-        device.join(&other_welcome, |_| true)
+        device.join(&other_welcome, NOW, |_| true)
     });
     assert!(joined.is_err(), "refused, not a silent replacement");
     let device = load(47, &states[1]);
@@ -173,7 +173,9 @@ fn a_welcome_with_a_leaf_that_breaks_the_profile_is_refused_and_leaves_no_group(
         let mut added: Vec<&[u8]> = vec![&packages[0]];
         added.extend(extra);
         let welcome = foreign::welcome(signer, identity, channel, &added);
-        let joined = step(joiner, &mut state, |device| device.join(&welcome, |_| true));
+        let joined = step(joiner, &mut state, |device| {
+            device.join(&welcome, NOW, |_| true)
+        });
         assert!(joined.is_err(), "refused: {what}");
         assert!(!holds_group(joiner, &state, channel), "no group: {what}");
     }
@@ -195,7 +197,7 @@ fn a_welcome_that_keeps_to_the_profile_joins_whichever_client_made_it() {
 
     let mut seen = None;
     let joined = step(joiner, &mut state, |device| {
-        device.join(&welcome, |joining| {
+        device.join(&welcome, NOW, |joining| {
             seen = Some((joining.signer, joining.members.clone()));
             true
         })
@@ -215,7 +217,7 @@ fn a_device_that_was_not_added_cannot_join_from_the_welcome() {
     let (mut outsider, _) = with_key_packages(60, 1);
     let mut asked = false;
     let joined = step(60, &mut outsider, |device| {
-        device.join(&welcome, |_| {
+        device.join(&welcome, NOW, |_| {
             asked = true;
             true
         })
@@ -255,7 +257,7 @@ fn a_malformed_or_truncated_welcome_is_refused_without_a_panic_and_leaves_no_gro
     let mut device = load(62, &joiners[0]);
     for input in &inputs {
         assert!(
-            device.join(input, |_| true).is_err(),
+            device.join(input, NOW, |_| true).is_err(),
             "refused: {} bytes",
             input.len()
         );
