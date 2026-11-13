@@ -38,7 +38,7 @@ A human takes one action per release: merging the Release PR.
 All checks except e2e, the PR title, the CLA, the edit comparison prototype's Windows job and the release dry run run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md); it exempts bots, `*[bot]`.
-- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of the server's GitHub sign-in and of the client's sign-in also in headless Chrome; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
+- **Rust:** `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of `script/check-github-sign-in` among them, those of the server's GitHub sign-in and of the client's sign-in also in headless Chrome; the MLS prototypes' tests natively and in WASM, in Node.js; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
@@ -118,6 +118,7 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 ## Cloud
 - **The same image that is published for self-hosting.**
 - **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites. `script/staging-status` tells whether staging runs the latest commit on `dev` and how long after its merge it got there, from public data only: the head of `dev`, its CI runs and the health check.
+  - Its GitHub sign-in uses an OAuth App of its own under `skald-so`; `script/check-github-sign-in https://dev.skald.so <client ID>` checks it without a person.
   - Every merge into `dev` is deployed to it by this repository's CI: after `.github/workflows/edge.yml` publishes `:edge`, its deploy job deploys that digest over SSH with `script/deploy-staging`: one deploy at a time, only of the head of `dev`, so staging never moves back.
   - The job runs in the environment `staging`: only `dev` deploys from it, only this job uses it. Its secrets are the connection `script/deploy-staging` reads, described there: `STAGING_SSH_KEY`, `STAGING_SSH_HOST_KEY`, `STAGING_SSH_DESTINATION`. The key runs only the deploy on the VPS.
 - **Production:** dedicated Hetzner servers, a primary and a replica.
