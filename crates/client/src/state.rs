@@ -43,7 +43,7 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE device ADD COLUMN account TEXT;
     UPDATE device SET account = (SELECT account FROM session);",
     // The session keeps its account's username instead of the GitHub login. A session of a state
-    // older than this column has no username until its next sign-in.
+    // older than this column has no username until its next sign-in or `skald set-username`.
     "ALTER TABLE session DROP COLUMN github_login;
     ALTER TABLE session ADD COLUMN username TEXT;",
 ];
@@ -83,7 +83,7 @@ pub struct Session {
     pub server: String,
     /// The account's ID, once the server gave it.
     pub account: Option<String>,
-    /// The account's username, as the server gave it at the latest sign-in.
+    /// The account's username, as the latest sign-in or `skald set-username` recorded it.
     pub username: Option<String>,
 }
 
