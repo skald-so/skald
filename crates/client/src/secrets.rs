@@ -13,6 +13,10 @@ use std::sync::Arc;
 pub const FILE: &str = "secrets.json";
 /// The keyring service of the client's entries; an entry's user is its state directory.
 const SERVICE: &str = "skald";
+/// The setting that lets a test use the system's own key storage: `1`, and only on a machine whose
+/// key storage nothing else uses, such as a fresh CI runner. Otherwise no test touches it.
+#[cfg(test)]
+const REAL_KEY_STORAGE: &str = "SKALD_TEST_REAL_KEY_STORAGE";
 
 /// The secrets by name.
 pub type Map = BTreeMap<String, String>;
@@ -42,15 +46,17 @@ pub trait Keyring {
     fn set(&self, value: &str) -> Result<(), KeyringError>;
 }
 
-/// The system's key storage, through the keyring project's store for the platform.
+/// The system's key storage, through the keyring project's store for the platform: the entry of
+/// `service` and `user`.
 struct System {
+    service: String,
     user: String,
 }
 
 impl System {
     fn entry(&self) -> Result<keyring_core::Entry, KeyringError> {
         platform_store()
-            .and_then(|store| store.build(SERVICE, &self.user, None))
+            .and_then(|store| store.build(&self.service, &self.user, None))
             .map_err(keyring_error)
     }
 }
@@ -126,8 +132,14 @@ pub struct Secrets {
 impl Secrets {
     /// The secrets of the state directory `dir`, in `storage`.
     pub fn new(dir: &Path, storage: Storage) -> Self {
+        Self::of_service(dir, storage, SERVICE)
+    }
+
+    /// The secrets of the state directory `dir`, in `storage`, under the keyring service `service`.
+    fn of_service(dir: &Path, storage: Storage, service: &str) -> Self {
         let keyring = match storage {
             Storage::Auto => Some(Box::new(System {
+                service: service.to_owned(),
                 user: dir.display().to_string(),
             }) as Box<dyn Keyring>),
             Storage::File => None,
@@ -383,6 +395,66 @@ mod tests {
         fs::create_dir(dir.join(FILE)).unwrap();
         let error = secrets.save(&token("two")).expect_err("the file stays");
         assert!(matches!(error, Error::File(..)), "{error:?}");
+    }
+
+    /// An entry of the system's own key storage, deleted on drop: a test leaves nothing behind,
+    /// also when it fails.
+    struct SystemEntry(System);
+
+    impl Drop for SystemEntry {
+        fn drop(&mut self) {
+            if let Ok(entry) = self.0.entry() {
+                let _ = entry.delete_credential();
+            }
+        }
+    }
+
+    /// The system's own key storage in auto mode, only with SKALD_TEST_REAL_KEY_STORAGE=1: a
+    /// device's keys and a session token go into it, under a keyring service of the test's own,
+    /// and not into the file; a later run reads them back; once the entry is deleted, nothing is
+    /// stored.
+    #[test]
+    fn system_key_storage_keeps_the_device_keys() {
+        if std::env::var(REAL_KEY_STORAGE).as_deref() != Ok("1") {
+            return;
+        }
+        let dir = TestDir::new("secrets-system");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let service = format!("skald-test-{}-{nanos}", std::process::id());
+        let entry = SystemEntry(System {
+            service: service.clone(),
+            user: dir.display().to_string(),
+        });
+        assert!(matches!(entry.0.get(), Ok(None)), "a new entry");
+        let keys = crate::device::Keys::generate();
+        let mut stored = token("tok-system-0123456789abcdefghijkl");
+        keys.store(&mut stored);
+
+        Secrets::of_service(&dir, Storage::Auto, &service)
+            .save(&stored)
+            .unwrap();
+
+        assert!(!dir.join(FILE).exists(), "the secrets went to the file");
+        let held = entry.0.get().unwrap().expect("the entry holds the secrets");
+        assert_eq!(parse(&held, "the entry").unwrap(), stored);
+        let loaded = Secrets::of_service(&dir, Storage::Auto, &service)
+            .load()
+            .unwrap();
+        assert_eq!(loaded, stored);
+        let read = crate::device::Keys::load(&loaded).unwrap().expect("keys");
+        assert_eq!(read.id(), keys.id());
+
+        entry.0.entry().unwrap().delete_credential().unwrap();
+        assert!(matches!(entry.0.get(), Ok(None)), "the entry is deleted");
+        assert_eq!(
+            Secrets::of_service(&dir, Storage::Auto, &service)
+                .load()
+                .unwrap(),
+            Map::new()
+        );
     }
 
     #[test]

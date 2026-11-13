@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 // Tests the job of .github/workflows/ci.yml that runs the client's tests on Windows:
-//   - one job of a PR into dev runs `cargo test -p skald-client --locked` on a windows-2025 runner,
-//     in a step that may run and whose failure fails the job; the command selects no other test
-//     target, may add --no-fail-fast and leaves tests out only with `--skip <name>`;
+//   - one job of a PR into dev runs `cargo test -p skald-client --locked --no-fail-fast` on a
+//     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
+//     client, none left out;
 //   - it is gated like the job that runs script/test's Rust part: it needs the job of
 //     script/changed-parts and runs exactly when that job's rust output is true, whatever the other
 //     outputs are;
 //   - before the tests, it starts the runner image's PostgreSQL service and waits for it, and
 //     installs the packages of web/, whose playwright-core drives Chrome; the tests get the server
 //     through SKALD_TEST_DATABASE_URL;
+//   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
+//     Manager; no other job of any workflow and no script sets it;
 //   - every action is pinned to a commit, a checkout keeps no credentials, and the job's token reads
 //     contents at most.
+import fs from 'node:fs';
 import path from 'node:path';
 import { commands, condition, event, jobsFor, needsOf, permissions, readWorkflow, stepSkipped, truth, unknown, words } from './lib/workflows.mjs';
 
@@ -68,17 +71,8 @@ if (testStep.if !== undefined) fail(`the test step of job ${key} has a condition
 const tests = commands(testStep.run).filter((line) => cargoTest(line));
 if (tests.length !== 1) fail(`the test step of job ${key} runs cargo test ${tests.length} times, not once`);
 const args = cargoTest(tests[0] ?? '') ?? [];
-const split = args.indexOf('--');
-const options = split < 0 ? args : args.slice(0, split);
-const harness = split < 0 ? [] : args.slice(split + 1);
-if (JSON.stringify(options.filter((option) => option !== '--no-fail-fast')) !== JSON.stringify(['-p', 'skald-client', '--locked'])) {
-  fail(`job ${key} runs cargo test ${options.join(' ')}, not cargo test -p skald-client --locked: every test target, from the lockfile`);
-}
-for (let i = 0; i < harness.length; i += 2) {
-  if (harness[i] !== '--skip' || !harness[i + 1] || harness[i + 1].startsWith('-')) {
-    fail(`job ${key} passes the test harness ${harness.slice(i).join(' ')}: only --skip <name> leaves a test out`);
-    break;
-  }
+if (args.join(' ') !== '-p skald-client --locked --no-fail-fast') {
+  fail(`job ${key} runs cargo test ${args.join(' ')}, not cargo test -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
 }
 // The server's URL: in the step's or the job's env, or set in PowerShell before cargo test runs.
 const url = /^postgres(ql)?:\/\/[^@\s/]+@127\.0\.0\.1:5432$/;
@@ -138,6 +132,21 @@ if (partsJob) {
     if (got !== want) fail(`job ${key} ${got ? 'runs' : got === false ? 'is skipped' : 'may run'} when the Rust part is ${rust === 'true' ? 'changed' : 'unchanged'}`);
     if (rustJob && runs(jobs[rustJob], rust) !== want) fail(`job ${rustJob} is not gated by the Rust part: rust=${rust}`);
   }
+}
+
+// The system's own key storage: only this job's tests use it.
+const realKeys = 'SKALD_TEST_REAL_KEY_STORAGE';
+if (String(testStep.env?.[realKeys]) !== '1') fail(`the test step of job ${key} does not set ${realKeys}=1`);
+const workflowDir = path.join(root, '.github/workflows');
+for (const file of fs.readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f))) {
+  const workflow = readWorkflow(path.join(workflowDir, file));
+  const others = { ...workflow, jobs: Object.fromEntries(Object.entries(workflow.jobs ?? {}).filter(([k]) => `.github/workflows/${file}` !== ciFile || k !== key)) };
+  if (JSON.stringify(others).includes(realKeys)) fail(`.github/workflows/${file} sets ${realKeys} outside job ${key} of ${ciFile}`);
+}
+if (JSON.stringify(jobs[key]).replace(JSON.stringify(testStep), '').includes(realKeys)) fail(`job ${key} sets ${realKeys} outside its test step`);
+for (const file of fs.readdirSync(path.join(root, 'script'), { recursive: true })) {
+  const full = path.join(root, 'script', file);
+  if (file !== 'ci-workflow-test' && fs.statSync(full).isFile() && fs.readFileSync(full, 'utf8').includes(realKeys)) fail(`script/${file} sets ${realKeys}`);
 }
 
 // The rules of every job.
