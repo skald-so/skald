@@ -321,21 +321,6 @@ impl Follower {
         }))
     }
 
-    /// The follower of the machine whose state is in `dir`, its secrets in `storage`, with the space
-    /// named `name` it follows.
-    pub fn of_space(
-        dir: &Path,
-        storage: secrets::Storage,
-        speaks: VersionRange,
-        timeout: Duration,
-        name: &str,
-    ) -> Result<(Self, state::Space), String> {
-        let follower = Follower::new(dir, storage, speaks, timeout)?
-            .ok_or_else(|| NOT_FOLLOWING.to_owned())?;
-        let space = follower.space(name)?;
-        Ok((follower, space))
-    }
-
     /// The space named `name`, as the state holds it now.
     pub fn space(&self, name: &str) -> Result<state::Space, String> {
         self.state
@@ -489,6 +474,36 @@ impl Follower {
     }
 }
 
+/// A space a command uses, once the device accepted the revisions the server has of it: the
+/// follower, the space as the state held it, its last accepted revision and its accounts' devices.
+pub struct Synced {
+    pub follower: Follower,
+    pub space: state::Space,
+    pub roster: Roster,
+    pub devices: SpaceDevices,
+}
+
+/// The space named `name` that the device of the machine whose state is in `dir`, its secrets in
+/// `storage`, follows, synced ([`Follower::sync`]).
+pub fn synced(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    name: &str,
+) -> Result<Synced, String> {
+    let mut follower =
+        Follower::new(dir, storage, speaks, timeout)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
+    let space = follower.space(name)?;
+    let (roster, devices) = follower.sync(&space)?;
+    Ok(Synced {
+        follower,
+        space,
+        roster,
+        devices,
+    })
+}
+
 /// Whether `device` is a device of an admin in `roster`: one of `account`, an admin in it, whose
 /// `excluded` does not list it. The device's certificate is checked on accepting.
 pub fn admin_device(roster: &Roster, account: AccountId, device: DeviceId) -> bool {
@@ -577,17 +592,14 @@ pub fn list(
     Ok(())
 }
 
-/// Shows the members of the space `name` that the device of the machine whose state is in `dir`,
-/// its secrets in `storage`, follows, after accepting the revisions the server has of it.
-pub fn members(
-    dir: &Path,
-    storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
-    name: &str,
-) -> Result<(), String> {
-    let (mut follower, space) = Follower::of_space(dir, storage, speaks, timeout, name)?;
-    let (roster, devices) = follower.sync(&space)?;
+/// Shows the members of `synced`, a space the device follows.
+pub fn members(synced: Synced) -> Result<(), String> {
+    let Synced {
+        follower,
+        roster,
+        devices,
+        ..
+    } = synced;
     let (listing, warnings) = members_listing(&roster, &devices, &follower.own, follower.this);
     print!("{listing}");
     for warning in warnings {

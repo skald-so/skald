@@ -4,18 +4,12 @@
 //! and a space's channels, as its last accepted revision gives them. The revision is written and
 //! sent as [`crate::spaces`] says.
 
-use std::path::Path;
-use std::time::Duration;
-
 use serde::Deserialize;
-use skald_proto::{
-    Cbor as _, Channel, ChannelId, ChannelMember, Roster, SpaceId, Unknown, VersionRange,
-};
+use skald_proto::{Cbor as _, Channel, ChannelId, ChannelMember, Roster, SpaceId, Unknown};
 
 use crate::connection::{Connection, Method};
 use crate::devices::text;
-use crate::secrets;
-use crate::spaces::{CHANGED_MEANWHILE, Follower, admin_device, no_admin};
+use crate::spaces::{CHANGED_MEANWHILE, Synced, admin_device, no_admin};
 
 /// `NewChannel` in the API spec.
 #[derive(Deserialize)]
@@ -23,18 +17,15 @@ struct NewChannel {
     channel: String,
 }
 
-/// Adds a channel to the space `name` that the device of the machine whose state is in `dir`, its
-/// secrets in `storage`, follows, once it accepted the revisions the server has of it: by the next
-/// revision, signed by the device, of an admin.
-pub fn create(
-    dir: &Path,
-    storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
-    name: &str,
-) -> Result<(), String> {
-    let (mut follower, space) = Follower::of_space(dir, storage, speaks, timeout, name)?;
-    let (latest, _) = follower.sync(&space)?;
+/// Adds a channel to `synced`, a space the device follows: by the next revision, signed by the
+/// device, of an admin.
+pub fn create(synced: Synced) -> Result<(), String> {
+    let Synced {
+        mut follower,
+        space,
+        roster: latest,
+        ..
+    } = synced;
     let name = space.name.as_str();
     if follower.space(name)?.pending.is_some() {
         return Err(format!(
@@ -83,18 +74,9 @@ fn issue(connection: &mut Connection, token: &str, id: SpaceId) -> Result<Channe
     issued.channel.parse().map_err(|_| unexpected())
 }
 
-/// Shows the channels of the space `name` that the device of the machine whose state is in `dir`,
-/// its secrets in `storage`, follows, after accepting the revisions the server has of it.
-pub fn list(
-    dir: &Path,
-    storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
-    name: &str,
-) -> Result<(), String> {
-    let (mut follower, space) = Follower::of_space(dir, storage, speaks, timeout, name)?;
-    let (roster, _) = follower.sync(&space)?;
-    print!("{}", listing(&roster));
+/// Shows the channels of `synced`, a space the device follows.
+pub fn list(synced: Synced) -> Result<(), String> {
+    print!("{}", listing(&synced.roster));
     Ok(())
 }
 

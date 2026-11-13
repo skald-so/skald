@@ -244,21 +244,21 @@ fn main() -> ExitCode {
                 .and_then(|dir| spaces::list(&dir, cli.key_storage, speaks, timeout));
             exit(result)
         }
-        Command::Members { space } => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| spaces::members(&dir, cli.key_storage, speaks, timeout, &space));
-            exit(result)
-        }
-        Command::CreateChannel { space } => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| channels::create(&dir, cli.key_storage, speaks, timeout, &space));
-            exit(result)
-        }
-        Command::Channels { space } => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| channels::list(&dir, cli.key_storage, speaks, timeout, &space));
-            exit(result)
-        }
+        Command::Members { space } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
+                .and_then(spaces::members),
+        ),
+        Command::CreateChannel { space } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
+                .and_then(channels::create),
+        ),
+        Command::Channels { space } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
+                .and_then(channels::list),
+        ),
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
 }
