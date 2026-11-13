@@ -267,6 +267,82 @@ fn token_endpoint_takes_basic_credentials_and_answers_a_form_by_default() {
     );
 }
 
+/// RFC 7636, Appendix B: a verifier and its S256 challenge.
+const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+/// A code for the user 1001 from an authorization request with `challenge` as `method`, if given.
+fn code_with_challenge(github: &GitHub, challenge: &str, method: Option<&str>) -> String {
+    let cookie = signed_in(github, 1001, false);
+    let mut params = vec![
+        ("client_id", CLIENT_ID),
+        ("redirect_uri", CALLBACK),
+        ("state", "s1"),
+        ("code_challenge", challenge),
+    ];
+    params.extend(method.map(|method| ("code_challenge_method", method)));
+    let query = serde_urlencoded::to_string(&params).expect("a query");
+    let url = format!("{}/login/oauth/authorize?{query}", github.url());
+    let back = get(&url, &[("cookie", &cookie)]);
+    back_param(&back, "code").expect("a code")
+}
+
+/// Exchanges `code` with the verifier `verifier`, if given.
+fn exchange_verified(github: &GitHub, code: &str, verifier: Option<&str>) -> Value {
+    let url = format!("{}/login/oauth/access_token", github.url());
+    let mut form = vec![
+        ("client_id", CLIENT_ID),
+        ("client_secret", CLIENT_SECRET),
+        ("code", code),
+    ];
+    form.extend(verifier.map(|verifier| ("code_verifier", verifier)));
+    let sent = agent()
+        .post(&url)
+        .header("accept", "application/json")
+        .send_form(form)
+        .expect("POST");
+    answer(sent).json()
+}
+
+#[test]
+fn token_endpoint_takes_a_code_with_a_challenge_only_with_its_verifier() {
+    let github = start();
+    let s256 = Some("S256");
+    for verifier in [None, Some(""), Some(CHALLENGE), Some(&VERIFIER[1..])] {
+        let code = code_with_challenge(&github, CHALLENGE, s256);
+        let refused = exchange_verified(&github, &code, verifier);
+        assert_eq!(refused["error"], "bad_verification_code", "{verifier:?}");
+    }
+    let code = code_with_challenge(&github, CHALLENGE, s256);
+    let granted = exchange_verified(&github, &code, Some(VERIFIER));
+    assert!(granted["access_token"].is_string(), "{granted}");
+
+    let plain = code_with_challenge(&github, VERIFIER, None);
+    let refused = exchange_verified(&github, &plain, Some(CHALLENGE));
+    assert_eq!(refused["error"], "bad_verification_code");
+    let plain = code_with_challenge(&github, VERIFIER, Some("plain"));
+    assert!(exchange_verified(&github, &plain, Some(VERIFIER))["access_token"].is_string());
+
+    // Without a challenge, a code needs no verifier.
+    let code = self::code(&github, 1001);
+    assert!(exchange_verified(&github, &code, None)["access_token"].is_string());
+
+    let cookie = signed_in(&github, 1001, false);
+    let query = serde_urlencoded::to_string([
+        ("client_id", CLIENT_ID),
+        ("redirect_uri", CALLBACK),
+        ("code_challenge", CHALLENGE),
+        ("code_challenge_method", "S512"),
+    ])
+    .expect("a query");
+    let url = format!("{}/login/oauth/authorize?{query}", github.url());
+    let back = get(&url, &[("cookie", &cookie)]);
+    assert_eq!(
+        back_param(&back, "error").as_deref(),
+        Some("invalid_request")
+    );
+}
+
 fn base64_encode(text: &str) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(text)
