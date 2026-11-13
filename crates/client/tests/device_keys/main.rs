@@ -34,23 +34,17 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use browser::{Browser, Page};
-use cloud::{APPROVE, Cloud, Device, GIVE_MASTER, REGISTER, WAIT, certified, ids, shown_grant};
-use machine::{FIRST_DEVICE, Finished, Machine, NO, SIGN_IN, YES};
+use browser::{APPROVE, Browser, Page};
+use cloud::{ASK_MASTER, Cloud, Device, GIVE_MASTER, REGISTER, WAIT, certified, ids, shown_grant};
+use machine::{FIRST_DEVICE, Finished, Machine, NAME, NO, SERVER, SIGN_IN, YES};
 use relay::Lose;
 use serde_json::Value;
 use skald_github_stand_in::User;
 use skald_proto::{CERT_NAME_MAX, Cert, DeviceId, DeviceKind};
 
-/// The flag of a `name` the user gives.
-const NAME: &str = "--name";
-
-/// The request that asks for the account's master key, as its line starts.
-const ASK_MASTER: &str = "GET /account/master ";
-
 /// `skald sign-in --server <cloud> <extra>`.
 fn args<'a>(cloud: &'a Cloud, extra: &[&'a str]) -> Vec<&'a str> {
-    let mut args = vec![SIGN_IN, "--server", &cloud.url];
+    let mut args = vec![SIGN_IN, SERVER, &cloud.url];
     args.extend_from_slice(extra);
     args
 }

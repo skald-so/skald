@@ -13,7 +13,7 @@ use skald_github_stand_in::{App, GitHub, User};
 use skald_proto::{AccountId, Cbor, Cert, DeviceId};
 use skald_server::{CALLBACK_PATH, ClientSecret, GitHubApp, Settings, SignInSettings};
 
-use super::browser::{Page, Visit};
+use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_LINK, SUBMIT, Visit};
 use super::common::Server;
 use super::machine::{self, Finished, Machine, Run};
 use super::relay::{Relay, strings_named};
@@ -25,18 +25,11 @@ pub const WAIT: Duration = Duration::from_secs(60);
 const CLIENT_ID: &str = "Ov23li0standin0cli";
 const CLIENT_SECRET: &str = "standin-secret-cli-0b1c2d3e4f5a6b7c8d9e";
 
-/// The verification page's field for the code, the buttons that approve and deny it, and the
-/// button of a page that asks for the code first.
-const CODE_FIELD: &str = "role=textbox";
-pub const APPROVE: &str = "role=button[name=/approve/i]";
-pub const DENY: &str = "role=button[name=/deny/i]";
-const SUBMIT: &str = "role=button >> nth=0";
-/// A link or button of the verification page that signs a browser without a session in.
-const SIGN_IN: &str = "a:has-text('sign in'), button:has-text('sign in')";
-
-/// The requests that register a device and give the account's master key, as their lines start.
+/// The requests that register a device and give and ask for the account's master key, as their
+/// lines start.
 pub const REGISTER: &str = "POST /devices ";
 pub const GIVE_MASTER: &str = "PUT /account/master ";
+pub const ASK_MASTER: &str = "GET /account/master ";
 
 /// What device authorization gave the machine, as the relay saw it.
 #[derive(Clone, Debug)]
@@ -254,7 +247,7 @@ impl Cloud {
         extra: &[&str],
     ) -> Finished {
         let before = self.grants().len();
-        let mut args = vec![machine::SIGN_IN, "--server", &self.url];
+        let mut args = vec![machine::SIGN_IN, machine::SERVER, &self.url];
         args.extend_from_slice(extra);
         let mut run = machine.start(&args);
         let grant = shown_grant(self, &mut run, before);
@@ -298,13 +291,13 @@ impl Cloud {
 
     /// The person at `page`, signed in to GitHub as `user`, opens `grant`'s verification page,
     /// signing in to the server on the way, types its code and clicks `button`, [`APPROVE`] or
-    /// [`DENY`]; gives the last visit.
+    /// [`DENY`](super::browser::DENY); gives the last visit.
     pub fn decide(&self, page: &Page, user: &User, grant: &Grant, button: &str) -> Visit {
         let visit = page.goto(&self.github.sign_in_url(user.id));
         assert_eq!(visit.status, Some(200), "stand-in sign-in: {visit:?}");
         page.goto_settled(&grant.verification_uri);
-        if page.count(SIGN_IN) > 0 {
-            page.click(&format!("{SIGN_IN} >> nth=0"));
+        if page.count(SIGN_IN_LINK) > 0 {
+            page.click(&format!("{SIGN_IN_LINK} >> nth=0"));
             page.goto_settled(&grant.verification_uri);
         }
         assert_eq!(

@@ -41,8 +41,8 @@ use std::fs;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::{Browser, Page};
-use cloud::Cloud;
-use machine::{DEVICES, FIRST_DEVICE, Finished, Machine, NOT_LINKED, THIS_DEVICE};
+use cloud::{ASK_MASTER, Cloud};
+use machine::{DEVICES, FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED, THIS_DEVICE};
 use serde_json::{Value, json};
 use skald_crypto::{SigningKey, issue};
 use skald_github_stand_in::User;
@@ -51,9 +51,9 @@ use skald_proto::{AccountId, Cbor, Cert, CertBody, DeviceId, DeviceKind, Unknown
 /// What the warning for two bodies says.
 const WARNING: &str = "warning";
 
-/// The requests whose answers the proxy rewrites, as their lines start.
+/// The request for the device list, whose answers the proxy rewrites, as its line starts; it also
+/// rewrites the answers to [`ASK_MASTER`].
 const LIST: &str = "GET /devices";
-const MASTER: &str = "GET /account/master";
 
 /// When the certificates the tests make up were issued: 2001-02-03, at noon UTC. No date of that
 /// month may show.
@@ -123,7 +123,7 @@ fn sign_in(cloud: &Cloud, page: &Page, machine: &Machine, user: &User, first: &s
 /// its host name is its registered `name`.
 fn second_machine(cloud: &Cloud, browser: &Browser, ada: &Ada, host: &str) -> Machine {
     let machine = Machine::new().with_host_name(host);
-    sign_in(cloud, &browser.page(), &machine, &ada.user, "no");
+    sign_in(cloud, &browser.page(), &machine, &ada.user, NO);
     machine
 }
 
@@ -565,7 +565,7 @@ fn master_key_the_server_swaps_changes_nothing() {
     let master = URL_SAFE_NO_PAD.encode(swapped.public_key());
     cloud
         .relay
-        .rewrite(MASTER, move |_| json!({ "master": master }).to_string());
+        .rewrite(ASK_MASTER, move |_| json!({ "master": master }).to_string());
     let device = MadeUp::new();
     let cert = device.cert(&device.body(ada.account, None, "swapped-master"), &swapped);
     add(&cloud, vec![], vec![entry(device.id(), &cert)]);

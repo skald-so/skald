@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use skald_github_stand_in::User;
 
-use super::browser::{Page, Visit};
+use super::browser::{APPROVE, CODE_FIELD, DENY, Page, SUBMIT, Visit};
 use super::sign_in::{Account, CLIENT_SECRET, SESSION, SignIn, cookie_set};
 use super::spec::{operation_violations, spec};
 use super::{Response, delete_url, get_url, post_form, send};
@@ -30,13 +30,6 @@ pub const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// seconds.
 pub const LIFETIME: &str = "--device-code-lifetime";
 pub const INTERVAL: &str = "--device-poll-interval";
-
-/// The page's button that approves the code, the one that denies it, and its field for the code.
-pub const APPROVE: &str = "role=button[name=/approve/i]";
-pub const DENY: &str = "role=button[name=/deny/i]";
-pub const CODE_FIELD: &str = "role=textbox";
-/// The button of a page that asks for the code first.
-pub const SUBMIT: &str = "role=button >> nth=0";
 
 /// What device authorization gives (RFC 8628, §3.2).
 #[derive(Clone, Debug)]

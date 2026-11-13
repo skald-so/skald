@@ -9,11 +9,10 @@ use std::collections::BTreeSet;
 use std::sync::Barrier;
 use std::thread;
 
-use common::browser::Browser;
+use common::browser::{APPROVE, Browser, CODE_FIELD, DENY, SIGN_IN_LINK, SUBMIT};
 use common::device_flow::{
-    APPROVE, CLIENT_ID, CODE_FIELD, DENY, DEVICE_AUTHORIZATION, DeviceFlow, GRANT_TYPE, Grant,
-    INTERVAL, LIFETIME, Poll, SUBMIT, TOKEN, answer, assert_ok, assert_refused_page, json, pause,
-    text,
+    CLIENT_ID, DEVICE_AUTHORIZATION, DeviceFlow, GRANT_TYPE, Grant, INTERVAL, LIFETIME, Poll,
+    TOKEN, answer, assert_ok, assert_refused_page, json, pause, text,
 };
 use common::sign_in::SignIn;
 use common::{get_url, post_form, stored_forms};
@@ -145,9 +144,8 @@ fn person_without_a_session_signs_in_with_github_on_the_page() {
     flow.stand.assert_signed_out(&page);
     flow.stand.github_session(&page, &bob);
     let mut visit = flow.open(&page, &grant.verification_uri_complete);
-    let sign_in = "a:has-text('sign in'), button:has-text('sign in')";
-    if page.count(sign_in) > 0 {
-        visit = page.click(&format!("{sign_in} >> nth=0"));
+    if page.count(SIGN_IN_LINK) > 0 {
+        visit = page.click(&format!("{SIGN_IN_LINK} >> nth=0"));
     }
     assert!(
         visit

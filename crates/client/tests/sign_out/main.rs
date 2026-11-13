@@ -34,7 +34,8 @@ use std::path::PathBuf;
 use browser::Browser;
 use cloud::{Cloud, Device, GIVE_MASTER, REGISTER, certified, ids};
 use machine::{
-    DEVICES, FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED, SIGN_IN, SIGN_OUT, THIS_DEVICE, YES,
+    DEVICES, FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED, SERVER, SIGN_IN, SIGN_OUT,
+    THIS_DEVICE, YES,
 };
 use skald_github_stand_in::User;
 use skald_proto::{Cert, DeviceId};
@@ -301,7 +302,7 @@ fn signing_one_machine_out_leaves_the_accounts_other_sessions_working() {
     let grants = cloud.grants().len();
     let mark = cloud.relay.mark();
     let again = second
-        .start(&[SIGN_IN, "--server", &cloud.url, FIRST_DEVICE, NO])
+        .start(&[SIGN_IN, SERVER, &cloud.url, FIRST_DEVICE, NO])
         .finish();
     assert!(again.shown().contains(&ada.user.login), "{again:?}");
     assert_eq!(cloud.grants().len(), grants, "a new code: {again:?}");

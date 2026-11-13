@@ -16,8 +16,10 @@ use super::common::CLIENT;
 pub const STATE_DIR: &str = "SKALD_STATE_DIR";
 /// The setting of the key storage; `file` keeps secrets in the 0600 file, never in the system's.
 pub const KEY_STORAGE: &str = "SKALD_KEY_STORAGE";
-/// The sign-in command.
+/// The sign-in command; its flags of the server's address and of a `name` the user gives.
 pub const SIGN_IN: &str = "sign-in";
+pub const SERVER: &str = "--server";
+pub const NAME: &str = "--name";
 /// The flag of `skald sign-in` that answers whether this is the account's first device, and its
 /// answers.
 pub const FIRST_DEVICE: &str = "--first-device";
@@ -80,7 +82,7 @@ impl Machine {
 
     /// Starts `skald sign-in --server <server>`.
     pub fn sign_in(&self, server: &str) -> Run {
-        self.start(&[SIGN_IN, "--server", server])
+        self.start(&[SIGN_IN, SERVER, server])
     }
 
     /// Starts `skald` with `args`.

@@ -12,7 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::browser::Browser;
-use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn, set_cookie};
+use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn, cookie_set, set_cookie};
 use common::{Response, SERVER, get_url};
 use skald_github_stand_in::{Endpoint, Fault, User};
 
@@ -24,11 +24,7 @@ const WRONG_SECRET: &str = "standin-secret-0000000000000000000000000000wrong";
 /// started it, with another cookie of the site before its own, and the callback URL on the server.
 fn to_callback(stand: &SignIn, user: &User) -> (Response, String, String) {
     let (start, callback) = stand.to_callback(user);
-    let state = start.header("set-cookie").expect("a state cookie");
-    let jar = format!(
-        "theme=dark; {}",
-        state.split(';').next().unwrap_or_default()
-    );
+    let jar = format!("theme=dark; {}", cookie_set(&start, "skald_sign_in"));
     (start, jar, callback)
 }
 
