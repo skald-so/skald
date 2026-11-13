@@ -42,10 +42,16 @@ pub const BOB_ROGUE: u8 = 22;
 pub const BOB_ROGUE_CI: u8 = 23;
 /// A `client` device on bob's account chained to carol's master key.
 pub const BOB_BY_CAROL: u8 = 24;
+/// A `client` device on bob's account chained to alice's master key, an admin's.
+pub const BOB_BY_ALICE: u8 = 25;
 pub const CAROL_LAPTOP: u8 = 30;
 pub const DAVE_LAPTOP: u8 = 40;
 /// A valid `service` device on dave's account, outside the space.
 pub const DAVE_CI: u8 = 41;
+/// A `client` device on dave's account chained to bob's master key, a member's.
+pub const DAVE_BY_BOB: u8 = 42;
+/// A `service` device on dave's account certified by [`DAVE_BY_BOB`].
+pub const DAVE_BY_BOB_CI: u8 = 43;
 /// A device with no certificate.
 pub const UNCERTIFIED: u8 = 50;
 
@@ -100,7 +106,7 @@ enum By {
     Device(u8),
 }
 
-const DEVICES: [(u8, AccountId, DeviceKind, By); 13] = [
+const DEVICES: [(u8, AccountId, DeviceKind, By); 16] = [
     (
         ALICE_LAPTOP,
         ALICE,
@@ -141,6 +147,7 @@ const DEVICES: [(u8, AccountId, DeviceKind, By); 13] = [
         By::Device(BOB_ROGUE),
     ),
     (BOB_BY_CAROL, BOB, DeviceKind::Client, By::Key(CAROL_MASTER)),
+    (BOB_BY_ALICE, BOB, DeviceKind::Client, By::Key(ALICE_MASTER)),
     (
         CAROL_LAPTOP,
         CAROL,
@@ -149,6 +156,13 @@ const DEVICES: [(u8, AccountId, DeviceKind, By); 13] = [
     ),
     (DAVE_LAPTOP, DAVE, DeviceKind::Client, By::Key(DAVE_MASTER)),
     (DAVE_CI, DAVE, DeviceKind::Service, By::Device(DAVE_LAPTOP)),
+    (DAVE_BY_BOB, DAVE, DeviceKind::Client, By::Key(BOB_MASTER)),
+    (
+        DAVE_BY_BOB_CI,
+        DAVE,
+        DeviceKind::Service,
+        By::Device(DAVE_BY_BOB),
+    ),
 ];
 
 /// Every device's certificate, as the server returns them.

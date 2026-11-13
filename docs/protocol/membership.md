@@ -324,7 +324,7 @@ channel-member = [
 - A `service` device sends only as `space/owner/agent` from its entry ([Envelope](README.md#envelope)).
 
 A client starts from an anchor: revision 1 of a space it created, the revision its [invite](#invite) link names, or one from its [link object](#linking-a-device) or [anchors](#anchors). It MUST NOT accept revision n+1 before it has accepted revision n, nor unless:
-1. its signature verifies with the certificate of `signer`, a valid `client` or `browser` device of an account that is an admin in revision n;
+1. its signature verifies with the certificate of `signer`, a valid `client` or `browser` device of an account that is an admin in revision n, and that member's `excluded` in revision n does not list `signer`;
 2. `space` and `name` are those of revision n, `revision` is n+1, and `prev` is the hash of revision n;
 3. it has at least one admin; no list repeats an account, device, channel or invite; `name`, handles, owners and agents are valid names ([Agent address](README.md#agent-address)); no two members share a handle, and no owner is a handle; service agents may share an owner, but not an owner and agent;
 4. each `service-agent` device has a valid certificate of kind `service` on a member's account; each `channel-member` is a member; `policy` passes [its checks](#policy).

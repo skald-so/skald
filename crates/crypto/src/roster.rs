@@ -26,7 +26,8 @@ pub fn sign_roster(body: &RosterBody, key: &SigningKey) -> Result<Roster, Decode
 /// Why a client does not accept a roster revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RosterError {
-    /// Check 1: `signer` is not a valid `client` or `browser` device of an admin of revision n.
+    /// Check 1: `signer` is not a valid `client` or `browser` device of an admin of revision n
+    /// that the admin's `excluded` does not list.
     Signer(DeviceId),
     /// Check 1: the signature does not verify with the key of `signer`'s certificate.
     Signature,
@@ -36,6 +37,8 @@ pub enum RosterError {
     Name,
     /// Check 2: `revision` is not n+1; holds n+1.
     Revision { expected: u64, actual: u64 },
+    /// Check 2: n is the highest number a revision holds, so no n+1 follows it.
+    LastRevision,
     /// Check 2: `prev` is not the hash of revision n.
     Prev,
     /// Check 3: no member is an admin.
@@ -65,6 +68,9 @@ impl fmt::Display for RosterError {
             Self::Name => f.write_str("another name than the previous revision's"),
             Self::Revision { expected, actual } => {
                 write!(f, "revision {actual}, not {expected}")
+            }
+            Self::LastRevision => {
+                f.write_str("the previous revision has the highest number; none follows it")
             }
             Self::Prev => f.write_str("prev is not the hash of the previous revision"),
             Self::NoAdmin => f.write_str("no member is an admin"),
@@ -135,9 +141,15 @@ pub fn accept_next(
         .find_map(|admin| {
             let cert = check_device(&pinned(prev_body, admin.account)?, certs, body.signer).ok()?;
             let cert = cert.body();
+            let excluded = admin
+                .excluded
+                .iter()
+                .flat_map(|ids| ids.iter())
+                .any(|id| *id == body.signer);
             (cert.account == admin.account
-                && matches!(cert.kind, DeviceKind::Client | DeviceKind::Browser))
-            .then_some(cert.signing)
+                && matches!(cert.kind, DeviceKind::Client | DeviceKind::Browser)
+                && !excluded)
+                .then_some(cert.signing)
         })
         .ok_or(RosterError::Signer(body.signer))?;
     verify(
@@ -155,7 +167,10 @@ pub fn accept_next(
     if body.name != prev_body.name {
         return Err(RosterError::Name);
     }
-    let expected = prev_body.revision.saturating_add(1);
+    let expected = prev_body
+        .revision
+        .checked_add(1)
+        .ok_or(RosterError::LastRevision)?;
     if body.revision != expected {
         return Err(RosterError::Revision {
             expected,

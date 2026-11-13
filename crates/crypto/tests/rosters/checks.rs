@@ -94,6 +94,24 @@ fn a_signer_chained_to_another_master_key_is_rejected() {
 }
 
 #[test]
+fn a_signer_chained_to_an_admins_master_key_but_certified_on_another_account_is_rejected() {
+    assert!(accepts(&signed_by(BOB_BY_ALICE).roster()).is_err());
+}
+
+#[test]
+fn a_device_that_revision_n_excludes_is_no_signer() {
+    let mut previous = current();
+    previous.members[0].excluded = vec![device(ALICE_LAPTOP)];
+    let mut rev = successor(&previous);
+    rev.signer = ALICE_LAPTOP;
+    assert!(accepts_after(&previous, &rev.roster()).is_err());
+
+    // Another device of the same admin account still signs.
+    rev.signer = ALICE_BROWSER;
+    accepts_after(&previous, &rev.roster()).unwrap();
+}
+
+#[test]
 fn a_signer_without_a_certificate_is_rejected() {
     assert!(accepts(&signed_by(UNCERTIFIED).roster()).is_err());
 }
@@ -185,6 +203,17 @@ fn another_revision_number_is_rejected() {
         rev.revision = revision;
         assert!(accepts(&rev.roster()).is_err(), "revision {revision}");
     }
+}
+
+#[test]
+fn no_revision_follows_the_highest_revision_number() {
+    let mut previous = current();
+    previous.revision = u64::MAX;
+    let rev = Rev {
+        prev: Some(previous.roster().hash()),
+        ..previous.clone()
+    };
+    assert!(accepts_after(&previous, &rev.roster()).is_err());
 }
 
 #[test]
@@ -334,6 +363,16 @@ fn a_repeated_account_or_service_in_a_channel_is_rejected() {
 }
 
 #[test]
+fn one_account_and_one_service_in_two_channels_are_accepted() {
+    let rev = changed(|rev| {
+        rev.channels[1].members.push((ALICE, false));
+        rev.channels[1].services.push(device(BOB_CI));
+    });
+    accepts(&rev.roster()).unwrap();
+    passes_content_checks(&rev.bytes()).unwrap();
+}
+
+#[test]
 fn a_repeated_excluded_device_is_rejected() {
     let rev = changed(|rev| rev.members[2].excluded = vec![device(CAROL_LAPTOP); 2]);
     assert_rejected("carol's laptop excluded twice", &rev);
@@ -356,6 +395,15 @@ fn a_service_agent_without_a_valid_service_certificate_on_a_members_account_is_r
         let rev = changed(|rev| rev.service_agents[0].device = device(seed));
         assert_rejected(what, &rev);
     }
+}
+
+#[test]
+fn a_service_agent_chained_to_a_members_master_key_but_certified_on_another_account_is_rejected() {
+    let rev = changed(|rev| rev.service_agents[0].device = device(DAVE_BY_BOB_CI));
+    assert_rejected(
+        "a service device on dave's account chained to bob's master key",
+        &rev,
+    );
 }
 
 #[test]
@@ -493,6 +541,26 @@ fn the_error_names_the_check_that_fails() {
             RosterError::Name,
             "another name than the previous revision's".to_owned()
         )
+    );
+
+    let mut last = current();
+    last.revision = u64::MAX;
+    let after_last = Rev {
+        prev: Some(last.roster().hash()),
+        ..last.clone()
+    };
+    let error = accept_next(
+        &last.roster(),
+        &after_last.roster(),
+        &certs(),
+        ALICE,
+        &public(ALICE_MASTER),
+    )
+    .unwrap_err();
+    assert_eq!(error, RosterError::LastRevision);
+    assert_eq!(
+        error.to_string(),
+        "the previous revision has the highest number; none follows it"
     );
 
     let error = accept_next(
