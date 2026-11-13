@@ -5,10 +5,11 @@
 #[allow(dead_code)]
 mod common;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::future::{Ready, ready};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
+use std::time::Duration;
 
 use common::{SETUP_ATTEMPTS, Server, retried_on_reset, test_databases};
 
@@ -66,6 +67,27 @@ fn only_a_reset_is_retried_and_only_a_few_times() {
         assert!(result.is_err());
         assert_eq!(calls.get(), 1, "{result:?}");
     }
+}
+
+#[test]
+fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .expect("start a tokio runtime");
+    let attempts = RefCell::new(Vec::new());
+    let result: Result<(), _> = runtime.block_on(async {
+        let started = tokio::time::Instant::now();
+        retried_on_reset("a step", || {
+            attempts.borrow_mut().push(started.elapsed());
+            ready(Err(io_error(io::ErrorKind::ConnectionReset)))
+        })
+        .await
+    });
+    assert!(result.is_err());
+    let at = [0, 100, 300, 700, 1500].map(Duration::from_millis);
+    assert_eq!(attempts.into_inner(), at);
 }
 
 /// The only test of this binary that makes databases: no other test's are listed.

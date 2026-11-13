@@ -13,6 +13,7 @@
 //     through SKALD_TEST_DATABASE_URL;
 //   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
 //     Manager; no other job of any workflow and no script sets it;
+//   - a step after the tests, when they fail, prints the failures in PostgreSQL's log;
 //   - a step after the tests, also when they fail, fails the job when they left a skald-update-* or
 //     skald-client-* directory in the temporary directory;
 //   - every action is pinned to a commit, a checkout keeps no credentials, and the job's token reads
@@ -116,6 +117,20 @@ if (
   fail(`job ${key} does not install the packages of web/ with npm ci before its tests: the sign-in tests drive Chrome with its playwright-core`);
 }
 if (!before.some((step) => String(step.uses ?? '').startsWith('actions/checkout@'))) fail(`job ${key} does not check out the repository before its tests`);
+
+// PostgreSQL's failures, printed after the tests when they fail.
+const logStep = steps.slice(testIndex + 1).find((step) => /\bGet-Content\b/.test(commands(step.run).join('\n')) && commands(step.run).join('\n').includes('$env:PGDATA\\log'));
+if (!logStep) {
+  fail(`no step of job ${key} after its tests prints PostgreSQL's log, $env:PGDATA\\log`);
+} else {
+  const text = commands(logStep.run).join('\n');
+  for (const level of ['FATAL', 'PANIC']) {
+    if (!text.includes(level)) fail(`the step of job ${key} that prints PostgreSQL's log leaves out its ${level} lines`);
+  }
+  if ((logStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell) !== 'pwsh') fail(`the step of job ${key} that prints PostgreSQL's log does not run in pwsh`);
+  const scope = { ...states[key].scope, status: { success: false, always: true, failure: true, cancelled: false } };
+  if (truth(condition(logStep.if ?? 'success()', scope)) !== true) fail(`the step of job ${key} that prints PostgreSQL's log does not run when the tests fail`);
+}
 
 // The check that the tests left no directories, after them, also when they fail.
 const patterns = ["'skald-update-*'", "'skald-client-*'"];
