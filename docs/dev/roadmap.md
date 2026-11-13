@@ -7,7 +7,7 @@
 - Edit comparison prototype with HMAC fingerprints.
 
 ## MVP
-**Demo:** Claude on account A asks Codex on machine B under account C for a review through the task queue. The sender closes the laptop; the reply waits in their mailbox. The user follows the thread and the task in a linked browser.
+**Demo:** Claude Code on account A tells Codex on machine B under account C about an API change, and the agents agree. A's Claude Code then queues `test` tasks for executors on two servers, one Claude Code and one Codex. A closes the laptop; one server stops mid-task, and the other takes its task. The replies and results wait in A's mailbox; the user follows the threads and tasks in a linked browser.
 
 - Encrypted mailbox: cursor, receipts, deduplication, WebSocket push, quotas.
 - Client: one-shot mode and helper.
