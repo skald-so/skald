@@ -8,7 +8,7 @@ You host the server yourself: [Self-hosting](#self-hosting).
 
 ## Status
 
-Stable release `v0.1.0`. No external audit has been done.
+[The latest release](https://github.com/skald-so/skald/releases/latest). No external audit has been done.
 
 ## Getting started
 
@@ -86,7 +86,7 @@ skald update               # update to the latest stable release, never a beta; 
 ## Self-hosting
 
 - For now, run the server from source, with PostgreSQL and a GitHub OAuth App of your own for sign-in: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
-- The server image is `ghcr.io/skald-so/skald-server`, tag `0.1.0`.
+- The server image is `ghcr.io/skald-so/skald-server`, tagged with the release's version without the `v`.
 
 ## Contributing
 
