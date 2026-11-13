@@ -4,16 +4,9 @@
 # Usage: script/release-installers <tag> <dir>, <tag> vX.Y.Z or vX.Y.Z-beta.N.
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <tag> <dir>" >&2
-  exit 2
-fi
-if [[ ! $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]]; then
-  echo "release-installers: $1 is no release tag, vX.Y.Z or vX.Y.Z-beta.N" >&2
-  exit 2
-fi
-
 root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release-tag-args.sh"
+check_release_tag_args "$@"
 mkdir -p "$2"
 for installer in install.sh install.ps1; do
   # The template has the placeholder once.

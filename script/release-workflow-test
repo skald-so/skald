@@ -16,9 +16,12 @@
 //     x86_64 and arm64, for PRs and manual runs;
 //   - the rules of the release pipeline: every job's permissions are set; only the job that creates
 //     the release writes: contents, and the attestations of its files, with an OIDC token
-//     (id-token); and one job that pushes the release image with docker/build-push-action:
+//     (id-token); one job that pushes the release image with docker/build-push-action:
 //     packages, and its attestations, with an OIDC token; script/release-image-test tests that job;
-//     no job that does not attest requests an OIDC token; actions are pinned to
+//     and one job that publishes to npm with npm publish --provenance: an OIDC token only, for
+//     trusted publishing and the provenance that proves the package's origin instead of an
+//     attestation; script/release-npm-workflow-test tests that job; no other job that does not
+//     attest requests an OIDC token; actions are pinned to
 //     commits and Docker images to digests; tools, cosign included, are installed by
 //     taiki-e/install-action at exact versions it checks against checksums, never downloaded by a
 //     step, by an installer action such as sigstore/cosign-installer, or run from an expression;
@@ -243,7 +246,7 @@ if (creator) {
 // Permissions.
 for (const file of files) {
   const w = writes(permissions(workflows[file], {}));
-  if (w.length > 0) fail(`${file}: the workflow's token writes ${w.join(', ')}; only the job that creates the release and the image's write`);
+  if (w.length > 0) fail(`${file}: the workflow's token writes ${w.join(', ')}; only the job that creates the release, the image's and npm's write`);
 }
 // The job that publishes the release image: a step pushes it with docker/build-push-action.
 const off = (v) => v === undefined || v === null || v === false || v === '' || String(v).toLowerCase() === 'false';
@@ -251,6 +254,13 @@ const pushesImage = (job) =>
   (job.steps ?? []).some((step) => /^docker\/build-push-action@/i.test(String(step.uses ?? '')) && !off(step.with?.push));
 const imageJobs = jobs.filter((entry) => pushesImage(entry.job));
 if (imageJobs.length > 1) fail(`one job pushes the release image, not: ${imageJobs.map(where).join(', ')}`);
+// The job that publishes to npm: a step runs npm publish. Its provenance, from --provenance, proves
+// the package's origin, as an attestation does a release file's.
+const npmPublish = (line) => /(^|[\s;&|(])npm(\s+\S+)*\s+publish\b/.test(line);
+const npmJobs = jobs.filter((entry) => (entry.job.steps ?? []).some((step) => commands(step.run).some(npmPublish)));
+if (npmJobs.length > 1) fail(`one job publishes to npm, not: ${npmJobs.map(where).join(', ')}`);
+const provenance = (entry) =>
+  (entry.job.steps ?? []).some((step) => commands(step.run).some((line) => npmPublish(line) && /\s--provenance(=true)?(\s|$)/.test(line)));
 for (const entry of jobs) {
   const p = permissions(entry.workflow, entry.job);
   if (p === null) {
@@ -260,6 +270,7 @@ for (const entry of jobs) {
   const w = writes(p);
   const isCreator = creator && entry.file === creator.file && entry.key === creator.key;
   const isImage = imageJobs.length === 1 && imageJobs[0] === entry && !isCreator;
+  const isNpm = npmJobs.length === 1 && npmJobs[0] === entry && !isCreator && !isImage;
   if (isCreator && JSON.stringify([...w].sort()) !== '["attestations","contents","id-token"]') {
     fail(
       `${where(entry)}: the job that creates the release writes contents, and attestations with an OIDC token (id-token), and nothing else, not: ${
@@ -274,15 +285,23 @@ for (const entry of jobs) {
       }`,
     );
   }
-  if (!isCreator && !isImage && w.length > 0) {
-    fail(`${where(entry)}: only the job that creates the release and the one that pushes the image write; this one writes ${w.join(', ')}`);
+  if (isNpm && JSON.stringify(w) !== '["id-token"]') {
+    fail(`${where(entry)}: the job that publishes to npm writes only id-token, for trusted publishing and provenance, not: ${w.join(', ') || 'nothing'}`);
+  }
+  if (isNpm && !provenance(entry)) fail(`${where(entry)}: the job that publishes to npm runs npm publish --provenance`);
+  if (!isCreator && !isImage && !isNpm && w.length > 0) {
+    fail(
+      `${where(entry)}: only the job that creates the release, the one that pushes the image and the one that publishes to npm write; this one writes ${w.join(', ')}`,
+    );
   }
   const attestsHere = (entry.job.steps ?? []).some((step) => /^actions\/(attest-build-provenance|attest)@/i.test(String(step.uses ?? '')));
-  if ('id-token' in p && !attestsHere) fail(`${where(entry)}: it requests an OIDC token, but attests nothing`);
+  if ('id-token' in p && !attestsHere && !(isNpm && provenance(entry))) {
+    fail(`${where(entry)}: it requests an OIDC token, but attests nothing${isNpm ? ' and publishes to npm with no provenance' : ''}`);
+  }
 }
 for (const file of files) {
   const p = workflows[file].permissions;
-  if (p && typeof p === 'object' && 'id-token' in p) fail(`${file}: the workflow requests an OIDC token for every job; only a job that attests requests one`);
+  if (p && typeof p === 'object' && 'id-token' in p) fail(`${file}: the workflow requests an OIDC token for every job; only a job that attests or publishes to npm requests one`);
 }
 
 // Actions, tools and caches.
