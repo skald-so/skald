@@ -195,6 +195,8 @@ git commit --quiet --all --message dev
 moved=$(git rev-parse HEAD)
 git checkout --quiet --detach "$branch"
 since 'edits repository' "$moved"
+got=$(parts "$moved")
+[[ $got == 'edits repository' ]] || fail "a base that moved on after HEAD branched: got '$got', want 'edits repository'"
 for args in '--since' "--since $base $base" "--base $base" "$base $base"; do
   # $args unquoted: its words are the arguments.
   status=0
@@ -247,6 +249,14 @@ checking "$all" SKALD_TEST_SINCE="$copy_base"
 apply prototypes/edits/src/lib.rs
 git commit --quiet --all --message edits
 checking 'edits repository' SKALD_TEST_SINCE="$copy_base"
+# A base that moved on after HEAD branched off it: its new commits do not count.
+branch=$(git rev-parse HEAD)
+git checkout --quiet --detach "$copy_base"
+apply prototypes/agents/src/lib.rs
+git commit --quiet --all --message dev
+moved=$(git rev-parse HEAD)
+git checkout --quiet --detach "$branch"
+checking 'edits repository' SKALD_TEST_SINCE="$moved"
 # Uncommitted and untracked changes count; ignored files do not.
 apply prototypes/agents/src/lib.rs
 checking 'agents edits repository' SKALD_TEST_SINCE="$copy_base"
