@@ -297,6 +297,52 @@ fn an_owner_that_is_a_members_handle_is_rejected() {
 }
 
 #[test]
+fn two_service_agents_with_one_owner_are_accepted() {
+    let rev = changed(|rev| {
+        rev.service_agents
+            .push(service_agent(ALICE_SERVICE, "ci", "test-bot"));
+    });
+    accepts(&rev.roster()).unwrap();
+    passes_content_checks(&rev.bytes()).unwrap();
+}
+
+#[test]
+fn a_repeated_owner_and_agent_is_rejected() {
+    let rev = changed(|rev| {
+        rev.service_agents
+            .push(service_agent(ALICE_SERVICE, "ci", "deploy-bot"));
+    });
+    assert_rejected("ci/deploy-bot twice", &rev);
+}
+
+#[test]
+fn an_invalid_agent_or_space_name_is_rejected() {
+    for agent in ["Deploy", "deploy_bot", "-bot", ""] {
+        let rev = changed(|rev| rev.service_agents[0].agent = agent.to_owned());
+        assert_rejected(&format!("agent {agent:?}"), &rev);
+    }
+    let rev = changed(|rev| rev.name = "Acme".to_owned());
+    assert_rejected("space name \"Acme\"", &rev);
+}
+
+#[test]
+fn a_repeated_account_or_service_in_a_channel_is_rejected() {
+    let rev = changed(|rev| rev.channels[0].members.push((ALICE, false)));
+    assert_rejected("alice twice in a channel", &rev);
+    let rev = changed(|rev| rev.channels[0].services.push(device(BOB_CI)));
+    assert_rejected("bob's ci twice in a channel", &rev);
+}
+
+#[test]
+fn a_repeated_excluded_device_is_rejected() {
+    let rev = changed(|rev| rev.members[2].excluded = vec![device(CAROL_LAPTOP); 2]);
+    assert_rejected("carol's laptop excluded twice", &rev);
+
+    let rev = changed(|rev| rev.members[2].excluded = vec![device(CAROL_LAPTOP)]);
+    accepts(&rev.roster()).unwrap();
+}
+
+#[test]
 fn a_service_agent_without_a_valid_service_certificate_on_a_members_account_is_rejected() {
     for (what, seed) in [
         ("no certificate", UNCERTIFIED),

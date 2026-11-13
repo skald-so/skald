@@ -12,12 +12,3 @@ skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
 
-[features]
-# Builds the acceptance tests of rosters, written before the code they test.
-# Remove this feature and the [[test]] entry below with that code.
-acceptance = []
-
-[[test]]
-name = "rosters"
-path = "tests/rosters/main.rs"
-required-features = ["acceptance"]
