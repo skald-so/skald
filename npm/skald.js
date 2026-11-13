@@ -23,9 +23,13 @@ const fail = (message) => {
 };
 
 if (version === '0.0.0') fail('this is the source of the package; run the package of a release: npx skald-so');
-// Node.js's own proxy support for fetch, set from the environment: Node.js 24.14+ or 25.4+.
-if (typeof http.setGlobalProxyFromEnv !== 'function') fail(`needs Node.js 24.14 or later, or 25.4 or later, not ${process.version}`);
-http.setGlobalProxyFromEnv();
+// Node.js's own proxy support for fetch, set from the environment: Node.js 24.14+ or 25.4+. An
+// older Node.js runs the launcher only with no proxy set.
+if (typeof http.setGlobalProxyFromEnv === 'function') {
+  http.setGlobalProxyFromEnv();
+} else if (['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].some((name) => process.env[name])) {
+  fail(`a proxy needs Node.js 24.14 or later, or 25.4 or later, not ${process.version}`);
+}
 const tag = `v${version}`;
 const windows = process.platform === 'win32';
 const targets = {

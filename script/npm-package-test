@@ -15,7 +15,9 @@
 #     missing or empty checksum, npx skald-so fails with an error that names the checksum and runs
 #     no skald, also when run again.
 #   - Behind a proxy, with the release's files reachable only through the proxy HTTPS_PROXY names,
-#     npx skald-so downloads them through it and runs skald.
+#     npx skald-so downloads them through it and runs skald. On a Node.js with no proxy support of
+#     its own, it runs skald with no proxy set, and with a proxy set it fails with an error that names
+#     the Node.js versions a proxy needs and runs no skald.
 # Each run has a home, npm cache and temporary directory of its own; SKALD_DOWNLOAD_URL says where
 # the release's files are instead of its GitHub Release, as for the installers.
 #   script/npm-package-test: against a stand-in release whose skald prints its version and target,
@@ -329,7 +331,8 @@ start_server "$tmp/proxy.requests" node "$(native "$root/script/lib/proxy.mjs")"
   echo "npm-package-test: the stand-in proxy did not start: $server_failure" >&2
   exit 1
 }
-run_env=("HTTPS_PROXY=http://127.0.0.1:$server_port" "NODE_EXTRA_CA_CERTS=$(native "$tmp/certificates/ca.pem")")
+proxy_port=$server_port
+run_env=("HTTPS_PROXY=http://127.0.0.1:$proxy_port" "NODE_EXTRA_CA_CERTS=$(native "$tmp/certificates/ca.pem")")
 status=0
 npx_run "$tmp/proxied" https://releases.skald.test --version || status=$?
 run_env=()
@@ -340,6 +343,33 @@ proxied=$(tail -n +2 "$tmp/proxy.requests" | tr -d '\r' | sort -u | tr '\n' ' ')
 [[ $proxied == 'CONNECT releases.skald.test:443 ' ]] ||
   fail "behind the proxy HTTPS_PROXY names, npx skald-so sends it, not only CONNECT releases.skald.test:443: ${proxied:-nothing}"
 requested "$tmp/proxied.requests" "$archive"
+
+# A Node.js with no proxy support of its own, stood in for by one whose http has no
+# setGlobalProxyFromEnv: with no proxy set, npx skald-so runs skald; with any of the proxy
+# variables set, it fails, names the Node.js versions a proxy needs and runs no skald.
+printf '%s\n' "delete require('node:http').setGlobalProxyFromEnv;" >"$tmp/older-node.js"
+older_node="NODE_OPTIONS=--require \"$(native "$tmp/older-node.js")\""
+run_env=("$older_node")
+status=0
+npx_run "$tmp/older" "$url" --version || status=$?
+output=$(stdout "$tmp/older")
+[[ $status == 0 && $output == "$expected" ]] ||
+  fail "on a Node.js with no proxy support and no proxy set, npx skald-so --version prints '$output', exit status $status, not '$expected': $(tail -n 3 "$tmp/older/err")"
+n=0
+for variable in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy; do
+  # Windows' variables ignore case, and so may its file names: a directory of each by number.
+  n=$((n + 1))
+  run_env=("$older_node" "$variable=http://127.0.0.1:$proxy_port")
+  status=0
+  npx_run "$tmp/older-$n" "$url" --version || status=$?
+  output=$(cat "$tmp/older-$n/out" "$tmp/older-$n/err" | tr -d '\r')
+  [[ $status != 0 ]] || fail "on a Node.js with no proxy support, npx skald-so passes with $variable set: $output"
+  [[ $output == *24.14*25.4* ]] ||
+    fail "on a Node.js with no proxy support, npx skald-so with $variable set does not name Node.js 24.14 and 25.4: $(head -n 2 <<<"$output")"
+  [[ $output != *"skald $version"* && ! -s $tmp/older-$n/ran ]] ||
+    fail "on a Node.js with no proxy support, npx skald-so with $variable set runs skald: $output"
+done
+run_env=()
 
 # The refused releases, each a copy of the release's archive for this machine and its checksum,
 # served on its own: one whose checksum does not match the archive, one with no checksum, one with
