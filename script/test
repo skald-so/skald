@@ -13,8 +13,9 @@
 #            image and staging deploy workflow, of the Release PR workflow and its release tags, of
 #            the release workflow, its release notes, the attestations of its files and its image, its
 #            npm package, the move of main to a stable release, on fixture repositories too, and of
-#            the installers in installers/ and the npm package on this machine; Renovate config
-#            validation
+#            the installers in installers/ and the npm package on this machine; of the release check
+#            and its jobs, against stand-ins for a release and the verification commands; Renovate
+#            config validation
 #   rust and tooling both: the Release PR and the release tags on fixture repositories, with
 #            release-plz
 #   web      copied code in web/; web UI lint, tests (with the kit page screenshots against their
@@ -232,7 +233,8 @@ fi
 # its publishing step, the release notes, the attestations of the release files and how to verify
 # them, the release image and how to verify it, the npm package and how to verify it, the move of
 # main to a stable release, on fixture repositories too, and the installers and the npm package
-# against a stand-in release.
+# against a stand-in release; the release check's jobs, and the release check against stand-ins for
+# a release and the verification commands.
 if checks tooling; then
   script/release-workflow-test
   script/release-jobs-test
@@ -245,4 +247,6 @@ if checks tooling; then
   script/release-npm-workflow-test
   script/move-main-workflow-test
   script/move-main-test
+  script/release-check-workflow-test
+  script/release-check-test
 fi
