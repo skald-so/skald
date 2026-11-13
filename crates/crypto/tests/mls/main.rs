@@ -3,8 +3,8 @@
 //! caller only sealed under a key the caller keeps in key storage; KeyPackages kept and checked
 //! before an Add as "KeyPackages" says; a channel's group formed from KeyPackages as "Creating a
 //! channel" says, joining from its Welcome, and messages only its members read; Commits that change
-//! the group, which members see before they keep them, and removing a device. Every step loads the
-//! state the previous step sealed, as one-shot mode does.
+//! the group, which members see before they keep them, and removing a device; forward secrecy.
+//! Every step loads the state the previous step sealed, as one-shot mode does.
 
 mod channels;
 mod commit_checks;
@@ -18,6 +18,9 @@ mod messages;
 mod profile;
 mod removing;
 mod sealed;
+// Built only with the `acceptance` feature until the code it tests lands.
+#[cfg(feature = "acceptance")]
+mod secrecy;
 mod steps;
 mod welcome;
 mod wire;
