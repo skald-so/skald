@@ -1,11 +1,12 @@
 //! Joining from a Welcome: `docs/protocol/membership.md`, "Group changes" and "MLS profile". The
 //! caller checks the Welcome's signer and members before the joined group is saved; a refused
-//! Welcome leaves no group.
+//! Welcome leaves no group. A device joins a channel whose members' leaves outlived their
+//! KeyPackages.
 
 use skald_crypto::{MemberDevice, SealedState};
 use skald_proto::ChannelId;
 
-use crate::fixtures::{NOW, device_id, load, signing_key};
+use crate::fixtures::{NOW, admitted, device_id, load, new_state, signing_key};
 use crate::foreign;
 use crate::framing::{self, WELCOME};
 use crate::steps::{
@@ -269,5 +270,63 @@ fn a_malformed_or_truncated_welcome_is_refused_without_a_panic_and_leaves_no_gro
         join(62, &mut state, &welcome),
         channel,
         "the refusals changed nothing: the intact Welcome joins"
+    );
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_device_joins_a_channel_whose_members_key_packages_expired() {
+    let channel = ChannelId::generate();
+    let (creator_seed, member_seed, newcomer) = (63, 64, 65);
+    let mut member_state = new_state(member_seed);
+    let package = step(member_seed, &mut member_state, |device| {
+        device.key_package(NOW).expect("a KeyPackage")
+    });
+    let mut creator_state = creator(creator_seed, channel);
+    add(
+        creator_seed,
+        &mut creator_state,
+        channel,
+        &[package.message.as_slice()],
+    );
+    let welcome = stored(creator_seed, &mut creator_state, channel);
+    assert_eq!(join(member_seed, &mut member_state, &welcome), channel);
+
+    let later = package.expires + 1;
+    let mut newcomer_state = new_state(newcomer);
+    let newcomer_package = step(newcomer, &mut newcomer_state, |device| {
+        bytes(device.key_package(later).expect("a KeyPackage"))
+    });
+    step(creator_seed, &mut creator_state, |device| {
+        device
+            .add_devices(channel, &[&newcomer_package], admitted(), later)
+            .expect("a Commit of the Add");
+    });
+    let welcome = stored(creator_seed, &mut creator_state, channel);
+    let mut seen = None;
+    let joined = step(newcomer, &mut newcomer_state, |device| {
+        device.join(&welcome, later, |joining| {
+            seen = Some(joining.members.clone());
+            true
+        })
+    });
+    assert_eq!(
+        joined.expect("the members' expired leaf lifetimes do not refuse the Welcome"),
+        channel
+    );
+    let members = [member(creator_seed), member(member_seed), member(newcomer)];
+    assert_eq!(seen.expect("the caller saw the Welcome"), members);
+    assert_eq!(
+        load(newcomer, &newcomer_state)
+            .members(channel)
+            .expect("the joined group"),
+        members,
+        "the device added before its KeyPackage expired stays a member"
+    );
+
+    let message = send(newcomer, &mut newcomer_state, channel, b"joined late");
+    assert_eq!(
+        receive(creator_seed, &mut creator_state, channel, &message),
+        Some((device_id(newcomer), b"joined late".to_vec()))
     );
 }

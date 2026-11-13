@@ -2,7 +2,8 @@
 //! `docs/protocol/membership.md`, "MLS profile", and the device's MLS state, which reaches the
 //! caller only sealed under a key the caller keeps in key storage; KeyPackages kept and checked
 //! before an Add as "KeyPackages" says; a channel's group formed from KeyPackages as "Creating a
-//! channel" says, joining from its Welcome, and messages only its members read. Every step loads the state the previous step sealed, as one-shot mode does.
+//! channel" says, joining from its Welcome, and messages only its members read. Every step loads
+//! the state the previous step sealed, as one-shot mode does.
 
 mod channels;
 mod fixtures;
