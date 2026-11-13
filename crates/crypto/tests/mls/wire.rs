@@ -161,13 +161,14 @@ fn varint(len: usize) -> Vec<u8> {
     }
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
+/// Reads RFC 9420's encoding from `bytes`, at byte `at`; panics on a truncated field.
+pub struct Reader<'a> {
+    pub bytes: &'a [u8],
+    pub at: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn take(&mut self, len: usize) -> &'a [u8] {
+    pub fn take(&mut self, len: usize) -> &'a [u8] {
         let end = self.at + len;
         assert!(end <= self.bytes.len(), "truncated at byte {}", self.at);
         let taken = &self.bytes[self.at..end];
@@ -175,16 +176,16 @@ impl<'a> Reader<'a> {
         taken
     }
 
-    fn u8(&mut self) -> u8 {
+    pub fn u8(&mut self) -> u8 {
         self.take(1)[0]
     }
 
-    fn u16(&mut self) -> u16 {
+    pub fn u16(&mut self) -> u16 {
         u16::from_be_bytes(self.take(2).try_into().unwrap())
     }
 
     /// An `opaque<V>` or a vector: its length, then its bytes.
-    fn vector(&mut self) -> &'a [u8] {
+    pub fn vector(&mut self) -> &'a [u8] {
         let first = self.u8();
         let len = match first >> 6 {
             0 => usize::from(first),

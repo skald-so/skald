@@ -51,6 +51,18 @@ impl Store {
         self.contents().groups.contains_key(id)
     }
 
+    /// Drops group `id` with its prior epochs.
+    pub(super) fn remove_group(&self, id: &[u8]) {
+        self.contents().groups.remove(id);
+    }
+
+    /// Deletes the private keys of each KeyPackage whose lifetime ended before `now`.
+    pub(super) fn delete_expired(&self, now: u64) {
+        self.contents()
+            .key_packages
+            .retain(|_, data| data.expiration >= now);
+    }
+
     /// Each group and KeyPackage with its encoding, in the order of their IDs.
     pub(super) fn items(&self) -> Vec<(Kept, Zeroizing<Vec<u8>>)> {
         let contents = self.contents();
@@ -300,5 +312,20 @@ mod tests {
         assert_eq!(store.get(b"a").unwrap(), None);
         assert_eq!(store.get(b"b").unwrap(), Some(data));
         assert_eq!(store.items().len(), 1);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_key_package_is_deleted_once_its_lifetime_ended_before_the_time_given() {
+        let mut store = Store::default();
+        for (id, expiration) in [(b"a", 9), (b"b", 10), (b"c", 11)] {
+            let data =
+                KeyPackageData::new(Vec::new(), Vec::new().into(), Vec::new().into(), expiration);
+            KeyPackageStorage::insert(&mut store, id.to_vec(), data).unwrap();
+        }
+        store.delete_expired(10);
+        assert_eq!(store.get(b"a").unwrap(), None, "ended before");
+        assert!(store.get(b"b").unwrap().is_some(), "ends at the time given");
+        assert!(store.get(b"c").unwrap().is_some(), "ends after");
     }
 }
