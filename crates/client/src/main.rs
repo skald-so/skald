@@ -46,8 +46,16 @@ struct Cli {
     )]
     timeout: Option<NonZeroU64>,
 
-    /// The directory of the local state and of the secrets file [default: the platform's directory
-    /// for application state, such as ~/.local/state/skald].
+    /// The directory of the local state and of the secrets file
+    #[cfg_attr(windows, doc = r"[default: %LOCALAPPDATA%\skald].")]
+    #[cfg_attr(
+        target_os = "macos",
+        doc = "[default: ~/Library/Application Support/skald]."
+    )]
+    #[cfg_attr(
+        not(any(windows, target_os = "macos")),
+        doc = "[default: $XDG_STATE_HOME/skald or ~/.local/state/skald]."
+    )]
     #[arg(long, env = "SKALD_STATE_DIR", value_name = "DIR", global = true)]
     state_dir: Option<PathBuf>,
 
