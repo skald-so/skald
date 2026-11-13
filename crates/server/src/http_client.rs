@@ -3,8 +3,10 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use ureq::Agent;
+use serde::de::DeserializeOwned;
+use ureq::http::Response;
 use ureq::tls::{Certificate, RootCerts, TlsConfig};
+use ureq::{Agent, Body};
 
 /// How long a request to a provider may take.
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -27,6 +29,22 @@ pub(crate) fn agent() -> &'static Agent {
             .build()
             .new_agent()
     })
+}
+
+/// The JSON body of a `200` answer, or why there is none, such as `answered 404`.
+pub(crate) fn json_body<T: DeserializeOwned>(
+    response: Result<Response<Body>, ureq::Error>,
+) -> Result<T, String> {
+    let mut response = response.map_err(|err| format!("is unreachable: {err}"))?;
+    let status = response.status();
+    if status != 200 {
+        return Err(format!("answered {status}"));
+    }
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|err| format!("gave an unreadable answer: {err}"))?;
+    serde_json::from_str(&body).map_err(|err| format!("gave an unexpected answer: {err}"))
 }
 
 /// The platform's root certificates; those it cannot load are left out.

@@ -4,9 +4,10 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use url::Url;
 
-use crate::http_client::agent;
+use crate::http_client::{agent, json_body};
 
 /// The REST API version the server reads the user with.
 const API_VERSION: &str = "2022-11-28";
@@ -139,21 +140,11 @@ impl GitHubApp {
 }
 
 /// The JSON body of a `200` answer of GitHub's `endpoint`.
-fn read<T: for<'de> Deserialize<'de>>(
+fn read<T: DeserializeOwned>(
     endpoint: &str,
     response: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
 ) -> Result<T, Refusal> {
-    let failed = |reason: String| Refusal::GitHub(format!("GitHub's {endpoint} {reason}"));
-    let mut response = response.map_err(|err| failed(format!("is unreachable: {err}")))?;
-    let status = response.status();
-    if status != 200 {
-        return Err(failed(format!("answered {status}")));
-    }
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|err| failed(format!("gave an unreadable answer: {err}")))?;
-    serde_json::from_str(&body).map_err(|err| failed(format!("gave an unexpected answer: {err}")))
+    json_body(response).map_err(|reason| Refusal::GitHub(format!("GitHub's {endpoint} {reason}")))
 }
 
 /// `text` from GitHub, such as an error code, cut to printable ASCII for the server's output.

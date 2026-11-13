@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use url::{Host, Url};
 
 use crate::github::ClientSecret;
-use crate::http_client::agent;
+use crate::http_client::{agent, json_body};
 
 /// The metadata's path under the issuer.
 const METADATA_PATH: &str = "/.well-known/openid-configuration";
@@ -333,21 +333,8 @@ fn read_keys(jwks_uri: &Url) -> Result<Vec<Key>, String> {
 
 /// The JSON body of a `200` answer at `url`, the provider's `what`.
 fn fetch<T: DeserializeOwned>(what: &str, url: &str) -> Result<T, String> {
-    let failed = |reason: String| format!("the provider's {what} at {url}: {reason}");
-    let mut response = agent()
-        .get(url)
-        .header("accept", "application/json")
-        .call()
-        .map_err(|err| failed(format!("unreachable: {err}")))?;
-    let status = response.status();
-    if status != 200 {
-        return Err(failed(format!("answered {status}")));
-    }
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|err| failed(format!("an unreadable answer: {err}")))?;
-    serde_json::from_str(&body).map_err(|err| failed(format!("an unexpected answer: {err}")))
+    let response = agent().get(url).header("accept", "application/json").call();
+    json_body(response).map_err(|reason| format!("the provider's {what} at {url} {reason}"))
 }
 
 /// A part of a JWS: base64url of a JSON object.
@@ -586,27 +573,18 @@ mod tests {
     }
 
     #[test]
-    fn a_key_for_encryption_does_not_verify() {
-        let key = StandInKey::ec();
-        let mut jwk = key.jwk();
-        jwk["use"] = json!("enc");
-        let (_provider, oidc, token) = serving(&key, &[jwk]);
-        assert!(matches!(
-            oidc.check(&token, NONCE),
-            Err(OidcError::Token(..))
-        ));
-    }
-
-    #[test]
-    fn a_key_for_another_algorithm_does_not_verify() {
-        let key = StandInKey::ec();
-        let mut jwk = key.jwk();
-        jwk["alg"] = json!("ES384");
-        let (_provider, oidc, token) = serving(&key, &[jwk]);
-        assert!(matches!(
-            oidc.check(&token, NONCE),
-            Err(OidcError::Token(..))
-        ));
+    fn a_key_for_encryption_or_another_algorithm_does_not_verify() {
+        for (field, value) in [("use", "enc"), ("alg", "ES384")] {
+            let key = StandInKey::ec();
+            let mut jwk = key.jwk();
+            jwk[field] = json!(value);
+            let (_provider, oidc, token) = serving(&key, &[jwk]);
+            let result = oidc.check(&token, NONCE);
+            assert!(
+                matches!(result, Err(OidcError::Token(..))),
+                "{field} {value}: {result:?}"
+            );
+        }
     }
 
     #[test]
