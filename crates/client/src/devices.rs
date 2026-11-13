@@ -57,23 +57,7 @@ pub fn run(
     };
 
     let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
-    let body = connection.get_as("/devices", &token).map_err(text)?;
-    let devices: Devices = serde_json::from_slice(&body)
-        .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
-    let ids: Vec<DeviceId> = devices
-        .devices
-        .iter()
-        .filter_map(|entry| entry.device.parse().ok())
-        .collect();
-    // A certificate that does not decode counts as none.
-    let certs: Vec<Cert> = devices
-        .devices
-        .iter()
-        .filter_map(|entry| {
-            let bytes = URL_SAFE_NO_PAD.decode(entry.cert.as_ref()?).ok()?;
-            Cert::from_cbor(&bytes).ok()
-        })
-        .collect();
+    let (ids, certs) = fetch(&mut connection, "/devices", &token)?;
 
     let checked = check(&master, &ids, &certs);
     print!("{}", listing(&checked, this));
@@ -92,6 +76,32 @@ pub fn run(
         );
     }
     Ok(())
+}
+
+/// `GET <path>` as the session `token`: a device list, as the IDs of its devices and the
+/// certificates it gives; a certificate that does not decode counts as none.
+pub fn fetch(
+    connection: &mut Connection,
+    path: &str,
+    token: &str,
+) -> Result<(Vec<DeviceId>, Vec<Cert>), String> {
+    let body = connection.get_as(path, token).map_err(text)?;
+    let devices: Devices = serde_json::from_slice(&body)
+        .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
+    let ids = devices
+        .devices
+        .iter()
+        .filter_map(|entry| entry.device.parse().ok())
+        .collect();
+    let certs = devices
+        .devices
+        .iter()
+        .filter_map(|entry| {
+            let bytes = URL_SAFE_NO_PAD.decode(entry.cert.as_ref()?).ok()?;
+            Cert::from_cbor(&bytes).ok()
+        })
+        .collect();
+    Ok((ids, certs))
 }
 
 /// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the
@@ -142,9 +152,9 @@ pub fn text(err: impl std::fmt::Display) -> String {
 
 /// The devices of a list, checked.
 #[derive(Debug, PartialEq)]
-struct Checked<'c> {
+pub struct Checked<'c> {
     /// The valid certificates, one per device, in the list's order.
-    linked: Vec<&'c Cert>,
+    pub linked: Vec<&'c Cert>,
     /// The devices without a valid certificate, in the list's order.
     apart: Vec<DeviceId>,
     /// The devices, listed or issuers in a chain, with certificates of two bodies.
@@ -153,7 +163,7 @@ struct Checked<'c> {
 
 /// Checks each of `devices` once against the pinned `master` key, with `certs`, all the
 /// certificates the server gave.
-fn check<'c>(master: &[u8; 32], devices: &[DeviceId], certs: &'c [Cert]) -> Checked<'c> {
+pub fn check<'c>(master: &[u8; 32], devices: &[DeviceId], certs: &'c [Cert]) -> Checked<'c> {
     let mut checked = Checked {
         linked: Vec::new(),
         apart: Vec::new(),
@@ -209,7 +219,7 @@ fn listing(checked: &Checked, this: DeviceId) -> String {
 }
 
 /// The line of a device with its valid certificate `cert`, marked if it is `this` device.
-fn linked_line(cert: &Cert, this: DeviceId) -> String {
+pub fn linked_line(cert: &Cert, this: DeviceId) -> String {
     let body = cert.body();
     let kind = match body.kind {
         DeviceKind::Client => "client",

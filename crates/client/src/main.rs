@@ -3,6 +3,7 @@
 mod connection;
 mod device;
 mod devices;
+mod follow;
 mod secrets;
 mod set_username;
 mod sign_in;
@@ -128,9 +129,18 @@ enum Command {
         #[arg(value_name = "NAME", allow_hyphen_values = true)]
         name: String,
     },
-    /// Lists the spaces this device accepted a roster revision of: each one's name, the account's
-    /// role and handle in it, and its ID.
+    /// Lists the spaces this device follows, as their last accepted roster revisions give them:
+    /// each one's name, the account's role and handle in it, and its ID. Signed in, it first accepts
+    /// the revisions the server has of each, and warns of each one that has no effect.
     Spaces,
+    /// Shows the members of a space this device follows, as its last accepted roster revision gives
+    /// them: each one's handle and role, and its devices with a valid certificate. It first accepts
+    /// the revisions the server has, and warns of each one that has no effect.
+    Members {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -212,7 +222,16 @@ fn main() -> ExitCode {
                 .and_then(|dir| spaces::create(&dir, cli.key_storage, speaks, timeout, &name));
             exit(result)
         }
-        Command::Spaces => exit(state::dir(cli.state_dir).and_then(|dir| spaces::list(&dir))),
+        Command::Spaces => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| spaces::list(&dir, cli.key_storage, speaks, timeout));
+            exit(result)
+        }
+        Command::Members { space } => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| spaces::members(&dir, cli.key_storage, speaks, timeout, &space));
+            exit(result)
+        }
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
 }

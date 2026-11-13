@@ -1,8 +1,9 @@
-//! `skald create-space` and `skald spaces`: a team space the device creates and signs revision 1 of
-//! as its first admin, and the spaces the device accepted a revision of
+//! `skald create-space`, `skald spaces` and `skald members`: a team space the device creates and
+//! signs revision 1 of as its first admin, the spaces the device follows and a space's members
 //! (`docs/protocol/membership.md`, "Roster"). The local state keeps revision 1 as the space's anchor
 //! and last accepted revision; it is written before it is sent and sent again on later runs until
-//! the server takes it.
+//! the server takes it. Listing spaces or their members first accepts the revisions the server has
+//! ([`crate::follow`]).
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,12 +12,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
-    AccountId, Cbor as _, Cert, Name, Role, Roster, RosterBody, SpaceId, VersionRange,
+    AccountId, Cbor as _, Cert, DeviceId, Name, Role, Roster, RosterBody, SpaceId, VersionRange,
 };
 
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
-use crate::devices::{signed_in_with_secrets, text};
+use crate::devices::{self, signed_in, signed_in_with_secrets, text};
+use crate::follow::{self, Own, SpaceDevices};
 use crate::secrets;
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -24,6 +26,10 @@ use crate::state::{self, Link, State};
 /// What `skald create-space` says on a device without a certificate.
 const NOT_LINKED: &str = "this device is not linked yet: it holds no certificate signed by the \
                           account's master key, so it creates no space";
+
+/// What `skald members` says on a machine without a certified device.
+const NOT_FOLLOWING: &str = "this device is not linked yet: it holds no certificate signed by the \
+                             account's master key, so it follows no space";
 
 /// `Space` in the API spec.
 #[derive(Deserialize)]
@@ -50,16 +56,7 @@ pub fn create(
         )
     })?;
     let (state, server, token, stored) = signed_in_with_secrets(dir, storage)?;
-    let device = state
-        .device()
-        .map_err(text)?
-        .ok_or_else(|| NOT_LINKED.to_owned())?;
-    let Link::Certified { master, cert } = device.link.clone() else {
-        return Err(NOT_LINKED.to_owned());
-    };
-    let cert = Cert::from_cbor(&cert)
-        .map_err(|err| state::Error::Malformed(format!("the device's certificate: {err}")))
-        .map_err(text)?;
+    let (device, master, cert) = certified(&state)?.ok_or_else(|| NOT_LINKED.to_owned())?;
     let keys = device::known_keys(&stored, Some(&device))
         .map_err(text)?
         .ok_or_else(|| device::Error::MissingKeys.to_string())?;
@@ -81,9 +78,7 @@ pub fn create(
         }
     }
     if let Some(space) = existing {
-        let roster = Roster::from_cbor(&space.anchor)
-            .map_err(|err| state::Error::Malformed(format!("a space's revision: {err}")))
-            .map_err(text)?;
+        let roster = follow::decode(&space.anchor, &space.name)?;
         println!("{}", created(&roster, space.pending.is_none()));
         return Ok(());
     }
@@ -119,6 +114,21 @@ pub fn create(
     )?;
     println!("{}", created(&roster, false));
     Ok(())
+}
+
+/// This machine's device, with the master key it pinned and its certificate, once the server took
+/// them.
+fn certified(state: &State) -> Result<Option<(state::Device, [u8; 32], Cert)>, String> {
+    let Some(device) = state.device().map_err(text)? else {
+        return Ok(None);
+    };
+    let Link::Certified { master, cert } = device.link.clone() else {
+        return Ok(None);
+    };
+    let cert = Cert::from_cbor(&cert)
+        .map_err(|err| state::Error::Malformed(format!("the device's certificate: {err}")))
+        .map_err(text)?;
+    Ok(Some((device, master, cert)))
 }
 
 /// What `skald create-space` says of the space whose revision 1 is `first`: that it created it,
@@ -224,11 +234,74 @@ fn send(
     }
 }
 
-/// Lists the spaces the device of the machine whose state is in `dir` accepted a revision of, from
-/// its local state only.
-pub fn list(dir: &Path) -> Result<(), String> {
-    let spaces = if dir.is_dir() {
+/// What a signed-in machine with a certified device follows its spaces with: its local state, a
+/// connection to the server of its session, the session token, its account with the master key it
+/// pinned, and its device.
+struct Follower {
+    state: State,
+    connection: Connection,
+    token: String,
+    own: Own,
+    this: DeviceId,
+}
+
+impl Follower {
+    /// The follower of the machine whose state is in `dir`, its secrets in `storage`; `None` if it
+    /// has no certified device.
+    fn new(
+        dir: &Path,
+        storage: secrets::Storage,
+        speaks: VersionRange,
+        timeout: Duration,
+    ) -> Result<Option<Self>, String> {
+        let (state, server, token) = signed_in(dir, storage)?;
+        let Some((device, master, cert)) = certified(&state)? else {
+            return Ok(None);
+        };
+        let connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+        Ok(Some(Follower {
+            state,
+            connection,
+            token,
+            own: Own {
+                account: cert.body().account,
+                master,
+            },
+            this: device.id,
+        }))
+    }
+
+    /// Follows `space`: its last accepted revision and the devices of its accounts.
+    fn sync(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
+        follow::sync(
+            &mut self.connection,
+            &self.state,
+            &self.token,
+            space,
+            &self.own,
+        )
+    }
+}
+
+/// Lists the spaces the device of the machine whose state is in `dir`, its secrets in `storage`,
+/// follows, each at its last accepted revision. A signed-in machine with a certified device first
+/// accepts the revisions the server has of each; a space it fails to follow shows as the local
+/// state holds it, saying why.
+pub fn list(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+) -> Result<(), String> {
+    let lines = if dir.is_dir() {
         let state = State::open(dir).map_err(text)?;
+        let mut follower = match state.session().map_err(text)? {
+            Some(_) => Follower::new(dir, storage, speaks, timeout).unwrap_or_else(|err| {
+                eprintln!("skald: the spaces show their last accepted revisions: {err}");
+                None
+            }),
+            None => None,
+        };
         let account = match state
             .device()
             .map_err(text)?
@@ -244,30 +317,113 @@ pub fn list(dir: &Path) -> Result<(), String> {
             ),
             None => None,
         };
-        state
-            .spaces()
-            .map_err(text)?
-            .iter()
-            .map(|space| {
-                let roster = Roster::from_cbor(&space.accepted).map_err(|err| {
-                    text(state::Error::Malformed(format!(
-                        "the revision of the space {}: {err}",
+        let mut lines = Vec::new();
+        for space in state.spaces().map_err(text)? {
+            let synced = follower.as_mut().map(|follower| follower.sync(&space));
+            let roster = match synced {
+                Some(Ok((roster, _))) => roster,
+                Some(Err(err)) => {
+                    eprintln!(
+                        "skald: the space {} shows its last accepted revision: {err}",
                         space.name
-                    )))
-                })?;
-                Ok(line(&roster, account, space.pending.is_some()))
-            })
-            .collect::<Result<Vec<_>, String>>()?
+                    );
+                    follow::decode(&space.accepted, &space.name)?
+                }
+                None => follow::decode(&space.accepted, &space.name)?,
+            };
+            lines.push(line(&roster, account, space.pending.is_some()));
+        }
+        lines
     } else {
         Vec::new()
     };
-    if spaces.is_empty() {
+    if lines.is_empty() {
         println!("This device is in no space yet; create one with skald create-space <name>.");
     }
-    for line in spaces {
+    for line in lines {
         println!("{line}");
     }
     Ok(())
+}
+
+/// Shows the members of the space `name` that the device of the machine whose state is in `dir`,
+/// its secrets in `storage`, follows, after accepting the revisions the server has of it.
+pub fn members(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    name: &str,
+) -> Result<(), String> {
+    let unknown = || {
+        format!(
+            "this device follows no space named \"{}\": it follows the spaces it created",
+            printable(name)
+        )
+    };
+    let mut follower =
+        Follower::new(dir, storage, speaks, timeout)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
+    let space = follower
+        .state
+        .spaces()
+        .map_err(text)?
+        .into_iter()
+        .find(|space| space.name == name)
+        .ok_or_else(unknown)?;
+    let (roster, devices) = follower.sync(&space)?;
+    print!(
+        "{}",
+        members_listing(&roster, &devices, &follower.own, follower.this)
+    );
+    Ok(())
+}
+
+/// What `skald members` shows of `roster`, a space's last accepted revision, with `devices`, those
+/// of its accounts: each member's handle and role, and under it each device of its account with a
+/// valid certificate, as `skald devices` shows it, `this` device marked. A certificate is checked
+/// against the master key `own` pinned for its own account, and against the `master` the revision
+/// gives any other.
+fn members_listing(roster: &Roster, devices: &SpaceDevices, own: &Own, this: DeviceId) -> String {
+    let body = roster.body();
+    let mut out = format!(
+        "The space {} ({}), revision {}:\n",
+        body.name.as_str(),
+        body.space,
+        body.revision
+    );
+    for member in body.members.iter() {
+        out.push_str(&format!(
+            "  {}  {}\n",
+            member.handle.as_str(),
+            role(member.role)
+        ));
+        let master = if member.account == own.account {
+            own.master
+        } else {
+            member.master
+        };
+        let checked = devices::check(&master, &devices.ids, &devices.certs);
+        let linked: Vec<&&Cert> = checked
+            .linked
+            .iter()
+            .filter(|cert| cert.body().account == member.account)
+            .collect();
+        if linked.is_empty() {
+            out.push_str("    no device with a valid certificate\n");
+        }
+        for cert in linked {
+            out.push_str(&format!("    {}\n", devices::linked_line(cert, this)));
+        }
+    }
+    out
+}
+
+/// A role, as the CLI shows it.
+fn role(role: Role) -> &'static str {
+    match role {
+        Role::Admin => "admin",
+        Role::Member => "member",
+    }
 }
 
 /// The line of a space whose last accepted revision is `roster`: its name, the role and handle of
@@ -277,13 +433,7 @@ fn line(roster: &Roster, account: Option<AccountId>, pending: bool) -> String {
     let member =
         account.and_then(|account| body.members.iter().find(|member| member.account == account));
     let (role, handle) = match member {
-        Some(member) => (
-            match member.role {
-                Role::Admin => "admin",
-                Role::Member => "member",
-            },
-            member.handle.as_str(),
-        ),
+        Some(member) => (role(member.role), member.handle.as_str()),
         None => ("no member", "-"),
     };
     let mut line = format!("{}  {role}  {handle}  {}", body.name.as_str(), body.space);
@@ -334,6 +484,83 @@ mod tests {
         assert_eq!(
             line(&roster, None, false),
             format!("acme  no member  -  {id}")
+        );
+    }
+
+    #[test]
+    fn members_show_each_members_devices_with_a_valid_certificate_under_it() {
+        let (ada, bob) = (AccountId::generate(), AccountId::generate());
+        let (ada_master, bob_master) = (SigningKey::generate(), SigningKey::generate());
+        let device = |account, master: &SigningKey, name: &str| {
+            let key = SigningKey::generate();
+            let body = skald_proto::CertBody {
+                account,
+                device: DeviceId::from_signing_key(&key.public_key()),
+                kind: skald_proto::DeviceKind::Client,
+                signing: key.public_key(),
+                hpke: [4; 32],
+                issuer: None,
+                issued: 1_800_000_000,
+                ssh: None,
+                name: name.to_owned(),
+                unknown: skald_proto::Unknown::default(),
+            };
+            skald_crypto::issue(&body, master, &key).expect("a certificate")
+        };
+        let certs = vec![
+            device(ada, &ada_master, "ada-laptop"),
+            device(bob, &bob_master, "bob-laptop"),
+            // On Bob's account, by a key that is not its master key.
+            device(bob, &SigningKey::generate(), "bob-forged"),
+            // By Bob's master key, on Ada's account.
+            device(ada, &bob_master, "ada-forged"),
+        ];
+        let devices = SpaceDevices {
+            ids: certs.iter().map(|cert| cert.body().device).collect(),
+            certs: certs.clone(),
+        };
+        let first = first(ada);
+        let mut body = first.body().clone();
+        body.revision = 2;
+        body.members.push(skald_proto::Member {
+            account: bob,
+            handle: "bob".parse().unwrap(),
+            role: Role::Member,
+            master: bob_master.public_key(),
+            invite: None,
+            excluded: None,
+            unknown: skald_proto::Unknown::default(),
+        });
+        // Revision 1 gives Ada another master key than the one Ada's device pinned.
+        let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
+        let own = Own {
+            account: ada,
+            master: ada_master.public_key(),
+        };
+        let this = certs[0].body().device;
+
+        let shown = members_listing(&roster, &devices, &own, this);
+
+        assert_eq!(
+            shown,
+            format!(
+                "The space acme ({}), revision 2:\n  ada  admin\n    {}\n  bob  member\n    {}\n",
+                body.space,
+                devices::linked_line(&certs[0], this),
+                devices::linked_line(&certs[1], this)
+            )
+        );
+        let without = SpaceDevices {
+            ids: vec![this],
+            certs: vec![],
+        };
+        assert_eq!(
+            members_listing(&roster, &without, &own, this),
+            format!(
+                "The space acme ({}), revision 2:\n  ada  admin\n    no device with a valid \
+                 certificate\n  bob  member\n    no device with a valid certificate\n",
+                body.space
+            )
         );
     }
 

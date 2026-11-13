@@ -1,6 +1,7 @@
 //! The client's local state: an SQLite database in the state directory. It holds no secret: those go
 //! to [`crate::secrets`].
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,15 @@ const MIGRATIONS: &[&str] = &[
         anchor BLOB NOT NULL,
         accepted BLOB NOT NULL,
         pending BLOB
+    ) STRICT",
+    // The hash of each revision the device accepted of a space, by its number, but that of the
+    // space's last accepted revision, which the space holds: it is recorded once the device
+    // accepts the next one. A state older than this table accepted only revision 1 of each space.
+    "CREATE TABLE accepted_revision (
+        space TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        hash BLOB NOT NULL CHECK (length(hash) = 32),
+        PRIMARY KEY (space, revision)
     ) STRICT",
 ];
 
@@ -367,11 +377,67 @@ impl State {
 
     /// Forgets the space `id`.
     pub fn remove_space(&self, id: SpaceId) -> Result<(), Error> {
-        self.db.execute(
-            "DELETE FROM space WHERE space = ?1",
-            params![id.to_string()],
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        tx.execute(
+            "DELETE FROM accepted_revision WHERE space = ?1",
+            params![id],
         )?;
+        tx.execute("DELETE FROM space WHERE space = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// The hashes the state records of the revisions the device accepted of the space `id`, by
+    /// number: all but that of its last accepted revision.
+    pub fn accepted_hashes(&self, id: SpaceId) -> Result<BTreeMap<u64, [u8; 32]>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT revision, hash FROM accepted_revision WHERE space = ?1")?;
+        let rows = query.query_map(params![id.to_string()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        rows.map(|row| {
+            let (revision, hash) = row?;
+            let malformed = || Error::Malformed(format!("the hash of revision {revision}"));
+            let revision = u64::try_from(revision).map_err(|_| malformed())?;
+            let hash = hash.try_into().map_err(|_| malformed())?;
+            Ok((revision, hash))
+        })
+        .collect()
+    }
+
+    /// Records that the device accepted revisions of the space `id` after `from`, its last accepted
+    /// revision until now, in CBOR: `hashes`, the number and hash of `from` and of each revision but
+    /// the last, and `last`, in CBOR, its new last accepted revision. Records nothing and gives
+    /// `false` if `from` is no longer the space's last accepted revision.
+    pub fn accept(
+        &self,
+        id: SpaceId,
+        from: &[u8],
+        hashes: &[(u64, [u8; 32])],
+        last: &[u8],
+    ) -> Result<bool, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        let changed = tx.execute(
+            "UPDATE space SET accepted = ?3 WHERE space = ?1 AND accepted = ?2",
+            params![id, from, last],
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        for (revision, hash) in hashes {
+            let revision = i64::try_from(*revision)
+                .map_err(|_| Error::Malformed(format!("revision {revision}")))?;
+            tx.execute(
+                "INSERT INTO accepted_revision (space, revision, hash) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING",
+                params![id, revision, hash.as_slice()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 }
 
@@ -538,6 +604,58 @@ mod tests {
             .unwrap();
         let error = state.spaces().expect_err("malformed");
         assert!(matches!(error, Error::Malformed(_)), "{error:?}");
+    }
+
+    #[test]
+    fn accepted_revisions_are_recorded_only_after_the_last_accepted_one() {
+        let dir = TestDir::new("state-accepted");
+        let state = State::open(&dir).unwrap();
+        let (acme, globex) = (SpaceId::generate(), SpaceId::generate());
+        state.add_space(acme, "acme", &[1]).unwrap();
+        state.add_space(globex, "globex", &[7]).unwrap();
+        assert_eq!(state.accepted_hashes(acme).unwrap(), BTreeMap::new());
+
+        let hashes = [(1, [1; 32]), (2, [2; 32])];
+        assert!(state.accept(acme, &[1], &hashes, &[3]).unwrap());
+        // Another run accepted from revision 1 meanwhile: nothing is recorded.
+        assert!(!state.accept(acme, &[1], &[(1, [1; 32])], &[2]).unwrap());
+
+        let state = State::open(&dir).unwrap();
+        let accepted = |id| {
+            let spaces = state.spaces().unwrap();
+            let space = spaces.into_iter().find(|space| space.id == id).unwrap();
+            (space.anchor, space.accepted)
+        };
+        assert_eq!(accepted(acme), (vec![1], vec![3]));
+        assert_eq!(state.accepted_hashes(acme).unwrap(), BTreeMap::from(hashes));
+        assert_eq!(accepted(globex), (vec![7], vec![7]));
+        assert_eq!(state.accepted_hashes(globex).unwrap(), BTreeMap::new());
+        // A hash already recorded stays.
+        assert!(
+            state
+                .accept(acme, &[3], &[(2, [9; 32]), (3, [3; 32])], &[4])
+                .unwrap()
+        );
+        assert_eq!(
+            state.accepted_hashes(acme).unwrap(),
+            BTreeMap::from([(1, [1; 32]), (2, [2; 32]), (3, [3; 32])])
+        );
+
+        state.remove_space(acme).unwrap();
+        assert_eq!(state.accepted_hashes(acme).unwrap(), BTreeMap::new());
+        state
+            .db
+            .execute(
+                "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 1, zeroblob(32))",
+                [],
+            )
+            .unwrap();
+        for update in [
+            "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 2, zeroblob(31))",
+            "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 0, zeroblob(32))",
+        ] {
+            assert!(state.db.execute(update, []).is_err(), "{update}");
+        }
     }
 
     #[test]
