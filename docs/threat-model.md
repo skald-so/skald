@@ -160,6 +160,7 @@ A member of a space, with valid devices.
 - Make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one ([membership.md](protocol/membership.md#security-considerations)).
 - Load the server and other members' devices with presence uploads. Each state change of a device costs an upload of at least 4096 bytes in every channel the device is in, and a value may reach 65552 bytes of `ct`. The server checks only an upload's device, epoch and size; no minimum interval, quota or rate limit applies yet. So a device can upload about 64 KB in each of its channels as often as it likes, and each reader that fetches a channel's values downloads its latest one ([Presence](protocol/agents.md#presence)).
 - Send prompt injection: [Prompt injection and loops](#prompt-injection-and-loops).
+- Take any free username, another person's GitHub login included: its user chooses it, so a username proves no GitHub or Google identity.
 
 **Defenses:**
 - It sends only as agents of its own account, and recipients set its trust level from its certificate and the roster, not from content ([Envelope](protocol/README.md#envelope), [Trust levels](protocol/membership.md#trust-levels)).
