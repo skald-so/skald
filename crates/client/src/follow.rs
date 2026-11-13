@@ -201,14 +201,13 @@ pub fn follow(
                     current.body().revision
                 )),
             },
-            None if Some(number) > next => followed.warnings.push(format!(
+            // After the next revision: the state records the hash of each revision the device
+            // accepted, so none before the last accepted one comes here.
+            None => followed.warnings.push(format!(
                 "revision {number} of the space {name} builds on no revision this device \
                  accepted; it has no effect, and this device keeps revision {}",
                 current.body().revision
             )),
-            // Below the last accepted revision with no hash to compare: the state records the hash
-            // of each revision the device accepted, so none comes here.
-            None => {}
         }
     }
     followed
