@@ -22,6 +22,7 @@ mod github;
 mod protocol;
 mod refusal;
 mod sign_in;
+mod spaces;
 
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 pub use protocol::Versions;
@@ -118,6 +119,26 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             "/session",
             get(sign_in::session)
                 .delete(sign_in::end)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces",
+            get(spaces::list)
+                .post(spaces::create)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels",
+            post(spaces::channel).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/devices",
+            get(spaces::devices).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/revisions",
+            get(spaces::revisions)
+                .post(spaces::store)
                 .layer(checked(Statement::Header)),
         )
         .route("/ws", get(websocket).layer(checked(Statement::Subprotocol)))
