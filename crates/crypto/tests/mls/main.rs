@@ -3,10 +3,6 @@
 //! caller only sealed under a key the caller keeps in key storage. Every step loads the state the
 //! previous step sealed, as one-shot mode does.
 
-// Written before the code they test: built only with the `acceptance` feature until that code
-// lands, so that the rest of the crate's tests run meanwhile.
-#![cfg(feature = "acceptance")]
-
 mod fixtures;
 mod profile;
 mod sealed;
