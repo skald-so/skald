@@ -2,13 +2,17 @@
 // Tests the release workflow, .github/workflows/release.yml, beyond script/release-workflow-test:
 //   - a PR that changes any file of the release starts the dry run: the workflow, dist's settings
 //     (dist-workspace.toml, Cargo.toml with [profile.dist], the Cargo.toml of each package that sets
-//     [package.metadata.dist]), the installers, and the scripts its steps run with those they run;
+//     [package.metadata.dist]), the installers, the scripts its steps run with those they run, and
+//     `skald update` with its tests;
 //   - the job that creates the release needs, directly or through other jobs, every job that runs
 //     script/installers-test, and those jobs check every target the build jobs build: no release
-//     is published before each target's installer passed.
+//     is published before each target's installer passed;
+//   - the dry run of a PR and of a manual run tests `skald update` on a macOS and a Windows runner:
+//     `cargo test -p skald-client --test update`, in a step that may run and whose failure fails the
+//     run.
 import fs from 'node:fs';
 import path from 'node:path';
-import { commands, needsOf, pathTriggers, readWorkflow, triggers } from './lib/workflows.mjs';
+import { commands, event, jobsFor, needsOf, pathTriggers, readWorkflow, stepSkipped, triggers } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const releaseFile = '.github/workflows/release.yml';
@@ -23,7 +27,16 @@ const jobs = release.jobs ?? {};
 const runs = (job) => (job.steps ?? []).flatMap((step) => commands(step.run));
 
 // The dry run's paths.
-const files = [releaseFile, 'dist-workspace.toml', 'Cargo.toml', 'installers/install.sh', 'installers/install.ps1'];
+const files = [
+  releaseFile,
+  'dist-workspace.toml',
+  'Cargo.toml',
+  'installers/install.sh',
+  'installers/install.ps1',
+  'crates/client/src/update.rs',
+  'crates/client/tests/update/main.rs',
+  'crates/client/tests/update/release.rs',
+];
 for (const crate of fs.readdirSync(path.join(root, 'crates'))) {
   const manifest = `crates/${crate}/Cargo.toml`;
   const text = fs.existsSync(path.join(root, manifest)) ? fs.readFileSync(path.join(root, manifest), 'utf8') : '';
@@ -66,6 +79,37 @@ const built = targets(builders);
 const checked = targets(checkers);
 if (built.length !== 6 || JSON.stringify(built) !== JSON.stringify(checked)) {
   fail(`the installers are checked on ${checked.join(', ') || 'no target'}, not on every target built: ${built.join(', ') || 'none'}`);
+}
+
+// The tests of skald update on macOS and Windows.
+const testsUpdate = (line) => /\bcargo\s+test\b/.test(line) && /\s-p\s+skald-client\b/.test(line) && /\s--test\s+update\b/.test(line);
+// runners <job>: the runner labels of the job, from its runs-on and its matrix.
+const runners = (job) => {
+  const matrix = job.strategy?.matrix ?? {};
+  return [job['runs-on'], ...[].concat(matrix.runner ?? []), ...[].concat(matrix.include ?? []).map((i) => i?.runner)]
+    .filter((label) => typeof label === 'string' && !label.includes('${{'));
+};
+for (const [name, ref] of [
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+]) {
+  const states = jobsFor(release, event(name, ref));
+  const labels = Object.entries(jobs)
+    .filter(([key, job]) => !states[key].skipped && !job['continue-on-error'])
+    .filter(([key, job]) =>
+      (job.steps ?? []).some(
+        (step) => !step['continue-on-error'] && !stepSkipped(step, states[key]) && commands(step.run).some(testsUpdate),
+      ),
+    )
+    .flatMap(([, job]) => runners(job));
+  for (const [os, label] of [
+    ['macOS', /^macos-/],
+    ['Windows', /^windows-/],
+  ]) {
+    if (!labels.some((l) => label.test(l))) {
+      fail(`the dry run of a ${name} does not run cargo test -p skald-client --test update on a ${os} runner`);
+    }
+  }
 }
 
 if (failures > 0) {
