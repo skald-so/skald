@@ -15,6 +15,7 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
+mod accounts;
 mod device_flow;
 mod devices;
 mod github;

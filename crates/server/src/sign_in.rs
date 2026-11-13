@@ -11,10 +11,10 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use skald_proto::AccountId;
 use sqlx::PgPool;
 use url::Url;
 
+use crate::accounts::{self, GITHUB, Method};
 use crate::github::{GitHubApp, Refusal, http_url};
 use crate::{AppState, database_failed, problem};
 
@@ -331,25 +331,14 @@ async fn finish(
             Refusal::Code => Failure::Refused("GitHub refused the code."),
             Refusal::GitHub(reason) => Failure::GitHub(reason),
         })?;
-    let github_id = i64::try_from(user.id)
-        .map_err(|_| Failure::GitHub(format!("GitHub gave the user ID {}", user.id)))?;
-
-    let session = random_token();
-    sqlx::query(
-        "WITH account AS (
-             INSERT INTO accounts (id, github_id, github_login) VALUES ($1::uuid, $2, $3)
-             ON CONFLICT (github_id) DO UPDATE SET github_login = EXCLUDED.github_login
-             RETURNING id
-         )
-         INSERT INTO sessions (token_hash, account_id, kind) SELECT $4, id, 'web' FROM account",
-    )
-    .bind(AccountId::generate().to_string())
-    .bind(github_id)
-    .bind(&user.login)
-    .bind(digest(&session))
-    .execute(db)
-    .await
-    .map_err(Failure::Database)?;
+    let method = Method {
+        provider: GITHUB,
+        subject: user.id.to_string(),
+        login: Some(&user.login),
+    };
+    let session = accounts::sign_in(db, &method)
+        .await
+        .map_err(Failure::Database)?;
     Ok((session, return_to))
 }
 
@@ -367,11 +356,13 @@ async fn find(
     hashes: Vec<Vec<u8>>,
 ) -> Result<Option<Session>, sqlx::Error> {
     let found: Option<(String, String)> = sqlx::query_as(
-        "SELECT a.id::text, a.github_login FROM sessions s JOIN accounts a ON a.id = s.account_id
+        "SELECT s.account_id::text, m.login FROM sessions s
+         JOIN sign_in_methods m ON m.account_id = s.account_id AND m.provider = $3
          WHERE s.kind = $1 AND s.token_hash = ANY($2) LIMIT 1",
     )
     .bind(kind)
     .bind(hashes)
+    .bind(GITHUB)
     .fetch_optional(db)
     .await?;
     Ok(found.map(|(account, github_login)| Session {
