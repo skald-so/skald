@@ -111,23 +111,17 @@ impl<K: Issued> Id<K> {
     }
 }
 
-/// The current Unix time in milliseconds from the system clock; 0 before the Unix epoch.
-#[cfg(not(target_arch = "wasm32"))]
+/// The current Unix time in milliseconds; 0 before the Unix epoch.
 fn unix_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    // `SystemTime` panics in WASM: there the time comes from JavaScript's clock, in whole
+    // milliseconds well below 2^53; `as` saturates a time before the epoch to 0.
+    #[cfg(target_arch = "wasm32")]
+    let unix_ms = js_sys::Date::now() as u128;
+    #[cfg(not(target_arch = "wasm32"))]
+    let unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_millis());
     u64::try_from(unix_ms).unwrap_or(u64::MAX)
-}
-
-/// The current Unix time in milliseconds from JavaScript's clock: `SystemTime` panics in WASM.
-/// 0 before the Unix epoch.
-#[cfg(target_arch = "wasm32")]
-fn unix_ms() -> u64 {
-    // Whole milliseconds, well below 2^53; `as` saturates a negative time to 0.
-    js_sys::Date::now() as u64
 }
 
 impl DeviceId {
