@@ -26,4 +26,15 @@ url = "2.5"
 jsonschema = { version = "0.61", default-features = false }
 serde_urlencoded = "0.7"
 skald-github-stand-in = { path = "../github-stand-in" }
+skald-oidc-stand-in = { path = "../oidc-stand-in" }
 tungstenite = "0.30"
+
+[features]
+# Builds the acceptance tests of the OIDC code, written before that code.
+# Remove this feature and the [[test]] entry below with that code.
+acceptance = []
+
+[[test]]
+name = "oidc"
+path = "tests/oidc/main.rs"
+required-features = ["acceptance"]
