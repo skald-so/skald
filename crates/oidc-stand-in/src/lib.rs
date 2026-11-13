@@ -77,7 +77,10 @@ impl Key {
             "openssl genpkey failed: {}",
             String::from_utf8_lossy(&made.stderr)
         );
-        let pair = RsaKeyPair::from_pkcs8(&made.stdout).expect("read the RSA key openssl made");
+        // OpenSSL 3.0 writes the key as PKCS #1, later versions as PKCS #8.
+        let pair = RsaKeyPair::from_pkcs8(&made.stdout)
+            .or_else(|_| RsaKeyPair::from_der(&made.stdout))
+            .expect("read the RSA key openssl made");
         Key {
             kid: random_kid(),
             pair: Pair::Rsa(Arc::new(pair)),
