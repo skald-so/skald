@@ -34,7 +34,7 @@
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
 - **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
 - **Invite:**
-  - a valid `client` or `browser` device of an admin signs it: [protocol spec](../protocol/membership.md#invite);
+  - an admin's device signs it: [protocol spec](../protocol/membership.md#invite);
   - its secret travels only in the link's fragment and never reaches the server;
   - the admin's device admits the newcomer by itself, after checking the newcomer's devices.
 - Formats, checks, and how changes reach the MLS groups: [protocol spec](../protocol/membership.md#roster).
@@ -49,7 +49,8 @@
 ## Data model
 | Entity | Description |
 |---|---|
-| Account | A person or organization. Bound to a GitHub or OIDC identity and optionally to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking) |
+| Account | A person or organization. Reached through its sign-in methods; optionally bound to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking) |
+| Sign-in method | A provider and the subject it gives the person: GitHub and the GitHub user's ID, or an OIDC provider by its issuer and the ID token's `sub`. Belongs to one account; the first sign-in with it creates the account, the same way for every provider. A GitHub method keeps the GitHub login for display, updated at each sign-in |
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
 | Space | A team space and trust boundary. Signed roster and policy: [Membership](#membership); a device can belong to N spaces |

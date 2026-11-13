@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use ciborium_ll::{Decoder, Encoder, Header};
 
-use crate::address::{Address, AddressError};
+use crate::address::{Address, AddressError, Name, NameError};
 use crate::id::{Id, Kind};
 
 /// The deepest nesting of arrays and maps the spec allows, the outermost included: "Encoding".
@@ -115,6 +115,8 @@ pub enum FieldProblem {
     Empty,
     /// A number that is at least 1 is 0.
     Zero,
+    /// A number is below its least value.
+    Below { min: u64, actual: u64 },
     /// A number is none of the values the spec defines for the field.
     Value(u64),
     /// A map key is not an integer.
@@ -131,6 +133,8 @@ pub enum FieldProblem {
     Same(&'static str),
     /// An agent address is invalid.
     Address(AddressError),
+    /// A name of an agent address is invalid.
+    Name(NameError),
     /// A byte string that holds a CBOR item does not decode.
     Embedded(Box<DecodeError>),
 }
@@ -177,6 +181,7 @@ impl fmt::Display for FieldProblem {
             Self::Items { expected, actual } => write!(f, "{actual} items, not {expected}"),
             Self::Empty => f.write_str("empty; at least one item is needed"),
             Self::Zero => f.write_str("0; at least 1 is needed"),
+            Self::Below { min, actual } => write!(f, "{actual}; at least {min} is needed"),
             Self::Value(value) => write!(f, "{value} is not a defined value"),
             Self::KeyType => f.write_str("a map key that is not an integer"),
             Self::NoBody => f.write_str("no body"),
@@ -185,6 +190,7 @@ impl fmt::Display for FieldProblem {
             Self::Mismatch(other) => write!(f, "differs from {other}"),
             Self::Same(other) => write!(f, "the same as {other}"),
             Self::Address(error) => write!(f, "{error}"),
+            Self::Name(error) => write!(f, "{error}"),
             Self::Embedded(error) => write!(f, "{error}"),
         }
     }
@@ -276,7 +282,8 @@ enum Node<'b> {
     Text(&'b str),
     Array(Vec<Item<'b>>),
     Map(Vec<(Item<'b>, Item<'b>)>),
-    Simple,
+    /// `false`, `true` or `null`: simple value 20, 21 or 22.
+    Simple(u64),
 }
 
 /// Decodes exactly one item and checks it against the spec's encoding rules.
@@ -362,7 +369,7 @@ fn parse_item<'b>(bytes: &'b [u8], at: &mut usize, depth: usize) -> Result<Item<
             }
             Node::Map(entries)
         }
-        _ => Node::Simple,
+        _ => Node::Simple(argument),
     };
     Ok(Item {
         raw: &bytes[start..*at],
@@ -436,6 +443,20 @@ impl<'b> Item<'b> {
             Node::Text(text) => Ok(text),
             _ => Err(field_error(field, FieldProblem::Type("a text string"))),
         }
+    }
+
+    pub(crate) fn boolean(&self, field: &'static str) -> Result<bool, DecodeError> {
+        match self.node {
+            Node::Simple(20) => Ok(false),
+            Node::Simple(21) => Ok(true),
+            _ => Err(field_error(field, FieldProblem::Type("a boolean"))),
+        }
+    }
+
+    /// A text string that is a name of an agent address.
+    pub(crate) fn name(&self, field: &'static str) -> Result<Name, DecodeError> {
+        Name::from_str(self.text(field)?)
+            .map_err(|error| field_error(field, FieldProblem::Name(error)))
     }
 
     pub(crate) fn array(&self, field: &'static str) -> Result<&[Item<'b>], DecodeError> {
@@ -595,6 +616,10 @@ pub(crate) fn text(value: &str) -> Vec<u8> {
     head(&mut out, Header::Text(Some(value.len())));
     out.extend_from_slice(value.as_bytes());
     out
+}
+
+pub(crate) fn boolean(value: bool) -> Vec<u8> {
+    vec![if value { 0xf5 } else { 0xf4 }]
 }
 
 pub(crate) fn id<K: Kind>(value: &Id<K>) -> Vec<u8> {
