@@ -17,10 +17,11 @@ impl HpkeKey {
         Self(StaticSecret::from(*secret))
     }
 
-    /// A new key from the operating system's cryptographically secure generator.
+    /// A new key from the cryptographically secure generator of the operating system, or in WASM
+    /// of the browser or Node.js.
     ///
     /// # Panics
-    /// If the operating system's random generator fails.
+    /// If the random generator fails.
     pub fn generate() -> Self {
         Self::from_bytes(&random_secret())
     }

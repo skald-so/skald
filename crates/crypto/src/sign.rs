@@ -16,10 +16,11 @@ impl SigningKey {
         Self(ed25519_dalek::SigningKey::from_bytes(secret))
     }
 
-    /// A new key from the operating system's cryptographically secure generator.
+    /// A new key from the cryptographically secure generator of the operating system, or in WASM
+    /// of the browser or Node.js.
     ///
     /// # Panics
-    /// If the operating system's random generator fails.
+    /// If the random generator fails.
     pub fn generate() -> Self {
         Self::from_bytes(&random_secret())
     }
@@ -46,13 +47,14 @@ impl fmt::Debug for SigningKey {
     }
 }
 
-/// 32 bytes from the operating system's cryptographically secure generator, zeroed on drop.
+/// 32 bytes from the cryptographically secure generator of the operating system, or in WASM of the
+/// browser or Node.js, zeroed on drop.
 ///
 /// # Panics
-/// If the operating system's random generator fails.
+/// If the random generator fails.
 pub(crate) fn random_secret() -> Zeroizing<[u8; 32]> {
     let mut secret = Zeroizing::new([0; 32]);
-    getrandom::fill(secret.as_mut()).expect("the operating system's random generator failed");
+    getrandom::fill(secret.as_mut()).expect("the random generator failed");
     secret
 }
 

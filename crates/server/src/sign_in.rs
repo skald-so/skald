@@ -346,7 +346,10 @@ async fn finish(
 #[derive(Serialize)]
 pub(crate) struct Session {
     pub account: String,
-    pub github_login: String,
+    pub username: String,
+    /// The login of the account's GitHub method, while it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_login: Option<String>,
 }
 
 /// The account of the session of `kind`, `web` or `device`, whose token has one of `hashes`.
@@ -355,9 +358,13 @@ async fn find(
     kind: &str,
     hashes: Vec<Vec<u8>>,
 ) -> Result<Option<Session>, sqlx::Error> {
-    let found: Option<(String, String)> = sqlx::query_as(
-        "SELECT s.account_id::text, m.login FROM sessions s
-         JOIN sign_in_methods m ON m.account_id = s.account_id AND m.provider = $3
+    let found: Option<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT a.id::text, a.username, m.login FROM sessions s
+         JOIN accounts a ON a.id = s.account_id
+         LEFT JOIN LATERAL (
+             SELECT login FROM sign_in_methods
+             WHERE account_id = a.id AND provider = $3 ORDER BY created_at LIMIT 1
+         ) m ON true
          WHERE s.kind = $1 AND s.token_hash = ANY($2) LIMIT 1",
     )
     .bind(kind)
@@ -365,8 +372,9 @@ async fn find(
     .bind(GITHUB)
     .fetch_optional(db)
     .await?;
-    Ok(found.map(|(account, github_login)| Session {
+    Ok(found.map(|(account, username, github_login)| Session {
         account,
+        username,
         github_login,
     }))
 }

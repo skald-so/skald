@@ -6,7 +6,8 @@ use skald_proto::{Cbor, RosterBody};
 
 use crate::fixtures::*;
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn signing_a_revision_signs_its_encoded_body_over_the_roster_label() {
     let rev = next();
     let body = RosterBody::from_cbor(&rev.body()).unwrap();
@@ -25,14 +26,16 @@ fn signing_a_revision_signs_its_encoded_body_over_the_roster_label() {
     );
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_signed_revision_one_the_client_builds_passes_checks_3_and_4() {
     let roster = sign_roster(&first_body(), &key(ALICE_LAPTOP)).unwrap();
     check_roster(&roster, &certs()).unwrap();
     check_roster(&roster, &[]).unwrap();
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn revision_two_after_a_revision_one_the_client_built_is_accepted() {
     let first = sign_roster(&first_body(), &key(ALICE_LAPTOP)).unwrap();
     let mut body = RosterBody::from_cbor(first.body_bytes()).unwrap();

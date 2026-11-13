@@ -78,6 +78,18 @@ export interface MasterKeyRequest {
 }
 
 /**
+ * An account's username: a `name` of an agent address (docs/protocol/README.md, "Agent address"), unique on the server; `skald`, `admin`, `support` and `root` are reserved.
+ * @minLength 1
+ * @maxLength 63
+ * @pattern ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+ */
+export type Username = string;
+
+export interface UsernameRequest {
+  username: Username;
+}
+
+/**
  * A device's ID: a UUIDv8 derived from its signing key, in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
  * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
  */
@@ -148,8 +160,9 @@ export type AccountId = string;
 
 export interface Session {
   account: AccountId;
-  /** The GitHub login of the account's user as of its latest sign-in, for display. */
-  github_login: string;
+  username: Username;
+  /** The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one. */
+  github_login?: string;
 }
 
 /**

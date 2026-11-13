@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Packs the npm package skald-so of the release <tag> into <dir> as its only file,
+# skald-so-<version>.tgz: npm/ with the version X.Y.Z of vX.Y.Z, or X.Y.Z-beta.N of vX.Y.Z-beta.N,
+# and the licenses. npm packs it with no config but its own, so the packer's plays no part.
+# Usage: script/release-npm <tag> <dir>
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release-tag-args.sh"
+check_release_tag_args "$@"
+version=${1#v}
+# native <path>: the path as node and npm on this OS take it.
+native() {
+  case $(uname -s) in
+    MINGW* | MSYS* | CYGWIN*) cygpath -m "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+mkdir "$tmp/package" "$tmp/out"
+cp "$root/npm/package.json" "$root/npm/skald.js" "$root/npm/README.md" "$root/LICENSE-APACHE" "$root/LICENSE-MIT" "$tmp/package/"
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+  manifest.version = process.argv[2];
+  fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");
+' "$(native "$tmp/package/package.json")" "$version"
+: >"$tmp/npmrc"
+: >"$tmp/global-npmrc"
+(cd "$tmp/package" && env npm_config_userconfig="$(native "$tmp/npmrc")" npm_config_globalconfig="$(native "$tmp/global-npmrc")" \
+  npm_config_cache="$(native "$tmp/cache")" npm_config_update_notifier=false \
+  npm pack --ignore-scripts --silent --pack-destination "$(native "$tmp/out")" >/dev/null)
+mkdir -p "$2"
+mv "$tmp/out/skald-so-$version.tgz" "$2/"

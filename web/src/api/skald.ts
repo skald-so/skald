@@ -21,6 +21,7 @@ import type {
   SpaceRequest,
   Spaces,
   StoredRosterRevision,
+  UsernameRequest,
 } from "./skald.schemas";
 
 export type getMasterKeyResponse200 = {
@@ -178,6 +179,99 @@ export const putMasterKey = async (
     status: res.status,
     headers: res.headers,
   } as putMasterKeyResponse;
+};
+
+export type putUsernameResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type putUsernameResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type putUsernameResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type putUsernameResponse409 = {
+  data: Problem;
+  status: 409;
+};
+
+export type putUsernameResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type putUsernameResponseSuccess = putUsernameResponse204 & {
+  headers: Headers;
+};
+export type putUsernameResponseError = (
+  | putUsernameResponse400
+  | putUsernameResponse401
+  | putUsernameResponse409
+  | putUsernameResponse500
+) & {
+  headers: Headers;
+};
+
+export type putUsernameResponse =
+  putUsernameResponseSuccess | putUsernameResponseError;
+
+export const getPutUsernameUrl = () => {
+  return `/account/username`;
+};
+
+/**
+ * Sets the username of the session's account, from a web or a device session. A refused username leaves the old one.
+ * @summary Set the account's username
+ */
+export const putUsername = async (
+  usernameRequest: UsernameRequest,
+  options?: RequestInit,
+): Promise<putUsernameResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getPutUsernameUrl(), {
+    ...options,
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(usernameRequest),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: putUsernameResponse["data"] = body ? JSON.parse(body) : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as putUsernameResponse;
 };
 
 export type getDevicesResponse200 = {

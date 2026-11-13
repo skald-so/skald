@@ -181,7 +181,8 @@ fn assert_two_bodies(certs: &[Cert], device: u8) {
 
 // Signatures.
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_signing_key_has_the_rfc_8032_public_key() {
     // RFC 8032, §7.1, "TEST 1" and "TEST 2".
     for (secret, expected) in [
@@ -202,7 +203,8 @@ fn a_signing_key_has_the_rfc_8032_public_key() {
     assert_eq!(key(A).public_key(), public(A));
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn an_hpke_key_is_kept_as_its_scalar_and_has_the_rfc_7748_public_key() {
     // RFC 7748, §6.1: Alice's and Bob's private keys, unclamped, and their public keys.
     for (secret, expected) in [
@@ -223,7 +225,8 @@ fn an_hpke_key_is_kept_as_its_scalar_and_has_the_rfc_7748_public_key() {
     assert_eq!(format!("{:?}", HpkeKey::generate()), "HpkeKey(..)");
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn generated_keys_differ_and_are_made_again_of_their_secrets() {
     let (one, two) = (SigningKey::generate(), SigningKey::generate());
     assert_ne!(one.public_key(), two.public_key());
@@ -235,7 +238,8 @@ fn generated_keys_differ_and_are_made_again_of_their_secrets() {
     assert_eq!(again.public_key(), one.public_key());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_signature_covers_the_encoded_label_and_byte_strings() {
     let body = b"a body".as_slice();
     assert_eq!(key(A).sign(CERT, &[body]), signature(A, CERT, body));
@@ -248,7 +252,8 @@ fn a_signature_covers_the_encoded_label_and_byte_strings() {
     );
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_signature_verifies_only_with_its_key_label_and_bytes() {
     let parts: [&[u8]; 2] = [b"header", b"content"];
     let made = key(A).sign("skald hpke", &parts);
@@ -282,7 +287,8 @@ fn a_signature_verifies_only_with_its_key_label_and_bytes() {
     assert!(verify(&[0xff; 32], "skald hpke", &parts, &made).is_err());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn generated_keys_differ_and_sign() {
     let (first, second) = (SigningKey::generate(), SigningKey::generate());
     assert_ne!(first.public_key(), second.public_key());
@@ -293,7 +299,8 @@ fn generated_keys_differ_and_sign() {
 
 // Issuing.
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn the_master_key_signs_and_the_device_proves_over_their_labels() {
     let body = body(A, DeviceKind::Client, None);
     let cert = issue(&body, &key(MASTER), &key(A)).unwrap();
@@ -306,7 +313,8 @@ fn the_master_key_signs_and_the_device_proves_over_their_labels() {
     assert_valid(std::slice::from_ref(&cert), A, &cert);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn an_issuer_device_signs_and_the_device_proves_over_their_labels() {
     let body = body(B, DeviceKind::Browser, Some(A));
     let cert = issue(&body, &key(A), &key(B)).unwrap();
@@ -319,12 +327,14 @@ fn an_issuer_device_signs_and_the_device_proves_over_their_labels() {
 
 // Valid certificates.
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_certificate_signed_by_the_master_key_is_valid() {
     assert_valid(&[first(A)], A, &first(A));
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_certificate_chained_to_the_master_key_is_valid() {
     let b = linked(B, DeviceKind::Client, A);
     let c = linked(C, DeviceKind::Service, B);
@@ -340,7 +350,8 @@ fn a_certificate_chained_to_the_master_key_is_valid() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_client_device_issues_every_kind() {
     for kind in [DeviceKind::Client, DeviceKind::Browser, DeviceKind::Service] {
         let b = linked(B, kind, A);
@@ -348,7 +359,8 @@ fn a_client_device_issues_every_kind() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_body_is_checked_as_the_bytes_it_came_in() {
     // A body with a field of a later version: key 10, after the known keys 1 to 9.
     let mut bytes = body(A, DeviceKind::Client, None).to_cbor();
@@ -373,7 +385,8 @@ fn a_body_is_checked_as_the_bytes_it_came_in() {
 
 // The proof check.
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_device_id_not_derived_from_the_signing_key_is_not_valid() {
     // A's keys under B's ID, proved and signed with the right keys.
     let forged = CertBody {
@@ -391,7 +404,8 @@ fn a_device_id_not_derived_from_the_signing_key_is_not_valid() {
     assert!(check_device(&public(MASTER), &certs, DeviceId::from_bytes([0x5a; 16])).is_err());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn only_the_holder_of_a_signing_key_certifies_its_device_id() {
     // Another key under B's ID beside B's genuine certificate: discarded, so B has one body.
     let forged = CertBody {
@@ -404,7 +418,8 @@ fn only_the_holder_of_a_signing_key_certifies_its_device_id() {
     assert_valid(&certs, B, &first(B));
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_broken_proof_is_not_valid() {
     assert_invalid(&[broken_proof(&first(A))], A);
     // A proof by another key.
@@ -418,14 +433,16 @@ fn a_broken_proof_is_not_valid() {
 
 // Check 1: the signature.
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_broken_signature_is_not_valid() {
     assert_invalid(&[broken_signature(&first(A))], A);
     let b = linked(B, DeviceKind::Client, A);
     assert_invalid(&[first(A), broken_signature(&b)], B);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_signature_by_another_key_is_not_valid() {
     let a = body(A, DeviceKind::Client, None);
     // A server's signature alone never admits a device.
@@ -441,7 +458,8 @@ fn a_signature_by_another_key_is_not_valid() {
     assert_invalid(&[first(A), b], B);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_signature_over_another_label_is_not_valid() {
     let bytes = body(A, DeviceKind::Client, None).to_cbor();
     let proof = signature(A, PROOF, &bytes);
@@ -471,7 +489,8 @@ fn a_signature_over_another_label_is_not_valid() {
 
 // Check 2: the chain.
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_chain_to_another_master_key_is_not_valid() {
     let a = signed(&body(A, DeviceKind::Client, None), OTHER_MASTER, A);
     let b = linked(B, DeviceKind::Client, A);
@@ -483,7 +502,8 @@ fn a_chain_to_another_master_key_is_not_valid() {
     assert!(matches!(check_device(&public(OTHER_MASTER), &certs, id(A)), Ok(cert) if *cert == a));
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_chain_that_repeats_a_device_is_not_valid() {
     // Issued by itself.
     assert_invalid(&[linked(A, DeviceKind::Client, A)], A);
@@ -507,7 +527,8 @@ fn a_chain_that_repeats_a_device_is_not_valid() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn an_issuer_that_is_not_a_client_device_is_not_valid() {
     for kind in [DeviceKind::Browser, DeviceKind::Service] {
         let b = linked(B, kind, A);
@@ -522,7 +543,8 @@ fn an_issuer_that_is_not_a_client_device_is_not_valid() {
     assert_invalid(&[a, b], B);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn an_issuer_of_another_account_is_not_valid() {
     let b = CertBody {
         account: other_account(),
@@ -539,7 +561,8 @@ fn an_issuer_of_another_account_is_not_valid() {
     assert_invalid(&certs, B);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_chain_with_an_issuer_that_fails_check_1_is_not_valid() {
     let b = linked(B, DeviceKind::Client, A);
     let c = linked(C, DeviceKind::Client, B);
@@ -561,7 +584,8 @@ fn a_chain_with_an_issuer_that_fails_check_1_is_not_valid() {
 
 // Copies and bodies.
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn copies_of_one_certificate_count_as_one() {
     let a = first(A);
     assert_valid(&[a.clone(), a.clone()], A, &a);
@@ -569,7 +593,8 @@ fn copies_of_one_certificate_count_as_one() {
     assert_valid(&[a.clone(), b.clone(), a.clone(), b.clone()], B, &b);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_broken_copy_beside_a_genuine_certificate_leaves_the_device_valid() {
     let a = first(A);
     let bytes = a.body_bytes().to_vec();
@@ -594,7 +619,8 @@ fn a_broken_copy_beside_a_genuine_certificate_leaves_the_device_valid() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_device_with_two_bodies_has_no_valid_certificate() {
     let a = first(A);
     let renamed = CertBody {
@@ -615,7 +641,8 @@ fn a_device_with_two_bodies_has_no_valid_certificate() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_second_body_that_fails_the_proof_check_does_not_count() {
     let a = first(A);
     let renamed = CertBody {
@@ -628,7 +655,8 @@ fn a_second_body_that_fails_the_proof_check_does_not_count() {
     assert_valid(&certs, A, &a);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_device_without_a_certificate_is_not_valid() {
     assert_invalid(&[], A);
     assert_invalid(&[first(A), linked(B, DeviceKind::Client, A)], C);

@@ -15,7 +15,8 @@ use skald_proto::{
 use sqlx::PgPool;
 
 use crate::AppState;
-use crate::devices::{Answer, Devices, Refusal, SignedIn, base64, bytes, parse, taken};
+use crate::devices::{Devices, base64, bytes, taken};
+use crate::refusal::{Answer, Refusal, SignedIn, parse};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]

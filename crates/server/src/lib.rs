@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router, middleware};
 use serde::Serialize;
 use sqlx::migrate::Migrator;
@@ -20,6 +20,7 @@ mod device_flow;
 mod devices;
 mod github;
 mod protocol;
+mod refusal;
 mod sign_in;
 mod spaces;
 
@@ -83,6 +84,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(devices::master)
                 .put(devices::give_master)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/username",
+            put(accounts::set_username).layer(checked(Statement::Header)),
         )
         .route(
             "/auth/device",
