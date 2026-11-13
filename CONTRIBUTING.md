@@ -41,7 +41,15 @@ read -rs SKALD_GITHUB_CLIENT_SECRET && export SKALD_GITHUB_CLIENT_SECRET  # past
 SKALD_DATABASE_URL=postgres://postgres:skald@127.0.0.1:5432/postgres cargo run -p skald-server -- \
   --public-url http://127.0.0.1:8080 --github-client-id <client ID>
 ```
-Then open `http://127.0.0.1:8080/auth/github`. Without the client ID and secret, sign-in is off. `skald-server --help` lists the other settings.
+Then open `http://127.0.0.1:8080/auth/github`. Without the client ID and secret, GitHub sign-in is off. `skald-server --help` lists the other settings.
+
+Google sign-in needs a Google OAuth client of your own (Google Cloud console → Google Auth Platform → Clients, type "Web application") with the authorized redirect URI `http://127.0.0.1:8080/auth/google/callback`. Its client secret goes only in `SKALD_GOOGLE_CLIENT_SECRET`; `--google-issuer` defaults to Google's:
+```sh
+read -rs SKALD_GOOGLE_CLIENT_SECRET && export SKALD_GOOGLE_CLIENT_SECRET  # paste the secret
+SKALD_DATABASE_URL=postgres://postgres:skald@127.0.0.1:5432/postgres cargo run -p skald-server -- \
+  --public-url http://127.0.0.1:8080 --google-client-id <client ID>
+```
+Then open `http://127.0.0.1:8080/auth/google`. Without the client ID and secret, Google sign-in is off. Both providers' settings can be given at once.
 
 `skald`:
 ```sh

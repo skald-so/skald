@@ -234,7 +234,7 @@ A decoder MUST reject:
 
 ## Protocol version
 - An integer from 1, separate from the release version of `skald` and `skald-server`.
-- It changes only for a change a peer on the previous version cannot handle. Fields peers may ignore do not change it.
+- It changes only for a change an implementation on the previous version cannot handle. Fields implementations may ignore do not change it.
 - Adjacent versions interoperate: each reads every envelope the other sends. Replacing an envelope field takes two versions: the first adds the new field, the next drops the old one.
 - Each version pins one A2A version ([A2A extension](#a2a-extension)). A new version moves only to an A2A version whose messages the previous one reads.
 

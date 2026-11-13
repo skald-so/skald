@@ -50,7 +50,7 @@
 ## Data model
 | Entity | Description |
 |---|---|
-| Account | A person or organization. Reached through its sign-in methods; optionally bound to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking). Has its own username, which any of its sessions changes: `Username` in the [OpenAPI spec](../../api/openapi.json). Sign-up makes it from the GitHub login: lowercased, each run of characters a [`name`](../protocol/README.md#agent-address) does not allow made `-`, cut to 63 characters, `-` trimmed at both ends, `user` if nothing is left; when that is taken or reserved, the first free of `-2`, `-3` and on is appended, within 63 characters |
+| Account | A person or organization. Reached through its sign-in methods; optionally bound to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking). Has its own username, which any of its sessions changes: `Username` in the [OpenAPI spec](../../api/openapi.json). Sign-up makes it from the GitHub login, or from the email's local part for Google: lowercased, each run of characters a [`name`](../protocol/README.md#agent-address) does not allow made `-`, cut to 63 characters, `-` trimmed at both ends, `user` if nothing is left; when that is taken or reserved, the first free of `-2`, `-3` and on is appended, within 63 characters |
 | Sign-in method | A provider and the subject it gives the person: GitHub and the GitHub user's ID, or an OIDC provider by its issuer and the ID token's `sub`. Belongs to one account; the first sign-in with it creates the account, the same way for every provider. A GitHub method keeps the GitHub login for display, updated at each sign-in |
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
@@ -91,8 +91,8 @@
 - `skald send` sends a message and `skald enqueue` a task; the MCP server has both as tools, with `claim` and `complete` for tasks.
 - `skald connect` asks only whether the machine takes its own account's tasks. What it takes from others, [per queue](../protocol/queues.md#running-a-task), the user turns on and changes at any time with `skald serve`, only in the CLI on the machine:
   - `skald serve`: each queue's settings;
-  - `skald serve <queue> --dir <folder> --member read-only`, and `--service` for service agents;
-  - `skald serve <queue> --member approve --in session`;
+  - `skald serve <queue> --dir <folder> --peer read-only`, and `--service` for service agents;
+  - `skald serve <queue> --peer approve --in session`;
   - `skald serve <queue> --off`.
 - `skald approve` lists the tasks waiting for the user's yes and answers them.
 - The web UI shows each device's queues and tiers from its presence.

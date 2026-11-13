@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use crate::http_client::{agent, json_body};
+use crate::http_client::{agent, json_body, printable};
 
 /// The REST API version the server reads the user with.
 const API_VERSION: &str = "2022-11-28";
@@ -56,6 +56,11 @@ impl ClientSecret {
     /// The secret `text`; `None` if it is empty.
     pub fn new(text: String) -> Option<Self> {
         (!text.is_empty()).then_some(ClientSecret(text))
+    }
+
+    /// The secret, to send to its provider only.
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
     }
 }
 
@@ -112,7 +117,7 @@ impl GitHubApp {
             .header("accept", "application/json")
             .send_form([
                 ("client_id", self.client_id.as_str()),
-                ("client_secret", self.client_secret.0.as_str()),
+                ("client_secret", self.client_secret.expose()),
                 ("code", code),
                 ("redirect_uri", redirect_uri),
             ]);
@@ -147,14 +152,6 @@ fn read<T: DeserializeOwned>(
     json_body(response).map_err(|reason| Refusal::GitHub(format!("GitHub's {endpoint} {reason}")))
 }
 
-/// `text` from GitHub, such as an error code, cut to printable ASCII for the server's output.
-fn printable(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_ascii_graphic())
-        .take(64)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,12 +174,6 @@ mod tests {
         ] {
             assert!(text.parse::<GitHubUrl>().is_err(), "{text}");
         }
-    }
-
-    #[test]
-    fn printable_keeps_printable_ascii_only() {
-        assert_eq!(printable("bad\n code\u{1b}[31m"), "badcode[31m");
-        assert_eq!(printable(&"x".repeat(100)).len(), 64);
     }
 
     #[test]
