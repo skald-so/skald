@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use skald_github_stand_in::User;
 
-use super::browser::{Page, Visit};
-use super::sign_in::{Account, CLIENT_SECRET, SESSION, START, SignIn};
+use super::browser::{APPROVE, CODE_FIELD, DENY, Page, SUBMIT, Visit};
+use super::sign_in::{Account, CLIENT_SECRET, SESSION, SignIn, cookie_set};
 use super::spec::{operation_violations, spec};
-use super::{Response, get_url, post_form};
+use super::{Response, delete_url, get_url, post_form, send};
 
 /// Device authorization (RFC 8628, §3.1): `POST`, a form of `client_id`.
 pub const DEVICE_AUTHORIZATION: &str = "/auth/device";
@@ -30,13 +30,6 @@ pub const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 /// seconds.
 pub const LIFETIME: &str = "--device-code-lifetime";
 pub const INTERVAL: &str = "--device-poll-interval";
-
-/// The page's button that approves the code, the one that denies it, and its field for the code.
-pub const APPROVE: &str = "role=button[name=/approve/i]";
-pub const DENY: &str = "role=button[name=/deny/i]";
-pub const CODE_FIELD: &str = "role=textbox";
-/// The button of a page that asks for the code first.
-pub const SUBMIT: &str = "role=button >> nth=0";
 
 /// What device authorization gives (RFC 8628, §3.2).
 #[derive(Clone, Debug)]
@@ -88,7 +81,7 @@ impl DeviceFlow {
 
     /// `POST <path>` of `fields` straight to the server, stating the protocol version; checked
     /// against the spec.
-    fn post(&self, path: &str, fields: &[(&str, &str)]) -> Response {
+    pub fn post(&self, path: &str, fields: &[(&str, &str)]) -> Response {
         let version = skald_proto::PROTOCOL_VERSION.to_string();
         let headers = [(skald_proto::VERSION_HEADER, version.as_str())];
         let response = post_form(&self.url(path), &headers, fields);
@@ -175,17 +168,43 @@ impl DeviceFlow {
         assert_eq!(answer, Poll::Error("authorization_pending".to_owned()));
     }
 
+    /// `<method> <path>` straight to the server, `method` in lowercase, with the request headers
+    /// `headers` and the JSON `body` if given, stating the protocol version if `stated`; checked
+    /// against the spec.
+    pub fn request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: Option<&[u8]>,
+        stated: bool,
+    ) -> Response {
+        let version = skald_proto::PROTOCOL_VERSION.to_string();
+        let mut all = headers.to_vec();
+        if stated {
+            all.push((skald_proto::VERSION_HEADER, &version));
+        }
+        let url = self.url(path);
+        let response = match body {
+            Some(body) => {
+                all.push(("content-type", "application/json"));
+                send(method, &url, &all, body)
+            }
+            None if method == "delete" => delete_url(&url, &all),
+            None => get_url(&url, &all),
+        };
+        self.conforms(method, path, &response);
+        response
+    }
+
     /// `GET /session` with the request header `Authorization: <authorization>` if given, straight
     /// to the server; checked against the spec.
     pub fn session(&self, authorization: Option<&str>) -> Response {
-        let version = skald_proto::PROTOCOL_VERSION.to_string();
-        let mut headers = vec![(skald_proto::VERSION_HEADER, version.as_str())];
-        if let Some(authorization) = authorization {
-            headers.push(("authorization", authorization));
-        }
-        let response = get_url(&self.url(SESSION), &headers);
-        self.conforms("get", SESSION, &response);
-        response
+        let headers: Vec<_> = authorization
+            .map(|authorization| ("authorization", authorization))
+            .into_iter()
+            .collect();
+        self.request("get", SESSION, &headers, None, true)
     }
 
     /// The account a request with the session token `token` acts as.
@@ -209,17 +228,9 @@ impl DeviceFlow {
     /// Signs `user` in on the server by plain HTTP, as a browser follows the redirects; gives the
     /// `Cookie` header of the web session.
     pub fn web_cookie(&self, user: &User) -> String {
-        let stand = &self.stand;
-        let started = stand.server.get(START);
-        let github = get_url(&stand.github.sign_in_url(user.id), &[]);
-        let at_github = get_url(
-            started.header("location").expect("to GitHub"),
-            &[("cookie", &cookie_set(&github, "stand_in_user"))],
-        );
-        let callback = at_github.header("location").expect("back from GitHub");
-        let local = callback.replacen(&stand.public, stand.server.base(), 1);
+        let (started, callback) = self.stand.to_callback(user);
         let signed_in = get_url(
-            &local,
+            &callback,
             &[("cookie", &cookie_set(&started, "skald_sign_in"))],
         );
         assert_eq!(signed_in.status, 200, "{}", text(&signed_in));
@@ -288,17 +299,6 @@ impl DeviceFlow {
         assert_eq!(page.count(APPROVE), 1, "the page asks to approve");
         assert_eq!(page.count(DENY), 1, "the page offers to deny");
     }
-}
-
-/// The `name=value` of the cookie `name` that `response` sets.
-pub fn cookie_set(response: &Response, name: &str) -> String {
-    response
-        .header_values("set-cookie")
-        .into_iter()
-        .filter_map(|cookie| cookie.split(';').next())
-        .find(|pair| pair.starts_with(&format!("{name}=")))
-        .unwrap_or_else(|| panic!("no cookie {name}: {:?}", response.headers))
-        .to_owned()
 }
 
 /// Clicks `button` on the page in `page`, submitting the code first if the page asks for it; gives

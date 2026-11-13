@@ -34,29 +34,17 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use browser::{Browser, Page};
-use cloud::{APPROVE, Cloud, Device, WAIT, certified, ids, shown_grant};
-use machine::{Finished, Machine, SIGN_IN};
+use browser::{APPROVE, Browser, Page};
+use cloud::{ASK_MASTER, Cloud, Device, GIVE_MASTER, REGISTER, WAIT, certified, ids, shown_grant};
+use machine::{FIRST_DEVICE, Finished, Machine, NAME, NO, SERVER, SIGN_IN, YES};
 use relay::Lose;
 use serde_json::Value;
 use skald_github_stand_in::User;
-use skald_proto::{AccountId, CERT_NAME_MAX, Cert, DeviceId, DeviceKind};
-
-/// The flag that answers whether this is the account's first device, and its answers.
-const FIRST_DEVICE: &str = "--first-device";
-const YES: &str = "yes";
-const NO: &str = "no";
-/// The flag of a `name` the user gives.
-const NAME: &str = "--name";
-
-/// The requests that register a device and give the account's master key, as their lines start.
-const REGISTER: &str = "POST /devices ";
-const GIVE_MASTER: &str = "PUT /account/master ";
-const ASK_MASTER: &str = "GET /account/master ";
+use skald_proto::{CERT_NAME_MAX, Cert, DeviceId, DeviceKind};
 
 /// `skald sign-in --server <cloud> <extra>`.
 fn args<'a>(cloud: &'a Cloud, extra: &[&'a str]) -> Vec<&'a str> {
-    let mut args = vec![SIGN_IN, "--server", &cloud.url];
+    let mut args = vec![SIGN_IN, SERVER, &cloud.url];
     args.extend_from_slice(extra);
     args
 }
@@ -132,11 +120,6 @@ fn says_created(finished: &Finished) -> bool {
     said.contains("created") && said.contains("master key") && said.contains("certificate")
 }
 
-/// The session token the server gave last.
-fn last_token(cloud: &Cloud) -> String {
-    cloud.tokens().last().cloned().expect("a session token")
-}
-
 /// Whether the machine said what `part`, in lowercase, says.
 fn says(finished: &Finished, part: &str) -> bool {
     finished.shown().to_lowercase().contains(part)
@@ -145,24 +128,9 @@ fn says(finished: &Finished, part: &str) -> bool {
 /// The secrets file of `machine` and its session token: the one file that holds one of the tokens
 /// the server gave.
 fn secrets_of(cloud: &Cloud, machine: &Machine) -> (PathBuf, String) {
-    let mut found = Vec::new();
-    for token in cloud.tokens() {
-        for file in machine.files_holding(&token) {
-            found.push((file, token.clone()));
-        }
-    }
+    let mut found = cloud.token_files(machine);
     assert_eq!(found.len(), 1, "files holding a session token: {found:?}");
     found.remove(0)
-}
-
-/// The session's account, from the server.
-fn account(cloud: &Cloud, token: &str) -> AccountId {
-    let (status, body) = cloud.session_of(token);
-    assert_eq!(status, 200, "GET /session: {body}");
-    body["account"]
-        .as_str()
-        .and_then(|id| id.parse().ok())
-        .unwrap_or_else(|| panic!("an account ID: {body}"))
 }
 
 /// The valid certificate of `device` among the certificates of `devices`, as a server returns them,
@@ -243,7 +211,7 @@ fn first_machine_creates_the_master_key_and_holds_a_certificate_chained_to_it() 
     assert!(says_created(&first.finished), "{:?}", first.finished);
     assert_eq!(ids(&first.devices), vec![first.id]);
     let body = first.cert.body();
-    assert_eq!(body.account, account(&cloud, &first.token));
+    assert_eq!(body.account, cloud.account_of(&first.token));
     assert_eq!(body.kind, DeviceKind::Client);
     assert_eq!(body.issuer, None, "issued by the master key");
     assert_eq!(body.name, "ada-workstation", "the host name");
@@ -340,7 +308,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
         }
     }
     assert_eq!(cloud.relay.lost(), 1, "the server never answered {request}");
-    let token = last_token(&cloud);
+    let token = cloud.last_token();
     let registered = cloud.devices(&token);
     assert_eq!(registered.len(), 1, "the server took no registration");
     let taken = cloud.master(&token);
@@ -474,7 +442,7 @@ fn two_first_machines_at_once_give_the_account_one_master_key() {
         2,
         "both machines did not send a master key: {finished:?}"
     );
-    let token = last_token(&cloud);
+    let token = cloud.last_token();
     let master = cloud.master(&token).expect("the account's master key");
     let devices = cloud.devices(&token);
     assert_eq!(devices.len(), 2, "{devices:?}");
@@ -514,7 +482,7 @@ fn no_on_an_account_without_a_master_key_warns_and_creates_none() {
 
     assert!(says(&finished, "no master key"), "{finished:?}");
     assert!(!says_created(&finished), "{finished:?}");
-    let token = last_token(&cloud);
+    let token = cloud.last_token();
     assert_eq!(cloud.master(&token), None, "a master key created");
     assert_eq!(certified(&cloud.devices(&token)), Vec::<DeviceId>::new());
     let since = cloud.relay.sent().first().expect("requests").at;
@@ -567,7 +535,7 @@ fn asks_whether_this_is_the_first_device_before_asking_the_server() {
 
     assert!(finished.success, "{finished:?}");
     assert!(says_created(&finished), "{finished:?}");
-    let token = last_token(&cloud);
+    let token = cloud.last_token();
     let master = cloud.master(&token).expect("the account's master key");
     let devices = cloud.devices(&token);
     assert_eq!(devices.len(), 1, "{devices:?}");

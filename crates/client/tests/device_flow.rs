@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use common::{CLIENT, Stub, response};
-use machine::Machine;
+use machine::{DEVICES, FIRST_DEVICE, KEY_STORAGE, Machine, NAME, SERVER, SIGN_IN, STATE_DIR, YES};
 
 const TOKEN: &str = "tok-stub-0123456789abcdefghijkl";
 const LOGIN: &str = "ada-stub-login";
@@ -214,9 +214,9 @@ fn fails_saying(stub: &Stub, part: &str) {
 /// nothing else; gives whether it succeeded and its stderr.
 fn sign_in_with(server: &str, env: &[(&str, &std::path::Path)]) -> (bool, String) {
     let output = Command::new(CLIENT)
-        .args(["sign-in", "--server", server])
+        .args([SIGN_IN, SERVER, server])
         .env_clear()
-        .env("SKALD_KEY_STORAGE", "file")
+        .env(KEY_STORAGE, "file")
         .envs(env.iter().copied())
         .output()
         .expect("run skald");
@@ -253,7 +253,7 @@ fn state_directory_defaults_to_the_platforms() {
 
     let (success, stderr) = sign_in_with(&stub.url, &[]);
     assert!(!success);
-    assert!(stderr.contains("SKALD_STATE_DIR"), "{stderr}");
+    assert!(stderr.contains(STATE_DIR), "{stderr}");
 }
 
 /// The requests among `stub`'s that carry a session token.
@@ -305,7 +305,7 @@ fn name_of_a_named_device_does_not_change_and_it_registers_once() {
     let stub = Stub::start(approving);
     let machine = Machine::new();
     let sign_in = |name: &str| {
-        let args = ["sign-in", "--server", &stub.url, "--name", name];
+        let args = [SIGN_IN, SERVER, &stub.url, NAME, name];
         machine.start(&args).finish()
     };
     let first = sign_in("Ada's laptop");
@@ -342,7 +342,7 @@ fn certifying(path: &str, devices: fn() -> String) -> String {
 
 /// Signs `machine` in on `stub` as the account's first device, which holds its certificate then.
 fn sign_in_first(machine: &Machine, stub: &Stub) {
-    let args = ["sign-in", "--server", &stub.url, "--first-device", "yes"];
+    let args = [SIGN_IN, SERVER, &stub.url, FIRST_DEVICE, YES];
     let finished = machine.start(&args).finish();
     assert!(finished.success, "{finished:?}");
     assert!(
@@ -354,7 +354,7 @@ fn sign_in_first(machine: &Machine, stub: &Stub) {
 /// Runs `skald devices` on `machine` with `args` before it; fails unless the run fails and its
 /// stderr holds each of `parts`.
 fn devices_fail_saying(machine: &Machine, args: &[&str], parts: &[&str]) {
-    let args: Vec<&str> = args.iter().copied().chain(["devices"]).collect();
+    let args: Vec<&str> = args.iter().copied().chain([DEVICES]).collect();
     let finished = machine.start(&args).finish();
     assert!(!finished.success, "{finished:?}");
     for part in parts {

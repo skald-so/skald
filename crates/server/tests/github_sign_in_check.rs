@@ -29,8 +29,8 @@ use skald_github_stand_in::{App, GitHub};
 use url::Url;
 
 use common::device_flow::{DEVICE_AUTHORIZATION, INTERVAL, TOKEN, json as json_of, text};
-use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, github_settings};
-use common::{Response, Server, TestDb, get_url, on_free_port, send};
+use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn, with_param};
+use common::{Response, Server, TestDb, get_url, send};
 
 /// The check.
 const CHECK: &str = concat!(
@@ -295,19 +295,9 @@ fn to_github(change: impl Fn(&mut Url) + Send + Sync + 'static) -> Tamper {
 
 /// Sets the query parameter `name` of `url` to `value`, or removes it if `value` is `None`.
 fn set_param(url: &mut Url, name: &str, value: Option<&str>) {
-    let pairs: Vec<(String, String)> = url
-        .query_pairs()
-        .filter(|(param, _)| param != name)
-        .map(|(param, value)| (param.into_owned(), value.into_owned()))
-        .collect();
-    let mut query = url.query_pairs_mut();
-    query.clear();
-    for (param, value) in &pairs {
-        query.append_pair(param, value);
-    }
-    if let Some(value) = value {
-        query.append_pair(name, value);
-    }
+    *url = with_param(url.as_str(), name, value)
+        .parse()
+        .expect("a URL");
 }
 
 /// A local HTTP front for the server: forwards each request and gives the check the answer its
@@ -450,40 +440,16 @@ fn relay(
 /// A server with GitHub sign-in through the stand-in, its codes polled every second, behind a
 /// front: its public address is the front's.
 struct Stage {
-    github: GitHub,
+    stand: SignIn,
     front: Front,
-    _server: Server,
-    _db: TestDb,
 }
 
 impl Stage {
     fn start() -> Self {
         let mut front = Front::bind();
-        let public = front.url.clone();
-        let db = TestDb::create();
-        let (github, server) = on_free_port(Duration::from_secs(30), |port| {
-            let github = GitHub::start(App {
-                client_id: CLIENT_ID.to_owned(),
-                client_secret: CLIENT_SECRET.to_owned(),
-                callback: Some(format!("{public}{CALLBACK}")),
-            });
-            let mut args = github_settings(&public, &github);
-            args.extend_from_slice(&[INTERVAL, "1"]);
-            let server = Server::try_launch(
-                &db,
-                &format!("127.0.0.1:{port}"),
-                &args,
-                &[("SKALD_GITHUB_CLIENT_SECRET", CLIENT_SECRET)],
-            )?;
-            Ok((github, server))
-        });
-        front.serve(server.base());
-        Stage {
-            github,
-            front,
-            _server: server,
-            _db: db,
-        }
+        let stand = SignIn::behind(&front.url, &[INTERVAL, "1"]);
+        front.serve(stand.server.base());
+        Stage { stand, front }
     }
 
     /// The server's address, as the check is given it.
@@ -495,7 +461,7 @@ impl Stage {
     /// `tamper`; checks that it printed no code the server gave.
     fn check(&self, case: &str, client_id: &str, tamper: Tamper) -> Run {
         self.front.set_tamper(tamper);
-        let run = run_check(case, self.address(), client_id, self.github.url());
+        let run = run_check(case, self.address(), client_id, self.stand.github.url());
         assert_no_codes(&run, &self.front.codes());
         run
     }

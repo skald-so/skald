@@ -16,8 +16,22 @@ use super::common::CLIENT;
 pub const STATE_DIR: &str = "SKALD_STATE_DIR";
 /// The setting of the key storage; `file` keeps secrets in the 0600 file, never in the system's.
 pub const KEY_STORAGE: &str = "SKALD_KEY_STORAGE";
-/// The sign-in command.
+/// The sign-in command; its flags of the server's address and of a `name` the user gives.
 pub const SIGN_IN: &str = "sign-in";
+pub const SERVER: &str = "--server";
+pub const NAME: &str = "--name";
+/// The flag of `skald sign-in` that answers whether this is the account's first device, and its
+/// answers.
+pub const FIRST_DEVICE: &str = "--first-device";
+pub const YES: &str = "yes";
+pub const NO: &str = "no";
+/// The sign-out command.
+pub const SIGN_OUT: &str = "sign-out";
+/// The device list command; what it says on the current device's line, and above the devices
+/// without a valid certificate and on a device without one.
+pub const DEVICES: &str = "devices";
+pub const THIS_DEVICE: &str = "this device";
+pub const NOT_LINKED: &str = "not linked";
 /// The setting of the host name the client reads, which names its device unless the user gives a
 /// name; set to an empty value, the host name is empty.
 pub const HOST_NAME: &str = "SKALD_HOST_NAME";
@@ -68,7 +82,7 @@ impl Machine {
 
     /// Starts `skald sign-in --server <server>`.
     pub fn sign_in(&self, server: &str) -> Run {
-        self.start(&[SIGN_IN, "--server", server])
+        self.start(&[SIGN_IN, SERVER, server])
     }
 
     /// Starts `skald` with `args`.

@@ -41,25 +41,19 @@ use std::fs;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::{Browser, Page};
-use cloud::Cloud;
-use machine::{Finished, Machine};
+use cloud::{ASK_MASTER, Cloud};
+use machine::{DEVICES, FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED, THIS_DEVICE};
 use serde_json::{Value, json};
 use skald_crypto::{SigningKey, issue};
 use skald_github_stand_in::User;
 use skald_proto::{AccountId, Cbor, Cert, CertBody, DeviceId, DeviceKind, Unknown};
 
-/// The device list command.
-const DEVICES: &str = "devices";
-/// What the list says above the devices without a valid certificate, and on a device without one.
-const NOT_LINKED: &str = "not linked";
-/// What the current device's line says.
-const THIS_DEVICE: &str = "this device";
 /// What the warning for two bodies says.
 const WARNING: &str = "warning";
 
-/// The requests whose answers the proxy rewrites, as their lines start.
+/// The request for the device list, whose answers the proxy rewrites, as its line starts; it also
+/// rewrites the answers to [`ASK_MASTER`].
 const LIST: &str = "GET /devices";
-const MASTER: &str = "GET /account/master";
 
 /// When the certificates the tests make up were issued: 2001-02-03, at noon UTC. No date of that
 /// month may show.
@@ -92,17 +86,11 @@ fn setup(github_id: u64, login: &str) -> (Cloud, Browser, Ada) {
     let browser = Browser::launch();
     let user = cloud.user(github_id, login);
     let name = "ada-workstation";
-    let machine = Machine::new().with_host_name(name);
-    let finished = sign_in(&cloud, &browser.page(), &machine, &user, "yes");
+    let (machine, finished) = cloud.first_machine(&browser.page(), &user, name);
     assert!(finished.success, "{finished:?}");
 
-    let token = cloud.tokens().last().cloned().expect("a session token");
-    let (status, session) = cloud.session_of(&token);
-    assert_eq!(status, 200, "GET /session: {session}");
-    let account = session["account"]
-        .as_str()
-        .and_then(|id| id.parse().ok())
-        .expect("the session's account");
+    let token = cloud.last_token();
+    let account = cloud.account_of(&token);
     let mut certs: Vec<Cert> = served(&cloud, &token)
         .iter()
         .filter_map(|entry| entry["cert"].as_str().map(cert_of))
@@ -128,14 +116,14 @@ fn setup(github_id: u64, login: &str) -> (Cloud, Browser, Ada) {
 /// Signs `machine` in as `user`, the person approving at `page`, answering `first` whether it is
 /// the account's first device.
 fn sign_in(cloud: &Cloud, page: &Page, machine: &Machine, user: &User, first: &str) -> Finished {
-    cloud.signed_in(page, machine, user, &["--first-device", first])
+    cloud.signed_in(page, machine, user, &[FIRST_DEVICE, first])
 }
 
 /// A second machine of Ada's account, registered and waiting for linking, without a certificate;
 /// its host name is its registered `name`.
 fn second_machine(cloud: &Cloud, browser: &Browser, ada: &Ada, host: &str) -> Machine {
     let machine = Machine::new().with_host_name(host);
-    sign_in(cloud, &browser.page(), &machine, &ada.user, "no");
+    sign_in(cloud, &browser.page(), &machine, &ada.user, NO);
     machine
 }
 
@@ -387,7 +375,7 @@ fn shows_issued(line: &str, issued: u64) -> bool {
 fn lists_the_linked_device_by_its_certificate_and_others_apart_by_id() {
     let (cloud, browser, ada) = setup(4_120_667_001, "ada-lists-standin");
     let second = second_machine(&cloud, &browser, &ada, "ada-second-host");
-    let token = cloud.tokens().last().cloned().expect("a session token");
+    let token = cloud.last_token();
     let others: Vec<DeviceId> = served(&cloud, &token)
         .iter()
         .filter_map(|entry| entry["device"].as_str()?.parse().ok())
@@ -577,7 +565,7 @@ fn master_key_the_server_swaps_changes_nothing() {
     let master = URL_SAFE_NO_PAD.encode(swapped.public_key());
     cloud
         .relay
-        .rewrite(MASTER, move |_| json!({ "master": master }).to_string());
+        .rewrite(ASK_MASTER, move |_| json!({ "master": master }).to_string());
     let device = MadeUp::new();
     let cert = device.cert(&device.body(ada.account, None, "swapped-master"), &swapped);
     add(&cloud, vec![], vec![entry(device.id(), &cert)]);
@@ -598,7 +586,7 @@ fn names_come_only_from_certificates() {
         &ada,
         "ada-registered-name",
     ));
-    let token = cloud.tokens().last().cloned().expect("a session token");
+    let token = cloud.last_token();
     let second: DeviceId = served(&cloud, &token)
         .iter()
         .filter_map(|entry| entry["device"].as_str()?.parse().ok())

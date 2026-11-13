@@ -20,8 +20,8 @@ mod relay;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use browser::{Browser, Page};
-use cloud::{APPROVE, Cloud, DENY, WAIT, shown_grant};
+use browser::{APPROVE, Browser, DENY, Page};
+use cloud::{Cloud, WAIT, shown_grant};
 use machine::{Finished, Machine};
 use skald_github_stand_in::User;
 
@@ -50,7 +50,7 @@ fn sign_in(cloud: &Cloud, page: &Page, machine: &Machine, user: &User) -> (Finis
     cloud.decide(page, user, &grant, APPROVE);
     let finished = run.finish();
     assert!(finished.success, "{finished:?}");
-    let token = cloud.tokens().last().cloned().expect("a session token");
+    let token = cloud.last_token();
     (finished, token)
 }
 

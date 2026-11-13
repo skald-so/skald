@@ -12,9 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use common::browser::Browser;
-use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn, github_settings};
-use common::{Response, SERVER, Server, TestDb, get_url};
-use skald_github_stand_in::{App, Endpoint, Fault, GitHub, User};
+use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn, cookie_set, set_cookie};
+use common::{Response, SERVER, get_url};
+use skald_github_stand_in::{Endpoint, Fault, User};
 
 /// A client secret other than the one the stand-in's app has.
 const WRONG_SECRET: &str = "standin-secret-0000000000000000000000000000wrong";
@@ -23,20 +23,8 @@ const WRONG_SECRET: &str = "standin-secret-0000000000000000000000000000wrong";
 /// address, up to GitHub's redirect back: the start's answer, the `Cookie` header of the browser that
 /// started it, with another cookie of the site before its own, and the callback URL on the server.
 fn to_callback(stand: &SignIn, user: &User) -> (Response, String, String) {
-    let start = stand.server.get(START);
-    assert_eq!(start.status, 302, "GET {START}");
-    let state = start.header("set-cookie").expect("a state cookie");
-    let jar = format!(
-        "theme=dark; {}",
-        state.split(';').next().unwrap_or_default()
-    );
-    let signed_in = get_url(&stand.github.sign_in_url(user.id), &[]);
-    let github = signed_in.header("set-cookie").expect("a stand-in cookie");
-    let github = github.split(';').next().unwrap_or_default();
-    let authorize = start.header("location").expect("a redirect to GitHub");
-    let back = get_url(authorize, &[("cookie", github)]);
-    let callback = back.header("location").expect("GitHub goes back");
-    let callback = callback.replacen(&stand.public, stand.server.base(), 1);
+    let (start, callback) = stand.to_callback(user);
+    let jar = format!("theme=dark; {}", cookie_set(&start, "skald_sign_in"));
     (start, jar, callback)
 }
 
@@ -50,15 +38,6 @@ fn accounts(stand: &SignIn) -> Vec<String> {
 /// The attributes of the `Set-Cookie` value `cookie`, its name and value first.
 fn attributes(cookie: &str) -> Vec<&str> {
     cookie.split(';').map(str::trim).collect()
-}
-
-/// The `Set-Cookie` value of `response` for the cookie `name`.
-fn set_cookie<'a>(response: &'a Response, name: &str) -> &'a str {
-    response
-        .header_values("set-cookie")
-        .into_iter()
-        .find(|cookie| cookie.starts_with(&format!("{name}=")))
-        .unwrap_or_else(|| panic!("no cookie {name}: {:?}", response.headers))
 }
 
 #[test]
@@ -255,22 +234,10 @@ fn the_return_page_request_carries_the_session_cookie() {
         "http://skald.test:{}",
         listener.local_addr().expect("local address").port()
     );
-    let db = TestDb::create();
-    // The stand-in's app takes any callback: this one is the proxy's.
-    let github = GitHub::start(App {
-        client_id: CLIENT_ID.to_owned(),
-        client_secret: CLIENT_SECRET.to_owned(),
-        callback: None,
-    });
-    let server = Server::launch(
-        &db,
-        "127.0.0.1:0",
-        &github_settings(&public, &github),
-        &[("SKALD_GITHUB_CLIENT_SECRET", CLIENT_SECRET)],
-    );
-    let recorder = Recorder::start(listener, server.base());
-    let ada = User::new(1_402_000_006, "ada-landing-standin");
-    github.put_user(ada.clone());
+    let stand = SignIn::behind(&public, &[]);
+    let github = &stand.github;
+    let recorder = Recorder::start(listener, stand.server.base());
+    let ada = stand.user(1_402_000_006, "ada-landing-standin");
 
     // The person authorizes the app on GitHub's page, so the way back starts on another site.
     let page = browser.page();

@@ -22,10 +22,8 @@ use std::path::PathBuf;
 
 use browser::Browser;
 use cloud::Cloud;
-use machine::{Finished, Machine};
+use machine::{FIRST_DEVICE, Machine, SIGN_OUT, YES};
 use relay::Lose;
-
-const SIGN_OUT: &str = "sign-out";
 
 /// Without the server's answer, sign-out fails and keeps the token, so the machine can retry; the
 /// retry, which the server refuses as its session has ended, signs the machine out.
@@ -34,10 +32,9 @@ fn sign_out_without_an_answer_keeps_the_token_and_a_retry_signs_out() {
     let cloud = Cloud::start(120, 1);
     let browser = Browser::launch();
     let ada = cloud.user(4_120_669_001, "ada-lost-sign-out-standin");
-    let machine = Machine::new().with_host_name("ada-workstation");
-    let signed_in = cloud.signed_in(&browser.page(), &machine, &ada, &["--first-device", "yes"]);
+    let (machine, signed_in) = cloud.first_machine(&browser.page(), &ada, "ada-workstation");
     assert!(signed_in.success, "{signed_in:?}");
-    let token = cloud.tokens().pop().expect("a session token");
+    let token = cloud.last_token();
     assert_eq!(machine.files_holding(&token).len(), 1);
 
     cloud.relay.lose_answer("DELETE /session ", Lose::Close);
@@ -70,7 +67,8 @@ fn sign_out_never_signed_in_says_so() {
     assert_eq!(machine.files(), Vec::<PathBuf>::new());
 }
 
-const FIRST_DEVICE: [&str; 2] = ["--first-device", "yes"];
+/// The arguments that sign the account's first device in.
+const FIRST: [&str; 2] = [FIRST_DEVICE, YES];
 
 /// Runs `skald sign-out` on `machine`; fails unless it succeeds.
 fn sign_out(machine: &Machine) {
@@ -94,8 +92,7 @@ fn device_without_an_account_takes_its_next_sign_ins_and_refuses_another() {
     let browser = Browser::launch();
     let ada = cloud.user(4_120_670_001, "ada-no-account-standin");
     let bob = cloud.user(4_120_670_002, "bob-no-account-standin");
-    let machine = Machine::new().with_host_name("ada-workstation");
-    let first: Finished = cloud.signed_in(&browser.page(), &machine, &ada, &FIRST_DEVICE);
+    let (machine, first) = cloud.first_machine(&browser.page(), &ada, "ada-workstation");
     assert!(first.success, "{first:?}");
     let account = device_account(&machine).expect("the device's account");
     sign_out(&machine);
@@ -105,12 +102,12 @@ fn device_without_an_account_takes_its_next_sign_ins_and_refuses_another() {
         .execute("UPDATE device SET account = NULL", [])
         .expect("forget the device's account");
 
-    let again = cloud.signed_in(&browser.page(), &machine, &ada, &FIRST_DEVICE);
+    let again = cloud.signed_in(&browser.page(), &machine, &ada, &FIRST);
     assert!(again.success, "{again:?}");
     assert_eq!(device_account(&machine), Some(account.clone()));
     sign_out(&machine);
 
-    let refused = cloud.signed_in(&browser.page(), &machine, &bob, &FIRST_DEVICE);
+    let refused = cloud.signed_in(&browser.page(), &machine, &bob, &FIRST);
     assert!(!refused.success, "{refused:?}");
     assert!(
         refused

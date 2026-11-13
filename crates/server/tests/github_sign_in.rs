@@ -9,7 +9,9 @@ use std::thread;
 use std::time::Duration;
 
 use common::browser::{Browser, Cookie, Page};
-use common::sign_in::{Account, CALLBACK, CLIENT_ID, CLIENT_SECRET, SESSION, START, SignIn};
+use common::sign_in::{
+    Account, CALLBACK, CLIENT_ID, CLIENT_SECRET, SESSION, START, SignIn, param, with_param,
+};
 use common::spec::{spec, spec_violations};
 use common::{Response, SERVER, Server, TestDb, get_url, stored_forms};
 use skald_github_stand_in::{Endpoint, Fault, User};
@@ -720,32 +722,4 @@ fn session_cookies(stand: &SignIn, page: &Page, user: &User) -> Vec<Cookie> {
     assert!(!set.is_empty(), "the callback sets the session's cookie");
     assert_eq!(stand.account(page).github_login, user.login);
     set
-}
-
-/// The value of the query parameter `name` of `url`.
-fn param(url: &str, name: &str) -> Option<String> {
-    query(url)
-        .into_iter()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value)
-}
-
-/// `url` with its query parameter `name` set to `value`, or removed for `None`.
-fn with_param(url: &str, name: &str, value: Option<&str>) -> String {
-    let base = url.split('?').next().unwrap_or(url);
-    let mut pairs = query(url);
-    pairs.retain(|(key, _)| key != name);
-    if let Some(value) = value {
-        pairs.push((name.to_owned(), value.to_owned()));
-    }
-    let encoded = serde_urlencoded::to_string(&pairs).expect("a query");
-    format!("{base}?{encoded}")
-}
-
-fn query(url: &str) -> Vec<(String, String)> {
-    let query = url
-        .split_once('?')
-        .map(|(_, query)| query)
-        .unwrap_or_default();
-    serde_urlencoded::from_str(query).expect("a query")
 }

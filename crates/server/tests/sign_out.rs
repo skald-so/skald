@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use common::device_flow::{DeviceFlow, json, text};
 use common::devices::{
-    DEVICES, Device, Key, MASTER, Machine, assert_refused, assert_taken, machine, request,
+    DEVICES, Device, Key, MASTER, Machine, assert_refused, assert_taken, machine,
 };
 use common::sign_in::{Account, SESSION};
 
@@ -26,7 +26,7 @@ fn assert_ended(response: &common::Response) {
 
 /// `GET /session` with the request headers `headers`, stating the protocol version.
 fn session(flow: &DeviceFlow, headers: &[(&str, &str)]) -> common::Response {
-    request(flow, "get", SESSION, headers, None, true)
+    flow.request("get", SESSION, headers, None, true)
 }
 
 /// The account a request with `headers` acts as; fails if it acts as none.
@@ -43,7 +43,7 @@ fn assert_refused_everywhere(flow: &DeviceFlow, machine: &Machine, device: &Devi
     let headers = [("authorization", bearer.as_str())];
     let mut answers: Vec<common::Response> = [SESSION, DEVICES, MASTER]
         .into_iter()
-        .map(|path| request(flow, "get", path, &headers, None, true))
+        .map(|path| flow.request("get", path, &headers, None, true))
         .collect();
     let master = Key::generate();
     answers.push(machine.register(&device.registration()));
@@ -154,7 +154,7 @@ fn ending_a_session_without_a_valid_one_is_refused_and_ends_nothing() {
     let unknown = format!("Bearer {}x", machine.token);
 
     for headers in [vec![], vec![("authorization", unknown.as_str())]] {
-        let response = request(&flow, "delete", SESSION, &headers, None, true);
+        let response = flow.request("delete", SESSION, &headers, None, true);
         assert_refused(&response, 401);
     }
     assert_eq!(flow.account_of(&machine.token), machine.account);
@@ -168,8 +168,7 @@ fn ending_a_session_states_the_protocol_version() {
     let machine = machine(&flow, &ada);
     let bearer = format!("Bearer {}", machine.token);
 
-    let response = request(
-        &flow,
+    let response = flow.request(
         "delete",
         SESSION,
         &[("authorization", &bearer)],

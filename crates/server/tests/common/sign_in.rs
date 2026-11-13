@@ -7,7 +7,7 @@ use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
 
 use super::browser::{Browser, Page, Visit};
-use super::{Server, TestDb, on_free_port};
+use super::{Response, Server, TestDb, get_url, on_free_port};
 
 /// The fake OAuth App's client ID and secret.
 pub const CLIENT_ID: &str = "Ov23li0standin0client";
@@ -97,6 +97,12 @@ impl SignIn {
         )
     }
 
+    /// A server whose public address is `public`, such as that of a front before it, with the
+    /// extra arguments `args`.
+    pub fn behind(public: &str, args: &[&str]) -> Self {
+        Self::new(|_| public.to_owned(), args, CLIENT_SECRET)
+    }
+
     /// A server whose public address `public` gives for the port the server listens on.
     fn new(public: impl Fn(u16) -> String, args: &[&str], secret: &str) -> Self {
         let db = TestDb::create();
@@ -141,6 +147,20 @@ impl SignIn {
             }
             None => format!("{}{START}", self.public),
         }
+    }
+
+    /// Runs a sign-in of `user` by plain HTTP, straight to the server whatever its public address,
+    /// up to GitHub's redirect back: the start's answer and the callback URL on the server.
+    pub fn to_callback(&self, user: &User) -> (Response, String) {
+        let start = self.server.get(START);
+        assert_eq!(start.status, 302, "GET {START}");
+        let signed_in = get_url(&self.github.sign_in_url(user.id), &[]);
+        let github = cookie_set(&signed_in, "stand_in_user");
+        let authorize = start.header("location").expect("a redirect to GitHub");
+        let back = get_url(authorize, &[("cookie", &github)]);
+        let callback = back.header("location").expect("GitHub goes back");
+        let callback = callback.replacen(&self.public, self.server.base(), 1);
+        (start, callback)
     }
 
     /// Signs `page`'s browser in to GitHub as `user`, then to the server with GitHub.
@@ -210,6 +230,49 @@ impl SignIn {
         rows.retain(|row| row.contains(&user.login) || holds_number(row, &id));
         rows
     }
+}
+
+/// The `Set-Cookie` value of `response` for the cookie `name`.
+pub fn set_cookie<'a>(response: &'a Response, name: &str) -> &'a str {
+    response
+        .header_values("set-cookie")
+        .into_iter()
+        .find(|cookie| cookie.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("no cookie {name}: {:?}", response.headers))
+}
+
+/// The `name=value` of the cookie `name` that `response` sets.
+pub fn cookie_set(response: &Response, name: &str) -> String {
+    let cookie = set_cookie(response, name);
+    cookie.split(';').next().unwrap_or_default().to_owned()
+}
+
+/// The value of the query parameter `name` of `url`.
+pub fn param(url: &str, name: &str) -> Option<String> {
+    query(url)
+        .into_iter()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value)
+}
+
+/// `url` with its query parameter `name` set to `value`, or removed for `None`.
+pub fn with_param(url: &str, name: &str, value: Option<&str>) -> String {
+    let base = url.split('?').next().unwrap_or(url);
+    let mut pairs = query(url);
+    pairs.retain(|(key, _)| key != name);
+    if let Some(value) = value {
+        pairs.push((name.to_owned(), value.to_owned()));
+    }
+    let encoded = serde_urlencoded::to_string(&pairs).expect("a query");
+    format!("{base}?{encoded}")
+}
+
+fn query(url: &str) -> Vec<(String, String)> {
+    let query = url
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    serde_urlencoded::from_str(query).expect("a query")
 }
 
 /// Whether `text` holds the decimal `number`, not as a part of a longer one.

@@ -4,7 +4,7 @@
 mod common;
 
 use common::device_flow::{DeviceFlow, json};
-use common::devices::{assert_refused, machine, request};
+use common::devices::{assert_refused, machine};
 use common::sign_in::{Account, SESSION};
 
 #[test]
@@ -22,18 +22,11 @@ fn web_session_neither_ends_nor_is_ended() {
         vec![("cookie", machine.cookie.as_str())],
         vec![("authorization", bearer.as_str())],
     ] {
-        let response = request(&flow, "delete", SESSION, &headers, None, true);
+        let response = flow.request("delete", SESSION, &headers, None, true);
         assert_refused(&response, 401);
     }
 
-    let web = request(
-        &flow,
-        "get",
-        SESSION,
-        &[("cookie", &machine.cookie)],
-        None,
-        true,
-    );
+    let web = flow.request("get", SESSION, &[("cookie", &machine.cookie)], None, true);
     assert_eq!(web.status, 200);
     assert_eq!(Account::of(&json(&web)), machine.account);
     assert_eq!(flow.account_of(&machine.token), machine.account);

@@ -22,16 +22,6 @@ const WRONG_CODE_LIMIT: usize = 10;
 /// A user code in the codes' form that the server never issued in these tests.
 const WRONG_CODE: &str = "ZZZZ-ZZZZ";
 
-/// `POST <path>` of `fields` to `flow`'s server, stating the protocol version, checked against the
-/// spec.
-fn post_stated(flow: &DeviceFlow, path: &str, fields: &[(&str, &str)]) -> Response {
-    let version = skald_proto::PROTOCOL_VERSION.to_string();
-    let url = format!("{}{path}", flow.stand.server.base());
-    let response = post_form(&url, &[(skald_proto::VERSION_HEADER, &version)], fields);
-    flow.conforms("post", path, &response);
-    response
-}
-
 /// Checks that `response` is an OAuth error `error`, not to be cached.
 fn assert_oauth_error(response: &Response, error: &str) {
     assert_eq!(response.status, 400, "{}", text(response));
@@ -61,7 +51,7 @@ fn malformed_machine_requests_are_refused() {
             "invalid_request",
         ),
     ] {
-        let response = post_stated(&flow, DEVICE_AUTHORIZATION, &fields);
+        let response = flow.post(DEVICE_AUTHORIZATION, &fields);
         assert_oauth_error(&response, error);
     }
 
@@ -105,7 +95,7 @@ fn malformed_machine_requests_are_refused() {
             "invalid_request",
         ),
     ] {
-        let response = post_stated(&flow, TOKEN, &fields);
+        let response = flow.post(TOKEN, &fields);
         assert_oauth_error(&response, error);
     }
     // None of them counted as a poll.
@@ -280,9 +270,8 @@ fn database_failures_answer_500() {
     let origin = flow.stand.public.clone();
 
     flow.stand.db.set_reachable(false);
-    let authorized = post_stated(&flow, DEVICE_AUTHORIZATION, &[("client_id", CLIENT_ID)]);
-    let polled = post_stated(
-        &flow,
+    let authorized = flow.post(DEVICE_AUTHORIZATION, &[("client_id", CLIENT_ID)]);
+    let polled = flow.post(
         TOKEN,
         &[
             ("grant_type", GRANT_TYPE),
