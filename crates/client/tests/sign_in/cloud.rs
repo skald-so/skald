@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
-use skald_proto::{AccountId, Cbor, Cert, DeviceId};
+use skald_proto::{AccountId, Cbor, Cert, DeviceId, Roster, SpaceId};
 use skald_server::{CALLBACK_PATH, ClientSecret, GitHubApp, Settings, SignInSettings};
 
 use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_LINK, SUBMIT, Visit};
@@ -88,13 +88,14 @@ impl Cloud {
             let github_url = stand_in.url().parse().expect("the stand-in's address");
             let sign_in = SignInSettings {
                 public_url: public.parse().expect("a public address"),
-                github: GitHubApp {
+                github: Some(GitHubApp {
                     client_id: CLIENT_ID.to_owned(),
                     client_secret: ClientSecret::new(CLIENT_SECRET.to_owned())
                         .expect("a client secret"),
                     api_url: github_url,
                     url: stand_in.url().parse().expect("the stand-in's address"),
-                },
+                }),
+                google: None,
                 state_lifetime: Duration::from_secs(600),
                 device_code_lifetime: Duration::from_secs(lifetime),
                 device_poll_interval: Duration::from_secs(interval),
@@ -223,6 +224,25 @@ impl Cloud {
                     Cert::from_cbor(&unb64(cert))
                         .unwrap_or_else(|err| panic!("a certificate: {err}"))
                 }),
+            })
+            .collect()
+    }
+
+    /// The revisions of `space` the server holds, for the session `token`, straight from the
+    /// server: each one's bytes as stored, and the revision they decode to.
+    pub fn revisions(&self, token: &str, space: SpaceId) -> Vec<(Vec<u8>, Roster)> {
+        let path = format!("/spaces/{space}/revisions");
+        let (status, body) = self.get_as(&path, token);
+        assert_eq!(status, 200, "GET {path}: {body}");
+        body["revisions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("GET {path}: {body}"))
+            .iter()
+            .map(|revision| {
+                let bytes = unb64(revision.as_str().expect("a revision in base64url"));
+                let roster = Roster::from_cbor(&bytes)
+                    .unwrap_or_else(|err| panic!("a revision that does not decode: {err}"));
+                (bytes, roster)
             })
             .collect()
     }

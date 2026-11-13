@@ -57,16 +57,59 @@ pub fn run(
     };
 
     let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
-    let body = connection.get_as("/devices", &token).map_err(text)?;
+    let (ids, certs) = fetch(&mut connection, "/devices", &token)?;
+
+    let checked = check(&master, &ids, &certs);
+    print!("{}", listing(&checked, this));
+    for warning in two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked)) {
+        eprintln!("skald: warning: {warning}");
+    }
+    Ok(())
+}
+
+/// The warning of each device in `checked` with certificates of two bodies
+/// (`docs/protocol/membership.md`, "Device certificate").
+pub fn two_bodies_warnings<'a>(checked: &'a Checked) -> impl Iterator<Item = String> + 'a {
+    checked.two_bodies.iter().map(|id| {
+        format!(
+            "the key of device {id} signed two different certificates of it, so neither counts; \
+             the device or its key may be compromised"
+        )
+    })
+}
+
+/// The warning of each name that two or more of the `linked` certificates, those of one account,
+/// hold ("Device checks").
+pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
+    shared_names(linked)
+        .into_iter()
+        .map(|(name, ids)| {
+            let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+            format!(
+                "linked devices {} have the same name \"{}\"; tell them apart by ID",
+                ids.join(", "),
+                printable(&name)
+            )
+        })
+        .collect()
+}
+
+/// `GET <path>` as the session `token`: a device list, as the IDs of its devices and the
+/// certificates it gives; a certificate that does not decode counts as none.
+pub fn fetch(
+    connection: &mut Connection,
+    path: &str,
+    token: &str,
+) -> Result<(Vec<DeviceId>, Vec<Cert>), String> {
+    let body = connection.get_as(path, token).map_err(text)?;
     let devices: Devices = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
-    let ids: Vec<DeviceId> = devices
+    let ids = devices
         .devices
         .iter()
         .filter_map(|entry| entry.device.parse().ok())
         .collect();
-    // A certificate that does not decode counts as none.
-    let certs: Vec<Cert> = devices
+    let certs = devices
         .devices
         .iter()
         .filter_map(|entry| {
@@ -74,24 +117,7 @@ pub fn run(
             Cert::from_cbor(&bytes).ok()
         })
         .collect();
-
-    let checked = check(&master, &ids, &certs);
-    print!("{}", listing(&checked, this));
-    for id in &checked.two_bodies {
-        eprintln!(
-            "skald: warning: the key of device {id} signed two different certificates of it, so \
-             neither counts; the device or its key may be compromised"
-        );
-    }
-    for (name, ids) in shared_names(&checked.linked) {
-        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
-        eprintln!(
-            "skald: warning: linked devices {} have the same name \"{}\"; tell them apart by ID",
-            ids.join(", "),
-            printable(&name)
-        );
-    }
-    Ok(())
+    Ok((ids, certs))
 }
 
 /// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the
@@ -142,9 +168,9 @@ pub fn text(err: impl std::fmt::Display) -> String {
 
 /// The devices of a list, checked.
 #[derive(Debug, PartialEq)]
-struct Checked<'c> {
+pub struct Checked<'c> {
     /// The valid certificates, one per device, in the list's order.
-    linked: Vec<&'c Cert>,
+    pub linked: Vec<&'c Cert>,
     /// The devices without a valid certificate, in the list's order.
     apart: Vec<DeviceId>,
     /// The devices, listed or issuers in a chain, with certificates of two bodies.
@@ -153,7 +179,7 @@ struct Checked<'c> {
 
 /// Checks each of `devices` once against the pinned `master` key, with `certs`, all the
 /// certificates the server gave.
-fn check<'c>(master: &[u8; 32], devices: &[DeviceId], certs: &'c [Cert]) -> Checked<'c> {
+pub fn check<'c>(master: &[u8; 32], devices: &[DeviceId], certs: &'c [Cert]) -> Checked<'c> {
     let mut checked = Checked {
         linked: Vec::new(),
         apart: Vec::new(),
@@ -209,7 +235,7 @@ fn listing(checked: &Checked, this: DeviceId) -> String {
 }
 
 /// The line of a device with its valid certificate `cert`, marked if it is `this` device.
-fn linked_line(cert: &Cert, this: DeviceId) -> String {
+pub fn linked_line(cert: &Cert, this: DeviceId) -> String {
     let body = cert.body();
     let kind = match body.kind {
         DeviceKind::Client => "client",

@@ -145,6 +145,32 @@ fn a_jwks_uri_neither_https_nor_http_on_loopback_is_refused() {
 }
 
 #[test]
+fn an_authorization_or_token_endpoint_neither_https_nor_http_on_loopback_is_refused() {
+    let provider = Provider::start(&[Key::rsa()]);
+    let issuer = provider.issuer().to_owned();
+    for (field, path) in [
+        ("authorization_endpoint", "authorize"),
+        ("token_endpoint", "token"),
+    ] {
+        // `localhost` reaches the stand-in, but a name is not known to be loopback.
+        let localhost = format!("{}/{path}", issuer.replacen("127.0.0.1", "localhost", 1));
+        for endpoint in [
+            localhost,
+            format!("http://accounts.skald.invalid/{path}"),
+            format!("ftp://accounts.skald.invalid/{path}"),
+        ] {
+            let mut metadata = provider.metadata();
+            metadata[field] = json!(endpoint);
+            provider.set_metadata(&metadata);
+            refused_provider(&issuer, &format!("{field} {endpoint}"));
+        }
+    }
+    // The same metadata with the stand-in's own endpoints is taken.
+    provider.set_metadata(&provider.metadata());
+    discover(&provider, LONG);
+}
+
+#[test]
 fn a_redirect_from_the_metadata_or_the_keys_is_not_followed() {
     for status in [301, 302, 303, 307, 308] {
         // Each redirect leads to a second stand-in whose answer would pass every check.

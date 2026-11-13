@@ -1,6 +1,7 @@
 //! The client's local state: an SQLite database in the state directory. It holds no secret: those go
 //! to [`crate::secrets`].
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -55,6 +56,15 @@ const MIGRATIONS: &[&str] = &[
         anchor BLOB NOT NULL,
         accepted BLOB NOT NULL,
         pending BLOB
+    ) STRICT",
+    // The hash of each revision the device accepted of a space, by its number, but that of the
+    // space's last accepted revision, which the space holds: it is recorded once the device
+    // accepts the next one. A state older than this table accepted only revision 1 of each space.
+    "CREATE TABLE accepted_revision (
+        space TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        hash BLOB NOT NULL CHECK (length(hash) = 32),
+        PRIMARY KEY (space, revision)
     ) STRICT",
 ];
 
@@ -137,6 +147,15 @@ pub struct Space {
     pub accepted: Vec<u8>,
     /// The revision the device signed that the server has not taken yet, in CBOR.
     pub pending: Option<Vec<u8>>,
+}
+
+/// What the state holds of the revisions the device accepted of a space.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Accepted {
+    /// The last accepted revision, in CBOR.
+    pub last: Vec<u8>,
+    /// The hash of each earlier accepted revision, by number.
+    pub hashes: BTreeMap<u64, [u8; 32]>,
 }
 
 /// Why the state cannot be used.
@@ -368,11 +387,83 @@ impl State {
 
     /// Forgets the space `id`.
     pub fn remove_space(&self, id: SpaceId) -> Result<(), Error> {
-        self.db.execute(
-            "DELETE FROM space WHERE space = ?1",
-            params![id.to_string()],
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        tx.execute(
+            "DELETE FROM accepted_revision WHERE space = ?1",
+            params![id],
         )?;
+        tx.execute("DELETE FROM space WHERE space = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// What the state holds of the space `id`, if it holds it: its last accepted revision and the
+    /// hashes of the earlier ones, read in one transaction, so another run's accepting is in both
+    /// or in neither.
+    pub fn accepted(&self, id: SpaceId) -> Result<Option<Accepted>, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        let Some(last) = tx
+            .query_row(
+                "SELECT accepted FROM space WHERE space = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let mut query =
+            tx.prepare("SELECT revision, hash FROM accepted_revision WHERE space = ?1")?;
+        let rows = query.query_map(params![id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let hashes = rows
+            .map(|row| {
+                let (revision, hash) = row?;
+                let malformed = || Error::Malformed(format!("the hash of revision {revision}"));
+                let revision = u64::try_from(revision).map_err(|_| malformed())?;
+                let hash = hash.try_into().map_err(|_| malformed())?;
+                Ok((revision, hash))
+            })
+            .collect::<Result<_, Error>>()?;
+        drop(query);
+        tx.commit()?;
+        Ok(Some(Accepted { last, hashes }))
+    }
+
+    /// Records that the device accepted revisions of the space `id` after `from`, its last accepted
+    /// revision until now, in CBOR: `hashes`, the number and hash of `from` and of each revision but
+    /// the last, and `last`, in CBOR, its new last accepted revision. Records nothing and gives
+    /// `false` if `from` is no longer the space's last accepted revision.
+    pub fn accept(
+        &self,
+        id: SpaceId,
+        from: &[u8],
+        hashes: &[(u64, [u8; 32])],
+        last: &[u8],
+    ) -> Result<bool, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        let changed = tx.execute(
+            "UPDATE space SET accepted = ?3 WHERE space = ?1 AND accepted = ?2",
+            params![id, from, last],
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        for (revision, hash) in hashes {
+            let revision = i64::try_from(*revision)
+                .map_err(|_| Error::Malformed(format!("revision {revision}")))?;
+            tx.execute(
+                "INSERT INTO accepted_revision (space, revision, hash) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING",
+                params![id, revision, hash.as_slice()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 }
 
@@ -539,6 +630,133 @@ mod tests {
             .unwrap();
         let error = state.spaces().expect_err("malformed");
         assert!(matches!(error, Error::Malformed(_)), "{error:?}");
+    }
+
+    #[test]
+    fn accepted_revisions_are_recorded_only_after_the_last_accepted_one() {
+        let dir = TestDir::new("state-accepted");
+        let state = State::open(&dir).unwrap();
+        let (acme, globex) = (SpaceId::generate(), SpaceId::generate());
+        assert_eq!(state.accepted(acme).unwrap(), None);
+        state.add_space(acme, "acme", &[1]).unwrap();
+        state.add_space(globex, "globex", &[7]).unwrap();
+        let accepted = |state: &State, id, last: &[u8], hashes: &[(u64, [u8; 32])]| {
+            assert_eq!(
+                state.accepted(id).unwrap(),
+                Some(Accepted {
+                    last: last.to_vec(),
+                    hashes: hashes.iter().copied().collect(),
+                })
+            );
+        };
+        accepted(&state, acme, &[1], &[]);
+
+        let hashes = [(1, [1; 32]), (2, [2; 32])];
+        assert!(state.accept(acme, &[1], &hashes, &[3]).unwrap());
+        // Another run accepted from revision 1 meanwhile: nothing is recorded, not even a hash
+        // the state has none of yet.
+        assert!(
+            !state
+                .accept(acme, &[1], &[(1, [1; 32]), (3, [8; 32])], &[4])
+                .unwrap()
+        );
+        accepted(&state, acme, &[3], &hashes);
+
+        let state = State::open(&dir).unwrap();
+        accepted(&state, acme, &[3], &hashes);
+        assert_eq!(state.spaces().unwrap()[0].anchor, vec![1]);
+        accepted(&state, globex, &[7], &[]);
+        // A hash already recorded stays.
+        assert!(
+            state
+                .accept(acme, &[3], &[(2, [9; 32]), (3, [3; 32])], &[4])
+                .unwrap()
+        );
+        accepted(
+            &state,
+            acme,
+            &[4],
+            &[(1, [1; 32]), (2, [2; 32]), (3, [3; 32])],
+        );
+
+        state.remove_space(acme).unwrap();
+        assert_eq!(state.accepted(acme).unwrap(), None);
+        state.add_space(acme, "acme", &[1]).unwrap();
+        accepted(&state, acme, &[1], &[]);
+        state
+            .db
+            .execute(
+                "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 1, zeroblob(32))",
+                [],
+            )
+            .unwrap();
+        for update in [
+            "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 2, zeroblob(31))",
+            "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 0, zeroblob(32))",
+        ] {
+            assert!(state.db.execute(update, []).is_err(), "{update}");
+        }
+    }
+
+    /// Another run accepts revisions of a space while `accepted` reads it, between its reads of the
+    /// last accepted revision and of the hashes: the read holds the revision and the hashes from
+    /// before, or both from after.
+    #[test]
+    fn accepted_revision_and_hashes_are_read_at_once() {
+        use rusqlite::trace::{TraceEvent, TraceEventCodes};
+        use std::cell::RefCell;
+
+        thread_local! {
+            /// The state directory and the space of the other run, until it runs.
+            static OTHER_RUN: RefCell<Option<(PathBuf, SpaceId)>> = const { RefCell::new(None) };
+            /// What the other run's accepting gave.
+            static RAN: RefCell<Option<Result<bool, String>>> = const { RefCell::new(None) };
+        }
+        fn other_run(event: TraceEvent<'_>) {
+            let TraceEvent::Stmt(_, sql) = event else {
+                return;
+            };
+            if !sql.contains("SELECT revision, hash") {
+                return;
+            }
+            let Some((dir, id)) = OTHER_RUN.with(|run| run.borrow_mut().take()) else {
+                return;
+            };
+            let accepted = State::open(&dir)
+                .and_then(|state| {
+                    state.db.busy_timeout(std::time::Duration::ZERO)?;
+                    state.accept(id, &[1], &[(1, [1; 32])], &[2])
+                })
+                .map_err(|err| err.to_string());
+            RAN.with(|ran| *ran.borrow_mut() = Some(accepted));
+        }
+
+        let dir = TestDir::new("state-accepted-at-once");
+        let state = State::open(&dir).unwrap();
+        let acme = SpaceId::generate();
+        state.add_space(acme, "acme", &[1]).unwrap();
+        OTHER_RUN.with(|run| *run.borrow_mut() = Some((dir.to_path_buf(), acme)));
+        state
+            .db
+            .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(other_run));
+
+        let read = state.accepted(acme).unwrap().expect("acme");
+
+        state.db.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        let ran = RAN.with(|ran| ran.borrow().clone());
+        assert!(ran.is_some(), "no other run");
+        let before = Accepted {
+            last: vec![1],
+            hashes: BTreeMap::new(),
+        };
+        let after = Accepted {
+            last: vec![2],
+            hashes: [(1, [1; 32])].into_iter().collect(),
+        };
+        assert!(
+            read == before || read == after,
+            "{read:?}, the other run: {ran:?}"
+        );
     }
 
     #[test]

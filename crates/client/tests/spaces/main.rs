@@ -150,22 +150,7 @@ fn server_spaces(cloud: &Cloud, token: &str) -> Vec<(SpaceId, String)> {
 /// The revisions of `space` the server holds, for the session `token`: each one's bytes as stored,
 /// and the revision they decode to.
 fn server_revisions(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<(Vec<u8>, Roster)> {
-    let path = format!("/spaces/{space}/revisions");
-    let (status, body) = cloud.get_as(&path, token);
-    assert_eq!(status, 200, "GET {path}: {body}");
-    body["revisions"]
-        .as_array()
-        .unwrap_or_else(|| panic!("GET {path}: {body}"))
-        .iter()
-        .map(|revision| {
-            let bytes = URL_SAFE_NO_PAD
-                .decode(revision.as_str().expect("a revision in base64url"))
-                .expect("a revision in base64url without padding");
-            let roster = Roster::from_cbor(&bytes)
-                .unwrap_or_else(|err| panic!("a revision that does not decode: {err}"));
-            (bytes, roster)
-        })
-        .collect()
+    cloud.revisions(token, space)
 }
 
 /// The handle of the account of the session `token`: its username, as the server gives it.
