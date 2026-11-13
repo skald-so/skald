@@ -5,8 +5,9 @@ name: Release
 # with its installer from the release's files, then one job attests every file of the release and
 # creates the release with all of them. Another job builds the skald-server image at the tag's
 # commit, pushes it to GHCR under its version, signs its digest with cosign and attests it.
-# Any other run is the dry run: it builds and checks everything and publishes nothing; a PR that
-# changes the release config or this workflow starts it, and so does a manual run.
+# Any other run is the dry run: it builds and checks everything and publishes nothing, and it runs the
+# tests of `skald update` on macOS and Windows; a PR that changes the release config, this workflow
+# or `skald update` starts it, and so does a manual run.
 # Its tests: docs/dev/infrastructure.md, "PR checks", "Tooling".
 on:
   push:
@@ -19,6 +20,9 @@ on:
       # dist's settings in Cargo.toml: [profile.dist], and the package it releases.
       - Cargo.toml
       - crates/client/Cargo.toml
+      # skald update, which installs the release's archives, and its tests.
+      - crates/client/src/update.rs
+      - crates/client/tests/update/**
       - installers/**
       - script/installers-test
       - script/lib/serve.mjs
@@ -177,6 +181,30 @@ jobs:
           prerelease=()
           [[ $TAG != *-* ]] || prerelease=(--prerelease)
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}" release/*
+
+  # The dry run's tests of skald update, which replace a copy of skald with the archive of a stand-in
+  # release over HTTPS; script/test runs them on Linux. They make certificates with openssl and
+  # archives with tar, on Windows System32's.
+  update:
+    name: Test skald update on ${{ matrix.runner }}
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Test skald update
+        run: cargo test -p skald-client --test update --locked
 
   # The dry run's build of the release image, as job publish-image builds it.
   image:

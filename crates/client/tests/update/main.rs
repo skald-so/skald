@@ -335,6 +335,17 @@ fn newer_beta_changes_nothing() {
 }
 
 #[test]
+fn no_stable_release_changes_nothing() {
+    let machine = Machine::new("no-stable");
+    // The API answers 404 for the latest release: every release is a beta.
+    let releases = machine.serve(vec![machine.release(&format!("v{}-beta.1", newer(1)))]);
+
+    let run = machine.update(&releases);
+
+    assert_current(&machine, &releases, &run);
+}
+
+#[test]
 fn mismatched_checksum_leaves_the_old_binary() {
     let machine = Machine::new("mismatched");
     let name = archive(TARGET);

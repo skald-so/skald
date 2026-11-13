@@ -49,7 +49,7 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
   - The release-plz workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
   - The App: installed only on `skald-so/skald`; contents and pull requests read-write, metadata read; webhook off; it bypasses no ruleset but the creation of `v*` tags ("Branches").
 - **Path filters:** CI runs only the parts of `script/test` that a PR changes, chosen by `script/changed-parts`; locally `script/test` runs all of them.
-- **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald` and installs it on every runner, and builds the `skald-server` image, as for a release, and publishes nothing. A PR that changes the workflow, dist's settings (`dist-workspace.toml`, `Cargo.toml`, `crates/client/Cargo.toml`), `installers/` or the scripts the workflow runs starts it, and so does a manual run (`workflow_dispatch`).
+- **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald` and installs it on every runner, and builds the `skald-server` image, as for a release, and publishes nothing. It also runs the tests of `skald update` on macOS and Windows; `script/test` runs them on Linux. A PR that changes the workflow, dist's settings (`dist-workspace.toml`, `Cargo.toml`, `crates/client/Cargo.toml`), `installers/`, the scripts the workflow runs or `skald update` and its tests starts it, and so does a manual run (`workflow_dispatch`).
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
@@ -87,6 +87,9 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
   - A PR sets a beta's version in `[workspace.package]` of `Cargo.toml`; the Release PR keeps it, after the beta too, until a PR sets the next beta's or the release's.
   - As beta tags do not count, the CHANGELOG section of a beta or a release lists the PRs of the betas before it too.
 - **Updates for users:** `skald update` and plugin auto-update from the marketplace.
+  - `skald update` looks up the latest stable release through GitHub's API. If it is newer than the running `skald`, it downloads the release's archive for the machine's OS and architecture, checks it against its `.sha256` and replaces the running binary in place. It trusts the checksum because releases are immutable ("Trust in builds").
+  - It never installs a beta or an older version. On a failed download or a mismatched or missing checksum it exits with an error, and the old binary stays.
+  - A `skald` with a file `installed-by-npm` beside it is from npm: `skald update` leaves it to npm.
 
 ## Channels
 | What | Where |
