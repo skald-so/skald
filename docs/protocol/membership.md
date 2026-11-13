@@ -431,7 +431,7 @@ A member device:
 - Every device that can be a member keeps unused KeyPackages on the server: when fewer than 10 remain, it uploads enough to have 20. Their `lifetime` is at most 60 days; a device replaces a KeyPackage 7 days before it expires.
 - Each device also keeps one last-resort KeyPackage, which the server hands out only when no other remains and does not delete. The device replaces it once it was used, and as the others.
 - The server hands out each other KeyPackage once, then deletes it, and deletes expired ones. It hands them only to devices of accounts that share a space with the KeyPackage's device.
-- A device MUST NOT add a KeyPackage unless its MLS signature verifies, its `lifetime` holds, its ciphersuite is `0x0001`, and its `identity` and `signature_key` match an admitted device's valid certificate.
+- A device MUST NOT add a KeyPackage unless its MLS signature verifies, its `lifetime` holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` match an admitted device's valid certificate.
 
 ### Commit ordering
 - The server keeps a channel's current epoch from the Commits it accepts. It accepts a Commit only if:

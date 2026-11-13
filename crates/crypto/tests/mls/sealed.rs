@@ -8,7 +8,7 @@ use skald_crypto::{MlsDevice, SigningKey, StateKey};
 use skald_proto::ChannelId;
 
 use crate::fixtures::{
-    after, holds, items, load, new_state, signing_key, state_key, state_of, state_with_groups,
+    NOW, after, holds, items, load, new_state, signing_key, state_key, state_of, state_with_groups,
 };
 
 /// Whether device `seed`, with its own keys, refuses `state`.
@@ -23,7 +23,7 @@ fn a_state_loads_with_the_keys_restored_from_key_storage() {
     let state_key = StateKey::generate();
     let channel = ChannelId::generate();
     let mut device = MlsDevice::new(&signing, &state_key);
-    device.create_group(channel).expect("a new group");
+    device.create_group(channel, NOW).expect("a new group");
     let key = *device.history_key(channel, 0).expect("epoch 0").to_bytes();
     let state = device.seal();
 
@@ -89,7 +89,7 @@ fn each_group_is_sealed_as_an_item_of_its_own() {
     let (first, second) = (ChannelId::generate(), ChannelId::generate());
     let one = state_with_groups(12, &[first]);
     let two = after(12, &one, |device| {
-        device.create_group(second).expect("a second group");
+        device.create_group(second, NOW).expect("a second group");
     });
     let names =
         |state| -> BTreeSet<Vec<u8>> { items(state).into_iter().map(|(name, _)| name).collect() };
@@ -166,8 +166,10 @@ fn a_state_made_by_another_device_is_refused() {
     let shared = state_key(17);
     let seal = |seed: u8| {
         let mut device = MlsDevice::new(&signing_key(seed), &shared);
-        device.key_package().expect("a KeyPackage");
-        device.create_group(ChannelId::generate()).expect("a group");
+        device.key_package(NOW).expect("a KeyPackage");
+        device
+            .create_group(ChannelId::generate(), NOW)
+            .expect("a group");
         items(&device.seal())
     };
     let (theirs, ours) = (seal(18), seal(19));
@@ -193,7 +195,7 @@ fn one_item_in_place_of_another_is_refused() {
         20,
         &state_with_groups(20, &[ChannelId::generate(), ChannelId::generate()]),
         |device| {
-            device.key_package().expect("a second KeyPackage");
+            device.key_package(NOW).expect("a second KeyPackage");
         },
     );
     let state = items(&state);
