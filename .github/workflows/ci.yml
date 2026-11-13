@@ -118,6 +118,16 @@ jobs:
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
           cargo test -p skald-client --locked --no-fail-fast
+      # The server's side of a failure at a test's database.
+      - name: Show PostgreSQL's log
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -File -Path "$env:PGDATA\log" | Sort-Object LastWriteTime |
+            Get-Content | Where-Object { $_ -notmatch 'terminating connection due to administrator command' } |
+            Select-Object -Last 400
+          "processors: $([Environment]::ProcessorCount)"
+          & "$env:PGBIN\psql" --host 127.0.0.1 --dbname postgres --command 'SELECT version()' --command 'SHOW max_connections' --command 'SHOW logging_collector' --command 'SHOW log_directory'
       # The tests remove the directories they make in the temporary directory, also when one fails:
       # any left, listed with what it holds, fails the job.
       - name: Check that the tests left no directories

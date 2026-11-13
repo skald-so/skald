@@ -2,11 +2,11 @@
 //! database, or against a stub that gives canned answers.
 
 use std::env;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -68,10 +68,12 @@ fn output(output: process::Output) -> Output {
 }
 
 /// A `skald-server` on a new PostgreSQL database, serving on a free local port in this process.
-/// The server and the database are removed on drop.
+/// The server and the database are removed on drop, the database also when the server fails to
+/// start.
 pub struct Server {
     pub url: String,
     runtime: Option<Runtime>,
+    /// Dropped once the server has stopped.
     db: TestDb,
 }
 
@@ -94,18 +96,18 @@ impl Server {
         let runtime = Runtime::new().expect("start a tokio runtime");
         let db = TestDb::create(&runtime);
         let url = db.url();
-        let (listener, pool) = runtime.block_on(async {
-            let pool = skald_server::connect(&url)
-                .await
-                .expect("connect to the test database");
+        let pool = retried_on_reset("connect to the test database", || {
+            runtime.block_on(skald_server::connect(&url))
+        })
+        .expect("connect to the test database");
+        let listener = runtime.block_on(async {
             skald_server::MIGRATOR
                 .run(&pool)
                 .await
                 .expect("apply migrations");
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
-                .expect("bind a local port");
-            (listener, pool)
+                .expect("bind a local port")
         });
         let addr = listener.local_addr().expect("the server's address");
         let settings = settings(addr);
@@ -164,48 +166,107 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        // Stops the server and closes its connections, so the database can be dropped.
+        // Stops the server and closes its connections; then the database goes, as `db` drops.
         let runtime = self.runtime.take().expect("the runtime runs until drop");
         runtime.shutdown_background();
-        let runtime = Runtime::new().expect("start a tokio runtime");
-        let _ = self.db.admin(
-            &runtime,
-            &[format!(
-                "DROP DATABASE IF EXISTS {} WITH (FORCE)",
-                self.db.name
-            )],
-        );
     }
 }
 
-/// A new empty database on the PostgreSQL server at `SKALD_TEST_DATABASE_URL`.
-///
-/// `SKALD_TEST_DATABASE_URL` is a connection URL without a database name, e.g.
-/// `postgres://postgres:password@127.0.0.1:5432`; `script/test` sets it.
+/// How many times a step of a test database's setup is tried while PostgreSQL resets its
+/// connection, and the wait before the first retry, doubled before each next one: 1.5 s in all.
+pub const SETUP_ATTEMPTS: u32 = 5;
+const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
+
+/// The result of `step`, `what`, tried again while PostgreSQL resets its connection, up to
+/// [`SETUP_ATTEMPTS`] times. On Windows PostgreSQL starts a process for each new connection, and
+/// one that fails to start under load closes the connection unread, which Windows reports as
+/// reset; PostgreSQL itself goes on. Any other error is returned at once.
+pub fn retried_on_reset<T>(
+    what: &str,
+    mut step: impl FnMut() -> Result<T, sqlx::Error>,
+) -> Result<T, sqlx::Error> {
+    let mut wait = SETUP_RETRY_WAIT;
+    let mut attempt = 1;
+    loop {
+        match step() {
+            Err(sqlx::Error::Io(err))
+                if err.kind() == io::ErrorKind::ConnectionReset && attempt < SETUP_ATTEMPTS =>
+            {
+                eprintln!("{what}: PostgreSQL reset the connection: {err}; again in {wait:?}");
+                thread::sleep(wait);
+                wait *= 2;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// The names of the test databases this process has on the PostgreSQL server.
+pub fn test_databases() -> Vec<String> {
+    let runtime = Runtime::new().expect("start a tokio runtime");
+    let prefix = format!("{}{}_", TestDb::PREFIX, process::id());
+    runtime
+        .block_on(async {
+            let mut conn = PgConnection::connect(&format!("{}/postgres", server())).await?;
+            let names: Vec<(String,)> = sqlx::query_as("SELECT datname FROM pg_database")
+                .fetch_all(&mut conn)
+                .await?;
+            conn.close().await?;
+            Ok::<_, sqlx::Error>(names)
+        })
+        .expect("list the databases")
+        .into_iter()
+        .map(|(name,)| name)
+        .filter(|name| name.starts_with(&prefix))
+        .collect()
+}
+
+/// The PostgreSQL server at `SKALD_TEST_DATABASE_URL`: a connection URL without a database name,
+/// e.g. `postgres://postgres:password@127.0.0.1:5432`; `script/test` sets it.
+fn server() -> String {
+    env::var("SKALD_TEST_DATABASE_URL")
+        .expect("SKALD_TEST_DATABASE_URL is not set: run the tests with script/test")
+}
+
+/// A new empty database on the PostgreSQL server at `SKALD_TEST_DATABASE_URL`, dropped on drop.
 struct TestDb {
     server: String,
     name: String,
 }
 
 impl TestDb {
+    /// The start of the names of the test databases: `<PREFIX><pid>_<n>`.
+    const PREFIX: &str = "skald_client_test_";
+
     fn create(runtime: &Runtime) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let server = env::var("SKALD_TEST_DATABASE_URL")
-            .expect("SKALD_TEST_DATABASE_URL is not set: run the tests with script/test");
+        // One at a time: the tests of a binary start together, and so would their `CREATE
+        // DATABASE`s, each copying the template database.
+        static CREATING: Mutex<()> = Mutex::new(());
         let name = format!(
-            "skald_client_test_{}_{}",
+            "{}{}_{}",
+            Self::PREFIX,
             process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let db = TestDb { server, name };
-        db.admin(
-            runtime,
-            &[
-                format!("DROP DATABASE IF EXISTS {}", db.name),
-                format!("CREATE DATABASE {}", db.name),
-            ],
-        )
+        // Dropped on drop from here on: also when making it fails.
+        let db = TestDb {
+            server: server(),
+            name,
+        };
+        let one_at_a_time = CREATING.lock().unwrap_or_else(PoisonError::into_inner);
+        retried_on_reset("create a test database", || {
+            db.admin(
+                runtime,
+                &[
+                    format!("DROP DATABASE IF EXISTS {}", db.name),
+                    format!("CREATE DATABASE {}", db.name),
+                ],
+            )
+        })
         .expect("create a test database");
+        drop(one_at_a_time);
         db
     }
 
@@ -225,6 +286,18 @@ impl TestDb {
             }
             conn.close().await
         })
+    }
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let runtime = Runtime::new().expect("start a tokio runtime");
+        let statement = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
+        if let Err(err) = retried_on_reset("drop a test database", || {
+            self.admin(&runtime, std::slice::from_ref(&statement))
+        }) {
+            eprintln!("cannot drop the test database {}: {err}", self.name);
+        }
     }
 }
 
