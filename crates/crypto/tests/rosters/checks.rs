@@ -400,3 +400,112 @@ fn a_mode_of_a_later_version_and_unknown_fields_are_accepted() {
     accepts(&rev.roster()).unwrap();
     passes_content_checks(&rev.bytes()).unwrap();
 }
+
+#[test]
+fn the_error_names_the_check_that_fails() {
+    use skald_crypto::{RosterError, accept_next};
+
+    let reason = |rev: &Rev| {
+        accept_next(
+            &current().roster(),
+            &rev.roster(),
+            &certs(),
+            ALICE,
+            &public(ALICE_MASTER),
+        )
+        .unwrap_err()
+    };
+    let carol = device(CAROL_LAPTOP);
+    let cases = [
+        (
+            reason(&signed_by(CAROL_LAPTOP)),
+            RosterError::Signer(carol),
+            format!("the signer {carol} is no valid client or browser device of an admin"),
+        ),
+        (
+            reason(&changed(|rev| rev.space = OTHER_SPACE)),
+            RosterError::Space,
+            "another space than the previous revision's".to_owned(),
+        ),
+        (
+            reason(&changed(|rev| rev.revision = 4)),
+            RosterError::Revision {
+                expected: 3,
+                actual: 4,
+            },
+            "revision 4, not 3".to_owned(),
+        ),
+        (
+            reason(&changed(|rev| rev.prev = Some([0x77; 32]))),
+            RosterError::Prev,
+            "prev is not the hash of the previous revision".to_owned(),
+        ),
+        (
+            reason(&changed(|rev| {
+                rev.members[0].role = MEMBER;
+                rev.members[1].role = MEMBER;
+            })),
+            RosterError::NoAdmin,
+            "no member is an admin".to_owned(),
+        ),
+        (
+            reason(&changed(|rev| rev.members[2].handle = "bob".to_owned())),
+            RosterError::Repeated("members' handles"),
+            "members' handles repeat an item".to_owned(),
+        ),
+        (
+            reason(&changed(|rev| {
+                rev.service_agents[0].owner = "carol".to_owned();
+            })),
+            RosterError::OwnerIsHandle("carol".parse().unwrap()),
+            "the service agent owner carol is a member's handle".to_owned(),
+        ),
+        (
+            reason(&changed(|rev| {
+                rev.service_agents[0].device = device(DAVE_CI)
+            })),
+            RosterError::ServiceAgent(device(DAVE_CI)),
+            format!(
+                "the service agent {} has no valid service certificate on a member's account",
+                device(DAVE_CI)
+            ),
+        ),
+        (
+            reason(&changed(|rev| rev.channels[0].members.push((DAVE, true)))),
+            RosterError::ChannelMember {
+                channel: CHANNEL,
+                account: DAVE,
+            },
+            format!("{DAVE} in channel {CHANNEL} is not a member"),
+        ),
+    ];
+    for (error, expected, message) in cases {
+        assert_eq!(error, expected);
+        assert_eq!(error.to_string(), message);
+    }
+
+    let mut renamed = next();
+    renamed.name = "acme2".to_owned();
+    let error = reason(&renamed);
+    assert_eq!(
+        (error.clone(), error.to_string()),
+        (
+            RosterError::Name,
+            "another name than the previous revision's".to_owned()
+        )
+    );
+
+    let error = accept_next(
+        &current().roster(),
+        &next().signed_with(BOB_LAPTOP),
+        &certs(),
+        ALICE,
+        &public(ALICE_MASTER),
+    )
+    .unwrap_err();
+    assert_eq!(error, RosterError::Signature);
+    assert_eq!(
+        error.to_string(),
+        "the signature does not verify with the signer's key"
+    );
+}
