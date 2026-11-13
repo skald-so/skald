@@ -4,7 +4,8 @@ name: Release
 # builds it on a runner of each OS and architecture (dist-workspace.toml), each runner installs it
 # with its installer from the release's files, then one job attests every file of the release and
 # creates the release with all of them. Another job builds the skald-server image at the tag's
-# commit, pushes it to GHCR under its version, signs its digest with cosign and attests it.
+# commit, pushes it to GHCR under its version, signs its digest with cosign and attests it. Once both
+# are published, a stable release, vX.Y.Z, moves main to the tag with the deploy key.
 # Any other run is the dry run: it builds and checks everything and publishes nothing; a PR that
 # changes the release config or this workflow starts it, and so does a manual run.
 # Its tests: docs/dev/infrastructure.md, "PR checks", "Tooling".
@@ -22,6 +23,7 @@ on:
       - installers/**
       - script/installers-test
       - script/lib/serve.mjs
+      - script/move-main
       - script/release-installers
       - script/release-notes
       - script/release-version
@@ -257,3 +259,35 @@ jobs:
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
+
+  # main follows stable releases only, forward only, once every channel is published.
+  move-main:
+    name: Move main
+    needs: [plan, release, publish-image]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    runs-on: ubuntu-latest
+    # The deploy key, its only secret; only this job uses the environment, and only v* tags may.
+    environment: move-main
+    # It pushes with the deploy key: the job's token writes nothing.
+    permissions:
+      contents: read
+    steps:
+      # The tag's commit, one commit deep; the job's token is not kept for later commands.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Only this step reads the key: it is loaded into an ssh-agent of the step's own, killed when the
+      # step ends, and nothing writes it to disk. GitHub's host key is pinned.
+      - name: Move main to the tag
+        env:
+          DEPLOY_KEY: ${{ secrets.MAIN_DEPLOY_KEY }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          eval "$(ssh-agent -s)" >/dev/null
+          trap 'ssh-agent -k >/dev/null' EXIT
+          ssh-add -q - <<<"$DEPLOY_KEY"
+          unset DEPLOY_KEY
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >"$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes"
+          git remote set-url origin "git@github.com:$GITHUB_REPOSITORY.git"
+          script/move-main "$TAG"
