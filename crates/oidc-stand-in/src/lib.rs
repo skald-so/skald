@@ -4,8 +4,8 @@
 //!   Discovery 1.0, §4);
 //! - `GET <issuer>/keys`: its keys, the metadata's `jwks_uri`, as a JWK Set (RFC 7517, §5).
 //!
-//! Tests rotate its keys and break its answers through [`Provider`], and sign ID tokens, valid and
-//! faulty, with [`Key`], [`signed`], [`hmac`] and [`unsigned`].
+//! Tests rotate its keys, break its answers and redirect them through [`Provider`], and sign ID
+//! tokens, valid and faulty, with [`Key`], [`signed`], [`hmac`] and [`unsigned`].
 
 use std::process::Command;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -318,6 +318,10 @@ struct Served {
     keys: Vec<Key>,
     /// The keys' body instead of the JWK Set of `keys`.
     keys_body: Option<String>,
+    /// A redirect instead of the metadata: its status and `Location`.
+    metadata_redirect: Option<(StatusCode, String)>,
+    /// A redirect instead of the keys: its status and `Location`.
+    keys_redirect: Option<(StatusCode, String)>,
     metadata_reads: usize,
     key_reads: usize,
 }
@@ -387,6 +391,8 @@ impl Provider {
             metadata: None,
             keys: keys.to_vec(),
             keys_body: None,
+            metadata_redirect: None,
+            keys_redirect: None,
             metadata_reads: 0,
             key_reads: 0,
         }));
@@ -442,6 +448,18 @@ impl Provider {
         self.served().keys_body = Some(body.to_owned());
     }
 
+    /// Answers a request for its metadata from now on with a redirect of `status`, such as `302`,
+    /// to `location`.
+    pub fn redirect_metadata(&self, status: u16, location: &str) {
+        self.served().metadata_redirect = Some((redirect_status(status), location.to_owned()));
+    }
+
+    /// Answers a request for its keys from now on with a redirect of `status`, such as `302`, to
+    /// `location`.
+    pub fn redirect_keys(&self, status: u16, location: &str) {
+        self.served().keys_redirect = Some((redirect_status(status), location.to_owned()));
+    }
+
     /// How many times its metadata has been read.
     pub fn metadata_reads(&self) -> usize {
         self.served().metadata_reads
@@ -477,23 +495,37 @@ impl Drop for Provider {
     }
 }
 
-/// Every request: the metadata and the keys under the issuer's path, and `404` for the rest.
+/// `status` as a redirect's status.
+fn redirect_status(status: u16) -> StatusCode {
+    StatusCode::from_u16(status)
+        .ok()
+        .filter(StatusCode::is_redirection)
+        .unwrap_or_else(|| panic!("not a redirect's status: {status}"))
+}
+
+/// Every request: the metadata and the keys under the issuer's path, or the redirects set for them,
+/// and `404` for the rest.
 async fn answer(State(shared): State<Shared>, uri: Uri) -> Response {
     let mut served = shared
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let path = uri.path();
-    let body = if path == format!("{}{METADATA_PATH}", served.path) {
+    let (redirect, body) = if path == format!("{}{METADATA_PATH}", served.path) {
         served.metadata_reads += 1;
-        served
+        let body = served
             .metadata
             .clone()
-            .unwrap_or_else(|| served.default_metadata().to_string())
+            .unwrap_or_else(|| served.default_metadata().to_string());
+        (served.metadata_redirect.clone(), body)
     } else if path == format!("{}{KEYS_PATH}", served.path) {
         served.key_reads += 1;
-        served.keys_body.clone().unwrap_or_else(|| served.key_set())
+        let body = served.keys_body.clone().unwrap_or_else(|| served.key_set());
+        (served.keys_redirect.clone(), body)
     } else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    ([(header::CONTENT_TYPE, "application/json")], body).into_response()
+    match redirect {
+        Some((status, location)) => (status, [(header::LOCATION, location)]).into_response(),
+        None => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+    }
 }

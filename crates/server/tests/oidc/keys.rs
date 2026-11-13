@@ -115,6 +115,8 @@ fn with_the_provider_down_known_keys_pass_and_unknown_ones_give_an_error() {
         result.is_err(),
         "a token by an unknown key passes: {result:?}"
     );
+    // The failed read keeps the keys read before.
+    passes(&oidc, &token);
 }
 
 #[test]

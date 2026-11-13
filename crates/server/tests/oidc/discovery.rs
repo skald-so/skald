@@ -111,6 +111,73 @@ fn malformed_metadata_gives_an_error() {
     }
 }
 
+/// Asserts that discovering `issuer` is refused as the provider's fault; `what` names the case.
+#[track_caller]
+fn refused_provider(issuer: &str, what: &str) {
+    match OidcProvider::discover(settings(issuer, LONG)) {
+        Err(OidcError::Provider(..)) => {}
+        Err(other) => panic!("{what}: refused, but not as the provider's fault: {other:?}"),
+        Ok(_) => panic!("{what}: the provider is discovered"),
+    }
+}
+
+#[test]
+fn a_jwks_uri_neither_https_nor_http_on_loopback_is_refused() {
+    let provider = Provider::start(&[Key::rsa()]);
+    let issuer = provider.issuer().to_owned();
+    // `localhost` reaches the stand-in's keys, but a name is not known to be loopback.
+    let localhost = format!("{}/keys", issuer.replacen("127.0.0.1", "localhost", 1));
+    for jwks_uri in [
+        localhost.as_str(),
+        "http://keys.skald.invalid/keys",
+        "ftp://keys.skald.invalid/keys",
+    ] {
+        let mut metadata = provider.metadata();
+        metadata["jwks_uri"] = json!(jwks_uri);
+        provider.set_metadata(&metadata);
+        refused_provider(&issuer, jwks_uri);
+    }
+    assert_eq!(
+        provider.key_reads(),
+        0,
+        "keys were read off a refused jwks_uri"
+    );
+}
+
+#[test]
+fn a_redirect_from_the_metadata_or_the_keys_is_not_followed() {
+    for status in [301, 302, 303, 307, 308] {
+        // Each redirect leads to a second stand-in whose answer would pass every check.
+        let key = Key::rsa();
+        let provider = Provider::start(std::slice::from_ref(&key));
+        let elsewhere = Provider::start(std::slice::from_ref(&key));
+        elsewhere.set_metadata(&provider.metadata());
+        provider.redirect_metadata(
+            status,
+            &format!("{}/.well-known/openid-configuration", elsewhere.issuer()),
+        );
+        refused_provider(
+            provider.issuer(),
+            &format!("metadata redirected by {status}"),
+        );
+        assert_eq!(
+            elsewhere.metadata_reads(),
+            0,
+            "a {status} redirect from the metadata is followed"
+        );
+
+        let provider = Provider::start(std::slice::from_ref(&key));
+        let elsewhere = Provider::start(std::slice::from_ref(&key));
+        provider.redirect_keys(status, &format!("{}/keys", elsewhere.issuer()));
+        refused_provider(provider.issuer(), &format!("keys redirected by {status}"));
+        assert_eq!(
+            elsewhere.key_reads(),
+            0,
+            "a {status} redirect from the keys is followed"
+        );
+    }
+}
+
 #[test]
 fn an_unreachable_provider_gives_an_error() {
     let mut provider = Provider::start(&[Key::rsa()]);
