@@ -306,6 +306,9 @@ fn newer_stable_release_is_installed_not_a_newer_beta() {
     assert_installed(&machine, &releases, &run, &stable);
 }
 
+// On a beta build no stable release equals the running version: `v{VERSION}` is a beta, so this is
+// the case of an older release, and the unit test `installs_only_a_newer_stable_release` covers
+// the same version.
 #[test]
 fn same_version_changes_nothing() {
     let machine = Machine::new("same");
