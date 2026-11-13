@@ -22,8 +22,9 @@ use crate::connection::Connection;
 use crate::devices::{self, text};
 use crate::state::{self, State};
 
-/// How many times a run accepts a space's revisions again when another run accepted some first.
-const ATTEMPTS: usize = 5;
+/// How many times a run accepts a space's revisions again when another run accepted some first, or
+/// signs a revision again when another came first.
+pub const ATTEMPTS: usize = 5;
 
 /// `RosterRevisions` in the API spec.
 #[derive(Deserialize)]
@@ -77,8 +78,7 @@ pub fn sync(
             )),
         }
     }
-    let (ids, certs) = devices::fetch(connection, &format!("/spaces/{id}/devices"), token)?;
-    let devices = SpaceDevices { ids, certs };
+    let devices = space_devices(connection, token, id)?;
 
     let held = read(state, id, name)?;
     let (current, followed) = settle(state, (id, name), held, &given, &devices.certs, own)?;
@@ -88,8 +88,18 @@ pub fn sync(
     Ok((current, devices))
 }
 
+/// The devices of the accounts of the space `id`, as the server gives them to the session `token`.
+pub fn space_devices(
+    connection: &mut Connection,
+    token: &str,
+    id: SpaceId,
+) -> Result<SpaceDevices, String> {
+    let (ids, certs) = devices::fetch(connection, &format!("/spaces/{id}/devices"), token)?;
+    Ok(SpaceDevices { ids, certs })
+}
+
 /// What `state` holds of the space `id` named `name`.
-fn read(state: &State, id: SpaceId, name: &str) -> Result<state::Accepted, String> {
+pub fn read(state: &State, id: SpaceId, name: &str) -> Result<state::Accepted, String> {
     state
         .accepted(id)
         .map_err(text)?

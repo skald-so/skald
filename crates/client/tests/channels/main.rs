@@ -242,6 +242,24 @@ fn assert_refused_as_no_admin(finished: &Finished) {
     );
 }
 
+/// From now on, the server's database refuses every new revision, as a failing database would.
+fn refuse_revisions(cloud: &Cloud) {
+    cloud.execute(
+        "CREATE FUNCTION skald_test_refuse() RETURNS trigger LANGUAGE plpgsql AS
+           $$ BEGIN RAISE EXCEPTION 'the database is down'; END $$;
+         CREATE TRIGGER skald_test_refuse BEFORE INSERT ON roster_revisions
+           FOR EACH ROW EXECUTE FUNCTION skald_test_refuse();",
+    );
+}
+
+/// From now on, the server's database stores new revisions again.
+fn store_revisions(cloud: &Cloud) {
+    cloud.execute(
+        "DROP TRIGGER skald_test_refuse ON roster_revisions;
+         DROP FUNCTION skald_test_refuse();",
+    );
+}
+
 /// Ada's machine creates `acme`, and its revision 2, signed by Ada's device and stored on the
 /// server, adds the people of `added` with their roles. Gives revisions 1 and 2.
 fn acme_with(cloud: &Cloud, ada: &Person, added: &[(&Person, Role)]) -> [Roster; 2] {
@@ -345,11 +363,12 @@ fn revision_another_admin_stored_first_is_accepted_and_the_channel_added_on_top(
     assert_channel(&listed, adas, &[&ada.handle], &[&bob.handle, &carol.handle]);
 }
 
-/// Ada's device follows `acme` to revision 2, which made Bob an admin; Bob's device then stores
-/// revision 3, which makes Ada a member. Ada's device, which first sees the revisions as they were
-/// before Bob's, signs a revision 3 with a channel, which the server refuses; it accepts Bob's
-/// revision, in which its account is no admin, and stops saying why. The server keeps Bob's
-/// revision as the latest, the device sends the refused revision no more, and lists no channel.
+/// Ada's device follows `acme` to revision 2, which made Bob an admin, and signs a revision 3 with a
+/// channel, which the server fails to store; Bob's device then stores revision 3, which makes Ada a
+/// member. The next `skald create-channel` on Ada's device sends its revision 3 again, which the
+/// server refuses; it accepts Bob's revision, in which its account is no admin, and stops saying
+/// why. The server keeps Bob's revision as the latest, the device sends the refused revision no
+/// more, and lists no channel.
 #[test]
 fn latest_revision_that_makes_the_account_no_admin_stops_the_creation() {
     let world = World::start();
@@ -359,8 +378,14 @@ fn latest_revision_that_makes_the_account_no_admin_stops_the_creation() {
     let [first, second] = acme_with(cloud, &ada, &[(&bob, Role::Admin)]);
     let space = first.body().space;
     assert_role(&members(&ada.machine, ACME), &bob.handle, ADMIN);
+    // The server issues a channel ID only to an admin in the latest revision, so Ada's device gets
+    // its own before Bob's revision is stored; the server's database refuses Ada's revision.
+    refuse_revisions(cloud);
+    let issuing = cloud.relay.mark();
+    let failed = create_channel(&ada.machine, ACME);
+    assert!(!failed.success, "{failed:?}");
+    store_revisions(cloud);
     let third = demote(cloud, &ada, &bob, &second);
-    stale_once(cloud, space, 2);
     let since = cloud.relay.mark();
 
     let refused = create_channel(&ada.machine, ACME);
@@ -369,10 +394,11 @@ fn latest_revision_that_makes_the_account_no_admin_stops_the_creation() {
     assert_eq!(
         cloud.count_sent(since, &store_request(space)),
         1,
-        "the device did not sign once, or signed again: {:?}",
+        "the device did not send its revision once, or signed again: {:?}",
         cloud.relay.sent_since(since)
     );
-    let issued = issued_since(cloud, since);
+    let issued = issued_since(cloud, issuing);
+    assert_eq!(issued.len(), 1, "the channel IDs issued: {issued:?}");
     let rosters = server_rosters(cloud, &ada.token, space);
     assert_eq!(rosters, [first, second, third], "the space's revisions");
 
@@ -475,6 +501,107 @@ fn until_the_server_takes_the_revision_the_space_stays_at_the_last_accepted_one(
         "another channel ID was issued"
     );
     assert_channel(&listed, added, &[&ada.handle], &[]);
+}
+
+/// `skald create-channel` first sends a revision with a channel the server has not taken: while the
+/// server fails to store it, the run fails and gets no other channel ID; once the server stores
+/// revisions again, the run sends it, then adds a second channel on top of it.
+#[test]
+fn create_channel_sends_a_waiting_revision_first() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_120_691_601, "ada-waiting", "ada-workstation");
+    let first = create(cloud, &ada, ACME);
+    let space = first.body().space;
+    refuse_revisions(cloud);
+    let since = cloud.relay.mark();
+    let failed = create_channel(&ada.machine, ACME);
+    assert!(!failed.success, "{failed:?}");
+
+    let again = create_channel(&ada.machine, ACME);
+
+    assert!(!again.success, "{again:?}");
+    let issued = issued_since(cloud, since);
+    assert_eq!(issued.len(), 1, "the channel IDs issued: {issued:?}");
+    assert_eq!(
+        cloud.count_sent(since, &store_request(space)),
+        2,
+        "the waiting revision was not sent again, or another was sent"
+    );
+    store_revisions(cloud);
+
+    let created = create_channel(&ada.machine, ACME);
+
+    assert!(created.success, "{created:?}");
+    let rosters = server_rosters(cloud, &ada.token, space);
+    assert_eq!(rosters.len(), 3, "the space's revisions: {rosters:?}");
+    let general = assert_adds_a_channel(cloud, &first, &rosters[1], &ada);
+    assert_eq!(
+        general.to_string(),
+        issued[0],
+        "another channel than the one issued"
+    );
+    let random = assert_adds_a_channel(cloud, &rosters[1], &rosters[2], &ada);
+    assert!(created.shown().contains(&random.to_string()), "{created:?}");
+    let listed = channels(&ada.machine, ACME);
+    assert_channel(&listed, general, &[&ada.handle], &[]);
+    assert_channel(&listed, random, &[&ada.handle], &[]);
+}
+
+/// Ada's device adds a channel by revision 3, then signs a revision 4 with another, which the server
+/// fails to store; Bob's device then stores revision 4 with a channel of its own. While Ada's
+/// revision waits, as when the answer to sending it again is lost, Ada's device keeps `acme` at
+/// revision 3 and lists only its first channel. The next run that sends it again accepts Bob's
+/// revision and adds Ada's channel on top of it.
+#[test]
+fn waiting_revision_keeps_the_space_until_it_goes_on_top_of_another_admins() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_120_691_701, "ada-waits", "ada-workstation");
+    let bob = world.sign_up(4_120_691_702, "bob-goes-first", "bob-workstation");
+    let [first, _] = acme_with(cloud, &ada, &[(&bob, Role::Admin)]);
+    let space = first.body().space;
+    assert!(create_channel(&ada.machine, ACME).success);
+    let third = server_rosters(cloud, &ada.token, space).remove(2);
+    let general = third.body().channels[0].id;
+    refuse_revisions(cloud);
+    let since = cloud.relay.mark();
+    let failed = create_channel(&ada.machine, ACME);
+    assert!(!failed.success, "{failed:?}");
+    let issued = issued_since(cloud, since);
+    store_revisions(cloud);
+    let bobs = issue_channel(cloud, &bob.token, space);
+    let fourth = next_with(&third, (bob.device, &bob.key), |body| {
+        body.channels.push(channel(bobs, &[(&bob, true)]));
+    });
+    store(cloud, &bob.token, &fourth);
+    cloud.relay.lose_answer(&store_request(space), Lose::Close);
+
+    let waiting = channels(&ada.machine, ACME);
+
+    assert_eq!(
+        cloud.relay.lost(),
+        1,
+        "the waiting revision was not sent again"
+    );
+    assert_channel(&waiting, general, &[&ada.handle], &[]);
+    assert_unlisted(&waiting, &[bobs.to_string(), issued[0].clone()]);
+    assert_eq!(server_rosters(cloud, &ada.token, space).len(), 4);
+
+    let listed = channels(&ada.machine, ACME);
+
+    let rosters = server_rosters(cloud, &ada.token, space);
+    assert_eq!(rosters.len(), 5, "the space's revisions: {rosters:?}");
+    assert_eq!(rosters[3], fourth, "Bob's revision 4 is not kept");
+    let adas = assert_adds_a_channel(cloud, &fourth, &rosters[4], &ada);
+    assert_eq!(
+        adas.to_string(),
+        issued[0],
+        "another channel than the one issued"
+    );
+    assert_channel(&listed, general, &[&ada.handle], &[&bob.handle]);
+    assert_channel(&listed, bobs, &[&bob.handle], &[&ada.handle]);
+    assert_channel(&listed, adas, &[&ada.handle], &[&bob.handle]);
 }
 
 /// Which answer of the server the relay loses.
