@@ -371,20 +371,27 @@ pub fn members(
         .find(|space| space.name == name)
         .ok_or_else(unknown)?;
     let (roster, devices) = follower.sync(&space)?;
-    print!(
-        "{}",
-        members_listing(&roster, &devices, &follower.own, follower.this)
-    );
+    let (listing, warnings) = members_listing(&roster, &devices, &follower.own, follower.this);
+    print!("{listing}");
+    for warning in warnings {
+        eprintln!("skald: warning: {warning}");
+    }
     Ok(())
 }
 
 /// What `skald members` shows of `roster`, a space's last accepted revision, with `devices`, those
 /// of its accounts: each member's handle and role, and under it each device of its account with a
-/// valid certificate, as `skald devices` shows it, `this` device marked. A certificate is checked
-/// against the master key `own` pinned for its own account, and against the `master` the revision
-/// gives any other.
-fn members_listing(roster: &Roster, devices: &SpaceDevices, own: &Own, this: DeviceId) -> String {
+/// valid certificate, as `skald devices` shows it, `this` device marked; and the warnings of
+/// `skald devices` for them. A certificate is checked against the master key `own` pinned for its
+/// own account, and against the `master` the revision gives any other.
+fn members_listing(
+    roster: &Roster,
+    devices: &SpaceDevices,
+    own: &Own,
+    this: DeviceId,
+) -> (String, Vec<String>) {
     let body = roster.body();
+    let mut warnings: Vec<String> = Vec::new();
     let mut out = format!(
         "The space {} ({}), revision {}:\n",
         body.name.as_str(),
@@ -403,11 +410,18 @@ fn members_listing(roster: &Roster, devices: &SpaceDevices, own: &Own, this: Dev
             member.master
         };
         let checked = devices::check(&master, &devices.ids, &devices.certs);
-        let linked: Vec<&&Cert> = checked
+        for warning in devices::two_bodies_warnings(&checked) {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        let linked: Vec<&Cert> = checked
             .linked
             .iter()
+            .copied()
             .filter(|cert| cert.body().account == member.account)
             .collect();
+        warnings.extend(devices::shared_name_warnings(&linked));
         if linked.is_empty() {
             out.push_str("    no device with a valid certificate\n");
         }
@@ -415,7 +429,7 @@ fn members_listing(roster: &Roster, devices: &SpaceDevices, own: &Own, this: Dev
             out.push_str(&format!("    {}\n", devices::linked_line(cert, this)));
         }
     }
-    out
+    (out, warnings)
 }
 
 /// A role, as the CLI shows it.
@@ -487,80 +501,159 @@ mod tests {
         );
     }
 
+    /// The certificate of the device of `key` on `account`, named `name`, signed by `master`.
+    fn cert(account: AccountId, master: &SigningKey, key: &SigningKey, name: &str) -> Cert {
+        let body = skald_proto::CertBody {
+            account,
+            device: DeviceId::from_signing_key(&key.public_key()),
+            kind: skald_proto::DeviceKind::Client,
+            signing: key.public_key(),
+            hpke: [4; 32],
+            issuer: None,
+            issued: 1_800_000_000,
+            ssh: None,
+            name: name.to_owned(),
+            unknown: skald_proto::Unknown::default(),
+        };
+        skald_crypto::issue(&body, master, key).expect("a certificate")
+    }
+
+    /// The accounts of Ada, who created `acme`, and Bob, with their master keys.
+    struct Pair {
+        ada: AccountId,
+        bob: AccountId,
+        ada_master: SigningKey,
+        bob_master: SigningKey,
+    }
+
+    impl Pair {
+        fn new() -> Self {
+            Pair {
+                ada: AccountId::generate(),
+                bob: AccountId::generate(),
+                ada_master: SigningKey::generate(),
+                bob_master: SigningKey::generate(),
+            }
+        }
+
+        /// Revision 2 of `acme`, which adds Bob as a member. Its revision 1 gives Ada another
+        /// master key than the one Ada's device pinned.
+        fn roster(&self) -> Roster {
+            let mut body = first(self.ada).body().clone();
+            body.revision = 2;
+            body.members.push(skald_proto::Member {
+                account: self.bob,
+                handle: "bob".parse().unwrap(),
+                role: Role::Member,
+                master: self.bob_master.public_key(),
+                invite: None,
+                excluded: None,
+                unknown: skald_proto::Unknown::default(),
+            });
+            skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap()
+        }
+
+        /// What Ada's device trusts revisions by.
+        fn own(&self) -> Own {
+            Own {
+                account: self.ada,
+                master: self.ada_master.public_key(),
+            }
+        }
+
+        /// What `skald members` on Ada's device `this` gives of `roster` with `certs`.
+        fn listing(
+            &self,
+            roster: &Roster,
+            certs: &[Cert],
+            this: DeviceId,
+        ) -> (String, Vec<String>) {
+            let devices = SpaceDevices {
+                ids: certs.iter().map(|cert| cert.body().device).collect(),
+                certs: certs.to_vec(),
+            };
+            members_listing(roster, &devices, &self.own(), this)
+        }
+    }
+
     #[test]
     fn members_show_each_members_devices_with_a_valid_certificate_under_it() {
-        let (ada, bob) = (AccountId::generate(), AccountId::generate());
-        let (ada_master, bob_master) = (SigningKey::generate(), SigningKey::generate());
+        let pair = Pair::new();
+        let (ada, bob) = (pair.ada, pair.bob);
         let device = |account, master: &SigningKey, name: &str| {
-            let key = SigningKey::generate();
-            let body = skald_proto::CertBody {
-                account,
-                device: DeviceId::from_signing_key(&key.public_key()),
-                kind: skald_proto::DeviceKind::Client,
-                signing: key.public_key(),
-                hpke: [4; 32],
-                issuer: None,
-                issued: 1_800_000_000,
-                ssh: None,
-                name: name.to_owned(),
-                unknown: skald_proto::Unknown::default(),
-            };
-            skald_crypto::issue(&body, master, &key).expect("a certificate")
+            cert(account, master, &SigningKey::generate(), name)
         };
         let certs = vec![
-            device(ada, &ada_master, "ada-laptop"),
-            device(bob, &bob_master, "bob-laptop"),
+            device(ada, &pair.ada_master, "ada-laptop"),
+            device(bob, &pair.bob_master, "bob-laptop"),
             // On Bob's account, by a key that is not its master key.
             device(bob, &SigningKey::generate(), "bob-forged"),
             // By Bob's master key, on Ada's account.
-            device(ada, &bob_master, "ada-forged"),
+            device(ada, &pair.bob_master, "ada-forged"),
         ];
-        let devices = SpaceDevices {
-            ids: certs.iter().map(|cert| cert.body().device).collect(),
-            certs: certs.clone(),
-        };
-        let first = first(ada);
-        let mut body = first.body().clone();
-        body.revision = 2;
-        body.members.push(skald_proto::Member {
-            account: bob,
-            handle: "bob".parse().unwrap(),
-            role: Role::Member,
-            master: bob_master.public_key(),
-            invite: None,
-            excluded: None,
-            unknown: skald_proto::Unknown::default(),
-        });
-        // Revision 1 gives Ada another master key than the one Ada's device pinned.
-        let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
-        let own = Own {
-            account: ada,
-            master: ada_master.public_key(),
-        };
+        let roster = pair.roster();
+        let body = roster.body();
         let this = certs[0].body().device;
 
-        let shown = members_listing(&roster, &devices, &own, this);
+        let shown = pair.listing(&roster, &certs, this);
 
         assert_eq!(
             shown,
-            format!(
-                "The space acme ({}), revision 2:\n  ada  admin\n    {}\n  bob  member\n    {}\n",
-                body.space,
-                devices::linked_line(&certs[0], this),
-                devices::linked_line(&certs[1], this)
+            (
+                format!(
+                    "The space acme ({}), revision 2:\n  ada  admin\n    {}\n  bob  member\n    {}\n",
+                    body.space,
+                    devices::linked_line(&certs[0], this),
+                    devices::linked_line(&certs[1], this)
+                ),
+                vec![]
             )
         );
-        let without = SpaceDevices {
-            ids: vec![this],
-            certs: vec![],
-        };
         assert_eq!(
-            members_listing(&roster, &without, &own, this),
-            format!(
-                "The space acme ({}), revision 2:\n  ada  admin\n    no device with a valid \
-                 certificate\n  bob  member\n    no device with a valid certificate\n",
-                body.space
+            pair.listing(&roster, &[], this),
+            (
+                format!(
+                    "The space acme ({}), revision 2:\n  ada  admin\n    no device with a valid \
+                     certificate\n  bob  member\n    no device with a valid certificate\n",
+                    body.space
+                ),
+                vec![]
             )
+        );
+    }
+
+    #[test]
+    fn members_warn_of_a_device_with_two_bodies_and_of_one_accounts_devices_with_one_name() {
+        let pair = Pair::new();
+        let (ada, bob) = (pair.ada, pair.bob);
+        let keys: Vec<SigningKey> = (0..4).map(|_| SigningKey::generate()).collect();
+        let certs = vec![
+            cert(ada, &pair.ada_master, &keys[0], "laptop"),
+            cert(ada, &pair.ada_master, &keys[1], "laptop"),
+            // Bob's device of the same name as Ada's: another account's.
+            cert(bob, &pair.bob_master, &keys[2], "laptop"),
+            // Two bodies of one device of Bob's.
+            cert(bob, &pair.bob_master, &keys[3], "phone"),
+            cert(bob, &pair.bob_master, &keys[3], "tablet"),
+        ];
+        let ids: Vec<DeviceId> = certs.iter().map(|cert| cert.body().device).collect();
+
+        let (shown, warnings) = pair.listing(&pair.roster(), &certs, ids[0]);
+
+        assert!(!shown.contains(&ids[3].to_string()), "{shown}");
+        assert_eq!(
+            warnings,
+            vec![
+                format!(
+                    "the key of device {} signed two different certificates of it, so neither \
+                     counts; the device or its key may be compromised",
+                    ids[3]
+                ),
+                format!(
+                    "linked devices {}, {} have the same name \"laptop\"; tell them apart by ID",
+                    ids[0], ids[1]
+                ),
+            ]
         );
     }
 

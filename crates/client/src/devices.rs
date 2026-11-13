@@ -61,21 +61,37 @@ pub fn run(
 
     let checked = check(&master, &ids, &certs);
     print!("{}", listing(&checked, this));
-    for id in &checked.two_bodies {
-        eprintln!(
-            "skald: warning: the key of device {id} signed two different certificates of it, so \
-             neither counts; the device or its key may be compromised"
-        );
-    }
-    for (name, ids) in shared_names(&checked.linked) {
-        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
-        eprintln!(
-            "skald: warning: linked devices {} have the same name \"{}\"; tell them apart by ID",
-            ids.join(", "),
-            printable(&name)
-        );
+    for warning in two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked)) {
+        eprintln!("skald: warning: {warning}");
     }
     Ok(())
+}
+
+/// The warning of each device in `checked` with certificates of two bodies
+/// (`docs/protocol/membership.md`, "Device certificate").
+pub fn two_bodies_warnings<'a>(checked: &'a Checked) -> impl Iterator<Item = String> + 'a {
+    checked.two_bodies.iter().map(|id| {
+        format!(
+            "the key of device {id} signed two different certificates of it, so neither counts; \
+             the device or its key may be compromised"
+        )
+    })
+}
+
+/// The warning of each name that two or more of the `linked` certificates, those of one account,
+/// hold ("Device checks").
+pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
+    shared_names(linked)
+        .into_iter()
+        .map(|(name, ids)| {
+            let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+            format!(
+                "linked devices {} have the same name \"{}\"; tell them apart by ID",
+                ids.join(", "),
+                printable(&name)
+            )
+        })
+        .collect()
 }
 
 /// `GET <path>` as the session `token`: a device list, as the IDs of its devices and the
