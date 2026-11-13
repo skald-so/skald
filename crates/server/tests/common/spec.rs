@@ -140,12 +140,21 @@ fn schema_violations(spec: &Value, schema: &str, instance: &Value) -> Vec<String
         .expect("index the spec");
     let validator = jsonschema::options()
         .with_registry(&registry)
-        .build(&json!({ "$ref": format!("{SPEC_URI}#{schema}") }))
+        .build(&json!({ "$ref": format!("{SPEC_URI}#{}", fragment(schema)) }))
         .expect("compile the schema");
     validator
         .iter_errors(instance)
         .map(|err| format!("{err} at {:?}", err.instance_path().as_str()))
         .collect()
+}
+
+/// The JSON pointer `pointer` as a URI fragment (RFC 6901, §6): the characters a fragment cannot
+/// hold that the spec's paths have, such as `{` of a path parameter, percent-encoded.
+fn fragment(pointer: &str) -> String {
+    pointer
+        .replace('%', "%25")
+        .replace('{', "%7B")
+        .replace('}', "%7D")
 }
 
 /// Escapes `token` for a JSON pointer (RFC 6901).

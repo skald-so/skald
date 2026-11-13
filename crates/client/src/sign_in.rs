@@ -45,7 +45,7 @@ struct Token {
 #[derive(Deserialize)]
 struct Account {
     account: String,
-    github_login: String,
+    username: String,
 }
 
 /// Why a sign-in failed.
@@ -62,11 +62,11 @@ pub enum Error {
     Expired,
     /// An answer the device flow does not define.
     Unexpected(String),
-    /// The person who approved the code, GitHub user `login`, signed in to another account than
-    /// the one the device belongs to; `unended` is why the server did not end that session, if it
-    /// did not.
+    /// The person who approved the code signed in to another account than the one the device
+    /// belongs to, the account with `username`; `unended` is why the server did not end that
+    /// session, if it did not.
     OtherAccount {
-        login: String,
+        username: String,
         unended: Option<connection::Error>,
     },
 }
@@ -86,14 +86,14 @@ impl std::fmt::Display for Error {
                 "the code expired before it was approved; run skald sign-in again for a new one",
             ),
             Error::Unexpected(answer) => write!(f, "unexpected answer from the server: {answer}"),
-            Error::OtherAccount { login, unended } => {
+            Error::OtherAccount { username, unended } => {
                 write!(
                     f,
-                    "the code was approved by GitHub user {}, whose account is not the one this \
-                     device belongs to; this machine keeps no session of it and its device stays \
-                     as it was. Run skald sign-in again and approve the code as the GitHub user \
-                     of the device's own account",
-                    printable(login)
+                    "the code was approved by account {}, which is not the one this device \
+                     belongs to; this machine keeps no session of it and its device stays as it \
+                     was. Run skald sign-in again and approve the code signed in to the device's \
+                     own account",
+                    printable(username)
                 )?;
                 match unended {
                     Some(err) => write!(f, ". The server did not end that session: {err}"),
@@ -273,16 +273,16 @@ fn take(
             let unended = connection.delete_as("/session", &token).err();
             forget(state, secrets, stored)?;
             return Err(Error::OtherAccount {
-                login: account.github_login,
+                username: account.username,
                 unended,
             });
         }
     }
-    state.set_account(&account.account, &account.github_login)?;
+    state.set_account(&account.account, &account.username)?;
     println!(
         "Signed in to {} as {}.",
         connection.server(),
-        printable(&account.github_login)
+        printable(&account.username)
     );
     Ok((token, id))
 }
@@ -490,13 +490,14 @@ mod tests {
     fn other_account_names_who_approved_and_whether_the_session_ended() {
         let error = |unended| {
             Error::OtherAccount {
-                login: "bob\u{1b}".to_owned(),
+                username: "bob\u{1b}".to_owned(),
                 unended,
             }
             .to_string()
         };
         let ended = error(None);
-        assert!(ended.contains("GitHub user bob\\u{1b},"), "{ended}");
+        assert!(ended.contains("account bob\\u{1b}, which"), "{ended}");
+        assert!(!ended.contains("GitHub"), "{ended}");
         assert!(ended.contains("skald sign-in"), "{ended}");
         assert!(!ended.contains("did not end"), "{ended}");
         let unended = error(Some(connection::Error::Timeout(SECOND)));

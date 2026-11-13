@@ -19,10 +19,15 @@ use crate::refusal::{Answer, Refusal, account, answer, parse};
 const CLIENT: &str = "client";
 
 /// The bytes of `text`, base64url without padding; `field` names it in the refusal.
-fn bytes(text: &str, field: &str) -> Result<Vec<u8>, Refusal> {
+pub(crate) fn bytes(text: &str, field: &str) -> Result<Vec<u8>, Refusal> {
     URL_SAFE_NO_PAD
         .decode(text)
         .map_err(|_| Refusal::Invalid(format!("{field}: not base64url without padding")))
+}
+
+/// `bytes` in base64url without padding.
+pub(crate) fn base64(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// The public key of 32 bytes in `text`, as [`bytes`] reads it.
@@ -33,7 +38,7 @@ fn key(text: &str, field: &str) -> Result<[u8; 32], Refusal> {
 }
 
 /// `200`, or `201` once `created`, with `body` in JSON.
-fn taken(created: bool, body: impl Serialize) -> Answer {
+pub(crate) fn taken(created: bool, body: impl Serialize) -> Answer {
     let status = if created {
         StatusCode::CREATED
     } else {
@@ -53,15 +58,26 @@ impl Device {
     fn new(device: String, cert: Option<Vec<u8>>) -> Self {
         Device {
             device,
-            cert: cert.map(|cert| URL_SAFE_NO_PAD.encode(cert)),
+            cert: cert.as_deref().map(base64),
         }
     }
 }
 
 /// `Devices` in the spec.
 #[derive(Serialize)]
-struct Devices {
+pub(crate) struct Devices {
     devices: Vec<Device>,
+}
+
+impl Devices {
+    /// The devices `found`, each an ID and its certificate as the device sent it.
+    pub(crate) fn of(found: Vec<(String, Option<Vec<u8>>)>) -> Self {
+        let devices = found
+            .into_iter()
+            .map(|(device, cert)| Device::new(device, cert))
+            .collect();
+        Devices { devices }
+    }
 }
 
 /// `MasterKey` in the spec.
@@ -73,7 +89,7 @@ struct MasterKey {
 impl MasterKey {
     fn new(master: Option<&[u8]>) -> Self {
         MasterKey {
-            master: master.map(|master| URL_SAFE_NO_PAD.encode(master)),
+            master: master.map(base64),
         }
     }
 }
@@ -174,11 +190,7 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         .fetch_all(&state.db)
         .await
         .map_err(|err| Refusal::Database("read the devices", err))?;
-        let devices = found
-            .into_iter()
-            .map(|(device, cert)| Device::new(device, cert))
-            .collect();
-        Ok(Json(Devices { devices }).into_response())
+        Ok(Json(Devices::of(found)).into_response())
     })
     .await
 }

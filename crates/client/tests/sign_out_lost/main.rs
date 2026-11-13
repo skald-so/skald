@@ -112,7 +112,7 @@ fn device_without_an_account_takes_its_next_sign_ins_and_refuses_another() {
     assert!(
         refused
             .stderr
-            .contains(&format!("GitHub user {},", bob.login)),
+            .contains(&format!("account {}, which", bob.login)),
         "{refused:?}"
     );
     assert_eq!(device_account(&machine), Some(account));

@@ -42,6 +42,10 @@ const MIGRATIONS: &[&str] = &[
     // of a state older than this column takes its session's account, if the session has one.
     "ALTER TABLE device ADD COLUMN account TEXT;
     UPDATE device SET account = (SELECT account FROM session);",
+    // The session keeps its account's username instead of the GitHub login. A session of a state
+    // older than this column has no username until its next sign-in or `skald set-username`.
+    "ALTER TABLE session DROP COLUMN github_login;
+    ALTER TABLE session ADD COLUMN username TEXT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -77,8 +81,10 @@ pub fn create_dir(dir: &Path) -> io::Result<()> {
 pub struct Session {
     /// The server's base URL.
     pub server: String,
-    /// The account's ID and GitHub login, once the server gave them.
-    pub account: Option<(String, String)>,
+    /// The account's ID, once the server gave it.
+    pub account: Option<String>,
+    /// The account's username, as the latest sign-in or `skald set-username` recorded it.
+    pub username: Option<String>,
 }
 
 /// The machine's own device, as the state holds it.
@@ -156,18 +162,13 @@ impl State {
     pub fn session(&self) -> Result<Option<Session>, Error> {
         let session = self
             .db
-            .query_row(
-                "SELECT server, account, github_login FROM session",
-                [],
-                |row| {
-                    let account: Option<String> = row.get(1)?;
-                    let login: Option<String> = row.get(2)?;
-                    Ok(Session {
-                        server: row.get(0)?,
-                        account: account.zip(login),
-                    })
-                },
-            )
+            .query_row("SELECT server, account, username FROM session", [], |row| {
+                Ok(Session {
+                    server: row.get(0)?,
+                    account: row.get(1)?,
+                    username: row.get(2)?,
+                })
+            })
             .optional()?;
         Ok(session)
     }
@@ -181,12 +182,19 @@ impl State {
         Ok(())
     }
 
-    /// Records the session's account.
-    pub fn set_account(&self, account: &str, github_login: &str) -> Result<(), Error> {
+    /// Records the session's account and its username.
+    pub fn set_account(&self, account: &str, username: &str) -> Result<(), Error> {
         self.db.execute(
-            "UPDATE session SET account = ?1, github_login = ?2",
-            params![account, github_login],
+            "UPDATE session SET account = ?1, username = ?2",
+            params![account, username],
         )?;
+        Ok(())
+    }
+
+    /// Records the username of the session's account.
+    pub fn set_username(&self, username: &str) -> Result<(), Error> {
+        self.db
+            .execute("UPDATE session SET username = ?1", params![username])?;
         Ok(())
     }
 
@@ -330,27 +338,33 @@ mod tests {
             state.session().unwrap(),
             Some(Session {
                 server: "http://one.test".to_owned(),
-                account: None
+                account: None,
+                username: None,
             })
         );
         state.set_account("0190", "ada").unwrap();
         drop(state);
 
         let state = State::open(&dir).unwrap();
-        let account = Some(("0190".to_owned(), "ada".to_owned()));
-        assert_eq!(
-            state.session().unwrap(),
+        let ada = |username: &str| {
             Some(Session {
                 server: "http://one.test".to_owned(),
-                account
+                account: Some("0190".to_owned()),
+                username: Some(username.to_owned()),
             })
+        };
+        assert_eq!(state.session().unwrap(), ada("ada"));
+        state.set_username("ada-of-skald").unwrap();
+        assert_eq!(
+            State::open(&dir).unwrap().session().unwrap(),
+            ada("ada-of-skald")
         );
         // A new session replaces it, with no account yet.
         state.start_session("http://two.test").unwrap();
         let session = state.session().unwrap().unwrap();
         assert_eq!(
-            (session.server.as_str(), session.account),
-            ("http://two.test", None)
+            (session.server.as_str(), session.account, session.username),
+            ("http://two.test", None, None)
         );
         state.end_session().unwrap();
         assert_eq!(state.session().unwrap(), None);
@@ -433,6 +447,41 @@ mod tests {
             state.device().unwrap().unwrap().account.as_deref(),
             Some("0191")
         );
+    }
+
+    #[test]
+    fn session_of_a_state_with_the_github_login_keeps_its_account_and_drops_the_login() {
+        let dir = TestDir::new("state-session-username");
+        let db = Connection::open(dir.join(FILE)).unwrap();
+        for migration in &MIGRATIONS[..3] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.execute_batch(
+            "PRAGMA user_version = 3;
+             INSERT INTO session (id, server, account, github_login)
+                 VALUES (1, 'http://one.test', '0190', 'Ada_Lovelace');",
+        )
+        .unwrap();
+        drop(db);
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.session().unwrap(),
+            Some(Session {
+                server: "http://one.test".to_owned(),
+                account: Some("0190".to_owned()),
+                username: None,
+            })
+        );
+        let columns: Vec<String> = state
+            .db
+            .prepare("SELECT name FROM pragma_table_info('session')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(columns, ["id", "server", "account", "username"]);
     }
 
     #[test]

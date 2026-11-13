@@ -19,7 +19,7 @@ use machine::{
 };
 
 const TOKEN: &str = "tok-stub-0123456789abcdefghijkl";
-const LOGIN: &str = "ada-stub-login";
+const USERNAME: &str = "ada-stub-username";
 
 /// Device authorization's answer, with codes that live `expires_in` seconds.
 fn grant(expires_in: u64) -> String {
@@ -43,8 +43,9 @@ fn oauth_error(error: &str) -> String {
 }
 
 fn session() -> String {
-    let body =
-        format!(r#"{{"account":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","github_login":"{LOGIN}"}}"#);
+    let body = format!(
+        r#"{{"account":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","username":"{USERNAME}","github_login":"Ada_Stub_Login"}}"#
+    );
     response("200 OK", "application/json", &body)
 }
 
@@ -112,7 +113,7 @@ fn device_flow_requests_state_the_protocol_version() {
     let finished = machine.sign_in(&stub.url).finish();
 
     assert!(finished.success, "{finished:?}");
-    assert!(finished.shown().contains(LOGIN), "{finished:?}");
+    assert!(finished.shown().contains(USERNAME), "{finished:?}");
     let version = format!(
         "\nskald-protocol-version: {}",
         skald_proto::PROTOCOL_VERSION
