@@ -393,14 +393,14 @@ pub(crate) async fn page(
 fn ask(session: &Session, user_code: &str) -> Response {
     let body = format!(
         "<h1>Sign in a machine</h1>\
-         <p>You are signed in as <strong>{login}</strong>. Approving a code signs the machine that \
+         <p>You are signed in as <strong>{username}</strong>. Approving a code signs the machine that \
          shows it in to this account: approve only a code that your own machine shows.</p>\
          <form method=\"post\" action=\"{VERIFICATION_PATH}\">\
          <p><label>Code <input name=\"user_code\" value=\"{code}\" autocomplete=\"off\" \
          spellcheck=\"false\"></label></p>\
          <p><button name=\"decision\" value=\"approve\">Approve</button> \
          <button name=\"decision\" value=\"deny\">Deny</button></p></form>",
-        login = escape(&session.github_login),
+        username = escape(&session.username),
         code = escape(user_code),
     );
     page_of(StatusCode::OK, "Sign in a machine", &body)
