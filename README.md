@@ -69,7 +69,7 @@ skald update               # update to the latest stable release, never a beta; 
 
 - Device keys are generated on the machine and never leave it.
 - The device keys and the session token are kept in the system's key store: Keychain on macOS, Secret Service on Linux, Credential Manager on Windows. Without one, they go to a file in the client's state directory, with 0600 permissions on macOS and Linux.
-- The account master key is the root of trust: every device certificate leads back to it through a chain of signatures. The server cannot link a device to the account on its own.
+- The account master key is the root of trust: every device certificate leads back to it through a chain of signatures. Once the account's first device has created the master key, the server cannot link a device to the account on its own: [threat model, "The server or its operator"](docs/threat-model.md#the-server-or-its-operator).
 
 ## Security
 
