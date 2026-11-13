@@ -558,13 +558,11 @@ mod tests {
     #[test]
     fn keys_of_other_kinds_are_left_out() {
         let key = StandInKey::ec();
-        let mut p384 = key.jwk();
-        p384["crv"] = json!("P-384");
-        p384["kid"] = json!("p384");
+        // Each is malformed as a key the server takes: only left out, it breaks nothing.
         let others = [
-            json!({ "kty": "oct", "kid": "oct", "k": "c2VjcmV0" }),
-            json!({ "kty": "OKP", "kid": "okp", "crv": "Ed25519", "x": "AAAA" }),
-            p384,
+            json!({ "kty": "oct", "kid": "oct", "k": "*" }),
+            json!({ "kty": "OKP", "kid": "okp", "crv": "Ed25519", "x": "*" }),
+            json!({ "kty": "EC", "kid": "p384", "crv": "P-384", "x": "*", "y": "*" }),
             json!({ "kty": "RSA", "kid": "enc", "use": "enc", "n": "*", "e": "*" }),
             key.jwk(),
         ];
