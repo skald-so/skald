@@ -63,8 +63,13 @@ impl DeviceFlow {
 
     /// A server with the extra arguments `args`, as [`SignIn::start_with`] starts it.
     pub fn start_with(args: &[&str]) -> Self {
+        Self::of(SignIn::start_with(args, CLIENT_SECRET))
+    }
+
+    /// The device flow of `stand`'s server, which it starts with no extra arguments.
+    pub fn of(stand: SignIn) -> Self {
         DeviceFlow {
-            stand: SignIn::start_with(args, CLIENT_SECRET),
+            stand,
             spec: spec(),
         }
     }

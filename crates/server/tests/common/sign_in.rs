@@ -103,9 +103,23 @@ impl SignIn {
         Self::new(|_| public.to_owned(), args, CLIENT_SECRET)
     }
 
+    /// As [`SignIn::start`], on `db`, such as a database that holds what an earlier server made.
+    pub fn on(db: TestDb) -> Self {
+        Self::new_on(
+            db,
+            |port| format!("http://skald.test:{port}"),
+            &[],
+            CLIENT_SECRET,
+        )
+    }
+
     /// A server whose public address `public` gives for the port the server listens on.
     fn new(public: impl Fn(u16) -> String, args: &[&str], secret: &str) -> Self {
-        let db = TestDb::create();
+        Self::new_on(TestDb::create(), public, args, secret)
+    }
+
+    /// As [`SignIn::new`], on `db`.
+    fn new_on(db: TestDb, public: impl Fn(u16) -> String, args: &[&str], secret: &str) -> Self {
         let (github, server, public) = on_free_port(Duration::from_secs(30), |port| {
             let public = public(port);
             let github = GitHub::start(App {

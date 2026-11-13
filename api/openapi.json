@@ -373,7 +373,7 @@
       "get": {
         "operationId": "finishGitHubSignIn",
         "summary": "GitHub's callback",
-        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and reads the GitHub user. The first sign-in of a GitHub user creates its account, bound to the user's GitHub ID; later ones reach it and update its GitHub login. Keeps no GitHub token.",
+        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and reads the GitHub user. The first sign-in of a GitHub user creates an account with the user's GitHub ID as its GitHub sign-in method; later ones reach the account that holds that method and update the method's GitHub login. Keeps no GitHub token.",
         "parameters": [
           {
             "name": "code",
