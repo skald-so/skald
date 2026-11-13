@@ -297,15 +297,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
     match how {
         // Its result does not matter.
         Lose::Close => drop(run.finish()),
-        Lose::Withhold => {
-            let deadline = Instant::now() + WAIT;
-            while cloud.relay.lost() == 0 {
-                assert!(Instant::now() < deadline, "no {request}: {}", run.shown());
-                thread::sleep(Duration::from_millis(50));
-            }
-            // Killed.
-            drop(run);
-        }
+        Lose::Withhold => cloud.kill_once_lost(run, request),
     }
     assert_eq!(cloud.relay.lost(), 1, "the server never answered {request}");
     let token = cloud.last_token();
