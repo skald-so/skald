@@ -195,7 +195,7 @@ grant-body = {
 
 A recipient MUST reject content from a `service` device unless:
 1. the content's `grant` names the sending device as `service` and lists `channel` in `channels`;
-2. `signer` is a valid `client` or `browser` device ([Device checks](membership.md#device-checks)) of an admin of `space`, and `signature` verifies with its certificate;
+2. `signer` is an [admin's device](membership.md#roster) of `space`, and `signature` verifies with its certificate;
 3. `expires` has not passed.
 
 ### Delegation

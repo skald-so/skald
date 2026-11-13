@@ -318,13 +318,14 @@ channel-member = [
 ```
 
 - A space's creator signs revision 1 and is its first admin.
+- An admin's device in a revision is a `client` or `browser` device with a valid certificate ([Device checks](#device-checks)) of an account that is an admin in it, unless that member's `excluded` in it lists the device.
 - A revision's hash is SHA-256 over its encoded `roster`.
 - The server keeps every revision. It stores revision n+1 only if it has revision n, so of two revisions signed at once it keeps the first; it refuses the other, and its signer applies its change to the new revision and signs again.
 - It sends a [`space-notice`](delivery.md#frames) to the space's devices when it stores a revision.
 - A `service` device sends only as `space/owner/agent` from its entry ([Envelope](README.md#envelope)).
 
 A client starts from an anchor: revision 1 of a space it created, the revision its [invite](#invite) link names, or one from its [link object](#linking-a-device) or [anchors](#anchors). It MUST NOT accept revision n+1 before it has accepted revision n, nor unless:
-1. its signature verifies with the certificate of `signer`, a valid `client` or `browser` device of an account that is an admin in revision n, and that member's `excluded` in revision n does not list `signer`;
+1. its signature verifies with the certificate of `signer`, an admin's device in revision n;
 2. `space` and `name` are those of revision n, `revision` is n+1, and `prev` is the hash of revision n;
 3. it has at least one admin; no list repeats an account, device, channel or invite; `name`, handles, owners and agents are valid names ([Agent address](README.md#agent-address)); no two members share a handle, and no owner is a handle; service agents may share an owner, but not an owner and agent;
 4. each `service-agent` device has a valid certificate of kind `service` on a member's account; each `channel-member` is a member; `policy` passes [its checks](#policy).
@@ -383,11 +384,11 @@ acceptance-body = {
 
 The newcomer's device MUST, from the link:
 1. take the roster revision with the hash in the fragment, check its hash and accept it as its anchor, then accept later revisions as [Roster](#roster) says;
-2. check the invite's signature with `signer`, a valid `client` or `browser` device of an admin per those revisions, and that `key` is the one derived from the secret;
+2. check the invite's signature with `signer`, an [admin's device](#roster) per those revisions, and that `key` is the one derived from the secret;
 3. only then prove it holds the secret: sign an acceptance with the invite key, for its own account, master key and handle.
 
 An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
-1. checks the invite: its signature with the certificate of `signer`, a valid `client` or `browser` device of an admin in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;
+1. checks the invite: its signature with the certificate of `signer`, an [admin's device](#roster) in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;
 2. checks the acceptance's signature with the invite's `key`;
 3. checks that the account is not a member and the handle is free;
 4. checks each of the newcomer's devices: a valid certificate chained to `master` from the acceptance, not to one the server gives.

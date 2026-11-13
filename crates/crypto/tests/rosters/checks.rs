@@ -106,6 +106,10 @@ fn a_device_that_revision_n_excludes_is_no_signer() {
     rev.signer = ALICE_LAPTOP;
     assert!(accepts_after(&previous, &rev.roster()).is_err());
 
+    // Also when the revision it signs drops its exclusion.
+    rev.members[0].excluded.clear();
+    assert!(accepts_after(&previous, &rev.roster()).is_err());
+
     // Another device of the same admin account still signs.
     rev.signer = ALICE_BROWSER;
     accepts_after(&previous, &rev.roster()).unwrap();
