@@ -1,0 +1,179 @@
+#!/usr/bin/env node
+// Tests the job of .github/workflows/ci.yml that runs the client's tests on Windows:
+//   - one job of a PR into dev runs `cargo test -p skald-client --locked --no-fail-fast` on a
+//     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
+//     client, none left out;
+//   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
+//     last command's, so a command after it would hide a failing test;
+//   - it is gated like the job that runs script/test's Rust part: it needs the job of
+//     script/changed-parts and runs exactly when that job's rust output is true, whatever the other
+//     outputs are;
+//   - before the tests, it starts the runner image's PostgreSQL service and waits for it, and
+//     installs the packages of web/, whose playwright-core drives Chrome; the tests get the server
+//     through SKALD_TEST_DATABASE_URL;
+//   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
+//     Manager; no other job of any workflow and no script sets it;
+//   - every action is pinned to a commit, a checkout keeps no credentials, and the job's token reads
+//     contents at most.
+import fs from 'node:fs';
+import path from 'node:path';
+import { commands, condition, event, jobsFor, needsOf, permissions, readWorkflow, stepSkipped, truth, unknown, words } from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const ciFile = '.github/workflows/ci.yml';
+const ci = readWorkflow(path.join(root, ciFile));
+let failures = 0;
+const fail = (what) => {
+  console.error(`ci-workflow-test: ${what}`);
+  failures++;
+};
+const done = () => {
+  if (failures > 0) {
+    console.error(`ci-workflow-test: ${failures} case(s) failed`);
+    process.exit(1);
+  }
+  console.log('ci-workflow-test: all cases passed');
+};
+
+const jobs = ci.jobs ?? {};
+const states = jobsFor(ci, event('pull_request', 'refs/pull/7/merge'));
+// The cargo test command of a line, as its words, or null.
+const cargoTest = (line) => {
+  const w = words(line);
+  const at = w.findIndex((word, i) => word === 'cargo' && w[i + 1] === 'test');
+  return at < 0 ? null : w.slice(at + 2);
+};
+const testsClient = (args) => {
+  const options = args.indexOf('--') < 0 ? args : args.slice(0, args.indexOf('--'));
+  return options.some((word, i) => (word === '-p' || word === '--package') && options[i + 1] === 'skald-client') || options.includes('--package=skald-client');
+};
+
+// The job.
+const found = Object.entries(jobs).filter(
+  ([key, job]) =>
+    !states[key]?.skipped &&
+    String(job['runs-on'] ?? '').startsWith('windows-') &&
+    (job.steps ?? []).some((step) => commands(step.run).some((line) => testsClient(cargoTest(line) ?? []))),
+);
+if (found.length !== 1) {
+  fail(`not one job of a PR runs cargo test -p skald-client on a Windows runner: ${found.map(([key]) => key).join(', ') || 'none'}`);
+  done();
+}
+const [key, job] = found[0];
+const steps = job.steps ?? [];
+if (job['runs-on'] !== 'windows-2025') fail(`job ${key} runs on ${job['runs-on']}, not on windows-2025`);
+if (job['continue-on-error']) fail(`a failure of job ${key} does not fail the run: continue-on-error`);
+
+// The test step.
+const testIndex = steps.findIndex((step) => commands(step.run).some((line) => testsClient(cargoTest(line) ?? [])));
+const testStep = steps[testIndex];
+if (testStep['continue-on-error']) fail(`a failure of the test step of job ${key} does not fail the job: continue-on-error`);
+if (stepSkipped(testStep, states[key])) fail(`the test step of job ${key} is skipped for a PR`);
+if (testStep.if !== undefined) fail(`the test step of job ${key} has a condition: ${testStep.if}`);
+const tests = commands(testStep.run).filter((line) => cargoTest(line));
+if (tests.length !== 1) fail(`the test step of job ${key} runs cargo test ${tests.length} times, not once`);
+const args = cargoTest(tests[0] ?? '') ?? [];
+if (args.join(' ') !== '-p skald-client --locked --no-fail-fast') {
+  fail(`job ${key} runs cargo test ${args.join(' ')}, not cargo test -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
+}
+const last = commands(testStep.run)
+  .map((line) => line.trim())
+  .filter((line) => line !== '' && !line.startsWith('#'))
+  .at(-1);
+if (last !== 'cargo test -p skald-client --locked --no-fail-fast') {
+  fail(`the test step of job ${key} ends with ${last ?? 'nothing'}, not with cargo test: its exit code is the step's last command's, so a failing test would not fail the step`);
+}
+// A custom shell, {0} for the script, decides the exit code itself.
+if (String(testStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell ?? '').includes('{0}')) {
+  fail(`the test step of job ${key} runs in a custom shell, which may hide a failing test`);
+}
+// The server's URL: in the step's or the job's env, or set in PowerShell before cargo test runs.
+const url = /^postgres(ql)?:\/\/[^@\s/]+@127\.0\.0\.1:5432$/;
+const lines = commands(testStep.run);
+const set = lines.findIndex((line) => url.test(line.match(/^\s*\$env:SKALD_TEST_DATABASE_URL\s*=\s*"([^"]*)"\s*$/)?.[1] ?? ''));
+const powershell = ['pwsh', 'powershell', undefined].includes(testStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell);
+const inEnv = [testStep.env, job.env, ci.env].some((env) => url.test(String(env?.SKALD_TEST_DATABASE_URL ?? '')));
+if (!inEnv && !(powershell && set >= 0 && set < lines.findIndex((line) => cargoTest(line)))) {
+  fail(`the test step of job ${key} does not give the tests the PostgreSQL at 127.0.0.1:5432 through SKALD_TEST_DATABASE_URL`);
+}
+
+// What the tests need, before them.
+const before = steps.slice(0, testIndex).filter((step) => !step['continue-on-error'] && !stepSkipped(step, states[key]) && step.if === undefined);
+const starts = before.findIndex((step) => {
+  const text = commands(step.run).join('\n');
+  return /\bStart-Service\b/.test(text) && /['"]?postgresql\*['"]?/.test(text);
+});
+if (starts < 0) fail(`job ${key} does not start the runner image's PostgreSQL service, postgresql*, before its tests`);
+const waits = before.findIndex(
+  (step, i) => i >= starts && commands(step.run).some((line) => /pg_isready\b/.test(line) && /--host\s+127\.0\.0\.1\b/.test(line) && /--port\s+5432\b/.test(line)),
+);
+if (starts >= 0 && waits < 0) fail(`job ${key} does not wait for PostgreSQL at 127.0.0.1:5432 with pg_isready before its tests`);
+if (
+  !before.some((step) => step['working-directory'] === 'web' && commands(step.run).some((line) => /^\s*npm\s+ci\b/.test(line)))
+) {
+  fail(`job ${key} does not install the packages of web/ with npm ci before its tests: the sign-in tests drive Chrome with its playwright-core`);
+}
+if (!before.some((step) => String(step.uses ?? '').startsWith('actions/checkout@'))) fail(`job ${key} does not check out the repository before its tests`);
+
+// The gate: as the Rust part's job.
+const rustJob = Object.keys(jobs).find((k) =>
+  (jobs[k].steps ?? []).some((step) => step.env?.SKALD_TEST_PARTS === 'rust' && commands(step.run).some((line) => /script\/test\b/.test(line))),
+);
+if (!rustJob) fail('no job runs script/test with SKALD_TEST_PARTS=rust');
+const partsJob = Object.keys(jobs).find((k) => (jobs[k].steps ?? []).some((step) => commands(step.run).some((line) => /script\/changed-parts\b/.test(line))));
+if (!partsJob) fail('no job runs script/changed-parts');
+if (partsJob && JSON.stringify(needsOf(job)) !== JSON.stringify([partsJob])) {
+  fail(`job ${key} needs ${needsOf(job).join(', ') || 'nothing'}, not only job ${partsJob}, which runs script/changed-parts`);
+}
+// runs <job> <rust>: whether the job runs when the parts job succeeds with that rust output, the
+// other outputs unknown: true, false, or undefined when that does not decide it.
+const runs = (j, rust) => {
+  const outputs = Object.fromEntries(Object.keys(jobs[partsJob]?.outputs ?? {}).map((name) => [name, unknown()]));
+  outputs.rust = rust;
+  const scope = {
+    contexts: { github: states[key].scope.contexts.github, inputs: {}, needs: { [partsJob]: { result: 'success', outputs } } },
+    status: { success: true, always: true, failure: false, cancelled: false },
+  };
+  return j.if === undefined ? true : truth(condition(j.if, scope));
+};
+if (partsJob) {
+  for (const [rust, want] of [
+    ['true', true],
+    ['false', false],
+  ]) {
+    const got = runs(job, rust);
+    if (got !== want) fail(`job ${key} ${got ? 'runs' : got === false ? 'is skipped' : 'may run'} when the Rust part is ${rust === 'true' ? 'changed' : 'unchanged'}`);
+    if (rustJob && runs(jobs[rustJob], rust) !== want) fail(`job ${rustJob} is not gated by the Rust part: rust=${rust}`);
+  }
+}
+
+// The system's own key storage: only this job's tests use it.
+const realKeys = 'SKALD_TEST_REAL_KEY_STORAGE';
+if (String(testStep.env?.[realKeys]) !== '1') fail(`the test step of job ${key} does not set ${realKeys}=1`);
+const workflowDir = path.join(root, '.github/workflows');
+for (const file of fs.readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f))) {
+  const workflow = readWorkflow(path.join(workflowDir, file));
+  const others = { ...workflow, jobs: Object.fromEntries(Object.entries(workflow.jobs ?? {}).filter(([k]) => `.github/workflows/${file}` !== ciFile || k !== key)) };
+  if (JSON.stringify(others).includes(realKeys)) fail(`.github/workflows/${file} sets ${realKeys} outside job ${key} of ${ciFile}`);
+}
+if (JSON.stringify(jobs[key]).replace(JSON.stringify(testStep), '').includes(realKeys)) fail(`job ${key} sets ${realKeys} outside its test step`);
+for (const file of fs.readdirSync(path.join(root, 'script'), { recursive: true })) {
+  const full = path.join(root, 'script', file);
+  if (file !== 'ci-workflow-test' && fs.statSync(full).isFile() && fs.readFileSync(full, 'utf8').includes(realKeys)) fail(`script/${file} sets ${realKeys}`);
+}
+
+// The rules of every workflow, for this job: pinned actions, no kept credentials, a read-only token.
+for (const step of steps) {
+  const uses = String(step.uses ?? '');
+  if (uses && !uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(uses)) fail(`job ${key} uses ${uses}, not pinned to a commit`);
+  if (uses.startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false && step.with?.['persist-credentials'] !== 'false') {
+    fail(`a checkout of job ${key} keeps the credentials: no persist-credentials: false`);
+  }
+}
+const granted = permissions(ci, job);
+if (granted === null) fail(`job ${key} has no permissions set`);
+else if (Object.entries(granted).some(([scope, level]) => level !== 'none' && !(scope === 'contents' && level === 'read'))) {
+  fail(`the token of job ${key} gets more than contents: read: ${JSON.stringify(granted)}`);
+}
+
+done();

@@ -1,6 +1,6 @@
-//! A machine without a browser: `skald` runs with an empty environment, a `PATH` with nothing on it
-//! and a home, a state directory and a temporary directory of its own, all under one directory
-//! that is removed on drop. Several machines run on one this way.
+//! A machine without a browser: `skald` runs with an empty environment ([`bare_skald`]), a `PATH`
+//! with nothing on it and a home, a state directory and a temporary directory of its own, all under
+//! one directory that is removed on drop. Several machines run on one this way.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -38,6 +38,18 @@ pub const HOST_NAME: &str = "SKALD_HOST_NAME";
 
 /// How long a run may take before the test fails.
 pub const RUN_LIMIT: Duration = Duration::from_secs(90);
+
+/// `skald` with an empty environment but for what Windows needs to run any program with sockets:
+/// without `SystemRoot`, Winsock loads no provider, os error 10106.
+pub fn bare_skald() -> Command {
+    let mut command = Command::new(CLIENT);
+    command.env_clear();
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
+    command
+}
 
 pub struct Machine {
     root: PathBuf,
@@ -96,13 +108,16 @@ impl Machine {
     }
 
     fn spawn(&self, args: &[&str], stdin: Stdio) -> Run {
-        let mut command = Command::new(CLIENT);
+        let mut command = bare_skald();
         command
             .args(args)
-            .env_clear()
             .env("PATH", self.root.join("bin"))
+            // The home and the temporary directory, as Unix and Windows name them.
             .env("HOME", self.root.join("home"))
+            .env("USERPROFILE", self.root.join("home"))
             .env("TMPDIR", self.root.join("tmp"))
+            .env("TMP", self.root.join("tmp"))
+            .env("TEMP", self.root.join("tmp"))
             .env(STATE_DIR, self.state_dir())
             .env(KEY_STORAGE, "file");
         if let Some(name) = &self.host_name {

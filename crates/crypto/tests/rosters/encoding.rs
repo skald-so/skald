@@ -41,7 +41,8 @@ fn with_member_field(rev: &Rev, key: i64, field: Option<Value>) -> Value {
     with(&rev.value(), 7, Some(Value::Array(members)))
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_decodes_into_its_spec_fields() {
     let rev = rich();
     let roster = Roster::from_cbor(&rev.bytes()).unwrap();
@@ -96,7 +97,8 @@ fn a_revision_decodes_into_its_spec_fields() {
     assert_eq!(body.policy.history, THIRTY_DAYS);
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_round_trips_byte_for_byte_with_its_unknown_fields() {
     let rev = rich();
     let roster = Roster::from_cbor(&rev.bytes()).unwrap();
@@ -110,7 +112,8 @@ fn a_revision_round_trips_byte_for_byte_with_its_unknown_fields() {
     assert_eq!(&body, roster.body());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_without_optional_fields_round_trips() {
     let mut rev = current();
     rev.members = vec![alice()];
@@ -126,7 +129,8 @@ fn a_revision_without_optional_fields_round_trips() {
     assert_eq!(body.to_cbor(), rev.body());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_one_has_no_prev() {
     let mut rev = current();
     rev.revision = 1;
@@ -136,7 +140,8 @@ fn a_revision_one_has_no_prev() {
     assert_eq!(body.to_cbor(), rev.body());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_mode_this_version_does_not_know_reads_as_read_only_and_round_trips() {
     let mut rev = current();
     rev.ceilings = [9, FULL];
@@ -153,7 +158,8 @@ fn a_mode_this_version_does_not_know_reads_as_read_only_and_round_trips() {
     assert_eq!(body.to_cbor(), rev.body());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn revision_one_of_a_new_space_has_its_creator_as_the_only_admin() {
     let body = first_body();
 
@@ -176,7 +182,8 @@ fn revision_one_of_a_new_space_has_its_creator_as_the_only_admin() {
     assert_eq!(body.to_cbor(), revision_one().body());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_hash_is_sha_256_of_the_encoded_roster() {
     let roster = Roster::from_cbor(&revision_one().bytes()).unwrap();
     // SHA-256 of `revision_one().bytes()`, computed apart from the crates under test.
@@ -195,7 +202,8 @@ fn hex32(hex: &str) -> [u8; 32] {
     out
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn every_truncation_of_a_revision_is_rejected() {
     let encoded = rich().bytes();
     for len in 0..encoded.len() {
@@ -222,7 +230,8 @@ fn every_truncation_of_a_revision_is_rejected() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn every_corruption_of_a_revision_decodes_or_fails_without_a_panic() {
     let encoded = rich().bytes();
     for at in 0..encoded.len() {
@@ -242,7 +251,8 @@ fn every_corruption_of_a_revision_decodes_or_fails_without_a_panic() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_that_breaks_the_encoding_rules_is_rejected() {
     let encoded = current().bytes();
 
@@ -295,7 +305,8 @@ fn a_revision_that_breaks_the_encoding_rules_is_rejected() {
     assert!(Roster::from_cbor(&roster_of(&not_shortest)).is_err());
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_that_breaks_the_cddl_does_not_decode() {
     let rev = current();
     let body = rev.value();
@@ -402,7 +413,8 @@ fn a_revision_that_breaks_the_cddl_does_not_decode() {
 
 /// A revision that breaks the CDDL in a way a decoder or check 3 may catch: the client never
 /// accepts it.
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_revision_with_no_member_or_an_undefined_role_is_never_accepted() {
     let mut no_member = next();
     no_member.members.clear();

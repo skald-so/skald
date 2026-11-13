@@ -17,7 +17,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - `curl`, `jq`, `openssl` and `tar`: the tests run them.
 - The OpenSSH client and server (`ssh`, `ssh-add`, `ssh-agent`, `ssh-keygen`, `sshd`): the staging deploy's test runs a local `sshd`.
 - Python 3 with its `venv` module: the edit comparison prototype's tests install a package with `pip` in a virtual environment.
-- The MLS prototypes' WASM tests: the `wasm32-unknown-unknown` target, `rustup target add wasm32-unknown-unknown`, and `wasm-bindgen-cli` of the `wasm-bindgen` version in `prototypes/mls/Cargo.lock`: `cargo install wasm-bindgen-cli --version <version> --locked`. They run in Node.js.
+- The WASM tests of `skald-crypto`, `skald-proto`'s of ID generation and the MLS prototypes': the `wasm32-unknown-unknown` target, `rustup target add wasm32-unknown-unknown`, and `wasm-bindgen-cli` of the `wasm-bindgen` version in `prototypes/mls/Cargo.lock`, which the workspace's `Cargo.lock` has too: `cargo install wasm-bindgen-cli --version <version> --locked`. They run in Node.js.
 - Google Chrome: the web tests ([web/README.md](web/README.md)) and the server's and the client's sign-in tests run it headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
 
 ## Running locally

@@ -52,7 +52,8 @@ jobs:
             prototypes/mls -> target
             prototypes/edits -> target
             prototypes/agents -> target
-      # The MLS prototypes' WASM tests need the wasm-bindgen-cli of their Cargo.lock.
+      # The WASM tests of the crates and the MLS prototypes need the wasm-bindgen-cli of the
+      # prototypes' Cargo.lock.
       - id: wasm-bindgen
         shell: bash # -o pipefail: a failure of awk fails the step
         run: >-
@@ -63,7 +64,7 @@ jobs:
         with:
           tool: >-
             cargo-deny@0.20.2,wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }},release-plz@0.4.3
-      # The MLS prototypes' WASM tests run in Node.js; the server's and the client's sign-in tests
+      # The WASM tests run in Node.js; the server's and the client's sign-in tests
       # drive the runner's Google Chrome with the playwright-core of web/.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -73,6 +74,50 @@ jobs:
       - run: ./script/test
         env:
           SKALD_TEST_PARTS: rust
+
+  # The tests of the client, the one crate whose behavior depends on the OS, on Windows; script/test
+  # runs them on Linux. Outside script/test, in the Rust part.
+  client-windows:
+    name: Client on Windows
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The sign-in tests drive the runner's Google Chrome with the playwright-core of web/.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install the packages of web/
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      # The image's PostgreSQL, stopped and disabled until started.
+      - name: Start PostgreSQL
+        shell: pwsh
+        run: |
+          $service = Get-Service -Name 'postgresql*'
+          Set-Service -InputObject $service -StartupType Manual
+          Start-Service -InputObject $service
+          & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      # PGUSER and PGPASSWORD of the image name its superuser. Every failing test target shows. A
+      # fresh runner's Credential Manager is the one key storage a test may use.
+      - name: Test the client
+        shell: pwsh
+        env:
+          SKALD_TEST_REAL_KEY_STORAGE: '1'
+        run: |
+          $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
+          cargo test -p skald-client --locked --no-fail-fast
 
   tooling:
     name: Tooling

@@ -9,71 +9,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use skald_proto::{CERT_NAME_MAX, Cbor as _, Cert, DeviceId};
-use sqlx::PgPool;
 
-use crate::sign_in::{not_signed_in, signed_in};
-use crate::{AppState, database_failed, problem};
+use crate::AppState;
+use crate::refusal::{Answer, Refusal, account, answer, parse};
 
 /// The only kind of device that registers here; other kinds come with later stories.
 const CLIENT: &str = "client";
-
-/// Why the server refuses a request.
-enum Refusal {
-    NotSignedIn,
-    /// A malformed or invalid body, for the reason it holds.
-    Invalid(String),
-    /// A certificate the server does not take, for the reason it holds.
-    Cert(String),
-    DeviceTaken,
-    MasterKeyTaken,
-    /// The database failed at what it holds, such as `read a session`.
-    Database(&'static str, sqlx::Error),
-}
-
-impl IntoResponse for Refusal {
-    fn into_response(self) -> Response {
-        let bad = StatusCode::BAD_REQUEST;
-        match self {
-            Refusal::NotSignedIn => not_signed_in(),
-            Refusal::Invalid(detail) => problem(bad, "invalid-request", "Invalid request", &detail),
-            Refusal::Cert(detail) => {
-                problem(bad, "invalid-certificate", "Invalid certificate", &detail)
-            }
-            Refusal::DeviceTaken => problem(
-                StatusCode::CONFLICT,
-                "device-taken",
-                "Device ID taken",
-                "The server has this device ID with other keys or name, or on another account.",
-            ),
-            Refusal::MasterKeyTaken => problem(
-                StatusCode::CONFLICT,
-                "master-key-taken",
-                "The account has a master key",
-                "The account has another master key, or took another certificate with it.",
-            ),
-            Refusal::Database(doing, err) => database_failed(doing, err),
-        }
-    }
-}
-
-/// What a handler answers: a response, or why it refuses.
-type Answer = Result<Response, Refusal>;
-
-/// The ID of the account of the request's session.
-async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, Refusal> {
-    let session = signed_in(db, headers)
-        .await
-        .map_err(|err| Refusal::Database("read a session", err))?;
-    Ok(session.ok_or(Refusal::NotSignedIn)?.account)
-}
-
-/// The JSON `body` as a `T`.
-fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<T, Refusal> {
-    serde_json::from_slice(body).map_err(|err| Refusal::Invalid(format!("not a valid body: {err}")))
-}
 
 /// The bytes of `text`, base64url without padding; `field` names it in the refusal.
 fn bytes(text: &str, field: &str) -> Result<Vec<u8>, Refusal> {
@@ -97,11 +40,6 @@ fn taken(created: bool, body: impl Serialize) -> Answer {
         StatusCode::OK
     };
     Ok((status, Json(body)).into_response())
-}
-
-/// Runs a handler's `answer`, which gives a response or why it refuses.
-async fn answer(answer: impl Future<Output = Answer>) -> Response {
-    answer.await.unwrap_or_else(IntoResponse::into_response)
 }
 
 /// `Device` in the spec.

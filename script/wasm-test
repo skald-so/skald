@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# Runs the tests of skald-crypto in WASM in Node.js, and skald-proto's test of ID generation, and
+# fails unless:
+#   - skald-proto and skald-crypto build for wasm32-unknown-unknown;
+#   - the workspace takes the wasm-bindgen of the MLS prototypes, so one wasm-bindgen-cli runs the
+#     WASM tests of both;
+#   - every test that skald-crypto lists natively, in each of its test targets, passes in WASM:
+#     wasm-bindgen-test-runner skips a plain #[test], so a test that never ran fails here;
+#   - the tests of the same bytes from fixed keys, of generated keys and of generated IDs ran and
+#     passed in WASM.
+# script/test runs it after the native tests, which cover the native side.
+# Usage: script/wasm-test, in any directory of the repository.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+target=wasm32-unknown-unknown
+failures=0
+
+fail() {
+  echo "wasm-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# The tests in Node.js, wasm-bindgen-test's default, whatever cargo config is in place.
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+
+# lock_version <Cargo.lock> <package>: the versions of <package> in <Cargo.lock>, one per line.
+lock_version() {
+  awk -v name="name = \"$2\"" '$0 == name { getline; gsub(/"/, "", $3); print $3 }' "$1"
+}
+
+ours=$(lock_version Cargo.lock wasm-bindgen)
+theirs=$(lock_version prototypes/mls/Cargo.lock wasm-bindgen)
+if [[ -z $ours || $ours != "$theirs" ]]; then
+  fail "the workspace's wasm-bindgen is '${ours//$'\n'/ }', the MLS prototypes' '$theirs':" \
+    "one wasm-bindgen-cli runs the WASM tests of both"
+fi
+
+if ! cargo build --target "$target" -p skald-proto -p skald-crypto --locked; then
+  fail "skald-proto and skald-crypto do not build for $target"
+fi
+
+# passed_in_wasm <package> <cargo test target option>...: the names of the tests that passed in
+# WASM, one per line, in $tmp/passed; fails when the run fails.
+passed_in_wasm() {
+  local package=$1
+  shift
+  if ! cargo test --target "$target" -p "$package" --locked "$@" >"$tmp/run" 2>&1; then
+    cat "$tmp/run" >&2
+    return 1
+  fi
+  sed -n -E 's/^test (.+) \.\.\. ok$/\1/p' "$tmp/run" | sort >"$tmp/passed"
+}
+
+# The test targets of skald-crypto that cargo test runs: its library's unit tests and each file in
+# tests/, as cargo test options.
+selections=$(cargo metadata --format-version 1 --no-deps | jq -r '
+  .packages[] | select(.name == "skald-crypto") | .targets[] | select(.test)
+  | if .kind == ["lib"] then "--lib" elif .kind == ["test"] then "--test \(.name)" else empty end')
+if [[ -z $selections ]]; then
+  fail "skald-crypto has no test targets"
+fi
+
+while IFS= read -r selection; do
+  [[ -n $selection ]] || continue
+  # $selection unquoted: `--test <name>` is two words.
+  if ! cargo test -p skald-crypto --locked $selection -- --list --format terse >"$tmp/list" 2>&1; then
+    cat "$tmp/list" >&2
+    fail "skald-crypto $selection: its tests cannot be listed natively"
+    continue
+  fi
+  sed -n -E 's/^(.+): test$/\1/p' "$tmp/list" | sort >"$tmp/native"
+  if ! passed_in_wasm skald-crypto $selection; then
+    fail "skald-crypto $selection: the run in WASM fails"
+    continue
+  fi
+  missing=$(comm -23 "$tmp/native" "$tmp/passed")
+  if [[ -n $missing ]]; then
+    fail "skald-crypto $selection: tests listed natively that did not pass in WASM:" \
+      "${missing//$'\n'/ }"
+  fi
+  name=${selection#--test }
+  cp "$tmp/passed" "$tmp/passed-${name#--}"
+done <<<"$selections"
+
+# expect <file of passed tests> <label> <test>...: each <test> passed in WASM.
+expect() {
+  local passed=$1 label=$2
+  shift 2
+  for test in "$@"; do
+    if [[ ! -f $passed ]] || ! grep -qxF "$test" "$passed"; then
+      fail "$label: $test did not pass in WASM"
+    fi
+  done
+}
+
+expect "$tmp/passed-targets" "skald-crypto --test targets" \
+  fixed_secrets_give_the_rfc_public_keys \
+  signatures_with_a_fixed_key_are_the_native_bytes \
+  certificates_with_fixed_keys_are_the_native_bytes \
+  generated_signing_keys_differ \
+  generated_hpke_keys_differ
+
+rm -f "$tmp/passed"
+if ! passed_in_wasm skald-proto --test generated_ids; then
+  fail "skald-proto --test generated_ids: the run in WASM fails"
+fi
+expect "$tmp/passed" "skald-proto --test generated_ids" \
+  generated_ids_are_uuidv7_of_the_current_time
+
+if ((failures > 0)); then
+  echo "wasm-test: $failures failed" >&2
+  exit 1
+fi
+echo "wasm-test: ok"

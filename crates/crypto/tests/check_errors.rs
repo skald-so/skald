@@ -52,7 +52,8 @@ fn chain(seed: u8, problem: ChainProblem) -> Result<Cert, DeviceCheckError> {
     })
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn each_failed_check_has_its_reason() {
     let master = signing_key(MASTER).public_key();
     let other_master = signing_key(MASTER + 1).public_key();
@@ -116,7 +117,8 @@ fn each_failed_check_has_its_reason() {
     assert_eq!(check(&[first, second.clone()], 2), Ok(second));
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_device_hanging_off_a_loop_of_issuers_is_not_valid() {
     // 1 issued by 2, 2 by 3, 3 by 4 and 4 by 2: the chain of 1 repeats 2, but not 1.
     let certs = [
@@ -132,7 +134,8 @@ fn a_device_hanging_off_a_loop_of_issuers_is_not_valid() {
     );
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_public_key_or_r_of_small_order_verifies_nothing() {
     // The identity point as the public key and as R, with S = 0: a signature over any data with
     // a verifier that does not reject small orders.
@@ -152,7 +155,8 @@ fn a_public_key_or_r_of_small_order_verifies_nothing() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_body_the_cddl_forbids_is_not_issued() {
     for name in [String::new(), "a".repeat(65)] {
         let body = CertBody {
@@ -181,7 +185,8 @@ fn a_body_the_cddl_forbids_is_not_issued() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn errors_explain_themselves() {
     let device = device_id(1);
     let chain = |problem| DeviceCheckError::Chain { device, problem }.to_string();
@@ -231,7 +236,8 @@ fn errors_explain_themselves() {
     assert_eq!(SignatureError.to_string(), "the signature does not verify");
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_signing_key_never_shows_its_bytes() {
     assert_eq!(format!("{:?}", signing_key(1)), "SigningKey(..)");
     assert_eq!(format!("{:#?}", SigningKey::generate()), "SigningKey(..)");
