@@ -3,7 +3,8 @@
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     copied code in crates/ and prototypes/ (script/duplicates); build, fmt, clippy, tests
 #            with PostgreSQL, those of script/check-github-sign-in among them, and, for the server's
-#            GitHub sign-in and the client's sign-in, headless Chrome; cargo-deny; the MLS
+#            GitHub sign-in and the client's sign-in, headless Chrome; the tests of skald-crypto and
+#            skald-proto's of ID generation in WASM (script/wasm-test); cargo-deny; the MLS
 #            prototypes in prototypes/mls and their benchmarks' smoke run, natively and in WASM; the
 #            delivery prototypes in prototypes/agents; the edit comparison prototype in
 #            prototypes/edits;
@@ -143,6 +144,7 @@ if checks rust; then
   web_packages
   postgres_wait
   cargo test --workspace --locked
+  script/wasm-test
 
   script/deny check advisories licenses
   script/deny-test
