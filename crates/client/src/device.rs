@@ -153,6 +153,11 @@ impl Keys {
     pub fn id(&self) -> DeviceId {
         DeviceId::from_signing_key(&self.signing.public_key())
     }
+
+    /// The device's signing key.
+    pub fn signing(&self) -> &SigningKey {
+        &self.signing
+    }
 }
 
 /// The keys of the device the state knows, `known`, as `stored` holds them; or, if the state knows

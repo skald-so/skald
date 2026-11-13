@@ -97,6 +97,14 @@ pub fn run(
 /// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the
 /// server of its session and the session token; [`NOT_SIGNED_IN`] if it has no session.
 pub fn signed_in(dir: &Path, storage: secrets::Storage) -> Result<(State, String, String), String> {
+    signed_in_with_secrets(dir, storage).map(|(state, server, token, _)| (state, server, token))
+}
+
+/// As [`signed_in`], with the secrets too.
+pub fn signed_in_with_secrets(
+    dir: &Path,
+    storage: secrets::Storage,
+) -> Result<(State, String, String, secrets::Map), String> {
     if !dir.is_dir() {
         return Err(NOT_SIGNED_IN.to_owned());
     }
@@ -109,7 +117,7 @@ pub fn signed_in(dir: &Path, storage: secrets::Storage) -> Result<(State, String
     let token = sign_in::token_for(&stored, &session.server)
         .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
         .clone();
-    Ok((state, session.server, token))
+    Ok((state, session.server, token, stored))
 }
 
 /// Each name that two or more of the `linked` certificates hold, with their devices, in the order

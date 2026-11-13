@@ -7,6 +7,7 @@ mod secrets;
 mod set_username;
 mod sign_in;
 mod sign_out;
+mod spaces;
 mod state;
 #[cfg(test)]
 mod test_dir;
@@ -119,6 +120,17 @@ enum Command {
         #[arg(value_name = "USERNAME", allow_hyphen_values = true)]
         username: String,
     },
+    /// Creates a team space on the server of this machine's session: this device signs the space's
+    /// first roster revision as its first admin, with the account's username as its handle. Run
+    /// again after a lost answer, it finishes the same space.
+    CreateSpace {
+        /// The space's name, such as acme: a-z, 0-9 and '-' inside, 1 to 63 characters.
+        #[arg(value_name = "NAME", allow_hyphen_values = true)]
+        name: String,
+    },
+    /// Lists the spaces this device accepted a roster revision of: each one's name, the account's
+    /// role and handle in it, and its ID.
+    Spaces,
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -195,6 +207,12 @@ fn main() -> ExitCode {
             });
             exit(result)
         }
+        Command::CreateSpace { name } => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| spaces::create(&dir, cli.key_storage, speaks, timeout, &name));
+            exit(result)
+        }
+        Command::Spaces => exit(state::dir(cli.state_dir).and_then(|dir| spaces::list(&dir))),
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
 }
