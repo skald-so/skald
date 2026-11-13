@@ -63,7 +63,7 @@ timestamp = uint       ; seconds since the Unix epoch
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
 - `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
-- A peer ignores a frame of a type it does not know.
+- The client and the server each ignore a frame of a type they do not know.
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request states the cursor; its answer is a `batch`, empty if nothing arrived before its timeout.
