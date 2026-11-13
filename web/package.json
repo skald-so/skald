@@ -36,7 +36,7 @@
     "orval": "^8.47.0",
     "oxlint": "^1.93.0",
     "pixelmatch": "^8.0.0",
-    "playwright-core": "1.65.0",
+    "playwright-core": "1.65.1",
     "pngjs": "^7.0.0",
     "prettier": "^3.9.10",
     "typescript": "~7.0.2",
