@@ -254,7 +254,7 @@ A client MUST warn its user when:
 - two valid devices of an account have the same `name`.
 
 ## Trust levels
-A recipient device sets the level of each message it accepts from the sending device: the one its scheme authenticates ([Envelope](README.md#envelope)). The level sets the restricted mode of the [policy](#policy) for a task.
+A recipient device sets the level of each message it accepts from the sending device, the one its scheme authenticates ([Envelope](README.md#envelope)), and of each task it claims from its `sender` ([Claim checks](queues.md#claim-checks)). The level sets how a message's text reaches the agent ([Device to agent](delivery.md#device-to-agent)) and a task's rights ([Running a task](queues.md#running-a-task)).
 
 | Level | The sending device |
 |---|---|
@@ -262,7 +262,7 @@ A recipient device sets the level of each message it accepts from the sending de
 | `member` | A `client` or `browser` device of an account the recipient's space roster lists as a member |
 | `service` | A `service` device |
 
-- The level comes from the sending device's valid certificate, its `account` and `kind`, and the roster of the recipient's space; never from the content.
+- The level comes from the sending device's valid certificate, its `account` and `kind`, and the roster of the recipient's space; never from the content, and no setting changes it.
 - `own` is above `member`, which is above `service`.
 
 ## Roster
@@ -336,17 +336,18 @@ A space's policy travels in its roster, so an admin's device signs every change.
 
 ```cddl
 policy = {
-  1 => [own: mode, member: mode, service: mode],  ; restrictions: per trust level
+  1 => [member: mode, service: mode],  ; ceilings: per trust level
   2 => uint .ge 86400,     ; history: the history key's longest age, in seconds
   * int => any,            ; fields of later versions
 }
 
-mode = &(read-only: 1, no-shell: 2, no-network: 3, full: 4)
+mode = &(read-only: 1, full: 2) / uint   ; other values: modes of later versions
 ```
 
-- `restrictions`: the mode a task runs in, by the [trust level](#trust-levels) of its sender. `read-only` reads files; `no-shell` also edits them; `no-network` also runs commands, without network; `full` has no limits.
+- `ceilings`: the most rights a task from a `member` or `service` sender gets without the approval of the claiming device's user, who can only lower them ([Running a task](queues.md#running-a-task)). An `own` task has no ceiling.
+- `mode`: `read-only` reads only the agent's folder and changes nothing, with no network; `full` has no limits. This version defines only these two; a device takes a mode it does not know as `read-only`.
 - `history`: [History key](#history-key).
-- A new space starts with `[full, read-only, read-only]` and 30 days.
+- A new space starts with `[read-only, read-only]` and 30 days.
 
 ## Invite
 An admin invites a person by link. The link's secret proves the newcomer is the one invited and never reaches the server.

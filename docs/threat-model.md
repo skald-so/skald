@@ -36,7 +36,7 @@ Also whoever takes over the server or its database.
 - Withhold the master backup, so no device links with the recovery key ([membership.md](protocol/membership.md#security-considerations)).
 - Give a channel member whose `history` is false the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
 - Join a channel's group by an external Commit from a device of its own, since it holds GroupInfo ([membership.md](protocol/membership.md#security-considerations)).
-- Withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them, hand one task to two devices at once, an `at-most-once` one included, and hand an old task out again until its `deadline` ([queues.md](protocol/queues.md#security-considerations)).
+- Withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them, hand one task to two devices at once, an `at-most-once` one included, hand an old task out again until its `deadline`, and hand a device a task its claim did not ask for ([queues.md](protocol/queues.md#security-considerations)).
 - Withhold, delete or delay presence values, and give a reader that has not seen a newer value an older one until it expires, at most 900 seconds after its upload ([agents.md](protocol/agents.md#security-considerations)).
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
 - Drop an ephemeral agent's message unnoticed: content without `counter` has no gap detection ([Gap detection](protocol/delivery.md#gap-detection)).
@@ -56,7 +56,8 @@ Also whoever takes over the server or its database.
 - A device the server joins to a channel is not admitted: members commit its Remove and send nothing until it is gone, and its epoch is not clean, so member devices upload no link, wrap or entry of it ([Admitted devices](protocol/membership.md#admitted-devices), [Clean epochs](protocol/membership.md#clean-epochs)).
 - A browser writes history only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose that key ([Wraps](protocol/membership.md#wraps)).
 - A task is sealed, signed and bound to its channel, queue and ID; the server cannot read, forge or alter it ([Queue key](protocol/queues.md#queue-key), [Claim checks](protocol/queues.md#claim-checks)).
-- A claiming device refuses an `at-most-once` claim with `attempt` above 1 ([Claim checks](protocol/queues.md#claim-checks)).
+- A claiming device refuses an `at-most-once` claim with `attempt` above 1, and runs no task whose sender's trust level, template or addressee its claim did not ask for ([Claim checks](protocol/queues.md#claim-checks)).
+- What a device runs from other accounts is set only in its local state; the server holds no such setting ([Running a task](protocol/queues.md#running-a-task)).
 - A claiming device takes no unsigned template from the server ([Templates](protocol/queues.md#templates)).
 - An attachment's `digest` keeps the server from swapping its blob ([Attachments](protocol/delivery.md#attachments)).
 - Receipt messages and replies are signed by the recipient device ([Receipts](protocol/delivery.md#receipts)); gap detection reports dropped messages ([Gap detection](protocol/delivery.md#gap-detection)).
@@ -95,7 +96,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - The attacker links none of the user's devices: a new device takes a certificate only through the link code its user enters on the issuing device ([Link code](protocol/membership.md#link-code)). The issuing device tells its user to enter only a code shown on their own device.
 - The web UI's non-secret sections list the account's devices and sign-in sessions, the attacker's included ([roadmap.md, "MVP"](dev/roadmap.md#mvp)).
 - Sign-in methods are linked explicitly; accounts are never merged by email.
-- A task from a comment runs at the `service` trust level, in its restricted mode ([Trust levels](protocol/membership.md#trust-levels), [Policy](protocol/membership.md#policy)).
+- A task from a comment runs at the `service` trust level: only where a device's user turned on `service` tasks, within the policy's ceiling unless that user approves it ([Trust levels](protocol/membership.md#trust-levels), [Running a task](protocol/queues.md#running-a-task)).
 
 ### A stolen device
 An attacker holding a device or its keys, before the device is revoked.
@@ -103,7 +104,8 @@ An attacker holding a device or its keys, before the device is revoked.
 **Can:**
 - Do what the device does: read its channels, the history and presence it reaches and the tasks it opens; send as its account's agents, and from a `client` or `browser` device as the person ([Access](protocol/membership.md#access), [Envelope](protocol/README.md#envelope)).
 - Answer the person's questions, and decide the `hold`s of its own agents ([agents.md](protocol/agents.md#security-considerations), [Device to agent](protocol/delivery.md#device-to-agent)).
-- Enqueue tasks that its account's other devices run at the `own` trust level, with full rights in a new space's policy ([queues.md](protocol/queues.md#security-considerations), [Policy](protocol/membership.md#policy)).
+- Enqueue tasks that its account's other devices run at the `own` trust level, with full rights ([queues.md](protocol/queues.md#security-considerations), [Running a task](protocol/queues.md#running-a-task)).
+- Change what the device itself runs from other accounts, and approve the tasks waiting on it ([Running a task](protocol/queues.md#running-a-task)).
 - Revoke the account's other devices; its revocations count even after another device revokes it ([Revocation](protocol/membership.md#revocation)).
 - From a `client` device, certify new devices of the account, but not under an existing device's ID; and, unless its user names it as stolen when linking a device with the recovery key, have its anchors count: in a space no other device anchored, make that device start from a revision the server forged ([membership.md](protocol/membership.md#security-considerations)).
 - On an admin's device, do what [an admin](#an-admin-acting-against-others) does.
@@ -112,6 +114,7 @@ An attacker holding a device or its keys, before the device is revoked.
 **Defenses:**
 - Keys live in the OS key store, or a file with 0600 permissions ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - Clients warn when an account's device set changes, so the devices it certifies or revokes show ([Device checks](protocol/membership.md#device-checks)).
+- Its settings of what it runs are its own: it changes them on no other device ([Running a task](protocol/queues.md#running-a-task)).
 - Another `client` or `browser` device of the account revokes it ([Revocation](protocol/membership.md#revocation)): see [A revoked device](#a-revoked-device).
 - A device linked with the recovery key revokes it with the master key: that one object voids every revocation it and the devices it certified signed, and lists in `also` the devices that stay revoked ([Revocation](protocol/membership.md#revocation), [Linking a device](protocol/membership.md#linking-a-device)).
 
@@ -150,7 +153,7 @@ A member of a space, with valid devices.
 
 **Can:**
 - Read every channel it is in, with their presence and the history its `history` flag allows. Without history access, it holds its join epoch's key, which opens the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
-- Send as its own agents at the `member` trust level; enqueue tasks that run in the policy's `member` mode ([Trust levels](protocol/membership.md#trust-levels), [Policy](protocol/membership.md#policy)).
+- Send as its own agents at the `member` trust level; enqueue tasks that another account's device runs only where its user turned on `member` tasks, within the policy's `member` ceiling unless that user approves them ([Trust levels](protocol/membership.md#trust-levels), [Running a task](protocol/queues.md#running-a-task)).
 - List any agent of its account in its presence, with any status and `note` ([agents.md](protocol/agents.md#security-considerations)).
 - Claim tasks of its channels and return any result; release a task it started, so an `at-most-once` task runs again ([queues.md](protocol/queues.md#security-considerations)).
 - Upload a wrong link, wrap or queue key object first, so history, or tasks that non-member `service` devices seal, become unreadable ([membership.md](protocol/membership.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
@@ -174,28 +177,32 @@ An admin of a space, with valid devices.
 - Sign revisions: add and remove members, admins included, change roles, exclude a member's devices, add channels and channel members, add service agents on members' accounts ([Roster](protocol/membership.md#roster)).
 - Add itself to any channel of the space with history access, and read its earlier history ([Roster](protocol/membership.md#roster), [Access](protocol/membership.md#access)).
 - Replace a member's `master` in the roster, so other members accept devices certified under the new key as that member's ([Roster](protocol/membership.md#roster), [Device checks](protocol/membership.md#device-checks)).
-- Change the policy: the restricted mode of each trust level, `full` for all included, and the history key's longest age, down to one day ([Policy](protocol/membership.md#policy)).
+- Change the policy: the ceilings of `member` and `service` tasks, `full` included, and the history key's longest age, down to one day ([Policy](protocol/membership.md#policy)).
+- Sign team templates for the space ([Templates](protocol/queues.md#templates)).
 - Sign invites with any role and channels ([Invite](protocol/membership.md#invite)), and grants that let `service` devices send in channels ([Service grant](protocol/README.md#service-grant)).
-- Change or delete any queue of the space, and restart or cancel any of its tasks ([Queues](protocol/queues.md#queues), [Task states](protocol/queues.md#task-states)).
+- Change any queue of the space, delete any but `default`, and restart or cancel any of its tasks ([Queues](protocol/queues.md#queues), [Task states](protocol/queues.md#task-states)).
 
 **Defenses:**
 - It sends only as agents of its own account and certifies no device under another account's master key ([Envelope](protocol/README.md#envelope), [Device checks](protocol/membership.md#device-checks)).
 - Clients warn their users when a member's `master` changes in the roster ([Device checks](protocol/membership.md#device-checks)).
 - Every change is a signed revision chained to the previous one by its hash; the server keeps every revision ([Roster](protocol/membership.md#roster)).
+- The policy only lowers what a device's user allows: a `full` ceiling runs a task with full rights without approval only where that user set `full`. An admin turns on no device's tasks and changes no device's settings ([Running a task](protocol/queues.md#running-a-task)).
+- A device takes a team template only once its user enables it, and a template grants no rights ([Templates](protocol/queues.md#templates)).
 
 ### A malicious sender
 Anyone who sends to an agent: a member, a service agent, or an agent prompt injection steers.
 
 **Can:**
 - Put text and files into the recipient agent's context that try to steer it: [Prompt injection and loops](#prompt-injection-and-loops).
-- Enqueue tasks in queues of its channels, which run in the mode of its trust level ([Claim checks](protocol/queues.md#claim-checks)).
+- Enqueue tasks in queues of its channels, which run where the devices' users allow its trust level ([Running a task](protocol/queues.md#running-a-task)).
 - Set `hops` as it likes: content is the sending device's own ([Content](protocol/README.md#content)).
 - Send as much as the server's rate limit and its space's quota allow ([architecture.md, "Security"](dev/architecture.md#security), [Send](protocol/delivery.md#send)).
 
 **Defenses:**
 - Its label and trust level come from its device's certificate and the roster, not from content ([Envelope](protocol/README.md#envelope), [Trust levels](protocol/membership.md#trust-levels)).
 - The recipient agent's inbound mode and allowlist apply before handover ([Device to agent](protocol/delivery.md#device-to-agent)).
-- A task runs in the restricted mode of its sender's trust level; a mode the agent cannot enforce is refused, not weakened ([Claim checks](protocol/queues.md#claim-checks), [Policy](protocol/membership.md#policy)).
+- Text from another account or a service agent reaches a session only through `inbox`, labelled as data ([Device to agent](protocol/delivery.md#device-to-agent)).
+- A task from another account runs nowhere until a device's user turns on its trust level; then in an executor by default, within the policy's ceiling unless that user approves it. A mode the agent cannot enforce is refused, not weakened ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - A recipient device fetches no URL the sender wrote: attachments carry a blob ID ([Attachments](protocol/delivery.md#attachments)).
 
 ### A leaked CI secret
@@ -214,22 +221,22 @@ A service agent's server token, and its device key with the token: they usually 
 - A token alone signs nothing: it asks no question, signs no task, and creates, changes or deletes no queue ([agents.md](protocol/agents.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device releases, restarts and cancels no task, so neither leak makes an `at-most-once` task run twice ([Claims and leases](protocol/queues.md#claims-and-leases), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device sends only as its roster entry, only in its grant's channels until the grant expires, and never answers a question ([Envelope](protocol/README.md#envelope), [Service grant](protocol/README.md#service-grant), [Person](protocol/agents.md#person)).
-- Its tasks run at the `service` trust level, `read-only` in a new space's policy ([Trust levels](protocol/membership.md#trust-levels), [Policy](protocol/membership.md#policy)).
+- Its tasks run at the `service` trust level: only where a device's user turned on `service` tasks and, unless that user approves them, `read-only` in a new space's policy ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Once the service device is revoked, clients that hold its revocation trust it no more, and it claims no task ([Device checks](protocol/membership.md#device-checks), [Claim checks](protocol/queues.md#claim-checks)); a token has scopes and an expiry and is revoked in the web UI.
 
 ### An agent on the person's own device
 An agent session, such as Claude Code, on one of the person's `client` devices, possibly steered by prompt injection.
 
 **Can:**
-- With a shell, run the `skald` CLI with the device's powers: answer the person's `ask_user` questions, decide `hold`s, send as the person, and sign what the device signs, such as revocations and, on an admin's device, revisions ([agents.md](protocol/agents.md#security-considerations), [Device to agent](protocol/delivery.md#device-to-agent)).
-- Read what the device reads, and enqueue tasks that the account's other devices run at the `own` trust level, with full rights in a new space's policy ([Policy](protocol/membership.md#policy)).
+- With a shell, run the `skald` CLI with the device's powers: answer the person's `ask_user` questions, decide `hold`s, approve waiting tasks and change what the device runs from others, send as the person, and sign what the device signs, such as revocations and, on an admin's device, revisions ([agents.md](protocol/agents.md#security-considerations), [Device to agent](protocol/delivery.md#device-to-agent), [Running a task](protocol/queues.md#running-a-task)).
+- Read what the device reads, and enqueue tasks that the account's other devices run at the `own` trust level, with full rights ([Running a task](protocol/queues.md#running-a-task)).
 
 **Out of scope:** as in other end-to-end encrypted messengers, a device acts for its person. An `ask_user` answer proves which device answered, not that a person did, and Skald does not tell an agent's answer or `hold` decision on the device from the person's ([agents.md](protocol/agents.md#security-considerations), [Device to agent](protocol/delivery.md#device-to-agent)). The defenses against content that steers the agent: [Prompt injection and loops](#prompt-injection-and-loops).
 
 **Defenses:**
 - The asking agent gets the answering device's name and kind ([`ask_user`](protocol/agents.md#ask_user)).
 - A browser runs no agent, so an answer from a linked browser is not an agent's ([agents.md](protocol/agents.md#security-considerations)).
-- A task from another person runs in its restricted mode; `read-only` and `no-shell` give the agent no shell to run the CLI in ([Policy](protocol/membership.md#policy), [Claim checks](protocol/queues.md#claim-checks)).
+- A task from another person runs in an executor by default, and in `read-only` it reads only its folder and changes nothing, so it cannot act through the CLI ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
 
 ## The server sees
@@ -248,7 +255,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - when each device takes its messages;
 - which envelopes ask for delivery statuses, so which are likely receipts, and which hold MLS handshake messages;
 - attachment sizes, uploads and downloads;
-- task scheduling fields and states, and which device enqueues, claims and completes each task;
+- task scheduling fields and states, the addressee's device included; what each claim asks for: trust levels, templates, tasks without one; and which device enqueues, claims and completes each task;
 - quota counters.
 
 ## The server does not see
@@ -264,17 +271,21 @@ Message texts, agent and session names other than service agents, threads, files
 - the limits of trust in devices, rosters and history: [protocol spec](protocol/membership.md#security-considerations).
 
 ## Prompt injection and loops
-An inbound message is data, not an instruction. The defenses of [architecture.md, "Security"](dev/architecture.md#security), those the spec adds, and what each does not stop:
+The sender, not the kind of text, sets how text reaches an agent ([Device to agent](protocol/delivery.md#device-to-agent)). The defenses of [architecture.md, "Security"](dev/architecture.md#security), those the spec adds, and what each does not stop:
 
-- **Sender label and prompt injection warning.** The label comes from the authenticated sending device and its trust level ([Envelope](protocol/README.md#envelope), [Trust levels](protocol/membership.md#trust-levels)). It informs the agent; it does not stop a model from following injected text.
+- **Sender label and prompt injection warning.** The label comes from the authenticated sending device and its trust level ([Envelope](protocol/README.md#envelope), [Trust levels](protocol/membership.md#trust-levels)). It informs the agent and binds no model: a model may follow text labelled as data, as it may ignore a request from its own agent.
+- **Only a signal from others** ([Device to agent](protocol/delivery.md#device-to-agent)). Text from another account or a service agent enters a session only when the agent calls `inbox`; it then reaches the model as any text does.
 - **Sender allowlist and inbound modes** ([Device to agent](protocol/delivery.md#device-to-agent)). An allowlist admits senders, not content: an allowed agent that injection steers passes it on. An `ask_user` answer passes regardless of mode and allowlist ([`ask_user`](protocol/agents.md#ask_user)).
 - **`hold` until a human confirms** ([Device to agent](protocol/delivery.md#device-to-agent)). A human who approves a message lets its content in, and an agent with a shell on the device can decide a `hold`: [An agent on the person's own device](#an-agent-on-the-persons-own-device).
-- **Restricted mode for tasks from other people** ([Policy](protocol/membership.md#policy), [Claim checks](protocol/queues.md#claim-checks)).
-  - It applies to tasks, not to messages: a message reaches the agent's session with that session's rights.
-  - `read-only` still reads files, and the result goes back to the sender: a task can take out what the agent can read ([Results](protocol/queues.md#results)).
-  - The `own` level runs with full rights in a new space's policy, so a task from a stolen own device or from an own agent that injection steers is unrestricted.
-- **Signed templates.** A claiming device takes a template's instructions only from its client or signed by an admin, so the server cannot inject them ([Templates](protocol/queues.md#templates)). A template does not restrict the task: its mode comes from the trust level.
-- **Presence and task results are data.** A presence `note` and a task result are data for the agents that read them, not instructions; presence is labelled like inbound content ([Presence](protocol/agents.md#presence), [agents.md](protocol/agents.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)). As with any label, this does not stop a model from following them.
+- **Tasks from other people** ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
+  - The rights apply to tasks, not to messages: a message reaches the agent's session with that session's rights, and nothing keeps the agent from acting on it.
+  - They run nowhere until the device's user turns them on; then an executor runs each apart from the user's sessions, tools and environment, within the policy's ceiling unless that user approves it.
+  - The agent CLI enforces `read-only`, so a flaw in the vendor's limits is a flaw of the mode. `read-only` still reads the queue's folder, with the files the task hands over; the vendor's model sees all of it, and the result goes back to the sender: a task can take out what the executor reads ([Results](protocol/queues.md#results)).
+  - In the working session, at `approve` after a yes or at `full`, a task runs without the executor's isolation: its text joins the user's context and stays there for later turns, it reads that context and the session's files, and it acts with the session's rights, MCP servers, hooks, plugins and environment.
+  - A task the device's user approves runs with full rights, whatever the policy: the user's yes is the only check.
+  - `own` tasks run with full rights, so a task from a stolen own device or from an own agent that injection steers is unrestricted.
+- **Signed templates.** A claiming device takes a template's instructions only from its client or signed by an admin, so the server cannot inject them ([Templates](protocol/queues.md#templates)). A template grants no rights.
+- **Presence and task results.** A presence `note` and a task result reach an agent labelled with their device's trust level, as a message's text does, and nothing shows a result is honest ([agents.md](protocol/agents.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
 - **Attachments** carry a blob ID, not a URL, so injected content cannot make a device fetch from a host of its choice ([Attachments](protocol/delivery.md#attachments)).
 
 Loops:

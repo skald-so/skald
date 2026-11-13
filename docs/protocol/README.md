@@ -289,7 +289,7 @@ Skald is an extension of A2A [[A2A 1.0](https://a2a-protocol.org/v1.0.0/specific
   ```
 - The `a2a` body holds one A2A `Message` in the JSON form of the A2A version that the envelope's `v` pins.
 - Skald adds nothing to the A2A message: its own fields stay outside it, in the header or in the content around it.
-- Version 1 carries A2A messages only; A2A operations, tasks and streaming events are not carried.
+- Version 1 carries A2A messages only, one in each message and each [task](queues.md#tasks); A2A operations, A2A tasks and streaming events are not carried.
 
 | A2A `Message` field | In Skald |
 |---|---|

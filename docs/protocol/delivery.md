@@ -22,7 +22,7 @@ A message reaches an agent in three hops: the sending device → the server → 
 - Every hop is at-least-once with deduplication. There is no end-to-end exactly-once.
 - Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store.
 - Every message ends in a status the sender sees: [Receipts](#receipts).
-- `read` means handed to the agent, not acted on. Work that must be done goes through the queue.
+- `read` means handed to the agent: it shows neither that the agent acted on the message nor that it did not. Work that must be done goes through the [queue](queues.md#tasks).
 
 ## Frames
 Client and server exchange envelopes, answers and statuses as frames: CBOR items carried as [Encoding](README.md#encoding) says.
@@ -119,11 +119,16 @@ A recipient device drops, without a receipt:
   - `accept`: the device hands the message over;
   - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
   - `refuse`: the device issues `refused`.
+- The [trust level](membership.md#trust-levels) of the sending device sets how the text reaches the agent's session:
+  - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;
+  - `member` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
+- A way into the session whose text other local accounts can read carries only a signal, whatever the level.
+- `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
 - Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
 - After marking a message with `to` handed over, the device issues `read`.
 - Only `a2a`, [`task-result`](queues.md#results) and [`ask-answer`](agents.md#ask_user) bodies are handed over as messages; receipts are not.
-- How each agent takes messages: [architecture.md, "Delivery to agents"](../dev/architecture.md#delivery-to-agents).
+- How each agent and surface takes messages: [Delivery to agent sessions](../agent-sessions.md).
 
 ## Receipts
 | Status | Meaning | Issued by | Reaches the sender as |
