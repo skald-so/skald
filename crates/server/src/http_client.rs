@@ -47,6 +47,14 @@ pub(crate) fn json_body<T: DeserializeOwned>(
     serde_json::from_str(&body).map_err(|err| format!("gave an unexpected answer: {err}"))
 }
 
+/// `text` from a provider, such as an error code, cut to printable ASCII for the server's output.
+pub(crate) fn printable(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_graphic())
+        .take(64)
+        .collect()
+}
+
 /// The platform's root certificates; those it cannot load are left out.
 fn platform_roots() -> Vec<Certificate<'static>> {
     rustls_native_certs::load_native_certs()
@@ -59,6 +67,12 @@ fn platform_roots() -> Vec<Certificate<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn printable_keeps_printable_ascii_only() {
+        assert_eq!(printable("bad\n code\u{1b}[31m"), "badcode[31m");
+        assert_eq!(printable(&"x".repeat(100)).len(), 64);
+    }
 
     #[test]
     fn loads_the_platform_root_certificates() {

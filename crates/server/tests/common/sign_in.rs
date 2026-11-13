@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
 
-use super::browser::{Browser, Page, Visit};
+use super::browser::{Browser, Cookie, Page, Visit};
 use super::{Response, Server, TestDb, get_url, on_free_port};
 
 /// The fake OAuth App's client ID and secret.
@@ -154,27 +154,13 @@ impl SignIn {
 
     /// The sign-in start, with the return address `return_to` if given.
     pub fn start_url(&self, return_to: Option<&str>) -> String {
-        match return_to {
-            Some(to) => {
-                let query = serde_urlencoded::to_string([("return_to", to)]).expect("a query");
-                format!("{}{START}?{query}", self.public)
-            }
-            None => format!("{}{START}", self.public),
-        }
+        start_url(&self.public, START, return_to)
     }
 
     /// Runs a sign-in of `user` by plain HTTP, straight to the server whatever its public address,
     /// up to GitHub's redirect back: the start's answer and the callback URL on the server.
     pub fn to_callback(&self, user: &User) -> (Response, String) {
-        let start = self.server.get(START);
-        assert_eq!(start.status, 302, "GET {START}");
-        let signed_in = get_url(&self.github.sign_in_url(user.id), &[]);
-        let github = cookie_set(&signed_in, "stand_in_user");
-        let authorize = start.header("location").expect("a redirect to GitHub");
-        let back = get_url(authorize, &[("cookie", &github)]);
-        let callback = back.header("location").expect("GitHub goes back");
-        let callback = callback.replacen(&self.public, self.server.base(), 1);
-        (start, callback)
+        to_github_callback(&self.server, &self.github, &self.public, user)
     }
 
     /// Signs `page`'s browser in to GitHub as `user`, then to the server with GitHub.
@@ -211,17 +197,7 @@ impl SignIn {
 
     /// `GET /session` from a page of the server in `page`'s browser: the status and the body.
     pub fn session(&self, page: &Page) -> (u16, Value) {
-        let visit = page.goto(&format!("{}/health", self.public));
-        assert_eq!(visit.status, Some(200), "GET /health: {visit:?}");
-        let answer = page.evaluate(&format!(
-            r#"fetch("{SESSION}", {{ headers: {{ "{header}": "{version}" }} }})
-                .then(async (response) => ({{ status: response.status, body: await response.text() }}))"#,
-            header = skald_proto::VERSION_HEADER,
-            version = skald_proto::PROTOCOL_VERSION,
-        ));
-        let status = answer["status"].as_u64().expect("a status") as u16;
-        let body = answer["body"].as_str().expect("a body");
-        (status, serde_json::from_str(body).unwrap_or(Value::Null))
+        page_session(page, &self.public)
     }
 
     /// The account of `page`'s session; fails without one.
@@ -243,6 +219,162 @@ impl SignIn {
         let mut rows = self.db.rows();
         rows.retain(|row| row.contains(&user.login) || holds_number(row, &id));
         rows
+    }
+}
+
+/// Runs a GitHub sign-in of `user` by plain HTTP at `server`, whose public address is `public`,
+/// straight to it, against `github`, up to GitHub's redirect back: the start's answer and the
+/// callback URL on the server.
+pub fn to_github_callback(
+    server: &Server,
+    github: &GitHub,
+    public: &str,
+    user: &User,
+) -> (Response, String) {
+    let start = server.get(START);
+    assert_eq!(start.status, 302, "GET {START}");
+    let signed_in = get_url(&github.sign_in_url(user.id), &[]);
+    let github = cookie_set(&signed_in, "stand_in_user");
+    let authorize = start.header("location").expect("a redirect to GitHub");
+    let back = get_url(authorize, &[("cookie", &github)]);
+    let callback = back.header("location").expect("GitHub goes back");
+    let callback = callback.replacen(public, server.base(), 1);
+    (start, callback)
+}
+
+/// The sign-in start `start`, such as `/auth/github`, under the public address `public`, with the
+/// return address `return_to` if given.
+pub fn start_url(public: &str, start: &str, return_to: Option<&str>) -> String {
+    match return_to {
+        Some(to) => {
+            let query = serde_urlencoded::to_string([("return_to", to)]).expect("a query");
+            format!("{public}{start}?{query}")
+        }
+        None => format!("{public}{start}"),
+    }
+}
+
+/// `GET /session` from a page of the server at the public address `public` in `page`'s browser:
+/// the status and the body.
+pub fn page_session(page: &Page, public: &str) -> (u16, Value) {
+    let visit = page.goto(&format!("{public}/health"));
+    assert_eq!(visit.status, Some(200), "GET /health: {visit:?}");
+    let answer = page.evaluate(&format!(
+        r#"fetch("{SESSION}", {{ headers: {{ "{header}": "{version}" }} }})
+            .then(async (response) => ({{ status: response.status, body: await response.text() }}))"#,
+        header = skald_proto::VERSION_HEADER,
+        version = skald_proto::PROTOCOL_VERSION,
+    ));
+    let status = answer["status"].as_u64().expect("a status") as u16;
+    let body = answer["body"].as_str().expect("a body");
+    (status, serde_json::from_str(body).unwrap_or(Value::Null))
+}
+
+/// Opens `callback`, a sign-in's callback held before, in `page`'s browser; gives the cookies of
+/// `host`, the server's, that it set or changed: the session's.
+pub fn cookies_set_by(page: &Page, host: &str, callback: &str) -> Vec<Cookie> {
+    let before = page.cookies_of(host);
+    page.goto(callback);
+    let mut set = page.cookies_of(host);
+    set.retain(|cookie| !before.contains(cookie));
+    assert!(!set.is_empty(), "the callback sets the session's cookie");
+    set
+}
+
+/// States a callback's `state` is not: longer, with its last character changed, cut in half, and
+/// another's.
+pub fn wrong_states(state: &str) -> Vec<String> {
+    let mut flipped = state.to_owned().into_bytes();
+    let last = flipped.last_mut().expect("a state is not empty");
+    *last = if *last == b'A' { b'B' } else { b'A' };
+    let flipped = String::from_utf8(flipped).expect("ASCII");
+    vec![
+        format!("{state}A"),
+        flipped,
+        state[..state.len() / 2].to_owned(),
+        "0123456789abcdef0123456789abcdef".to_owned(),
+    ]
+}
+
+/// Return addresses off a server under `host`, as a sign-in's `return_to`; `elsewhere` is a port of
+/// that host the server does not listen on.
+pub fn off_server(host: &str, elsewhere: u16) -> Vec<String> {
+    vec![
+        "https://evil.test/".to_owned(),
+        "http://evil.test/".to_owned(),
+        "//evil.test/".to_owned(),
+        "/\\evil.test/".to_owned(),
+        "\\\\evil.test/".to_owned(),
+        "/\t/evil.test/".to_owned(),
+        "https:evil.test/".to_owned(),
+        format!("http://{host}.evil.test/"),
+        format!("http://{host}:{elsewhere}/"),
+        "javascript:alert(document.cookie)".to_owned(),
+    ]
+}
+
+/// Checks that a sign-in's cookies of `host` go only over HTTPS: `state`, the cookies that bind a
+/// sign-in's `state`, probed at the sign-in's `callback` path, and `session`, the session's, probed
+/// at `/`, `/session` and `callback`, each with the page of the browser that holds them. A probe
+/// opens a path on a plain and an HTTPS echo server of `browser` under `host`: no plain request
+/// carries a cookie, and each cookie goes with some HTTPS one.
+pub fn assert_only_over_https(
+    browser: &Browser,
+    (host, callback): (&str, &str),
+    state: (&Page, &[Cookie]),
+    session: (&Page, &[Cookie]),
+) {
+    let plain = browser.echo(false);
+    let secure = browser.echo(true);
+    let probes = [
+        (state, vec![callback], "state"),
+        (session, vec!["/", SESSION, callback], "session"),
+    ];
+    for ((page, cookies), paths, probe) in probes {
+        let query = format!("probe={probe}");
+        for path in &paths {
+            for (port, scheme) in [(plain, "http"), (secure, "https")] {
+                page.goto(&format!("{scheme}://{host}:{port}{path}?{query}"));
+            }
+        }
+        for hit in browser.wait_for_hits(plain, &query, paths.len()) {
+            assert_eq!(hit.cookie, None, "plain HTTP carries no cookie: {hit:?}");
+        }
+        let over_https = browser.wait_for_hits(secure, &query, paths.len());
+        for cookie in cookies {
+            assert!(
+                over_https.iter().any(|hit| hit.carries(cookie)),
+                "HTTPS carries {cookie:?}: {over_https:?}"
+            );
+        }
+    }
+}
+
+/// Cookies as a client that follows no rules but name and value keeps them.
+#[derive(Clone, Default)]
+pub struct Jar(Vec<(String, String)>);
+
+impl Jar {
+    /// Keeps the cookies `response` sets, replacing those of the same name.
+    pub fn take(&mut self, response: &Response) {
+        for set in response.header_values("set-cookie") {
+            let pair = set.split(';').next().unwrap_or_default();
+            let Some((name, value)) = pair.trim().split_once('=') else {
+                continue;
+            };
+            self.0.retain(|(kept, _)| kept != name);
+            self.0.push((name.to_owned(), value.to_owned()));
+        }
+    }
+
+    /// The `Cookie` header that carries them.
+    pub fn header(&self) -> String {
+        let pairs: Vec<_> = self
+            .0
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect();
+        pairs.join("; ")
     }
 }
 

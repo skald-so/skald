@@ -19,6 +19,7 @@ mod accounts;
 mod device_flow;
 mod devices;
 mod github;
+mod google;
 mod http_client;
 mod oidc;
 mod protocol;
@@ -27,7 +28,7 @@ mod sign_in;
 mod spaces;
 
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
-pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings};
+pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
 pub use protocol::Versions;
 use protocol::{Stated, Statement};
 pub use sign_in::{CALLBACK_PATH, PublicUrl, SignInSettings};
@@ -64,7 +65,7 @@ pub async fn connect(url: &str) -> Result<PgPool, sqlx::Error> {
 pub struct Settings {
     /// The protocol versions it accepts.
     pub versions: Versions,
-    /// GitHub sign-in; off without it.
+    /// Sign-in; off without it.
     pub sign_in: Option<SignInSettings>,
 }
 
@@ -74,6 +75,7 @@ struct AppState {
     db: PgPool,
     versions: Versions,
     sign_in: Option<Arc<SignInSettings>>,
+    google: Option<Arc<google::Google>>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
@@ -98,6 +100,8 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route(sign_in::START_PATH, get(sign_in::start))
         .route(CALLBACK_PATH, get(sign_in::callback))
+        .route(google::START_PATH, get(google::start))
+        .route(google::CALLBACK_PATH, get(google::callback))
         .route(
             "/auth/token",
             post(device_flow::token).layer(checked(Statement::Header)),
@@ -148,6 +152,11 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .with_state(AppState {
             db,
             versions,
+            google: settings
+                .sign_in
+                .as_ref()
+                .and_then(|sign_in| sign_in.google.clone())
+                .map(|google| Arc::new(google::Google::new(google))),
             sign_in: settings.sign_in.map(Arc::new),
         })
 }
