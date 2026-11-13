@@ -1,6 +1,7 @@
 //! MLS on a device, on mls-rs: KeyPackages and channel groups to `docs/protocol/membership.md`,
-//! "MLS profile", and the history key of each epoch the device enters ("History key"). The
-//! device's state reaches the caller only sealed ([`SealedState`]).
+//! "MLS profile", formed as "Creating a channel" says, their messages, and the history key of each
+//! epoch the device enters ("History key"). The device's state reaches the caller only sealed
+//! ([`SealedState`]).
 
 mod profile;
 mod store;
@@ -10,7 +11,10 @@ use std::{
     fmt,
 };
 
-use mls_rs::{ExtensionList, Group, client_builder::MlsConfig};
+use mls_rs::{
+    ExtensionList, Group, MlsMessage, WireFormat, client_builder::MlsConfig,
+    group::ReceivedMessage, identity::SigningIdentity,
+};
 use skald_proto::{ChannelId, DeviceId};
 use zeroize::Zeroizing;
 
@@ -20,12 +24,15 @@ use store::{Kept, Store};
 /// The exporter label of a history key.
 const HISTORY_LABEL: &[u8] = b"skald history";
 /// The name prefixes of the sealed items: a group by its ID, a KeyPackage's private keys by its
-/// ID, and a channel's history keys by the channel ID.
+/// ID, a channel's history keys by the channel ID, and the Welcome of a channel's pending Commit by
+/// the channel ID.
 const GROUP_ITEM: &[u8] = b"group:";
 const KEY_PACKAGE_ITEM: &[u8] = b"key-package:";
 const HISTORY_ITEM: &[u8] = b"history:";
+const WELCOME_ITEM: &[u8] = b"welcome:";
 
-/// A device's MLS state: its groups, its KeyPackages' private keys and its history keys.
+/// A device's MLS state: its groups, its KeyPackages' private keys, its history keys and the
+/// Welcomes of its pending Commits.
 ///
 /// Each step starts from the state the caller loads and ends with the state the caller seals and
 /// saves, before it sends what the step produced; a failed step leaves the device as it was.
@@ -35,6 +42,8 @@ pub struct MlsDevice {
     id: DeviceId,
     store: Store,
     history: BTreeMap<ChannelId, BTreeMap<u64, HistoryKey>>,
+    /// The Welcome of each channel's pending Commit, handed out once the server stored it.
+    welcomes: BTreeMap<ChannelId, Vec<u8>>,
 }
 
 impl MlsDevice {
@@ -47,6 +56,7 @@ impl MlsDevice {
             id: DeviceId::from_signing_key(&signing.public_key()),
             store: Store::default(),
             history: BTreeMap::new(),
+            welcomes: BTreeMap::new(),
         }
     }
 
@@ -83,6 +93,10 @@ impl MlsDevice {
             self.store.restore(Kept::Group(id.to_vec()), plaintext)
         } else if let Some(id) = name.strip_prefix(KEY_PACKAGE_ITEM) {
             self.store.restore(Kept::KeyPackage(id.to_vec()), plaintext)
+        } else if let Some(id) = name.strip_prefix(WELCOME_ITEM) {
+            let channel = ChannelId::from_bytes(id.try_into().ok()?);
+            self.welcomes.insert(channel, plaintext.to_vec());
+            Some(())
         } else {
             let channel = ChannelId::from_bytes(name.strip_prefix(HISTORY_ITEM)?.try_into().ok()?);
             let keys = plaintext
@@ -94,8 +108,8 @@ impl MlsDevice {
         }
     }
 
-    /// The device's state, each group, KeyPackage and channel's history keys an item sealed with a
-    /// fresh nonce.
+    /// The device's state, each group, KeyPackage, channel's history keys and pending Commit's
+    /// Welcome an item sealed with a fresh nonce.
     ///
     /// # Panics
     /// If the random generator fails.
@@ -120,6 +134,9 @@ impl MlsDevice {
                 plaintext.extend_from_slice(key.0.as_ref());
             }
             seal([HISTORY_ITEM, channel.as_bytes()].concat(), &plaintext);
+        }
+        for (channel, welcome) in &self.welcomes {
+            seal([WELCOME_ITEM, channel.as_bytes()].concat(), welcome);
         }
         state
     }
@@ -158,13 +175,159 @@ impl MlsDevice {
             ExtensionList::new(),
             None,
         )?;
-        let key = HistoryKey::of(&group)?;
+        self.save(channel, &mut group)
+    }
+
+    /// Adds the devices of `key_packages`, each in an `MLSMessage`, to `channel`'s group and
+    /// commits; gives the Commit, a PublicMessage. The Commit stays pending until the caller says
+    /// the server stored it ([`MlsDevice::commit_stored`]) or refused it
+    /// ([`MlsDevice::commit_refused`]).
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Malformed`]
+    /// if an item of `key_packages` is not a KeyPackage; [`MlsError::Mls`] if mls-rs refuses a
+    /// KeyPackage, a Commit is pending already or mls-rs fails. One refused KeyPackage refuses
+    /// them all.
+    pub fn add_devices(
+        &mut self,
+        channel: ChannelId,
+        key_packages: &[impl AsRef<[u8]>],
+    ) -> Result<Vec<u8>, MlsError> {
+        let mut group = self.group(channel)?;
+        let mut commit = group.commit_builder();
+        for package in key_packages {
+            commit = commit.add_member(message(package.as_ref(), WireFormat::KeyPackage)?)?;
+        }
+        let output = commit.build()?;
+        let commit = output.commit_message.to_bytes()?;
+        let welcome = match output.welcome_messages.as_slice() {
+            [] => None,
+            [welcome] => Some(welcome.to_bytes()?),
+            _ => unreachable!("mls-rs makes one Welcome for all the devices a Commit adds"),
+        };
         group.write_to_storage()?;
-        self.history
-            .entry(channel)
-            .or_default()
-            .insert(group.current_epoch(), key);
+        if let Some(welcome) = welcome {
+            self.welcomes.insert(channel, welcome);
+        }
+        Ok(commit)
+    }
+
+    /// The server stored `channel`'s pending Commit: it merges, and the device keeps the new
+    /// epoch's history key. Gives the Commit's Welcome, if it adds devices; it is handed out here
+    /// only.
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`;
+    /// [`MlsError::NoCommitPending`] if no Commit is pending in it; [`MlsError::Mls`] if mls-rs
+    /// fails.
+    pub fn commit_stored(&mut self, channel: ChannelId) -> Result<Option<Vec<u8>>, MlsError> {
+        let mut group = self.pending(channel)?;
+        group.apply_pending_commit()?;
+        self.save(channel, &mut group)?;
+        Ok(self.welcomes.remove(&channel))
+    }
+
+    /// The server refused `channel`'s pending Commit: the device drops it and its Welcome. A
+    /// refused Commit of epoch 0 drops the group too, as the server keeps another group of the
+    /// channel, which the device joins from its Welcome.
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`;
+    /// [`MlsError::NoCommitPending`] if no Commit is pending in it; [`MlsError::Mls`] if mls-rs
+    /// fails.
+    pub fn commit_refused(&mut self, channel: ChannelId) -> Result<(), MlsError> {
+        let mut group = self.pending(channel)?;
+        if group.current_epoch() == 0 {
+            self.store.remove_group(channel.as_bytes());
+            self.history.remove(&channel);
+        } else {
+            group.clear_pending_commit();
+            group.write_to_storage()?;
+        }
+        self.welcomes.remove(&channel);
         Ok(())
+    }
+
+    /// Joins a channel's group from `welcome`, an `MLSMessage`; gives the channel. `check` gets
+    /// the Welcome's signer and members for the checks of "Group changes" before the group is
+    /// saved; `false` refuses the Welcome.
+    ///
+    /// # Errors
+    /// [`MlsError::Malformed`] if `welcome` is not a Welcome of a channel's group;
+    /// [`MlsError::GroupExists`] if the device holds a group for its channel: mls-rs would replace
+    /// it; [`MlsError::Refused`] if `check` refuses it; [`MlsError::Profile`] if a leaf breaks the
+    /// profile; [`MlsError::Mls`] if mls-rs refuses it, such as one not for this device, or fails.
+    /// A refused Welcome leaves no group.
+    pub fn join(
+        &mut self,
+        welcome: &[u8],
+        check: impl FnOnce(&Joining) -> bool,
+    ) -> Result<ChannelId, MlsError> {
+        let welcome = message(welcome, WireFormat::Welcome)?;
+        let (mut group, info) = self.client().join_group(None, &welcome, None)?;
+        let channel = ChannelId::from_bytes(
+            group
+                .group_id()
+                .try_into()
+                .map_err(|_| MlsError::Malformed)?,
+        );
+        if self.store.has_group(channel.as_bytes()) {
+            return Err(MlsError::GroupExists(channel));
+        }
+        let members = members_of(&group)?;
+        let signer = group
+            .member_at_index(info.sender)
+            .ok_or(MlsError::Malformed)?;
+        let joining = Joining {
+            channel,
+            epoch: group.current_epoch(),
+            signer: member_device(&signer.signing_identity)?,
+            members,
+        };
+        if !check(&joining) {
+            return Err(MlsError::Refused);
+        }
+        self.save(channel, &mut group)?;
+        Ok(channel)
+    }
+
+    /// `plaintext` encrypted in `channel`'s group: an application message, a PrivateMessage.
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Mls`] if
+    /// mls-rs fails.
+    pub fn encrypt(&mut self, channel: ChannelId, plaintext: &[u8]) -> Result<Vec<u8>, MlsError> {
+        let mut group = self.group(channel)?;
+        let message = group
+            .encrypt_application_message(plaintext, Vec::new())?
+            .to_bytes()?;
+        group.write_to_storage()?;
+        Ok(message)
+    }
+
+    /// The application message `message`, a PrivateMessage of `channel`'s group, decrypted.
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Malformed`]
+    /// if `message` is not a PrivateMessage or holds no application message; [`MlsError::Mls`] if
+    /// mls-rs refuses it, such as a replay or a message of another group, or fails.
+    pub fn decrypt(&mut self, channel: ChannelId, message: &[u8]) -> Result<Decrypted, MlsError> {
+        let message = self::message(message, WireFormat::PrivateMessage)?;
+        let mut group = self.group(channel)?;
+        let ReceivedMessage::ApplicationMessage(received) =
+            group.process_incoming_message(message)?
+        else {
+            return Err(MlsError::Malformed);
+        };
+        let sender = group
+            .member_at_index(received.sender_index)
+            .ok_or(MlsError::Malformed)?;
+        let sender = member_device(&sender.signing_identity)?.device;
+        group.write_to_storage()?;
+        Ok(Decrypted {
+            sender,
+            plaintext: received.data().to_vec(),
+        })
     }
 
     /// The epoch of `channel`'s group.
@@ -182,15 +345,7 @@ impl MlsDevice {
     /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Mls`] if
     /// mls-rs fails.
     pub fn members(&self, channel: ChannelId) -> Result<Vec<MemberDevice>, MlsError> {
-        self.group(channel)?
-            .roster()
-            .members_iter()
-            .map(|member| {
-                let (device, signing) =
-                    profile::device_of(&member.signing_identity).map_err(|_| MlsError::Profile)?;
-                Ok(MemberDevice { device, signing })
-            })
-            .collect()
+        members_of(&self.group(channel)?)
     }
 
     /// The history key of `channel` in `epoch`, if the device holds it.
@@ -208,6 +363,75 @@ impl MlsDevice {
         }
         Ok(self.client().load_group(channel.as_bytes())?)
     }
+
+    /// `channel`'s group with its pending Commit.
+    fn pending(&self, channel: ChannelId) -> Result<Group<impl MlsConfig + use<>>, MlsError> {
+        let group = self.group(channel)?;
+        if !group.has_pending_commit() {
+            return Err(MlsError::NoCommitPending(channel));
+        }
+        Ok(group)
+    }
+
+    /// Saves `group` of `channel`, which entered its current epoch, and keeps the epoch's history
+    /// key; on an error the device stays as it was.
+    fn save(
+        &mut self,
+        channel: ChannelId,
+        group: &mut Group<impl MlsConfig>,
+    ) -> Result<(), MlsError> {
+        let key = HistoryKey::of(group)?;
+        group.write_to_storage()?;
+        self.history
+            .entry(channel)
+            .or_default()
+            .insert(group.current_epoch(), key);
+        Ok(())
+    }
+}
+
+/// `bytes` as one `MLSMessage` of `wire_format`.
+fn message(bytes: &[u8], wire_format: WireFormat) -> Result<MlsMessage, MlsError> {
+    let message = MlsMessage::from_bytes(bytes).map_err(|_| MlsError::Malformed)?;
+    if message.wire_format() == wire_format {
+        Ok(message)
+    } else {
+        Err(MlsError::Malformed)
+    }
+}
+
+/// The member devices of `group`, in leaf order.
+fn members_of(group: &Group<impl MlsConfig>) -> Result<Vec<MemberDevice>, MlsError> {
+    group
+        .roster()
+        .members_iter()
+        .map(|member| member_device(&member.signing_identity))
+        .collect()
+}
+
+fn member_device(leaf: &SigningIdentity) -> Result<MemberDevice, MlsError> {
+    let (device, signing) = profile::device_of(leaf).map_err(|_| MlsError::Profile)?;
+    Ok(MemberDevice { device, signing })
+}
+
+/// A channel's group a device joins from a Welcome, before the group is saved: what the caller
+/// checks as "Group changes" says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Joining {
+    pub channel: ChannelId,
+    pub epoch: u64,
+    /// The member that signed the Welcome's GroupInfo.
+    pub signer: MemberDevice,
+    /// Every member, in leaf order.
+    pub members: Vec<MemberDevice>,
+}
+
+/// An application message a device decrypted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Decrypted {
+    /// The device ID of the sender's credential.
+    pub sender: DeviceId,
+    pub plaintext: Vec<u8>,
 }
 
 /// A member device of a group: the device ID and the signature key of its leaf.
@@ -264,6 +488,12 @@ pub enum MlsError {
     GroupExists(ChannelId),
     /// A leaf breaks the MLS profile.
     Profile,
+    /// No Commit is pending in the channel's group.
+    NoCommitPending(ChannelId),
+    /// The caller refused the Welcome.
+    Refused,
+    /// The input is not an MLS message of the kind the step takes, or not of a channel's group.
+    Malformed,
     /// mls-rs refuses the step or fails.
     Mls(mls_rs::error::MlsError),
 }
@@ -275,6 +505,11 @@ impl fmt::Display for MlsError {
             Self::NoGroup(channel) => write!(f, "no group for the channel {channel}"),
             Self::GroupExists(channel) => write!(f, "a group for the channel {channel} already"),
             Self::Profile => f.write_str("a leaf breaks the MLS profile"),
+            Self::NoCommitPending(channel) => {
+                write!(f, "no Commit pending in the channel {channel}")
+            }
+            Self::Refused => f.write_str("the caller refused the Welcome"),
+            Self::Malformed => f.write_str("not an MLS message of the kind the step takes"),
             Self::Mls(error) => write!(f, "mls-rs: {error}"),
         }
     }
@@ -304,6 +539,19 @@ mod tests {
             &SigningKey::from_bytes(&[1; 32]),
             &StateKey::from_bytes(&[2; 32]),
         )
+    }
+
+    /// Device `seed`, a new one.
+    fn seeded(seed: u8) -> MlsDevice {
+        MlsDevice::new(
+            &SigningKey::from_bytes(&[seed; 32]),
+            &StateKey::from_bytes(&[seed; 32]),
+        )
+    }
+
+    /// `device` reloaded from the state it seals.
+    fn reloaded(device: &MlsDevice) -> MlsDevice {
+        MlsDevice::load(&device.signing, &device.state_key, &device.seal()).unwrap()
     }
 
     /// Whether `device` loads `items`, each a name and the plaintext it seals under that name.
@@ -339,6 +587,7 @@ mod tests {
             (named(GROUP_ITEM, b"a group"), vec![0; 4]),
             (history.clone(), key.clone()),
             (history.clone(), Vec::new()),
+            (named(WELCOME_ITEM, &channel), b"a Welcome".to_vec()),
         ] {
             assert!(loads(&device, &[(name.clone(), plaintext)]), "{name:?}");
         }
@@ -353,6 +602,8 @@ mod tests {
             (named(HISTORY_ITEM, &[7; 17]), key.clone()),
             (history.clone(), key[..23].to_vec()),
             (history, [key.as_slice(), &[0]].concat()),
+            (named(WELCOME_ITEM, &channel[..15]), b"a Welcome".to_vec()),
+            (named(WELCOME_ITEM, &[7; 17]), b"a Welcome".to_vec()),
         ] {
             assert!(!loads(&device, &[(name.clone(), plaintext)]), "{name:?}");
         }
@@ -406,6 +657,93 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_refused_commit_after_epoch_zero_leaves_the_group_in_its_epoch() {
+        let channel = ChannelId::from_bytes([6; 16]);
+        let mut creator = seeded(11);
+        let first = seeded(12).key_package().unwrap();
+        let second = seeded(13).key_package().unwrap();
+        creator.create_group(channel).unwrap();
+        creator.add_devices(channel, &[&first]).unwrap();
+        creator.commit_stored(channel).unwrap();
+        let members = creator.members(channel).unwrap();
+        let key = creator.history_key(channel, 1).unwrap().to_bytes();
+
+        creator.add_devices(channel, &[&second]).unwrap();
+        creator = reloaded(&creator);
+        creator.commit_refused(channel).unwrap();
+        creator = reloaded(&creator);
+        assert_eq!(creator.epoch(channel).unwrap(), 1);
+        assert_eq!(creator.members(channel).unwrap(), members);
+        assert_eq!(creator.history_key(channel, 1).unwrap().to_bytes(), key);
+        assert!(matches!(
+            creator.commit_stored(channel),
+            Err(MlsError::NoCommitPending(_))
+        ));
+
+        creator.add_devices(channel, &[&second]).unwrap();
+        assert!(creator.commit_stored(channel).unwrap().is_some());
+        assert_eq!(creator.epoch(channel).unwrap(), 2);
+        assert_eq!(creator.members(channel).unwrap().len(), 3);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn only_a_private_message_is_decrypted() {
+        let channel = ChannelId::from_bytes([8; 16]);
+        let mut creator = seeded(14);
+        creator.create_group(channel).unwrap();
+        let commit = creator
+            .add_devices(channel, &[seeded(15).key_package().unwrap()])
+            .unwrap();
+        assert!(matches!(
+            creator.decrypt(channel, &commit),
+            Err(MlsError::Malformed)
+        ));
+        let welcome = creator.commit_stored(channel).unwrap().unwrap();
+        assert_eq!(creator.epoch(channel).unwrap(), 1, "the Commit was pending");
+        assert!(matches!(
+            creator.decrypt(channel, &welcome),
+            Err(MlsError::Malformed)
+        ));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_welcome_to_a_group_whose_id_is_no_channel_id_is_refused() {
+        let mut joiner = seeded(16);
+        let package = MlsMessage::from_bytes(&joiner.key_package().unwrap()).unwrap();
+        let other = seeded(17);
+        let mut group = other
+            .client()
+            .create_group_with_id(
+                vec![9; 15],
+                ExtensionList::new(),
+                ExtensionList::new(),
+                None,
+            )
+            .unwrap();
+        let output = group
+            .commit_builder()
+            .add_member(package)
+            .unwrap()
+            .build()
+            .unwrap();
+        let welcome = output.welcome_messages[0].to_bytes().unwrap();
+        assert!(matches!(
+            joiner.join(&welcome, |_| true),
+            Err(MlsError::Malformed)
+        ));
+        assert!(
+            joiner
+                .store
+                .items()
+                .iter()
+                .all(|(kept, _)| matches!(kept, Kept::KeyPackage(_)))
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn each_error_says_what_failed() {
         let channel = ChannelId::from_bytes([4; 16]);
         let messages: BTreeSet<String> = [
@@ -413,6 +751,9 @@ mod tests {
             MlsError::NoGroup(channel),
             MlsError::GroupExists(channel),
             MlsError::Profile,
+            MlsError::NoCommitPending(channel),
+            MlsError::Refused,
+            MlsError::Malformed,
             MlsError::Mls(mls_rs::error::MlsError::GroupNotFound),
         ]
         .iter()
@@ -427,7 +768,7 @@ mod tests {
             message
         })
         .collect();
-        assert_eq!(messages.len(), 5, "{messages:?}");
+        assert_eq!(messages.len(), 8, "{messages:?}");
         assert!(messages.contains(&format!("no group for the channel {channel}")));
     }
 }

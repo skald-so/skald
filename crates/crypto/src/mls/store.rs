@@ -51,6 +51,11 @@ impl Store {
         self.contents().groups.contains_key(id)
     }
 
+    /// Drops group `id` with its prior epochs.
+    pub(super) fn remove_group(&self, id: &[u8]) {
+        self.contents().groups.remove(id);
+    }
+
     /// Each group and KeyPackage with its encoding, in the order of their IDs.
     pub(super) fn items(&self) -> Vec<(Kept, Zeroizing<Vec<u8>>)> {
         let contents = self.contents();
