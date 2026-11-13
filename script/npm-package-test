@@ -14,6 +14,8 @@
 #   - On a checksum that does not match the archive, an archive replaced under its checksum, and a
 #     missing or empty checksum, npx skald-so fails with an error that names the checksum and runs
 #     no skald, also when run again.
+#   - Behind a proxy, with the release's files reachable only through the proxy HTTPS_PROXY names,
+#     npx skald-so downloads them through it and runs skald.
 # Each run has a home, npm cache and temporary directory of its own; SKALD_DOWNLOAD_URL says where
 # the release's files are instead of its GitHub Release, as for the installers.
 #   script/npm-package-test: against a stand-in release whose skald prints its version and target,
@@ -170,27 +172,25 @@ for other in v1.2.3 v1.2.3-beta.1; do
   fi
 done
 
-# serve <dir> <log> <var>: serves the files of <dir> as GitHub serves release files, each request's
-# path a line of <log> after the port; sets the variable <var> to the server's address.
+source "$root/script/lib/start-server.sh"
+# serve <dir> <log> <var> [<cert> <key>]: serves the files of <dir> as GitHub serves release files,
+# over HTTPS with the certificate <cert> and its key <key>, each request's path a line of <log>
+# after the port; sets the variable <var> to the server's address, http://127.0.0.1:<port>.
 serve() {
-  node "$(native "$root/script/lib/serve.mjs")" "$(native "$1")" >"$2" &
-  for _ in $(seq 50); do
-    [[ ! -s $2 ]] || break
-    sleep 0.1
-  done
-  local port
-  port=$(head -n 1 "$2" | tr -d '\r')
-  [[ $port =~ ^[0-9]+$ ]] || {
-    echo "npm-package-test: the server of the release files did not start" >&2
+  local tls=()
+  [[ $# -eq 3 ]] || tls=("$(native "$4")" "$(native "$5")")
+  start_server "$2" node "$(native "$root/script/lib/serve.mjs")" "$(native "$1")" ${tls[@]+"${tls[@]}"} || {
+    echo "npm-package-test: the server of the release files did not start: $server_failure" >&2
     exit 1
   }
-  printf -v "$3" '%s' "http://127.0.0.1:$port"
+  printf -v "$3" '%s' "http://127.0.0.1:$server_port"
 }
 
 # npx_run <root> <url> <args>...: runs `npx skald-so <args>` from the packed package as a user runs
 # it, in an empty directory, with the home, npm cache and config and temporary directory of <root>,
-# no npm registry reachable and the release's files at <url>. Its stdout goes to <root>/out, its
-# stderr to <root>/err; returns its exit status.
+# no npm registry reachable, the release's files at <url> and the variables of run_env. Its stdout
+# goes to <root>/out, its stderr to <root>/err; returns its exit status.
+run_env=()
 npx_run() {
   local dir=$1 url=$2
   shift 2
@@ -207,6 +207,7 @@ npx_run() {
     npm_config_update_notifier=false
     npm_config_fund=false
     npm_config_audit=false
+    ${run_env[@]+"${run_env[@]}"}
   )
   local status=0
   if $windows; then
@@ -275,6 +276,70 @@ else
   [[ $status != 0 ]] || fail "skald update through npx skald-so passes; it leaves an npm install to npm: $output"
   [[ $output == *npm* ]] || fail "skald update through npx skald-so does not say to update through npm: $output"
 fi
+
+# certificates <dir>: a test CA, <dir>/ca.pem, and a server certificate it issued for
+# releases.skald.test, a name no resolver knows, <dir>/server.pem with its key <dir>/server.key; made
+# with openssl.
+certificates() {
+  mkdir -p "$1"
+  cat >"$1/openssl.cnf" <<'EOF'
+[req]
+prompt = no
+distinguished_name = ca_name
+
+[ca_name]
+CN = skald-so test CA
+
+[server_name]
+CN = releases.skald.test
+
+[ca]
+basicConstraints = critical, CA:true
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+
+[server]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:releases.skald.test
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid
+EOF
+  # The server's request names the server, with the same config.
+  sed 's/^distinguished_name = ca_name$/distinguished_name = server_name/' "$1/openssl.cnf" >"$1/server.cnf"
+  if ! {
+    openssl req -x509 -config "$1/openssl.cnf" -extensions ca -newkey rsa:2048 -nodes -days 2 \
+      -keyout "$1/ca.key" -out "$1/ca.pem" &&
+      openssl req -new -config "$1/server.cnf" -newkey rsa:2048 -nodes -keyout "$1/server.key" -out "$1/server.csr" &&
+      openssl x509 -req -in "$1/server.csr" -CA "$1/ca.pem" -CAkey "$1/ca.key" -set_serial 1 -days 2 \
+        -extfile "$1/openssl.cnf" -extensions server -out "$1/server.pem"
+  } >"$1/openssl.log" 2>&1; then
+    echo "npm-package-test: openssl cannot make the test certificates: $(tail -n 3 "$1/openssl.log")" >&2
+    exit 1
+  fi
+}
+
+# Behind a proxy: the release's files at https://releases.skald.test, a name no resolver knows, so
+# only the proxy HTTPS_PROXY names reaches them: a stand-in that tunnels each CONNECT to a server of
+# the files over HTTPS, whose certificate is of a test CA the run trusts (NODE_EXTRA_CA_CERTS).
+certificates "$tmp/certificates"
+serve "$release" "$tmp/proxied.requests" proxied_url "$tmp/certificates/server.pem" "$tmp/certificates/server.key"
+start_server "$tmp/proxy.requests" node "$(native "$root/script/lib/proxy.mjs")" "${proxied_url##*:}" || {
+  echo "npm-package-test: the stand-in proxy did not start: $server_failure" >&2
+  exit 1
+}
+run_env=("HTTPS_PROXY=http://127.0.0.1:$server_port" "NODE_EXTRA_CA_CERTS=$(native "$tmp/certificates/ca.pem")")
+status=0
+npx_run "$tmp/proxied" https://releases.skald.test --version || status=$?
+run_env=()
+output=$(stdout "$tmp/proxied")
+[[ $status == 0 && $output == "$expected" ]] ||
+  fail "behind the proxy HTTPS_PROXY names, npx skald-so --version prints '$output', exit status $status, not '$expected': $(tail -n 3 "$tmp/proxied/err")"
+proxied=$(tail -n +2 "$tmp/proxy.requests" | tr -d '\r' | sort -u | tr '\n' ' ')
+[[ $proxied == 'CONNECT releases.skald.test:443 ' ]] ||
+  fail "behind the proxy HTTPS_PROXY names, npx skald-so sends it, not only CONNECT releases.skald.test:443: ${proxied:-nothing}"
+requested "$tmp/proxied.requests" "$archive"
 
 # The refused releases, each a copy of the release's archive for this machine and its checksum,
 # served on its own: one whose checksum does not match the archive, one with no checksum, one with

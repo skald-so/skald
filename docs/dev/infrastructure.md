@@ -76,12 +76,13 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
   - This job writes packages, and attestations with an OIDC token. No other job writes packages.
 - **npm:** on a push of a `v*` tag, once the GitHub Release is published, a job of the same workflow publishes the package `skald-so`, `npm/` packed by `script/release-npm` with the release's version, under the dist-tag `latest`, or `next` for a beta.
   - Before the GitHub Release is published, each build runner runs `skald` from the release's files through the packed package (`script/npm-package-test`); a dry run publishes nothing.
-  - It publishes by trusted publishing, with provenance: npm accepts the job's OIDC token only from the package's trusted publisher, `skald-so/skald`, `release.yml` and the environment `npm`. The package's publishing access requires 2FA and disallows tokens; CI holds no npm token.
+  - It publishes with provenance; npm accepts the job's OIDC token only from the package's trusted publisher, `skald-so/skald`, `release.yml` and the environment `npm`. The package's publishing access requires 2FA and disallows tokens.
   - The job's token writes nothing but `id-token`.
 - **Main:** on a push of a stable release's tag, `vX.Y.Z`, once the GitHub Release, the npm package and the image are published, a job of the same workflow moves `main` to the tag's commit with `script/move-main` and the deploy key ("PR checks", "Secrets"). A beta, or a release whose publishing failed, leaves `main` where it is.
   - `main` only moves forward: a tag whose commit does not descend from `main` as `origin` has it is refused, and `main` stays.
   - The job's token writes nothing, and it requests no OIDC token.
 - **npm package:** `npx skald-so` downloads the release's archive for the machine's OS and architecture, checks it against its `.sha256` and runs `skald`; on a mismatch or a missing or empty checksum it stops and runs nothing. It unpacks the archive into the package's directory once, with a file `installed-by-npm` beside `skald`. `SKALD_DOWNLOAD_URL` sets where the release's files are, as for the installers.
+  - It needs Node.js 24.14 or later, or 25.4 or later: its downloads go through `HTTPS_PROXY` ([Network](architecture.md#network)) by Node.js's own proxy support.
 - **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture, check it against its `.sha256` and install `skald` so a new shell runs it. On a mismatch or a missing or empty checksum they stop and install nothing. dist's own installers are not used.
   - `install.sh`: into `~/.local/bin`. Unless that directory is on the running shell's `PATH` already, it adds it to `PATH` in `~/.profile`, in `~/.bash_profile` if there is one, in `~/.bashrc` if bash is installed, and in `.zshenv` if zsh is installed.
   - `install.ps1`: into `%LOCALAPPDATA%\Programs\skald`, added to the user's `PATH`.
@@ -93,7 +94,7 @@ All checks except e2e, the PR title, the CLA, the edit comparison prototype's Wi
 - **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far, those that change only `prototypes/` included; the exception for them starts with the first release tag.
 - **The protocol** has its own version number: [protocol spec](../protocol/README.md#protocol-version).
 - **Cadence:** we release when ready, aiming for every 1–2 weeks. Fixes ship at any time.
-- **Betas:** `vX.Y.Z-beta.N`, on npm with the `next` tag.
+- **Betas:** `vX.Y.Z-beta.N`.
   - A PR sets a beta's version in `[workspace.package]` of `Cargo.toml`; the Release PR keeps it, after the beta too, until a PR sets the next beta's or the release's.
   - As beta tags do not count, the CHANGELOG section of a beta or a release lists the PRs of the betas before it too.
 - **Updates for users:** `skald update` and plugin auto-update from the marketplace.

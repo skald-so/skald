@@ -5,12 +5,14 @@
 // unpacks it into this package's directory, with the file installed-by-npm beside skald, so
 // `skald update` leaves that copy to npm. On a mismatch or a missing checksum it stops and runs
 // nothing. script/release-npm sets the release's version; script/npm-package-test tests it.
-// SKALD_DOWNLOAD_URL: where the release's files are instead of its GitHub Release.
+// SKALD_DOWNLOAD_URL: where the release's files are instead of its GitHub Release. The downloads go
+// through the proxy HTTPS_PROXY names, HTTP_PROXY for http, except to the hosts NO_PROXY names.
 'use strict';
 
 const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 
 const { version } = require('./package.json');
@@ -21,6 +23,9 @@ const fail = (message) => {
 };
 
 if (version === '0.0.0') fail('this is the source of the package; run the package of a release: npx skald-so');
+// Node.js's own proxy support for fetch, set from the environment: Node.js 24.14+ or 25.4+.
+if (typeof http.setGlobalProxyFromEnv !== 'function') fail(`needs Node.js 24.14 or later, or 25.4 or later, not ${process.version}`);
+http.setGlobalProxyFromEnv();
 const tag = `v${version}`;
 const windows = process.platform === 'win32';
 const targets = {

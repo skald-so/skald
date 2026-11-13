@@ -30,7 +30,9 @@ on:
       - npm/**
       - script/installers-test
       - script/lib/release-tag-args.sh
+      - script/lib/proxy.mjs
       - script/lib/serve.mjs
+      - script/lib/start-server.sh
       - script/move-main
       - script/npm-package-test
       - script/release-installers
