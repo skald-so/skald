@@ -241,4 +241,19 @@ mod tests {
             Err(ProfileError::ExternalSender)
         );
     }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn each_profile_error_says_how_the_leaf_breaks_it() {
+        let errors = [
+            ProfileError::Credential,
+            ProfileError::SignatureKey,
+            ProfileError::Identity,
+            ProfileError::ExternalSender,
+        ];
+        let messages: std::collections::BTreeSet<String> =
+            errors.iter().map(ToString::to_string).collect();
+        assert_eq!(messages.len(), errors.len(), "{messages:?}");
+        assert!(messages.iter().all(|message| !message.is_empty()));
+    }
 }

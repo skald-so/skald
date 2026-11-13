@@ -275,6 +275,7 @@ mod tests {
             .ok()
             .unwrap();
         assert!(Group::decode(&encoded).is_some());
+        assert_eq!(encoded.capacity(), encoded.len(), "sized up front");
         // The state's length and bytes end at 9, epoch 1's ID, length and record at 24.
         let (state_end, first_end) = (4 + 5, 4 + 5 + 8 + 4 + 3);
         for cut in (0..encoded.len()).filter(|cut| ![state_end, first_end].contains(cut)) {
