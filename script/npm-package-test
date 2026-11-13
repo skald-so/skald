@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+# Tests the npm package skald-so, packed by script/release-npm: run as a user runs it, `npx skald-so`,
+# here from the packed file, it downloads the release's archive for this machine's target from the
+# release's files, served over HTTP as GitHub serves them (script/lib/serve.mjs), checks it against
+# its checksum and runs skald.
+#   - The packed package is one file, skald-so-<version>.tgz, whose package.json names skald-so and
+#     the release's version, X.Y.Z for vX.Y.Z and X.Y.Z-beta.N for vX.Y.Z-beta.N.
+#   - One package for every platform: npx installs it with no npm registry reachable, so it needs no
+#     other package, and it downloads this machine's archive, and no other.
+#   - npx skald-so prints the release's version with --version, passes skald its arguments and
+#     exits with skald's exit status, also when run again.
+#   - Beside the skald it unpacks, the file installed-by-npm, so skald update leaves that copy to
+#     npm; with the release workflow's files, skald update run through npx says so and fails.
+#   - On a checksum that does not match the archive, an archive replaced under its checksum, and a
+#     missing or empty checksum, npx skald-so fails with an error that names the checksum and runs
+#     no skald, also when run again.
+#   - Behind a proxy, with the release's files reachable only through the proxy HTTPS_PROXY names,
+#     npx skald-so downloads them through it and runs skald. On a Node.js with no proxy support of
+#     its own, it runs skald with no proxy set, and with a proxy set it fails with an error that names
+#     the Node.js versions a proxy needs and runs no skald.
+# Each run has a home, npm cache and temporary directory of its own; SKALD_DOWNLOAD_URL says where
+# the release's files are instead of its GitHub Release, as for the installers.
+#   script/npm-package-test: against a stand-in release whose skald prints its version and target,
+#     on macOS and Linux; script/test runs this.
+#   script/npm-package-test <dir> <tag> <target>: against the release files of <tag> in <dir>, whose
+#     skald prints its version; <target> is the one this machine's archive is built for. The release
+#     workflow's dry run runs this on each runner.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+failures=0
+
+fail() {
+  echo "npm-package-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+if [[ $# -ne 0 && $# -ne 3 ]]; then
+  echo "usage: $0 [<dir> <tag> <target>]" >&2
+  exit 2
+fi
+
+# Symlinks resolved, so the paths a run reports compare with these.
+tmp=$(cd "$(mktemp -d)" && pwd -P)
+# The servers of the release files are this shell's background jobs.
+cleanup() {
+  local jobs
+  jobs=$(jobs -p)
+  if [[ -n $jobs ]]; then
+    # shellcheck disable=SC2086 # one job ID per word
+    kill $jobs 2>/dev/null || true
+    wait 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+windows=false
+case $(uname -s) in
+  MINGW* | MSYS* | CYGWIN*) windows=true ;;
+esac
+# native <path>: the path as node and npm on this OS take it.
+native() {
+  if $windows; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+# sha256 <file>: the file's SHA-256 in hex.
+sha256() {
+  node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$(native "$1")"
+}
+# checksum <archive>: writes <archive>.sha256 as dist writes it: `<hex> *<name>` and a blank line.
+checksum() {
+  printf '%s *%s\n\n' "$(sha256 "$1")" "${1##*/}" >"$1.sha256"
+}
+
+# stand_in <dir> <target> <line>: a skald laid out as dist lays it out in <dir>/skald-client-<target>,
+# which prints <line> for --version, `args:` and each argument in brackets for anything else, and
+# exits with <n> for `exit-with <n>`. Each run appends its own path, symlinks resolved, to the file
+# $STAND_IN_RAN.
+stand_in() {
+  mkdir -p "$1/skald-client-$2"
+  cat >"$1/skald-client-$2/skald" <<EOF
+#!/bin/sh
+if [ -n "\${STAND_IN_RAN:-}" ]; then
+  printf '%s\n' "\$(cd "\$(dirname "\$0")" && pwd -P)/\$(basename "\$0")" >>"\$STAND_IN_RAN"
+fi
+case \${1:-} in
+  --version) echo "$3" ;;
+  exit-with) exit "\$2" ;;
+  *)
+    printf 'args:'
+    for arg in "\$@"; do printf ' [%s]' "\$arg"; done
+    echo
+    ;;
+esac
+EOF
+  chmod 755 "$1/skald-client-$2/skald"
+}
+
+if [[ $# -eq 3 ]]; then
+  release=$1 tag=$2 target=$3
+  version=${tag#v}
+  expected="skald $version"
+  standin=false
+else
+  # The stand-in release: an archive of each macOS and Linux target, laid out as dist lays it out,
+  # with a skald that prints its target too.
+  version=$("$root/script/release-version")
+  tag=v$version
+  # This machine as node, which runs the package, sees it.
+  machine=$(node -p 'process.platform + " " + process.arch')
+  case $machine in
+    'darwin arm64') target=aarch64-apple-darwin ;;
+    'darwin x64') target=x86_64-apple-darwin ;;
+    'linux arm64') target=aarch64-unknown-linux-gnu ;;
+    'linux x64') target=x86_64-unknown-linux-gnu ;;
+    *)
+      echo "npm-package-test: no stand-in release for $machine" >&2
+      exit 1
+      ;;
+  esac
+  release=$tmp/release
+  mkdir -p "$release"
+  for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+    stand_in "$tmp/build" "$t" "skald $version $t"
+    tar -czf "$release/skald-client-$t.tar.gz" -C "$tmp/build" "skald-client-$t"
+    checksum "$release/skald-client-$t.tar.gz"
+  done
+  expected="skald $version $target"
+  standin=true
+fi
+if $windows; then archive=skald-client-$target.zip; else archive=skald-client-$target.tar.gz; fi
+[[ -f $release/$archive ]] || {
+  echo "npm-package-test: the release has no archive for $target: $archive" >&2
+  exit 1
+}
+[[ -f $release/$archive.sha256 ]] || fail "the release has no checksum of $archive: $archive.sha256"
+
+# pack <tag> <dir>: script/release-npm packs the package of <tag> into <dir>; sets packed to the
+# packed file.
+pack() {
+  packed=
+  mkdir -p "$2"
+  if ! "$root/script/release-npm" "$1" "$2" >"$tmp/pack.log" 2>&1; then
+    fail "script/release-npm $1 failed: $(tail -n 3 "$tmp/pack.log")"
+    return 1
+  fi
+  local files
+  files=$(cd "$2" && ls -A)
+  if [[ $files != "skald-so-${1#v}.tgz" ]]; then
+    fail "script/release-npm $1 writes one file, skald-so-${1#v}.tgz, not: $(tr '\n' ' ' <<<"$files")"
+    return 1
+  fi
+  packed=$2/skald-so-${1#v}.tgz
+}
+# manifest <packed> <field>: the field of the package.json in the packed package.
+manifest() {
+  tar -xzOf "$1" package/package.json | node -e \
+    'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => process.stdout.write(String(JSON.parse(s)[process.argv[1]] ?? "")))' "$2"
+}
+
+pack "$tag" "$tmp/package" || {
+  echo "npm-package-test: $failures case(s) failed" >&2
+  exit 1
+}
+package=$packed
+[[ $(manifest "$package" name) == skald-so ]] || fail "the packed package is named '$(manifest "$package" name)', not skald-so"
+[[ $(manifest "$package" version) == "$version" ]] ||
+  fail "the package of $tag has the version '$(manifest "$package" version)', not $version"
+# A beta's and a stable release's version, whatever the workspace's.
+for other in v1.2.3 v1.2.3-beta.1; do
+  if pack "$other" "$tmp/package-$other"; then
+    [[ $(manifest "$packed" version) == "${other#v}" ]] ||
+      fail "the package of $other has the version '$(manifest "$packed" version)', not ${other#v}"
+  fi
+done
+
+source "$root/script/lib/start-server.sh"
+# serve <dir> <log> <var> [<cert> <key>]: serves the files of <dir> as GitHub serves release files,
+# over HTTPS with the certificate <cert> and its key <key>, each request's path a line of <log>
+# after the port; sets the variable <var> to the server's address, http://127.0.0.1:<port>.
+serve() {
+  local tls=()
+  [[ $# -eq 3 ]] || tls=("$(native "$4")" "$(native "$5")")
+  start_server "$2" node "$(native "$root/script/lib/serve.mjs")" "$(native "$1")" ${tls[@]+"${tls[@]}"} || {
+    echo "npm-package-test: the server of the release files did not start: $server_failure" >&2
+    exit 1
+  }
+  printf -v "$3" '%s' "http://127.0.0.1:$server_port"
+}
+
+# npx_run <root> <url> <args>...: runs `npx skald-so <args>` from the packed package as a user runs
+# it, in an empty directory, with the home, npm cache and config and temporary directory of <root>,
+# no npm registry reachable, the release's files at <url> and the variables of run_env. Its stdout
+# goes to <root>/out, its stderr to <root>/err; returns its exit status.
+run_env=()
+npx_run() {
+  local dir=$1 url=$2
+  shift 2
+  mkdir -p "$dir/home" "$dir/tmp" "$dir/cwd"
+  : >"$dir/npmrc"
+  : >"$dir/global-npmrc"
+  local vars=(
+    "SKALD_DOWNLOAD_URL=$url"
+    "STAND_IN_RAN=$dir/ran"
+    "npm_config_cache=$(native "$dir/home/npm-cache")"
+    "npm_config_userconfig=$(native "$dir/npmrc")"
+    "npm_config_globalconfig=$(native "$dir/global-npmrc")"
+    "npm_config_registry=http://127.0.0.1:9/"
+    npm_config_update_notifier=false
+    npm_config_fund=false
+    npm_config_audit=false
+    ${run_env[@]+"${run_env[@]}"}
+  )
+  local status=0
+  if $windows; then
+    local w
+    w=$(cygpath -w "$dir/home")
+    (cd "$dir/cwd" && env "${vars[@]}" HOME="$dir/home" USERPROFILE="$w" LOCALAPPDATA="$w\\AppData\\Local" \
+      APPDATA="$w\\AppData\\Roaming" TEMP="$(cygpath -w "$dir/tmp")" TMP="$(cygpath -w "$dir/tmp")" \
+      npx --yes "file:$(native "$package")" "$@" >"$dir/out" 2>"$dir/err" </dev/null) || status=$?
+  else
+    (cd "$dir/cwd" && env -i PATH="$PATH" HOME="$dir/home" TMPDIR="$dir/tmp" "${vars[@]}" \
+      npx --yes "file:$package" "$@" >"$dir/out" 2>"$dir/err" </dev/null) || status=$?
+  fi
+  return $status
+}
+# stdout <root>: the output of the last run in <root>, without carriage returns.
+stdout() { tr -d '\r' <"$1/out"; }
+# says_checksum <root>: the output of the last run in <root> names the checksum.
+says_checksum() {
+  [[ $(cat "$1/out" "$1/err" | tr -d '\r\n' | tr '[:upper:]' '[:lower:]') == *checksum* ]]
+}
+# requested <log> <archive>: the server of <log> served <archive>, and no other archive.
+requested() {
+  local archives
+  archives=$(tail -n +2 "$1" | tr -d '\r' | grep -E '\.(tar\.gz|zip)$' | sort -u | tr '\n' ' ')
+  [[ $archives == "/$2 " ]] || fail "npx skald-so downloads $2 for $target, not: ${archives:-nothing}"
+}
+
+# The release as published: the version, the arguments and the exit status, twice.
+serve "$release" "$tmp/requests" url
+run=$tmp/run
+status=0
+npx_run "$run" "$url" --version || status=$?
+output=$(stdout "$run")
+[[ $status == 0 ]] || fail "npx skald-so --version exits with $status: $(tail -n 3 "$run/err")"
+[[ $output == "$expected" ]] || fail "npx skald-so --version prints '$output', not '$expected'"
+requested "$tmp/requests" "$archive"
+if $standin; then
+  status=0
+  npx_run "$run" "$url" hello 'two words' '' || status=$?
+  output=$(stdout "$run")
+  [[ $status == 0 && $output == 'args: [hello] [two words] []' ]] ||
+    fail "npx skald-so hello 'two words' '' gives skald other arguments: '$output', exit status $status"
+  status=0
+  npx_run "$run" "$url" exit-with 7 || status=$?
+  [[ $status == 7 ]] || fail "npx skald-so exits with $status, not with skald's exit status, 7"
+  status=0
+  npx_run "$run" "$url" --version || status=$?
+  output=$(stdout "$run")
+  [[ $status == 0 && $output == "$expected" ]] || fail "npx skald-so --version run again prints '$output', not '$expected'"
+
+  # Every skald that ran has installed-by-npm beside it.
+  if [[ ! -s $run/ran ]]; then
+    fail "npx skald-so ran no skald of the release"
+  else
+    while IFS= read -r ran; do
+      real=$(node -e 'process.stdout.write(require("fs").realpathSync(process.argv[1]))' "$ran")
+      [[ $real != "$release"/* && $real != "$tmp/build"/* ]] || fail "npx skald-so runs the release's own file, not one it unpacked: $real"
+      [[ -f ${real%/*}/installed-by-npm ]] || fail "the skald npx skald-so runs has no installed-by-npm beside it: $real"
+    done < <(sort -u "$run/ran")
+  fi
+else
+  # The release's skald update leaves the copy npx unpacked to npm.
+  status=0
+  npx_run "$run" "$url" update || status=$?
+  output=$(cat "$run/out" "$run/err" | tr -d '\r')
+  [[ $status != 0 ]] || fail "skald update through npx skald-so passes; it leaves an npm install to npm: $output"
+  [[ $output == *npm* ]] || fail "skald update through npx skald-so does not say to update through npm: $output"
+fi
+
+# certificates <dir>: a test CA, <dir>/ca.pem, and a server certificate it issued for
+# releases.skald.test, a name no resolver knows, <dir>/server.pem with its key <dir>/server.key; made
+# with openssl.
+certificates() {
+  mkdir -p "$1"
+  cat >"$1/openssl.cnf" <<'EOF'
+[req]
+prompt = no
+distinguished_name = ca_name
+
+[ca_name]
+CN = skald-so test CA
+
+[server_name]
+CN = releases.skald.test
+
+[ca]
+basicConstraints = critical, CA:true
+keyUsage = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+
+[server]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:releases.skald.test
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid
+EOF
+  # The server's request names the server, with the same config.
+  sed 's/^distinguished_name = ca_name$/distinguished_name = server_name/' "$1/openssl.cnf" >"$1/server.cnf"
+  if ! {
+    openssl req -x509 -config "$1/openssl.cnf" -extensions ca -newkey rsa:2048 -nodes -days 2 \
+      -keyout "$1/ca.key" -out "$1/ca.pem" &&
+      openssl req -new -config "$1/server.cnf" -newkey rsa:2048 -nodes -keyout "$1/server.key" -out "$1/server.csr" &&
+      openssl x509 -req -in "$1/server.csr" -CA "$1/ca.pem" -CAkey "$1/ca.key" -set_serial 1 -days 2 \
+        -extfile "$1/openssl.cnf" -extensions server -out "$1/server.pem"
+  } >"$1/openssl.log" 2>&1; then
+    echo "npm-package-test: openssl cannot make the test certificates: $(tail -n 3 "$1/openssl.log")" >&2
+    exit 1
+  fi
+}
+
+# Behind a proxy: the release's files at https://releases.skald.test, a name no resolver knows, so
+# only the proxy HTTPS_PROXY names reaches them: a stand-in that tunnels each CONNECT to a server of
+# the files over HTTPS, whose certificate is of a test CA the run trusts (NODE_EXTRA_CA_CERTS).
+certificates "$tmp/certificates"
+serve "$release" "$tmp/proxied.requests" proxied_url "$tmp/certificates/server.pem" "$tmp/certificates/server.key"
+start_server "$tmp/proxy.requests" node "$(native "$root/script/lib/proxy.mjs")" "${proxied_url##*:}" || {
+  echo "npm-package-test: the stand-in proxy did not start: $server_failure" >&2
+  exit 1
+}
+proxy_port=$server_port
+run_env=("HTTPS_PROXY=http://127.0.0.1:$proxy_port" "NODE_EXTRA_CA_CERTS=$(native "$tmp/certificates/ca.pem")")
+status=0
+npx_run "$tmp/proxied" https://releases.skald.test --version || status=$?
+run_env=()
+output=$(stdout "$tmp/proxied")
+[[ $status == 0 && $output == "$expected" ]] ||
+  fail "behind the proxy HTTPS_PROXY names, npx skald-so --version prints '$output', exit status $status, not '$expected': $(tail -n 3 "$tmp/proxied/err")"
+proxied=$(tail -n +2 "$tmp/proxy.requests" | tr -d '\r' | sort -u | tr '\n' ' ')
+[[ $proxied == 'CONNECT releases.skald.test:443 ' ]] ||
+  fail "behind the proxy HTTPS_PROXY names, npx skald-so sends it, not only CONNECT releases.skald.test:443: ${proxied:-nothing}"
+requested "$tmp/proxied.requests" "$archive"
+
+# A Node.js with no proxy support of its own, stood in for by one whose http has no
+# setGlobalProxyFromEnv: with no proxy set, npx skald-so runs skald; with any of the proxy
+# variables set, it fails, names the Node.js versions a proxy needs and runs no skald.
+printf '%s\n' "delete require('node:http').setGlobalProxyFromEnv;" >"$tmp/older-node.js"
+older_node="NODE_OPTIONS=--require \"$(native "$tmp/older-node.js")\""
+run_env=("$older_node")
+status=0
+npx_run "$tmp/older" "$url" --version || status=$?
+output=$(stdout "$tmp/older")
+[[ $status == 0 && $output == "$expected" ]] ||
+  fail "on a Node.js with no proxy support and no proxy set, npx skald-so --version prints '$output', exit status $status, not '$expected': $(tail -n 3 "$tmp/older/err")"
+n=0
+for variable in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy; do
+  # Windows' variables ignore case, and so may its file names: a directory of each by number.
+  n=$((n + 1))
+  run_env=("$older_node" "$variable=http://127.0.0.1:$proxy_port")
+  status=0
+  npx_run "$tmp/older-$n" "$url" --version || status=$?
+  output=$(cat "$tmp/older-$n/out" "$tmp/older-$n/err" | tr -d '\r')
+  [[ $status != 0 ]] || fail "on a Node.js with no proxy support, npx skald-so passes with $variable set: $output"
+  [[ $output == *24.14*25.4* ]] ||
+    fail "on a Node.js with no proxy support, npx skald-so with $variable set does not name Node.js 24.14 and 25.4: $(head -n 2 <<<"$output")"
+  [[ $output != *"skald $version"* && ! -s $tmp/older-$n/ran ]] ||
+    fail "on a Node.js with no proxy support, npx skald-so with $variable set runs skald: $output"
+done
+run_env=()
+
+# The refused releases, each a copy of the release's archive for this machine and its checksum,
+# served on its own: one whose checksum does not match the archive, one with no checksum, one with
+# an empty checksum, and one whose archive was replaced under its checksum.
+refused=(mismatched missing empty replaced)
+refusal() {
+  case $1 in
+    mismatched) echo 'a checksum that does not match the archive' ;;
+    missing) echo 'no checksum of the archive' ;;
+    empty) echo 'an empty checksum of the archive' ;;
+    replaced) echo 'an archive replaced under its checksum' ;;
+  esac
+}
+for case in "${refused[@]}"; do
+  mkdir "$tmp/$case"
+  cp "$release/$archive" "$tmp/$case/"
+  [[ ! -f $release/$archive.sha256 ]] || cp "$release/$archive.sha256" "$tmp/$case/"
+done
+# The SHA-256 of nothing: a well-formed checksum, of another file.
+printf '%s *%s\n\n' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "$archive" \
+  >"$tmp/mismatched/$archive.sha256"
+rm -f "$tmp/missing/$archive.sha256"
+: >"$tmp/empty/$archive.sha256"
+# A skald of its own, laid out as the release's, under the release's checksum.
+if $windows; then
+  mkdir "$tmp/replacement"
+  echo 'skald replaced' >"$tmp/replacement/skald.exe"
+  rm -f "$tmp/replaced/$archive"
+  powershell -NoProfile -Command "Compress-Archive -Force -Path '$(cygpath -w "$tmp/replacement/skald.exe")' -DestinationPath '$(cygpath -w "$tmp/replaced/$archive")'"
+else
+  stand_in "$tmp/replacement" "$target" 'skald replaced'
+  tar -czf "$tmp/replaced/$archive" -C "$tmp/replacement" "skald-client-$target"
+fi
+[[ $(sha256 "$tmp/replaced/$archive") != "$(sha256 "$release/$archive")" ]] ||
+  fail "the replaced archive is the release's own"
+for case in "${refused[@]}"; do
+  serve "$tmp/$case" "$tmp/$case.requests" refused_url
+  what=$(refusal "$case")
+  for attempt in 1 2; do
+    status=0
+    npx_run "$tmp/$case.run" "$refused_url" --version || status=$?
+    output=$(stdout "$tmp/$case.run")
+    [[ $status != 0 ]] || fail "npx skald-so passes with $what, run $attempt"
+    says_checksum "$tmp/$case.run" ||
+      fail "npx skald-so with $what does not name the checksum, run $attempt: $(cat "$tmp/$case.run/out" "$tmp/$case.run/err" | head -n 2)"
+    [[ $output != *"skald $version"* && $output != *'skald replaced'* ]] ||
+      fail "npx skald-so with $what runs skald, run $attempt: $output"
+    [[ ! -s $tmp/$case.run/ran ]] || fail "npx skald-so with $what runs skald, run $attempt: $(sort -u "$tmp/$case.run/ran" | tr '\n' ' ')"
+  done
+done
+
+if ((failures > 0)); then
+  echo "npm-package-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "npm-package-test: all cases passed"

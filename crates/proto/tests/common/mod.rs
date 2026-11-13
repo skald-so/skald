@@ -8,9 +8,9 @@ use std::num::NonZeroU64;
 
 use skald_proto::{
     Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation, DelegationBody,
-    DeliveryStatus, DeviceId, Envelope, Grant, GrantBody, Header, HpkePayload, HpkePlaintext,
-    MessageId, NonEmpty, Receipt, ReceiptStatus, Scheme, SendKey, ServerStatus, SpaceId, Stored,
-    Unknown,
+    DeliveryStatus, DeviceId, Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload,
+    HpkePlaintext, MessageId, NonEmpty, Receipt, ReceiptStatus, Scheme, SendKey, ServerStatus,
+    SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -32,6 +32,16 @@ pub fn hex(text: &str) -> Vec<u8> {
         .chunks(2)
         .map(|pair| pair[0] * 16 + pair[1])
         .collect()
+}
+
+/// Asserts that `result` fails with `problem` in a field.
+pub fn assert_field_problem<T: Debug>(result: Result<T, DecodeError>, problem: &FieldProblem) {
+    match result {
+        Err(DecodeError::Field {
+            problem: actual, ..
+        }) => assert_eq!(&actual, problem),
+        other => panic!("expected {problem:?}, got {other:?}"),
+    }
 }
 
 /// The lowercase hex of `bytes`.

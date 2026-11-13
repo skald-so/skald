@@ -83,20 +83,16 @@ fi
 
 # serve <dir> <log> <var>: serves the files of <dir> as GitHub serves release files, each request's
 # path a line of <log> after the port; sets the variable <var> to the server's address.
+source "$root/script/lib/start-server.sh"
 serve() {
-  node "$root/script/lib/serve.mjs" "$1" >"$2" &
-  servers+=($!)
-  for _ in $(seq 50); do
-    [[ ! -s $2 ]] || break
-    sleep 0.1
-  done
-  local port
-  port=$(head -n 1 "$2")
-  [[ $port =~ ^[0-9]+$ ]] || {
-    echo "installers-test: the server of the release files did not start" >&2
+  local started=true
+  start_server "$2" node "$root/script/lib/serve.mjs" "$1" || started=false
+  servers+=("$server_pid")
+  $started || {
+    echo "installers-test: the server of the release files did not start: $server_failure" >&2
     exit 1
   }
-  printf -v "$3" '%s' "http://127.0.0.1:$port"
+  printf -v "$3" '%s' "http://127.0.0.1:$server_port"
 }
 serve "$release" "$tmp/requests" url
 

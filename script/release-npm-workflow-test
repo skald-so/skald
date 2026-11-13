@@ -1,0 +1,551 @@
+#!/usr/bin/env node
+// Tests how .github/workflows/release.yml publishes the npm package skald-so, and how
+// docs/dev/infrastructure.md says to verify it:
+//   - one step of all workflows publishes to npm, in one job of the release workflow, the publish
+//     job;
+//   - only a push of a v* tag publishes: for any other push, a PR and a manual run, on a tag ref
+//     too, the publishing step is skipped, whatever the run's inputs, variables and step outputs; a
+//     push of vX.Y.Z and of vX.Y.Z-beta.N may run it;
+//   - the publish job, its steps run as GitHub runs them with a stand-in npm that records each
+//     `npm publish` and runs any other npm command: on a push of vX.Y.Z it publishes once, under the
+//     dist-tag latest, and on a push of vX.Y.Z-beta.N once, under next, each with provenance, and,
+//     when the published package can be read, skald-so at the tag's version;
+//   - the publish job runs in the GitHub environment npm, and no other job of any workflow names it;
+//   - no step uses an npm token: no workflow sets NODE_AUTH_TOKEN, NPM_TOKEN or an npm auth
+//     setting, reads a secret named for npm, or runs npm login, adduser or token, or writes an auth
+//     token to an npmrc; the publish job reads no secret other than GITHUB_TOKEN, and npm publish
+//     runs with no npm token in its environment;
+//   - the rules of the release pipeline: the publish job's permissions are set, and its token
+//     writes nothing but id-token, for trusted publishing and provenance; setup-node restores no
+//     cache; the rules every job follows are script/release-workflow-test's;
+//   - order: the publish job needs, directly or through other jobs, the job that creates the GitHub
+//     Release, whose files the package downloads, and every job that runs script/npm-package-test,
+//     which together check every target the build jobs build; the job that moves main needs the
+//     publish job, so main moves only after npm has the release;
+//   - the dry run of a PR and of a manual run runs script/npm-package-test with the release's files,
+//     its tag and the runner's target on a runner of each target the build jobs build, in steps that
+//     may run and whose failure fails the run; a PR that changes the package or script/release-npm
+//     starts the dry run;
+//   - docs/dev/infrastructure.md, "Trust in builds": a command that verifies the provenance of the
+//     skald-so package.
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  commands,
+  condition,
+  event,
+  isUnknown,
+  jobsFor,
+  needsOf,
+  open,
+  pathTriggers,
+  permissions,
+  readWorkflow,
+  stepSkipped,
+  template,
+  toText,
+  triggers,
+  truth,
+  unknown,
+  words,
+} from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const releaseFile = '.github/workflows/release.yml';
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-npm-workflow-test: ${what}`);
+  failures++;
+};
+const done = () => {
+  if (failures > 0) {
+    console.error(`release-npm-workflow-test: ${failures} case(s) failed`);
+    process.exit(1);
+  }
+  console.log('release-npm-workflow-test: all cases passed');
+};
+
+const workflowDir = path.join(root, '.github/workflows');
+const workflows = Object.fromEntries(
+  fs
+    .readdirSync(workflowDir)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .map((f) => [`.github/workflows/${f}`, readWorkflow(path.join(workflowDir, f))]),
+);
+const release = workflows[releaseFile];
+if (!release) {
+  console.error(`release-npm-workflow-test: ${releaseFile} is missing`);
+  process.exit(1);
+}
+const jobs = release.jobs ?? {};
+const allJobs = Object.entries(workflows).flatMap(([file, workflow]) =>
+  Object.entries(workflow.jobs ?? {}).map(([key, job]) => ({ file, key, job, workflow })),
+);
+const where = (file, key, step, index) => `${file} job ${key}${step ? ` step ${step.name ?? step.id ?? index + 1}` : ''}`;
+const lines = (step) => commands(step?.run);
+const action = (step) => String(step?.uses ?? '').split('@')[0].toLowerCase();
+const writes = (p) => (p ? Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope) : []);
+
+// The step that publishes to npm.
+const publishes = (step) =>
+  /^js-devtools\/npm-publish$/.test(action(step)) ||
+  lines(step).some((l) => /(^|[\s;&|(])(npm|pnpm)(\s+\S+)*\s+publish\b/.test(l) || /(^|[\s;&|(])yarn(\s+npm)?\s+publish\b/.test(l));
+const publishing = allJobs.flatMap((entry) =>
+  (entry.job.steps ?? []).map((step, index) => ({ ...entry, step, index })).filter(({ step }) => publishes(step)),
+);
+if (publishing.length !== 1 || publishing[0].file !== releaseFile) {
+  fail(
+    `one step of all workflows publishes to npm, in ${releaseFile}, not: ${
+      publishing.map((s) => where(s.file, s.key, s.step, s.index)).join(', ') || 'none'
+    }`,
+  );
+  done();
+}
+const { key, job, step: publishStep, index: publishIndex } = publishing[0];
+const publishWhere = where(releaseFile, key, publishStep, publishIndex);
+
+// The events it publishes on.
+const quiet = [
+  ['push', 'refs/heads/dev'],
+  ['push', 'refs/heads/main'],
+  ['push', 'refs/heads/v1.2.3'],
+  ['push', 'refs/tags/1.2.3'],
+  ['push', 'refs/tags/release-1.2.3'],
+  ['push', 'refs/tags/skald-v1.2.3'],
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
+];
+for (const [name, ref] of quiet) {
+  if (!stepSkipped(publishStep, jobsFor(release, event(name, ref))[key])) {
+    fail(`a ${name} on ${ref} publishes nothing to npm, but ${publishWhere} may run`);
+  }
+}
+for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
+  if (stepSkipped(publishStep, jobsFor(release, event('push', `refs/tags/${tag}`))[key])) {
+    fail(`a push of the tag ${tag} cannot publish it to npm: ${publishWhere} is skipped`);
+  }
+}
+
+// The environment.
+const envName = (j) => (j.environment && typeof j.environment === 'object' ? j.environment.name : j.environment);
+if (String(envName(job) ?? '').toLowerCase() !== 'npm') {
+  fail(`job ${key} publishes to npm in the GitHub environment npm, not: ${JSON.stringify(envName(job) ?? null)}`);
+}
+for (const entry of allJobs) {
+  if (entry.file === releaseFile && entry.key === key) continue;
+  const other = envName(entry.job);
+  if (typeof other === 'string' && (other.toLowerCase() === 'npm' || other.includes('${{'))) {
+    fail(`${where(entry.file, entry.key)}: only job ${key} names the environment npm, but this one names ${other}`);
+  }
+}
+
+// No npm token.
+const secretsOf = (value) =>
+  [...JSON.stringify(value ?? null).matchAll(/secrets\s*(?:\.\s*([A-Za-z0-9_]+)|\[\s*'([^']+)'\s*\])/gi)].map((m) => m[1] ?? m[2]);
+const tokenVariable = (name) => /^(node_auth_token|npm_token|npm_auth_token|npm_config_.*_?auth.*)$/i.test(name);
+const tokenCommand = (line) =>
+  /\bnpm\s+(login|adduser|add-user|token)\b/.test(line) ||
+  /(^|[^A-Za-z0-9])_auth(Token)?\b/.test(line) ||
+  /\b(NODE_AUTH_TOKEN|NPM_TOKEN|NPM_AUTH_TOKEN)\b/.test(line) ||
+  /\bnpm\s+config\s+set\s+\S*auth/i.test(line);
+for (const [file, workflow] of Object.entries(workflows)) {
+  for (const s of secretsOf(workflow)) if (/npm|node_auth/i.test(s)) fail(`${file} reads the secret ${s}; CI holds no npm token`);
+  const envs = [
+    [file, workflow.env],
+    ...Object.entries(workflow.jobs ?? {}).flatMap(([k, j]) => [
+      [where(file, k), j.env],
+      ...(j.steps ?? []).map((step, i) => [where(file, k, step, i), step.env]),
+    ]),
+  ];
+  for (const [at, env] of envs) {
+    for (const name of Object.keys(env ?? {})) if (tokenVariable(name)) fail(`${at} sets ${name}; no step uses an npm token`);
+  }
+  for (const [k, j] of Object.entries(workflow.jobs ?? {})) {
+    (j.steps ?? []).forEach((step, i) => {
+      for (const line of lines(step)) if (tokenCommand(line)) fail(`${where(file, k, step, i)}: no step uses an npm token, but it runs: ${line.trim()}`);
+      for (const [input, value] of Object.entries(step.with ?? {})) {
+        if (/npm|registry/i.test(action(step) + input) && /token/i.test(input) && value) {
+          fail(`${where(file, k, step, i)}: no step uses an npm token, but ${action(step)} gets ${input}`);
+        }
+      }
+    });
+  }
+}
+const jobSecrets = [...new Set(secretsOf(job))].filter((s) => s.toUpperCase() !== 'GITHUB_TOKEN');
+if (jobSecrets.length > 0 || job.secrets === 'inherit') {
+  fail(`job ${key} reads no secret other than GITHUB_TOKEN, not: ${jobSecrets.join(', ') || 'inherit'}`);
+}
+
+// Permissions and caches.
+const p = permissions(release, job);
+if (p === null) fail(`job ${key}: its permissions are not set`);
+else {
+  const w = writes(p);
+  if (!w.includes('id-token')) fail(`job ${key}: it publishes by trusted publishing with provenance, so its token writes id-token`);
+  const extra = w.filter((s) => s !== 'id-token');
+  if (extra.length > 0) fail(`job ${key}: its token writes only id-token, not also: ${extra.join(', ')}`);
+}
+for (const [k, j] of Object.entries(jobs)) {
+  (j.steps ?? []).forEach((step, i) => {
+    if (action(step) !== 'actions/setup-node') return;
+    const w = step.with ?? {};
+    if (!(w['package-manager-cache'] === false || String(w['package-manager-cache']).toLowerCase() === 'false')) {
+      fail(`${where(releaseFile, k, step, i)}: actions/setup-node restores a cache unless package-manager-cache is false`);
+    }
+  });
+}
+
+// Order.
+const needed = (k, seen = new Set()) => {
+  for (const n of needsOf(jobs[k])) {
+    if (!seen.has(n)) {
+      seen.add(n);
+      needed(n, seen);
+    }
+  }
+  return seen;
+};
+const runs = (j) => (j.steps ?? []).flatMap(lines);
+const runner = (k) => Object.keys(jobs).filter((x) => runs(jobs[x]).some((l) => k.test(l)));
+const creators = runner(/\bgh\s+release\s+create\b/);
+const testers = runner(/(^|[\s;&|(/])script\/npm-package-test(\s|$|["';&|)])/);
+const builders = runner(/\bdist\s+build\b/);
+const movers = runner(/(^|[\s;&|(/])script\/move-main(\s|$|["';&|)])/);
+if (creators.length === 0) fail('no job creates the GitHub Release with gh release create');
+for (const c of creators) if (!needed(key).has(c)) fail(`job ${key} publishes to npm without needing job ${c}, which creates the GitHub Release`);
+if (testers.length === 0) fail('no job runs script/npm-package-test');
+for (const t of testers) if (!needed(key).has(t)) fail(`job ${key} publishes to npm without needing job ${t}, which tests the package`);
+if (movers.length === 0) fail('no job moves main with script/move-main');
+for (const m of movers) if (!needed(m).has(key)) fail(`job ${m} moves main without needing job ${key}, which publishes to npm`);
+const targets = (keys) =>
+  [...new Set(keys.flatMap((k) => [].concat(jobs[k].strategy?.matrix?.include ?? []).map((i) => i?.target)))].filter(Boolean).sort();
+const built = targets(builders);
+if (built.length !== 6) fail(`the build jobs build six targets, not: ${built.join(', ') || 'none'}`);
+
+// The dry run.
+// testsPackage <line>: it runs script/npm-package-test with three arguments, the release's files,
+// its tag and the target.
+const testsPackage = (line) => {
+  const m = line.match(/(?:^|[\s;&|(/])script\/npm-package-test(?=\s|$)(.*)$/);
+  return m ? words(m[1].split(/\s(?:&&|\|\||;|\||#|>|2>)/)[0].trim()).length === 3 : false;
+};
+for (const [name, ref] of [
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+]) {
+  const states = jobsFor(release, event(name, ref));
+  const checking = Object.entries(jobs)
+    .filter(([k, j]) => !states[k].skipped && !j['continue-on-error'])
+    .filter(([k, j]) => (j.steps ?? []).some((s) => !s['continue-on-error'] && !stepSkipped(s, states[k]) && lines(s).some(testsPackage)))
+    .map(([k]) => k);
+  const checked = targets(checking);
+  const missing = built.filter((t) => !checked.includes(t));
+  if (missing.length > 0) {
+    fail(`the dry run of a ${name} does not run script/npm-package-test <dir> <tag> <target> on the runner of: ${missing.join(', ')}`);
+  }
+}
+const pr = triggers(release).pull_request;
+const tracked = spawnSync('git', ['ls-files', '-co', '--exclude-standard'], { cwd: root, encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+const manifests = tracked.filter((f) => /(^|\/)package\.json$/.test(f) && !f.includes('node_modules/')).filter((f) => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(root, f), 'utf8')).name === 'skald-so';
+  } catch {
+    return false;
+  }
+});
+if (manifests.length !== 1) fail(`one package.json of the repository names skald-so, not: ${manifests.join(', ') || 'none'}`);
+const packageDir = manifests.length === 1 ? path.dirname(manifests[0]) : null;
+const packageFiles = packageDir ? tracked.filter((f) => packageDir === '.' || f.startsWith(`${packageDir}/`)) : [];
+for (const file of [...packageFiles, 'script/release-npm', 'script/npm-package-test']) {
+  if (!pr || !pathTriggers(pr, file)) fail(`a PR that changes ${file} does not start the dry run`);
+}
+
+// The docs.
+const infra = fs.readFileSync(path.join(root, 'docs/dev/infrastructure.md'), 'utf8');
+const trust = infra.split(/^## /m).find((s) => s.startsWith('Trust in builds')) ?? '';
+const items = trust.split(/\n(?=\s*- )/);
+if (!items.some((item) => /skald-so/.test(item) && /provenance/i.test(item) && /`(npm|gh)\s[^`]+`/.test(item))) {
+  fail('docs/dev/infrastructure.md, "Trust in builds", has no command that verifies the provenance of the skald-so package');
+}
+
+// The run of the publish job: its steps as GitHub runs them, with a stand-in npm.
+const realNpm = spawnSync('bash', ['-c', 'command -v npm'], { encoding: 'utf8' }).stdout.trim();
+if (!realNpm) {
+  fail('npm is missing');
+  done();
+}
+const usesStatus = (v) => typeof v === 'string' && /\b(success|always|failure|cancelled)\s*\(/i.test(v);
+function combinations(matrix) {
+  if (!matrix || typeof matrix !== 'object') return [{}];
+  const keys = Object.keys(matrix).filter((k) => k !== 'include' && k !== 'exclude');
+  let combos = [{}];
+  for (const k of keys) combos = combos.flatMap((c) => [].concat(matrix[k] ?? []).map((v) => ({ ...c, [k]: v })));
+  const include = [].concat(matrix.include ?? []);
+  if (keys.length === 0 && include.length > 0) return include;
+  return [...combos, ...include];
+}
+const git = (cwd, ...args) => {
+  const r = spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH,
+      HOME: cwd,
+      GIT_CONFIG_GLOBAL: '/dev/null',
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_AUTHOR_NAME: 'test',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'test',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    },
+  });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  return r.stdout.trim();
+};
+// readOutputs <file>: the name=value and name<<delimiter lines of a GITHUB_OUTPUT or GITHUB_ENV file.
+const readOutputs = (file) => {
+  const out = {};
+  const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n') : [];
+  for (let i = 0; i < text.length; i++) {
+    const heredoc = text[i].match(/^([^=<]+)<<(.+)$/);
+    if (heredoc) {
+      const value = [];
+      for (i++; i < text.length && text[i] !== heredoc[2]; i++) value.push(text[i]);
+      out[heredoc[1]] = value.join('\n');
+    } else {
+      const m = text[i].match(/^([^=]+)=(.*)$/);
+      if (m) out[m[1]] = m[2];
+    }
+  }
+  return out;
+};
+const stub = `#!/usr/bin/env bash
+# The stand-in npm: records npm publish and the commands that write to the registry, runs any other.
+for arg in "$@"; do
+  case $arg in
+    publish | login | adduser | add-user | token | dist-tag | dist-tags | access | owner | unpublish | deprecate | trust)
+      exec "${process.execPath}" -e '
+        const fs = require("fs");
+        const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => /npm|node_auth|token/i.test(k)));
+        fs.appendFileSync(process.env.NPM_STUB_LOG, JSON.stringify({ command: process.argv[1], args: process.argv.slice(2), cwd: process.cwd(), env }) + "\\n");
+        process.exit(process.argv[1] === "publish" ? 0 : 1);
+      ' "$arg" "$@"
+      ;;
+  esac
+done
+exec "${realNpm}" "$@"
+`;
+
+// run <tag>: runs the publish job, and the jobs it needs only for their outputs, on a push of <tag>
+// with the workspace at its version; {publishes, problems}.
+function run(tag) {
+  const version = tag.slice(1);
+  const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-npm-workflow-test-')));
+  const problems = [];
+  const records = [];
+  try {
+    const work = path.join(tmp, 'work');
+    const bin = path.join(tmp, 'bin');
+    const runnerTemp = path.join(tmp, 'runner');
+    const home = path.join(tmp, 'home');
+    for (const dir of [work, bin, runnerTemp, home]) fs.mkdirSync(dir);
+    // The checkout: the repository's files, the workspace at <version>, one commit and its tag.
+    for (const f of tracked) {
+      const from = path.join(root, f);
+      if (!fs.existsSync(from) || fs.lstatSync(from).isDirectory()) continue;
+      fs.mkdirSync(path.dirname(path.join(work, f)), { recursive: true });
+      fs.cpSync(from, path.join(work, f), { verbatimSymlinks: true });
+    }
+    const cargo = path.join(work, 'Cargo.toml');
+    fs.writeFileSync(
+      cargo,
+      fs.readFileSync(cargo, 'utf8').replace(/(\[workspace\.package\][\s\S]*?\nversion\s*=\s*")[^"]*"/, `$1${version}"`),
+    );
+    git(work, 'init', '-q');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-q', '-m', 'release');
+    git(work, 'tag', tag);
+    const sha = git(work, 'rev-parse', 'HEAD');
+    const log = path.join(tmp, 'npm.log');
+    fs.writeFileSync(path.join(bin, 'npm'), stub, { mode: 0o755 });
+    fs.writeFileSync(path.join(home, '.npmrc'), '');
+
+    const ref = `refs/tags/${tag}`;
+    const ev = event('push', ref);
+    const github = open({ ...ev.github, sha, workspace: work, token: 'stub-token', actor: 'skald-release[bot]', server_url: 'https://github.com', run_id: '1' });
+    const baseEnv = {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      HOME: home,
+      TMPDIR: tmp,
+      CI: 'true',
+      GITHUB_ACTIONS: 'true',
+      GITHUB_WORKSPACE: work,
+      GITHUB_EVENT_NAME: 'push',
+      GITHUB_REF: ref,
+      GITHUB_REF_NAME: tag,
+      GITHUB_REF_TYPE: 'tag',
+      GITHUB_REPOSITORY: 'skald-so/skald',
+      GITHUB_REPOSITORY_OWNER: 'skald-so',
+      GITHUB_SHA: sha,
+      GITHUB_ACTOR: 'skald-release[bot]',
+      GITHUB_SERVER_URL: 'https://github.com',
+      GITHUB_RUN_ID: '1',
+      RUNNER_TEMP: runnerTemp,
+      RUNNER_OS: 'Linux',
+      RUNNER_ARCH: 'X64',
+      NPM_STUB_LOG: log,
+      // No registry, so nothing this run starts reaches npm.
+      npm_config_registry: 'http://127.0.0.1:9/',
+      npm_config_cache: path.join(tmp, 'npm-cache'),
+      npm_config_update_notifier: 'false',
+    };
+    const value = (text, contexts, status) => {
+      const v = template(text, { contexts, status });
+      return isUnknown(v) ? '' : toText(v);
+    };
+    // The jobs it needs succeed, with their outputs that name a tag or a version set to the release's.
+    const needs = {};
+    for (const n of needsOf(job)) {
+      const outputs = {};
+      for (const name of Object.keys(jobs[n]?.outputs ?? {})) outputs[name] = /tag/i.test(name) ? tag : /version/i.test(name) ? version : unknown();
+      needs[n] = { result: 'success', outputs: open(outputs) };
+    }
+    const jobContexts = { github, needs, inputs: {}, vars: open({}) };
+    const jobStatus = { success: true, failure: false, always: true, cancelled: false };
+    if (job.if !== undefined && truth(condition(job.if, { contexts: jobContexts, status: jobStatus })) === false) {
+      problems.push(`job ${key} is skipped`);
+      return { records, problems };
+    }
+    for (const matrix of combinations(job.strategy?.matrix)) {
+      const steps = {};
+      const env = { ...baseEnv, GITHUB_JOB: key };
+      let failed = false;
+      for (const [index, step] of (job.steps ?? []).entries()) {
+        const status = { success: !failed, failure: failed, always: true, cancelled: false };
+        const contexts = {
+          ...jobContexts,
+          env: open({}),
+          steps: open(steps),
+          matrix: open(matrix),
+          runner: open({ temp: runnerTemp, os: 'Linux', arch: 'X64' }),
+          secrets: open({ GITHUB_TOKEN: 'stub-token' }),
+          job: open({}),
+          strategy: open({}),
+        };
+        let go = usesStatus(step.if) ? true : !failed;
+        if (step.if !== undefined && truth(condition(step.if, { contexts, status })) === false) go = false;
+        if (!go) {
+          if (step.id) steps[step.id] = { outputs: {}, outcome: 'skipped', conclusion: 'skipped' };
+          continue;
+        }
+        const stepEnv = { ...env };
+        for (const source of [release.env, job.env, step.env]) {
+          for (const [k, v] of Object.entries(source ?? {})) stepEnv[k] = value(v, { ...contexts, env: open({ ...stepEnv }) }, status);
+        }
+        const at = where(releaseFile, key, step, index);
+        let outputs = {};
+        if (step.run !== undefined) {
+          const shell = step.shell ?? job.defaults?.run?.shell ?? release.defaults?.run?.shell ?? 'bash';
+          if (!/^bash\b/.test(shell)) {
+            problems.push(`${at}: runs in ${shell}, which this test does not run`);
+            failed = true;
+            continue;
+          }
+          const script = path.join(tmp, `step-${index}.sh`);
+          fs.writeFileSync(script, value(step.run, { ...contexts, env: open({ ...stepEnv }) }, status));
+          const outFile = path.join(tmp, `output-${index}`);
+          const envFile = path.join(tmp, `env-${index}`);
+          const pathFile = path.join(tmp, `path-${index}`);
+          for (const f of [outFile, envFile, pathFile]) fs.writeFileSync(f, '');
+          const cwd = step['working-directory'] ?? job.defaults?.run?.['working-directory'] ?? release.defaults?.run?.['working-directory'];
+          const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', script], {
+            cwd: cwd ? path.resolve(work, value(cwd, contexts, status)) : work,
+            env: { ...stepEnv, GITHUB_OUTPUT: outFile, GITHUB_ENV: envFile, GITHUB_PATH: pathFile },
+            encoding: 'utf8',
+            timeout: 300000,
+          });
+          if (r.status !== 0) {
+            if (!step['continue-on-error']) failed = true;
+            problems.push(`${at} fails: ${(r.stderr || r.stdout || String(r.error ?? '')).trim().split('\n').slice(-3).join(' | ')}`);
+          }
+          outputs = readOutputs(outFile);
+          Object.assign(env, readOutputs(envFile));
+          const added = fs.readFileSync(pathFile, 'utf8').split('\n').filter(Boolean);
+          if (added.length > 0) env.PATH = `${bin}${path.delimiter}${added.reverse().join(path.delimiter)}${path.delimiter}${env.PATH.slice(bin.length + 1)}`;
+        }
+        // An action does nothing here: the checkout is there, and npm is the stand-in.
+        if (step.id) steps[step.id] = { outputs, outcome: failed ? 'failure' : 'success', conclusion: failed ? 'failure' : 'success' };
+      }
+      if (fs.existsSync(log)) {
+        for (const line of fs.readFileSync(log, 'utf8').split('\n').filter(Boolean)) {
+          const record = JSON.parse(line);
+          // The published package, when this run has it: a packed file or a directory.
+          const target = record.args.slice(record.args.indexOf('publish') + 1).find((a) => !a.startsWith('-'));
+          const at = target ? path.resolve(record.cwd, target) : record.cwd;
+          try {
+            record.manifest = at.endsWith('.tgz')
+              ? JSON.parse(spawnSync('tar', ['-xzOf', at, 'package/package.json'], { encoding: 'utf8' }).stdout)
+              : JSON.parse(fs.readFileSync(path.join(at, 'package.json'), 'utf8'));
+          } catch {
+            record.manifest = null;
+          }
+          records.push(record);
+        }
+        fs.rmSync(log);
+      }
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+  return { records, problems };
+}
+
+// option <args> <name>: the value of --<name> in <args>, or undefined.
+const option = (args, name) => {
+  let found;
+  args.forEach((a, i) => {
+    if (a === `--${name}` && args[i + 1] !== undefined && !args[i + 1].startsWith('-')) found = args[i + 1];
+    else if (a.startsWith(`--${name}=`)) found = a.slice(name.length + 3);
+  });
+  return found;
+};
+const envValue = (env, name) => Object.entries(env).find(([k]) => k.toLowerCase() === name)?.[1];
+for (const [tag, distTag] of [
+  ['v1.2.3', 'latest'],
+  ['v1.2.3-beta.1', 'next'],
+]) {
+  const { records, problems } = run(tag);
+  for (const problem of problems) fail(`on a push of ${tag}: ${problem}`);
+  const others = records.filter((r) => r.command !== 'publish');
+  for (const r of others) fail(`on a push of ${tag}, job ${key} runs npm ${r.command}; it only publishes, with no npm token`);
+  const published = records.filter((r) => r.command === 'publish');
+  if (published.length !== 1) {
+    fail(`on a push of ${tag}, job ${key} runs npm publish once, not ${published.length} times`);
+    continue;
+  }
+  const { args, env, manifest } = published[0];
+  const flags = args.slice(args.indexOf('publish') + 1);
+  const used = option(flags, 'tag') ?? envValue(env, 'npm_config_tag') ?? manifest?.publishConfig?.tag ?? 'latest';
+  if (used !== distTag) fail(`on a push of ${tag}, npm publish publishes under the dist-tag ${used}, not ${distTag}`);
+  const provenance =
+    flags.includes('--provenance') ||
+    option(flags, 'provenance') === 'true' ||
+    String(envValue(env, 'npm_config_provenance')).toLowerCase() === 'true' ||
+    manifest?.publishConfig?.provenance === true;
+  if (!provenance || flags.includes('--no-provenance') || option(flags, 'provenance') === 'false') {
+    fail(`on a push of ${tag}, npm publish publishes with provenance: --provenance, or provenance set to true`);
+  }
+  for (const [name, v] of Object.entries(env)) {
+    if (tokenVariable(name) && v) fail(`on a push of ${tag}, npm publish runs with ${name} set; no step uses an npm token`);
+  }
+  if (manifest) {
+    if (manifest.name !== 'skald-so') fail(`on a push of ${tag}, job ${key} publishes ${manifest.name}, not skald-so`);
+    if (manifest.version !== tag.slice(1)) fail(`on a push of ${tag}, job ${key} publishes the version ${manifest.version}, not ${tag.slice(1)}`);
+  }
+}
+
+done();
