@@ -55,7 +55,7 @@ agent-state = &(available: 1, busy: 2, waiting: 3, offline: 4)
 
 served-queue = [
   queue: id,
-  tiers: [own: tier, member: tier, service: tier],
+  tiers: [own: tier, peer: tier, service: tier],
 ]
 
 tier = &(off: 1, read-only: 2, approve: 3, full: 4)
