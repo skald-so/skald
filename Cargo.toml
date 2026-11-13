@@ -25,3 +25,11 @@ path = "repository.rs"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Debug builds and tests: line tables in our crates, enough for the file and line of each backtrace
+# frame; no debug info in dependencies. It keeps target/ several times smaller.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
