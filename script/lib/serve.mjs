@@ -1,6 +1,7 @@
 // Serves the files of <dir> over HTTP on 127.0.0.1, as GitHub serves release files: each as
 // application/octet-stream, 404 for any other path. Prints the port it listens on, a free one, then
-// the path of each request, and runs until killed. For the installers' tests: script/installers-test.
+// the path of each request, and runs until killed. For the tests of the installers and the npm
+// package: script/installers-test, script/npm-package-test.
 // Usage: node script/lib/serve.mjs <dir>
 import fs from 'node:fs';
 import http from 'node:http';

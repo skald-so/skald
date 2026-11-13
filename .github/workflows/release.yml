@@ -3,9 +3,10 @@ name: Release
 # A push of a release tag, vX.Y.Z or vX.Y.Z-beta.N, publishes skald to the tag's GitHub Release: dist
 # builds it on a runner of each OS and architecture (dist-workspace.toml), each runner installs it
 # with its installer from the release's files, then one job attests every file of the release and
-# creates the release with all of them. Another job builds the skald-server image at the tag's
-# commit, pushes it to GHCR under its version, signs its digest with cosign and attests it. Once both
-# are published, a stable release, vX.Y.Z, moves main to the tag with the deploy key.
+# creates the release with all of them. Each runner also runs skald from those files through the npm
+# package skald-so, which a job then publishes to npm. Another job builds the skald-server image at
+# the tag's commit, pushes it to GHCR under its version, signs its digest with cosign and attests it.
+# Once all three are published, a stable release, vX.Y.Z, moves main to the tag with the deploy key.
 # Any other run is the dry run: it builds and checks everything and publishes nothing, and it runs the
 # tests of `skald update` on macOS and Windows; a PR that changes the release config, this workflow
 # or `skald update` starts it, and so does a manual run.
@@ -25,11 +26,16 @@ on:
       - crates/client/src/update.rs
       - crates/client/tests/update/**
       - installers/**
+      # The npm package skald-so.
+      - npm/**
       - script/installers-test
+      - script/lib/release-tag-args.sh
       - script/lib/serve.mjs
       - script/move-main
+      - script/npm-package-test
       - script/release-installers
       - script/release-notes
+      - script/release-npm
       - script/release-version
   workflow_dispatch:
 
@@ -141,6 +147,19 @@ jobs:
         run: |
           script/release-installers "$TAG" release
           script/installers-test release "$TAG" "$TARGET"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      # The npm package of the release, packed by script/release-npm: npx skald-so downloads this
+      # runner's archive from the release's files, checks it and runs skald, which prints the
+      # workspace version. It refuses an archive that does not match its checksum, or has none, and
+      # runs nothing.
+      - name: Run skald through npx
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: script/npm-package-test release "$TAG" "$TARGET"
 
   release:
     name: Release
@@ -183,6 +202,39 @@ jobs:
           prerelease=()
           [[ $TAG != *-* ]] || prerelease=(--prerelease)
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}" release/*
+
+  # The npm package skald-so of the release, which runs skald from the GitHub Release's files: a
+  # stable release under the dist-tag latest, a beta under next. Trusted publishing: npm accepts the
+  # job's OIDC token only from the package's trusted publisher, this workflow in the environment npm,
+  # and there is no npm token; the same token signs the package's provenance.
+  publish-npm:
+    name: Publish to npm
+    needs: [plan, release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Only v* tags may use it, and it holds no secret; only this job uses it.
+    environment: npm
+    # The OIDC token for trusted publishing and provenance; the token writes nothing else.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node.js 26 has npm 11.5.1 or later, which publishes by trusted publishing.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      - name: Publish the package
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          script/release-npm "$TAG" "$RUNNER_TEMP/npm"
+          dist_tag=latest
+          [[ $TAG != *-* ]] || dist_tag=next
+          npm publish "$RUNNER_TEMP/npm/skald-so-${TAG#v}.tgz" --provenance --tag "$dist_tag" --access public
 
   # The dry run's tests of skald update, which replace a copy of skald with the archive of a stand-in
   # release over HTTPS; script/test runs them on Linux. They make certificates with openssl and
@@ -291,7 +343,7 @@ jobs:
   # main follows stable releases only, forward only, once every channel is published.
   move-main:
     name: Move main
-    needs: [plan, release, publish-image]
+    needs: [plan, release, publish-npm, publish-image]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
     runs-on: ubuntu-latest
     # The deploy key, its only secret; only this job uses the environment, and only v* tags may.

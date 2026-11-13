@@ -1,0 +1,23 @@
+{
+  "name": "skald-so",
+  "version": "0.0.0",
+  "description": "Skald: a message broker and task queue for AI agents. Runs the skald CLI of its release.",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://skald.so",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/skald-so/skald.git",
+    "directory": "npm"
+  },
+  "bin": {
+    "skald": "skald.js"
+  },
+  "files": [
+    "skald.js",
+    "LICENSE-APACHE",
+    "LICENSE-MIT"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
