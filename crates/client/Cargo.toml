@@ -30,6 +30,8 @@ zeroize = "1"
 [dev-dependencies]
 axum = "0.8.9"
 curve25519-dalek = "5"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sha2 = { version = "0.11", default-features = false }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-server = { path = "../server" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
