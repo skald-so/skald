@@ -17,7 +17,7 @@ use skald_proto::{
 
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
-use crate::devices::{self, signed_in, signed_in_with_secrets, text};
+use crate::devices::{self, signed_in, signed_in_with_secrets, text, to_session};
 use crate::follow::{self, Own, SpaceDevices};
 use crate::secrets;
 use crate::sign_in;
@@ -60,7 +60,7 @@ pub fn create(
     let keys = device::known_keys(&stored, Some(&device))
         .map_err(text)?
         .ok_or_else(|| device::Error::MissingKeys.to_string())?;
-    let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+    let mut connection = to_session(&server, speaks, timeout)?;
 
     let mut existing = None;
     for space in state.spaces().map_err(text)? {
@@ -258,7 +258,7 @@ impl Follower {
         let Some((device, master, cert)) = certified(&state)? else {
             return Ok(None);
         };
-        let connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+        let connection = to_session(&server, speaks, timeout)?;
         Ok(Some(Follower {
             state,
             connection,

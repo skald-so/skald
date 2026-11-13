@@ -115,7 +115,7 @@ if ! command -v npm >/dev/null; then
   exit 1
 fi
 if checks rust && ! command -v openssl >/dev/null; then
-  echo "script/test: openssl is missing; the server's sign-in tests and the client's update tests make TLS certificates with it: https://openssl.org" >&2
+  echo "script/test: openssl is missing; the server's sign-in tests and the client's update and HTTPS tests make TLS certificates with it: https://openssl.org" >&2
   exit 1
 fi
 if checks rust && ! command -v tar >/dev/null; then
