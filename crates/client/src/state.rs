@@ -148,6 +148,15 @@ pub struct Space {
     pub pending: Option<Vec<u8>>,
 }
 
+/// What the state holds of the revisions the device accepted of a space.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Accepted {
+    /// The last accepted revision, in CBOR.
+    pub last: Vec<u8>,
+    /// The hash of each earlier accepted revision, by number.
+    pub hashes: BTreeMap<u64, [u8; 32]>,
+}
+
 /// Why the state cannot be used.
 #[derive(Debug)]
 pub enum Error {
@@ -388,23 +397,39 @@ impl State {
         Ok(())
     }
 
-    /// The hashes the state records of the revisions the device accepted of the space `id`, by
-    /// number: all but that of its last accepted revision.
-    pub fn accepted_hashes(&self, id: SpaceId) -> Result<BTreeMap<u64, [u8; 32]>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT revision, hash FROM accepted_revision WHERE space = ?1")?;
-        let rows = query.query_map(params![id.to_string()], |row| {
+    /// What the state holds of the space `id`, if it holds it: its last accepted revision and the
+    /// hashes of the earlier ones, read in one transaction, so another run's accepting is in both
+    /// or in neither.
+    pub fn accepted(&self, id: SpaceId) -> Result<Option<Accepted>, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        let Some(last) = tx
+            .query_row(
+                "SELECT accepted FROM space WHERE space = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let mut query =
+            tx.prepare("SELECT revision, hash FROM accepted_revision WHERE space = ?1")?;
+        let rows = query.query_map(params![id], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
         })?;
-        rows.map(|row| {
-            let (revision, hash) = row?;
-            let malformed = || Error::Malformed(format!("the hash of revision {revision}"));
-            let revision = u64::try_from(revision).map_err(|_| malformed())?;
-            let hash = hash.try_into().map_err(|_| malformed())?;
-            Ok((revision, hash))
-        })
-        .collect()
+        let hashes = rows
+            .map(|row| {
+                let (revision, hash) = row?;
+                let malformed = || Error::Malformed(format!("the hash of revision {revision}"));
+                let revision = u64::try_from(revision).map_err(|_| malformed())?;
+                let hash = hash.try_into().map_err(|_| malformed())?;
+                Ok((revision, hash))
+            })
+            .collect::<Result<_, Error>>()?;
+        drop(query);
+        tx.commit()?;
+        Ok(Some(Accepted { last, hashes }))
     }
 
     /// Records that the device accepted revisions of the space `id` after `from`, its last accepted
@@ -611,38 +636,52 @@ mod tests {
         let dir = TestDir::new("state-accepted");
         let state = State::open(&dir).unwrap();
         let (acme, globex) = (SpaceId::generate(), SpaceId::generate());
+        assert_eq!(state.accepted(acme).unwrap(), None);
         state.add_space(acme, "acme", &[1]).unwrap();
         state.add_space(globex, "globex", &[7]).unwrap();
-        assert_eq!(state.accepted_hashes(acme).unwrap(), BTreeMap::new());
+        let accepted = |state: &State, id, last: &[u8], hashes: &[(u64, [u8; 32])]| {
+            assert_eq!(
+                state.accepted(id).unwrap(),
+                Some(Accepted {
+                    last: last.to_vec(),
+                    hashes: hashes.iter().copied().collect(),
+                })
+            );
+        };
+        accepted(&state, acme, &[1], &[]);
 
         let hashes = [(1, [1; 32]), (2, [2; 32])];
         assert!(state.accept(acme, &[1], &hashes, &[3]).unwrap());
-        // Another run accepted from revision 1 meanwhile: nothing is recorded.
-        assert!(!state.accept(acme, &[1], &[(1, [1; 32])], &[2]).unwrap());
+        // Another run accepted from revision 1 meanwhile: nothing is recorded, not even a hash
+        // the state has none of yet.
+        assert!(
+            !state
+                .accept(acme, &[1], &[(1, [1; 32]), (3, [8; 32])], &[4])
+                .unwrap()
+        );
+        accepted(&state, acme, &[3], &hashes);
 
         let state = State::open(&dir).unwrap();
-        let accepted = |id| {
-            let spaces = state.spaces().unwrap();
-            let space = spaces.into_iter().find(|space| space.id == id).unwrap();
-            (space.anchor, space.accepted)
-        };
-        assert_eq!(accepted(acme), (vec![1], vec![3]));
-        assert_eq!(state.accepted_hashes(acme).unwrap(), BTreeMap::from(hashes));
-        assert_eq!(accepted(globex), (vec![7], vec![7]));
-        assert_eq!(state.accepted_hashes(globex).unwrap(), BTreeMap::new());
+        accepted(&state, acme, &[3], &hashes);
+        assert_eq!(state.spaces().unwrap()[0].anchor, vec![1]);
+        accepted(&state, globex, &[7], &[]);
         // A hash already recorded stays.
         assert!(
             state
                 .accept(acme, &[3], &[(2, [9; 32]), (3, [3; 32])], &[4])
                 .unwrap()
         );
-        assert_eq!(
-            state.accepted_hashes(acme).unwrap(),
-            BTreeMap::from([(1, [1; 32]), (2, [2; 32]), (3, [3; 32])])
+        accepted(
+            &state,
+            acme,
+            &[4],
+            &[(1, [1; 32]), (2, [2; 32]), (3, [3; 32])],
         );
 
         state.remove_space(acme).unwrap();
-        assert_eq!(state.accepted_hashes(acme).unwrap(), BTreeMap::new());
+        assert_eq!(state.accepted(acme).unwrap(), None);
+        state.add_space(acme, "acme", &[1]).unwrap();
+        accepted(&state, acme, &[1], &[]);
         state
             .db
             .execute(

@@ -16,7 +16,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::accept_next;
-use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Roster};
+use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Roster, SpaceId};
 
 use crate::connection::Connection;
 use crate::devices::{self, text};
@@ -80,38 +80,53 @@ pub fn sync(
     let (ids, certs) = devices::fetch(connection, &format!("/spaces/{id}/devices"), token)?;
     let devices = SpaceDevices { ids, certs };
 
+    let held = read(state, id, name)?;
+    let (current, followed) = settle(state, (id, name), held, &given, &devices.certs, own)?;
+    for warning in warnings.iter().chain(&followed) {
+        eprintln!("skald: warning: {warning}");
+    }
+    Ok((current, devices))
+}
+
+/// What `state` holds of the space `id` named `name`.
+fn read(state: &State, id: SpaceId, name: &str) -> Result<state::Accepted, String> {
+    state
+        .accepted(id)
+        .map_err(text)?
+        .ok_or_else(|| format!("this device dropped the space {name} meanwhile"))
+}
+
+/// Accepts the revisions of `given` that follow `held`, what `state` held of the space `id` named
+/// `name` when the run read it, with the certificates `certs` and `own`, and records them. While
+/// another run accepted revisions of the space first, it accepts again from what `state` then
+/// holds. Gives the space's last accepted revision and the warnings.
+fn settle(
+    state: &State,
+    (id, name): (SpaceId, &str),
+    mut held: state::Accepted,
+    given: &[Roster],
+    certs: &[Cert],
+    own: &Own,
+) -> Result<(Roster, Vec<String>), String> {
     for _ in 0..ATTEMPTS {
-        let space = state
-            .spaces()
-            .map_err(text)?
-            .into_iter()
-            .find(|space| space.id == id)
-            .ok_or_else(|| format!("this device dropped the space {name} meanwhile"))?;
-        let last = decode(&space.accepted, name)?;
-        let hashes = state.accepted_hashes(id).map_err(text)?;
-        let followed = follow(&last, &hashes, &given, &devices.certs, own);
-        let current = match followed.accepted.split_last() {
-            None => last,
-            Some((newest, before)) => {
-                let mut recorded = vec![(last.body().revision, last.hash())];
-                recorded.extend(
-                    before
-                        .iter()
-                        .map(|roster| (roster.body().revision, roster.hash())),
-                );
-                if !state
-                    .accept(id, &space.accepted, &recorded, &newest.to_cbor())
-                    .map_err(text)?
-                {
-                    continue;
-                }
-                newest.clone()
-            }
+        let last = decode(&held.last, name)?;
+        let Followed { accepted, warnings } = follow(&last, &held.hashes, given, certs, own);
+        let Some((newest, before)) = accepted.split_last() else {
+            return Ok((last, warnings));
         };
-        for warning in warnings.iter().chain(&followed.warnings) {
-            eprintln!("skald: warning: {warning}");
+        let mut recorded = vec![(last.body().revision, last.hash())];
+        recorded.extend(
+            before
+                .iter()
+                .map(|roster| (roster.body().revision, roster.hash())),
+        );
+        if state
+            .accept(id, &held.last, &recorded, &newest.to_cbor())
+            .map_err(text)?
+        {
+            return Ok((newest.clone(), warnings));
         }
-        return Ok((current, devices));
+        held = read(state, id, name)?;
     }
     Err(format!(
         "other skald runs kept accepting revisions of the space {name}; run the command again"
@@ -240,6 +255,7 @@ fn changed_masters(previous: &Roster, next: &Roster) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_dir::TestDir;
     use skald_crypto::{SigningKey, issue};
     use skald_proto::{CertBody, DeviceKind, Member, Name, Role, RosterBody, SpaceId, Unknown};
 
@@ -379,6 +395,72 @@ mod tests {
             let given: Vec<Roster> = given.iter().map(|roster| (*roster).clone()).collect();
             follow(last, &hashes, &given, &self.certs(), &self.ada.own())
         }
+    }
+
+    /// A state that follows `acme` at its revision 2, what a run read of it then, and revisions 3
+    /// by Bob and 4 by Ada after it.
+    struct Race {
+        state: State,
+        id: SpaceId,
+        stale: state::Accepted,
+        third: Roster,
+        fourth: Roster,
+        _dir: TestDir,
+    }
+
+    impl Race {
+        fn new(acme: &Acme, name: &str) -> Self {
+            let dir = TestDir::new(name);
+            let state = State::open(&dir).expect("a state");
+            let id = acme.first.body().space;
+            let first = acme.first.to_cbor();
+            state.add_space(id, "acme", &first).unwrap();
+            let hashes = [(1, acme.first.hash())];
+            assert!(
+                state
+                    .accept(id, &first, &hashes, &acme.second.to_cbor())
+                    .unwrap()
+            );
+            let stale = state.accepted(id).unwrap().unwrap();
+            let third = acme.bob.signs(&acme.second, |_| {});
+            let fourth = acme.ada.signs(&third, |_| {});
+            Race {
+                state,
+                id,
+                stale,
+                third,
+                fourth,
+                _dir: dir,
+            }
+        }
+
+        /// What the state holds now.
+        fn held(&self) -> state::Accepted {
+            self.state.accepted(self.id).unwrap().unwrap()
+        }
+    }
+
+    /// What a state holds once it accepted `before`, then `last`.
+    fn accepted(last: &Roster, before: &[&Roster]) -> state::Accepted {
+        state::Accepted {
+            last: last.to_cbor(),
+            hashes: before
+                .iter()
+                .map(|roster| (roster.body().revision, roster.hash()))
+                .collect(),
+        }
+    }
+
+    /// What `settle` gives of `acme` in `state` for a run given `given` that read `held`.
+    fn settled(
+        acme: &Acme,
+        state: &State,
+        held: state::Accepted,
+        given: &[&Roster],
+    ) -> (Roster, Vec<String>) {
+        let given: Vec<Roster> = given.iter().map(|roster| (*roster).clone()).collect();
+        let id = (acme.first.body().space, "acme");
+        settle(state, id, held, &given, &acme.certs(), &acme.ada.own()).expect("settled")
     }
 
     /// Sets the role of `account` in `members`.
@@ -565,5 +647,60 @@ mod tests {
                     .to_owned()
             ]
         );
+    }
+
+    #[test]
+    fn run_whose_space_another_run_moved_on_shows_what_the_state_holds_without_a_warning() {
+        let acme = Acme::new();
+        let race = Race::new(&acme, "follow-moved-on");
+        let given = [&acme.first, &acme.second, &race.third, &race.fourth];
+
+        // Another run moves the space from revision 2 to 4.
+        assert_eq!(
+            settled(&acme, &race.state, race.held(), &given),
+            (race.fourth.clone(), vec![])
+        );
+        let now = race.held();
+        assert_eq!(
+            now,
+            accepted(&race.fourth, &[&acme.first, &acme.second, &race.third])
+        );
+
+        assert_eq!(
+            settled(&acme, &race.state, race.stale.clone(), &given),
+            (race.fourth.clone(), vec![])
+        );
+        assert_eq!(race.held(), now);
+    }
+
+    #[test]
+    fn run_whose_space_another_run_moved_to_another_fork_keeps_that_one() {
+        let acme = Acme::new();
+        let race = Race::new(&acme, "follow-other-fork");
+        let other = acme.ada.signs(&acme.second, |_| {});
+
+        // Another run, given another revision 3, accepts it.
+        let given = [&acme.first, &acme.second, &other];
+        assert_eq!(
+            settled(&acme, &race.state, race.held(), &given),
+            (other.clone(), vec![])
+        );
+
+        let given = [&acme.first, &acme.second, &race.third, &race.fourth];
+        assert_eq!(
+            settled(&acme, &race.state, race.stale.clone(), &given),
+            (
+                other.clone(),
+                vec![
+                    "the server forked the roster of the space acme: it gives another valid \
+                     revision 3 than the one this device accepted, which it keeps"
+                        .to_owned(),
+                    "revision 4 of the space acme fails: prev is not the hash of the previous \
+                     revision; it has no effect, and this device keeps revision 3"
+                        .to_owned(),
+                ]
+            )
+        );
+        assert_eq!(race.held(), accepted(&other, &[&acme.first, &acme.second]));
     }
 }
