@@ -15,8 +15,11 @@ mod release;
 
 use std::fmt;
 use std::fs;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,6 +33,11 @@ const NPM_MARKER: &str = "installed-by-npm";
 
 /// The host of the stand-in when only a proxy reaches it: no resolver knows it.
 const PROXIED_HOST: &str = "releases.skald.test";
+
+/// The most bytes `skald update` reads of an archive, of a checksum and of the API's answer.
+const ARCHIVE_LIMIT: usize = 64 << 20;
+const CHECKSUM_LIMIT: usize = 4 << 10;
+const API_LIMIT: usize = 4 << 20;
 
 /// How long one run of `skald` may take.
 const LIMIT: Duration = Duration::from_secs(120);
@@ -475,4 +483,116 @@ fn npm_install_is_left_alone() {
         "archives downloaded"
     );
     machine.assert_unchanged();
+}
+
+#[test]
+fn archive_over_its_limit_leaves_the_old_binary() {
+    let machine = Machine::new("archive-limit");
+    let tag = format!("v{}", newer(1));
+    let name = archive(TARGET);
+    // Its checksum is the release's archive's: only the limit stops it before the checksum does.
+    let release = machine
+        .release(&tag)
+        .with(&name, vec![0; ARCHIVE_LIMIT + 1]);
+    let releases = machine.serve(vec![release]);
+
+    let run = machine.update(&releases);
+
+    assert_refused(&machine, &run);
+    assert!(
+        !run.says("checksum") && run.says(&name),
+        "the error is not that the archive is too large: {run}"
+    );
+    assert_eq!(releases.archives(), vec![archive_of(&tag)]);
+}
+
+#[test]
+fn checksum_over_its_limit_leaves_the_old_binary() {
+    let machine = Machine::new("checksum-limit");
+    let release = machine.release(&format!("v{}", newer(1)));
+    let name = checksum_of(&archive(TARGET));
+    // The archive's checksum, padded with blank lines past the limit.
+    let mut padded = release.bytes(&name);
+    padded.resize(CHECKSUM_LIMIT + 1, b'\n');
+    let releases = machine.serve(vec![release.with(&name, padded)]);
+
+    let run = machine.update(&releases);
+
+    assert_refused_on_checksum(&machine, &run);
+    assert_eq!(releases.archives(), Vec::<String>::new());
+}
+
+#[test]
+fn api_answer_over_its_limit_leaves_the_old_binary() {
+    let machine = Machine::new("api-limit");
+    // A file whose name alone makes the API's answer longer than the limit.
+    let release = machine
+        .release(&format!("v{}", newer(1)))
+        .adding(&"x".repeat(API_LIMIT), Vec::new());
+    let releases = machine.serve(vec![release]);
+
+    let run = machine.update(&releases);
+
+    assert_refused(&machine, &run);
+    assert!(
+        releases.looked_up(),
+        "skald update did not look up the latest release"
+    );
+    assert_eq!(releases.archives(), Vec::<String>::new());
+}
+
+#[test]
+fn redirect_to_plain_http_leaves_the_old_binary() {
+    let machine = Machine::new("plain-http");
+    // A plain HTTP server that counts the connections it gets and answers none.
+    let plain = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let to = format!(
+        "http://{}/{}",
+        plain.local_addr().expect("the server's address"),
+        archive(TARGET)
+    );
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&connections);
+    thread::spawn(move || {
+        for stream in plain.incoming().flatten() {
+            counted.fetch_add(1, Ordering::Relaxed);
+            drop(stream);
+        }
+    });
+    let release = machine
+        .release(&format!("v{}", newer(1)))
+        .redirect(&archive(TARGET), to);
+    let releases = machine.serve(vec![release]);
+
+    let run = machine.update(&releases);
+
+    assert_refused(&machine, &run);
+    assert_eq!(
+        connections.load(Ordering::Relaxed),
+        0,
+        "skald update followed a redirect to plain HTTP"
+    );
+}
+
+#[test]
+fn files_set_aside_by_earlier_updates_are_removed() {
+    let machine = Machine::new("set-aside");
+    let name = machine
+        .skald
+        .file_name()
+        .expect("a file name")
+        .to_string_lossy()
+        .into_owned();
+    // What an update on Windows leaves beside the skald it replaced, and a file of another program.
+    let aside = machine.skald.with_file_name(format!(".{name}.12345.old"));
+    let other = machine.skald.with_file_name(".other.12345.old");
+    fs::write(&aside, "the skald an earlier update replaced").expect("write a file set aside");
+    fs::write(&other, "").expect("write another file");
+    let releases = machine.serve(vec![machine.release(&format!("v{VERSION}"))]);
+
+    let run = machine.update(&releases);
+
+    assert_current(&machine, &releases, &run);
+    assert!(!aside.exists(), "the file set aside is still there");
+    assert!(other.exists(), "another program's file is removed");
 }

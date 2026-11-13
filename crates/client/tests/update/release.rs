@@ -7,7 +7,8 @@
 //! - `GET /repos/skald-so/skald/releases`: every release, newest first;
 //! - `GET /repos/skald-so/skald/releases/tags/<tag>`: the release of `<tag>`;
 //! - `GET /skald-so/skald/releases/download/<tag>/<name>`: a release file's `browser_download_url`,
-//!   302 to the file itself, which it serves as `application/octet-stream`.
+//!   302 to the file itself, which it serves as `application/octet-stream`, or to the URL
+//!   `Release::redirect` gives.
 //!
 //! As GitHub's, the API refuses a request without a `User-Agent` with 403. Its release answers are
 //! GitHub's, without the assets' `digest`: a release file's checksum is its `<archive>.sha256`.
@@ -84,6 +85,7 @@ pub struct Release {
     prerelease: bool,
     files: BTreeMap<String, Vec<u8>>,
     cut: Option<String>,
+    redirects: BTreeMap<String, String>,
 }
 
 impl Release {
@@ -116,6 +118,7 @@ impl Release {
             prerelease: version.contains('-'),
             files,
             cut: None,
+            redirects: BTreeMap::new(),
         }
     }
 
@@ -134,6 +137,30 @@ impl Release {
             self.files.insert(name.to_owned(), bytes).is_some(),
             "the release has no {name}"
         );
+        self
+    }
+
+    /// The release with one more file, `name`, of `bytes`.
+    pub fn adding(mut self, name: &str, bytes: Vec<u8>) -> Self {
+        assert!(
+            self.files.insert(name.to_owned(), bytes).is_none(),
+            "the release has {name} already"
+        );
+        self
+    }
+
+    /// The bytes of the release's file `name`.
+    pub fn bytes(&self, name: &str) -> Vec<u8> {
+        self.files
+            .get(name)
+            .unwrap_or_else(|| panic!("the release has no {name}"))
+            .clone()
+    }
+
+    /// The release whose file `name`'s `browser_download_url` redirects to `to`.
+    pub fn redirect(mut self, name: &str, to: String) -> Self {
+        assert!(self.files.contains_key(name), "the release has no {name}");
+        self.redirects.insert(name.to_owned(), to);
         self
     }
 
@@ -520,10 +547,14 @@ impl Shared {
             };
         }
         if let Some(file) = path.strip_prefix(&format!("/{REPO}/releases/download/")) {
-            if self.file(file).is_none() {
+            let Some((release, name, _)) = self.file(file) else {
                 return Answer::Whole(response("404 Not Found", &[], b"Not Found"));
-            }
-            let location = format!("{}/release-assets/{file}", self.url);
+            };
+            let location = release
+                .redirects
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| format!("{}/release-assets/{file}", self.url));
             return Answer::Whole(response("302 Found", &[("location", &location)], b""));
         }
         if let Some((release, name, bytes)) = path

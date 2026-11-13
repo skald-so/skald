@@ -26,10 +26,10 @@ const REPO: &str = "skald-so/skald";
 /// the `skald` it unpacks.
 const NPM_MARKER: &str = "installed-by-npm";
 
-/// The most bytes read of an archive, of a checksum and of the API's answer.
-const ARCHIVE_LIMIT: u64 = 512 * 1024 * 1024;
-const CHECKSUM_LIMIT: u64 = 4 * 1024;
-const API_LIMIT: u64 = 4 * 1024 * 1024;
+/// The most bytes read of an archive, 64 MiB; of a checksum, 4 KiB; of the API's answer, 4 MiB.
+const ARCHIVE_LIMIT: u64 = 64 << 20;
+const CHECKSUM_LIMIT: u64 = 4 << 10;
+const API_LIMIT: u64 = 4 << 20;
 
 /// The target of this machine's archive in a release, as dist names it.
 const TARGET: Option<&str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -198,7 +198,12 @@ pub fn run(api: &str, timeout: Duration) -> Result<(), String> {
             archive.name
         )
     })?;
-    let checksum = download(&agent, checksum_url, CHECKSUM_LIMIT, &checksum_name)?;
+    let checksum = download(
+        &agent,
+        checksum_url,
+        CHECKSUM_LIMIT,
+        &format!("the checksum of {}, {checksum_name}", archive.name),
+    )?;
     let expected = parse_checksum(&checksum).ok_or_else(|| {
         format!(
             "the checksum of {}, {checksum_name}, has no SHA-256: skald is not updated",
