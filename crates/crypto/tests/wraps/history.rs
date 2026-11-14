@@ -8,26 +8,16 @@ use std::collections::BTreeMap;
 use skald_crypto::{HistoryKey, follow_links};
 use skald_proto::{Cbor, Content, HistoryBody, HistoryEntry, HistoryLink, HistoryWrap, MessageId};
 
-use crate::cbor::{Value, bytes, text};
+use crate::cbor::{Value, bytes};
+use crate::fields::a2a_fields;
 use crate::fixtures::{Channel, Reader, cert, device_id, read, readers, signing_key};
 
 /// The time a history body states, in seconds since the Unix epoch.
 const SENT: u64 = 1_800_000_123;
 
-/// Content with an A2A message, as in `docs/protocol/test-vectors.md`, "Content with an A2A
-/// message and an attachment", without the attachment, its text `said`.
+/// Content with an A2A message, its text `said`.
 fn content(said: &str) -> Vec<u8> {
-    let message = format!(
-        r#"{{"messageId":"019a6f20-1a00-7c00-8a00-000000000004","contextId":"019a6f20-0000-7000-8000-00000000c0de","role":"ROLE_USER","parts":[{{"text":"{said}"}}]}}"#
-    );
-    Value::Map(vec![
-        (1, text("acme/alice/claude-api@skald.example")),
-        (2, text("acme/bob/codex@skald.example")),
-        (3, Value::Uint(7)),
-        (4, Value::Uint(1)),
-        (6, text(&message)),
-    ])
-    .encode()
+    Value::Map(a2a_fields(said)).encode()
 }
 
 /// The body of a message device `seed` sends in `channel` with the text `said`.

@@ -9,6 +9,8 @@ mod cbor;
 #[path = "../common/mod.rs"]
 mod common;
 mod errors;
+#[path = "../common/fields.rs"]
+mod fields;
 mod fixtures;
 mod history;
 mod objects;

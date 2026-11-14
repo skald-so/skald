@@ -9,6 +9,7 @@ use skald_proto::{
 };
 
 use crate::cbor::{Value, bytes, text};
+use crate::fields::{map, truncated_and_longer, with, without};
 use crate::history::{
     LABEL, SENT, Sealed, body_cbor, content, content_fields, entry_cbor, link_cbor, plaintext_cbor,
     unknown,
@@ -18,33 +19,6 @@ const CHANNEL: ChannelId = ChannelId::from_bytes([0xc1; 16]);
 const SENDER: DeviceId = DeviceId::from_bytes([0xd1; 16]);
 const MSG_ID: MessageId = MessageId::from_bytes([0x4d; 16]);
 const NONCE: [u8; 12] = [0x6e; 12];
-
-/// The encoded map of `fields`.
-fn map(fields: &[(i64, Value)]) -> Vec<u8> {
-    Value::Map(fields.to_vec()).encode()
-}
-
-/// The encoded map of `fields` with `value` at `key` in place of the field there.
-fn with(fields: &[(i64, Value)], key: i64, value: Value) -> Vec<u8> {
-    let mut fields: Vec<_> = fields.iter().filter(|(k, _)| *k != key).cloned().collect();
-    fields.push((key, value));
-    map(&fields)
-}
-
-/// The encoded map of `fields` without the field at `key`.
-fn without(fields: &[(i64, Value)], key: i64) -> Vec<u8> {
-    let fields: Vec<_> = fields.iter().filter(|(k, _)| *k != key).cloned().collect();
-    map(&fields)
-}
-
-/// Each prefix of `encoded`, and `encoded` with a byte after it.
-fn truncated_and_longer(encoded: &[u8]) -> Vec<Vec<u8>> {
-    let mut inputs: Vec<Vec<u8>> = (0..encoded.len())
-        .map(|at| encoded[..at].to_vec())
-        .collect();
-    inputs.push([encoded, &[0]].concat());
-    inputs
-}
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

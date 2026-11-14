@@ -8,6 +8,7 @@ use skald_proto::{
 };
 
 use crate::cbor::{Value, bytes, text};
+use crate::fields::{map, truncated_and_longer, with, without};
 use crate::fixtures::{ACCOUNT, RECOVERY};
 use crate::fixtures::{
     Channel, Fields, LABEL, browser_reader, recovery_reader, unknown, wrap_cbor,
@@ -27,32 +28,6 @@ fn fields(recipient: WrapRecipient) -> Fields {
         enc: vec![0xe1; 32],
         ct: vec![0xc7; 32],
     }
-}
-
-/// The encoded map of `entries`.
-fn map(entries: &[(i64, Value)]) -> Vec<u8> {
-    Value::Map(entries.to_vec()).encode()
-}
-
-/// The encoded map of `entries` with `value` at `key` in place of the entry there.
-fn with(entries: &[(i64, Value)], key: i64, value: Value) -> Vec<u8> {
-    let mut entries: Vec<_> = entries.iter().filter(|(k, _)| *k != key).cloned().collect();
-    entries.push((key, value));
-    map(&entries)
-}
-
-fn without(entries: &[(i64, Value)], key: i64) -> Vec<u8> {
-    let entries: Vec<_> = entries.iter().filter(|(k, _)| *k != key).cloned().collect();
-    map(&entries)
-}
-
-/// Each prefix of `encoded`, and `encoded` with a byte after it.
-fn truncated_and_longer(encoded: &[u8]) -> Vec<Vec<u8>> {
-    let mut inputs: Vec<Vec<u8>> = (0..encoded.len())
-        .map(|at| encoded[..at].to_vec())
-        .collect();
-    inputs.push([encoded, &[0]].concat());
-    inputs
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
