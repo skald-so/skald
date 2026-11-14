@@ -53,6 +53,7 @@ mod scene;
 mod acks;
 mod catch_up;
 mod connections;
+mod expired_entries;
 mod expiry;
 mod no_retention;
 mod receipts;

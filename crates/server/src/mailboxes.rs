@@ -13,6 +13,9 @@ use sqlx::PgPool;
 
 use crate::delivery::Wakers;
 
+/// The longest `ttl` the server keeps an entry for, in seconds: 100 years.
+const TTL_LONGEST: u64 = 100 * 365 * 24 * 3_600;
+
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
     pub(crate) device: DeviceId,
@@ -80,8 +83,15 @@ pub(crate) async fn send(
         Ok(recipient) => recipient,
         Err(problem) => return Ok(problem.refusal(key)),
     };
+    let new = Store {
+        key: &key,
+        recipient,
+        envelope: envelope.bytes(),
+        report,
+        ttl: header.ttl,
+    };
     loop {
-        let stored = store(db, sender, &key, recipient, envelope.bytes(), report).await?;
+        let stored = store(db, sender, &new).await?;
         if let Some(timestamp) = stored {
             wakers.wake(recipient);
             return Ok(answer(timestamp));
@@ -189,17 +199,19 @@ async fn stored_at(
     Ok(found.map(|(timestamp,)| timestamp.try_into().expect("a time after 1970")))
 }
 
-/// Stores `envelope`, the send of `sender` with `key` and `report`, with its entry in `recipient`'s
-/// mailbox, and gives when, in seconds since the Unix epoch; `None` if a send with `key` is stored
-/// already.
-async fn store(
-    db: &PgPool,
-    sender: &Sender,
-    key: &SendKey,
+/// A send to store: its idempotency key, its recipient device, its envelope's bytes, whether it
+/// gets statuses, and its envelope's `ttl`.
+struct Store<'a> {
+    key: &'a SendKey,
     recipient: DeviceId,
-    envelope: &[u8],
+    envelope: &'a [u8],
     report: bool,
-) -> Result<Option<u64>, sqlx::Error> {
+    ttl: Option<u64>,
+}
+
+/// Stores `send` of `sender` with its entry in its recipient's mailbox, and gives when, in seconds
+/// since the Unix epoch; `None` if a send with its key is stored already.
+async fn store(db: &PgPool, sender: &Sender, send: &Store<'_>) -> Result<Option<u64>, sqlx::Error> {
     let mut tx = db.begin().await?;
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
     let inserted: Option<(i64,)> = sqlx::query_as(
@@ -208,8 +220,8 @@ async fn store(
          ON CONFLICT DO NOTHING RETURNING floor(extract(epoch FROM stored_at))::bigint",
     )
     .bind(sender.device.to_string())
-    .bind(key.msg_id.to_string())
-    .bind(key.recipient.map(|device| device.to_string()))
+    .bind(send.key.msg_id.to_string())
+    .bind(send.key.recipient.map(|device| device.to_string()))
     .fetch_optional(&mut *tx)
     .await?;
     let Some((timestamp,)) = inserted else {
@@ -227,14 +239,17 @@ async fn store(
              ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
              RETURNING last_seq
          )
-         INSERT INTO entries (device_id, seq, envelope_id)
-         SELECT $2::uuid, mailbox.last_seq, envelope.id FROM envelope, mailbox",
+         INSERT INTO entries (device_id, seq, envelope_id, ttl_ends_at)
+         SELECT $2::uuid, mailbox.last_seq, envelope.id, now() + make_interval(secs => $6)
+         FROM envelope, mailbox",
     )
-    .bind(envelope)
-    .bind(recipient.to_string())
+    .bind(send.envelope)
+    .bind(send.recipient.to_string())
     .bind(sender.device.to_string())
-    .bind(key.msg_id.to_string())
-    .bind(report)
+    .bind(send.key.msg_id.to_string())
+    .bind(send.report)
+    // Past `TTL_LONGEST`, a `ttl` changes nothing.
+    .bind(send.ttl.map(|ttl| ttl.min(TTL_LONGEST) as f64))
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

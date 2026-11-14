@@ -226,7 +226,12 @@ async fn hold(
     mut ended: oneshot::Receiver<()>,
     sender: &Sender,
 ) {
-    let mut reader = Reader::new(&state.wakers, sender.device);
+    let mut reader = Reader::new(
+        &state.wakers,
+        sender.device,
+        sender.version,
+        state.mailbox_retention,
+    );
     loop {
         let served = tokio::select! {
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
@@ -309,18 +314,16 @@ async fn deliver(
     reader: &mut Reader,
     upto: i64,
 ) -> Result<(), Stop> {
-    loop {
-        let page = reader
-            .next(&state.db, upto)
-            .await
-            .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
-        if page.is_empty() {
-            return Ok(());
-        }
+    while let Some(page) = reader
+        .next(&state.db, upto)
+        .await
+        .map_err(|err| Stop::Close(failed("read a mailbox", err)))?
+    {
         for push in page {
             send_frame(socket, &Frame::Push(push)).await?;
         }
     }
+    Ok(())
 }
 
 /// Sends `frame` on `socket`.
