@@ -1,7 +1,7 @@
 //! Connections authenticated as a device: `docs/protocol/delivery.md`, "Connecting". A device
 //! session gets a challenge; a WebSocket is taken, as its device's, once its first frame signs that
 //! challenge with the key of a certified `client` device of the session's account. A taken
-//! connection carries the device's sends and closes when its session ends.
+//! connection carries the device's sends and its mailbox, and closes when its session ends.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -22,6 +22,7 @@ use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
+use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in};
@@ -208,56 +209,125 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
     hold(&state, socket, ended, &sender).await;
 }
 
-/// Answers each frame of `socket`, `sender`'s connection, in the order they arrive, until the
-/// client closes it, `ended` fires, or a frame does not decode.
+/// Why the server stops serving a connection.
+enum Stop {
+    /// It closes the connection.
+    Close(Closing),
+    /// The client is gone.
+    Gone,
+}
+
+/// Serves `socket`, `sender`'s connection, until the client closes it, `ended` fires, or a frame
+/// does not decode: answers its frames in the order they arrive and delivers its device's mailbox.
 async fn hold(
     state: &AppState,
     mut socket: WebSocket,
     mut ended: oneshot::Receiver<()>,
     sender: &Sender,
 ) {
+    let mut reader = Reader::new(&state.wakers, sender.device);
     loop {
-        let bytes = tokio::select! {
+        let served = tokio::select! {
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
+            () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
             message = socket.recv() => match message {
-                Some(Ok(Message::Binary(bytes))) => bytes,
-                Some(Ok(Message::Text(_))) => return close(socket, Closing::Malformed).await,
+                Some(Ok(Message::Binary(bytes))) => {
+                    serve_frame(state, &mut socket, sender, &mut reader, &bytes).await
+                }
+                Some(Ok(Message::Text(_))) => Err(Stop::Close(Closing::Malformed)),
                 Some(Ok(Message::Close(_))) => return finish(socket).await,
                 Some(Err(_)) | None => return,
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => Ok(()),
             },
         };
-        match answer(state, sender, &bytes).await {
-            Ok(Some(frame)) => {
-                if socket
-                    .send(Message::Binary(frame.to_cbor().into()))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            Ok(None) => {}
-            Err(closing) => return close(socket, closing).await,
+        match served {
+            Ok(()) => {}
+            Err(Stop::Close(closing)) => return close(socket, closing).await,
+            Err(Stop::Gone) => return,
         }
     }
 }
 
-/// The answer to the frame `bytes` from `sender`; `None` for a frame other than `send`, which the
-/// server ignores.
-async fn answer(state: &AppState, sender: &Sender, bytes: &[u8]) -> Result<Option<Frame>, Closing> {
+/// Serves the frame `bytes` from `sender`: answers a `send`, acks a `sync` or an `ack`, and ignores
+/// a frame of another type.
+async fn serve_frame(
+    state: &AppState,
+    socket: &mut WebSocket,
+    sender: &Sender,
+    reader: &mut Reader,
+    bytes: &[u8],
+) -> Result<(), Stop> {
     let answered = match Frame::from_cbor(bytes) {
-        Ok(Frame::Send { envelope, .. }) => mailboxes::send(&state.db, sender, &envelope).await,
+        Ok(Frame::Send { envelope, report }) => {
+            mailboxes::send(&state.db, &state.wakers, sender, &envelope, report).await
+        }
+        Ok(Frame::Sync { cursor }) => return sync(state, socket, reader, cursor).await,
+        Ok(Frame::Ack { seq }) => return ack(state, sender.device, seq.get()).await,
         // A frame of a type the server does not know, or one it does not serve yet.
-        Ok(_) => return Ok(None),
+        Ok(_) => return Ok(()),
         Err(_) => match Frame::misaddressed_send(bytes) {
             Some(header) => mailboxes::misaddressed(&state.db, sender, &header).await,
-            None => return Err(Closing::Malformed),
+            None => return Err(Stop::Close(Closing::Malformed)),
         },
     };
-    answered
-        .map(Some)
-        .map_err(|err| failed("store a send", err))
+    let answer = answered.map_err(|err| Stop::Close(failed("store a send", err)))?;
+    send_frame(socket, &answer).await
+}
+
+/// Acks `reader`'s mailbox up to `cursor`; at the connection's first `sync`, sends the entries
+/// after `cursor` that the mailbox holds, then an empty `batch`.
+async fn sync(
+    state: &AppState,
+    socket: &mut WebSocket,
+    reader: &mut Reader,
+    cursor: u64,
+) -> Result<(), Stop> {
+    ack(state, reader.device(), cursor).await?;
+    let held = reader
+        .start(&state.db, cursor)
+        .await
+        .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
+    let Some(held) = held else {
+        return Ok(());
+    };
+    deliver(state, socket, reader, held).await?;
+    send_frame(socket, &Frame::Batch(Vec::new())).await
+}
+
+/// Acks `device`'s mailbox up to `cursor`.
+async fn ack(state: &AppState, device: DeviceId, cursor: u64) -> Result<(), Stop> {
+    delivery::ack(&state.db, &state.wakers, device, cursor)
+        .await
+        .map_err(|err| Stop::Close(failed("ack a mailbox", err)))
+}
+
+/// Sends the entries of `reader`'s mailbox after those sent, up to `seq` `upto`.
+async fn deliver(
+    state: &AppState,
+    socket: &mut WebSocket,
+    reader: &mut Reader,
+    upto: i64,
+) -> Result<(), Stop> {
+    loop {
+        let page = reader
+            .next(&state.db, upto)
+            .await
+            .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
+        if page.is_empty() {
+            return Ok(());
+        }
+        for push in page {
+            send_frame(socket, &Frame::Push(push)).await?;
+        }
+    }
+}
+
+/// Sends `frame` on `socket`.
+async fn send_frame(socket: &mut WebSocket, frame: &Frame) -> Result<(), Stop> {
+    socket
+        .send(Message::Binary(frame.to_cbor().into()))
+        .await
+        .map_err(|_| Stop::Gone)
 }
 
 /// Reads `socket`'s `auth`, checks it and holds the connection as its device's. `None` if the
