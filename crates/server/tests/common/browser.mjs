@@ -84,7 +84,8 @@ const [browserPid] = await browserProcesses();
 if (process.platform !== "win32") {
   const watchdog = spawn(
     "/bin/sh",
-    ["-c", 'read -r _; kill -KILL -- "-$0" 2>/dev/null', String(browserPid)],
+    // No `--`: dash, /bin/sh on Debian and Ubuntu, takes it for a process ID.
+    ["-c", 'read -r _; kill -KILL "-$0" 2>/dev/null', String(browserPid)],
     { detached: true, stdio: ["pipe", "ignore", "ignore"] },
   );
   watchdog.unref();
