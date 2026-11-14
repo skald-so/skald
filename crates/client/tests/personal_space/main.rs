@@ -51,12 +51,9 @@ use relay::Lose;
 use skald_crypto::{check_device, check_roster};
 use skald_proto::{Cbor as _, ROSTER_LABEL, RosterBody, SpaceId};
 use world::{
-    ACME, ADMIN, PERSONAL_REQUEST, Person, World, assert_role, create, give_as_personal,
+    ACME, ADMIN, PERSONAL_REQUEST, Person, STORE, World, assert_role, create, give_as_personal,
     mark_as_personal, members, plain_lines, run, space_certs, spaces, words,
 };
-
-/// The request that stores a space's revision, as its line starts.
-const STORE: &str = "POST /spaces/";
 
 /// The word that marks the personal space in the space list.
 const PERSONAL: &str = "personal";

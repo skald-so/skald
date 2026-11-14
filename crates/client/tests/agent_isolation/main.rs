@@ -54,8 +54,8 @@ use machine::Finished;
 use skald_proto::{ChannelId, Name, Role, SpaceId};
 use world::{
     ADD_RULE, ADMIN, AGENT, APPROVE, CHANNELS, CLIENT_A, CLIENT_B, CREATE_CHANNEL, CREATE_SPACE,
-    FOLDER, HOST, MEMBERS, PERSONAL_REQUEST, Person, REMOVE_RULE, RULES, SPACES, World,
-    assert_role, create, dir_of, holds_word, next_by, path, plain_lines, run, space_id, store,
+    Desk, FOLDER, HOST, MEMBERS, PERSONAL_REQUEST, Person, REMOVE_RULE, RULES, SPACES, World,
+    assert_role, holds_word, next_by, path, plain_lines, run, space_id, store,
 };
 
 /// A space no device is in, and one an agent tries to create.
@@ -84,8 +84,7 @@ impl Space {
 /// Ada's first machine in its personal space, `clienta` with a channel and `clientb` with a
 /// channel and Bob as a member.
 struct Office {
-    world: World,
-    ada: Person,
+    desk: Desk,
     bob: Name,
     personal: Space,
     client_a: Space,
@@ -94,13 +93,10 @@ struct Office {
 
 impl Office {
     fn open(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        let world = World::on_host(HOST);
-        let ada = world.sign_up(ids[0], logins[0], "ada-workstation");
-        let bob = world.sign_up(ids[1], logins[1], "bob-laptop");
-        let cloud = &world.cloud;
-        create(cloud, &ada, CLIENT_A);
-        let first = create(cloud, &ada, CLIENT_B);
-        let with_bob = next_by(&first, &ada, |members| {
+        let desk = Desk::sign_up(World::on_host(HOST), ids[0], logins[0]);
+        let bob = desk.world.sign_up(ids[1], logins[1], "bob-laptop");
+        let (cloud, ada) = (&desk.world.cloud, &desk.ada);
+        let with_bob = next_by(&desk.client_b, ada, |members| {
             members.push(bob.member(Role::Member));
         });
         store(cloud, &ada.token, &with_bob);
@@ -108,25 +104,23 @@ impl Office {
             let created = run(&ada.machine, &[CREATE_CHANNEL, space]);
             assert!(created.success, "a channel in {space}: {created:?}");
         }
-        let personal = ada.handle.to_string();
         Office {
-            personal: space_of(cloud, &ada, &personal),
-            client_a: space_of(cloud, &ada, CLIENT_A),
-            client_b: space_of(cloud, &ada, CLIENT_B),
+            personal: space_of(cloud, ada, &desk.personal),
+            client_a: space_of(cloud, ada, CLIENT_A),
+            client_b: space_of(cloud, ada, CLIENT_B),
             bob: bob.handle,
-            world,
-            ada,
+            desk,
         }
     }
 
     /// The machine's folder `rel`, such as `work/clientA`, under its home; made if missing.
     fn folder(&self, rel: &str) -> PathBuf {
-        dir_of(&self.ada.machine, rel)
+        self.desk.dir(rel)
     }
 
     /// Runs `skald <args>` as the person in `dir`; fails unless it succeeds.
     fn person(&self, dir: &Path, args: &[&str]) -> Finished {
-        let finished = self.ada.machine.start_in(dir, args).finish();
+        let finished = self.desk.ada.machine.start_in(dir, args).finish();
         assert!(finished.success, "{args:?}: {finished:?}");
         finished
     }
@@ -135,7 +129,7 @@ impl Office {
     fn agent(&self, dir: &Path, agent: &str, args: &[&str]) -> Finished {
         let mut all = vec![AGENT, agent];
         all.extend_from_slice(args);
-        self.ada.machine.start_in(dir, &all).finish()
+        self.desk.ada.machine.start_in(dir, &all).finish()
     }
 
     /// As [`Office::agent`]; fails unless the run succeeds.
@@ -230,7 +224,7 @@ impl Office {
         self.assert_sees_no_other(&channels, Some(own), "the channels");
 
         let members = self.agent_ok(dir, agent, &[MEMBERS, &own.name]);
-        assert_role(&members, &self.ada.handle, ADMIN);
+        assert_role(&members, &self.desk.ada.handle, ADMIN);
         self.assert_sees_no_other(&members, Some(own), "the members");
 
         for command in [CHANNELS, MEMBERS] {
@@ -358,7 +352,7 @@ fn person_commands_are_refused_to_an_agent_and_change_nothing() {
         [4_121_001_201, 4_121_001_202],
         ["ada-person-standin", "bob-person-standin"],
     );
-    let cloud = &office.world.cloud;
+    let cloud = &office.desk.world.cloud;
     let a = office.folder("work/clientA");
     let b = office.folder("work/clientB");
     office.add_rule(&a, CLIENT_A);
@@ -386,7 +380,7 @@ fn person_commands_are_refused_to_an_agent_and_change_nothing() {
         .iter()
         .map(Finished::shown)
         .collect();
-        (shown, server_spaces(cloud, &office.ada))
+        (shown, server_spaces(cloud, &office.desk.ada))
     };
     let agent = "claude-p3rs0n";
     office.assert_sees_only(&a, agent, &office.client_a);

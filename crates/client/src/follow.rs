@@ -256,9 +256,8 @@ fn changed_masters(previous: &Roster, next: &Roster) -> Vec<String> {
         .filter(|member| {
             previous
                 .body()
-                .members
-                .iter()
-                .any(|before| before.account == member.account && before.master != member.master)
+                .member(member.account)
+                .is_some_and(|before| before.master != member.master)
         })
         .map(|member| {
             format!(

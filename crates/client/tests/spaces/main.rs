@@ -50,12 +50,10 @@ use relay::{Lose, strings_named};
 use serde_json::{Value, json};
 use skald_github_stand_in::User;
 use skald_proto::{AccountId, Cbor, Cert, DeviceKind, Name, Policy, ROSTER_LABEL, Role, SpaceId};
-use world::{ADMIN, CREATE_SPACE, spaces, words};
+use world::{ADMIN, CREATE_SPACE, STORE, spaces, words};
 
-/// The request that creates a space, and the one that stores a space's revision, as their lines
-/// start.
+/// The request that creates a space, as its line starts.
 const CREATE: &str = "POST /spaces ";
-const STORE: &str = "POST /spaces/";
 
 /// An OIDC provider's issuer, for a sign-in method of a provider other than GitHub.
 const GOOGLE: &str = "https://accounts.google.com";

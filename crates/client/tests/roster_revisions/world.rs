@@ -50,9 +50,11 @@ pub const ACME: &str = "acme";
 pub const CLIENT_A: &str = "clienta";
 pub const CLIENT_B: &str = "clientb";
 
-/// The requests for the account's personal space and for its spaces, as their lines start.
+/// The requests for the account's personal space, for its spaces and to store a space's revision,
+/// as their lines start.
 pub const PERSONAL_REQUEST: &str = "POST /account/personal-space ";
 pub const LIST_REQUEST: &str = "GET /spaces ";
+pub const STORE: &str = "POST /spaces/";
 
 /// The roles as the CLI shows them.
 pub const ADMIN: &str = "admin";
@@ -208,8 +210,9 @@ pub struct Desk {
     pub ada: Person,
     /// The name of the account's personal space: its username.
     pub personal: String,
-    /// Revision 1 of `clienta`.
+    /// Revisions 1 of `clienta` and `clientb`.
     pub client_a: Roster,
+    pub client_b: Roster,
 }
 
 impl Desk {
@@ -218,12 +221,13 @@ impl Desk {
     pub fn sign_up(world: World, id: u64, login: &str) -> Self {
         let ada = world.sign_up(id, login, "ada-workstation");
         let client_a = create(&world.cloud, &ada, CLIENT_A);
-        create(&world.cloud, &ada, CLIENT_B);
+        let client_b = create(&world.cloud, &ada, CLIENT_B);
         Desk {
             personal: ada.handle.to_string(),
             world,
             ada,
             client_a,
+            client_b,
         }
     }
 
