@@ -63,8 +63,9 @@ services:
       - POSTGRES_USER=skald
       - POSTGRES_DB=skald
       - POSTGRES_PASSWORD=${SKALD_DATABASE_PASSWORD:?set SKALD_DATABASE_PASSWORD in .env}
+    # Over TCP: the first start's initialization runs a server on the socket only.
     healthcheck:
-      test: [CMD, pg_isready, --username, skald, --dbname, skald]
+      test: [CMD, pg_isready, --host, localhost, --username, skald, --dbname, skald]
       interval: 2s
       timeout: 5s
       retries: 30
@@ -72,7 +73,27 @@ services:
       - database:/var/lib/postgresql
     networks: [database]
 
-# edge: Caddy and the server; database: the server and PostgreSQL, without the internet.
+  # The guide's backup and restore, `docker compose run --rm backup`; `up` leaves its profile off.
+  # PostgreSQL's image, for pg_dump, psql and tar.
+  backup:
+    image: postgres:19rc2@sha256:3c5f322ffe97481b51a1ebee693f58d0c081514d2bc3026500a9400b7428bea9
+    profiles: [backup]
+    logging: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    working_dir: /backup
+    environment:
+      - PGHOST=postgres
+      - PGUSER=skald
+      - PGDATABASE=skald
+      - PGPASSWORD=${SKALD_DATABASE_PASSWORD:?set SKALD_DATABASE_PASSWORD in .env}
+      - SKALD_ATTACHMENTS_BUCKET
+    volumes:
+      - attachments:/backup/attachments
+    networks: [database]
+
+# edge: Caddy and the server; database: the server, PostgreSQL and the backup, without the internet.
 networks:
   edge: {}
   database:
