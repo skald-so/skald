@@ -97,6 +97,7 @@ impl Cloud {
                 }),
                 google: None,
                 state_lifetime: Duration::from_secs(600),
+                link_age: Duration::from_secs(300),
                 device_code_lifetime: Duration::from_secs(lifetime),
                 device_poll_interval: Duration::from_secs(interval),
             };

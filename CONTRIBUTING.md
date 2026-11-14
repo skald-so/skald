@@ -49,7 +49,7 @@ read -rs SKALD_GOOGLE_CLIENT_SECRET && export SKALD_GOOGLE_CLIENT_SECRET  # past
 SKALD_DATABASE_URL=postgres://postgres:skald@127.0.0.1:5432/postgres cargo run -p skald-server -- \
   --public-url http://127.0.0.1:8080 --google-client-id <client ID>
 ```
-Then open `http://127.0.0.1:8080/auth/google`. Without the client ID and secret, Google sign-in is off. Both providers' settings can be given at once.
+Then open `http://127.0.0.1:8080/auth/google`. Without the client ID and secret, Google sign-in is off. Both providers' settings can be given at once; then `http://127.0.0.1:8080/sign-in-methods` links one to the account the other signs in to.
 
 `skald`:
 ```sh
@@ -62,7 +62,7 @@ Plain `http://` goes only to a server on this machine, as here: [Network](docs/d
 Web UI: [web/README.md](web/README.md).
 
 ## Tests
-`./script/test` builds everything and runs all checks; exit code 0 only if all of them pass. It starts its own PostgreSQL container and removes it afterwards. CI runs the same script.
+`./script/test` builds everything and runs all checks; exit code 0 only if all of them pass. It starts its own PostgreSQL container and removes it afterwards. CI runs the same script. To run only the parts your changes touch: [infrastructure.md](docs/dev/infrastructure.md#pr-checks), "Path filters".
 
 `./script/mutants origin/dev` mutates the Rust code changed on your branch and runs the tests of each mutated crate; it lists every mutant no test catches (rule 2 in [rules.md](rules.md)).
 

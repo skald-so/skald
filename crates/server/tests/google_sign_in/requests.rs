@@ -8,6 +8,7 @@ use ring::digest::{SHA256, digest};
 use skald_oidc_stand_in::{Endpoint, base64url};
 
 use super::common::browser::Browser;
+use super::common::sign_in::is_s256_challenge;
 use super::{CALLBACK, CLIENT_ID, Google};
 
 /// Whether `text` is a PKCE verifier (RFC 7636, §4.1): 43 to 128 unreserved characters.
@@ -65,10 +66,7 @@ fn authorization_request_asks_for_openid_and_email_only_with_state_nonce_and_pkc
         }
         let challenge = param("code_challenge").unwrap_or_default();
         assert!(
-            challenge.len() == 43
-                && challenge
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+            is_s256_challenge(challenge),
             "an S256 challenge is 43 characters of base64url: {request:?}"
         );
     }

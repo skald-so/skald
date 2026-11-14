@@ -12,6 +12,8 @@
 //!
 //! As GitHub's, the API refuses a request without a `User-Agent` with 403. Its release answers are
 //! GitHub's, without the assets' `digest`: a release file's checksum is its `<archive>.sha256`.
+//! `StandIn::answering` gives an API that answers each request with one status and its headers
+//! instead, as GitHub answers one over its rate limit, or with a refused token or a redirect.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -271,6 +273,8 @@ pub struct Request {
     pub path: String,
     /// Its `Host` header.
     pub host: String,
+    /// Its `Authorization` header, if any.
+    pub authorization: Option<String>,
 }
 
 /// The stand-in, serving on a free local port until the tests end.
@@ -286,6 +290,8 @@ pub struct StandIn {
 struct Shared {
     url: String,
     releases: Vec<Release>,
+    /// The answer of every API request, if not the releases'.
+    api: Option<Vec<u8>>,
     tls: Arc<ServerConfig>,
     requests: Arc<Mutex<Vec<Request>>>,
 }
@@ -294,6 +300,28 @@ impl StandIn {
     /// Serves `releases`, newest first, over HTTPS with the certificate for `host`: 127.0.0.1, or
     /// `releases.skald.test`, which only a proxy reaches.
     pub fn start(certificates: &Certificates, host: &str, releases: Vec<Release>) -> Self {
+        Self::listen(certificates, host, releases, None)
+    }
+
+    /// A stand-in on 127.0.0.1 whose API answers each request with `status`, such as
+    /// `403 Forbidden`, `headers` and GitHub's JSON of the status's reason, and serves no release.
+    pub fn answering(certificates: &Certificates, status: &str, headers: &[(&str, &str)]) -> Self {
+        let body = json!({
+            "message": status.split_once(' ').map(|(_, reason)| reason),
+            "documentation_url": "https://docs.github.com/rest",
+        });
+        let mut headers = headers.to_vec();
+        headers.push(("content-type", "application/json; charset=utf-8"));
+        let answer = response(status, &headers, &serde_json::to_vec(&body).expect("JSON"));
+        Self::listen(certificates, "127.0.0.1", Vec::new(), Some(answer))
+    }
+
+    fn listen(
+        certificates: &Certificates,
+        host: &str,
+        releases: Vec<Release>,
+        api: Option<Vec<u8>>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let addr = listener.local_addr().expect("the stand-in's address");
         let url = format!("https://{host}:{}", addr.port());
@@ -303,6 +331,7 @@ impl StandIn {
         let shared = Arc::new(Shared {
             url: url.clone(),
             releases,
+            api,
             tls: Arc::clone(&certificates.config),
             requests: Arc::clone(&requests),
         });
@@ -386,6 +415,7 @@ impl Shared {
         self.requests.lock().unwrap().push(Request {
             path: path.clone(),
             host,
+            authorization: header("authorization"),
         });
         match self.answer(&method, &path, agent) {
             Answer::Whole(bytes) => {
@@ -414,6 +444,9 @@ impl Shared {
                     &json!({ "message": "Request forbidden by administrative rules. Please make sure your request has a User-Agent header" }),
                     head_only,
                 );
+            }
+            if let Some(answer) = &self.api {
+                return Answer::Whole(answer.clone());
             }
             let found = match rest.trim_end_matches('/') {
                 "releases/latest" => self.json_of(|release| !release.prerelease),

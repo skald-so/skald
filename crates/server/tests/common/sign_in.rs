@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
 
-use super::browser::{Browser, Cookie, Page, Visit};
+use super::browser::{Browser, Cookie, Page, Submission, Visit};
 use super::{Response, Server, TestDb, get_url, on_free_port};
 
 /// The fake OAuth App's client ID and secret.
@@ -186,13 +186,7 @@ impl SignIn {
 
     /// The link of GitHub's page that asks to authorize the app, where `visit` ended.
     pub fn authorize_link(&self, page: &Page, visit: &Visit) -> String {
-        let authorize = format!("{}/login/oauth/authorize?", self.github.url());
-        assert!(visit.url.starts_with(&authorize), "at GitHub: {visit:?}");
-        let link = page.evaluate(r#"document.getElementById("authorize").href"#);
-        let link = link.as_str().expect("a link to authorize the app");
-        let callback = format!("{}{CALLBACK}?", self.public);
-        assert!(link.starts_with(&callback), "to the callback: {link}");
-        link.to_owned()
+        github_authorize_link(&self.github, &self.public, page, visit)
     }
 
     /// `GET /session` from a page of the server in `page`'s browser: the status and the body.
@@ -215,11 +209,28 @@ impl SignIn {
 
     /// The rows of the database that hold `user`'s GitHub ID or login.
     pub fn rows_of(&self, user: &User) -> Vec<String> {
-        let id = user.id.to_string();
-        let mut rows = self.db.rows();
-        rows.retain(|row| row.contains(&user.login) || holds_number(row, &id));
-        rows
+        github_rows(&self.db, user)
     }
+}
+
+/// The link of `github`'s page that asks to authorize the app, where `visit` ended in `page`'s
+/// browser: the callback of the server at the public address `public`, with `code` and `state`.
+pub fn github_authorize_link(github: &GitHub, public: &str, page: &Page, visit: &Visit) -> String {
+    let authorize = format!("{}/login/oauth/authorize?", github.url());
+    assert!(visit.url.starts_with(&authorize), "at GitHub: {visit:?}");
+    let link = page.evaluate(r#"document.getElementById("authorize").href"#);
+    let link = link.as_str().expect("a link to authorize the app");
+    let callback = format!("{public}{CALLBACK}?");
+    assert!(link.starts_with(&callback), "to the callback: {link}");
+    link.to_owned()
+}
+
+/// The rows of `db` that hold the GitHub ID or login of `user`.
+pub fn github_rows(db: &TestDb, user: &User) -> Vec<String> {
+    let id = user.id.to_string();
+    let mut rows = db.rows();
+    rows.retain(|row| row.contains(&user.login) || holds_number(row, &id));
+    rows
 }
 
 /// Runs a GitHub sign-in of `user` by plain HTTP at `server`, whose public address is `public`,
@@ -257,10 +268,16 @@ pub fn start_url(public: &str, start: &str, return_to: Option<&str>) -> String {
 /// `GET /session` from a page of the server at the public address `public` in `page`'s browser:
 /// the status and the body.
 pub fn page_session(page: &Page, public: &str) -> (u16, Value) {
+    page_get(page, public, SESSION)
+}
+
+/// `GET <path>` of the server's API, stating the protocol version, from a page of the server at the
+/// public address `public` in `page`'s browser: the status and the JSON body, `null` if none.
+pub fn page_get(page: &Page, public: &str, path: &str) -> (u16, Value) {
     let visit = page.goto(&format!("{public}/health"));
     assert_eq!(visit.status, Some(200), "GET /health: {visit:?}");
     let answer = page.evaluate(&format!(
-        r#"fetch("{SESSION}", {{ headers: {{ "{header}": "{version}" }} }})
+        r#"fetch("{path}", {{ headers: {{ "{header}": "{version}" }} }})
             .then(async (response) => ({{ status: response.status, body: await response.text() }}))"#,
         header = skald_proto::VERSION_HEADER,
         version = skald_proto::PROTOCOL_VERSION,
@@ -440,4 +457,54 @@ pub fn is_uuid_v7(id: &str) -> bool {
         })
         && bytes[14] == b'7'
         && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+}
+
+/// Opens `site`, a page of another site, in `page`'s browser and submits from it the form that
+/// `submission` describes, as that site can; gives the visit.
+pub fn submit_from_site(page: &Page, site: &str, submission: &Submission) -> Visit {
+    page.goto(site);
+    page.navigate_by(&format!(
+        r#"setTimeout(() => {{
+            const form = document.createElement("form");
+            form.method = {method};
+            form.action = {action};
+            for (const [name, value] of {fields}) {{
+                const field = document.createElement("input");
+                field.type = "hidden";
+                field.name = name;
+                field.value = value;
+                form.append(field);
+            }}
+            document.body.append(form);
+            form.submit();
+        }}, 0)"#,
+        method = serde_json::to_string(&submission.method).expect("JSON"),
+        action = serde_json::to_string(&submission.action).expect("JSON"),
+        fields = serde_json::to_string(&submission.fields).expect("JSON"),
+    ))
+}
+
+/// Opens `site`, a page of another site, in `page`'s browser and follows a link from it to `url`;
+/// gives the visit.
+pub fn follow_from_site(page: &Page, site: &str, url: &str) -> Visit {
+    page.goto(site);
+    page.navigate_by(&format!(
+        r#"setTimeout(() => {{ location.href = {}; }}, 0)"#,
+        serde_json::to_string(url).expect("JSON")
+    ))
+}
+
+/// What `submission` sends, as a link: its action with its fields as the query.
+pub fn as_link(submission: &Submission) -> String {
+    let query = serde_urlencoded::to_string(&submission.fields).expect("a query");
+    let action = submission.action.split('?').next().unwrap_or_default();
+    format!("{action}?{query}")
+}
+
+/// Whether `text` is an S256 PKCE challenge (RFC 7636, §4.2): 43 characters of base64url.
+pub fn is_s256_challenge(text: &str) -> bool {
+    text.len() == 43
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }

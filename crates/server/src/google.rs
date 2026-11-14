@@ -7,16 +7,11 @@ use std::sync::{Arc, Mutex, PoisonError};
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use sha2::{Digest, Sha256};
-use sqlx::PgPool;
 
-use crate::accounts::{self, Method};
+use crate::links;
 use crate::oidc::{OidcError, OidcProvider, OidcSettings};
 use crate::sign_in::{
-    Failure, Flow, Secrets, SignInSettings, begin, param, random_token, redirect, signed_in_page,
-    take,
+    Failure, Flow, Identity, Provider, Secrets, SignInSettings, callback_with, param, start_with,
 };
 use crate::{AppState, problem};
 
@@ -37,15 +32,6 @@ impl Google {
         Google {
             settings,
             provider: Mutex::new(None),
-        }
-    }
-
-    fn flow(&self) -> Flow<'_> {
-        Flow {
-            name: "Google",
-            provider: &self.settings.issuer,
-            start: START_PATH,
-            callback: CALLBACK_PATH,
         }
     }
 
@@ -72,12 +58,12 @@ impl Google {
 }
 
 /// The sign-in settings and Google, while the server has Google's settings.
-fn google(state: &AppState) -> Option<(&SignInSettings, &Google)> {
+pub(crate) fn google(state: &AppState) -> Option<(&SignInSettings, &Google)> {
     Some((state.sign_in.as_deref()?, state.google.as_deref()?))
 }
 
 /// The answer while the server has no Google settings.
-fn off() -> Response {
+pub(crate) fn off() -> Response {
     problem(
         StatusCode::NOT_FOUND,
         "google-sign-in-off",
@@ -86,14 +72,82 @@ fn off() -> Response {
     )
 }
 
-/// The S256 PKCE challenge of `verifier` (RFC 7636, §4.2).
-fn challenge(verifier: &str) -> String {
-    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
-}
-
 /// The local part of `email`: what is before its last `@`.
 fn local_part(email: &str) -> &str {
     email.rsplit_once('@').map_or(email, |(local, _)| local)
+}
+
+impl Provider for Google {
+    fn flow(&self) -> Flow<'_> {
+        Flow {
+            name: "Google",
+            provider: &self.settings.issuer,
+            start: START_PATH,
+            callback: CALLBACK_PATH,
+            link: links::GOOGLE_PATH,
+        }
+    }
+
+    /// A link asks Google to let the person choose the Google account.
+    async fn authorize(
+        &self,
+        settings: &SignInSettings,
+        state: &str,
+        secrets: &Secrets,
+        link: bool,
+    ) -> Result<String, Failure> {
+        let provider = self.provider().await?;
+        let nonce = secrets
+            .nonce
+            .as_deref()
+            .expect("an OIDC sign-in has a nonce");
+        let authorize = provider.authorization_url(
+            &settings.public_url.at(CALLBACK_PATH),
+            state,
+            nonce,
+            &secrets.challenge(),
+            link.then_some("select_account"),
+        );
+        Ok(authorize.into())
+    }
+
+    async fn identify(
+        &self,
+        settings: &SignInSettings,
+        query: Option<&str>,
+        secrets: Secrets,
+    ) -> Result<Identity, Failure> {
+        let Secrets { verifier, nonce } = secrets;
+        let nonce = nonce.ok_or(Failure::Refused("the sign-in is not an OIDC one."))?;
+        if param(query, "error").is_some() {
+            return Err(Failure::Refused("Google did not authorize it."));
+        }
+        let code = param(query, "code")
+            .filter(|code| !code.is_empty())
+            .ok_or(Failure::Refused("Google gave no code."))?;
+
+        let provider = self.provider().await?;
+        let redirect_uri = settings.public_url.at(CALLBACK_PATH);
+        let identity = tokio::task::spawn_blocking(move || {
+            let id_token = provider.exchange(&code, &redirect_uri, &verifier)?;
+            provider.check(&id_token, &nonce)
+        })
+        .await
+        .map_err(|err| Failure::Provider(format!("the request to Google failed: {err}")))?
+        .map_err(|err| match err {
+            OidcError::Code => Failure::Refused("Google refused the code."),
+            OidcError::Token(reason) => {
+                eprintln!("skald-server: Google sign-in refused an ID token: {reason}");
+                Failure::Refused("Google's ID token failed a check.")
+            }
+            other => Failure::Provider(other.to_string()),
+        })?;
+        Ok(Identity {
+            source: identity.email.as_deref().map_or("", local_part).to_owned(),
+            subject: identity.subject,
+            login: None,
+        })
+    }
 }
 
 /// `GET /auth/google`: sends the browser to Google with a new `state`, bound to it by a cookie, and
@@ -102,30 +156,12 @@ pub(crate) async fn start(State(state): State<AppState>, RawQuery(query): RawQue
     let Some((settings, google)) = google(&state) else {
         return off();
     };
-    let flow = google.flow();
-    let provider = match google.provider().await {
-        Ok(provider) => provider,
-        Err(failure) => return failure.page(&flow),
-    };
-    let secrets = Secrets {
-        nonce: random_token(),
-        verifier: random_token(),
-    };
-    let token = match begin(&state.db, settings, &flow, query.as_deref(), Some(&secrets)).await {
-        Ok(token) => token,
-        Err(failure) => return failure.page(&flow),
-    };
-    let authorize = provider.authorization_url(
-        &settings.public_url.at(CALLBACK_PATH),
-        &token,
-        &secrets.nonce,
-        &challenge(&secrets.verifier),
-    );
-    redirect(settings, &flow, authorize.as_str(), &token)
+    let return_to = param(query.as_deref(), "return_to");
+    start_with(&state.db, settings, google, return_to.as_deref(), None).await
 }
 
-/// `GET /auth/google/callback`: checks `state`, exchanges the code, checks the ID token, finds or
-/// creates the account of its subject and starts a session.
+/// `GET /auth/google/callback`: checks `state`, exchanges the code and checks the ID token, then
+/// finds or creates the account of its subject and starts a session, or links its method.
 pub(crate) async fn callback(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -134,72 +170,12 @@ pub(crate) async fn callback(
     let Some((settings, google)) = google(&state) else {
         return off();
     };
-    let flow = google.flow();
-    match finish(&state.db, settings, google, &headers, query.as_deref()).await {
-        Ok((session, return_to)) => signed_in_page(settings, &flow, &session, &return_to),
-        Err(failure) => failure.page(&flow),
-    }
-}
-
-/// The session token and the return address of a sign-in that Google's callback with `query`
-/// completes.
-async fn finish(
-    db: &PgPool,
-    settings: &SignInSettings,
-    google: &Google,
-    headers: &HeaderMap,
-    query: Option<&str>,
-) -> Result<(String, String), Failure> {
-    let (return_to, secrets) = take(db, &google.flow(), headers, query).await?;
-    let Secrets { nonce, verifier } =
-        secrets.ok_or(Failure::Refused("the sign-in is not an OIDC one."))?;
-    if param(query, "error").is_some() {
-        return Err(Failure::Refused("Google did not authorize it."));
-    }
-    let code = param(query, "code")
-        .filter(|code| !code.is_empty())
-        .ok_or(Failure::Refused("Google gave no code."))?;
-
-    let provider = google.provider().await?;
-    let redirect_uri = settings.public_url.at(CALLBACK_PATH);
-    let identity = tokio::task::spawn_blocking(move || {
-        let id_token = provider.exchange(&code, &redirect_uri, &verifier)?;
-        provider.check(&id_token, &nonce)
-    })
-    .await
-    .map_err(|err| Failure::Provider(format!("the request to Google failed: {err}")))?
-    .map_err(|err| match err {
-        OidcError::Code => Failure::Refused("Google refused the code."),
-        OidcError::Token(reason) => {
-            eprintln!("skald-server: Google sign-in refused an ID token: {reason}");
-            Failure::Refused("Google's ID token failed a check.")
-        }
-        other => Failure::Provider(other.to_string()),
-    })?;
-    let method = Method {
-        provider: &google.settings.issuer,
-        subject: identity.subject,
-        login: None,
-    };
-    let source = identity.email.as_deref().map_or("", local_part);
-    let session = accounts::sign_in(db, &method, source)
-        .await
-        .map_err(Failure::Database)?;
-    Ok((session, return_to))
+    callback_with(&state.db, settings, google, &headers, query.as_deref()).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn challenge_is_s256_of_the_verifier() {
-        // RFC 7636, Appendix B.
-        assert_eq!(
-            challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-        );
-    }
 
     #[test]
     fn local_part_is_before_the_last_at() {
