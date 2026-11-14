@@ -707,3 +707,26 @@ fn database_failures_answer_500_and_close_with_1011() {
     let mut socket = connect_as(&flow, &ada, &challenge);
     assert_connection_taken(&flow.stand.server, &mut socket);
 }
+
+/// A taken connection is closed with code 1007 (invalid frame payload data) on a frame that does
+/// not decode: a binary frame that is not CBOR, and a text frame.
+#[test]
+fn frame_that_does_not_decode_closes_with_1007() {
+    let flow = DeviceFlow::start();
+    let ada = linked(&flow, 3_121_220_023, "ada-malformed-frame-standin");
+
+    for frame in [
+        Message::Binary(vec![0xff].into()),
+        Message::Text("send".into()),
+    ] {
+        let challenge = challenge(&flow, &ada.machine.token);
+        let mut socket = connect_as(&flow, &ada, &challenge);
+        assert_connection_taken(&flow.stand.server, &mut socket);
+        socket.send(frame).expect("send the frame");
+
+        assert_eq!(
+            closing(&mut socket, CLOSE_WITHIN),
+            Some(Closed::Frame(CloseCode::Invalid, String::new()))
+        );
+    }
+}
