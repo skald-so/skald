@@ -51,7 +51,7 @@ To run the server, see [Self-hosting](#self-hosting).
    skald sign-in --server https://skald.example.com
    ```
 
-   - The command prints a URL and a code. Approve the code in a browser after signing in with GitHub. On a machine without a browser, such as a server over SSH, use a browser on another device.
+   - The command prints a URL and a code. Approve the code in a browser after signing in with GitHub or Google. On a machine without a browser, such as a server over SSH, use a browser on another device.
    - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices). `no`: the device waits to be linked by a device already connected, which the client cannot do yet. `--first-device yes|no` gives the answer without asking.
 
 ### 3. Client commands

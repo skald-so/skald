@@ -1,17 +1,19 @@
-//! The device flow (RFC 8628) on a `skald-server` set up for GitHub sign-in against the GitHub
-//! stand-in: a machine's requests, each checked against the OpenAPI spec, and its person on the
-//! verification page in a browser.
+//! The device flow (RFC 8628) on a `skald-server`: a machine's requests, each checked against the
+//! OpenAPI spec, and its person on the verification page in a browser. [`DeviceFlow`] runs it on a
+//! server set up for GitHub sign-in against the GitHub stand-in.
 //!
 //! The person's page: a textbox for the code, a button named "Approve" and one named "Deny"; when
 //! the page asks for the code first, its only button submits it and the next page has both. Each
 //! is an HTML form whose submission navigates; a refused code answers with a `4xx`.
 
+use std::ops::Deref;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use skald_github_stand_in::User;
 
+use super::accounts::Who;
 use super::browser::{APPROVE, CODE_FIELD, DENY, Page, SUBMIT, Visit};
 use super::sign_in::{Account, CLIENT_SECRET, SESSION, SignIn, cookie_set};
 use super::spec::{operation_violations, spec};
@@ -49,10 +51,11 @@ pub enum Poll {
     Error(String),
 }
 
-/// A server with GitHub sign-in through the stand-in and the device flow, on its own database.
+/// A server with GitHub sign-in through the stand-in and the device flow, on its own database. The
+/// device flow's requests and pages are those of [`Machine`], which it derefs to.
 pub struct DeviceFlow {
     pub stand: SignIn,
-    spec: Value,
+    machine: Machine,
 }
 
 impl DeviceFlow {
@@ -68,8 +71,57 @@ impl DeviceFlow {
 
     /// The device flow of `stand`'s server, which it starts with no extra arguments.
     pub fn of(stand: SignIn) -> Self {
-        DeviceFlow {
-            stand,
+        let machine = Machine::at(stand.server.base());
+        DeviceFlow { stand, machine }
+    }
+
+    /// The account a request with the session token `token` acts as.
+    pub fn account_of(&self, token: &str) -> Account {
+        let response = self.session(Some(&format!("Bearer {token}")));
+        assert_eq!(response.status, 200, "{}", text(&response));
+        Account::of(&json(&response))
+    }
+
+    /// Signs `user` in on the server by plain HTTP, as a browser follows the redirects; gives the
+    /// `Cookie` header of the web session.
+    pub fn web_cookie(&self, user: &User) -> String {
+        let (started, callback) = self.stand.to_callback(user);
+        let signed_in = get_url(
+            &callback,
+            &[("cookie", &cookie_set(&started, "skald_sign_in"))],
+        );
+        assert_eq!(signed_in.status, 200, "{}", text(&signed_in));
+        cookie_set(&signed_in, "skald_session")
+    }
+
+    /// Signs `page`'s browser in to the server as `user` and gives their account.
+    pub fn signed_in(&self, page: &Page, user: &User) -> Account {
+        self.stand.sign_in(page, user);
+        self.stand.account(page)
+    }
+}
+
+impl Deref for DeviceFlow {
+    type Target = Machine;
+
+    fn deref(&self) -> &Machine {
+        &self.machine
+    }
+}
+
+/// A machine's side of the device flow at a server, whichever providers it signs people in with,
+/// each request checked against the OpenAPI spec; and its person's side on the verification page.
+pub struct Machine {
+    /// Where the test reaches the server, such as `http://127.0.0.1:41234`.
+    base: String,
+    spec: Value,
+}
+
+impl Machine {
+    /// The device flow of the server at `base`, where the test reaches it.
+    pub fn at(base: &str) -> Self {
+        Machine {
+            base: base.to_owned(),
             spec: spec(),
         }
     }
@@ -81,7 +133,7 @@ impl DeviceFlow {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.stand.server.base())
+        format!("{}{path}", self.base)
     }
 
     /// `POST <path>` of `fields` straight to the server, stating the protocol version; checked
@@ -212,11 +264,9 @@ impl DeviceFlow {
         self.request("get", SESSION, &headers, None, true)
     }
 
-    /// The account a request with the session token `token` acts as.
-    pub fn account_of(&self, token: &str) -> Account {
-        let response = self.session(Some(&format!("Bearer {token}")));
-        assert_eq!(response.status, 200, "{}", text(&response));
-        Account::of(&json(&response))
+    /// The account a request with the session token `token` acts as, whatever its sign-in methods.
+    pub fn who_of(&self, token: &str) -> Who {
+        Who::of(&self.session(Some(&format!("Bearer {token}"))))
     }
 
     /// Checks that a request with `authorization` acts as no account.
@@ -228,24 +278,6 @@ impl DeviceFlow {
             "{authorization:?}: {}",
             text(&response)
         );
-    }
-
-    /// Signs `user` in on the server by plain HTTP, as a browser follows the redirects; gives the
-    /// `Cookie` header of the web session.
-    pub fn web_cookie(&self, user: &User) -> String {
-        let (started, callback) = self.stand.to_callback(user);
-        let signed_in = get_url(
-            &callback,
-            &[("cookie", &cookie_set(&started, "skald_sign_in"))],
-        );
-        assert_eq!(signed_in.status, 200, "{}", text(&signed_in));
-        cookie_set(&signed_in, "skald_session")
-    }
-
-    /// Signs `page`'s browser in to the server as `user` and gives their account.
-    pub fn signed_in(&self, page: &Page, user: &User) -> Account {
-        self.stand.sign_in(page, user);
-        self.stand.account(page)
     }
 
     /// Opens the verification page at `url` in `page`'s browser, signing in with GitHub on the way

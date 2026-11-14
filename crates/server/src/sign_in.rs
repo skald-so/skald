@@ -18,9 +18,8 @@ use url::Url;
 
 use crate::accounts::{self, GITHUB, Method};
 use crate::github::{GitHubApp, Refusal, http_url};
-use crate::links;
 use crate::oidc::OidcSettings;
-use crate::{AppState, database_failed, problem};
+use crate::{AppState, database_failed, google, links, problem};
 
 /// GitHub sign-in's start's path under the public address.
 pub(crate) const START_PATH: &str = "/auth/github";
@@ -78,7 +77,7 @@ impl FromStr for PublicUrl {
 pub struct SignInSettings {
     /// The server's public address; the providers' callbacks are under it.
     pub public_url: PublicUrl,
-    /// GitHub sign-in and the device flow; both are off without it.
+    /// GitHub sign-in; off without it. The device flow is off without any provider.
     pub github: Option<GitHubApp>,
     /// Google sign-in, with the OIDC provider at Google's issuer; off without it.
     pub google: Option<OidcSettings>,
@@ -147,6 +146,45 @@ pub(crate) const GITHUB_FLOW: Flow<'static> = Flow {
 pub(crate) fn github(state: &AppState) -> Option<(&SignInSettings, &GitHubApp)> {
     let settings = state.sign_in.as_deref()?;
     Some((settings, settings.github.as_ref()?))
+}
+
+/// The sign-in settings, while the server has the settings of any provider.
+pub(crate) fn settings(state: &AppState) -> Option<&SignInSettings> {
+    state
+        .sign_in
+        .as_deref()
+        .filter(|settings| settings.github.is_some() || settings.google.is_some())
+}
+
+/// The flows of the providers the server has settings for.
+pub(crate) fn flows(state: &AppState) -> Vec<Flow<'_>> {
+    let mut flows = Vec::new();
+    if github(state).is_some() {
+        flows.push(GITHUB_FLOW);
+    }
+    if let Some((_, google)) = google::google(state) {
+        flows.push(google.flow());
+    }
+    flows
+}
+
+/// Links that sign in with each of `flows` and return to `return_to`, a page of this server.
+pub(crate) fn sign_in_links(flows: &[Flow], again: &str, return_to: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("return_to", return_to)
+        .finish();
+    let links: Vec<String> = flows
+        .iter()
+        .map(|flow| {
+            format!(
+                "<a href=\"{}?{}\">Sign in{again} with {}</a>",
+                flow.start,
+                escape(&query),
+                flow.name
+            )
+        })
+        .collect();
+    links.join(" ")
 }
 
 /// What a sign-in keeps beside its `state` until its callback: its PKCE verifier and an OIDC
@@ -501,12 +539,22 @@ pub(crate) fn session_hashes(headers: &HeaderMap) -> Vec<Vec<u8>> {
 }
 
 /// The answer while the server has no GitHub settings.
-pub(crate) fn off() -> Response {
+pub(crate) fn github_off() -> Response {
     problem(
         StatusCode::NOT_FOUND,
         "github-sign-in-off",
         "GitHub sign-in is off",
         "This server has no GitHub settings.",
+    )
+}
+
+/// The answer while the server has no settings of any provider.
+pub(crate) fn off() -> Response {
+    problem(
+        StatusCode::NOT_FOUND,
+        "sign-in-off",
+        "Sign-in is off",
+        "This server has no sign-in settings.",
     )
 }
 
@@ -568,7 +616,7 @@ impl Provider for GitHubApp {
 /// a PKCE challenge.
 pub(crate) async fn start(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
     let Some((settings, github)) = self::github(&state) else {
-        return off();
+        return github_off();
     };
     let return_to = param(query.as_deref(), "return_to");
     start_with(&state.db, settings, github, return_to.as_deref(), None).await
@@ -582,7 +630,7 @@ pub(crate) async fn callback(
     RawQuery(query): RawQuery,
 ) -> Response {
     let Some((settings, github)) = self::github(&state) else {
-        return off();
+        return github_off();
     };
     callback_with(&state.db, settings, github, &headers, query.as_deref()).await
 }
