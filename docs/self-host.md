@@ -71,7 +71,7 @@ At start, the server writes, reads back and deletes an object of its own there, 
 
 ### Sign-in
 
-People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Anyone your providers sign in gets an account: any GitHub user, and any Google account your client's audience admits.
+People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Who gets an account: [Sign-up](#sign-up).
 
 A GitHub OAuth App, in GitHub's Settings, Developer settings, OAuth Apps, New OAuth App:
 
@@ -97,6 +97,27 @@ Its client ID and secret, the secret read without echo:
 echo 'SKALD_GOOGLE_CLIENT_ID=<Google client ID>' >>.env
 read -rsp 'Google client secret: ' secret && echo "SKALD_GOOGLE_CLIENT_SECRET=$secret" >>.env && unset secret
 ```
+
+### Sign-up
+
+Sign-up is open by default: anyone your providers sign in gets an account, any GitHub user and any Google account your client's audience admits. The server's log then warns of it at every start.
+
+Closed, only the listed people create accounts; existing accounts sign in as before. Each list is comma-separated, compared without case, and may stay empty:
+
+- GitHub logins. GitHub gives no verified email, so a login counts, never an email: whoever holds a listed login when signing up gets the account, also after a rename frees it.
+- Google emails, once Google has verified them.
+- Google domains: the Workspace or Cloud organization of the account, never an email's domain.
+
+```sh self-host=sign-up
+cat >>.env <<'EOF'
+SKALD_SIGN_UP=closed
+SKALD_SIGN_UP_GITHUB_LOGINS=<GitHub logins>
+SKALD_SIGN_UP_GOOGLE_EMAILS=<Google emails>
+SKALD_SIGN_UP_GOOGLE_DOMAINS=<Google domains>
+EOF
+```
+
+A refused person sees that sign-up is closed in the browser, and `skald sign-in` on their machine says so and stops.
 
 ## Start
 

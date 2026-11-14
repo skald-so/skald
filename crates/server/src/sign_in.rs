@@ -21,12 +21,14 @@ use crate::accounts::{self, GITHUB, Method};
 use crate::github::{GitHubApp, Refusal, http_url};
 use crate::google::Google;
 use crate::oidc::OidcSettings;
-use crate::{AppState, database_failed, links, problem};
+use crate::{AppState, database_failed, device_flow, links, problem};
 
 /// GitHub sign-in's start's path under the public address.
 pub(crate) const START_PATH: &str = "/auth/github";
 /// GitHub's callback's path under the public address.
 pub const CALLBACK_PATH: &str = "/auth/github/callback";
+/// The problem type of a refused sign-up, named on its page.
+const SIGN_UP_CLOSED: &str = "https://skald.so/problems/sign-up-closed";
 /// The cookie that binds a sign-in's `state` to the browser that started it.
 const STATE_COOKIE: &str = "skald_sign_in";
 /// The session cookie.
@@ -218,6 +220,10 @@ pub(crate) struct Identity {
     pub login: Option<String>,
     /// What a sign-up makes the username from, such as the GitHub login.
     pub source: String,
+    /// A Google account's email, if Google has verified it.
+    pub verified_email: Option<String>,
+    /// A Google account's `hd`, its Workspace or Cloud organization.
+    pub hosted_domain: Option<String>,
 }
 
 /// A provider people sign in with in the browser.
@@ -443,14 +449,16 @@ pub(crate) async fn callback<P: Provider>(
         Err(failure) => return failure.page(&flow, false),
     };
     let link = taken.link.is_some();
-    finish(db, settings, provider, &flow, &headers, query, taken)
+    finish(&state, settings, provider, &flow, &headers, query, taken)
         .await
         .unwrap_or_else(|failure| failure.page(&flow, link))
 }
 
-/// The page that ends the sign-in or the link `taken`, whose provider's callback has `query`.
+/// The page that ends the sign-in or the link `taken`, whose provider's callback has `query`. A
+/// sign-up that the server's sign-up refuses creates nothing, and refuses the device code of a
+/// sign-in from the verification page.
 async fn finish<P: Provider>(
-    db: &PgPool,
+    state: &AppState,
     settings: &SignInSettings,
     provider: &P,
     flow: &Flow<'_>,
@@ -478,6 +486,8 @@ async fn finish<P: Provider>(
         .filter(|code| !code.is_empty())
         .ok_or(Failure::ProviderRefused("gave no code."))?;
     let identity = provider.identify(settings, code, secrets).await?;
+    let may_sign_up = state.sign_up.admits(&identity);
+    let db = &state.db;
     let method = Method {
         provider: flow.provider,
         subject: identity.subject,
@@ -489,9 +499,15 @@ async fn finish<P: Provider>(
             Ok(links::linked_page(settings, flow, added, &return_to))
         }
         None => {
-            let session = accounts::sign_in(db, &method, &identity.source)
+            let session = accounts::sign_in(db, &method, &identity.source, may_sign_up)
                 .await
                 .map_err(Failure::Database)?;
+            let Some(session) = session else {
+                device_flow::refuse_sign_up(db, &return_to)
+                    .await
+                    .map_err(Failure::Database)?;
+                return Err(Failure::SignUpClosed);
+            };
             Ok(signed_in_page(settings, flow, &session, &return_to))
         }
     }
@@ -650,6 +666,8 @@ impl Provider for GitHubApp {
             subject: user.id.to_string(),
             source: user.login.clone(),
             login: Some(user.login),
+            verified_email: None,
+            hosted_domain: None,
         })
     }
 }
@@ -667,6 +685,8 @@ pub(crate) enum Failure {
     Session(&'static str),
     /// A link of a method that another account has.
     OtherAccount,
+    /// A sign-up while sign-up is closed, of a person on none of its lists.
+    SignUpClosed,
     /// The provider failed, is unreachable or refused the server's client.
     Provider(String),
     Database(sqlx::Error),
@@ -688,6 +708,14 @@ impl Failure {
                 StatusCode::CONFLICT,
                 format!(
                     "this {name} account signs in to another Skald account. Accounts never merge."
+                ),
+            ),
+            Failure::SignUpClosed => (
+                StatusCode::FORBIDDEN,
+                format!(
+                    "sign-up is closed on this server, and this {name} account has no Skald \
+                     account and is not on its list of who may sign up. Ask the server's \
+                     operator to add it. (<code>{SIGN_UP_CLOSED}</code>)"
                 ),
             ),
             Failure::Provider(reason) => {
