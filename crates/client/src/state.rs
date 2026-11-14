@@ -87,7 +87,8 @@ pub fn dir(given: Option<PathBuf>) -> Result<PathBuf, String> {
         .ok_or_else(|| "no state directory: set SKALD_STATE_DIR".to_owned())
 }
 
-/// Creates `dir` if it is missing, readable only by its owner.
+/// Creates `dir` if it is missing: on Unix readable only by its owner; on Windows it has the access
+/// rights it inherits from its parent.
 pub fn create_dir(dir: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);

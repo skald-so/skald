@@ -1,6 +1,7 @@
 //! The client's secrets, such as the session token: in the system's key storage through the keyring
-//! project's stores (`architecture.md`, "Cryptography"), or without one in a file with 0600 permissions in the state
-//! directory. They are kept as one JSON object of names and values.
+//! project's stores (`architecture.md`, "Cryptography"), or without one in a file in the state
+//! directory, with 0600 permissions on Unix; on Windows it has the access rights it inherits from
+//! the directory. They are kept as one JSON object of names and values.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -8,6 +9,8 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use crate::plain_path::plain;
 
 /// The secrets file in the state directory.
 pub const FILE: &str = "secrets.json";
@@ -116,7 +119,11 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::File(path, err) => {
-                write!(f, "the secrets file {} failed: {err}", path.display())
+                write!(
+                    f,
+                    "the secrets file {} failed: {err}",
+                    plain(path).display()
+                )
             }
             Error::Keyring(err) => write!(f, "the system's key storage failed: {err}"),
             Error::Malformed(place) => write!(f, "the secrets in {place} are malformed"),
@@ -165,7 +172,7 @@ impl Secrets {
             }
         }
         match fs::read_to_string(&self.file) {
-            Ok(value) => parse(&value, &self.file.display().to_string()),
+            Ok(value) => parse(&value, &plain(&self.file).display().to_string()),
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Map::new()),
             Err(err) => Err(Error::File(self.file.clone(), err)),
         }
@@ -195,7 +202,8 @@ impl Secrets {
         }
     }
 
-    /// Writes the file whole or not at all: a new file with 0600 permissions, renamed over it.
+    /// Writes the file whole or not at all: a new file, with 0600 permissions on Unix, renamed over
+    /// it.
     fn write_file(&self, value: &str) -> io::Result<()> {
         let new = self.file.with_extension("json.new");
         let mut options = fs::OpenOptions::new();
@@ -374,6 +382,19 @@ mod tests {
             .load()
             .expect_err("malformed");
         assert!(matches!(error, Error::Malformed(_)), "{error:?}");
+
+        // The client opens the state directory by its canonical path; the error names the file as
+        // people write its path, on Windows without the prefix `fs::canonicalize` gives.
+        let canonical = fs::canonicalize(&*dir).unwrap();
+        let error = Secrets::new(&canonical, Storage::File)
+            .load()
+            .expect_err("malformed");
+        let file = plain(&canonical.join(FILE));
+        assert_eq!(
+            error.to_string(),
+            format!("the secrets in {} are malformed", file.display())
+        );
+        assert!(!error.to_string().contains(r"\\?\"), "{error}");
     }
 
     #[test]
@@ -467,6 +488,17 @@ mod tests {
                 .starts_with("the secrets file /state/secrets.json failed: "),
             "{error}"
         );
+        #[cfg(windows)]
+        {
+            let file = PathBuf::from(r"\\?\C:\state\secrets.json");
+            let error = Error::File(file, io::Error::from(io::ErrorKind::PermissionDenied));
+            assert!(
+                error
+                    .to_string()
+                    .starts_with(r"the secrets file C:\state\secrets.json failed: "),
+                "{error}"
+            );
+        }
         assert_eq!(
             Error::Keyring("locked".to_owned()).to_string(),
             "the system's key storage failed: locked"

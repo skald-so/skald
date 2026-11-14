@@ -224,13 +224,17 @@ async function followRefreshes(tab) {
   }
 }
 
-/** Clicks what `selector` finds in `tab` and waits for the navigation it starts to load. */
-function click(tab, selector) {
+/**
+ * Clicks what `selector` finds in `tab` and waits for the navigation it starts to load; with
+ * `settle`, also for the documents its refreshes open, as `followRefreshes` does.
+ */
+function click(tab, selector, settle = false) {
   return navigation(tab, async () => {
     const [response] = await Promise.all([
       tab.waitForNavigation({ waitUntil: "load" }),
       tab.locator(selector).click(),
     ]);
+    if (settle) await followRefreshes(tab);
     return response;
   });
 }
@@ -306,10 +310,10 @@ const ops = {
   /**
    * Clicks the element `selector` finds, a playwright-core selector such as
    * `role=button[name=/approve/i]`, as a person does, and waits for the navigation it starts to
-   * load. Gives what `goto` gives.
+   * load; with `settle`, as `goto` does. Gives what `goto` gives.
    */
-  async click({ page: id, selector }) {
-    return click(page(id).page, selector);
+  async click({ page: id, selector, settle = false }) {
+    return click(page(id).page, selector, settle);
   },
 
   /** Clicks each `{page, selector}` of `clicks` at once, as `click` does; gives their visits. */

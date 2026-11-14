@@ -21,6 +21,7 @@ mod devices;
 mod github;
 mod google;
 mod http_client;
+mod links;
 mod oidc;
 mod protocol;
 mod refusal;
@@ -91,6 +92,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/account/sign-in-methods",
+            get(links::list).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/username",
             put(accounts::set_username).layer(checked(Statement::Header)),
         )
@@ -100,8 +105,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route(sign_in::START_PATH, get(sign_in::start))
         .route(CALLBACK_PATH, get(sign_in::callback))
+        .route(links::GITHUB_PATH, post(links::github))
         .route(google::START_PATH, get(google::start))
         .route(google::CALLBACK_PATH, get(google::callback))
+        .route(links::GOOGLE_PATH, post(links::google))
         .route(
             "/auth/token",
             post(device_flow::token).layer(checked(Statement::Header)),
@@ -128,6 +135,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .delete(sign_in::end)
                 .layer(checked(Statement::Header)),
         )
+        .route(links::PAGE_PATH, get(links::page))
         .route(
             "/spaces",
             get(spaces::list)

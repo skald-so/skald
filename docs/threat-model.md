@@ -82,7 +82,7 @@ Watches or alters traffic between devices and the server, or the channel an invi
 The provider that signs users in (GitHub, Google), and GitHub as the host of SSH keys and Actions.
 
 **Can:**
-- Sign in as a user and do what the server allows without the user's keys: register devices no linked device certifies, see the web UI's non-secret sections, and revoke the user's invites, sessions and tokens.
+- Sign in as a user, as can each provider linked to the user's account, and do what the server allows without the user's keys: register devices no linked device certifies, see the web UI's non-secret sections, and revoke the user's invites, sessions and tokens.
 - Sign in before the user's first device, as can whoever holds the user's sign-in: its device creates the account's master key and holds the account's root of trust for good, so the account stays unusable for its user. Members of a space it creates or joins as the account trust its devices as the account's, with no warning ([membership.md](protocol/membership.md#security-considerations)).
 - Persuade the user to enter a link code its own device shows, which links that device with the `name` and kind it chose ([membership.md](protocol/membership.md#security-considerations)).
 - GitHub: list an SSH key of its choice as the user's, so a device key signed with it passes the SSH signature check, or a genuine one fails it as a key change ([Device certificate](protocol/membership.md#device-certificate)).
@@ -95,7 +95,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
 - The attacker links none of the user's devices: a new device takes a certificate only through the link code its user enters on the issuing device ([Link code](protocol/membership.md#link-code)). The issuing device tells its user to enter only a code shown on their own device.
 - The web UI's non-secret sections list the account's devices and sign-in sessions, the attacker's included ([roadmap.md, "MVP"](dev/roadmap.md#mvp)).
-- Sign-in methods are linked explicitly; accounts are never merged by email.
+- Sign-in methods are linked explicitly, by a web session from a sign-in of the last few minutes (the server setting `--link-sign-in-age`); a method of another account is refused, and accounts are never merged by email.
 - A task from a comment runs at the `service` trust level: only where a device's user turned on `service` tasks, within the policy's ceiling unless that user approves it ([Trust levels](protocol/membership.md#trust-levels), [Running a task](protocol/queues.md#running-a-task)).
 
 ### A stolen device
@@ -112,7 +112,7 @@ An attacker holding a device or its keys, before the device is revoked.
 - After its revocation: what [a revoked device](#a-revoked-device) does.
 
 **Defenses:**
-- Keys live in the OS key store, or a file with 0600 permissions ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
+- Keys live in the OS key store, or a file in the state directory ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - Clients warn when an account's device set changes, so the devices it certifies or revokes show ([Device checks](protocol/membership.md#device-checks)).
 - Its settings of what it runs are its own: it changes them on no other device ([Running a task](protocol/queues.md#running-a-task)).
 - Another `client` or `browser` device of the account revokes it ([Revocation](protocol/membership.md#revocation)): see [A revoked device](#a-revoked-device).

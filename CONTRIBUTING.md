@@ -49,7 +49,7 @@ read -rs SKALD_GOOGLE_CLIENT_SECRET && export SKALD_GOOGLE_CLIENT_SECRET  # past
 SKALD_DATABASE_URL=postgres://postgres:skald@127.0.0.1:5432/postgres cargo run -p skald-server -- \
   --public-url http://127.0.0.1:8080 --google-client-id <client ID>
 ```
-Then open `http://127.0.0.1:8080/auth/google`. Without the client ID and secret, Google sign-in is off. Both providers' settings can be given at once.
+Then open `http://127.0.0.1:8080/auth/google`. Without the client ID and secret, Google sign-in is off. Both providers' settings can be given at once; then `http://127.0.0.1:8080/sign-in-methods` links one to the account the other signs in to.
 
 `skald`:
 ```sh
