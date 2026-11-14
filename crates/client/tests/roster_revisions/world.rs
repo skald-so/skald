@@ -24,6 +24,10 @@ pub const CREATE_SPACE: &str = "create-space";
 pub const SPACES: &str = "spaces";
 pub const MEMBERS: &str = "members";
 
+/// The requests for the account's personal space and for its spaces, as their lines start.
+pub const PERSONAL_REQUEST: &str = "POST /account/personal-space ";
+pub const LIST_REQUEST: &str = "GET /spaces ";
+
 /// The roles as the CLI shows them.
 pub const ADMIN: &str = "admin";
 pub const MEMBER: &str = "member";
@@ -148,6 +152,28 @@ pub fn create(cloud: &Cloud, person: &Person, name: &str) -> Roster {
     let revisions = cloud.revisions(&person.token, space);
     assert_eq!(revisions.len(), 1, "{name}: {revisions:?}");
     revisions[0].1.clone()
+}
+
+/// From now on the relay gives `space`, named `name`, as the account's personal space, as a
+/// compromised server would.
+pub fn give_as_personal(cloud: &Cloud, space: SpaceId, name: &str) {
+    let answer = json!({ "space": space.to_string(), "name": name }).to_string();
+    cloud
+        .relay
+        .rewrite(PERSONAL_REQUEST, move |_| answer.clone());
+}
+
+/// From now on the relay marks `space`, and no other, as personal in the account's spaces, as a
+/// compromised server would.
+pub fn mark_as_personal(cloud: &Cloud, space: SpaceId) {
+    let marked = space.to_string();
+    cloud.relay.rewrite(LIST_REQUEST, move |body| {
+        let mut list: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        for space in list["spaces"].as_array_mut().into_iter().flatten() {
+            space["personal"] = json!(space["space"] == json!(marked));
+        }
+        list.to_string()
+    });
 }
 
 /// The revision after `previous`, signed by `signer` with `key`, with the members `members`

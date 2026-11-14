@@ -69,6 +69,18 @@ const MIGRATIONS: &[&str] = &[
     // The device's personal space: the one it pinned when it signed its revision 1. At most one.
     "ALTER TABLE space ADD COLUMN personal INTEGER NOT NULL DEFAULT 0 CHECK (personal IN (0, 1));
     CREATE UNIQUE INDEX space_personal ON space (personal) WHERE personal = 1;",
+    // The rules that bind a folder and everything below it to a space: the folder's canonical path
+    // and the space's name, which may be of a space the device is not in.
+    "CREATE TABLE folder_rule (
+        folder TEXT PRIMARY KEY,
+        space TEXT NOT NULL
+    ) STRICT",
+    // The `.skald.toml` files the device's user approved: the canonical path of each one's folder
+    // and the SHA-256 of its bytes as approved.
+    "CREATE TABLE approved_config (
+        folder TEXT PRIMARY KEY,
+        hash BLOB NOT NULL CHECK (length(hash) = 32)
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -513,6 +525,69 @@ impl State {
         }
         tx.commit()?;
         Ok(true)
+    }
+
+    /// The rules, by folder: each one's folder, as its canonical path, and its space's name.
+    pub fn rules(&self) -> Result<Vec<(String, String)>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT folder, space FROM folder_rule ORDER BY folder")?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Records the rule that binds `folder`, a canonical path, and everything below it to the
+    /// space named `space`, in place of the folder's earlier rule; gives that rule's space.
+    pub fn set_rule(&self, folder: &str, space: &str) -> Result<Option<String>, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let earlier = tx
+            .query_row(
+                "SELECT space FROM folder_rule WHERE folder = ?1",
+                params![folder],
+                |row| row.get(0),
+            )
+            .optional()?;
+        tx.execute(
+            "INSERT OR REPLACE INTO folder_rule (folder, space) VALUES (?1, ?2)",
+            params![folder, space],
+        )?;
+        tx.commit()?;
+        Ok(earlier)
+    }
+
+    /// Forgets the rule of `folder`, a canonical path; gives whether it had one.
+    pub fn remove_rule(&self, folder: &str) -> Result<bool, Error> {
+        let removed = self
+            .db
+            .execute("DELETE FROM folder_rule WHERE folder = ?1", params![folder])?;
+        Ok(removed > 0)
+    }
+
+    /// The SHA-256 of the `.skald.toml` the device's user approved in `folder`, a canonical path.
+    pub fn approved_config(&self, folder: &str) -> Result<Option<[u8; 32]>, Error> {
+        let hash: Option<Vec<u8>> = self
+            .db
+            .query_row(
+                "SELECT hash FROM approved_config WHERE folder = ?1",
+                params![folder],
+                |row| row.get(0),
+            )
+            .optional()?;
+        hash.map(|hash| {
+            hash.try_into()
+                .map_err(|_| Error::Malformed(format!("the approval of {folder:?}")))
+        })
+        .transpose()
+    }
+
+    /// Records that the device's user approved the `.skald.toml` in `folder`, a canonical path,
+    /// whose bytes have the SHA-256 `hash`, in place of an earlier approval.
+    pub fn approve_config(&self, folder: &str, hash: &[u8; 32]) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO approved_config (folder, hash) VALUES (?1, ?2)",
+            params![folder, hash.as_slice()],
+        )?;
+        Ok(())
     }
 }
 
@@ -988,6 +1063,47 @@ mod tests {
             matches!(error, Error::Newer(version) if version == newer),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn rules_are_kept_across_opens_one_per_folder() {
+        let dir = TestDir::new("state-rules");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.rules().unwrap(), []);
+        assert_eq!(state.set_rule("/w/b", "clientb").unwrap(), None);
+        assert_eq!(state.set_rule("/w/a", "acme").unwrap(), None);
+        assert_eq!(
+            state.set_rule("/w/a", "clienta").unwrap().as_deref(),
+            Some("acme")
+        );
+        drop(state);
+
+        let state = State::open(&dir).unwrap();
+        let rule = |folder: &str, space: &str| (folder.to_owned(), space.to_owned());
+        assert_eq!(
+            state.rules().unwrap(),
+            [rule("/w/a", "clienta"), rule("/w/b", "clientb")]
+        );
+        assert!(state.remove_rule("/w/b").unwrap());
+        assert!(!state.remove_rule("/w/b").unwrap(), "removed already");
+        assert!(!state.remove_rule("/w").unwrap(), "no rule of its own");
+        assert_eq!(state.rules().unwrap(), [rule("/w/a", "clienta")]);
+    }
+
+    #[test]
+    fn approval_is_kept_across_opens_one_per_folder() {
+        let dir = TestDir::new("state-approvals");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.approved_config("/w/repo").unwrap(), None);
+        state.approve_config("/w/repo", &[1; 32]).unwrap();
+        state.approve_config("/w/other", &[2; 32]).unwrap();
+        state.approve_config("/w/repo", &[3; 32]).unwrap();
+        drop(state);
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.approved_config("/w/repo").unwrap(), Some([3; 32]));
+        assert_eq!(state.approved_config("/w/other").unwrap(), Some([2; 32]));
+        assert_eq!(state.approved_config("/w").unwrap(), None);
     }
 
     #[cfg(unix)]

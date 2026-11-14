@@ -39,6 +39,14 @@
   - its name is the account's username, numbered as a username is when another space has that name: [Data model](#data-model);
   - the account's first device signs its revision 1 once the server has taken the device's certificate, and pins it as its personal space in its local state;
   - a device never takes a personal space from the server's word; one that signed no personal space's revision 1 has none.
+- **Folder binding:**
+  - a session is in the space of its folder, its working directory;
+  - a rule in the device's local state binds a folder and everything below it to a space, such as `~/work/clientA → clientA`;
+  - so does a `.skald.toml` in the folder, `space = "<name>"`, once the device's user approved it in the CLI as its bytes are; a changed one binds nothing until approved again, so a cloned repository cannot move its sessions to another space;
+  - the nearest folder with a rule or an approved `.skald.toml` decides; at the same folder, the rule;
+  - a folder nothing binds is in the device's pinned personal space; without one, in no space;
+  - a binding to a space the device is not in leaves the folder in no space, never in another;
+  - folders compare as canonical paths, so a symlink binds as its target.
 - **Invite:**
   - an admin's device signs it: [protocol spec](../protocol/membership.md#invite);
   - its secret travels only in the link's fragment and never reaches the server;

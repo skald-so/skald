@@ -4,6 +4,7 @@ mod channels;
 mod connection;
 mod device;
 mod devices;
+mod folders;
 mod follow;
 mod plain_path;
 mod secrets;
@@ -171,6 +172,42 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
+    /// Binds a folder and everything below it to a space, by a rule in the local state, in place
+    /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
+    /// the folder is in no space. At the same folder the rule wins over a .skald.toml.
+    AddRule {
+        /// The folder, such as ~/work/acme; a symlink stands for its target.
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
+    /// Lists the rules: each one's folder and space.
+    Rules,
+    /// Removes a folder's rule.
+    RemoveRule {
+        /// The folder, such as ~/work/acme.
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+    },
+    /// Approves the .skald.toml in a folder as it is now: it binds the folder and everything below
+    /// it to the space it names, space = "<name>", until it changes. An unapproved or changed one
+    /// binds nothing.
+    ApproveBinding {
+        /// The folder, such as ~/work/acme.
+        #[arg(value_name = "FOLDER")]
+        folder: PathBuf,
+    },
+    /// Shows the space of a folder and what binds it to it: a rule or an approved .skald.toml of
+    /// the folder or of the nearest folder above it with one, the rule first; with neither, the
+    /// personal space this device pinned. A binding to a space this device is not in leaves the
+    /// folder in no space. A session's folder is its working directory.
+    Folder {
+        /// The folder [default: the working directory].
+        #[arg(value_name = "FOLDER")]
+        folder: Option<PathBuf>,
+    },
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -275,6 +312,19 @@ fn main() -> ExitCode {
                 .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
                 .and_then(channels::list),
         ),
+        Command::AddRule { folder, space } => {
+            exit(state::dir(cli.state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space)))
+        }
+        Command::Rules => exit(state::dir(cli.state_dir).and_then(|dir| folders::rules(&dir))),
+        Command::RemoveRule { folder } => {
+            exit(state::dir(cli.state_dir).and_then(|dir| folders::remove_rule(&dir, &folder)))
+        }
+        Command::ApproveBinding { folder } => {
+            exit(state::dir(cli.state_dir).and_then(|dir| folders::approve(&dir, &folder)))
+        }
+        Command::Folder { folder } => {
+            exit(state::dir(cli.state_dir).and_then(|dir| folders::show(&dir, folder.as_deref())))
+        }
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
 }

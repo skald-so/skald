@@ -48,21 +48,15 @@ use browser::APPROVE;
 use cloud::{Cloud, GIVE_MASTER, shown_grant};
 use machine::{FIRST_DEVICE, Finished, Machine, NO, SERVER, SIGN_IN, YES};
 use relay::Lose;
-use serde_json::{Value, json};
 use skald_crypto::{check_device, check_roster};
 use skald_proto::{Cbor as _, ROSTER_LABEL, RosterBody, SpaceId};
 use world::{
-    ADMIN, Person, SPACES, World, assert_role, create, members, plain_lines, run, space_certs,
-    words,
+    ADMIN, PERSONAL_REQUEST, Person, SPACES, World, assert_role, create, give_as_personal,
+    mark_as_personal, members, plain_lines, run, space_certs, words,
 };
 
-/// The request for the account's personal space, and the one that stores a space's revision, as
-/// their lines start.
-const PERSONAL_REQUEST: &str = "POST /account/personal-space ";
+/// The request that stores a space's revision, as its line starts.
 const STORE: &str = "POST /spaces/";
-
-/// The request for the account's spaces, as its line starts.
-const LIST_REQUEST: &str = "GET /spaces ";
 
 /// The word that marks the personal space in the space list.
 const PERSONAL: &str = "personal";
@@ -380,18 +374,8 @@ fn proxy_giving_another_personal_space_does_not_move_the_lists_mark() {
     let made_up = SpaceId::generate();
 
     for (other, other_name) in [(acme, ACME), (made_up, "globex")] {
-        let answer = json!({ "space": other.to_string(), "name": other_name }).to_string();
-        cloud
-            .relay
-            .rewrite(PERSONAL_REQUEST, move |_| answer.clone());
-        let marked = other.to_string();
-        cloud.relay.rewrite(LIST_REQUEST, move |body| {
-            let mut list: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-            for space in list["spaces"].as_array_mut().into_iter().flatten() {
-                space["personal"] = json!(space["space"] == json!(marked));
-            }
-            list.to_string()
-        });
+        give_as_personal(cloud, other, other_name);
+        mark_as_personal(cloud, other);
         let since = cloud.relay.mark();
 
         assert_marked(&ada.machine, name, &ada);
