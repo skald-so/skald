@@ -6,9 +6,9 @@
 //! the server forked the roster: the device keeps its own and warns. It warns when a revision it
 //! accepts changes a member's `master` ("Device checks").
 //!
-//! A device follows only the spaces it has an anchor for: revision 1 of a space it created, which
-//! counts as accepted before the server takes it. Any other revision counts as accepted only once
-//! the server gives it, those the device signed too.
+//! A device follows only the spaces it has an anchor for: revision 1 of a space it created, its
+//! personal space included, which counts as accepted before the server takes it. Any other revision
+//! counts as accepted only once the server gives it, those the device signed too.
 
 use std::collections::BTreeMap;
 
@@ -57,14 +57,9 @@ pub fn sync(
     own: &Own,
 ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
     let (id, name) = (space.id, &space.name);
-    let body = connection
-        .get_as(&format!("/spaces/{id}/revisions"), token)
-        .map_err(text)?;
-    let list: Revisions = serde_json::from_slice(&body)
-        .map_err(|_| "unexpected answer from the server: a revision list without its revisions")?;
     let mut warnings = Vec::new();
     let mut given = Vec::new();
-    for (place, entry) in list.revisions.iter().enumerate() {
+    for (place, entry) in listed(connection, token, id)?.iter().enumerate() {
         match URL_SAFE_NO_PAD
             .decode(entry)
             .ok()
@@ -86,6 +81,21 @@ pub fn sync(
         eprintln!("skald: warning: {warning}");
     }
     Ok((current, devices, given))
+}
+
+/// The revisions of the space `id` the server gives the session `token`, each in base64url as it
+/// gives it.
+pub fn listed(
+    connection: &mut Connection,
+    token: &str,
+    id: SpaceId,
+) -> Result<Vec<String>, String> {
+    let body = connection
+        .get_as(&format!("/spaces/{id}/revisions"), token)
+        .map_err(text)?;
+    let list: Revisions = serde_json::from_slice(&body)
+        .map_err(|_| "unexpected answer from the server: a revision list without its revisions")?;
+    Ok(list.revisions)
 }
 
 /// The devices of the accounts of the space `id`, as the server gives them to the session `token`.

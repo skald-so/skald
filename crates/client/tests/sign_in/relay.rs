@@ -1,7 +1,8 @@
 //! A recording relay between a machine and the server: it forwards every byte both ways and keeps
 //! them, so a test sees what the machine sent and what the server answered, as on the wire. It can
 //! also lose the server's answer to a request, or hold requests until several have come, as a
-//! network or a race would, and rewrite the body of an answer, as a compromised server would.
+//! network or a race would, rewrite the body of an answer, as a compromised server would, and answer
+//! a request itself, never letting it reach the server, as an older server would.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -54,6 +55,10 @@ struct Rules {
     rewrites: Vec<(String, Rewrite)>,
     /// The connections whose next answer gets its body rewritten, and what of it came so far.
     rewriting: HashMap<usize, (Rewrite, Vec<u8>)>,
+    /// Requests whose line starts so get this answer from the relay and never reach the server.
+    refusals: Vec<(String, Vec<u8>)>,
+    /// The connections the relay answered itself; it drops whatever else comes on them.
+    refused: HashSet<usize>,
 }
 
 struct Hold {
@@ -70,6 +75,14 @@ struct Shared {
     came: Condvar,
 }
 
+/// What becomes of a read the machine sent.
+enum Pass {
+    Forward,
+    Drop,
+    /// The relay answers with these bytes and closes the connection to the server.
+    Answer(Vec<u8>),
+}
+
 /// What becomes of an answer the server sent.
 enum Fate {
     Forward,
@@ -83,7 +96,7 @@ enum Fate {
 
 impl Shared {
     /// Applies the rules to `chunk`, a read the machine sent on `connection`, before it goes on.
-    fn sending(&self, connection: usize, chunk: &[u8]) {
+    fn sending(&self, connection: usize, chunk: &[u8]) -> Pass {
         let text = String::from_utf8_lossy(chunk);
         let starts = |request: &str| {
             request_starts(&text)
@@ -91,6 +104,18 @@ impl Shared {
                 .any(|at| text[at..].starts_with(request))
         };
         let mut rules = self.rules.lock().expect("the relay's rules");
+        if rules.refused.contains(&connection) {
+            return Pass::Drop;
+        }
+        let answer = rules
+            .refusals
+            .iter()
+            .find(|(request, _)| starts(request))
+            .map(|(_, answer)| answer.clone());
+        if let Some(answer) = answer {
+            rules.refused.insert(connection);
+            return Pass::Answer(answer);
+        }
         if let Some((request, how)) = rules.lose.clone()
             && starts(&request)
         {
@@ -127,6 +152,7 @@ impl Shared {
                     .0;
             }
         }
+        Pass::Forward
     }
 
     /// What becomes of `chunk`, a read the server sent on `connection`.
@@ -220,6 +246,33 @@ impl Relay {
         let mut rules = self.shared.rules.lock().expect("the relay's rules");
         rules.rewrites.retain(|(earlier, _)| earlier != request);
         rules.rewrites.push((request.to_owned(), Arc::new(rewrite)));
+    }
+
+    /// From now on, answers each request whose line starts with `request` itself with `status`,
+    /// such as `404 Not Found`, and a problem details object, closing the connection; the server
+    /// never gets the request.
+    pub fn refuse(&self, request: &str, status: &str) {
+        let code = status.split(' ').next().unwrap_or_default();
+        let body = format!(r#"{{"title":"{status}","status":{code}}}"#);
+        let answer = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/problem+json\r\nconnection: close\r\n\
+             content-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let mut rules = self.shared.rules.lock().expect("the relay's rules");
+        rules
+            .refusals
+            .push((request.to_owned(), answer.into_bytes()));
+    }
+
+    /// From now on, lets every request reach the server again.
+    pub fn stop_refusing(&self) {
+        self.shared
+            .rules
+            .lock()
+            .expect("the relay's rules")
+            .refusals
+            .clear();
     }
 
     /// How many requests came to the hold.
@@ -340,7 +393,15 @@ fn pipe(
                 bytes: buffer[..count].to_vec(),
             });
             if to_server {
-                shared.sending(connection, &buffer[..count]);
+                match shared.sending(connection, &buffer[..count]) {
+                    Pass::Forward => {}
+                    Pass::Drop => continue,
+                    Pass::Answer(answer) => {
+                        let _ = from.write_all(&answer);
+                        let _ = to.shutdown(Shutdown::Both);
+                        continue;
+                    }
+                }
             } else {
                 match shared.answering(connection, &buffer[..count]) {
                     Fate::Forward => {}

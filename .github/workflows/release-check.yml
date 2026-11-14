@@ -1,0 +1,72 @@
+name: Release check
+
+# script/release-check on a runner of each OS and architecture: the release installs with its
+# installer and through npx, and a stable release updates the skald of the release before it with
+# skald update. The runner ubuntu-22.04 also verifies the release with the commands of "Trust in
+# builds" in docs/dev/infrastructure.md; the other runners lack docker with buildx or cosign.
+# The release workflow calls it with its tag once the release is published, and main moves only after
+# it passes. A PR that changes it or script/release-check runs it against the newest release, betas
+# included, and so does a manual run, or against the release its input names.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release to check, vX.Y.Z or vX.Y.Z-beta.N
+        type: string
+        required: true
+  pull_request:
+    branches: [dev]
+    paths:
+      - .github/workflows/release-check.yml
+      - script/release-check
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release to check, vX.Y.Z or vX.Y.Z-beta.N; empty for the newest, betas included
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Check the release on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, steps: all }
+          - { runner: ubuntu-22.04-arm, steps: install }
+          - { runner: macos-15-intel, steps: install }
+          - { runner: macos-15, steps: install }
+          - { runner: windows-2025, steps: install }
+          - { runner: windows-11-arm, steps: install }
+    runs-on: ${{ matrix.runner }}
+    # It reads the release, its attestations and the image, and publishes nothing.
+    permissions:
+      attestations: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Node.js 26: the npm package needs 22.11 or later.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      - if: matrix.steps == 'all'
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cosign@3.1.4
+      - name: Check the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SKALD_RELEASE_CHECK_STEPS: ${{ matrix.steps }}
+          TAG: ${{ inputs.tag }}
+        run: script/release-check "$TAG"
