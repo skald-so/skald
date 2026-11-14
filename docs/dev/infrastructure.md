@@ -5,7 +5,7 @@
 PR (agent or contributor) → CI checks → dev → staging (automatic, :edge image)
 dev → a Release PR stays open (version + CHANGELOG)
 merge Release PR → tag vX.Y.Z → dist builds → GitHub Releases, npm, GHCR
-                              → main moves to the tag
+                              → release check on every OS → main moves to the tag
                               → production (same image, one click)
 ```
 A human takes one action per release: merging the Release PR.
@@ -25,7 +25,7 @@ A human takes one action per release: merging the Release PR.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
   - `Rust` runs whatever the jobs of the Rust code end with and passes only if `Changed parts` succeeded and each of them succeeded or was skipped.
-  - Not required: `Client on Windows`, `Windows` (the edit comparison prototype's job) and the jobs of the release dry run.
+  - Not required: `Client on Windows`, `Windows` (the edit comparison prototype's job), the jobs of the release dry run and of the release check.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest stable release; only CI moves it ("Release", "Main").
   - Its ruleset blocks updates and deletion; only the release pipeline's deploy key, kept only in CI secrets, bypasses it.
@@ -36,14 +36,14 @@ A human takes one action per release: merging the Release PR.
 - Branch rules are GitHub rulesets; no person bypasses them, admins included.
 
 ## PR checks
-All checks except e2e, the PR title, the CLA, the Windows jobs and the release dry run run via `script/test`, the same script agents and people use.
+All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry run and the release check run via `script/test`, the same script agents and people use.
 - **PR title:** rule 3 in [rules.md](../../rules.md), checked by `script/check-pr-title`.
 - **CLA:** CLA Assistant checks that every commit author signed the CLA: [CONTRIBUTING.md](../../CONTRIBUTING.md); it exempts bots, `*[bot]`.
 - **Rust:** one job per part of the Rust code (`script/test`), each on a runner of its own: `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of `script/check-github-sign-in` among them, some also in headless Chrome ([CONTRIBUTING.md](../../CONTRIBUTING.md#requirements)); `skald-crypto`'s tests, `skald-proto`'s of ID generation and the MLS prototypes' natively and in WASM, in Node.js (`script/wasm-test` for the crates), with `clippy` of `skald-proto` and `skald-crypto` in WASM; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust code's part `image`.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the Release PR workflow (`script/release-pr-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of `script/install-git-cliff` and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the Release PR workflow (`script/release-pr-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of `script/install-git-cliff` and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the release check against stand-ins for a release and the verification commands, and its jobs (`script/release-check-test`, `script/release-check-steps-test`, `script/release-check-workflow-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust code's part `repository`, on fixture repositories: `script/release-pr-test` and `script/release-tag-test`. `script/release-pr-test` also checks the section git-cliff writes for `v0.1.0` against `CHANGELOG.md`, so the Rust jobs check out the whole history and the tags.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
@@ -56,6 +56,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
   - Both count changes from the merge base with `dev`: commits `dev` got after the branch left it do not count.
 - **After a merge:** every push to `dev` runs every job of `.github/workflows/ci.yml`, without path filters; a run of one push is not cancelled by another's.
 - **Release dry run:** `.github/workflows/release.yml` without a release tag: it builds `skald`, installs it and runs it through `npx skald-so` on every runner, and builds the `skald-server` image, as for a release, and publishes nothing. It also runs the tests of `skald update` on macOS and Windows; `script/test` runs them on Linux. A PR that changes the workflow, dist's settings (`dist-workspace.toml`, `Cargo.toml`, `crates/client/Cargo.toml`), `installers/`, `npm/`, the scripts the workflow runs or `skald update` and its tests starts it, and so does a manual run (`workflow_dispatch`).
+- **Release check:** `script/release-check` against a published release ("Release", "Release check"). A PR that changes it or the workflow starts it against the newest release, betas included, and so does a manual run (`workflow_dispatch`), or against the release its input `tag` names.
 - **Client on Windows:** all of the client's tests on `windows-2025`, with the runner image's PostgreSQL and OpenSSL and with Chrome Headless Shell from `web/`'s playwright-core, with the Rust code's part `workspace`, outside `script/test`: `.github/workflows/ci.yml`.
   - Windows runs only the tests of code whose behavior depends on the OS: today the client's. The other crates' logic does not depend on it, and the server runs only on Linux.
   - Only this job sets `SKALD_TEST_REAL_KEY_STORAGE=1`: a test then keeps a device's keys in the runner's Credential Manager, under a keyring service of its own, and deletes them. Without it, `script/test` included, no test touches the system's key storage.
@@ -94,7 +95,13 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
   - Before the GitHub Release is published, each build runner runs `skald` from the release's files through the packed package (`script/npm-package-test`); a dry run publishes nothing.
   - It publishes with provenance; npm accepts the job's OIDC token only from the package's trusted publisher, `skald-so/skald`, `release.yml` and the environment `npm`. The package's publishing access requires 2FA and disallows tokens.
   - The job's token writes nothing but `id-token`.
-- **Main:** on a push of a stable release's tag, `vX.Y.Z`, once the GitHub Release, the npm package and the image are published, a job of the same workflow moves `main` to the tag's commit with `script/move-main` and the deploy key ("PR checks", "Secrets"). A beta, or a release whose publishing failed, leaves `main` where it is.
+- **Release check:** on a push of a `v*` tag, once the GitHub Release, the npm package and the image are published, the release workflow runs `script/release-check` on the tag, on a runner of each OS and architecture: `.github/workflows/release-check.yml`.
+  - Each runner installs the release with `install.sh`, or `install.ps1` on Windows, and with `npx skald-so`, and each `skald` prints the release's version. For a stable release with an earlier one, the release published before it, a beta included, that release's `skald` updates itself with `skald update` and then prints the release's version.
+  - `skald update` asks GitHub's API without a token, so a runner's shared address can use up its rate limit. The check then waits for the limit's reset, at most 20 minutes, and runs it again; a later reset fails the step, naming the rate limit.
+  - The `ubuntu-22.04` runner also verifies the release with the commands of "Trust in builds", pinned to its tag: the release is immutable, every file matches its checksum and has its attestation, the image has its signature and attestation, and the npm package its provenance and the dist-tag `latest`, or `next` for a beta.
+  - A failed step prints `release-check: <step>: failed: <why>`.
+  - Its jobs read the release and publish nothing: their token reads contents and attestations, and they read no secret.
+- **Main:** on a push of a stable release's tag, `vX.Y.Z`, once the GitHub Release, the npm package and the image are published and the release check passes, a job of the same workflow moves `main` to the tag's commit with `script/move-main` and the deploy key ("PR checks", "Secrets"). A beta, or a release whose publishing failed, leaves `main` where it is.
   - `main` only moves forward: a tag whose commit does not descend from `main` as `origin` has it is refused, and `main` stays.
   - The job's token writes nothing, and it requests no OIDC token.
 - **npm package:** `npx skald-so` downloads the release's archive for the machine's OS and architecture, checks it against its `.sha256` and runs `skald`; on a mismatch or a missing or empty checksum it stops and runs nothing. It unpacks the archive into the package's directory once, with a file `installed-by-npm` beside `skald`. `SKALD_DOWNLOAD_URL` sets where the release's files are, as for the installers.
@@ -141,6 +148,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
   - signature: `cosign verify ghcr.io/skald-so/skald-server@sha256:<digest> --certificate-identity https://github.com/skald-so/skald/.github/workflows/release.yml@refs/tags/vX.Y.Z --certificate-oidc-issuer https://token.actions.githubusercontent.com`;
   - attestation, as a release file's: `gh attestation verify oci://ghcr.io/skald-so/skald-server@sha256:<digest> --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`.
 - The npm package's provenance, here of `vX.Y.Z`, with gh 2.97.0 or later: `npm pack skald-so@X.Y.Z`; `curl -fsSL https://registry.npmjs.org/-/npm/v1/attestations/skald-so@X.Y.Z | jq -c '.attestations[] | select(.predicateType == "https://slsa.dev/provenance/v1") | .bundle' >skald-so.jsonl`; then `gh attestation verify skald-so-X.Y.Z.tgz --bundle skald-so.jsonl --digest-alg sha512 --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`. Provenance made on any other ref, or by another workflow or repository, fails it.
+- The release check runs these commands for every release once it is published ("Release", "Release check").
 - Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums; git-cliff is installed from its release archive, checked against a SHA-256 ("Release").
 - dist is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
 - Releases are immutable, a repository setting: a published release's files and checksums never change.
