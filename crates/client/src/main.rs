@@ -101,8 +101,9 @@ enum Command {
     /// Run again, checks the session with the server and says which account it is signed in to.
     ///
     /// At its first sign-in, the machine generates its device's keys, which never leave it, and
-    /// registers the device. The account's first device creates the account's master key and
-    /// issues its own certificate with it; any other device waits for linking.
+    /// registers the device. The account's first device creates the account's master key, issues
+    /// its own certificate with it and signs the account's personal space as its admin; any other
+    /// device waits for linking.
     SignIn {
         /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
         /// http://localhost:8080.
@@ -142,8 +143,9 @@ enum Command {
         name: String,
     },
     /// Lists the spaces this device follows, as their last accepted roster revisions give them:
-    /// each one's name, the account's role and handle in it, and its ID. Signed in, it first accepts
-    /// the revisions the server has of each, and warns of each one that has no effect.
+    /// each one's name, the account's role and handle in it, and its ID; the device's personal
+    /// space is marked personal. Signed in, it first accepts the revisions the server has of each,
+    /// and warns of each one that has no effect.
     Spaces,
     /// Shows the members of a space this device follows, as its last accepted roster revision gives
     /// them: each one's handle and role, and its devices with a valid certificate. It first accepts
@@ -226,7 +228,9 @@ fn main() -> ExitCode {
             let result = state::dir(cli.state_dir).and_then(|dir| {
                 let mut connection =
                     Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
-                sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())
+                sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())?;
+                spaces::take_personal(&dir, options.storage, speaks, timeout);
+                Ok(())
             });
             exit(result)
         }
