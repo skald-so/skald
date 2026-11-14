@@ -28,7 +28,7 @@ use skald_oidc_stand_in::{Client, Endpoint};
 use url::Url;
 
 use common::check::{
-    Answer, ELSEWHERE, Front, Run, Tamper, answer_with, assert_no_codes, callbacks_off, on,
+    Answer, ELSEWHERE, Front, Line, Run, Tamper, answer_with, assert_no_codes, callbacks_off, on,
     run_script, set_param, to_provider, unchanged,
 };
 use common::google::{CALLBACK, CLIENT_ID, CLIENT_SECRET, Google, START, Setup, param, text};
@@ -56,58 +56,9 @@ const OTHER_CLIENT_ID: &str = "skald-stand-in-google-other-client";
 /// The parameters of the authorization request the check holds back from its output.
 const HELD_BACK: [&str; 3] = ["state", "nonce", "code_challenge"];
 
-/// A line of the check's output.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Line {
-    /// A step and whether it passed.
-    Step(String, bool),
-    /// The check's result: whether it passed.
-    Result(bool),
-}
-
-/// Whether `name` is a step's name: lowercase words.
-fn is_step_name(name: &str) -> bool {
-    name.starts_with(|c: char| c.is_ascii_lowercase())
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ' ' || c == '-')
-        && !["pass", "fail"].contains(&name)
-}
-
 /// The output's lines, each read as a [`Line`]; fails on any other line.
 fn lines(run: &Run) -> Vec<Line> {
-    let read = |line: &str| {
-        let line = line.strip_prefix(PREFIX).unwrap_or(line);
-        match line {
-            "pass" => return Some(Line::Result(true)),
-            "fail" => return Some(Line::Result(false)),
-            _ => {}
-        }
-        let (name, rest) = line.split_once(": ")?;
-        if !is_step_name(name) {
-            return None;
-        }
-        if rest == "pass" {
-            Some(Line::Step(name.to_owned(), true))
-        } else if rest == "fail" || rest.starts_with("fail: ") {
-            Some(Line::Step(name.to_owned(), false))
-        } else {
-            None
-        }
-    };
-    run.output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            read(line).unwrap_or_else(|| {
-                panic!(
-                    "{}: a line that is neither a step nor the result: {line:?}\n{}",
-                    run.case, run.output
-                )
-            })
-        })
-        .collect()
+    run.read_lines(PREFIX)
 }
 
 /// Checks that the check passed: every step it ran, `verification page` and then `authorization`

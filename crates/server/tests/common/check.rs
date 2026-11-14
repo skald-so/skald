@@ -33,6 +33,63 @@ pub struct Run {
     pub output: String,
 }
 
+/// A line of a check's output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Line {
+    /// A step, by its name, and whether it passed.
+    Step(String, bool),
+    /// The check's result: whether it passed.
+    Result(bool),
+}
+
+/// Whether `name` is a step's name: lowercase words.
+fn is_step_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == ' ' || c == '-')
+        && !["pass", "fail"].contains(&name)
+}
+
+impl Run {
+    /// The output's lines, each read as a [`Line`] after `prefix`, which a line may start with;
+    /// fails on any other line.
+    pub fn read_lines(&self, prefix: &str) -> Vec<Line> {
+        let read = |line: &str| {
+            let line = line.strip_prefix(prefix).unwrap_or(line);
+            match line {
+                "pass" => return Some(Line::Result(true)),
+                "fail" => return Some(Line::Result(false)),
+                _ => {}
+            }
+            let (name, rest) = line.split_once(": ")?;
+            if !is_step_name(name) {
+                return None;
+            }
+            if rest == "pass" {
+                Some(Line::Step(name.to_owned(), true))
+            } else if rest == "fail" || rest.starts_with("fail: ") {
+                Some(Line::Step(name.to_owned(), false))
+            } else {
+                None
+            }
+        };
+        self.output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                read(line).unwrap_or_else(|| {
+                    panic!(
+                        "{}: a line that is neither a step nor the result: {line:?}\n{}",
+                        self.case, self.output
+                    )
+                })
+            })
+            .collect()
+    }
+}
+
 /// Runs `script` with `args` and the environment variables `envs`, no proxy among them; fails if it
 /// does not end within 90 seconds.
 pub fn run_script(case: &str, script: &str, args: &[&str], envs: &[(&str, &str)]) -> Run {

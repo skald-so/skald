@@ -12,6 +12,8 @@ use super::{Response, Server, TestDb, get_url, on_free_port};
 /// The fake OAuth App's client ID and secret.
 pub const CLIENT_ID: &str = "Ov23li0standin0client";
 pub const CLIENT_SECRET: &str = "standin-secret-5c0f1e7a9b2d4c6e8f0a1b3c5d7e9f1a";
+/// The environment variable that holds the client secret.
+pub const SECRET_ENV: &str = "SKALD_GITHUB_CLIENT_SECRET";
 
 /// Where the browser starts signing in: it takes the return address as `return_to`.
 pub const START: &str = "/auth/github";
@@ -22,9 +24,14 @@ pub const SESSION: &str = "/session";
 
 /// The server's settings that name the public address, the OAuth App and GitHub's addresses.
 pub fn github_settings<'a>(public: &'a str, github: &'a GitHub) -> Vec<&'a str> {
-    vec![
-        "--public-url",
-        public,
+    let mut settings = vec!["--public-url", public];
+    settings.extend(github_args(github));
+    settings
+}
+
+/// The server's settings that name the OAuth App and GitHub's addresses.
+pub fn github_args(github: &GitHub) -> [&str; 6] {
+    [
         "--github-client-id",
         CLIENT_ID,
         "--github-url",
@@ -32,6 +39,16 @@ pub fn github_settings<'a>(public: &'a str, github: &'a GitHub) -> Vec<&'a str> 
         "--github-api-url",
         github.url(),
     ]
+}
+
+/// The GitHub stand-in with the OAuth App, whose callback is under the server's public address
+/// `public`.
+pub fn github_stand_in(public: &str) -> GitHub {
+    GitHub::start(App {
+        client_id: CLIENT_ID.to_owned(),
+        client_secret: CLIENT_SECRET.to_owned(),
+        callback: Some(format!("{public}{CALLBACK}")),
+    })
 }
 
 /// A server with GitHub sign-in through the stand-in, on its own database.
@@ -144,14 +161,10 @@ impl SignIn {
     ) -> Self {
         let (github, server, public) = on_free_port(Duration::from_secs(30), |port| {
             let public = public(port);
-            let github = GitHub::start(App {
-                client_id: CLIENT_ID.to_owned(),
-                client_secret: CLIENT_SECRET.to_owned(),
-                callback: Some(format!("{public}{CALLBACK}")),
-            });
+            let github = github_stand_in(&public);
             let mut all = github_settings(&public, &github);
             all.extend_from_slice(args);
-            let mut all_envs = vec![("SKALD_GITHUB_CLIENT_SECRET", secret)];
+            let mut all_envs = vec![(SECRET_ENV, secret)];
             all_envs.extend_from_slice(envs);
             let server = Server::try_launch(&db, &format!("127.0.0.1:{port}"), &all, &all_envs)?;
             Ok((github, server, public))
@@ -190,8 +203,7 @@ impl SignIn {
 
     /// Signs `page`'s browser in to GitHub as `user`, as a person does before a sign-in.
     pub fn github_session(&self, page: &Page, user: &User) {
-        let visit = page.goto(&self.github.sign_in_url(user.id));
-        assert_eq!(visit.status, Some(200), "stand-in sign-in: {visit:?}");
+        github_session(page, &self.github, user);
     }
 
     /// Runs a sign-in of `user` in `page`'s browser up to GitHub's page that asks to authorize the
@@ -232,14 +244,31 @@ impl SignIn {
     }
 }
 
+/// Signs `page`'s browser in to `github` as `user`, as a person does before a sign-in.
+pub fn github_session(page: &Page, github: &GitHub, user: &User) {
+    let visit = page.goto(&github.sign_in_url(user.id));
+    assert_eq!(visit.status, Some(200), "stand-in sign-in: {visit:?}");
+}
+
 /// The link of `github`'s page that asks to authorize the app, where `visit` ended in `page`'s
 /// browser: the callback of the server at the public address `public`, with `code` and `state`.
 pub fn github_authorize_link(github: &GitHub, public: &str, page: &Page, visit: &Visit) -> String {
-    let authorize = format!("{}/login/oauth/authorize?", github.url());
-    assert!(visit.url.starts_with(&authorize), "at GitHub: {visit:?}");
+    let authorize = format!("{}/login/oauth/authorize", github.url());
+    authorize_link(page, visit, &authorize, &format!("{public}{CALLBACK}"))
+}
+
+/// The link of the provider's page that asks to continue, where `visit` ended in `page`'s browser:
+/// that page is at `authorize`, the provider's authorization endpoint, and the link leads to
+/// `callback`, the server's, with `code` and `state`.
+pub fn authorize_link(page: &Page, visit: &Visit, authorize: &str, callback: &str) -> String {
+    let authorize = format!("{authorize}?");
+    assert!(
+        visit.url.starts_with(&authorize),
+        "at the provider: {visit:?}"
+    );
     let link = page.evaluate(r#"document.getElementById("authorize").href"#);
-    let link = link.as_str().expect("a link to authorize the app");
-    let callback = format!("{public}{CALLBACK}?");
+    let link = link.as_str().expect("a link to continue");
+    let callback = format!("{callback}?");
     assert!(link.starts_with(&callback), "to the callback: {link}");
     link.to_owned()
 }
@@ -261,15 +290,35 @@ pub fn to_github_callback(
     public: &str,
     user: &User,
 ) -> (Response, String) {
-    let start = server.get(START);
-    assert_eq!(start.status, 302, "GET {START}");
-    let signed_in = get_url(&github.sign_in_url(user.id), &[]);
-    let github = cookie_set(&signed_in, "stand_in_user");
-    let authorize = start.header("location").expect("a redirect to GitHub");
-    let back = get_url(authorize, &[("cookie", &github)]);
-    let callback = back.header("location").expect("GitHub goes back");
+    to_callback(server, public, START, &github.sign_in_url(user.id))
+}
+
+/// Runs a sign-in by plain HTTP at `server`, whose public address is `public`, straight to it, from
+/// the sign-in start `start`, such as `/auth/github`, as the person whom the provider's
+/// `sign_in_url` signs in, up to the provider's redirect back: the start's answer and the callback
+/// URL on the server.
+pub fn to_callback(
+    server: &Server,
+    public: &str,
+    start: &str,
+    sign_in_url: &str,
+) -> (Response, String) {
+    let started = server.get(start);
+    assert_eq!(
+        started.status,
+        302,
+        "GET {start}: {}",
+        String::from_utf8_lossy(&started.body)
+    );
+    let mut provider = Jar::default();
+    provider.take(&get_url(sign_in_url, &[]));
+    let authorize = started
+        .header("location")
+        .expect("a redirect to the provider");
+    let back = get_url(authorize, &[("cookie", &provider.header())]);
+    let callback = back.header("location").expect("the provider goes back");
     let callback = callback.replacen(public, server.base(), 1);
-    (start, callback)
+    (started, callback)
 }
 
 /// The sign-in start `start`, such as `/auth/github`, under the public address `public`, with the

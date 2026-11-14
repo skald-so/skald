@@ -19,8 +19,9 @@ use url::{Host, Url};
 
 use crate::accounts::{self, GITHUB, Method};
 use crate::github::{GitHubApp, Refusal, http_url};
+use crate::google::Google;
 use crate::oidc::OidcSettings;
-use crate::{AppState, database_failed, google, links, problem};
+use crate::{AppState, database_failed, links, problem};
 
 /// GitHub sign-in's start's path under the public address.
 pub(crate) const START_PATH: &str = "/auth/github";
@@ -143,21 +144,6 @@ pub(crate) struct Flow<'a> {
     pub link: &'static str,
 }
 
-/// GitHub sign-in.
-pub(crate) const GITHUB_FLOW: Flow<'static> = Flow {
-    name: "GitHub",
-    provider: GITHUB,
-    start: START_PATH,
-    callback: CALLBACK_PATH,
-    link: links::GITHUB_PATH,
-};
-
-/// The sign-in settings and the GitHub OAuth App, while the server has GitHub's settings.
-pub(crate) fn github(state: &AppState) -> Option<(&SignInSettings, &GitHubApp)> {
-    let settings = state.sign_in.as_deref()?;
-    Some((settings, settings.github.as_ref()?))
-}
-
 /// The sign-in settings, while the server has the settings of any provider.
 pub(crate) fn settings(state: &AppState) -> Option<&SignInSettings> {
     state
@@ -169,10 +155,10 @@ pub(crate) fn settings(state: &AppState) -> Option<&SignInSettings> {
 /// The flows of the providers the server has settings for.
 pub(crate) fn flows(state: &AppState) -> Vec<Flow<'_>> {
     let mut flows = Vec::new();
-    if github(state).is_some() {
-        flows.push(GITHUB_FLOW);
+    if let Some((_, github)) = GitHubApp::of(state) {
+        flows.push(github.flow());
     }
-    if let Some((_, google)) = google::google(state) {
+    if let Some((_, google)) = Google::of(state) {
         flows.push(google.flow());
     }
     flows
@@ -235,7 +221,13 @@ pub(crate) struct Identity {
 }
 
 /// A provider people sign in with in the browser.
-pub(crate) trait Provider {
+pub(crate) trait Provider: Sized {
+    /// The provider's name for people, such as `GitHub`.
+    const NAME: &'static str;
+
+    /// The sign-in settings and the provider, while the server has the provider's settings.
+    fn of(state: &AppState) -> Option<(&SignInSettings, &Self)>;
+
     fn flow(&self) -> Flow<'_>;
 
     /// The address of the provider's authorization request of a sign-in, or of a link if `link`,
@@ -248,14 +240,37 @@ pub(crate) trait Provider {
         link: bool,
     ) -> Result<String, Failure>;
 
-    /// The person that the provider's callback with `query` brings back from the sign-in of
-    /// `secrets`.
+    /// The person that the provider brings back from the sign-in of `secrets` with `code`, the code
+    /// its callback gave.
     async fn identify(
         &self,
         settings: &SignInSettings,
-        query: Option<&str>,
+        code: String,
         secrets: Secrets,
     ) -> Result<Identity, Failure>;
+}
+
+/// The result of `request`, which blocks on the provider `name`, run off the async runtime.
+pub(crate) async fn blocking<T: Send + 'static>(
+    name: &str,
+    request: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Failure> {
+    tokio::task::spawn_blocking(request)
+        .await
+        .map_err(|err| Failure::Provider(format!("the request to {name} failed: {err}")))
+}
+
+/// `GET /auth/github` and `GET /auth/google`: sends the browser to the provider with a new `state`,
+/// bound to it by a cookie, a PKCE challenge and an OIDC sign-in's `nonce`.
+pub(crate) async fn start<P: Provider>(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let Some((settings, provider)) = P::of(&state) else {
+        return provider_off(P::NAME);
+    };
+    let return_to = param(query.as_deref(), "return_to");
+    start_with(&state.db, settings, provider, return_to.as_deref(), None).await
 }
 
 /// Starts a sign-in with `provider`, or a link of the web session whose token's SHA-256 is `link`:
@@ -407,25 +422,28 @@ async fn hop(
     Some(page(StatusCode::OK, "Linking", &body))
 }
 
-/// The provider's callback with `query`: checks `state`, then signs the person it brings back in,
-/// finding or creating their account, or links their method to the account of the link's session.
-pub(crate) async fn callback_with<P: Provider>(
-    db: &PgPool,
-    settings: &SignInSettings,
-    provider: &P,
-    headers: &HeaderMap,
-    query: Option<&str>,
+/// `GET /auth/github/callback` and `GET /auth/google/callback`, the provider's callback: checks
+/// `state`, then signs the person it brings back in, finding or creating their account, or links
+/// their method to the account of the link's session.
+pub(crate) async fn callback<P: Provider>(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
 ) -> Response {
+    let Some((settings, provider)) = P::of(&state) else {
+        return provider_off(P::NAME);
+    };
+    let (db, query) = (&state.db, query.as_deref());
     let flow = provider.flow();
-    if let Some(hop) = hop(db, settings, &flow, headers, query).await {
+    if let Some(hop) = hop(db, settings, &flow, &headers, query).await {
         return hop;
     }
-    let taken = match take(db, &flow, headers, query).await {
+    let taken = match take(db, &flow, &headers, query).await {
         Ok(taken) => taken,
         Err(failure) => return failure.page(&flow, false),
     };
     let link = taken.link.is_some();
-    finish(db, settings, provider, &flow, headers, query, taken)
+    finish(db, settings, provider, &flow, &headers, query, taken)
         .await
         .unwrap_or_else(|failure| failure.page(&flow, link))
 }
@@ -452,7 +470,14 @@ async fn finish<P: Provider>(
             "this browser is not under the session that started the link.",
         ));
     }
-    let identity = provider.identify(settings, query, secrets).await?;
+    // The authorization response (RFC 6749, §4.1.2).
+    if param(query, "error").is_some() {
+        return Err(Failure::ProviderRefused("did not authorize it."));
+    }
+    let code = param(query, "code")
+        .filter(|code| !code.is_empty())
+        .ok_or(Failure::ProviderRefused("gave no code."))?;
+    let identity = provider.identify(settings, code, secrets).await?;
     let method = Method {
         provider: flow.provider,
         subject: identity.subject,
@@ -548,13 +573,13 @@ pub(crate) fn session_hashes(headers: &HeaderMap) -> Vec<Vec<u8>> {
     cookies(headers, SESSION_COOKIE).map(digest).collect()
 }
 
-/// The answer while the server has no GitHub settings.
-pub(crate) fn github_off() -> Response {
+/// The answer while the server has no settings of the provider `name`, such as `GitHub`.
+pub(crate) fn provider_off(name: &str) -> Response {
     problem(
         StatusCode::NOT_FOUND,
-        "github-sign-in-off",
-        "GitHub sign-in is off",
-        "This server has no GitHub settings.",
+        &format!("{}-sign-in-off", name.to_ascii_lowercase()),
+        &format!("{name} sign-in is off"),
+        &format!("This server has no {name} settings."),
     )
 }
 
@@ -569,8 +594,21 @@ pub(crate) fn off() -> Response {
 }
 
 impl Provider for GitHubApp {
+    const NAME: &'static str = "GitHub";
+
+    fn of(state: &AppState) -> Option<(&SignInSettings, &Self)> {
+        let settings = state.sign_in.as_deref()?;
+        Some((settings, settings.github.as_ref()?))
+    }
+
     fn flow(&self) -> Flow<'_> {
-        GITHUB_FLOW
+        Flow {
+            name: Self::NAME,
+            provider: GITHUB,
+            start: START_PATH,
+            callback: CALLBACK_PATH,
+            link: links::GITHUB_PATH,
+        }
     }
 
     async fn authorize(
@@ -595,25 +633,19 @@ impl Provider for GitHubApp {
     async fn identify(
         &self,
         settings: &SignInSettings,
-        query: Option<&str>,
+        code: String,
         secrets: Secrets,
     ) -> Result<Identity, Failure> {
-        if param(query, "error").is_some() {
-            return Err(Failure::Refused("GitHub did not authorize it."));
-        }
-        let code = param(query, "code")
-            .filter(|code| !code.is_empty())
-            .ok_or(Failure::Refused("GitHub gave no code."))?;
         let github = self.clone();
         let callback = settings.public_url.at(CALLBACK_PATH);
-        let user =
-            tokio::task::spawn_blocking(move || github.user(&code, &callback, &secrets.verifier))
-                .await
-                .map_err(|err| Failure::Provider(format!("the request to GitHub failed: {err}")))?
-                .map_err(|refusal| match refusal {
-                    Refusal::Code => Failure::Refused("GitHub refused the code."),
-                    Refusal::GitHub(reason) => Failure::Provider(reason),
-                })?;
+        let user = blocking(Self::NAME, move || {
+            github.user(&code, &callback, &secrets.verifier)
+        })
+        .await?
+        .map_err(|refusal| match refusal {
+            Refusal::Code => Failure::ProviderRefused("refused the code."),
+            Refusal::GitHub(reason) => Failure::Provider(reason),
+        })?;
         Ok(Identity {
             subject: user.id.to_string(),
             source: user.login.clone(),
@@ -622,35 +654,15 @@ impl Provider for GitHubApp {
     }
 }
 
-/// `GET /auth/github`: sends the browser to GitHub with a new `state`, bound to it by a cookie, and
-/// a PKCE challenge.
-pub(crate) async fn start(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
-    let Some((settings, github)) = self::github(&state) else {
-        return github_off();
-    };
-    let return_to = param(query.as_deref(), "return_to");
-    start_with(&state.db, settings, github, return_to.as_deref(), None).await
-}
-
-/// `GET /auth/github/callback`: checks `state`, reads the GitHub user, then finds or creates their
-/// account and starts a session, or links their method.
-pub(crate) async fn callback(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    RawQuery(query): RawQuery,
-) -> Response {
-    let Some((settings, github)) = self::github(&state) else {
-        return github_off();
-    };
-    callback_with(&state.db, settings, github, &headers, query.as_deref()).await
-}
-
 /// Why a sign-in signed no one in, or a link linked nothing.
 #[derive(Debug)]
 pub(crate) enum Failure {
-    /// The request or the person's answer: a missing, wrong, expired or used `state`, no code, or
-    /// a refused one.
+    /// The request or its sign-in, as its message says: a missing, wrong, expired or used `state`,
+    /// or an ID token that failed a check.
     Refused(&'static str),
+    /// The provider's answer, as its message after the provider's name says, such as
+    /// `gave no code.`: no authorization, no code, or a refused one.
+    ProviderRefused(&'static str),
     /// A link's callback is not under the web session that started it, or that session ended.
     Session(&'static str),
     /// A link of a method that another account has.
@@ -668,6 +680,9 @@ impl Failure {
         let what = if link { "link" } else { "sign-in" };
         let (status, message) = match self {
             Failure::Refused(message) => (StatusCode::BAD_REQUEST, message.to_owned()),
+            Failure::ProviderRefused(message) => {
+                (StatusCode::BAD_REQUEST, format!("{name} {message}"))
+            }
             Failure::Session(message) => (StatusCode::FORBIDDEN, message.to_owned()),
             Failure::OtherAccount => (
                 StatusCode::CONFLICT,

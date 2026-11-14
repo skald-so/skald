@@ -9,13 +9,13 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use sqlx::PgPool;
 
+use crate::AppState;
 use crate::accounts::{GITHUB, Method};
 use crate::refusal::{Refusal, account, answer};
 use crate::sign_in::{
     self, Failure, Flow, Provider, SignInSettings, escape, flows, form_page, form_page_failed,
-    from_this_server, off, refresh_page, session_hashes, sign_in_links, start_with,
+    from_this_server, off, provider_off, refresh_page, session_hashes, sign_in_links, start_with,
 };
-use crate::{AppState, google};
 
 /// The page of the account's sign-in methods.
 pub(crate) const PAGE_PATH: &str = "/sign-in-methods";
@@ -170,30 +170,17 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
     .await
 }
 
-/// `POST /auth/github/link`: starts a link of a GitHub method.
-pub(crate) async fn github(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some((settings, github)) = sign_in::github(&state) else {
-        return sign_in::github_off();
-    };
-    start(&state, settings, github, &headers).await
-}
-
-/// `POST /auth/google/link`: starts a link of a Google method.
-pub(crate) async fn google(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some((settings, google)) = google::google(&state) else {
-        return google::off();
-    };
-    start(&state, settings, google, &headers).await
-}
-
-/// Starts a link with `provider` for the web session in the request's cookie, if the request comes
-/// from a page of this server and the session's sign-in is recent enough.
-async fn start<P: Provider>(
-    state: &AppState,
-    settings: &SignInSettings,
-    provider: &P,
-    headers: &HeaderMap,
+/// `POST /auth/github/link` and `POST /auth/google/link`: starts a link of a method of the provider
+/// for the web session in the request's cookie, if the request comes from a page of this server and
+/// the session's sign-in is recent enough.
+pub(crate) async fn start<P: Provider>(
+    State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> Response {
+    let Some((settings, provider)) = P::of(&state) else {
+        return provider_off(P::NAME);
+    };
+    let (state, headers) = (&state, &headers);
     let back = format!("<a href=\"{PAGE_PATH}\">Your sign-in methods</a>");
     // The session cookie is `SameSite=Strict`, and browsers state the origin of every POST.
     if !from_this_server(settings, headers) {

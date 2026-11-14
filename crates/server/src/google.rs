@@ -4,16 +4,10 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use axum::extract::{RawQuery, State};
-use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
-
+use crate::AppState;
 use crate::links;
 use crate::oidc::{OidcError, OidcProvider, OidcSettings};
-use crate::sign_in::{
-    Failure, Flow, Identity, Provider, Secrets, SignInSettings, callback_with, param, start_with,
-};
-use crate::{AppState, problem};
+use crate::sign_in::{Failure, Flow, Identity, Provider, Secrets, SignInSettings, blocking};
 
 /// The sign-in start's path under the public address.
 pub(crate) const START_PATH: &str = "/auth/google";
@@ -46,9 +40,8 @@ impl Google {
             return Ok(provider);
         }
         let settings = self.settings.clone();
-        let provider = tokio::task::spawn_blocking(move || OidcProvider::discover(settings))
-            .await
-            .map_err(|err| Failure::Provider(format!("the discovery failed: {err}")))?
+        let provider = blocking(Self::NAME, move || OidcProvider::discover(settings))
+            .await?
             .map_err(|err| Failure::Provider(err.to_string()))?;
         let provider = Arc::new(provider);
         // Of discoveries at once, the last one's stays; any of them serves.
@@ -57,30 +50,21 @@ impl Google {
     }
 }
 
-/// The sign-in settings and Google, while the server has Google's settings.
-pub(crate) fn google(state: &AppState) -> Option<(&SignInSettings, &Google)> {
-    Some((state.sign_in.as_deref()?, state.google.as_deref()?))
-}
-
-/// The answer while the server has no Google settings.
-pub(crate) fn off() -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        "google-sign-in-off",
-        "Google sign-in is off",
-        "This server has no Google settings.",
-    )
-}
-
 /// The local part of `email`: what is before its last `@`.
 fn local_part(email: &str) -> &str {
     email.rsplit_once('@').map_or(email, |(local, _)| local)
 }
 
 impl Provider for Google {
+    const NAME: &'static str = "Google";
+
+    fn of(state: &AppState) -> Option<(&SignInSettings, &Self)> {
+        Some((state.sign_in.as_deref()?, state.google.as_deref()?))
+    }
+
     fn flow(&self) -> Flow<'_> {
         Flow {
-            name: "Google",
+            name: Self::NAME,
             provider: &self.settings.issuer,
             start: START_PATH,
             callback: CALLBACK_PATH,
@@ -114,28 +98,20 @@ impl Provider for Google {
     async fn identify(
         &self,
         settings: &SignInSettings,
-        query: Option<&str>,
+        code: String,
         secrets: Secrets,
     ) -> Result<Identity, Failure> {
         let Secrets { verifier, nonce } = secrets;
         let nonce = nonce.ok_or(Failure::Refused("the sign-in is not an OIDC one."))?;
-        if param(query, "error").is_some() {
-            return Err(Failure::Refused("Google did not authorize it."));
-        }
-        let code = param(query, "code")
-            .filter(|code| !code.is_empty())
-            .ok_or(Failure::Refused("Google gave no code."))?;
-
         let provider = self.provider().await?;
         let redirect_uri = settings.public_url.at(CALLBACK_PATH);
-        let identity = tokio::task::spawn_blocking(move || {
+        let identity = blocking(Self::NAME, move || {
             let id_token = provider.exchange(&code, &redirect_uri, &verifier)?;
             provider.check(&id_token, &nonce)
         })
-        .await
-        .map_err(|err| Failure::Provider(format!("the request to Google failed: {err}")))?
+        .await?
         .map_err(|err| match err {
-            OidcError::Code => Failure::Refused("Google refused the code."),
+            OidcError::Code => Failure::ProviderRefused("refused the code."),
             OidcError::Token(reason) => {
                 eprintln!("skald-server: Google sign-in refused an ID token: {reason}");
                 Failure::Refused("Google's ID token failed a check.")
@@ -148,29 +124,6 @@ impl Provider for Google {
             login: None,
         })
     }
-}
-
-/// `GET /auth/google`: sends the browser to Google with a new `state`, bound to it by a cookie, and
-/// a new `nonce` and PKCE challenge.
-pub(crate) async fn start(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
-    let Some((settings, google)) = google(&state) else {
-        return off();
-    };
-    let return_to = param(query.as_deref(), "return_to");
-    start_with(&state.db, settings, google, return_to.as_deref(), None).await
-}
-
-/// `GET /auth/google/callback`: checks `state`, exchanges the code and checks the ID token, then
-/// finds or creates the account of its subject and starts a session, or links its method.
-pub(crate) async fn callback(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    RawQuery(query): RawQuery,
-) -> Response {
-    let Some((settings, google)) = google(&state) else {
-        return off();
-    };
-    callback_with(&state.db, settings, google, &headers, query.as_deref()).await
 }
 
 #[cfg(test)]
