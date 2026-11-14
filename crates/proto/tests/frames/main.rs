@@ -7,6 +7,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 mod fixtures;
+mod misaddressed;
 mod published;
 mod refused;
 mod round_trips;

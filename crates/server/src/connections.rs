@@ -1,9 +1,10 @@
 //! Connections authenticated as a device: `docs/protocol/delivery.md`, "Connecting". A device
 //! session gets a challenge; a WebSocket is taken, as its device's, once its first frame signs that
 //! challenge with the key of a certified `client` device of the session's account. A taken
-//! connection closes when its session ends.
+//! connection carries the device's sends and closes when its session ends.
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,10 +18,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use skald_proto::{AUTH_LABEL, Cbor as _, DeviceId, Frame};
+use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
+use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in};
 use crate::{AppState, database_failed};
@@ -38,6 +40,8 @@ enum Closing {
     DeviceRefused,
     SignatureRefused,
     SessionEnded,
+    /// A frame does not decode.
+    Malformed,
     /// The database failed.
     ServerError,
 }
@@ -50,6 +54,7 @@ impl Closing {
             Self::DeviceRefused => (close_code::POLICY, "device-refused"),
             Self::SignatureRefused => (close_code::POLICY, "signature-refused"),
             Self::SessionEnded => (close_code::POLICY, "session-ended"),
+            Self::Malformed => (close_code::INVALID, ""),
             Self::ServerError => (close_code::ERROR, "server-error"),
         };
         CloseFrame {
@@ -175,39 +180,93 @@ pub(crate) async fn open(
 ) -> Response {
     upgrade
         .protocols([skald_proto::subprotocol(version)])
-        .on_upgrade(move |socket| serve(state, socket))
+        .on_upgrade(move |socket| serve(state, socket, version))
 }
 
-/// Takes `socket` once it proves its device, and holds it until it closes or its session ends.
-async fn serve(state: AppState, mut socket: WebSocket) {
+/// A connection, once its `auth` proved its device, held as the device's.
+struct Proved {
+    device: DeviceId,
+    account: AccountId,
+    /// Lets the connection go when dropped.
+    _registration: Registration,
+    /// Fires when the session ends.
+    ended: oneshot::Receiver<()>,
+}
+
+/// Takes `socket`, of the protocol version `version`, once it proves its device, and serves it
+/// until it closes or its session ends.
+async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
     match prove(&state, &mut socket).await {
-        Ok(Some((_registration, ended))) => hold(socket, ended).await,
+        Ok(Some(proved)) => {
+            let sender = Sender {
+                device: proved.device,
+                account: proved.account,
+                version,
+            };
+            hold(&state, socket, proved.ended, &sender).await;
+        }
         Ok(None) => finish(socket).await,
         Err(closing) => close(socket, closing).await,
     }
 }
 
-/// Keeps `socket` open until the client closes it or `ended` fires. It carries no frame after
-/// `auth` yet.
-async fn hold(mut socket: WebSocket, mut ended: oneshot::Receiver<()>) {
+/// Answers each frame of `socket`, `sender`'s connection, in the order they arrive, until the
+/// client closes it, `ended` fires, or a frame does not decode.
+async fn hold(
+    state: &AppState,
+    mut socket: WebSocket,
+    mut ended: oneshot::Receiver<()>,
+    sender: &Sender,
+) {
     loop {
-        tokio::select! {
+        let bytes = tokio::select! {
+            // Once the session ends, no queued frame is answered.
+            biased;
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
             message = socket.recv() => match message {
+                Some(Ok(Message::Binary(bytes))) => bytes,
+                Some(Ok(Message::Text(_))) => return close(socket, Closing::Malformed).await,
                 Some(Ok(Message::Close(_))) => return finish(socket).await,
                 Some(Err(_)) | None => return,
-                Some(Ok(_)) => {}
+                Some(Ok(_)) => continue,
             },
+        };
+        match answer(state, sender, &bytes).await {
+            Ok(Some(frame)) => {
+                if socket
+                    .send(Message::Binary(frame.to_cbor().into()))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Ok(None) => {}
+            Err(closing) => return close(socket, closing).await,
         }
     }
 }
 
-/// Reads `socket`'s `auth`, checks it and holds the connection as its device's: the receiver fires
-/// when the session ends. `None` if the client closed the connection first.
-async fn prove(
-    state: &AppState,
-    socket: &mut WebSocket,
-) -> Result<Option<(Registration, oneshot::Receiver<()>)>, Closing> {
+/// The answer to the frame `bytes` from `sender`; `None` for a frame other than `send`, which the
+/// server ignores.
+async fn answer(state: &AppState, sender: &Sender, bytes: &[u8]) -> Result<Option<Frame>, Closing> {
+    let answered = match Frame::from_cbor(bytes) {
+        Ok(Frame::Send { envelope, .. }) => mailboxes::send(&state.db, sender, &envelope).await,
+        // A frame of a type the server does not know, or one it does not serve yet.
+        Ok(_) => return Ok(None),
+        Err(_) => match Frame::misaddressed_send(bytes) {
+            Some(header) => mailboxes::misaddressed(&state.db, sender, &header).await,
+            None => return Err(Closing::Malformed),
+        },
+    };
+    answered
+        .map(Some)
+        .map_err(|err| failed("store a send", err))
+}
+
+/// Reads `socket`'s `auth`, checks it and holds the connection as its device's. `None` if the
+/// client closed the connection first.
+async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved>, Closing> {
     let Some(frame) = first_frame(socket).await? else {
         return Ok(None);
     };
@@ -243,7 +302,13 @@ async fn prove(
         &signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
-    Ok(Some(held))
+    let (registration, ended) = held;
+    Ok(Some(Proved {
+        device,
+        account: account.parse().expect("a stored account ID"),
+        _registration: registration,
+        ended,
+    }))
 }
 
 /// The bytes of `socket`'s first frame, a binary message, within [`PROOF_WAIT`]; `None` if the
