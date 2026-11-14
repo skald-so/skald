@@ -2,6 +2,10 @@
 //! --agent <name> address` shows its address (`docs/protocol/README.md`, "Agent address") in the
 //! space of the working directory. The agent's name stays on the machine: no request carries it
 //! (`docs/threat-model.md`, "The server does not see").
+//!
+//! As an agent, the CLI covers only the space of the working directory: it lists no other space
+//! and refuses a command that names one, alike for every other name, and it refuses the person's
+//! commands. A folder in no space gives it none.
 
 use std::path::Path;
 use std::time::Duration;
@@ -11,7 +15,8 @@ use skald_proto::{Address, Name, PERSON, ServerName, VersionRange};
 
 use crate::connection::printable;
 use crate::devices::{text, to_session};
-use crate::{folders, follow, spaces};
+use crate::spaces::{OUT_OF_SCOPE, Scope};
+use crate::{folders, follow, secrets, spaces};
 
 /// The server's name, `GET`.
 const SERVER_PATH: &str = "/server";
@@ -33,6 +38,41 @@ pub fn name(text: &str) -> Result<Name, String> {
         ));
     }
     Ok(name)
+}
+
+/// Why an agent cannot run `command`, the CLI's name of one of the person's commands.
+pub fn person_only(command: &str) -> String {
+    format!("skald {command} is the person's command, which an agent cannot run; nothing changed")
+}
+
+/// `skald --agent <name> spaces`: lists the space of the working directory, by the state in `dir`,
+/// its secrets in `storage`, as `skald spaces` lists it; or says why the folder is in none.
+pub fn spaces(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+) -> Result<(), String> {
+    match folders::working_space(dir) {
+        Ok((_, space)) => spaces::list(dir, storage, speaks, timeout, Scope::Only(space.id)),
+        Err(why) => {
+            println!("This agent sees no space: {why}.");
+            Ok(())
+        }
+    }
+}
+
+/// The scope of a command that names the space `name`, by the state in `dir`: every space for
+/// the person; for an `agent`, the space of the working directory if it is named so. Any other
+/// name, of a space of the device's or not, is refused alike.
+pub fn scope(dir: &Path, name: &str, agent: bool) -> Result<Scope, String> {
+    if !agent {
+        return Ok(Scope::All);
+    }
+    match folders::working_space(dir) {
+        Ok((_, space)) if space.name == name => Ok(Scope::Only(space.id)),
+        _ => Err(OUT_OF_SCOPE.to_owned()),
+    }
 }
 
 /// `skald --agent <agent> address`: shows the address of `agent` in the space of the working

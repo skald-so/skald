@@ -25,6 +25,10 @@ const CONFIG_LIMIT: u64 = 64 * 1024;
 /// What a run says of a binding to a space the device is not in.
 const NOT_IN: &str = "This device is not in that space, so they are in no space until it is.";
 
+/// What an agent's `skald folder` says of a folder outside its space, alike for every such folder.
+const OTHER_FOLDER: &str =
+    "as an agent, skald shows only the folders in the space of the agent's folder";
+
 /// A `.skald.toml`.
 #[derive(Deserialize)]
 struct Config {
@@ -170,13 +174,29 @@ pub fn approve(dir: &Path, folder: &Path) -> Result<(), String> {
 }
 
 /// `skald folder`: shows the space of `folder`, by default the working directory, and what bound
-/// it, by the state in `dir`; warns of each `.skald.toml` it skipped.
-pub fn show(dir: &Path, folder: Option<&Path>) -> Result<(), String> {
+/// it, by the state in `dir`; warns of each `.skald.toml` it skipped. As an `agent`, it shows
+/// another folder than the working directory only in the working directory's space.
+pub fn show(dir: &Path, folder: Option<&Path>, agent: bool) -> Result<(), String> {
     let folder = match folder {
         Some(folder) => canonical(folder)?,
         None => working_dir()?,
     };
     let state = readable(dir)?;
+    let working = if agent {
+        working_dir()?
+    } else {
+        folder.clone()
+    };
+    if folder != working {
+        let (own, _) = bound(state.as_ref(), &working)?;
+        let (there, _) = bound(state.as_ref(), &folder)?;
+        if own
+            .space()
+            .is_none_or(|own| there.space().is_none_or(|there| there.id != own.id))
+        {
+            return Err(OTHER_FOLDER.to_owned());
+        }
+    }
     let bound = warned(state.as_ref(), &folder)?;
     println!("Folder: {}", shown(&folder));
     match bound {
@@ -199,6 +219,15 @@ pub fn show(dir: &Path, folder: Option<&Path>) -> Result<(), String> {
         ),
     }
     Ok(())
+}
+
+impl Bound {
+    /// The device's space the folder is in, if any.
+    fn space(&self) -> Option<&state::Space> {
+        match self {
+            Bound::By { space, .. } | Bound::Unbound(space) => space.as_ref(),
+        }
+    }
 }
 
 /// The space of the working directory, by the state in `dir`, with that state; warns of each
