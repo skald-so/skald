@@ -1,0 +1,385 @@
+#!/usr/bin/env node
+// Tests the jobs of the release check, those of all workflows whose steps run script/release-check
+// (script/release-check-test):
+//   - each is a job of .github/workflows/release.yml, or of a workflow that a job of release.yml
+//     calls (`uses: ./.github/workflows/<file>`): the gate, which the jobs of release.yml need;
+//   - on a push of a stable and of a beta tag they may run, on a runner of each OS and architecture:
+//     Linux, macOS and Windows, on x86_64 and on arm64, and each runner's step gives
+//     script/release-check the pushed tag;
+//   - they run after the release is published: when a job that publishes it fails, the gate is
+//     skipped; a job publishes when its permissions are not set, its token writes anything, it reads
+//     a secret other than GITHUB_TOKEN or it calls a workflow of another repository;
+//   - main moves only after the check passes: when the gate fails, the job that runs
+//     script/move-main is skipped;
+//   - a PR into dev that changes only script/release-check, or only the workflow file of the check's
+//     jobs, starts them, against the newest release: script/release-check gets no tag; so does a
+//     manual run, against the release its input names, or the newest with the input empty;
+//   - the rules of the release pipeline: actions pinned to a full commit SHA; the token's
+//     permissions set, writing nothing and requesting no OIDC token; no secret but GITHUB_TOKEN;
+//     tools that taiki-e/install-action installs pinned to exact versions; no cache restored;
+//   - "PR checks" in docs/dev/infrastructure.md names script/release-check.
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  commands,
+  condition,
+  event,
+  isUnknown,
+  jobsFor,
+  needsOf,
+  open,
+  pathTriggers,
+  permissions,
+  readWorkflow,
+  runsFor,
+  template,
+  toText,
+  triggers,
+  truth,
+  unknown,
+  words,
+} from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const releaseFile = '.github/workflows/release.yml';
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-check-workflow-test: ${what}`);
+  failures++;
+};
+const finish = () => {
+  if (failures > 0) {
+    console.error(`release-check-workflow-test: ${failures} case(s) failed`);
+    process.exit(1);
+  }
+  console.log('release-check-workflow-test: all cases passed');
+  process.exit(0);
+};
+
+const dir = path.join(root, '.github/workflows');
+const workflows = new Map(
+  fs
+    .readdirSync(dir)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .map((f) => [`.github/workflows/${f}`, readWorkflow(path.join(dir, f))]),
+);
+const release = workflows.get(releaseFile);
+const runsCheck = (line) => /(^|[\s;&|(/"'])script\/release-check(?=$|[\s"';&|)])/.test(line);
+const stepsChecking = (job) => (job.steps ?? []).map((step, index) => ({ step, index })).filter(({ step }) => commands(step.run).some(runsCheck));
+
+// The jobs that run the check: {file, key, job, gate}, <gate> the job of release.yml it runs as.
+const checkers = [];
+for (const [file, workflow] of workflows) {
+  for (const [key, job] of Object.entries(workflow.jobs ?? {})) {
+    if (stepsChecking(job).length === 0) continue;
+    if (file === releaseFile) {
+      checkers.push({ file, key, job, gate: key });
+      continue;
+    }
+    const callers = Object.entries(release?.jobs ?? {}).filter(([, j]) => String(j.uses ?? '').replace(/@.*$/, '') === `./${file}`);
+    if (callers.length !== 1) fail(`${file} job ${key} runs script/release-check, so one job of ${releaseFile} calls ${file}, not ${callers.length}`);
+    else checkers.push({ file, key, job, gate: callers[0][0], caller: callers[0][1] });
+  }
+}
+if (!release) fail(`${releaseFile} is missing`);
+if (checkers.length === 0) fail(`no job of ${releaseFile}, or of a workflow it calls, runs script/release-check`);
+if (failures > 0) finish();
+const where = (c, step, index) => `${c.file} job ${c.key}${step ? ` step ${step.name ?? step.id ?? index + 1}` : ''}`;
+
+// scopeOf <checker> <event> <inputs>: the expression scope of the checker's job, and whether it is
+// skipped, for the event; <inputs> those of a manual run, when known.
+function scopeOf(c, ev, inputs) {
+  const known = inputs === undefined ? ev : { ...ev, inputs, github: open({ ...ev.github, event: open({ ...ev.github.event, inputs }) }) };
+  const outer = jobsFor(release, known);
+  if (c.file === releaseFile) return outer[c.key];
+  const gate = outer[c.gate];
+  if (gate.skipped) return gate;
+  // The called workflow runs with the caller's event; its inputs are the caller's `with`.
+  // An input set from a job's or a step's output is what only the run knows, as that output.
+  const passed = Object.fromEntries(
+    Object.entries(c.caller.with ?? {}).map(([k, v]) => {
+      const value = template(v, gate.scope);
+      if (isUnknown(value) && fromOutput(v)) value.fromOutput = true;
+      return [k, value];
+    }),
+  );
+  const called = { ...workflows.get(c.file), on: { [ev.name]: {} } };
+  return jobsFor(called, { ...known, inputs: open(passed) })[c.key];
+}
+
+// combos <job>: its matrix's combinations, or null when only the run knows them.
+function combos(job) {
+  const matrix = job.strategy?.matrix;
+  if (matrix === undefined) return [{}];
+  if (typeof matrix !== 'object' || matrix === null) return null;
+  const axes = Object.entries(matrix).filter(([k]) => k !== 'include' && k !== 'exclude');
+  if (axes.some(([, v]) => !Array.isArray(v))) return null;
+  let list = axes.length === 0 ? [] : axes.reduce((acc, [k, values]) => acc.flatMap((c) => values.map((v) => ({ ...c, [k]: v }))), [{}]);
+  for (const ex of [].concat(matrix.exclude ?? [])) {
+    list = list.filter((c) => !Object.entries(ex).every(([k, v]) => JSON.stringify(c[k]) === JSON.stringify(v)));
+  }
+  // An include merges into each original combination it does not overwrite, or adds its own.
+  const original = list.map((c) => ({ ...c }));
+  const added = [];
+  for (const inc of [].concat(matrix.include ?? [])) {
+    const fits = original
+      .map((o, i) => [o, list[i]])
+      .filter(([o]) => Object.entries(inc).every(([k, v]) => !(k in o) || JSON.stringify(o[k]) === JSON.stringify(v)));
+    if (fits.length > 0) fits.forEach(([, c]) => Object.assign(c, inc));
+    else added.push({ ...inc });
+  }
+  return [...list, ...added];
+}
+
+// platform <label>: the OS and architecture of a GitHub-hosted runner label, or null.
+function platform(label) {
+  const l = String(label).toLowerCase();
+  const arm = /-arm(64)?$/.test(l);
+  if (/^ubuntu-/.test(l)) return `Linux ${arm ? 'arm64' : 'x86_64'}`;
+  if (/^windows-/.test(l)) return `Windows ${arm ? 'arm64' : 'x86_64'}`;
+  if (/^macos-/.test(l)) return `macOS ${/-(intel|large)$/.test(l) || /^macos-1[0-3]\b/.test(l) ? 'x86_64' : 'arm64'}`;
+  return null;
+}
+const runsOn = (value) => (Array.isArray(value) ? value[0] : value && typeof value === 'object' ? [].concat(value.labels ?? [])[0] : value);
+
+// fromOutput <text>: the text is an expression of a job's or a step's output.
+const fromOutput = (text) => /^\s*\$\{\{[\s\S]*\b(needs|steps)\.[A-Za-z0-9_-]+\.outputs\.[\s\S]*\}\}\s*$/.test(String(text));
+
+// argumentsOf <checker> <step> <scope>: for each line that runs script/release-check, the argument
+// it gets: a string, unknown when it comes from a job's or a step's output, null when it gets none,
+// or undefined when it cannot be read.
+function argumentsOf(c, step, scope) {
+  const values = [];
+  for (const line of commands(step.run).filter(runsCheck)) {
+    const held = [];
+    const rest = line
+      .replace(/^[\s\S]*?script\/release-check["']?/, '')
+      .replace(/\$\{\{[\s\S]*?\}\}/g, (m) => `@@${held.push(m) - 1}@@`)
+      .split(/\s(?:&&|\|\||;|\||#|>|2>)|[;|&]/)[0];
+    const args = words(rest).map((w) => w.replace(/@@(\d+)@@/g, (_, i) => held[Number(i)]));
+    if (args.length === 0) {
+      values.push(null);
+      continue;
+    }
+    if (args.length > 1) {
+      values.push(undefined);
+      continue;
+    }
+    const arg = args[0].replace(/^"(.*)"$/s, '$1');
+    const variable = arg.match(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)(:?-)?\}?$/)?.[1];
+    const envs = [step.env, c.job.env, workflows.get(c.file).env];
+    let source = arg;
+    if (variable === 'GITHUB_REF_NAME') source = '${{ github.ref_name }}';
+    else if (variable) source = envs.map((e) => e?.[variable]).find((v) => v !== undefined) ?? '';
+    const value = template(String(source), scope);
+    if (isUnknown(value)) values.push(fromOutput(source) || value.fromOutput ? value : undefined);
+    else values.push(toText(value));
+  }
+  return values;
+}
+
+// withMatrix <scope> <combo>: the scope with the matrix context of one combination.
+const withMatrix = (scope, combo) => ({ ...scope, contexts: { ...scope.contexts, matrix: open(combo) } });
+const checkSteps = checkers.flatMap((c) => stepsChecking(c.job).map(({ step, index }) => ({ c, step, index })));
+
+// A push of a release tag: every OS and architecture, each given the tag.
+const wanted = ['Linux x86_64', 'Linux arm64', 'macOS x86_64', 'macOS arm64', 'Windows x86_64', 'Windows arm64'];
+for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
+  const ev = event('push', `refs/tags/${tag}`);
+  const found = new Set();
+  for (const c of checkers) {
+    const state = scopeOf(c, ev);
+    if (state.skipped) {
+      fail(`a push of the tag ${tag} runs the release check, but skips ${where(c)}`);
+      continue;
+    }
+    const list = combos(c.job);
+    if (list === null) {
+      fail(`${where(c)}: its matrix is set in the workflow, so its runners are known`);
+      continue;
+    }
+    for (const combo of list) {
+      const label = template(toText(runsOn(c.job['runs-on'])), withMatrix(state.scope, combo));
+      const p = isUnknown(label) ? null : platform(label);
+      if (!p) fail(`${where(c)}: runs-on ${JSON.stringify(c.job['runs-on'])} is no GitHub-hosted runner of a known OS: ${toText(label)}`);
+      else found.add(p);
+      for (const { step, index } of stepsChecking(c.job)) {
+        for (const value of argumentsOf(c, step, withMatrix(state.scope, combo))) {
+          if (value === null || value === undefined) fail(`${where(c, step, index)}: on a push of ${tag}, script/release-check gets the tag, not ${value === null ? 'none' : 'what only the run knows'}`);
+          else if (!isUnknown(value) && value !== tag) fail(`${where(c, step, index)}: on a push of ${tag}, script/release-check gets '${value}', not the tag`);
+        }
+      }
+    }
+  }
+  const missing = wanted.filter((p) => !found.has(p));
+  if (missing.length > 0) fail(`on a push of ${tag} the release check runs on a runner of each OS and architecture; none of: ${missing.join(', ')}`);
+}
+
+// failedThen <event> <failed> <target>: when job <failed> of release.yml fails, job <target> is
+// skipped, whatever else the run does.
+function failedThen(ev, failed, target) {
+  const base = jobsFor(release, ev);
+  const result = {};
+  const settle = (key) => {
+    if (key in result) return result[key];
+    if (base[key].skipped) return (result[key] = 'skipped');
+    if (key === failed) return (result[key] = 'failure');
+    const job = release.jobs[key];
+    const direct = needsOf(job);
+    direct.forEach(settle);
+    const ancestors = new Set();
+    const climb = (k) => needsOf(release.jobs[k]).forEach((n) => (ancestors.has(n) ? null : (ancestors.add(n), climb(n))));
+    climb(key);
+    const needs = {};
+    for (const n of direct) {
+      needs[n] = { ...base[key].scope.contexts.needs[n], result: typeof result[n] === 'string' ? result[n] : unknown() };
+    }
+    const anyBad = direct.some((n) => result[n] === 'failure' || result[n] === 'skipped' || result[n] === 'cancelled');
+    const allGood = direct.every((n) => result[n] === 'success');
+    const status = {
+      success: anyBad ? false : allGood ? true : unknown(),
+      always: true,
+      failure: [...ancestors].some((n) => result[n] === 'failure') ? true : unknown(),
+      cancelled: false,
+    };
+    const statusCheck = typeof job.if === 'string' && /\b(success|always|failure|cancelled)\s*\(/i.test(job.if);
+    const cond = job.if === undefined ? true : truth(condition(job.if, { contexts: { ...base[key].scope.contexts, needs }, status }));
+    const skipped = (!statusCheck && truth(status.success) === false) || cond === false;
+    return (result[key] = skipped ? 'skipped' : unknown());
+  };
+  return settle(target) === 'skipped';
+}
+
+// The jobs that publish the release.
+const writesAny = (p) => Object.values(p ?? {}).some((level) => level === 'write');
+const secretNames = (value) =>
+  [...JSON.stringify(value ?? null).matchAll(/secrets\s*(?:\.\s*([A-Za-z0-9_]+)|\[\s*'([^']+)'\s*\])/gi)]
+    .map((m) => (m[1] ?? m[2]).toUpperCase())
+    .filter((s) => s !== 'GITHUB_TOKEN');
+const publishes = (job) =>
+  permissions(release, job) === null ||
+  writesAny(permissions(release, job)) ||
+  secretNames(job).length > 0 ||
+  job.secrets === 'inherit' ||
+  (typeof job.uses === 'string' && !job.uses.startsWith('./'));
+const gates = [...new Set(checkers.map((c) => c.gate))];
+const mover = Object.entries(release.jobs ?? {}).find(([, j]) => (j.steps ?? []).some((s) => commands(s.run).some((l) => /script\/move-main\b/.test(l))))?.[0];
+if (!mover) fail(`no job of ${releaseFile} runs script/move-main`);
+for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
+  const ev = event('push', `refs/tags/${tag}`);
+  const states = jobsFor(release, ev);
+  const publishers = Object.entries(release.jobs)
+    .filter(([k, j]) => !gates.includes(k) && k !== mover && !states[k].skipped && publishes(j))
+    .map(([k]) => k);
+  if (publishers.length === 0) fail(`no job of ${releaseFile} publishes the release on a push of ${tag}`);
+  for (const gate of gates) {
+    for (const p of publishers) {
+      if (!failedThen(ev, p, gate)) fail(`on a push of ${tag}, the release check runs after the release is published, but job ${gate} may run when job ${p} fails`);
+    }
+  }
+}
+if (mover) {
+  const ev = event('push', 'refs/tags/v1.2.3');
+  for (const gate of gates) {
+    if (!failedThen(ev, gate, mover)) fail(`main moves only after the release check passes, but job ${mover} may run when job ${gate} fails`);
+  }
+}
+
+// PRs and manual runs: against the newest release, or the one a manual run names.
+const holders = [...new Set(checkers.map((c) => c.file))];
+const starters = (ev, changed) =>
+  [...workflows.entries()].filter(([file, w]) => {
+    if (!runsFor(w, ev)) return false;
+    if (changed !== undefined && !pathTriggers(triggers(w)[ev.name] ?? {}, changed)) return false;
+    return file === releaseFile || holders.includes(file);
+  });
+const pr = event('pull_request', 'refs/pull/7/merge');
+for (const changed of ['script/release-check', ...holders]) {
+  const started = starters(pr, changed);
+  const runs = checkers.some((c) => started.some(([file]) => file === releaseFile || file === c.file) && !scopeFor(c, pr, started).skipped);
+  if (!runs) fail(`a PR into dev that changes only ${changed} runs the release check, but no job of it may run`);
+}
+// scopeFor <checker> <event> <started>: the checker's state when <started> workflows run: as a job
+// of release.yml, or, in a workflow of its own, as that workflow's job.
+function scopeFor(c, ev, started, inputs) {
+  if (started.some(([file]) => file === releaseFile)) {
+    const s = scopeOf(c, ev, inputs);
+    if (!s.skipped || c.file === releaseFile) return s;
+  }
+  if (c.file !== releaseFile && started.some(([file]) => file === c.file)) {
+    const ownEv = inputs === undefined ? ev : { ...ev, inputs, github: open({ ...ev.github, event: open({ ...ev.github.event, inputs }) }) };
+    return jobsFor(workflows.get(c.file), ownEv)[c.key];
+  }
+  return { skipped: true };
+}
+const argumentsWhen = (ev, started, inputs) =>
+  checkSteps.flatMap(({ c, step, index }) => {
+    const state = scopeFor(c, ev, started, inputs);
+    if (state.skipped) return [];
+    const list = combos(c.job) ?? [{}];
+    return list.flatMap((combo) => argumentsOf(c, step, withMatrix(state.scope, combo)).map((value) => ({ c, step, index, value })));
+  });
+for (const { c, step, index, value } of argumentsWhen(pr, starters(pr, 'script/release-check'))) {
+  if (value !== null && value !== '') fail(`${where(c, step, index)}: on a PR the check runs against the newest release, so script/release-check gets no tag, not ${isUnknown(value) ? 'what only the run knows' : `'${value}'`}`);
+}
+const dispatch = event('workflow_dispatch', 'refs/heads/dev');
+const manual = starters(dispatch);
+if (manual.length === 0) fail('a manual run (workflow_dispatch) runs the release check, but no workflow of it starts on one');
+const inputNames = [...new Set(manual.flatMap(([, w]) => Object.keys(triggers(w).workflow_dispatch?.inputs ?? {})))];
+if (manual.length > 0 && inputNames.length === 0) fail('a manual run of the release check names the release to check in an input, but it has none');
+for (const [given, expected] of [['v1.2.3-beta.1', 'v1.2.3-beta.1'], ['', null]]) {
+  if (inputNames.length === 0) break;
+  const inputs = open(Object.fromEntries(inputNames.map((n) => [n, given])));
+  const found = argumentsWhen(dispatch, manual, inputs);
+  if (found.length === 0) fail(`a manual run with the input '${given}' runs the release check, but no job of it may run`);
+  for (const { c, step, index, value } of found) {
+    const ok = expected === null ? value === null || value === '' : value === expected;
+    if (!ok) {
+      fail(`${where(c, step, index)}: a manual run with the input '${given}' checks ${expected ?? 'the newest release'}, so script/release-check gets ${expected === null ? 'no tag' : `'${expected}'`}, not ${value === null ? 'none' : isUnknown(value) ? 'what only the run knows' : `'${value}'`}`);
+    }
+  }
+}
+
+// The rules of the release pipeline, for each job of the check and each job of release.yml that
+// calls one.
+const entries = [
+  ...checkers.map((c) => ({ label: where(c), workflow: workflows.get(c.file), job: c.job })),
+  ...checkers.filter((c) => c.caller).map((c) => ({ label: `${releaseFile} job ${c.gate}`, workflow: release, job: c.caller })),
+];
+const cachers = /^(actions\/cache|Swatinem\/rust-cache|mozilla-actions\/sccache-action)(\/[^@]*)?@/i;
+for (const { label, workflow, job } of entries) {
+  const p = permissions(workflow, job);
+  if (p === null) fail(`${label}: its permissions are set`);
+  else {
+    const written = Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope);
+    if (written.length > 0) fail(`${label}: the release check publishes nothing, so its token writes nothing, not: ${written.join(', ')}`);
+    if (p['id-token'] === 'write' || p.all === 'write') fail(`${label}: the release check signs and attests nothing, so it requests no OIDC token`);
+  }
+  if (secretNames(job).length > 0 || job.secrets === 'inherit') fail(`${label}: it reads no secret but GITHUB_TOKEN, not: ${secretNames(job).join(', ') || 'all of them'}`);
+  if (typeof job.uses === 'string' && !job.uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(job.uses)) fail(`${label}: it calls ${job.uses}, not pinned to a full commit SHA`);
+  (job.steps ?? []).forEach((step, index) => {
+    const uses = String(step.uses ?? '');
+    const name = `${label} step ${step.name ?? step.id ?? index + 1}`;
+    if (uses && !uses.startsWith('./') && !uses.startsWith('docker://') && !/@[0-9a-f]{40}$/.test(uses)) fail(`${name}: ${uses} is pinned to a full commit SHA`);
+    if (cachers.test(uses)) fail(`${name}: the release check restores no cache: ${uses}`);
+    if (/^actions\/setup-[a-z]+@/i.test(uses)) {
+      const cache = step.with?.cache;
+      if (cache !== undefined && cache !== false && cache !== '' && String(cache) !== 'false') fail(`${name}: the release check restores no cache: cache: ${cache}`);
+      if (/^actions\/setup-node@/i.test(uses) && String(step.with?.['package-manager-cache']) !== 'false') {
+        fail(`${name}: the release check restores no cache: actions/setup-node sets package-manager-cache: false`);
+      }
+    }
+    if (/^taiki-e\/install-action@/i.test(uses)) {
+      for (const tool of String(step.with?.tool ?? '').split(/[\s,]+/).filter(Boolean)) {
+        if (!/^[A-Za-z0-9_.-]+@\d+\.\d+\.\d+$/.test(tool)) fail(`${name}: the tool ${tool} is pinned to an exact version`);
+      }
+    }
+  });
+}
+
+// "PR checks" names it.
+const docs = fs.readFileSync(path.join(root, 'docs/dev/infrastructure.md'), 'utf8');
+const prChecks = docs.match(/^## PR checks\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
+if (!/script\/release-check(?![\w-])/.test(prChecks)) fail('"PR checks" in docs/dev/infrastructure.md names the release check, script/release-check');
+
+finish();

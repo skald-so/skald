@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Tests script/install-git-cliff with a stand-in for curl, and the pins in script/lib/release.sh:
+#   - script/lib/release.sh pins git-cliff to one version, with a SHA-256 of its archive for Linux
+#     and macOS on x86_64 and arm64;
+#   - an archive that does not match its SHA-256, a stand-in's at the official URL, fails the run,
+#     and nothing is installed;
+#   - with an archive that matches, a copy of the script next to a script/lib/release.sh of a
+#     stand-in archive downloads it from the official release and installs its git-cliff;
+#   - with the git-cliff of script/lib/release.sh installed, it downloads nothing.
+# script/release-pr-test installs and runs the real one.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+export CARGO_HOME=$tmp/cargo
+source "$root/script/lib/release.sh"
+failures=0
+
+fail() {
+  echo "install-git-cliff-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+case="the pins"
+[[ $git_cliff_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "$case: no exact version: $git_cliff_version"
+targets=$(printf '%s\n' "${git_cliff_archives[@]}" | awk '$2 ~ /^[0-9a-f]{64}$/ { print $1 }' | sort |
+  paste -sd ' ' -)
+[[ $targets == "aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-unknown-linux-musl" ]] ||
+  fail "$case: not one SHA-256 for each of Linux and macOS on x86_64 and arm64: $targets"
+[[ $git_cliff_url == https://github.com/orhun/git-cliff/releases/download ]] ||
+  fail "$case: the archives are not from the official releases: $git_cliff_url"
+
+# The stand-in for curl logs its calls and saves the file under $tmp/served at the URL's path on
+# the official releases, or else a file that is not an archive.
+mkdir "$tmp/bin" "$tmp/served"
+cat >"$tmp/bin/curl" <<EOF
+#!/usr/bin/env bash
+echo "curl \$*" >>"$tmp/calls.log"
+while [[ \$# -gt 0 ]]; do
+  case \$1 in
+    --output) output=\$2; shift ;;
+    https://*) url=\$1 ;;
+  esac
+  shift
+done
+served=$tmp/served/\${url#$git_cliff_url/}
+if [[ -f \$served ]]; then cp "\$served" "\$output"; else echo "not the archive" >"\$output"; fi
+EOF
+chmod +x "$tmp/bin/curl"
+
+# run_install <root>: runs <root>/script/install-git-cliff; sets $status and $output.
+run_install() {
+  rm -f "$tmp/calls.log"
+  status=0
+  output=$(PATH="$tmp/bin:$PATH" "$1/script/install-git-cliff" 2>&1) || status=$?
+}
+
+# all_targets: the targets of the archives script/install-git-cliff picks from.
+all_targets=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin)
+# serve <version>: serves an archive of a stand-in git-cliff <version> for every target, and sets
+# $archives to their SHA-256 lines for a script/lib/release.sh.
+serve() {
+  local target file sum
+  mkdir -p "$tmp/archive/git-cliff-$1" "$tmp/served/v$1"
+  printf '#!/usr/bin/env bash\necho "git-cliff %s"\n' "$1" >"$tmp/archive/git-cliff-$1/git-cliff"
+  chmod +x "$tmp/archive/git-cliff-$1/git-cliff"
+  archives=()
+  for target in "${all_targets[@]}"; do
+    file=$tmp/served/v$1/git-cliff-$1-$target.tar.gz
+    tar -czf "$file" -C "$tmp/archive" "git-cliff-$1"
+    sum=$(openssl dgst -sha256 -r "$file")
+    archives+=("\"$target ${sum%% *}\"")
+  done
+}
+
+case="an archive that does not match its SHA-256"
+serve "$git_cliff_version"
+run_install "$root"
+[[ $status != 0 ]] || fail "$case: the run passes"
+grep -qF "does not match its SHA-256" <<<"$output" || fail "$case: it does not say so: $output"
+grep -qF "$git_cliff_url/v$git_cliff_version/git-cliff-$git_cliff_version-" "$tmp/calls.log" 2>/dev/null ||
+  fail "$case: it does not download the official archive: $(cat "$tmp/calls.log" 2>/dev/null)"
+[[ ! -e $git_cliff_root/bin/git-cliff ]] || fail "$case: it installs git-cliff"
+
+# A copy of the script next to a script/lib/release.sh of the stand-in archives.
+case="an archive that matches its SHA-256"
+copy=$tmp/copy
+mkdir -p "$copy/script/lib"
+cp "$root/script/install-git-cliff" "$copy/script/"
+serve 9.8.7
+cat >"$copy/script/lib/release.sh" <<EOF
+git_cliff_version=9.8.7
+git_cliff_archives=(${archives[*]})
+git_cliff_url=$git_cliff_url
+git_cliff_root=$tmp/standin-root
+EOF
+run_install "$copy"
+[[ $status == 0 ]] || fail "$case: the run fails: $output"
+[[ $("$tmp/standin-root/bin/git-cliff" --version 2>/dev/null) == "git-cliff 9.8.7" ]] ||
+  fail "$case: it does not install the archive's git-cliff into $tmp/standin-root/bin"
+
+case="git-cliff installed already"
+run_install "$copy"
+[[ $status == 0 ]] || fail "$case: the run fails: $output"
+[[ ! -s $tmp/calls.log ]] || fail "$case: it downloads: $(cat "$tmp/calls.log")"
+
+if ((failures > 0)); then
+  echo "install-git-cliff-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "install-git-cliff-test: all cases passed"

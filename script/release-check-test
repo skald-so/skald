@@ -1,0 +1,687 @@
+#!/usr/bin/env node
+// Tests the release check, script/release-check, against stand-ins for a release and for the
+// verification commands, on macOS and Linux, with no network.
+//   script/release-check [<tag>]: checks the release <tag>, vX.Y.Z or vX.Y.Z-beta.N; with none, or an
+//     empty one, the newest release, betas included. It exits 0 when every step passes. Otherwise it
+//     exits non-zero, and one of its lines starts with `release-check: `, says the step failed (it
+//     has "fail" in it) and names it: install.sh (install.ps1 on Windows), npx, skald update, the
+//     release file by its name, immutable, the image with signature or attestation, provenance,
+//     dist-tag; for a tag with no release, the tag.
+// Its steps, each of which this test fails on its own:
+//   - install.sh of the release installs skald, which prints the release's version; so does
+//     `npx skald-so` of the release's version;
+//   - for a stable release with an earlier one, the release published before it, a beta included,
+//     the skald of that earlier release updates itself to the release with `skald update`, then
+//     prints the release's version; a beta, and the first release, have no update;
+//   - with the commands of "Trust in builds" in docs/dev/infrastructure.md, pinned to the release's
+//     tag: every file of the release matches its checksum and has an attestation of the release
+//     workflow of skald-so/skald at the release's tag; the release is immutable; the image of the
+//     release's version is signed with cosign by that workflow at that tag, and has its attestation;
+//     the npm package has its provenance and is under the dist-tag latest, or next for a beta.
+//   - an attestation, a signature or a provenance made at another release's tag, at a ref that is no
+//     release tag, by another workflow or in another repository fails the check: one release's
+//     files, image and package, checked against the other release's tag.
+//   - a tag with no release fails it.
+// The stand-ins, script/lib/release-check-stub.mjs, set where it reaches:
+//   SKALD_RELEASES_URL   where the releases' files are instead of
+//                        https://github.com/skald-so/skald/releases/download: <url>/<tag>/<file>;
+//                        it names http://, not https://
+//   SKALD_GITHUB_API_URL GitHub's REST API, as for skald update
+//   npm_config_registry  npm's registry, for npx, npm and the npm attestations; curl on the PATH
+//                        reaches https://registry.npmjs.org/ there too
+//   PATH                 stand-ins of gh, cosign, docker and crane first
+// Each run has a home, npm cache and temporary directory of its own. A release's skald is a stand-in
+// that prints its version and, with `update`, updates itself as skald update does: from the latest
+// stable release of the stand-in API, with its user agent `skald/<version>`.
+import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  certificateIdentity,
+  imageName,
+  oidcIssuer,
+  provenanceType,
+  releaseWorkflow,
+  repository,
+  serve,
+} from './lib/release-check-stub.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const check = path.join(root, 'script/release-check');
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-check-test: ${what}`);
+  failures++;
+};
+
+const local = {
+  'Darwin/arm64': 'aarch64-apple-darwin',
+  'Darwin/x86_64': 'x86_64-apple-darwin',
+  'Linux/aarch64': 'aarch64-unknown-linux-gnu',
+  'Linux/x86_64': 'x86_64-unknown-linux-gnu',
+}[`${os.type()}/${os.machine()}`];
+if (!local) {
+  console.error(`release-check-test: no stand-in release for ${os.type()} on ${os.machine()}`);
+  process.exit(1);
+}
+const targets = [
+  'aarch64-apple-darwin',
+  'x86_64-apple-darwin',
+  'aarch64-unknown-linux-gnu',
+  'x86_64-unknown-linux-gnu',
+  'aarch64-pc-windows-msvc',
+  'x86_64-pc-windows-msvc',
+];
+// An archive of another machine's, which no install of this one downloads.
+const foreign = targets.find((t) => t !== local && !t.includes('windows'));
+const archiveOf = (target) => `skald-client-${target}.${target.includes('windows') ? 'zip' : 'tar.gz'}`;
+
+// Releases that skald-so/skald never publishes: its first release is 0.1.0 or later.
+const FIRST = 'v0.0.1';
+const BETA = 'v0.0.2-beta.1';
+const STABLE = 'v0.0.2';
+const LATER = 'v0.0.3';
+const versionOf = (tag) => tag.slice(1);
+const refOf = (tag) => `refs/tags/${tag}`;
+const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+const imageDigest = (tag) => `sha256:${sha256(`image ${tag}`)}`;
+
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-check-test-')));
+const curl = spawnSync('sh', ['-c', 'command -v curl'], { encoding: 'utf8' }).stdout.trim();
+if (!curl) {
+  console.error('release-check-test: curl is missing');
+  process.exit(1);
+}
+
+// standinSkald <version> <target> <behavior>: the source of a release's skald: --version prints
+// `skald <version>`, or a wrong one; `update` updates the running copy as skald update does, or
+// fails.
+const standinSkald = (version, target, behavior = {}) => `#!/usr/bin/env node
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const { execFileSync } = require('child_process');
+const version = ${JSON.stringify(version)};
+const target = ${JSON.stringify(target)};
+const args = process.argv.slice(2);
+const parse = (v) => {
+  const m = String(v).match(/^(\\d+)\\.(\\d+)\\.(\\d+)(?:-beta\\.(\\d+))?$/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? Infinity : Number(m[4])] : null;
+};
+const newer = (a, b) => {
+  const [x, y] = [parse(a), parse(b)];
+  for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+};
+async function update() {
+  ${behavior.updateFails ? "console.error('error: the update broke'); process.exit(1);" : ''}
+  const self = fs.realpathSync(process.argv[1]);
+  if (fs.existsSync(path.join(path.dirname(self), 'installed-by-npm'))) {
+    console.error('error: this skald is from npm; update it through npm');
+    process.exit(1);
+  }
+  const api = (process.env.SKALD_GITHUB_API_URL || 'https://api.github.com').replace(/\\/+$/, '');
+  const headers = { 'user-agent': 'skald/' + version };
+  const answer = await fetch(api + '/repos/skald-so/skald/releases/latest', { headers });
+  if (!answer.ok) throw new Error('no latest release: HTTP ' + answer.status);
+  const release = await answer.json();
+  const latest = release.tag_name.replace(/^v/, '');
+  if (!parse(latest) || !newer(latest, version)) {
+    console.log('skald ' + version + ' is current');
+    return;
+  }
+  const name = 'skald-client-' + target + '.tar.gz';
+  const asset = (n) => release.assets.find((a) => a.name === n);
+  if (!asset(name) || !asset(name + '.sha256')) throw new Error('the release has no ' + name);
+  const get = async (n) => {
+    const r = await fetch(asset(n).browser_download_url, { headers });
+    if (!r.ok) throw new Error('cannot download ' + n + ': HTTP ' + r.status);
+    return Buffer.from(await r.arrayBuffer());
+  };
+  const bytes = await get(name);
+  const expected = (await get(name + '.sha256')).toString().trim().split(/\\s+/)[0];
+  if (crypto.createHash('sha256').update(bytes).digest('hex') !== expected) throw new Error(name + ' does not match its checksum');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'skald-update-'));
+  fs.writeFileSync(path.join(dir, name), bytes);
+  execFileSync('tar', ['-xzf', path.join(dir, name), '-C', dir]);
+  fs.copyFileSync(path.join(dir, 'skald-client-' + target, 'skald'), self + '.new');
+  fs.chmodSync(self + '.new', 0o755);
+  fs.renameSync(self + '.new', self);
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log('updated skald to ' + latest);
+}
+if (args[0] === '--version' || args[0] === '-V') console.log('skald ' + ${JSON.stringify(behavior.prints ?? version)});
+else if (args[0] === 'update') update().catch((e) => { console.error('error: ' + e.message); process.exit(1); });
+else console.log('skald ' + version + ': ' + args.join(' '));
+`;
+
+// writeArchive <dir> <tag> <target> <behavior>: the release's archive for <target> and its
+// checksum, laid out as dist lays them out.
+function writeArchive(dir, tag, target, behavior) {
+  const archive = path.join(dir, archiveOf(target));
+  if (target.includes('windows')) {
+    fs.writeFileSync(archive, `stand-in zip of skald ${versionOf(tag)} for ${target}\n`);
+  } else {
+    const work = fs.mkdtempSync(path.join(scratch, 'archive-'));
+    fs.mkdirSync(path.join(work, `skald-client-${target}`));
+    fs.writeFileSync(path.join(work, `skald-client-${target}`, 'skald'), standinSkald(versionOf(tag), target, behavior), { mode: 0o755 });
+    const result = spawnSync('tar', ['-czf', archive, '-C', work, `skald-client-${target}`], { encoding: 'utf8' });
+    if (result.status !== 0) throw new Error(`tar: ${result.stderr}`);
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+  fs.writeFileSync(`${archive}.sha256`, `${sha256(fs.readFileSync(archive))} *${path.basename(archive)}\n\n`);
+}
+
+const runScript = (script, ...args) => {
+  const result = spawnSync(path.join(root, 'script', script), args, { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`script/${script} ${args.join(' ')}: ${result.stderr}`);
+};
+const packageJson = (tgz) => {
+  const result = spawnSync('tar', ['-xzOf', tgz, 'package/package.json'], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`cannot read the package.json of ${tgz}: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+};
+
+// The pristine releases and packages, copied into each case.
+const pristine = path.join(scratch, 'pristine');
+for (const tag of [FIRST, BETA, STABLE]) {
+  const dir = path.join(pristine, tag, 'release');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const target of targets) writeArchive(dir, tag, target);
+  runScript('release-installers', tag, dir);
+  runScript('release-npm', tag, path.join(pristine, tag, 'npm'));
+}
+// brokenPackage <tag> <dir>: a package skald-so of the release whose skald fails.
+function brokenPackage(tag, dir) {
+  const work = fs.mkdtempSync(path.join(scratch, 'package-'));
+  fs.mkdirSync(path.join(work, 'package'));
+  fs.writeFileSync(
+    path.join(work, 'package', 'package.json'),
+    JSON.stringify({ name: 'skald-so', version: versionOf(tag), bin: { skald: 'skald.js' }, license: 'MIT' }),
+  );
+  fs.writeFileSync(path.join(work, 'package', 'skald.js'), "#!/usr/bin/env node\nconsole.error('the package broke');\nprocess.exit(1);\n", {
+    mode: 0o755,
+  });
+  const tgz = path.join(dir, `skald-so-${versionOf(tag)}.tgz`);
+  const result = spawnSync('tar', ['-czf', tgz, '-C', work, 'package'], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`tar: ${result.stderr}`);
+  fs.rmSync(work, { recursive: true, force: true });
+  return tgz;
+}
+
+// world <dir> <tags>: the stand-in GitHub, GHCR and npm with the releases <tags>, oldest first, as
+// the release workflow publishes them, and helpers to change it.
+function world(dir, tags) {
+  const w = {
+    releases: [],
+    latest: null,
+    npm: { versions: {}, distTags: {}, provenance: {} },
+    requests: [],
+    image: { name: imageName, tags: {} },
+    signatures: [],
+    attestations: [],
+  };
+  const attestFile = (tag, file, by = {}) => ({
+    digest: sha256(fs.readFileSync(file)),
+    name: path.basename(file),
+    tag,
+    repo: by.repo ?? repository,
+    workflow: by.workflow ?? releaseWorkflow,
+    ref: by.ref ?? refOf(tag),
+    predicateType: provenanceType,
+  });
+  for (const tag of tags) {
+    const release = { tag, prerelease: tag.includes('-'), immutable: true, dir: path.join(dir, tag, 'release') };
+    fs.cpSync(path.join(pristine, tag, 'release'), release.dir, { recursive: true });
+    fs.cpSync(path.join(pristine, tag, 'npm'), path.join(dir, tag, 'npm'), { recursive: true });
+    w.releases.push(release);
+    for (const name of fs.readdirSync(release.dir)) w.attestations.push(attestFile(tag, path.join(release.dir, name)));
+    const digest = imageDigest(tag);
+    w.image.tags[versionOf(tag)] = digest;
+    w.signatures.push({ digest, tag, identity: certificateIdentity(releaseWorkflow, refOf(tag)), issuer: oidcIssuer });
+    w.attestations.push({ digest, tag, name: 'image', repo: repository, workflow: releaseWorkflow, ref: refOf(tag), predicateType: provenanceType });
+    const tgz = path.join(dir, tag, 'npm', `skald-so-${versionOf(tag)}.tgz`);
+    w.npm.versions[versionOf(tag)] = { tgz, manifest: packageJson(tgz) };
+    w.npm.provenance[versionOf(tag)] = { repo: repository, workflow: releaseWorkflow, ref: refOf(tag) };
+    w.npm.distTags[release.prerelease ? 'next' : 'latest'] = versionOf(tag);
+    if (!release.prerelease) w.latest = tag;
+  }
+  const release = (tag) => w.releases.find((r) => r.tag === tag);
+  // replace <tag> <name> <bytes>: the release's file <name> is <bytes>, attested as published.
+  w.replace = (tag, name, bytes) => {
+    const file = path.join(release(tag).dir, name);
+    fs.writeFileSync(file, bytes);
+    w.attestations = w.attestations.filter((a) => !(a.tag === tag && a.name === name));
+    w.attestations.push(attestFile(tag, file));
+  };
+  // rebuild <tag> <target> <behavior>: the release's archive for <target> holds a skald that
+  // behaves so, with its checksum, both attested as published.
+  w.rebuild = (tag, target, behavior) => {
+    writeArchive(release(tag).dir, tag, target, behavior);
+    for (const name of [archiveOf(target), `${archiveOf(target)}.sha256`]) w.replace(tag, name, fs.readFileSync(path.join(release(tag).dir, name)));
+  };
+  // reattest <tag> <by>: every file of the release is attested by <by> instead, {repo, workflow, ref}.
+  w.reattest = (tag, by) => {
+    w.attestations = w.attestations
+      .filter((a) => !(a.tag === tag && a.name !== 'image'))
+      .concat(fs.readdirSync(release(tag).dir).map((name) => attestFile(tag, path.join(release(tag).dir, name), by)));
+  };
+  w.release = release;
+  w.brokenPackage = (tag) => {
+    const tgz = brokenPackage(tag, fs.mkdtempSync(path.join(dir, 'broken-')));
+    w.npm.versions[versionOf(tag)] = { tgz, manifest: packageJson(tgz) };
+  };
+  return w;
+}
+
+// The names a failure line may give each step.
+const fileNames = (w, tag) => fs.readdirSync(w.release(tag).dir);
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const anyOf = (names) => new RegExp(names.map(escape).join('|'));
+
+// runCheck <dir> <w> <args>: script/release-check run against the world; {status, output, calls}.
+async function runCheck(dir, w, args) {
+  const server = await serve(w);
+  try {
+    const bin = path.join(dir, 'bin');
+    const home = path.join(dir, 'home');
+    const tmp = path.join(dir, 'tmp');
+    for (const d of [bin, home, tmp]) fs.mkdirSync(d, { recursive: true });
+    const stateFile = path.join(dir, 'state.json');
+    const calls = path.join(dir, 'calls.jsonl');
+    fs.writeFileSync(calls, '');
+    fs.writeFileSync(
+      stateFile,
+      JSON.stringify({ server: server.url, curl, calls, image: w.image, signatures: w.signatures, attestations: w.attestations }),
+    );
+    const stub = path.join(root, 'script/lib/release-check-stub.mjs');
+    for (const tool of ['gh', 'cosign', 'docker', 'crane', 'curl', 'wget']) {
+      fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nexec node '${stub}' '${stateFile}' ${tool} "$@"\n`, { mode: 0o755 });
+    }
+    const npmrc = path.join(dir, 'npmrc');
+    fs.writeFileSync(npmrc, '');
+    const env = {
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      HOME: home,
+      TMPDIR: tmp,
+      SKALD_RELEASES_URL: `${server.url}/download`,
+      SKALD_GITHUB_API_URL: `${server.url}/api`,
+      npm_config_registry: `${server.url}/npm/`,
+      npm_config_cache: path.join(dir, 'npm-cache'),
+      npm_config_userconfig: npmrc,
+      npm_config_update_notifier: 'false',
+      npm_config_fund: 'false',
+      npm_config_audit: 'false',
+    };
+    const child = spawn(check, args, { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    let output = '';
+    child.stdout.on('data', (d) => (output += d));
+    child.stderr.on('data', (d) => (output += d));
+    const timer = setTimeout(() => {
+      output += '\n(killed after 300 s)';
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {}
+    }, 300_000);
+    const status = await new Promise((resolve) => {
+      child.on('error', (e) => {
+        output += `\ncannot run script/release-check: ${e.message}`;
+        resolve(null);
+      });
+      child.on('close', (code, signal) => resolve(code ?? signal));
+    });
+    clearTimeout(timer);
+    const logged = fs
+      .readFileSync(calls, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    return { status, output, calls: logged };
+  } finally {
+    await server.close();
+  }
+}
+
+const tail = (output) => output.trim().split('\n').slice(-8).join(' | ');
+// failedLine <output> <patterns>: a line `release-check: ...` that says a step failed and matches
+// each of <patterns>.
+const failedLine = (output, patterns) =>
+  output.split('\n').some((line) => /^release-check: /.test(line) && /fail/i.test(line) && patterns.every((p) => p.test(line)));
+
+// Each case: its name, its releases, a change of the world, the arguments, and what it expects:
+// pass, or the patterns of the line that names the failed step; then more checks of a passed run.
+const all = [FIRST, BETA, STABLE];
+const cases = [
+  {
+    name: 'a good beta passes, with no skald update',
+    tags: [FIRST, BETA],
+    args: [BETA],
+    pass: true,
+    after: (r, w) => {
+      covered(r, w, BETA);
+      if (w.requests.some((q) => q.agent.startsWith('skald/'))) fail(`${BETA}: a beta has no skald update, but a skald ran one`);
+    },
+  },
+  {
+    name: 'a good stable release passes, with skald update from the beta before it',
+    tags: all,
+    args: [STABLE],
+    pass: true,
+    after: (r, w) => {
+      covered(r, w, STABLE);
+      const agent = `skald/${versionOf(BETA)}`;
+      if (!w.requests.some((q) => q.agent === agent && q.path === '/api/repos/skald-so/skald/releases/latest')) {
+        fail(`${STABLE}: the skald of ${BETA}, the release before it, runs skald update, but it asked for no latest release`);
+      }
+      if (!w.requests.some((q) => q.agent === agent && q.path === `/download/${STABLE}/${archiveOf(local)}`)) {
+        fail(`${STABLE}: skald update of ${BETA} downloads ${archiveOf(local)} of ${STABLE}, but it did not`);
+      }
+    },
+  },
+  {
+    name: 'the first stable release passes, with no skald update',
+    tags: [STABLE],
+    args: [STABLE],
+    pass: true,
+    after: (r, w) => {
+      if (w.requests.some((q) => q.agent.startsWith('skald/'))) fail(`${STABLE}: with no earlier release there is no skald update, but a skald ran one`);
+    },
+  },
+  {
+    name: 'with no tag it checks the newest release, a beta: the stable one before it fails, the beta passes',
+    tags: [FIRST, BETA],
+    change: (w) => (w.release(FIRST).immutable = false),
+    args: [],
+    pass: true,
+  },
+  {
+    name: 'with an empty tag it checks the newest release, a beta that fails',
+    tags: [FIRST, BETA],
+    change: (w) => (w.release(BETA).immutable = false),
+    args: [''],
+    expect: [/immutable/i],
+  },
+  {
+    name: 'with no tag it checks the newest release, a beta that fails',
+    tags: [FIRST, BETA],
+    change: (w) => (w.release(BETA).immutable = false),
+    args: [],
+    expect: [/immutable/i],
+  },
+  {
+    name: 'install.sh of the release fails',
+    tags: all,
+    change: (w) => w.replace(STABLE, 'install.sh', '#!/bin/sh\necho "the installer broke" >&2\nexit 1\n'),
+    args: [STABLE],
+    expect: [/install\.sh/],
+  },
+  {
+    name: 'npx skald-so of the release fails',
+    tags: all,
+    change: (w) => w.brokenPackage(STABLE),
+    args: [STABLE],
+    expect: [/\bnpx\b/],
+  },
+  {
+    name: "the release's skald prints another version",
+    tags: [FIRST, BETA],
+    change: (w) => w.rebuild(BETA, local, { prints: '0.0.0' }),
+    args: [BETA],
+    expect: [/install\.sh|\bnpx\b/],
+  },
+  {
+    name: 'skald update of the earlier release fails',
+    tags: all,
+    change: (w) => w.rebuild(BETA, local, { updateFails: true }),
+    args: [STABLE],
+    expect: [/skald update/],
+  },
+  {
+    name: 'skald update leaves the earlier release: GitHub does not mark the release the latest',
+    tags: all,
+    change: (w) => (w.latest = FIRST),
+    args: [STABLE],
+    expect: [/skald update/],
+  },
+  {
+    name: 'the release is not immutable',
+    tags: all,
+    change: (w) => (w.release(STABLE).immutable = false),
+    args: [STABLE],
+    expect: [/immutable/i],
+  },
+  {
+    name: 'a file of the release has no attestation',
+    tags: all,
+    change: (w) => (w.attestations = w.attestations.filter((a) => !(a.tag === STABLE && a.name === 'install.ps1'))),
+    args: [STABLE],
+    expect: [/install\.ps1/],
+  },
+  {
+    name: 'a Windows archive does not match its checksum',
+    tags: all,
+    change: (w) => w.replace(STABLE, archiveOf('aarch64-pc-windows-msvc'), 'another archive\n'),
+    args: [STABLE],
+    expect: [new RegExp(escape(archiveOf('aarch64-pc-windows-msvc')))],
+  },
+  {
+    name: "another machine's archive does not match its checksum",
+    tags: all,
+    change: (w) => w.replace(STABLE, archiveOf(foreign), 'another archive\n'),
+    args: [STABLE],
+    expect: [new RegExp(escape(archiveOf(foreign)))],
+  },
+  {
+    name: "the release's files are attested at the other release's tag",
+    tags: all,
+    change: (w) => w.reattest(STABLE, { ref: refOf(BETA) }),
+    args: [STABLE],
+    files: STABLE,
+  },
+  {
+    name: "the beta's files are attested at the stable release's tag",
+    tags: all,
+    change: (w) => w.reattest(BETA, { ref: refOf(STABLE) }),
+    args: [BETA],
+    files: BETA,
+  },
+  {
+    name: "the release's files are attested at a ref that is no release tag, refs/heads/dev",
+    tags: all,
+    change: (w) => w.reattest(STABLE, { ref: 'refs/heads/dev' }),
+    args: [STABLE],
+    files: STABLE,
+  },
+  {
+    name: "the release's files are attested at a PR's ref",
+    tags: all,
+    change: (w) => w.reattest(STABLE, { ref: 'refs/pull/7/merge' }),
+    args: [STABLE],
+    files: STABLE,
+  },
+  {
+    name: "the release's files are attested by another workflow at the tag",
+    tags: all,
+    change: (w) => w.reattest(STABLE, { workflow: 'skald-so/skald/.github/workflows/edge.yml' }),
+    args: [STABLE],
+    files: STABLE,
+  },
+  {
+    name: "the release's files are attested in another repository",
+    tags: all,
+    change: (w) => w.reattest(STABLE, { repo: 'fork/skald', workflow: 'fork/skald/.github/workflows/release.yml' }),
+    args: [STABLE],
+    files: STABLE,
+  },
+  {
+    name: 'GHCR has no image of the version',
+    tags: all,
+    change: (w) => delete w.image.tags[versionOf(STABLE)],
+    args: [STABLE],
+    expect: [/image/i],
+  },
+  {
+    name: "the image is signed at the other release's tag",
+    tags: all,
+    change: (w) => signAt(w, STABLE, certificateIdentity(releaseWorkflow, refOf(BETA))),
+    args: [STABLE],
+    expect: [/image/i, /signature/i],
+  },
+  {
+    name: "the beta's image is signed at the stable release's tag",
+    tags: all,
+    change: (w) => signAt(w, BETA, certificateIdentity(releaseWorkflow, refOf(STABLE))),
+    args: [BETA],
+    expect: [/image/i, /signature/i],
+  },
+  {
+    name: 'the image is signed at a ref that is no release tag, refs/heads/dev',
+    tags: all,
+    change: (w) => signAt(w, STABLE, certificateIdentity(releaseWorkflow, 'refs/heads/dev')),
+    args: [STABLE],
+    expect: [/image/i, /signature/i],
+  },
+  {
+    name: 'the image is signed by the release workflow of another repository',
+    tags: all,
+    change: (w) => signAt(w, STABLE, certificateIdentity('fork/skald/.github/workflows/release.yml', refOf(STABLE))),
+    args: [STABLE],
+    expect: [/image/i, /signature/i],
+  },
+  {
+    name: 'the image is not signed',
+    tags: all,
+    change: (w) => (w.signatures = w.signatures.filter((s) => s.tag !== STABLE)),
+    args: [STABLE],
+    expect: [/image/i, /signature/i],
+  },
+  {
+    name: "the image's attestation is made at the other release's tag",
+    tags: all,
+    change: (w) => imageAttestedAt(w, STABLE, { ref: refOf(BETA) }),
+    args: [STABLE],
+    expect: [/image/i, /attest/i],
+  },
+  {
+    name: "the image's attestation is made at a ref that is no release tag, refs/heads/dev",
+    tags: all,
+    change: (w) => imageAttestedAt(w, STABLE, { ref: 'refs/heads/dev' }),
+    args: [STABLE],
+    expect: [/image/i, /attest/i],
+  },
+  {
+    name: "the npm package's provenance is made at the other release's tag",
+    tags: all,
+    change: (w) => (w.npm.provenance[versionOf(STABLE)].ref = refOf(BETA)),
+    args: [STABLE],
+    expect: [/provenance/i],
+  },
+  {
+    name: "the npm package's provenance is made at a ref that is no release tag, refs/heads/dev",
+    tags: all,
+    change: (w) => (w.npm.provenance[versionOf(STABLE)].ref = 'refs/heads/dev'),
+    args: [STABLE],
+    expect: [/provenance/i],
+  },
+  {
+    name: 'the npm package has no provenance',
+    tags: all,
+    change: (w) => delete w.npm.provenance[versionOf(STABLE)],
+    args: [STABLE],
+    expect: [/provenance/i],
+  },
+  {
+    name: 'the beta is under the dist-tag latest, not next',
+    tags: [FIRST, BETA],
+    change: (w) => (w.npm.distTags = { latest: versionOf(BETA) }),
+    args: [BETA],
+    expect: [/dist-tag/i],
+  },
+  {
+    name: 'the stable release is not under the dist-tag latest',
+    tags: all,
+    change: (w) => (w.npm.distTags = { latest: versionOf(FIRST), next: versionOf(BETA) }),
+    args: [STABLE],
+    expect: [/dist-tag/i],
+  },
+  {
+    name: 'a tag with no release',
+    tags: all,
+    args: [LATER],
+    expect: [new RegExp(escape(LATER))],
+  },
+];
+
+function signAt(w, tag, identity) {
+  for (const s of w.signatures) if (s.tag === tag) s.identity = identity;
+}
+function imageAttestedAt(w, tag, by) {
+  for (const a of w.attestations) if (a.tag === tag && a.name === 'image') Object.assign(a, by);
+}
+// covered <run> <world> <tag>: the passed run verified the attestation of every file of the
+// release, signature and attestation of its image and the provenance of its package.
+function covered(r, w, tag) {
+  const ok = (tool, digest, extra = () => true) =>
+    r.calls.some((c) => c.tool === tool && c.status === 0 && c.subjects.includes(digest) && extra(c));
+  const verifies = (c) => c.args[0] === 'attestation' && c.args[1] === 'verify';
+  for (const name of fileNames(w, tag)) {
+    if (!ok('gh', sha256(fs.readFileSync(path.join(w.release(tag).dir, name))), verifies)) {
+      fail(`${tag}: the check verifies the attestation of every file of the release, but not of ${name}`);
+    }
+  }
+  if (!ok('cosign', imageDigest(tag))) fail(`${tag}: the check verifies the signature of the image ${imageName}@${imageDigest(tag)}, but did not`);
+  if (!ok('gh', imageDigest(tag), verifies)) fail(`${tag}: the check verifies the attestation of the image ${imageName}@${imageDigest(tag)}, but did not`);
+  const tgz = fs.readFileSync(w.npm.versions[versionOf(tag)].tgz);
+  if (!ok('gh', crypto.createHash('sha512').update(tgz).digest('hex'), verifies)) {
+    fail(`${tag}: the check verifies the provenance of the npm package skald-so@${versionOf(tag)}, but did not`);
+  }
+}
+
+async function runCase(c, index) {
+  const dir = path.join(scratch, `case-${index}`);
+  fs.mkdirSync(dir);
+  const w = world(dir, c.tags);
+  c.change?.(w);
+  const r = await runCheck(dir, w, c.args);
+  const label = `${c.name} (script/release-check ${c.args.map((a) => JSON.stringify(a)).join(' ')})`;
+  const unsupported = r.calls.filter((call) => call.status === 64);
+  if (unsupported.length > 0) {
+    fail(`${label}: the stand-ins cannot answer: ${unsupported.map((u) => `${u.tool} ${u.args.join(' ')}`).join('; ')}`);
+  }
+  if (c.pass) {
+    if (r.status !== 0) fail(`${label}: it passes, but exits ${r.status}: ${tail(r.output)}`);
+    else c.after?.(r, w);
+  } else {
+    const patterns = c.files ? [anyOf(fileNames(w, c.files))] : c.expect;
+    if (r.status === 0) fail(`${label}: it fails, but exits 0: ${tail(r.output)}`);
+    else if (!failedLine(r.output, patterns)) {
+      fail(`${label}: it fails with a line 'release-check: ...' that names the failed step (${patterns.join(' and ')}), not: ${tail(r.output)}`);
+    }
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+try {
+  if (!fs.statSync(check, { throwIfNoEntry: false })?.isFile()) fail('script/release-check is missing');
+  // Four checks at a time.
+  const queue = cases.map((c, i) => [c, i]);
+  await Promise.all(
+    Array.from({ length: 4 }, async () => {
+      while (queue.length > 0) {
+        const [c, i] = queue.shift();
+        await runCase(c, i);
+      }
+    }),
+  );
+} finally {
+  fs.rmSync(scratch, { recursive: true, force: true });
+}
+
+if (failures > 0) {
+  console.error(`release-check-test: ${failures} case(s) failed`);
+  process.exit(1);
+}
+console.log('release-check-test: all cases passed');
