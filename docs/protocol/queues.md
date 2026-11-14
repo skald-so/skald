@@ -281,6 +281,8 @@ The device hands the agent the `request` with its `from` and the trust level of 
 - After a no, or once `deadline` passes, the device fails the task without retry.
 
 ## Results
+Before it completes a task that names a template, the claiming device checks the result object in `response` ([Templates](#templates)) against the template's result format. A result is invalid when `response` has no result object, or the object lacks a field the format requires or holds it as null or an empty string, array or map; a number, 0 included, is never empty. The device MUST NOT complete a task with an invalid result; it fails the task with retry instead.
+
 After the server takes its complete, the claiming device sends the result as an application message in the channel; after the server takes its fail, it SHOULD send one. Its content has `from` the claiming agent, which is the task's `to` if it has one; `to` the task's `from`; `hops` the task's plus one; the `task-result` body; and `attachments` as for the `a2a` body.
 
 ```cddl
@@ -308,7 +310,7 @@ The task's sending device MUST drop a result unless:
 2. `task` is a task this device enqueued in the channel, `to` is that task's `from`, and `from` is that task's `to` if it has one;
 3. for `done`, the server gives the task as `done` with this `claim_id` and `generation`, claimed by the sending device.
 
-It takes the first result with `done` that passes as the task's result.
+It takes the first result with `done` that passes as the task's result, unless that result is invalid as above. For an invalid one, the device shows the task as done with an invalid result and triggers the [notification](../dev/architecture.md#notifications) of the enqueuing agent's [person](agents.md#person), giving the server only the event class.
 
 ## Templates
 A template sets the agent's instructions and the formats of a task's input and result. A task needs none: an `own` sender usually sends free text.
@@ -316,6 +318,7 @@ A template sets the agent's instructions and the formats of a task's input and r
 - A task names its template in `sched`; a claim gets it only if it states that template ([Claims and leases](#claims-and-leases)).
 - The input travels in `request` as one part with `data`, the input object in the template's format; the result in `response` the same way. Other parts, such as text and files, travel beside them.
 - A claiming device takes a template's instructions and formats only from a template built into its client, `review`, `test` or `ask`, or from a team template signed by an [admin's device](membership.md#roster) of the space, once its user enables it for the queue ([Running a task](#running-a-task)). It MUST NOT take them from the server unsigned. Team templates come in a later revision of this document; adding them needs no new protocol version.
+- The built-in `test` template's input names the commit to test. Its result holds the command, its exit code and duration, and the commit and tree hash the command ran on; each is required. The sending device shows them and warns its user when the tree is not that of the commit the task named.
 - A template grants no rights: [Running a task](#running-a-task).
 
 ## Problems
@@ -348,5 +351,5 @@ Queue requests are refused with a problem details object, as in [Server answers]
 - A `service` device that is not a member holds only queue public keys: a leaked service key with its token enqueues tasks at the `service` trust level and reads only what is sent to it under `hpke`. A leaked token alone signs no task, and it creates, changes or deletes no queue and releases, restarts or cancels no task.
 - A member `service` device's key and token usually sit in one CI secret. A leaked token alone claims tasks it cannot open, and fails them or lets their leases end, the device's live claims included: they go to `dead` or back after the backoff. A leak of the whole secret also opens and runs the tasks it claims, reads what the device's keys reach and enqueues tasks at the `service` trust level. Neither releases, restarts or cancels a task, so neither makes an `at-most-once` task run twice.
 - A member device can upload a wrong queue key object first. Tasks that non-member `service` devices seal to it are then unreadable to the other devices; member devices warn their users. It breaks availability, not secrecy from the server.
-- A claiming device can return any result: it reaches the sender's agent as a message from that device's agent and trust level does ([Device to agent](delivery.md#device-to-agent)), and nothing shows that it is honest.
+- A claiming device can return any result: it reaches the sender's agent as a message from that device's agent and trust level does ([Device to agent](delivery.md#device-to-agent)), and nothing shows that it is honest. A `test` result's commit and tree hash bind it to the claiming device and a tree, and the check of [Results](#results) shows it complete, not true.
 - Queue names and settings, `sched` with the addressee's device, what each claim states, and which device uploads, claims and completes each task, and when, are visible to the server. Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).
