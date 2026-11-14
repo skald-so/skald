@@ -2,13 +2,15 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
 use skald_proto::ServerName;
 use skald_server::{
-    ClientSecret, GitHubApp, GitHubUrl, OidcSettings, PublicUrl, Settings, SignInSettings,
+    AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret, GitHubApp, GitHubUrl,
+    OidcSettings, PublicUrl, Settings, SignInSettings,
 };
 use tokio::net::TcpListener;
 
@@ -16,6 +18,8 @@ use tokio::net::TcpListener;
 const GITHUB_SECRET_ENV: &str = "SKALD_GITHUB_CLIENT_SECRET";
 /// The environment variable that holds the Google OAuth client's secret.
 const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
+/// The environment variable that holds the attachment bucket's secret key.
+const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
 /// The least time between two reads of Google's keys.
 const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
 
@@ -134,6 +138,44 @@ struct Cli {
     /// change [default: the host of --public-url, unless that is an IP address].
     #[arg(long, env = "SKALD_SERVER_NAME", value_name = "NAME")]
     server_name: Option<ServerName>,
+
+    /// The directory that keeps attachments; a bucket replaces it [default: no attachment storage].
+    #[arg(long, env = "SKALD_ATTACHMENTS_DIR", value_name = "DIR")]
+    attachments_dir: Option<PathBuf>,
+
+    /// The S3-compatible bucket that keeps attachments, in place of the directory. Its secret key
+    /// comes only from the environment variable SKALD_ATTACHMENTS_BUCKET_SECRET_KEY.
+    #[arg(long, env = "SKALD_ATTACHMENTS_BUCKET", value_name = "NAME")]
+    attachments_bucket: Option<String>,
+
+    /// The bucket's S3 endpoint, https or http on a loopback address; the bucket is addressed in
+    /// its path, e.g. https://s3.example/<NAME>/<object>.
+    #[arg(long, env = "SKALD_ATTACHMENTS_BUCKET_ENDPOINT", value_name = "URL")]
+    attachments_bucket_endpoint: Option<BucketEndpoint>,
+
+    /// The bucket's region.
+    #[arg(long, env = "SKALD_ATTACHMENTS_BUCKET_REGION", value_name = "REGION")]
+    attachments_bucket_region: Option<String>,
+
+    /// The bucket's access key ID.
+    #[arg(
+        long,
+        env = "SKALD_ATTACHMENTS_BUCKET_ACCESS_KEY_ID",
+        value_name = "ID"
+    )]
+    attachments_bucket_access_key_id: Option<String>,
+}
+
+/// The secret in the environment variable `name`; `None` if it is unset or empty.
+fn secret(name: &str) -> Result<Option<ClientSecret>, String> {
+    Ok(env::var_os(name)
+        .map(|secret| {
+            secret
+                .into_string()
+                .map_err(|_| format!("{name} is not UTF-8"))
+        })
+        .transpose()?
+        .and_then(ClientSecret::new))
 }
 
 /// A provider's client ID, given by `flag`, and its secret, from the environment variable
@@ -143,15 +185,7 @@ fn client(
     flag: &str,
     secret_env: &str,
 ) -> Result<Option<(String, ClientSecret)>, String> {
-    let secret = env::var_os(secret_env)
-        .map(|secret| {
-            secret
-                .into_string()
-                .map_err(|_| format!("{secret_env} is not UTF-8"))
-        })
-        .transpose()?
-        .and_then(ClientSecret::new);
-    match (client_id, secret) {
+    match (client_id, secret(secret_env)?) {
         (None, None) => Ok(None),
         (Some(client_id), Some(secret)) => Ok(Some((client_id, secret))),
         (Some(_), None) => Err(format!("{flag} needs the client secret in {secret_env}")),
@@ -160,6 +194,56 @@ fn client(
 }
 
 impl Cli {
+    /// The attachment storage: the bucket, given with all its settings and `secret_key`, or the
+    /// directory, or none.
+    fn attachment_storage(
+        &mut self,
+        secret_key: Option<ClientSecret>,
+    ) -> Result<Option<AttachmentStorage>, String> {
+        let Some(name) = self.attachments_bucket.take() else {
+            let set = [
+                (
+                    self.attachments_bucket_endpoint.is_some(),
+                    "--attachments-bucket-endpoint",
+                ),
+                (
+                    self.attachments_bucket_region.is_some(),
+                    "--attachments-bucket-region",
+                ),
+                (
+                    self.attachments_bucket_access_key_id.is_some(),
+                    "--attachments-bucket-access-key-id",
+                ),
+                (secret_key.is_some(), BUCKET_SECRET_ENV),
+            ];
+            if let Some((_, setting)) = set.iter().find(|(set, _)| *set) {
+                return Err(format!("{setting} needs --attachments-bucket"));
+            }
+            return Ok(self
+                .attachments_dir
+                .take()
+                .map(AttachmentStorage::Directory));
+        };
+        let needs = |setting: &str| format!("--attachments-bucket needs {setting}");
+        Ok(Some(AttachmentStorage::Bucket(BucketSettings {
+            name,
+            endpoint: self
+                .attachments_bucket_endpoint
+                .take()
+                .ok_or_else(|| needs("--attachments-bucket-endpoint"))?,
+            region: self
+                .attachments_bucket_region
+                .take()
+                .ok_or_else(|| needs("--attachments-bucket-region"))?,
+            access_key_id: self
+                .attachments_bucket_access_key_id
+                .take()
+                .ok_or_else(|| needs("--attachments-bucket-access-key-id"))?,
+            secret_key: secret_key
+                .ok_or_else(|| needs(&format!("the secret key in {BUCKET_SECRET_ENV}")))?,
+        })))
+    }
+
     /// The settings, or why they do not fit together.
     fn settings(self) -> Result<Settings, String> {
         let server_name = self
@@ -225,10 +309,12 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Connects to PostgreSQL, applies pending migrations, then serves the API.
-async fn run(cli: Cli) -> Result<(), String> {
+/// Connects to PostgreSQL, applies pending migrations, checks the attachment storage, then serves
+/// the API.
+async fn run(mut cli: Cli) -> Result<(), String> {
     let listen = cli.listen;
     let database_url = cli.database_url.clone();
+    let attachments = cli.attachment_storage(secret(BUCKET_SECRET_ENV)?)?;
     let settings = cli.settings()?;
     let db = skald_server::connect(&database_url)
         .await
@@ -237,13 +323,106 @@ async fn run(cli: Cli) -> Result<(), String> {
         .run(&db)
         .await
         .map_err(|err| format!("cannot apply migrations: {err}"))?;
+    if let Some(storage) = attachments.clone() {
+        tokio::task::spawn_blocking(move || storage.check())
+            .await
+            .map_err(|err| format!("cannot check the attachment storage: {err}"))??;
+    }
 
     let listener = TcpListener::bind(listen)
         .await
         .map_err(|err| format!("cannot listen on {listen}: {err}"))?;
     let addr = listener.local_addr().map_err(|err| err.to_string())?;
     eprintln!("skald-server: listening on http://{addr}");
+    // After the line above, which the tests and the image's users read first.
+    if let Some(storage) = &attachments {
+        eprintln!("skald-server: attachments in {storage}");
+    }
     axum::serve(listener, skald_server::app(db, settings))
         .await
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The attachment storage of the arguments `args`, with `secret_key` as the bucket's.
+    fn storage(args: &[&str], secret_key: Option<&str>) -> Result<Option<String>, String> {
+        let mut cli = Cli::try_parse_from(
+            [
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+            ]
+            .iter()
+            .chain(args),
+        )
+        .expect("valid arguments");
+        let secret_key = secret_key.and_then(|key| ClientSecret::new(key.to_owned()));
+        cli.attachment_storage(secret_key)
+            .map(|storage| storage.map(|storage| storage.to_string()))
+    }
+
+    const BUCKET: [&str; 8] = [
+        "--attachments-bucket",
+        "files",
+        "--attachments-bucket-endpoint",
+        "https://s3.example",
+        "--attachments-bucket-region",
+        "auto",
+        "--attachments-bucket-access-key-id",
+        "key",
+    ];
+
+    #[test]
+    fn a_bucket_needs_all_its_settings() {
+        assert_eq!(
+            storage(&BUCKET, Some("secret")),
+            Ok(Some("the bucket files at https://s3.example/".to_owned()))
+        );
+        assert_eq!(
+            storage(&BUCKET, None),
+            Err(format!(
+                "--attachments-bucket needs the secret key in {BUCKET_SECRET_ENV}"
+            ))
+        );
+        for missing in [2, 4, 6] {
+            let mut args = BUCKET.to_vec();
+            let setting = args.remove(missing);
+            args.remove(missing);
+            assert_eq!(
+                storage(&args, Some("secret")),
+                Err(format!("--attachments-bucket needs {setting}"))
+            );
+        }
+    }
+
+    #[test]
+    fn a_bucket_setting_needs_the_bucket() {
+        for at in [2, 4, 6] {
+            assert_eq!(
+                storage(&BUCKET[at..at + 2], None),
+                Err(format!("{} needs --attachments-bucket", BUCKET[at]))
+            );
+        }
+        assert_eq!(
+            storage(&[], Some("secret")),
+            Err(format!("{BUCKET_SECRET_ENV} needs --attachments-bucket"))
+        );
+    }
+
+    #[test]
+    fn the_directory_unless_a_bucket_replaces_it() {
+        let dir = ["--attachments-dir", "/srv/attachments"];
+        assert_eq!(
+            storage(&dir, None),
+            Ok(Some("the directory /srv/attachments".to_owned()))
+        );
+        assert_eq!(
+            storage(&[&dir[..], &BUCKET[..]].concat(), Some("secret")),
+            Ok(Some("the bucket files at https://s3.example/".to_owned()))
+        );
+        assert_eq!(storage(&[], None), Ok(None));
+    }
 }

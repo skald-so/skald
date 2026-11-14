@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Mutation check of the Rust code changed since <base-ref>: cargo-mutants mutates only the lines of the
-# diff <base-ref>...HEAD and runs the tests of the mutated crate, with PostgreSQL as in script/test;
-# in each prototype workspace, prototypes/*, the tests of the whole workspace.
+# diff <base-ref>...HEAD and runs the tests of the mutated crate, with PostgreSQL and the S3-compatible
+# server as in script/test; in each prototype workspace, prototypes/*, the tests of the whole
+# workspace.
 # Exits 0 only if the tests catch every mutant; otherwise lists the mutants they miss.
 # Usage: script/mutants <base-ref>, in the repository to check, with its changes committed.
 # CARGO_MUTANTS_JOBS sets how many mutants are tested in parallel; the default is half the CPUs.
@@ -13,6 +14,7 @@ if [[ $# -ne 1 ]]; then
 fi
 base=$1
 source "$(dirname "$0")/lib/postgres.sh"
+source "$(dirname "$0")/lib/s3.sh"
 
 for tool in cargo-mutants docker; do
   if ! command -v "$tool" >/dev/null; then
@@ -33,7 +35,7 @@ if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
 fi
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"; postgres_stop' EXIT
+trap 'rm -rf "$tmp"; postgres_stop; s3_stop' EXIT
 
 # Each Cargo workspace gets its diff with paths relative to it. Plumbing ignores the diff settings of
 # the user's git config; -M limits a moved file to its changed lines.
@@ -72,7 +74,9 @@ jobs=(--jobs "${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}")
 status=0
 if [[ -n $root_mutants ]]; then
   postgres_start
+  s3_start
   postgres_wait
+  s3_wait
   mkdir "$tmp/root"
   cargo mutants "${root[@]}" --test-workspace=false "${jobs[@]}" --output "$tmp/root" || status=$?
 fi
