@@ -96,8 +96,8 @@ all="$rust tooling web"
 
 expect web web/src/App.tsx
 expect web web/README.md
-# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/, and so
-# does the self-host stack's.
+# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
+# self-host stack's part runs for its packages too.
 expect 'workspace self-host web' web/package.json
 expect 'workspace self-host web' web/package-lock.json
 expect 'workspace self-host web' -web/package.json
@@ -382,8 +382,8 @@ for path in docs/self-host.md docker-compose.yml Caddyfile; do
   mkdir -p "$copy/web"
   reads "$path" script/self-host-test
 done
-# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/, and so
-# does the self-host stack's.
+# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
+# self-host stack's part runs for its packages too.
 reads web/package.json 'cargo test --workspace --locked' script/self-host-test 'web: npm run lint' \
   'web: npm test' 'web: npm run build'
 

@@ -56,7 +56,7 @@ services:
 
   postgres:
     # Renovate keeps it on major version 19: renovate.json.
-    image: postgres:19rc1@sha256:4b3e4b2edcf554492dd1c5e008237208c1d6e6faf2f15c24bf5fc5c4bcf0a21d
+    image: postgres:19rc2@sha256:3c5f322ffe97481b51a1ebee693f58d0c081514d2bc3026500a9400b7428bea9
     restart: unless-stopped
     logging: *logging
     environment:

@@ -63,12 +63,13 @@
 #     naming it, and starts no container. /health answers ok over HTTPS with the ACME server's
 #     certificate for the domain, HTTP redirects to HTTPS, and skald status passes trusting only that
 #     ACME server's root and fails trusting another CA. Only the Caddy container publishes ports, 80
-#     and 443; the ports of PostgreSQL and the server do not answer on the machine's address, and Caddy
-#     does not reach PostgreSQL. The server's container has a read-only root, no capabilities, no new
-#     privileges and a non-root user; a volume at /var/lib/skald/attachments. PostgreSQL is 19; the
-#     images other than the server's are pinned by digest; every container restarts unless stopped
-#     and rotates its logs with a size cap. After `docker compose down` and `up`, and after the daemon
-#     restarts, the stack runs with the same certificate and keeps its database and attachments.
+#     and 443; the ports of PostgreSQL and the server do not answer on the machine's address, Caddy
+#     does not reach PostgreSQL, and PostgreSQL does not reach the machine's address. The server's
+#     container has a read-only root, no capabilities, no new privileges and a non-root user; a
+#     volume at /var/lib/skald/attachments. PostgreSQL is 19; the images other than the server's are
+#     pinned by digest; every container restarts unless stopped and rotates its logs with a size cap.
+#     After `docker compose down` and `up`, and after the daemon restarts, the stack runs with the
+#     same certificate and keeps its database and attachments.
 #   bucket: release, files, env, bucket, up, status. The bucket's stand-in sees the server's check:
 #     a write, a read and a delete in the bucket; the attachments volume stays empty; the output does
 #     not show the secret key.
@@ -684,6 +685,7 @@ if [[ -n $main_ok ]]; then
       if [[ -n $server ]] && reaches "$server" "$ip" 5432; then reached=1; fi
     done
     [[ -n $reached || -z $server ]] || fail "main: the server does not reach PostgreSQL"
+    if reaches "$postgres" "$address" 443; then fail "main: PostgreSQL reaches the machine's address"; fi
   fi
 
   if [[ -n $server ]]; then
