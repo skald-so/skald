@@ -1736,6 +1736,50 @@
         }
       }
     },
+    "/server": {
+      "get": {
+        "operationId": "getServer",
+        "summary": "The server's name in agent addresses",
+        "description": "The `server` of every agent address on this server (docs/protocol/README.md, \"Agent address\"): its operator's setting, by default the host of its public address. It never changes.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The server's name, or `null` when it has no valid one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Server"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/session": {
       "get": {
         "operationId": "getSession",
@@ -3118,6 +3162,33 @@
           }
         },
         "additionalProperties": false
+      },
+      "Server": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "description": "The server's name; `null` without a valid one, such as with no public address or an IP address as its host.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ServerName"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ServerName": {
+        "description": "A server's name: `server` of an agent address (docs/protocol/README.md, \"Agent address\"), a DNS name in A-label form of at most 253 characters, its last label not all digits.",
+        "type": "string",
+        "maxLength": 253,
+        "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+        "not": {
+          "pattern": "(^|\\.)[0-9]+$"
+        }
       },
       "Session": {
         "type": "object",

@@ -693,21 +693,7 @@ pub fn list(
             }),
             None => None,
         };
-        let account = match state
-            .device()
-            .map_err(text)?
-            .and_then(|device| device.account)
-        {
-            Some(account) => Some(
-                account
-                    .parse::<AccountId>()
-                    .map_err(|_| {
-                        state::Error::Malformed(format!("the device's account {account:?}"))
-                    })
-                    .map_err(text)?,
-            ),
-            None => None,
-        };
+        let account = own_account(&state)?;
         let mut lines = Vec::new();
         for space in state.spaces().map_err(text)? {
             let synced = follower.as_mut().map(|follower| follower.sync(&space));
@@ -735,6 +721,22 @@ pub fn list(
         println!("{line}");
     }
     Ok(())
+}
+
+/// The account of the device the state `state` holds, if it knows it.
+pub fn own_account(state: &State) -> Result<Option<AccountId>, String> {
+    let Some(account) = state
+        .device()
+        .map_err(text)?
+        .and_then(|device| device.account)
+    else {
+        return Ok(None);
+    };
+    account
+        .parse()
+        .map(Some)
+        .map_err(|_| state::Error::Malformed(format!("the device's account {account:?}")))
+        .map_err(text)
 }
 
 /// Shows the members of `synced`, a space the device follows.

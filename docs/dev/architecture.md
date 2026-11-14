@@ -60,7 +60,7 @@
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`.
-- Agent address: [protocol spec](../protocol/README.md#agent-address).
+- Agent address: [protocol spec](../protocol/README.md#agent-address). Its `server` is the server setting `--server-name` (`SKALD_SERVER_NAME`), by default the host of `--public-url`; without a valid one, agents get no address: `getServer` in the [OpenAPI spec](../../api/openapi.json).
 
 ## Data model
 | Entity | Description |

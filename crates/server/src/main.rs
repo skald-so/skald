@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
+use skald_proto::ServerName;
 use skald_server::{
     ClientSecret, GitHubApp, GitHubUrl, OidcSettings, PublicUrl, Settings, SignInSettings,
 };
@@ -128,6 +129,11 @@ struct Cli {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     owned_spaces_limit: Option<u32>,
+
+    /// The server's name in agent addresses, a DNS name such as skald.example; it should never
+    /// change [default: the host of --public-url, unless that is an IP address].
+    #[arg(long, env = "SKALD_SERVER_NAME", value_name = "NAME")]
+    server_name: Option<ServerName>,
 }
 
 /// A provider's client ID, given by `flag`, and its secret, from the environment variable
@@ -156,6 +162,9 @@ fn client(
 impl Cli {
     /// The settings, or why they do not fit together.
     fn settings(self) -> Result<Settings, String> {
+        let server_name = self
+            .server_name
+            .or_else(|| self.public_url.as_ref().and_then(PublicUrl::server_name));
         let github = client(
             self.github_client_id,
             "--github-client-id",
@@ -199,6 +208,7 @@ impl Cli {
             versions: self.protocol_versions.unwrap_or_default(),
             sign_in,
             owned_spaces_limit: self.owned_spaces_limit,
+            server_name,
         })
     }
 }
