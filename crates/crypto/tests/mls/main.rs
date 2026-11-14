@@ -8,9 +8,6 @@
 //! signed message copies under the history keys. Every step loads the state the previous step
 //! sealed, as one-shot mode does.
 
-// The acceptance tests of the history key chain and entries, which fail until the code they test
-// lands; the implementation removes the gates with the `acceptance` feature.
-#[cfg(feature = "acceptance")]
 #[path = "../rosters/cbor.rs"]
 mod cbor;
 mod channel_view;
@@ -22,13 +19,9 @@ mod foreign;
 mod foreign_member;
 mod framing;
 mod group_info;
-#[cfg(feature = "acceptance")]
 mod history;
-#[cfg(feature = "acceptance")]
 mod history_entries;
-#[cfg(feature = "acceptance")]
 mod history_objects;
-#[cfg(feature = "acceptance")]
 mod key_chain;
 mod key_packages;
 mod messages;
