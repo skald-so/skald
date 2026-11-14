@@ -172,7 +172,8 @@ enum Command {
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
-    /// to npm.
+    /// to npm. A token in GITHUB_TOKEN, or else GH_TOKEN, goes to GitHub's API only, for its higher
+    /// rate limit.
     Update {
         /// The base URL of GitHub's REST API, for tests.
         #[arg(
