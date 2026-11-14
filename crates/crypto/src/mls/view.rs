@@ -19,7 +19,7 @@ use super::{
 };
 
 /// The config of mls-rs's party outside a group, with the profile's identity provider and
-/// ciphersuite; spelled out, as mls-rs keeps the trait of `impl` configs private.
+/// ciphersuite; spelled out, as a struct field cannot hold an `impl` type.
 type Config =
     WithIdentityProvider<Profile, WithCryptoProvider<RustCryptoProvider, ExternalBaseConfig>>;
 
@@ -59,10 +59,11 @@ impl ChannelView {
     }
 
     /// The view of the next epoch from `commit`, a Commit of the view's epoch in a PublicMessage;
-    /// the view stays as it was, for the caller to keep or drop the new one. Refused as a member
-    /// refuses it, such as a Commit of another epoch or group or one whose signature does not
-    /// verify with its sender leaf's key; unchecked are its membership tag, which takes the
-    /// group's secrets, and whether an Add's KeyPackage lifetime holds, which takes a time.
+    /// the view stays as it was, for the caller to keep or drop the new one. Refused where a
+    /// member refuses it, such as a Commit of another epoch or group or one whose signature does
+    /// not verify with its sender leaf's key, but for what takes the group's secrets, its
+    /// membership tag, its confirmation tag and the UpdatePath's encrypted path secrets, and for
+    /// whether an Add's KeyPackage lifetime holds, which takes a time.
     ///
     /// # Errors
     /// [`MlsError::Malformed`] if `commit` is not a Commit in a PublicMessage;
@@ -109,15 +110,5 @@ impl ChannelView {
     /// Every member device, in leaf order.
     pub fn members(&self) -> &[MemberDevice] {
         &self.members
-    }
-}
-
-impl std::fmt::Debug for ChannelView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelView")
-            .field("epoch", &self.epoch())
-            .field("signer", &self.signer)
-            .field("members", &self.members)
-            .finish()
     }
 }

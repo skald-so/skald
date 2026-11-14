@@ -8,6 +8,7 @@
 //! GroupInfos are the members' own, changed and signed again apart from the crate
 //! (tests/mls/group_info.rs), or made by a client on mls-rs of the tests' own.
 
+use mls_rs::{CipherSuite, ExtensionList, ProtocolVersion, time::MlsTime};
 use skald_crypto::{ChannelView, MemberDevice, SealedState};
 use skald_proto::ChannelId;
 
@@ -15,7 +16,7 @@ use crate::commit_checks::{DAY, foreign_key_package};
 use crate::commits::{empty, process, processes_own_remove, remove, store};
 use crate::fixtures::{NOW, device_id, load, signing_key};
 use crate::foreign;
-use crate::foreign_member::{commit, with_foreign_member};
+use crate::foreign_member::{LIFETIME, SUITE, commit, with_foreign_member};
 use crate::group_info::{self, EXTERNAL_PUB, GroupInfo, RATCHET_TREE, replace_once, resigned};
 use crate::steps::{add, bytes, channel_of, join, send, step, stored, with_key_packages};
 
@@ -459,4 +460,50 @@ fn a_group_info_or_commit_with_a_leaf_whose_lifetime_spans_more_than_sixty_days_
         ChannelView::observe(channel, &group_info).is_err(),
         "refused: a GroupInfo with a leaf spanning 60 days and a second"
     );
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_reinit_commit_or_a_proposal_is_refused_and_leaves_the_view_as_it_was() {
+    let channel = ChannelId::generate();
+    let (mut states, mut group) = with_foreign_member(channel, &[49, 50], 51);
+    let view = observe(channel, &group_info_of(49, &mut states[0], channel));
+    let reinit = commit(&mut group, |builder| {
+        (builder.reinit(None, ProtocolVersion::MLS_10, SUITE, ExtensionList::new()))
+            .expect("mls-rs commits a ReInit")
+    });
+    let refused = step(50, &mut states[1], |device| {
+        device.process_commit(channel, &reinit, NOW, |_| true)
+    });
+    assert!(refused.is_err(), "a member refuses the ReInit Commit");
+    assert_refused(&view, &reinit, "a ReInit Commit");
+    let proposal = group
+        .propose_update(Vec::new())
+        .and_then(|message| message.to_bytes())
+        .expect("an Update proposal of mls-rs");
+    assert_refused(&view, &proposal, "a proposal");
+    let commit = empty(50, &mut states[1], channel, b"");
+    assert_eq!(view.follow(&commit).expect("a member's Commit").epoch(), 2);
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_group_info_of_another_ciphersuite_is_refused() {
+    let channel = ChannelId::generate();
+    // A group of device 52 alone on mls-rs in `suite`, at epoch 0.
+    let made = |suite: CipherSuite| {
+        foreign::client(52, device_id(52).as_bytes(), suite, LIFETIME)
+            .create_group_with_id(
+                channel.as_bytes().to_vec(),
+                ExtensionList::new(),
+                ExtensionList::new(),
+                Some(MlsTime::from(NOW)),
+            )
+            .and_then(|group| group.group_info_message_allowing_ext_commit(true))
+            .and_then(|message| message.to_bytes())
+            .expect("a GroupInfo of mls-rs")
+    };
+    assert_eq!(observe(channel, &made(SUITE)).members(), [member(52)]);
+    // MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519, 0x0003: the same Ed25519 key.
+    assert!(ChannelView::observe(channel, &made(CipherSuite::CURVE25519_CHACHA)).is_err());
 }
