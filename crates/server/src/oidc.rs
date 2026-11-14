@@ -400,18 +400,23 @@ fn due(read_at: Instant, now: Instant, key_refresh: Duration) -> bool {
 pub fn issuer_url(issuer: &str) -> Result<Url, String> {
     provider_url(issuer)
         .and_then(|url| {
-            let bare = url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none();
-            bare.then_some(url)
+            bare(&url)
+                .then_some(url)
                 .ok_or("an issuer has no user, query or fragment".to_owned())
         })
         .map_err(|reason| format!("the issuer {issuer:?}: {reason}"))
 }
 
+/// Whether `url` has no user, query or fragment.
+pub(crate) fn bare(url: &Url) -> bool {
+    url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
 /// `text` as a provider's URL: https, or http on a loopback address.
-fn provider_url(text: &str) -> Result<Url, String> {
+pub(crate) fn provider_url(text: &str) -> Result<Url, String> {
     let url = Url::parse(text).map_err(|err| format!("not a URL: {err}"))?;
     let loopback = match url.host() {
         Some(Host::Ipv4(ip)) => ip.is_loopback(),
