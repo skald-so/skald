@@ -52,6 +52,6 @@ commit_parsers = [
 ]
 
 [bump]
-# In 0.x a breaking change bumps the minor version, a feature the patch version.
+# The bump rule: docs/dev/infrastructure.md, "Release".
 features_always_bump_minor = false
 breaking_always_bump_major = false
