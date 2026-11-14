@@ -1,5 +1,6 @@
 //! A local stand-in for an OpenID Connect provider, for tests: no test needs a real Google client.
-//! Its issuer is `http://127.0.0.1:<port><path>`, and under it it serves
+//! Its issuer is `http://127.0.0.1:<port><path>`, or the one [`Provider::serve`] is given, and under
+//! it it serves
 //! - `GET <issuer>/.well-known/openid-configuration`: the provider's metadata (OpenID Connect
 //!   Discovery 1.0, §4);
 //! - `GET <issuer>/keys`: its keys, the metadata's `jwks_uri`, as a JWK Set (RFC 7517, §5);
