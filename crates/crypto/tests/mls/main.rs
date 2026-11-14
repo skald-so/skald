@@ -18,8 +18,6 @@ mod messages;
 mod profile;
 mod removing;
 mod sealed;
-// Built only with the `acceptance` feature until the code it tests lands.
-#[cfg(feature = "acceptance")]
 mod secrecy;
 mod steps;
 mod welcome;

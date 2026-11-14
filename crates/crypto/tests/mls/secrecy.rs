@@ -3,15 +3,16 @@
 //! processed yet (`docs/protocol/delivery.md`, "Order"), and within an epoch the keys of skipped
 //! messages up to 1024 generations ahead, until that epoch's secrets are deleted. A full copy of
 //! its sealed state, with its keys, reads no message the device decrypted before the copy was
-//! taken, nor one of an epoch the device no longer keeps. History keys stay: the history is outside
-//! forward secrecy.
+//! taken, nor one of an epoch the device no longer keeps, nor the Welcome of a regular KeyPackage
+//! it joined from. A copy taken before the device's own Commit reads nothing sent after it. History
+//! keys stay: the history is outside forward secrecy.
 
-use skald_crypto::SealedState;
+use skald_crypto::{Processed, SealedState};
 use skald_proto::ChannelId;
 
-use crate::commits::{empty, process, store};
-use crate::fixtures::{device_id, load};
-use crate::steps::{channel_of, history_key, receive, send, step};
+use crate::commits::{empty, process, processes_own_remove, remove, store, try_process};
+use crate::fixtures::{NOW, device_id, load, new_state};
+use crate::steps::{add, bytes, channel_of, creator, history_key, receive, send, step, stored};
 
 /// The epochs a device keeps before its current one.
 const KEPT_EPOCHS: u64 = 3;
@@ -174,4 +175,117 @@ fn skipped_keys_reach_1024_generations_ahead_and_stay_until_their_epochs_secrets
             "in epoch 5, a copy decrypts no skipped generation {generation} of epoch 1"
         );
     }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_copy_taken_after_decrypting_a_message_in_the_current_epoch_does_not_decrypt_it_again() {
+    let channel = ChannelId::generate();
+    let [mut sender, mut reader]: [SealedState; 2] =
+        channel_of(channel, 97, &[98]).try_into().unwrap();
+    let first = send(97, &mut sender, channel, b"first");
+    let second = send(97, &mut sender, channel, b"second");
+
+    assert_eq!(
+        receive(98, &mut reader, channel, &first),
+        Some((device_id(97), b"first".to_vec()))
+    );
+    let copy = reader;
+    assert_eq!(
+        receive(98, &mut copy.clone(), channel, &first),
+        None,
+        "the decrypted message's key is deleted"
+    );
+    assert_eq!(
+        receive(98, &mut copy.clone(), channel, &second),
+        Some((device_id(97), b"second".to_vec())),
+        "the copy decrypts what the device did not"
+    );
+}
+
+/// Whether a copy of device `seed`'s state, taken after it joined a channel from a Welcome to its
+/// KeyPackage, a last-resort one if `last_resort`, and was then removed, opens that Welcome again.
+fn opens_its_welcome_again(seed: u8, last_resort: bool) -> bool {
+    let channel = ChannelId::generate();
+    let mut joiner = new_state(seed);
+    let package = step(seed, &mut joiner, |device| {
+        let package = if last_resort {
+            device.last_resort_key_package(NOW)
+        } else {
+            device.key_package(NOW)
+        };
+        bytes(package.expect("a KeyPackage"))
+    });
+    let mut state = creator(97, channel);
+    add(97, &mut state, channel, &[&package]);
+    let welcome = stored(97, &mut state, channel);
+    let joined = step(seed, &mut joiner, |device| {
+        device.join(&welcome, NOW, |_| true)
+    });
+    assert_eq!(joined.expect("the device joins"), channel);
+
+    // Removed, the device is no member the Welcome could be refused for.
+    let commit = remove(97, &mut state, channel, &[seed], b"");
+    store(97, &mut state, channel);
+    processes_own_remove(seed, &mut joiner, channel, &commit);
+    let mut copy = joiner.clone();
+    step(seed, &mut copy, |device| {
+        device.join(&welcome, NOW, |_| true).is_ok()
+    })
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_copy_taken_after_joining_from_a_regular_key_packages_welcome_cannot_open_it_again() {
+    assert!(
+        !opens_its_welcome_again(99, false),
+        "the regular KeyPackage's private keys are deleted"
+    );
+    assert!(
+        opens_its_welcome_again(89, true),
+        "the last-resort KeyPackage's keys stay, so its Welcome opens again"
+    );
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_copy_taken_before_a_devices_own_empty_commit_decrypts_nothing_sent_after_it() {
+    let channel = ChannelId::generate();
+    let [mut committer, mut other]: [SealedState; 2] =
+        channel_of(channel, 97, &[98]).try_into().unwrap();
+    let before = send(98, &mut other, channel, b"before");
+    // A full copy of device 97's sealed state; its keys are the tests'.
+    let mut copy = committer.clone();
+
+    let commit = empty(97, &mut committer, channel, b"");
+    store(97, &mut committer, channel);
+    process(98, &mut other, channel, &commit);
+    let after = [
+        (98, send(98, &mut other, channel, b"after")),
+        (97, send(97, &mut committer, channel, b"after")),
+    ];
+    assert_eq!(
+        receive(97, &mut committer, channel, &after[0].1),
+        Some((device_id(98), b"after".to_vec()))
+    );
+
+    assert!(
+        !matches!(
+            try_process(97, &mut copy, channel, &commit, NOW, true).1,
+            Ok(Processed::Entered { .. })
+        ),
+        "the copy cannot enter the device's own epoch"
+    );
+    for (sender, message) in &after {
+        assert_eq!(
+            receive(97, &mut copy.clone(), channel, message),
+            None,
+            "the copy decrypts nothing device {sender} sent after the Commit"
+        );
+    }
+    assert_eq!(
+        receive(97, &mut copy, channel, &before),
+        Some((device_id(98), b"before".to_vec())),
+        "the copy decrypts what was sent before"
+    );
 }
