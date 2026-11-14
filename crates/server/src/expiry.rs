@@ -69,7 +69,7 @@ async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(
         // Leaves the database to other work between pages.
         tokio::time::sleep(PAUSE).await;
     }
-    sqlx::query("DELETE FROM sends WHERE stored_at <= now() - make_interval(secs => $1)")
+    sqlx::query("DELETE FROM sends WHERE answered_at <= now() - make_interval(secs => $1)")
         .bind(retention)
         .execute(db)
         .await?;

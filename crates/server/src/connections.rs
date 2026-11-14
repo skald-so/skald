@@ -234,6 +234,8 @@ async fn hold(
     );
     loop {
         let served = tokio::select! {
+            // Once the session ends, no queued frame is answered.
+            biased;
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
             () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
             message = socket.recv() => match message {

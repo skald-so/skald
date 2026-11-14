@@ -11,4 +11,4 @@ ALTER TABLE entries
 -- Finding expired entries and idempotency keys past the retention.
 CREATE INDEX entries_added_at ON entries (added_at);
 CREATE INDEX entries_ttl_ends_at ON entries (ttl_ends_at) WHERE ttl_ends_at IS NOT NULL;
-CREATE INDEX sends_stored_at ON sends (stored_at);
+CREATE INDEX sends_answered_at ON sends (answered_at);
