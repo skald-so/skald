@@ -3,7 +3,7 @@
 # SKALD_TEST_PARTS limits the run to some of its parts; CI sets it from script/changed-parts.
 #   rust     copied code in crates/ and prototypes/ (script/duplicates); build, fmt, clippy, tests
 #            with PostgreSQL, those of script/check-github-sign-in among them, and, for the server's
-#            GitHub sign-in and the client's sign-in, headless Chrome; clippy of skald-proto and
+#            GitHub sign-in and the client's sign-in, Chrome Headless Shell; clippy of skald-proto and
 #            skald-crypto in WASM, the tests of skald-crypto and skald-proto's of ID generation there
 #            (script/wasm-test); cargo-deny; the MLS prototypes in prototypes/mls and their
 #            benchmarks' smoke run, natively and in WASM; the delivery prototypes in prototypes/agents;
@@ -123,11 +123,15 @@ if checks rust && ! command -v tar >/dev/null; then
   exit 1
 fi
 
-# web_packages: installs the packages of web/ from its lockfile, once per run. The web UI needs them,
-# and so do the server's and the client's sign-in tests, which drive Chrome with its playwright-core.
+# web_packages: installs the packages of web/ from its lockfile, once per run, and the Chrome Headless
+# Shell of its playwright-core, unless SKALD_CHROME names another browser: CONTRIBUTING.md. The web UI
+# needs them, and so do the server's and the client's sign-in tests.
 web_packages() {
   if [[ -z ${web_installed:-} ]]; then
     (cd web && npm ci --no-audit --no-fund)
+    if [[ -z ${SKALD_CHROME:-} ]]; then
+      node web/node_modules/playwright-core/cli.js install chromium-headless-shell
+    fi
     web_installed=1
   fi
 }

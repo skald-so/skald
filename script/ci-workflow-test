@@ -8,9 +8,9 @@
 //   - it is gated like the job that runs script/test's Rust part: it needs the job of
 //     script/changed-parts and runs exactly when that job's rust output is true, whatever the other
 //     outputs are;
-//   - before the tests, it starts the runner image's PostgreSQL service and waits for it, and
-//     installs the packages of web/, whose playwright-core drives Chrome; the tests get the server
-//     through SKALD_TEST_DATABASE_URL;
+//   - before the tests, it starts the runner image's PostgreSQL service and waits for it, installs
+//     the packages of web/ and then, with their playwright-core, Chrome Headless Shell, which that
+//     playwright-core drives; the tests get the server through SKALD_TEST_DATABASE_URL;
 //   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
 //     Manager; no other job of any workflow and no script sets it;
 //   - every action is pinned to a commit, a checkout keeps no credentials, and the job's token reads
@@ -108,10 +108,16 @@ const waits = before.findIndex(
   (step, i) => i >= starts && commands(step.run).some((line) => /pg_isready\b/.test(line) && /--host\s+127\.0\.0\.1\b/.test(line) && /--port\s+5432\b/.test(line)),
 );
 if (starts >= 0 && waits < 0) fail(`job ${key} does not wait for PostgreSQL at 127.0.0.1:5432 with pg_isready before its tests`);
-if (
-  !before.some((step) => step['working-directory'] === 'web' && commands(step.run).some((line) => /^\s*npm\s+ci\b/.test(line)))
-) {
-  fail(`job ${key} does not install the packages of web/ with npm ci before its tests: the sign-in tests drive Chrome with its playwright-core`);
+const packages = before.findIndex((step) => step['working-directory'] === 'web' && commands(step.run).some((line) => /^\s*npm\s+ci\b/.test(line)));
+if (packages < 0) {
+  fail(`job ${key} does not install the packages of web/ with npm ci before its tests: the sign-in tests drive Chrome Headless Shell with its playwright-core`);
+}
+const shell = (line) => {
+  const w = words(line);
+  return w[0] === 'node' && w[1] === 'node_modules/playwright-core/cli.js' && w[2] === 'install' && w.slice(3).join(' ') === 'chromium-headless-shell';
+};
+if (!before.some((step, i) => i > packages && step['working-directory'] === 'web' && commands(step.run).some(shell))) {
+  fail(`job ${key} does not install Chrome Headless Shell with the playwright-core of web/ after its packages and before its tests: the sign-in tests drive it`);
 }
 if (!before.some((step) => String(step.uses ?? '').startsWith('actions/checkout@'))) fail(`job ${key} does not check out the repository before its tests`);
 
