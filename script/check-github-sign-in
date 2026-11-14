@@ -17,46 +17,9 @@
 # Usage: script/check-github-sign-in <server address> <client ID>
 set -euo pipefail
 
-if [[ $# -ne 2 || -z $2 ]]; then
-  echo "usage: $0 <server address> <client ID>" >&2
-  exit 2
-fi
-for tool in curl jq; do
-  if ! command -v "$tool" >/dev/null; then
-    echo "check-github-sign-in: $tool is missing" >&2
-    exit 2
-  fi
-done
+source "$(dirname "$0")/lib/sign-in-check.sh"
+check_start check-github-sign-in "$@"
 
-client_id=$2
-# The machine's client_id, skald, the CLI, and the protocol version its requests state:
-# PROTOCOL_VERSION in crates/proto/src/version.rs.
-machine=skald
-version='Skald-Protocol-Version: 1'
-url_parts='^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)(.*)$'
-
-# origin <scheme> <authority>: the origin, in lowercase, without the scheme's default port.
-origin() {
-  local scheme authority
-  scheme=$(tr '[:upper:]' '[:lower:]' <<<"$1")
-  authority=$(tr '[:upper:]' '[:lower:]' <<<"$2")
-  case $scheme in
-    https) authority=${authority%:443} ;;
-    http) authority=${authority%:80} ;;
-  esac
-  printf '%s://%s' "$scheme" "$authority"
-}
-
-# The server's origin and the path under it, without a trailing slash.
-if [[ $1 =~ $url_parts && $1 != *[[:space:][:cntrl:]?#]* ]]; then
-  server_path=${BASH_REMATCH[3]%/}
-  server_origin=$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
-fi
-server=${server_origin:-}${server_path:-}
-if [[ ${server_origin:-} != http://?* && ${server_origin:-} != https://?* ]]; then
-  echo "check-github-sign-in: the server address is not an http or https URL" >&2
-  exit 2
-fi
 github=${GITHUB_URL:-https://github.com}
 if [[ ! $github =~ $url_parts ]]; then
   echo "check-github-sign-in: GITHUB_URL is not a URL" >&2
@@ -64,171 +27,9 @@ if [[ ! $github =~ $url_parts ]]; then
 fi
 authorize=$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")${BASH_REMATCH[3]%/}/login/oauth/authorize
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/check-github-sign-in.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
-
-# on_server <url>: prints the part of <url> after the server's address; fails if <url> is not on
-# the server or has spaces or control characters.
-on_server() {
-  local rest
-  [[ $1 != *[[:space:][:cntrl:]]* && $1 =~ $url_parts ]] || return 1
-  rest=${BASH_REMATCH[3]}
-  [[ $(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}") == "$server_origin" ]] || return 1
-  [[ $rest == "$server_path"/* ]] || return 1
-  printf '%s' "${rest#"$server_path"}"
-}
-
-# request <name> <curl option>...: requests with curl, the URL among the options, the answer's body
-# in $tmp/<name>, its headers in $tmp/<name>.headers; prints the HTTP status. Fails without an
-# answer. Reads more curl options from stdin, in curl's config format.
-request() {
-  local name=$1
-  shift
-  : >"$tmp/$name"
-  : >"$tmp/$name.headers"
-  curl --disable --silent --max-time 30 --proto =http,https --config - \
-    --output "$tmp/$name" --dump-header "$tmp/$name.headers" --write-out '%{http_code}' \
-    "$@" 2>/dev/null
-}
-
-# get <name> <url>: as request, a GET of <url>, which stays out of the process list: it can hold a
-# user code.
-get() {
-  local url=${2//\\/\\\\}
-  url=${url//\"/\\\"}
-  request "$1" <<<"url = \"$url\""
-}
-
-# param <query> <name>: the decoded values of the parameter <name> in <query>, one per line.
-param() {
-  local pair value
-  local IFS='&'
-  for pair in $1; do
-    [[ $pair == "$2="* ]] || continue
-    value=${pair#*=}
-    value=${value//+/ }
-    value=${value//\\/\\\\}
-    printf '%b\n' "${value//%/\\x}"
-  done
-}
-
-steps_failed=false
-# step <name> <check function>: runs the check and prints its line; the function prints the reason
-# it failed.
-step() {
-  local reason
-  if reason=$("$2"); then
-    echo "$1: pass"
-  else
-    echo "$1: fail: ${reason:-it failed}"
-    steps_failed=true
-  fi
-}
-
-device_authorization() {
-  local status
-  status=$(request device --header "$version" --data client_id="$machine" \
-    "$server/auth/device" </dev/null) || {
-    echo "no answer from $server/auth/device"
-    return 1
-  }
-  [[ $status == 200 ]] || {
-    echo "HTTP $status from $server/auth/device"
-    return 1
-  }
-  jq -e 'type == "object"' "$tmp/device" >/dev/null 2>&1 || {
-    echo "the answer is not a JSON object"
-    return 1
-  }
-  jq -e '.user_code | strings | length > 0' "$tmp/device" >/dev/null || {
-    echo "no user code"
-    return 1
-  }
-  jq -e '.device_code | strings | length > 0' "$tmp/device" >/dev/null || {
-    echo "no device code"
-    return 1
-  }
-  local uri complete
-  uri=$(jq -r '.verification_uri | strings' "$tmp/device")
-  complete=$(jq -r '.verification_uri_complete | strings' "$tmp/device")
-  [[ -n $uri ]] || {
-    echo "no verification page"
-    return 1
-  }
-  on_server "$uri" >/dev/null && { [[ -z $complete ]] || on_server "$complete" >/dev/null; } || {
-    echo "the verification page is not on $server"
-    return 1
-  }
-  printf '%s' "${complete:-$uri}" >"$tmp/page-url"
-}
-
 verification_page() {
-  local page status link start query values
-  page=$(cat "$tmp/page-url")
-  status=$(get page "$page") || {
-    echo "no answer from the verification page"
-    return 1
-  }
-  [[ $status == 200 ]] || {
-    echo "HTTP $status from the verification page"
-    return 1
-  }
-  link=$(tr '\n\r\t' '   ' <"$tmp/page" |
-    grep -oiE '<a[[:space:]][^>]*>[[:space:]]*Sign in with GitHub[[:space:]]*</a>' |
-    head -n 1 | grep -oiE '[[:space:]]href="[^"]*"' | head -n 1 |
-    sed -e 's/^[^"]*"//' -e 's/"$//' -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' \
-      -e "s/&#39;/'/g" -e 's/&amp;/\&/g') || true
-  [[ -n $link ]] || {
-    echo "the page has no \"Sign in with GitHub\" link"
-    return 1
-  }
-  # The link's address, resolved against the page's.
-  if [[ $link =~ ^[A-Za-z][A-Za-z0-9+.-]*: ]]; then
-    start=$link
-  elif [[ $link == //* ]]; then
-    start=${server_origin%%://*}:$link
-  elif [[ $link == /* ]]; then
-    start=$server_origin$link
-  elif [[ $link == '?'* ]]; then
-    start=${page%%[?#]*}$link
-  else
-    start=${page%%[?#]*}
-    start=${start%/*}/$link
-  fi
-  on_server "$start" >/dev/null || {
-    echo "the \"Sign in with GitHub\" link leads off $server"
-    return 1
-  }
-  status=$(get start "$start") || {
-    echo "no answer from the sign-in start"
-    return 1
-  }
-  [[ $status == 30[12378] ]] || {
-    echo "HTTP $status from the sign-in start, not a redirect"
-    return 1
-  }
-  local location
-  location=$(tr -d '\r' <"$tmp/start.headers" | awk 'tolower($1) == "location:"' | tail -n 1 |
-    sed -e 's/^[^:]*:[[:space:]]*//' -e 's/[[:space:]]*$//')
-  local base=${location%%[?#]*}
-  if [[ -z $location || ! $base =~ $url_parts ]] ||
-    [[ $(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")${BASH_REMATCH[3]} != "$authorize" ]]; then
-    echo "the sign-in start does not send the browser to $authorize"
-    return 1
-  fi
-  query=${location#"$base"}
-  query=${query#\?}
-  query=${query%%#*}
-  values=$(param "$query" client_id)
-  [[ $values == "$client_id" ]] || {
-    echo "the sign-in start does not send the client ID $client_id"
-    return 1
-  }
-  values=$(param "$query" redirect_uri)
-  [[ -n $values && $(on_server "$values") == /auth/github/callback ]] || {
-    echo "the sign-in start does not send the callback $server/auth/github/callback"
-    return 1
-  }
+  sign_in_start 'Sign in with GitHub' '"Sign in with GitHub" link' "$authorize" \
+    /auth/github/callback
 }
 
 polling() {
@@ -251,13 +52,4 @@ polling() {
   }
 }
 
-for check in device_authorization verification_page polling; do
-  step "$(tr _ ' ' <<<"$check")" "$check"
-  [[ $steps_failed == false ]] || break
-done
-if [[ $steps_failed == false ]]; then
-  echo pass
-else
-  echo fail
-  exit 1
-fi
+run_steps device_authorization verification_page polling
