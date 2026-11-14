@@ -479,7 +479,7 @@ fn refusal_of_a_persons_command_names_it_as_the_persons() {
         assert!(
             said.contains(&format!("skald {}", args[0]))
                 && said.contains("person's command")
-                && said.contains("agent cannot run it"),
+                && said.contains("an agent cannot run"),
             "{args:?}: {refused:?}"
         );
     }
