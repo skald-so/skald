@@ -152,7 +152,7 @@ pub fn verifies_with_label(
 }
 
 /// The variable-size length of RFC 9420, §2.1.2.
-fn varint(len: usize) -> Vec<u8> {
+pub fn varint(len: usize) -> Vec<u8> {
     let len = u32::try_from(len).expect("a length below 2^30");
     match len {
         0..0x40 => vec![len as u8],

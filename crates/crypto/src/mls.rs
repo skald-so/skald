@@ -1,12 +1,14 @@
 //! MLS on a device, on mls-rs: KeyPackages and channel groups to `docs/protocol/membership.md`,
 //! "MLS profile", KeyPackages kept and checked as "KeyPackages" says, groups formed as "Creating a
 //! channel" says, their messages, Commits that change them ("Group changes", "Commit ordering"),
-//! and the history key of each epoch the device enters ("History key"). The device's state reaches
-//! the caller only sealed ([`SealedState`]).
+//! the history key of each epoch the device enters ("History key"), and a channel's GroupInfo and
+//! its view from outside the group ([`ChannelView`]). The device's state reaches the caller only
+//! sealed ([`SealedState`]).
 
 mod key_package;
 mod profile;
 mod store;
+mod view;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -17,7 +19,7 @@ use mls_rs::{
     ExtensionList, Group, MlsMessage, WireFormat,
     client_builder::MlsConfig,
     extension::recommended::LastResortKeyPackageExt,
-    group::{CommitEffect, ReceivedMessage, proposal::Proposal},
+    group::{CommitEffect, ReceivedMessage, Roster, proposal::Proposal},
     identity::SigningIdentity,
     time::MlsTime,
 };
@@ -27,6 +29,7 @@ use zeroize::Zeroizing;
 use crate::{SealedState, SigningKey, StateKey};
 pub use key_package::KeyPackage;
 use store::{Kept, Store};
+pub use view::ChannelView;
 
 /// The exporter label of a history key.
 const HISTORY_LABEL: &[u8] = b"skald history";
@@ -322,7 +325,7 @@ impl MlsDevice {
     ) -> Result<Vec<u8>, MlsError> {
         self.store.delete_expired(now);
         let mut group = self.group(channel)?;
-        let members = members_by_index(&group)?;
+        let members = members_by_index(&group.roster())?;
         let mut commit = group
             .commit_builder()
             .authenticated_data(authenticated_data.to_vec())
@@ -384,7 +387,7 @@ impl MlsDevice {
         self.store.delete_expired(now);
         let commit = message(commit, WireFormat::PublicMessage)?;
         let mut group = self.group(channel)?;
-        let before = members_by_index(&group)?;
+        let before = members_by_index(&group.roster())?;
         let own = group.current_member_index();
         let ReceivedMessage::Commit(description) =
             group.process_incoming_message_with_time(commit, MlsTime::from(now))?
@@ -472,7 +475,7 @@ impl MlsDevice {
             return Err(MlsError::GroupExists(channel));
         }
         key_package::check_spans(&group.export_tree())?;
-        let members = members_of(&group)?;
+        let members = members_of(&group.roster())?;
         let signer = group
             .member_at_index(info.sender)
             .ok_or(MlsError::Malformed)?;
@@ -543,7 +546,21 @@ impl MlsDevice {
     /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Mls`] if
     /// mls-rs fails.
     pub fn members(&self, channel: ChannelId) -> Result<Vec<MemberDevice>, MlsError> {
-        members_of(&self.group(channel)?)
+        members_of(&self.group(channel)?.roster())
+    }
+
+    /// The GroupInfo of `channel`'s group in the device's current epoch, in an `MLSMessage`, signed
+    /// by the device, with the `ratchet_tree` and `external_pub` extensions: after its Commit is
+    /// stored, the new epoch's, which it uploads ("MLS profile").
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Mls`] if
+    /// mls-rs fails.
+    pub fn group_info(&self, channel: ChannelId) -> Result<Vec<u8>, MlsError> {
+        let group = self.group(channel)?;
+        Ok(group
+            .group_info_message_allowing_ext_commit(true)?
+            .to_bytes()?)
     }
 
     /// The history key of `channel` in `epoch`, if the device holds it.
@@ -598,20 +615,17 @@ fn message(bytes: &[u8], wire_format: WireFormat) -> Result<MlsMessage, MlsError
     }
 }
 
-/// The member devices of `group` by their leaf indexes.
-fn members_by_index(
-    group: &Group<impl MlsConfig>,
-) -> Result<BTreeMap<u32, MemberDevice>, MlsError> {
-    group
-        .roster()
+/// The member devices of `roster` by their leaf indexes.
+fn members_by_index(roster: &Roster<'_>) -> Result<BTreeMap<u32, MemberDevice>, MlsError> {
+    roster
         .members_iter()
         .map(|member| Ok((member.index, member_device(&member.signing_identity)?)))
         .collect()
 }
 
-/// The member devices of `group`, in leaf order.
-fn members_of(group: &Group<impl MlsConfig>) -> Result<Vec<MemberDevice>, MlsError> {
-    Ok(members_by_index(group)?.into_values().collect())
+/// The member devices of `roster`, in leaf order.
+fn members_of(roster: &Roster<'_>) -> Result<Vec<MemberDevice>, MlsError> {
+    Ok(members_by_index(roster)?.into_values().collect())
 }
 
 fn member_device(leaf: &SigningIdentity) -> Result<MemberDevice, MlsError> {
@@ -733,6 +747,8 @@ pub enum MlsError {
     Refused,
     /// The input is not an MLS message of the kind the step takes, or not of a channel's group.
     Malformed,
+    /// The GroupInfo is of another channel's group.
+    OtherChannel,
     /// mls-rs refuses the step or fails.
     Mls(mls_rs::error::MlsError),
 }
@@ -755,6 +771,7 @@ impl fmt::Display for MlsError {
             }
             Self::Refused => f.write_str("the caller refused the Welcome or the epoch"),
             Self::Malformed => f.write_str("not an MLS message of the kind the step takes"),
+            Self::OtherChannel => f.write_str("the GroupInfo is of another channel"),
             Self::Mls(error) => write!(f, "mls-rs: {error}"),
         }
     }
@@ -1154,6 +1171,7 @@ mod tests {
             MlsError::NoCommitPending(channel),
             MlsError::Refused,
             MlsError::Malformed,
+            MlsError::OtherChannel,
             MlsError::Mls(mls_rs::error::MlsError::GroupNotFound),
         ]
         .iter()
@@ -1168,7 +1186,7 @@ mod tests {
             message
         })
         .collect();
-        assert_eq!(messages.len(), 12, "{messages:?}");
+        assert_eq!(messages.len(), 13, "{messages:?}");
         assert!(messages.contains(&format!("no group for the channel {channel}")));
         assert!(messages.contains(&format!("the device {device} is not admitted")));
         assert!(messages.contains(&format!("the device {device} is not a member")));

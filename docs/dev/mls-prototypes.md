@@ -405,7 +405,7 @@ The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls
 - **Checks before saving:** a processed Commit's sender, Adds, Removes and `authenticated_data`, and a Welcome's signer and members, are checked before `write_to_storage()`; a failed check drops the group unsaved ("Reading before merging", "Checking a Welcome").
 - **Admission:** only the device that commits an Add checks its KeyPackage against the admitted devices, before the Add; members remove such devices after processing ("Credential check").
 - **KeyPackages:** `key_package_lifetime` of 60 days from an hour back ("KeyPackage lifetime").
-- **GroupInfo:** `CommitOptions::with_allow_external_commit`; after an external Commit, `group_info_message_allowing_ext_commit(true)` ("GroupInfo", "External Commit").
+- **GroupInfo:** `group_info_message_allowing_ext_commit(true)` of the device's current epoch, after any Commit, so `MlsRules` stay the default ("GroupInfo", "External Commit").
 - **Rejoining:** `with_removal` of the old leaf, found by its signature key and accepted by `valid_successor`; the device drops its old state of the group before the build ("External Commit").
 - **Removed device:** acts on `CommitEffect::Removed` ("Removed device").
 - **Delivery Service:** processes a copy of its `ExternalGroup` and keeps it only if the sender check passes ("Outside party").
