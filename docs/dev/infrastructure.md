@@ -60,6 +60,8 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
+  - Only on Mondays, 00:00–06:00 UTC, open PRs included: one PR with every patch and digest update and every minor update from 1.0 on; a PR of its own for each major update and each minor update of a 0.x version, which breaks under SemVer; the lock file refresh.
+  - A fix for a known vulnerability (GitHub's alerts and OSV) comes at once, in a PR of its own.
 
 ## Release
 - **Tools:** release-plz (version, CHANGELOG, tag) and dist (the archives of `skald` and a checksum of each).
