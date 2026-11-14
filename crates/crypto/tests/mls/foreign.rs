@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use mls_rs::{
-    CipherSuite, Client, ExtensionList, MlsMessage,
+    CipherSuite, Client, ExtensionList, Group, MlsMessage,
     client_builder::MlsConfig,
     crypto::{SignaturePublicKey, SignatureSecretKey},
     identity::{
@@ -67,6 +67,16 @@ pub fn key_package(seed: u8, identity: &[u8]) -> Vec<u8> {
 /// The Welcome of `channel`'s group, which a client with key `seed` and credential `identity`
 /// creates, adds `key_packages` to and commits, at the tests' time.
 pub fn welcome(seed: u8, identity: &[u8], channel: ChannelId, key_packages: &[&[u8]]) -> Vec<u8> {
+    group(seed, identity, channel, key_packages).1
+}
+
+/// `channel`'s group as [`welcome`] makes it, in epoch 1, and its Welcome.
+pub fn group(
+    seed: u8,
+    identity: &[u8],
+    channel: ChannelId,
+    key_packages: &[&[u8]],
+) -> (Group<impl MlsConfig + use<>>, Vec<u8>) {
     let mut group = client(seed, identity, SUITE, LIFETIME)
         .create_group_with_id(
             channel.as_bytes().to_vec(),
@@ -87,5 +97,6 @@ pub fn welcome(seed: u8, identity: &[u8], channel: ChannelId, key_packages: &[&[
     let [welcome] = output.welcome_messages.as_slice() else {
         panic!("one Welcome");
     };
-    welcome.to_bytes().expect("the Welcome's bytes")
+    let welcome = welcome.to_bytes().expect("the Welcome's bytes");
+    (group, welcome)
 }

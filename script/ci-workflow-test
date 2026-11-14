@@ -7,8 +7,8 @@
 //     of one job;
 //   - each check script/test runs, run with stand-ins for its scripts and tools
 //     (script/lib/test-stand-ins.sh), runs in exactly one of the jobs that run script/test, by their
-//     SKALD_TEST_PARTS: none is left out and none runs twice; installing the packages of web/ is
-//     setup, not a check;
+//     SKALD_TEST_PARTS: none is left out and none runs twice; installing the packages of web/ and
+//     Chrome Headless Shell is setup, not a check;
 //   - each part script/changed-parts prints is an output of its job and the part of one job; those
 //     jobs need only the job of script/changed-parts; on a PR one runs exactly when one of its parts
 //     changed, whatever the other parts, and on a push to dev it runs;
@@ -28,9 +28,11 @@
 //   - it is gated like the job that runs script/test's workspace part: it needs the job of
 //     script/changed-parts and runs exactly when that job's workspace output is true, whatever the
 //     other outputs are, and on a push to dev;
-//   - before the tests, it starts the runner image's PostgreSQL service and waits for it, and
-//     installs the packages of web/, whose playwright-core drives Chrome; the tests get the server
-//     through SKALD_TEST_DATABASE_URL;
+//   - before the tests, it starts the runner image's PostgreSQL service and waits for it, installs
+//     the packages of web/ and then, with their playwright-core, Chrome Headless Shell, which that
+//     playwright-core drives; the tests get the server through SKALD_TEST_DATABASE_URL;
+//   - it, and each job of script/test's parts workspace and web, restores Playwright's browsers from
+//     the Actions cache before its tests, from where playwright-core keeps them on the runner's OS;
 //   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
 //     Manager; no other job of any workflow and no script sets it;
 //   - a step after the tests, when they fail, prints the failures in PostgreSQL's log;
@@ -136,7 +138,7 @@ process.on('exit', () => fs.rmSync(standIns, { recursive: true, force: true }));
 execFileSync('bash', ['-c', 'source "$1" && test_stand_ins "$2"', 'bash', path.join(root, 'script/lib/test-stand-ins.sh'), standIns], {
   stdio: ['ignore', 'ignore', 'inherit'],
 });
-const setup = new Set(['web\tnpm ci --no-audit --no-fund']);
+const setup = new Set(['web\tnpm ci --no-audit --no-fund', '\tnode web/node_modules/playwright-core/cli.js install chromium-headless-shell']);
 // checks <parts>: the checks script/test runs with SKALD_TEST_PARTS=<parts>, all without, or null
 // when it fails.
 const checks = (parts) => {
@@ -415,12 +417,40 @@ const waits = before.findIndex(
   (step, i) => i >= starts && commands(step.run).some((line) => /pg_isready\b/.test(line) && /--host\s+127\.0\.0\.1\b/.test(line) && /--port\s+5432\b/.test(line)),
 );
 if (starts >= 0 && waits < 0) fail(`job ${key} does not wait for PostgreSQL at 127.0.0.1:5432 with pg_isready before its tests`);
-if (
-  !before.some((step) => step['working-directory'] === 'web' && commands(step.run).some((line) => /^\s*npm\s+ci\b/.test(line)))
-) {
-  fail(`job ${key} does not install the packages of web/ with npm ci before its tests: the sign-in tests drive Chrome with its playwright-core`);
+const packages = before.findIndex((step) => step['working-directory'] === 'web' && commands(step.run).some((line) => /^\s*npm\s+ci\b/.test(line)));
+if (packages < 0) {
+  fail(`job ${key} does not install the packages of web/ with npm ci before its tests: the sign-in tests drive Chrome Headless Shell with its playwright-core`);
+}
+const shell = (line) => {
+  const w = words(line);
+  return w[0] === 'node' && w[1] === 'node_modules/playwright-core/cli.js' && w[2] === 'install' && w.slice(3).join(' ') === 'chromium-headless-shell';
+};
+if (!before.some((step, i) => i > packages && step['working-directory'] === 'web' && commands(step.run).some(shell))) {
+  fail(`job ${key} does not install Chrome Headless Shell with the playwright-core of web/ after its packages and before its tests: the sign-in tests drive it`);
 }
 if (!before.some((step) => String(step.uses ?? '').startsWith('actions/checkout@'))) fail(`job ${key} does not check out the repository before its tests`);
+
+// Chrome Headless Shell from the Actions cache, in each job whose tests drive it.
+// expanded <steps>: the steps, each of a local action in its place by the steps of that action.
+const expanded = (steps) =>
+  (steps ?? []).flatMap((step) => {
+    const uses = String(step.uses ?? '');
+    if (!uses.startsWith('./')) return [step];
+    const file = ['action.yml', 'action.yaml'].map((name) => path.join(root, uses, name)).find((f) => fs.existsSync(f));
+    return file ? expanded(readWorkflow(file).runs?.steps) : [];
+  });
+const browserJobs = [
+  [key, steps.slice(0, testIndex)],
+  ...testJobs
+    .filter(({ parts }) => parts.some((part) => part === 'workspace' || part === 'web'))
+    .map(({ key: k, job: j }) => [k, j.steps.slice(0, j.steps.findIndex(runsTest))]),
+];
+for (const [k, until] of browserJobs) {
+  const want = String(jobs[k]['runs-on']).startsWith('windows-') ? '~/AppData/Local/ms-playwright' : '~/.cache/ms-playwright';
+  if (!expanded(until).some((step) => String(step.uses ?? '').startsWith('actions/cache@') && step.with?.path === want)) {
+    fail(`job ${k} does not restore ${want} from the Actions cache before its tests: they drive Chrome Headless Shell`);
+  }
+}
 
 // PostgreSQL's failures, printed after the tests when they fail.
 const logStep = steps.slice(testIndex + 1).find((step) => /\bGet-Content\b/.test(commands(step.run).join('\n')) && commands(step.run).join('\n').includes('$env:PGDATA\\log'));
