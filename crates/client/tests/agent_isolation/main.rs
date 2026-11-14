@@ -53,8 +53,8 @@ use cloud::Cloud;
 use machine::Finished;
 use skald_proto::{ChannelId, Name, Role, SpaceId};
 use world::{
-    ADMIN, CREATE_SPACE, MEMBERS, Person, SPACES, World, assert_role, create, holds_word, next_by,
-    plain_lines, run, store,
+    ADMIN, CREATE_SPACE, MEMBERS, PERSONAL_REQUEST, Person, SPACES, World, assert_role, create,
+    holds_word, next_by, plain_lines, run, store,
 };
 
 /// The option that names the agent.
@@ -451,5 +451,126 @@ fn person_commands_are_refused_to_an_agent_and_change_nothing() {
         cloud.count_sent(since, SPACE_WRITES),
         0,
         "an agent's command left a write for the person's next run"
+    );
+}
+
+/// Each of the person's commands refused to an agent says that it is the person's command, naming
+/// it, and that an agent cannot run it.
+#[test]
+fn refusal_of_a_persons_command_names_it_as_the_persons() {
+    let office = Office::open(
+        [4_121_001_301, 4_121_001_302],
+        ["ada-refusal-standin", "bob-refusal-standin"],
+    );
+    let a = office.folder("work/clientA");
+    office.add_rule(&a, CLIENT_A);
+    let agent = "claude-r3fus3";
+    let commands: [&[&str]; 6] = [
+        &[ADD_RULE, path(&a), CLIENT_B],
+        &[RULES],
+        &[REMOVE_RULE, path(&a)],
+        &[APPROVE, path(&a)],
+        &[CREATE_SPACE, GLOBEX],
+        &[CREATE_CHANNEL, CLIENT_A],
+    ];
+    for args in commands {
+        let refused = office.agent_refused(&a, agent, args);
+        let said = refused.stderr.to_lowercase();
+        assert!(
+            said.contains(&format!("skald {}", args[0]))
+                && said.contains("person's command")
+                && said.contains("agent cannot run it"),
+            "{args:?}: {refused:?}"
+        );
+    }
+}
+
+/// An agent in `~/work/clientA` is shown another folder of clientA, such as one deeper or bound by
+/// the same rule, with clientA's name and ID.
+#[test]
+fn agent_sees_another_folder_of_its_space() {
+    let office = Office::open(
+        [4_121_001_401, 4_121_001_402],
+        ["ada-folders-standin", "bob-folders-standin"],
+    );
+    let a = office.folder("work/clientA");
+    office.add_rule(&a, CLIENT_A);
+    let src = office.folder("work/clientA/app/src");
+    let agent = "claude-f0ld3r";
+    for (dir, other) in [(&a, &src), (&src, &a)] {
+        let shown = office.agent_ok(dir, agent, &[FOLDER, path(other)]);
+        let own = &office.client_a;
+        assert!(
+            shown.stdout.contains(&own.id.to_string())
+                && holds_word(&plain_lines(&shown), &own.name),
+            "{} from {}: {shown:?}",
+            other.display(),
+            dir.display()
+        );
+        office.assert_sees_no_other(&shown, Some(own), "a folder of the agent's space");
+    }
+}
+
+/// On a machine whose account has no personal space yet, as the server refused it at sign-in, an
+/// agent's runs in `~/work/clientA`, its sign-in among them, neither ask for the personal space nor
+/// write to the server; the person's next run then sets it up.
+#[test]
+fn agent_runs_do_not_take_the_personal_space() {
+    let world = World::on_host(HOST);
+    let cloud = &world.cloud;
+    cloud.relay.refuse(PERSONAL_REQUEST, "404 Not Found");
+    let user = cloud.user(4_121_001_501, "ada-untaken-standin");
+    let host = "ada-workstation";
+    // Its result does not matter.
+    let (machine, _) = cloud.first_machine(&world.browser.page(), &user, host);
+    let ada = world.person(user, machine, host);
+    for args in [[CREATE_SPACE, CLIENT_A], [CREATE_CHANNEL, CLIENT_A]] {
+        let done = run(&ada.machine, &args);
+        assert!(done.success, "{args:?}: {done:?}");
+    }
+    cloud.relay.stop_refusing();
+    let mut a = ada.machine.root().join("home");
+    a.extend(["work", "clientA"]);
+    fs::create_dir_all(&a).expect("make a folder");
+    let added = run(&ada.machine, &[ADD_RULE, path(&a), CLIENT_A]);
+    assert!(added.success, "{added:?}");
+    let before = server_spaces(cloud, &ada);
+    assert_eq!(before.len(), 1, "only clienta: {before:?}");
+    let since = Instant::now();
+
+    let agent = "claude-unt4k3";
+    let runs: [&[&str]; 6] = [
+        &[SPACES],
+        &[CHANNELS, CLIENT_A],
+        &[MEMBERS, CLIENT_A],
+        &["address"],
+        &[FOLDER],
+        &["sign-in", "--server", &cloud.url],
+    ];
+    for args in runs {
+        let mut all = vec![AGENT, agent];
+        all.extend_from_slice(args);
+        let finished = ada.machine.start_in(&a, &all).finish();
+        assert!(finished.success, "{args:?}: {finished:?}");
+    }
+
+    assert_eq!(
+        cloud.count_sent(since, PERSONAL_REQUEST),
+        0,
+        "an agent's run asked for the personal space"
+    );
+    assert_eq!(
+        cloud.count_sent(since, SPACE_WRITES),
+        0,
+        "an agent's run wrote to the server"
+    );
+    assert_eq!(server_spaces(cloud, &ada), before);
+
+    let listed = run(&ada.machine, &[SPACES]);
+    assert!(listed.success, "{listed:?}");
+    assert_eq!(
+        server_spaces(cloud, &ada).len(),
+        2,
+        "the person's run sets up the personal space: {listed:?}"
     );
 }

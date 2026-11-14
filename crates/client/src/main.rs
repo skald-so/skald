@@ -302,7 +302,10 @@ fn main() -> ExitCode {
                 let mut connection =
                     Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
                 sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())?;
-                spaces::take_personal(&dir, options.storage, speaks, timeout);
+                // An agent's run takes nothing of another space than its folder's.
+                if agent.is_none() {
+                    spaces::take_personal(&dir, options.storage, speaks, timeout);
+                }
                 Ok(())
             });
             exit(result)

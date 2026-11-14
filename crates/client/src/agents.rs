@@ -5,7 +5,8 @@
 //!
 //! As an agent, the CLI covers only the space of the working directory: it lists no other space
 //! and refuses a command that names one, alike for every other name, and it refuses the person's
-//! commands. A folder in no space gives it none.
+//! commands of rules, `.skald.toml` approval and creating spaces and channels. A folder in no space
+//! gives it none.
 
 use std::path::Path;
 use std::time::Duration;
