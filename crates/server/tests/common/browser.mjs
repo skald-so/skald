@@ -6,11 +6,11 @@
 // the first line is `{"ready": true}` once the browser runs. A session is one test's: `close` closes
 // its pages and servers.
 // Exits once stdin closes or its parent, the test binary, is gone, however that ends; its exit kills
-// the browser. A browser whose driver is killed exits too: its pipe to the driver closes.
+// the browser. A browser whose driver is killed dies too: a watchdog kills it.
 // The browser resolves every *.test host to 127.0.0.1, so a test reaches a local server under a name
 // of its choice: another name is another site, and a name other than localhost is not a secure
 // context over plain HTTP.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
@@ -62,6 +62,34 @@ try {
     `Chrome Headless Shell did not start: install it with \`npx playwright-core install chromium-headless-shell\` in web/, or set SKALD_CHROME to a Chrome or Chromium binary.\n${error}`,
   );
   process.exit(1);
+}
+
+/** The processes of the browser, its own first. */
+async function browserProcesses() {
+  const cdp = await browser.newBrowserCDPSession();
+  try {
+    const { processInfo } = await cdp.send("SystemInfo.getProcessInfo");
+    const own = processInfo.find(({ type }) => type === "browser").id;
+    return [own, ...processInfo.map(({ id }) => id).filter((id) => id !== own)];
+  } finally {
+    await cdp.detach();
+  }
+}
+
+// A browser whose pipe to the driver closes exits by itself, but under load only seconds later, and
+// a stuck one never. Once the driver is gone, however it ends, and its pipe to this watchdog closes,
+// the watchdog kills the process group that playwright-core starts the browser in. Not on Windows,
+// where the browser has no process group: there it only exits by itself.
+const [browserPid] = await browserProcesses();
+if (process.platform !== "win32") {
+  const watchdog = spawn(
+    "/bin/sh",
+    ["-c", 'read -r _; kill -KILL -- "-$0" 2>/dev/null', String(browserPid)],
+    { detached: true, stdio: ["pipe", "ignore", "ignore"] },
+  );
+  watchdog.unref();
+  // Once the browser is gone, its group ID may go to another process.
+  browser.on("disconnected", () => watchdog.kill());
 }
 
 /** Pages by ID, each in a browser context of its own: one person's browser. */
@@ -269,21 +297,11 @@ const ops = {
    * browser runs.
    */
   async processes() {
-    const cdp = await browser.newBrowserCDPSession();
-    try {
-      const { processInfo } = await cdp.send("SystemInfo.getProcessInfo");
-      const own = processInfo.find(({ type }) => type === "browser").id;
-      return {
-        driver: process.pid,
-        browser: [
-          own,
-          ...processInfo.map(({ id }) => id).filter((id) => id !== own),
-        ],
-        program: program(own),
-      };
-    } finally {
-      await cdp.detach();
-    }
+    return {
+      driver: process.pid,
+      browser: await browserProcesses(),
+      program: program(browserPid),
+    };
   },
 
   /**
