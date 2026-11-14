@@ -3,14 +3,15 @@
 # $GITHUB_OUTPUT. CI checks only those parts of a PR, and script/test with SKALD_TEST_SINCE only
 # those of the working tree; script/test alone checks all of them. The paths and their parts:
 #   crates/ (with the skald-server image definition), Cargo.toml, Cargo.lock: workspace, wasm,
-#     image, repository
+#     image, self-host, repository
 #   deny.toml: repository
 #   prototypes/mls/, prototypes/agents/, prototypes/edits/: mls, agents and edits, each with
 #     repository; prototypes/mls/Cargo.lock also wasm: the crates' WASM tests take its wasm-bindgen
 #   any other path in prototypes/: every part of the Rust code, all but tooling and web
-#   web/: web; its package.json and package-lock.json also workspace: the server's and the client's
-#     sign-in tests drive Chrome with its playwright-core
-#   docs/, Markdown files in the root: none
+#   web/: web; its package.json and package-lock.json also workspace, whose sign-in tests drive
+#     Chrome with its playwright-core, and self-host
+#   docker-compose.yml, Caddyfile, docs/self-host.md (the self-host stack and its guide): self-host
+#   other paths in docs/, Markdown files in the root: none
 #   any other path: all; the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
 # The changes count from where HEAD branched off <base>, their merge base: commits <base> got later
 # do not count. Usage, in the repository to check:
@@ -33,20 +34,21 @@ else
   exit 2
 fi
 
-parts='workspace wasm image mls agents edits repository tooling web'
-for part in $parts; do printf -v "$part" false; done
+parts='workspace wasm image self-host mls agents edits repository tooling web'
+# Each part's flag is a variable of its name, - as _.
+for part in $parts; do printf -v "${part//-/_}" false; done
 # mark <part>...: the changes touch these parts.
-mark() { for part in "$@"; do printf -v "$part" true; done; }
+mark() { for part in "$@"; do printf -v "${part//-/_}" true; done; }
 
 while IFS= read -r path; do
   if [[ -z $path ]]; then
     continue
   elif [[ $path == web/package.json || $path == web/package-lock.json ]]; then
-    mark web workspace
+    mark web workspace self-host
   elif [[ $path == web/* ]]; then
     mark web
   elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock ]]; then
-    mark workspace wasm image repository
+    mark workspace wasm image self-host repository
   elif [[ $path == deny.toml ]]; then
     mark repository
   elif [[ $path == prototypes/mls/Cargo.lock ]]; then
@@ -58,7 +60,9 @@ while IFS= read -r path; do
   elif [[ $path == prototypes/edits/* ]]; then
     mark edits repository
   elif [[ $path == prototypes/* ]]; then
-    mark workspace wasm image mls agents edits repository
+    mark workspace wasm image self-host mls agents edits repository
+  elif [[ $path == docker-compose.yml || $path == Caddyfile || $path == docs/self-host.md ]]; then
+    mark self-host
   elif [[ $path == docs/* || ($path == *.md && $path != */*) ]]; then
     continue
   else
@@ -67,4 +71,7 @@ while IFS= read -r path; do
   fi
 done <<<"$paths"
 
-for part in $parts; do echo "$part=${!part}"; done
+for part in $parts; do
+  flag=${part//-/_}
+  echo "$part=${!flag}"
+done
