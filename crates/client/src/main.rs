@@ -1,5 +1,6 @@
 //! The `skald` client binary.
 
+mod channels;
 mod connection;
 mod device;
 mod devices;
@@ -152,6 +153,22 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
+    /// Adds a channel to a space this device follows, on a device of an admin of it: the device
+    /// signs the space's next roster revision with the channel, its account the channel's member.
+    /// It first accepts the revisions the server has; when another revision comes first, it signs
+    /// its change into the new one. Says the channel's ID.
+    CreateChannel {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
+    /// Lists the channels of a space this device follows, as its last accepted roster revision gives
+    /// them: each one's ID and its members' handles. It first accepts the revisions the server has.
+    Channels {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -238,11 +255,21 @@ fn main() -> ExitCode {
                 .and_then(|dir| spaces::list(&dir, cli.key_storage, speaks, timeout));
             exit(result)
         }
-        Command::Members { space } => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| spaces::members(&dir, cli.key_storage, speaks, timeout, &space));
-            exit(result)
-        }
+        Command::Members { space } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
+                .and_then(spaces::members),
+        ),
+        Command::CreateChannel { space } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
+                .and_then(channels::create),
+        ),
+        Command::Channels { space } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
+                .and_then(channels::list),
+        ),
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
 }

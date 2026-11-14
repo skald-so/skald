@@ -481,6 +481,8 @@ fn session_an_older_skald_stored_for_plain_http_on_another_machine_is_never_used
         &["set-username", "ada-elsewhere"],
         &["create-space", "acme"],
         &["members", "acme"],
+        &["create-channel", "acme"],
+        &["channels", "acme"],
     ] {
         let finished = machine.start(args).finish();
 

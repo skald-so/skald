@@ -149,6 +149,13 @@ pub struct Space {
     pub pending: Option<Vec<u8>>,
 }
 
+impl Space {
+    /// Whether its pending revision is its revision 1, which the server has not taken yet.
+    pub fn first_waits(&self) -> bool {
+        self.pending.as_ref() == Some(&self.anchor)
+    }
+}
+
 /// What the state holds of the revisions the device accepted of a space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Accepted {
@@ -376,11 +383,29 @@ impl State {
         Ok(())
     }
 
-    /// Records that the server took the pending revision of the space `id`.
-    pub fn set_taken(&self, id: SpaceId) -> Result<(), Error> {
+    /// Records `next`, in CBOR, as the pending revision of the space `id`, in place of `replaced`
+    /// or of none, while `base`, in CBOR, is its last accepted revision. Records nothing and gives
+    /// `false` if another run changed either meanwhile.
+    pub fn set_pending(
+        &self,
+        id: SpaceId,
+        base: &[u8],
+        replaced: Option<&[u8]>,
+        next: &[u8],
+    ) -> Result<bool, Error> {
+        let changed = self.db.execute(
+            "UPDATE space SET pending = ?4 WHERE space = ?1 AND accepted = ?2 AND pending IS ?3",
+            params![id.to_string(), base, replaced, next],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Forgets `pending`, in CBOR, the pending revision of the space `id`, which the server took or
+    /// refused; leaves another one.
+    pub fn clear_pending(&self, id: SpaceId, pending: &[u8]) -> Result<(), Error> {
         self.db.execute(
-            "UPDATE space SET pending = NULL WHERE space = ?1",
-            params![id.to_string()],
+            "UPDATE space SET pending = NULL WHERE space = ?1 AND pending = ?2",
+            params![id.to_string(), pending],
         )?;
         Ok(())
     }
@@ -602,7 +627,9 @@ mod tests {
             "one name"
         );
         assert!(state.add_space(acme, "other", &[3]).is_err(), "one ID");
-        state.set_taken(acme).unwrap();
+        state.clear_pending(acme, &[1, 2]).unwrap();
+        assert!(state.spaces().unwrap()[0].pending.is_some(), "another one");
+        state.clear_pending(acme, &[1, 1]).unwrap();
 
         let space = |id, name: &str, bytes: &[u8], pending: bool| Space {
             id,
@@ -630,6 +657,40 @@ mod tests {
             .unwrap();
         let error = state.spaces().expect_err("malformed");
         assert!(matches!(error, Error::Malformed(_)), "{error:?}");
+    }
+
+    #[test]
+    fn pending_revision_is_set_only_on_the_base_and_in_place_of_the_one_given() {
+        let dir = TestDir::new("state-pending");
+        let state = State::open(&dir).unwrap();
+        let acme = SpaceId::generate();
+        state.add_space(acme, "acme", &[1]).unwrap();
+        let pending = |state: &State| state.spaces().unwrap()[0].pending.clone();
+        let first_waits = |state: &State| state.spaces().unwrap()[0].first_waits();
+        assert!(first_waits(&state), "revision 1 waits");
+        state.clear_pending(acme, &[1]).unwrap();
+        assert!(!first_waits(&state));
+
+        assert!(
+            !state.set_pending(acme, &[9], None, &[2]).unwrap(),
+            "another base"
+        );
+        assert!(!state.set_pending(acme, &[1], Some(&[3]), &[2]).unwrap());
+        assert_eq!(pending(&state), None);
+        assert!(state.set_pending(acme, &[1], None, &[2]).unwrap());
+        assert!(!first_waits(&state), "a later revision waits");
+        assert!(
+            !state.set_pending(acme, &[1], None, &[4]).unwrap(),
+            "one waits"
+        );
+        assert!(state.set_pending(acme, &[1], Some(&[2]), &[4]).unwrap());
+        assert_eq!(pending(&State::open(&dir).unwrap()), Some(vec![4]));
+        assert!(
+            !state
+                .set_pending(SpaceId::generate(), &[1], Some(&[4]), &[5])
+                .unwrap()
+        );
+        assert_eq!(pending(&state), Some(vec![4]));
     }
 
     #[test]
