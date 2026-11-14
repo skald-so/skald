@@ -201,28 +201,22 @@ pub fn show(dir: &Path, folder: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-/// The space of the working directory, by the state in `dir`, with that state; warns of each
-/// `.skald.toml` it skipped. Fails, saying why, when the working directory is in no space.
-pub fn working_space(dir: &Path) -> Result<(State, state::Space), String> {
+/// The space of the working directory, by the state in `dir`; warns of each `.skald.toml` it
+/// skipped. Fails, saying why, when the working directory is in no space.
+pub fn working_space(dir: &Path) -> Result<state::Space, String> {
     let folder = working_dir()?;
     let state = readable(dir)?;
     let in_none = |why: String| format!("{} is in no space: {why}", shown(&folder));
-    let space = match warned(state.as_ref(), &folder)? {
+    match warned(state.as_ref(), &folder)? {
         Bound::By {
             space: Some(space), ..
         }
-        | Bound::Unbound(Some(space)) => space,
-        Bound::By { name, .. } => {
-            return Err(in_none(format!("this device is not in the space {name}")));
-        }
-        Bound::Unbound(None) => {
-            return Err(in_none(
-                "nothing binds it, and this device pinned no personal space".to_owned(),
-            ));
-        }
-    };
-    let state = state.ok_or_else(|| in_none("this device has no local state".to_owned()))?;
-    Ok((state, space))
+        | Bound::Unbound(Some(space)) => Ok(space),
+        Bound::By { name, .. } => Err(in_none(format!("this device is not in the space {name}"))),
+        Bound::Unbound(None) => Err(in_none(
+            "nothing binds it, and this device pinned no personal space".to_owned(),
+        )),
+    }
 }
 
 /// The working directory's canonical path.

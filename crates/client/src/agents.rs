@@ -46,7 +46,7 @@ pub fn address(
     timeout: Duration,
 ) -> Result<(), String> {
     let no_address = |why: String| format!("the agent {agent} has no address: {why}");
-    let (_, space) = folders::working_space(dir).map_err(no_address)?;
+    let space = folders::working_space(dir).map_err(no_address)?;
     let mut synced =
         spaces::synced(dir, storage, speaks, timeout, &space.name).map_err(no_address)?;
     let body = synced.roster.body();
