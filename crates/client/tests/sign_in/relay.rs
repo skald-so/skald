@@ -254,6 +254,11 @@ impl Relay {
     pub fn refuse(&self, request: &str, status: &str) {
         let code = status.split(' ').next().unwrap_or_default();
         let body = format!(r#"{{"title":"{status}","status":{code}}}"#);
+        self.refuse_with(request, status, &body);
+    }
+
+    /// As [`Relay::refuse`], with the problem details object `body`.
+    pub fn refuse_with(&self, request: &str, status: &str, body: &str) {
         let answer = format!(
             "HTTP/1.1 {status}\r\ncontent-type: application/problem+json\r\nconnection: close\r\n\
              content-length: {}\r\n\r\n{body}",

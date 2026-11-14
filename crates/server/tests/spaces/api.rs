@@ -60,6 +60,15 @@ impl Session {
         }
     }
 
+    /// The same session, its requests to `flow`'s server, such as one started again on the same
+    /// database.
+    pub fn at(&self, flow: &DeviceFlow) -> Self {
+        Session {
+            base: flow.stand.server.base().to_owned(),
+            token: self.token.clone(),
+        }
+    }
+
     /// `<method> <path>`, `method` `get` or `post`, with the JSON `body` if given; checked against
     /// the spec.
     pub fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Response {

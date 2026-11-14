@@ -113,6 +113,17 @@ impl SignIn {
         )
     }
 
+    /// As [`SignIn::on`], with the extra arguments `args` and the environment variables `envs`.
+    pub fn on_with(db: TestDb, args: &[&str], envs: &[(&str, &str)]) -> Self {
+        Self::new_with(
+            db,
+            |port| format!("http://skald.test:{port}"),
+            args,
+            CLIENT_SECRET,
+            envs,
+        )
+    }
+
     /// A server whose public address `public` gives for the port the server listens on.
     fn new(public: impl Fn(u16) -> String, args: &[&str], secret: &str) -> Self {
         Self::new_on(TestDb::create(), public, args, secret)
@@ -120,6 +131,17 @@ impl SignIn {
 
     /// As [`SignIn::new`], on `db`.
     fn new_on(db: TestDb, public: impl Fn(u16) -> String, args: &[&str], secret: &str) -> Self {
+        Self::new_with(db, public, args, secret, &[])
+    }
+
+    /// As [`SignIn::new_on`], with the environment variables `envs`.
+    fn new_with(
+        db: TestDb,
+        public: impl Fn(u16) -> String,
+        args: &[&str],
+        secret: &str,
+        envs: &[(&str, &str)],
+    ) -> Self {
         let (github, server, public) = on_free_port(Duration::from_secs(30), |port| {
             let public = public(port);
             let github = GitHub::start(App {
@@ -129,12 +151,9 @@ impl SignIn {
             });
             let mut all = github_settings(&public, &github);
             all.extend_from_slice(args);
-            let server = Server::try_launch(
-                &db,
-                &format!("127.0.0.1:{port}"),
-                &all,
-                &[("SKALD_GITHUB_CLIENT_SECRET", secret)],
-            )?;
+            let mut all_envs = vec![("SKALD_GITHUB_CLIENT_SECRET", secret)];
+            all_envs.extend_from_slice(envs);
+            let server = Server::try_launch(&db, &format!("127.0.0.1:{port}"), &all, &all_envs)?;
             Ok((github, server, public))
         });
         SignIn {
