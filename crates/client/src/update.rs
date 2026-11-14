@@ -450,10 +450,6 @@ fn rename(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Moves `from` to `to`, tried again while another program has either open, for up to `limit`.
 fn rename_within(from: &Path, to: &Path, limit: Duration) -> io::Result<()> {
-    // PROBE: no retry, to see the tests fail without it.
-    if std::hint::black_box(true) {
-        return fs::rename(from, to);
-    }
     let started = Instant::now();
     let mut wait = Duration::from_millis(10);
     loop {

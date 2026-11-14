@@ -210,11 +210,10 @@ pub async fn connect(url: &str) -> Result<PgConnection, sqlx::Error> {
     retried_on_reset("connect to PostgreSQL", || PgConnection::connect(url)).await
 }
 
-/// Closes `conn`, its statements done. PROBE: fails on any error of the close.
+/// Closes `conn`, its statements done. An error of the close says nothing of them: PostgreSQL on
+/// Windows resets a connection as its session ends, so the close fails when the reset comes first.
 pub async fn close(conn: PgConnection) {
-    if let Err(err) = conn.close().await {
-        panic!("close a connection: {err:?}");
-    }
+    let _ = conn.close().await;
 }
 
 /// The names of the test databases this process has on the PostgreSQL server.
