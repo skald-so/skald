@@ -1,7 +1,8 @@
 //! `skald sign-in` against stubs of the device flow's endpoints: the answers a `skald-server` gives
 //! only in time or in a fault, a stored session on another server, the default state directory, a
 //! device ID the server has taken and a name given to a named device. Then `skald devices` without
-//! a session, with a token for another server and with the server's error answers.
+//! a session, with a token for another server and with the server's error answers. Last, a server
+//! in plain HTTP on another machine, given or stored by an older skald.
 
 #[allow(dead_code)]
 mod common;
@@ -13,13 +14,13 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use common::{Stub, response};
+use common::{Stub, cleartext, elsewhere, response};
 use machine::{
     DEVICES, FIRST_DEVICE, KEY_STORAGE, Machine, NAME, SERVER, SIGN_IN, STATE_DIR, YES, bare_skald,
 };
 
 const TOKEN: &str = "tok-stub-0123456789abcdefghijkl";
-const LOGIN: &str = "ada-stub-login";
+const USERNAME: &str = "ada-stub-username";
 
 /// Device authorization's answer, with codes that live `expires_in` seconds.
 fn grant(expires_in: u64) -> String {
@@ -43,8 +44,9 @@ fn oauth_error(error: &str) -> String {
 }
 
 fn session() -> String {
-    let body =
-        format!(r#"{{"account":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","github_login":"{LOGIN}"}}"#);
+    let body = format!(
+        r#"{{"account":"0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b","username":"{USERNAME}","github_login":"Ada_Stub_Login"}}"#
+    );
     response("200 OK", "application/json", &body)
 }
 
@@ -112,7 +114,7 @@ fn device_flow_requests_state_the_protocol_version() {
     let finished = machine.sign_in(&stub.url).finish();
 
     assert!(finished.success, "{finished:?}");
-    assert!(finished.shown().contains(LOGIN), "{finished:?}");
+    assert!(finished.shown().contains(USERNAME), "{finished:?}");
     let version = format!(
         "\nskald-protocol-version: {}",
         skald_proto::PROTOCOL_VERSION
@@ -430,4 +432,115 @@ fn devices_show_the_servers_error_answers() {
     sign_in_first(&machine, &unlisting);
 
     devices_fail_saying(&machine, &[], &["a device list without its devices"]);
+}
+
+#[test]
+fn sign_in_to_plain_http_on_another_machine_is_refused_before_any_request() {
+    let stub = Stub::start(approving);
+    let machine = Machine::new();
+    let url = elsewhere(&stub);
+
+    let finished = machine.sign_in(&url).finish();
+
+    assert!(!finished.success, "{finished:?}");
+    assert_eq!(finished.stdout, "");
+    assert_eq!(finished.stderr, cleartext(&url));
+    assert_eq!(stub.requests(), Vec::<String>::new());
+    assert_eq!(machine.files(), Vec::<std::path::PathBuf>::new());
+}
+
+/// A machine signed in to `stub`, its session then moved to the stub's URL at `0.0.0.0`, as an
+/// older skald stored it: the state and the secrets name the same server. The URL and the secrets'
+/// file.
+fn stored_for_plain_http_elsewhere(stub: &Stub) -> (Machine, String, std::path::PathBuf) {
+    let machine = Machine::new();
+    sign_in_first(&machine, stub);
+    let url = elsewhere(stub);
+    let state = rusqlite::Connection::open(machine.state_dir().join("state.sqlite3")).unwrap();
+    state
+        .execute("UPDATE session SET server = ?1", [&url])
+        .unwrap();
+    drop(state);
+    let file = machine.state_dir().join("secrets.json");
+    let mut secrets: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    secrets["session_server"] = url.clone().into();
+    fs::write(&file, secrets.to_string()).unwrap();
+    (machine, url, file)
+}
+
+#[test]
+fn session_an_older_skald_stored_for_plain_http_on_another_machine_is_never_used() {
+    let stub = Stub::start(|path| certifying(path, registered));
+    let (machine, url, file) = stored_for_plain_http_elsewhere(&stub);
+    let stored = (machine.state_bytes(), fs::read(&file).unwrap());
+    let before = stub.requests().len();
+
+    for args in [
+        &[DEVICES][..],
+        &["set-username", "ada-elsewhere"],
+        &["create-space", "acme"],
+        &["members", "acme"],
+    ] {
+        let finished = machine.start(args).finish();
+
+        assert!(!finished.success, "{args:?}: {finished:?}");
+        assert_eq!(finished.stdout, "", "{args:?}");
+        assert_eq!(
+            finished.stderr,
+            format!(
+                "skald: {url:?}, the server of this machine's session, is plain HTTP to another \
+                 machine: sign in again with an https:// URL: run skald sign-in --server <URL>\n"
+            ),
+            "{args:?}"
+        );
+    }
+    // `spaces` shows what the state holds and says why it did not ask the server.
+    let finished = machine.start(&["spaces"]).finish();
+    assert!(finished.success, "{finished:?}");
+    assert_eq!(
+        finished.stderr,
+        format!(
+            "skald: the spaces show their last accepted revisions: {url:?}, the server of this \
+             machine's session, is plain HTTP to another machine: sign in again with an https:// \
+             URL: run skald sign-in --server <URL>\n"
+        )
+    );
+    assert_eq!(stub.requests().len(), before);
+    assert_eq!((machine.state_bytes(), fs::read(&file).unwrap()), stored);
+    assert_eq!(machine.files_holding(TOKEN), vec![file]);
+}
+
+/// On the server, the session ends when it expires.
+#[test]
+fn sign_out_forgets_a_session_stored_for_plain_http_on_another_machine_sending_nothing() {
+    let stub = Stub::start(|path| certifying(path, registered));
+    let (machine, url, file) = stored_for_plain_http_elsewhere(&stub);
+    let before = stub.requests().len();
+
+    let finished = machine.start(&["sign-out"]).finish();
+
+    assert!(finished.success, "{finished:?}");
+    assert_eq!(
+        finished.stdout,
+        format!(
+            "Signed out on this machine only: {url} is plain HTTP to another machine, so nothing \
+             was sent to it; the session there ends when it expires. This device stays for its \
+             next sign-in.\n"
+        )
+    );
+    assert_eq!(finished.stderr, "");
+    assert_eq!(stub.requests().len(), before);
+    assert_eq!(
+        machine.files_holding(TOKEN),
+        Vec::<std::path::PathBuf>::new()
+    );
+    let secrets: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(secrets.get("session_server"), None);
+    let state = rusqlite::Connection::open(machine.state_dir().join("state.sqlite3")).unwrap();
+    let sessions: i64 = state
+        .query_row("SELECT count(*) FROM session", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(sessions, 0);
 }

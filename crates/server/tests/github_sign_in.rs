@@ -4,16 +4,16 @@
 
 mod common;
 
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
 use common::browser::{Browser, Cookie, Page};
 use common::sign_in::{
-    Account, CALLBACK, CLIENT_ID, CLIENT_SECRET, SESSION, START, SignIn, param, with_param,
+    Account, CALLBACK, CLIENT_ID, CLIENT_SECRET, Jar, SESSION, START, SignIn,
+    assert_only_over_https, cookies_set_by, off_server, param, with_param, wrong_states,
 };
 use common::spec::{spec, spec_violations};
-use common::{Response, SERVER, Server, TestDb, get_url, stored_forms};
+use common::{Response, Server, TestDb, assert_holds_none, get_url, run};
 use skald_github_stand_in::{Endpoint, Fault, User};
 
 /// The host of the server's public address in the browser tests.
@@ -176,16 +176,7 @@ fn callback_with_wrong_state_signs_no_one_in() {
     let state = param(&callback, "state").expect("the callback has a state");
     let jar = page.cookies();
 
-    let mut flipped = state.clone().into_bytes();
-    let last = flipped.last_mut().expect("a state is not empty");
-    *last = if *last == b'A' { b'B' } else { b'A' };
-    let flipped = String::from_utf8(flipped).expect("ASCII");
-    for wrong in [
-        format!("{state}A"),
-        flipped,
-        state[..state.len() / 2].to_owned(),
-        "0123456789abcdef0123456789abcdef".to_owned(),
-    ] {
+    for wrong in wrong_states(&state) {
         page.add_cookies(&jar);
         page.goto(&with_param(&callback, "state", Some(&wrong)));
         stand.assert_signed_out(&page);
@@ -346,19 +337,7 @@ fn return_address_stays_on_this_server() {
     let server = format!("{}/", stand.public);
     let github = format!("{}/", stand.github.url());
 
-    let off_server = [
-        "https://evil.test/".to_owned(),
-        "http://evil.test/".to_owned(),
-        "//evil.test/".to_owned(),
-        "/\\evil.test/".to_owned(),
-        "\\\\evil.test/".to_owned(),
-        "/\t/evil.test/".to_owned(),
-        "https:evil.test/".to_owned(),
-        format!("http://{HOST}.evil.test/"),
-        format!("http://{HOST}:{elsewhere}/"),
-        "javascript:alert(document.cookie)".to_owned(),
-    ];
-    for to in &off_server {
+    for to in &off_server(HOST, elsewhere) {
         let page = browser.page();
         stand.github_session(&page, &ada);
         let visit = page.goto_settled(&stand.start_url(Some(to)));
@@ -399,8 +378,6 @@ fn https_public_address_sends_both_cookies_only_over_https() {
     let browser = Browser::launch();
     let stand = SignIn::start_https(&browser);
     let ada = stand.user(9_220_481_006, "ada-https-standin");
-    let plain = browser.echo(false);
-    let secure = browser.echo(true);
 
     // The cookie that binds `state`, set when the browser leaves for GitHub: the person is not
     // signed in there, so the browser stays at GitHub.
@@ -410,33 +387,15 @@ fn https_public_address_sends_both_cookies_only_over_https() {
     assert!(visit.url.starts_with(&authorize), "at GitHub: {visit:?}");
     let state_cookies = page.cookies_of(HOST);
     assert!(!state_cookies.is_empty(), "the sign-in start sets a cookie");
-    for (port, scheme) in [(plain, "http"), (secure, "https")] {
-        page.goto(&format!("{scheme}://{HOST}:{port}{CALLBACK}?probe=state"));
-    }
-    let over_http = &browser.wait_for_hits(plain, "probe=state", 1)[0];
-    let over_https = &browser.wait_for_hits(secure, "probe=state", 1)[0];
-    assert_eq!(over_http.cookie, None, "plain HTTP carries no cookie");
-    for cookie in &state_cookies {
-        assert!(over_https.carries(cookie), "{cookie:?}: {over_https:?}");
-    }
 
     // The session's cookie.
     let signed_in = browser.page();
     let session = session_cookies(&stand, &signed_in, &ada);
-    for path in ["/", SESSION, CALLBACK] {
-        for (port, scheme) in [(plain, "http"), (secure, "https")] {
-            signed_in.goto(&format!("{scheme}://{HOST}:{port}{path}?probe=session"));
-        }
-    }
-    for hit in browser.wait_for_hits(plain, "probe=session", 3) {
-        assert_eq!(hit.cookie, None, "plain HTTP carries no cookie: {hit:?}");
-    }
-    let over_https = browser.wait_for_hits(secure, "probe=session", 3);
-    assert!(
-        session
-            .iter()
-            .all(|cookie| over_https.iter().any(|hit| hit.carries(cookie))),
-        "HTTPS carries the session's cookie: {session:?}, {over_https:?}"
+    assert_only_over_https(
+        &browser,
+        (HOST, CALLBACK),
+        (&page, &state_cookies),
+        (&signed_in, &session),
     );
     assert_eq!(stand.account(&signed_in).github_login, ada.login);
 }
@@ -528,26 +487,13 @@ fn database_holds_no_github_token_client_secret_or_session_token() {
 
     let rows = stand.db.rows();
     assert!(!rows.is_empty(), "the database holds the accounts");
-    for secret in &secrets {
-        for form in stored_forms(secret) {
-            let found: Vec<_> = rows.iter().filter(|row| row.contains(&form)).collect();
-            assert!(found.is_empty(), "{secret:?} as {form:?} in {found:?}");
-        }
-    }
+    assert_holds_none(&rows, &secrets);
 }
 
 #[test]
 fn server_output_never_shows_the_client_secret() {
-    let help = Command::new(SERVER)
-        .arg("--help")
-        .env("SKALD_GITHUB_CLIENT_SECRET", CLIENT_SECRET)
-        .output()
-        .expect("run skald-server --help");
-    let help = format!(
-        "{}{}",
-        String::from_utf8_lossy(&help.stdout),
-        String::from_utf8_lossy(&help.stderr)
-    );
+    let secret = [("SKALD_GITHUB_CLIENT_SECRET", CLIENT_SECRET)];
+    let (_, help) = run(&["--help"], &secret);
     assert!(
         help.contains("SKALD_GITHUB_CLIENT_SECRET"),
         "--help names the setting: {help}"
@@ -557,16 +503,21 @@ fn server_output_never_shows_the_client_secret() {
     // A start that fails on a bad setting.
     let db = TestDb::create();
     let url = db.url();
-    let failed = Command::new(SERVER)
-        .args(["--listen", "127.0.0.1:0", "--database-url", &url])
-        .args(["--public-url", "not a URL", "--github-client-id", CLIENT_ID])
-        .env("SKALD_GITHUB_CLIENT_SECRET", CLIENT_SECRET)
-        .output()
-        .expect("run skald-server");
-    assert!(!failed.status.success());
-    for output in [&failed.stdout, &failed.stderr] {
-        assert!(!String::from_utf8_lossy(output).contains(CLIENT_SECRET));
-    }
+    let (started, output) = run(
+        &[
+            "--listen",
+            "127.0.0.1:0",
+            "--database-url",
+            &url,
+            "--public-url",
+            "not a URL",
+            "--github-client-id",
+            CLIENT_ID,
+        ],
+        &secret,
+    );
+    assert!(!started);
+    assert!(!output.contains(CLIENT_SECRET), "{output}");
 
     // A sign-in, and sign-ins that GitHub fails.
     let browser = Browser::launch();
@@ -600,10 +551,7 @@ fn without_github_settings_sign_in_is_refused_and_health_is_ok() {
     let spec = spec();
     let db = TestDb::create();
     let server = Server::start(&db);
-
-    let health = server.get("/health");
-    assert_eq!(health.status, 200);
-    assert_eq!(health.body, br#"{"status":"ok"}"#);
+    server.assert_healthy();
 
     let start = server.get(START);
     assert!(
@@ -684,42 +632,11 @@ fn sign_in_responses_conform_to_spec() {
     assert_eq!(body["github_login"], ada.login.as_str());
 }
 
-/// Cookies as a client that follows no rules but name and value keeps them.
-#[derive(Default)]
-struct Jar(Vec<(String, String)>);
-
-impl Jar {
-    /// Keeps the cookies `response` sets, replacing those of the same name.
-    fn take(&mut self, response: &Response) {
-        for set in response.header_values("set-cookie") {
-            let pair = set.split(';').next().unwrap_or_default();
-            let Some((name, value)) = pair.trim().split_once('=') else {
-                continue;
-            };
-            self.0.retain(|(kept, _)| kept != name);
-            self.0.push((name.to_owned(), value.to_owned()));
-        }
-    }
-
-    fn header(&self) -> String {
-        let pairs: Vec<_> = self
-            .0
-            .iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect();
-        pairs.join("; ")
-    }
-}
-
 /// Signs `user` in on `page` and gives the cookies of the server's host that the callback set or
 /// changed: the session's.
 fn session_cookies(stand: &SignIn, page: &Page, user: &User) -> Vec<Cookie> {
     let callback = stand.held_callback(page, user);
-    let before = page.cookies_of(HOST);
-    page.goto(&callback);
-    let mut set = page.cookies_of(HOST);
-    set.retain(|cookie| !before.contains(cookie));
-    assert!(!set.is_empty(), "the callback sets the session's cookie");
+    let set = cookies_set_by(page, HOST, &callback);
     assert_eq!(stand.account(page).github_login, user.login);
     set
 }

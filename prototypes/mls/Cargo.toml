@@ -14,3 +14,10 @@ inherits = "release"
 opt-level = "s"
 lto = true
 codegen-units = 1
+
+# Debug builds and tests: as in the root Cargo.toml.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

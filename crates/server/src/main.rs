@@ -6,11 +6,17 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::Parser;
-use skald_server::{ClientSecret, GitHubApp, GitHubUrl, PublicUrl, Settings, SignInSettings};
+use skald_server::{
+    ClientSecret, GitHubApp, GitHubUrl, OidcSettings, PublicUrl, Settings, SignInSettings,
+};
 use tokio::net::TcpListener;
 
 /// The environment variable that holds the GitHub OAuth App's client secret.
-const CLIENT_SECRET_ENV: &str = "SKALD_GITHUB_CLIENT_SECRET";
+const GITHUB_SECRET_ENV: &str = "SKALD_GITHUB_CLIENT_SECRET";
+/// The environment variable that holds the Google OAuth client's secret.
+const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
+/// The least time between two reads of Google's keys.
+const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
 
 /// Skald server.
 #[derive(Parser)]
@@ -30,7 +36,8 @@ struct Cli {
     protocol_versions: Option<skald_server::Versions>,
 
     /// The server's public address, the origin browsers open, e.g. https://skald.example. GitHub's
-    /// callback is <URL>/auth/github/callback; under https, cookies go over HTTPS only.
+    /// callback is <URL>/auth/github/callback, Google's <URL>/auth/google/callback; under https,
+    /// cookies go over HTTPS only.
     #[arg(long, env = "SKALD_PUBLIC_URL", value_name = "URL")]
     public_url: Option<PublicUrl>,
 
@@ -57,7 +64,7 @@ struct Cli {
     )]
     github_api_url: GitHubUrl,
 
-    /// How long a GitHub sign-in may take from its start to GitHub's callback.
+    /// How long a sign-in in the browser may take from its start to the provider's callback.
     #[arg(
         long,
         env = "SKALD_SIGN_IN_STATE_LIFETIME",
@@ -66,6 +73,20 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=86_400)
     )]
     sign_in_state_lifetime: u64,
+
+    /// The Google OAuth client's ID. Its client secret comes only from the environment variable
+    /// SKALD_GOOGLE_CLIENT_SECRET. Without both, Google sign-in is off.
+    #[arg(long, env = "SKALD_GOOGLE_CLIENT_ID", value_name = "ID")]
+    google_client_id: Option<String>,
+
+    /// Google's issuer: its OpenID Connect metadata is at <URL>/.well-known/openid-configuration.
+    #[arg(
+        long,
+        env = "SKALD_GOOGLE_ISSUER",
+        value_name = "URL",
+        default_value = "https://accounts.google.com"
+    )]
+    google_issuer: String,
 
     /// How long a device flow's codes work, from device authorization to the machine's last poll.
     #[arg(
@@ -88,39 +109,69 @@ struct Cli {
     device_poll_interval: u64,
 }
 
+/// A provider's client ID, given by `flag`, and its secret, from the environment variable
+/// `secret_env`: both or neither.
+fn client(
+    client_id: Option<String>,
+    flag: &str,
+    secret_env: &str,
+) -> Result<Option<(String, ClientSecret)>, String> {
+    let secret = env::var_os(secret_env)
+        .map(|secret| {
+            secret
+                .into_string()
+                .map_err(|_| format!("{secret_env} is not UTF-8"))
+        })
+        .transpose()?
+        .and_then(ClientSecret::new);
+    match (client_id, secret) {
+        (None, None) => Ok(None),
+        (Some(client_id), Some(secret)) => Ok(Some((client_id, secret))),
+        (Some(_), None) => Err(format!("{flag} needs the client secret in {secret_env}")),
+        (None, Some(_)) => Err(format!("{secret_env} needs {flag}")),
+    }
+}
+
 impl Cli {
     /// The settings, or why they do not fit together.
     fn settings(self) -> Result<Settings, String> {
-        let secret = env::var_os(CLIENT_SECRET_ENV)
-            .map(|secret| {
-                secret
-                    .into_string()
-                    .map_err(|_| format!("{CLIENT_SECRET_ENV} is not UTF-8"))
+        let github = client(
+            self.github_client_id,
+            "--github-client-id",
+            GITHUB_SECRET_ENV,
+        )?
+        .map(|(client_id, client_secret)| GitHubApp {
+            client_id,
+            client_secret,
+            url: self.github_url,
+            api_url: self.github_api_url,
+        });
+        let google = client(
+            self.google_client_id,
+            "--google-client-id",
+            GOOGLE_SECRET_ENV,
+        )?
+        .map(|(client_id, client_secret)| {
+            skald_server::issuer_url(&self.google_issuer)?;
+            Ok::<_, String>(OidcSettings {
+                issuer: self.google_issuer,
+                client_id,
+                client_secret,
+                key_refresh: GOOGLE_KEY_REFRESH,
             })
-            .transpose()?
-            .and_then(ClientSecret::new);
-        let sign_in = match (self.github_client_id, secret) {
-            (None, None) => None,
-            (Some(client_id), Some(client_secret)) => Some(SignInSettings {
-                public_url: self.public_url.ok_or("GitHub sign-in needs --public-url")?,
-                github: GitHubApp {
-                    client_id,
-                    client_secret,
-                    url: self.github_url,
-                    api_url: self.github_api_url,
-                },
+        })
+        .transpose()?;
+        let sign_in = if github.is_none() && google.is_none() {
+            None
+        } else {
+            Some(SignInSettings {
+                public_url: self.public_url.ok_or("sign-in needs --public-url")?,
+                github,
+                google,
                 state_lifetime: Duration::from_secs(self.sign_in_state_lifetime),
                 device_code_lifetime: Duration::from_secs(self.device_code_lifetime),
                 device_poll_interval: Duration::from_secs(self.device_poll_interval),
-            }),
-            (Some(_), None) => {
-                return Err(format!(
-                    "--github-client-id needs the client secret in {CLIENT_SECRET_ENV}"
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(format!("{CLIENT_SECRET_ENV} needs --github-client-id"));
-            }
+            })
         };
         Ok(Settings {
             versions: self.protocol_versions.unwrap_or_default(),

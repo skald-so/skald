@@ -28,8 +28,13 @@ pub(crate) struct Method<'a> {
 }
 
 /// Starts a web session of the account that holds `method`, and gives its token. The method's first
-/// sign-in signs up: it creates an account with that method. A GitHub method's login is updated.
-pub(crate) async fn sign_in(db: &PgPool, method: &Method<'_>) -> Result<String, sqlx::Error> {
+/// sign-in signs up: it creates an account with that method, its username made from `source`, such
+/// as a GitHub login or an email's local part. A GitHub method's login is updated.
+pub(crate) async fn sign_in(
+    db: &PgPool,
+    method: &Method<'_>,
+    source: &str,
+) -> Result<String, sqlx::Error> {
     let mut tx = db.begin().await?;
     // Of two first sign-ins with one method at once, the second waits for the first to commit and
     // finds its account.
@@ -46,7 +51,7 @@ pub(crate) async fn sign_in(db: &PgPool, method: &Method<'_>) -> Result<String, 
     .fetch_one(&mut *tx)
     .await?;
     if created {
-        sign_up(&mut tx, &account, method.login.unwrap_or_default()).await?;
+        sign_up(&mut tx, &account, source).await?;
     }
     let session = random_token();
     sqlx::query("INSERT INTO sessions (token_hash, account_id, kind) VALUES ($1, $2::uuid, 'web')")
@@ -59,7 +64,7 @@ pub(crate) async fn sign_in(db: &PgPool, method: &Method<'_>) -> Result<String, 
 }
 
 /// Creates the account `account`, whose first sign-in method `tx` added, with the first free
-/// username that `source`, such as a GitHub login, makes: the one sign-up of every provider.
+/// username that `source` makes: the one sign-up of every provider.
 async fn sign_up(
     tx: &mut Transaction<'_, Postgres>,
     account: &str,

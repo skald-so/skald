@@ -148,6 +148,18 @@ impl Server {
             })
             .expect("read the database's rows")
     }
+
+    /// Runs `sql`, one or more statements, on the server's database, as an operator would.
+    pub fn execute(&self, sql: &str) {
+        let runtime = Runtime::new().expect("start a tokio runtime");
+        runtime
+            .block_on(async {
+                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut conn).await?;
+                conn.close().await
+            })
+            .unwrap_or_else(|err| panic!("run {sql:?} on the database: {err}"));
+    }
 }
 
 impl Drop for Server {
@@ -278,6 +290,21 @@ impl Stub {
             .map(|head| head.to_lowercase())
             .collect()
     }
+}
+
+/// The URL of `stub` at `0.0.0.0`, no address of this machine; yet on Linux and macOS a connection
+/// to it reaches the stub, which would get any request sent there.
+pub fn elsewhere(stub: &Stub) -> String {
+    let port = stub.url.rsplit(':').next().expect("the stub's port");
+    format!("http://0.0.0.0:{port}")
+}
+
+/// The error of a server URL `url` in plain HTTP to another machine.
+pub fn cleartext(url: &str) -> String {
+    format!(
+        "skald: {url:?} is plain HTTP to another machine: use https://; plain http:// goes only to \
+         this machine: localhost, 127.0.0.0/8 or [::1]\n"
+    )
 }
 
 /// A whole HTTP response with `status`, `content_type` and `body`, closing the connection.

@@ -6,8 +6,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Seals the MLS state.
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
+# 0.57.1 refuses too-short UpdatePaths and filters proposals correctly. `external_client` for the
+# Delivery Service and the browser, `last_resort_key_package_ext` for the last-resort KeyPackage.
+mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_package_ext"] }
+# GroupState and EpochRecord, which mls-rs does not re-export.
+mls-rs-core = "0.27"
+mls-rs-crypto-rustcrypto = "0.23"
 skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
@@ -15,6 +23,8 @@ zeroize = "1"
 # In WASM: the random generator of the browser or Node.js.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
+# mls-rs takes JavaScript's clock itself; `browser` gives its provider the random generator.
+mls-rs-crypto-rustcrypto = { version = "0.23", features = ["browser"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

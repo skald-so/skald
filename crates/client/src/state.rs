@@ -1,12 +1,13 @@
 //! The client's local state: an SQLite database in the state directory. It holds no secret: those go
 //! to [`crate::secrets`].
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use skald_proto::DeviceId;
+use skald_proto::{DeviceId, SpaceId};
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
@@ -42,6 +43,29 @@ const MIGRATIONS: &[&str] = &[
     // of a state older than this column takes its session's account, if the session has one.
     "ALTER TABLE device ADD COLUMN account TEXT;
     UPDATE device SET account = (SELECT account FROM session);",
+    // The session keeps its account's username instead of the GitHub login. A session of a state
+    // older than this column has no username until its next sign-in or `skald set-username`.
+    "ALTER TABLE session DROP COLUMN github_login;
+    ALTER TABLE session ADD COLUMN username TEXT;",
+    // The spaces the device accepted a revision of: each one's ID and name, its anchor (revision 1
+    // of a space it created) and the last revision it accepted, as their CBOR bytes, and the
+    // revision it signed that the server has not taken yet, if any.
+    "CREATE TABLE space (
+        space TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        anchor BLOB NOT NULL,
+        accepted BLOB NOT NULL,
+        pending BLOB
+    ) STRICT",
+    // The hash of each revision the device accepted of a space, by its number, but that of the
+    // space's last accepted revision, which the space holds: it is recorded once the device
+    // accepts the next one. A state older than this table accepted only revision 1 of each space.
+    "CREATE TABLE accepted_revision (
+        space TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        hash BLOB NOT NULL CHECK (length(hash) = 32),
+        PRIMARY KEY (space, revision)
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -77,8 +101,10 @@ pub fn create_dir(dir: &Path) -> io::Result<()> {
 pub struct Session {
     /// The server's base URL.
     pub server: String,
-    /// The account's ID and GitHub login, once the server gave them.
-    pub account: Option<(String, String)>,
+    /// The account's ID, once the server gave it.
+    pub account: Option<String>,
+    /// The account's username, as the latest sign-in or `skald set-username` recorded it.
+    pub username: Option<String>,
 }
 
 /// The machine's own device, as the state holds it.
@@ -107,6 +133,28 @@ pub enum Link {
     Certified { master: [u8; 32], cert: Vec<u8> },
     /// It waits for linking by another device of the account.
     Waiting,
+}
+
+/// A space the device accepted a revision of, as the state holds it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Space {
+    pub id: SpaceId,
+    pub name: String,
+    /// Its anchor, in CBOR: revision 1 of a space the device created.
+    pub anchor: Vec<u8>,
+    /// The last revision the device accepted, in CBOR.
+    pub accepted: Vec<u8>,
+    /// The revision the device signed that the server has not taken yet, in CBOR.
+    pub pending: Option<Vec<u8>>,
+}
+
+/// What the state holds of the revisions the device accepted of a space.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Accepted {
+    /// The last accepted revision, in CBOR.
+    pub last: Vec<u8>,
+    /// The hash of each earlier accepted revision, by number.
+    pub hashes: BTreeMap<u64, [u8; 32]>,
 }
 
 /// Why the state cannot be used.
@@ -156,18 +204,13 @@ impl State {
     pub fn session(&self) -> Result<Option<Session>, Error> {
         let session = self
             .db
-            .query_row(
-                "SELECT server, account, github_login FROM session",
-                [],
-                |row| {
-                    let account: Option<String> = row.get(1)?;
-                    let login: Option<String> = row.get(2)?;
-                    Ok(Session {
-                        server: row.get(0)?,
-                        account: account.zip(login),
-                    })
-                },
-            )
+            .query_row("SELECT server, account, username FROM session", [], |row| {
+                Ok(Session {
+                    server: row.get(0)?,
+                    account: row.get(1)?,
+                    username: row.get(2)?,
+                })
+            })
             .optional()?;
         Ok(session)
     }
@@ -181,12 +224,19 @@ impl State {
         Ok(())
     }
 
-    /// Records the session's account.
-    pub fn set_account(&self, account: &str, github_login: &str) -> Result<(), Error> {
+    /// Records the session's account and its username.
+    pub fn set_account(&self, account: &str, username: &str) -> Result<(), Error> {
         self.db.execute(
-            "UPDATE session SET account = ?1, github_login = ?2",
-            params![account, github_login],
+            "UPDATE session SET account = ?1, username = ?2",
+            params![account, username],
         )?;
+        Ok(())
+    }
+
+    /// Records the username of the session's account.
+    pub fn set_username(&self, username: &str) -> Result<(), Error> {
+        self.db
+            .execute("UPDATE session SET username = ?1", params![username])?;
         Ok(())
     }
 
@@ -284,6 +334,136 @@ impl State {
         )?;
         Ok(())
     }
+
+    /// The spaces the device accepted a revision of, by name.
+    pub fn spaces(&self) -> Result<Vec<Space>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT space, name, anchor, accepted, pending FROM space ORDER BY name")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, name, anchor, accepted, pending) = row?;
+            let id = id
+                .parse()
+                .map_err(|err| Error::Malformed(format!("the space ID {id:?}: {err}")))?;
+            Ok(Space {
+                id,
+                name,
+                anchor,
+                accepted,
+                pending,
+            })
+        })
+        .collect()
+    }
+
+    /// Records the space `id` named `name` that the device created, with its revision 1 `first`,
+    /// in CBOR, as its anchor and last accepted revision, and as pending until the server takes it.
+    pub fn add_space(&self, id: SpaceId, name: &str, first: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO space (space, name, anchor, accepted, pending) VALUES (?1, ?2, ?3, ?3, ?3)",
+            params![id.to_string(), name, first],
+        )?;
+        Ok(())
+    }
+
+    /// Records that the server took the pending revision of the space `id`.
+    pub fn set_taken(&self, id: SpaceId) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE space SET pending = NULL WHERE space = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the space `id`.
+    pub fn remove_space(&self, id: SpaceId) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        tx.execute(
+            "DELETE FROM accepted_revision WHERE space = ?1",
+            params![id],
+        )?;
+        tx.execute("DELETE FROM space WHERE space = ?1", params![id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// What the state holds of the space `id`, if it holds it: its last accepted revision and the
+    /// hashes of the earlier ones, read in one transaction, so another run's accepting is in both
+    /// or in neither.
+    pub fn accepted(&self, id: SpaceId) -> Result<Option<Accepted>, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        let Some(last) = tx
+            .query_row(
+                "SELECT accepted FROM space WHERE space = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let mut query =
+            tx.prepare("SELECT revision, hash FROM accepted_revision WHERE space = ?1")?;
+        let rows = query.query_map(params![id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let hashes = rows
+            .map(|row| {
+                let (revision, hash) = row?;
+                let malformed = || Error::Malformed(format!("the hash of revision {revision}"));
+                let revision = u64::try_from(revision).map_err(|_| malformed())?;
+                let hash = hash.try_into().map_err(|_| malformed())?;
+                Ok((revision, hash))
+            })
+            .collect::<Result<_, Error>>()?;
+        drop(query);
+        tx.commit()?;
+        Ok(Some(Accepted { last, hashes }))
+    }
+
+    /// Records that the device accepted revisions of the space `id` after `from`, its last accepted
+    /// revision until now, in CBOR: `hashes`, the number and hash of `from` and of each revision but
+    /// the last, and `last`, in CBOR, its new last accepted revision. Records nothing and gives
+    /// `false` if `from` is no longer the space's last accepted revision.
+    pub fn accept(
+        &self,
+        id: SpaceId,
+        from: &[u8],
+        hashes: &[(u64, [u8; 32])],
+        last: &[u8],
+    ) -> Result<bool, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let id = id.to_string();
+        let changed = tx.execute(
+            "UPDATE space SET accepted = ?3 WHERE space = ?1 AND accepted = ?2",
+            params![id, from, last],
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        for (revision, hash) in hashes {
+            let revision = i64::try_from(*revision)
+                .map_err(|_| Error::Malformed(format!("revision {revision}")))?;
+            tx.execute(
+                "INSERT INTO accepted_revision (space, revision, hash) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING",
+                params![id, revision, hash.as_slice()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
 }
 
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
@@ -330,27 +510,33 @@ mod tests {
             state.session().unwrap(),
             Some(Session {
                 server: "http://one.test".to_owned(),
-                account: None
+                account: None,
+                username: None,
             })
         );
         state.set_account("0190", "ada").unwrap();
         drop(state);
 
         let state = State::open(&dir).unwrap();
-        let account = Some(("0190".to_owned(), "ada".to_owned()));
-        assert_eq!(
-            state.session().unwrap(),
+        let ada = |username: &str| {
             Some(Session {
                 server: "http://one.test".to_owned(),
-                account
+                account: Some("0190".to_owned()),
+                username: Some(username.to_owned()),
             })
+        };
+        assert_eq!(state.session().unwrap(), ada("ada"));
+        state.set_username("ada-of-skald").unwrap();
+        assert_eq!(
+            State::open(&dir).unwrap().session().unwrap(),
+            ada("ada-of-skald")
         );
         // A new session replaces it, with no account yet.
         state.start_session("http://two.test").unwrap();
         let session = state.session().unwrap().unwrap();
         assert_eq!(
-            (session.server.as_str(), session.account),
-            ("http://two.test", None)
+            (session.server.as_str(), session.account, session.username),
+            ("http://two.test", None, None)
         );
         state.end_session().unwrap();
         assert_eq!(state.session().unwrap(), None);
@@ -403,6 +589,176 @@ mod tests {
     }
 
     #[test]
+    fn spaces_are_kept_across_opens_with_their_pending_revision_until_taken() {
+        let dir = TestDir::new("state-spaces");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.spaces().unwrap(), vec![]);
+        let (globex, acme) = (SpaceId::generate(), SpaceId::generate());
+        state.add_space(globex, "globex", &[2, 2]).unwrap();
+        state.add_space(acme, "acme", &[1, 1]).unwrap();
+        assert!(
+            state.add_space(SpaceId::generate(), "acme", &[3]).is_err(),
+            "one name"
+        );
+        assert!(state.add_space(acme, "other", &[3]).is_err(), "one ID");
+        state.set_taken(acme).unwrap();
+
+        let space = |id, name: &str, bytes: &[u8], pending: bool| Space {
+            id,
+            name: name.to_owned(),
+            anchor: bytes.to_vec(),
+            accepted: bytes.to_vec(),
+            pending: pending.then(|| bytes.to_vec()),
+        };
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.spaces().unwrap(),
+            vec![
+                space(acme, "acme", &[1, 1], false),
+                space(globex, "globex", &[2, 2], true),
+            ]
+        );
+        state.remove_space(globex).unwrap();
+        assert_eq!(
+            state.spaces().unwrap(),
+            vec![space(acme, "acme", &[1, 1], false)]
+        );
+        state
+            .db
+            .execute("UPDATE space SET space = 'not an ID'", [])
+            .unwrap();
+        let error = state.spaces().expect_err("malformed");
+        assert!(matches!(error, Error::Malformed(_)), "{error:?}");
+    }
+
+    #[test]
+    fn accepted_revisions_are_recorded_only_after_the_last_accepted_one() {
+        let dir = TestDir::new("state-accepted");
+        let state = State::open(&dir).unwrap();
+        let (acme, globex) = (SpaceId::generate(), SpaceId::generate());
+        assert_eq!(state.accepted(acme).unwrap(), None);
+        state.add_space(acme, "acme", &[1]).unwrap();
+        state.add_space(globex, "globex", &[7]).unwrap();
+        let accepted = |state: &State, id, last: &[u8], hashes: &[(u64, [u8; 32])]| {
+            assert_eq!(
+                state.accepted(id).unwrap(),
+                Some(Accepted {
+                    last: last.to_vec(),
+                    hashes: hashes.iter().copied().collect(),
+                })
+            );
+        };
+        accepted(&state, acme, &[1], &[]);
+
+        let hashes = [(1, [1; 32]), (2, [2; 32])];
+        assert!(state.accept(acme, &[1], &hashes, &[3]).unwrap());
+        // Another run accepted from revision 1 meanwhile: nothing is recorded, not even a hash
+        // the state has none of yet.
+        assert!(
+            !state
+                .accept(acme, &[1], &[(1, [1; 32]), (3, [8; 32])], &[4])
+                .unwrap()
+        );
+        accepted(&state, acme, &[3], &hashes);
+
+        let state = State::open(&dir).unwrap();
+        accepted(&state, acme, &[3], &hashes);
+        assert_eq!(state.spaces().unwrap()[0].anchor, vec![1]);
+        accepted(&state, globex, &[7], &[]);
+        // A hash already recorded stays.
+        assert!(
+            state
+                .accept(acme, &[3], &[(2, [9; 32]), (3, [3; 32])], &[4])
+                .unwrap()
+        );
+        accepted(
+            &state,
+            acme,
+            &[4],
+            &[(1, [1; 32]), (2, [2; 32]), (3, [3; 32])],
+        );
+
+        state.remove_space(acme).unwrap();
+        assert_eq!(state.accepted(acme).unwrap(), None);
+        state.add_space(acme, "acme", &[1]).unwrap();
+        accepted(&state, acme, &[1], &[]);
+        state
+            .db
+            .execute(
+                "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 1, zeroblob(32))",
+                [],
+            )
+            .unwrap();
+        for update in [
+            "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 2, zeroblob(31))",
+            "INSERT INTO accepted_revision (space, revision, hash) VALUES ('x', 0, zeroblob(32))",
+        ] {
+            assert!(state.db.execute(update, []).is_err(), "{update}");
+        }
+    }
+
+    /// Another run accepts revisions of a space while `accepted` reads it, between its reads of the
+    /// last accepted revision and of the hashes: the read holds the revision and the hashes from
+    /// before, or both from after.
+    #[test]
+    fn accepted_revision_and_hashes_are_read_at_once() {
+        use rusqlite::trace::{TraceEvent, TraceEventCodes};
+        use std::cell::RefCell;
+
+        thread_local! {
+            /// The state directory and the space of the other run, until it runs.
+            static OTHER_RUN: RefCell<Option<(PathBuf, SpaceId)>> = const { RefCell::new(None) };
+            /// What the other run's accepting gave.
+            static RAN: RefCell<Option<Result<bool, String>>> = const { RefCell::new(None) };
+        }
+        fn other_run(event: TraceEvent<'_>) {
+            let TraceEvent::Stmt(_, sql) = event else {
+                return;
+            };
+            if !sql.contains("SELECT revision, hash") {
+                return;
+            }
+            let Some((dir, id)) = OTHER_RUN.with(|run| run.borrow_mut().take()) else {
+                return;
+            };
+            let accepted = State::open(&dir)
+                .and_then(|state| {
+                    state.db.busy_timeout(std::time::Duration::ZERO)?;
+                    state.accept(id, &[1], &[(1, [1; 32])], &[2])
+                })
+                .map_err(|err| err.to_string());
+            RAN.with(|ran| *ran.borrow_mut() = Some(accepted));
+        }
+
+        let dir = TestDir::new("state-accepted-at-once");
+        let state = State::open(&dir).unwrap();
+        let acme = SpaceId::generate();
+        state.add_space(acme, "acme", &[1]).unwrap();
+        OTHER_RUN.with(|run| *run.borrow_mut() = Some((dir.to_path_buf(), acme)));
+        state
+            .db
+            .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(other_run));
+
+        let read = state.accepted(acme).unwrap().expect("acme");
+
+        state.db.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        let ran = RAN.with(|ran| ran.borrow().clone());
+        assert!(ran.is_some(), "no other run");
+        let before = Accepted {
+            last: vec![1],
+            hashes: BTreeMap::new(),
+        };
+        let after = Accepted {
+            last: vec![2],
+            hashes: [(1, [1; 32])].into_iter().collect(),
+        };
+        assert!(
+            read == before || read == after,
+            "{read:?}, the other run: {ran:?}"
+        );
+    }
+
+    #[test]
     fn device_of_an_older_state_takes_its_sessions_account() {
         let dir = TestDir::new("state-device-account");
         let db = Connection::open(dir.join(FILE)).unwrap();
@@ -433,6 +789,41 @@ mod tests {
             state.device().unwrap().unwrap().account.as_deref(),
             Some("0191")
         );
+    }
+
+    #[test]
+    fn session_of_a_state_with_the_github_login_keeps_its_account_and_drops_the_login() {
+        let dir = TestDir::new("state-session-username");
+        let db = Connection::open(dir.join(FILE)).unwrap();
+        for migration in &MIGRATIONS[..3] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.execute_batch(
+            "PRAGMA user_version = 3;
+             INSERT INTO session (id, server, account, github_login)
+                 VALUES (1, 'http://one.test', '0190', 'Ada_Lovelace');",
+        )
+        .unwrap();
+        drop(db);
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.session().unwrap(),
+            Some(Session {
+                server: "http://one.test".to_owned(),
+                account: Some("0190".to_owned()),
+                username: None,
+            })
+        );
+        let columns: Vec<String> = state
+            .db
+            .prepare("SELECT name FROM pragma_table_info('session')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(columns, ["id", "server", "account", "username"]);
     }
 
     #[test]

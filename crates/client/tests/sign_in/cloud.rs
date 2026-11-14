@@ -10,7 +10,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
-use skald_proto::{AccountId, Cbor, Cert, DeviceId};
+use skald_proto::{AccountId, Cbor, Cert, DeviceId, Roster, SpaceId};
 use skald_server::{CALLBACK_PATH, ClientSecret, GitHubApp, Settings, SignInSettings};
 
 use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_LINK, SUBMIT, Visit};
@@ -88,13 +88,14 @@ impl Cloud {
             let github_url = stand_in.url().parse().expect("the stand-in's address");
             let sign_in = SignInSettings {
                 public_url: public.parse().expect("a public address"),
-                github: GitHubApp {
+                github: Some(GitHubApp {
                     client_id: CLIENT_ID.to_owned(),
                     client_secret: ClientSecret::new(CLIENT_SECRET.to_owned())
                         .expect("a client secret"),
                     api_url: github_url,
                     url: stand_in.url().parse().expect("the stand-in's address"),
-                },
+                }),
+                google: None,
                 state_lifetime: Duration::from_secs(600),
                 device_code_lifetime: Duration::from_secs(lifetime),
                 device_poll_interval: Duration::from_secs(interval),
@@ -227,6 +228,25 @@ impl Cloud {
             .collect()
     }
 
+    /// The revisions of `space` the server holds, for the session `token`, straight from the
+    /// server: each one's bytes as stored, and the revision they decode to.
+    pub fn revisions(&self, token: &str, space: SpaceId) -> Vec<(Vec<u8>, Roster)> {
+        let path = format!("/spaces/{space}/revisions");
+        let (status, body) = self.get_as(&path, token);
+        assert_eq!(status, 200, "GET {path}: {body}");
+        body["revisions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("GET {path}: {body}"))
+            .iter()
+            .map(|revision| {
+                let bytes = unb64(revision.as_str().expect("a revision in base64url"));
+                let roster = Roster::from_cbor(&bytes)
+                    .unwrap_or_else(|err| panic!("a revision that does not decode: {err}"));
+                (bytes, roster)
+            })
+            .collect()
+    }
+
     /// How many requests whose line starts with `request` the machines sent from `since` on.
     pub fn count_sent(&self, since: Instant, request: &str) -> usize {
         let request = request.to_lowercase();
@@ -264,9 +284,25 @@ impl Cloud {
         (machine, finished)
     }
 
+    /// Waits until the relay has lost an answer of the server to `request`, for up to [`WAIT`],
+    /// then kills `run`, which sent it.
+    pub fn kill_once_lost(&self, run: Run, request: &str) {
+        let deadline = Instant::now() + WAIT;
+        while self.relay.lost() == 0 {
+            assert!(Instant::now() < deadline, "no {request}: {}", run.shown());
+            thread::sleep(Duration::from_millis(50));
+        }
+        drop(run);
+    }
+
     /// What every table of the server's database holds, one XML document per table.
     pub fn rows(&self) -> Vec<String> {
         self.server.rows()
+    }
+
+    /// Runs `sql` on the server's database.
+    pub fn execute(&self, sql: &str) {
+        self.server.execute(sql);
     }
 
     /// The account a request with `token` acts as, from the server; fails if it acts as none.

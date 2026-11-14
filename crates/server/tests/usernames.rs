@@ -22,11 +22,12 @@ use std::collections::BTreeSet;
 use std::sync::Barrier;
 use std::thread;
 
-use common::device_flow::{DeviceFlow, json, text};
+use common::accounts::{NAME_MAX, RESERVED, Who, assert_valid};
+use common::device_flow::{DeviceFlow, text};
 use common::devices::{assert_refused, b64, machine, random};
 use common::sign_in::{SESSION, SignIn, cookie_set};
 use common::{Response, TestDb, get_url};
-use serde_json::{Value, json};
+use serde_json::json;
 use skald_github_stand_in::User;
 use skald_proto::AccountId;
 use sqlx::{Connection, PgConnection};
@@ -34,64 +35,11 @@ use sqlx::{Connection, PgConnection};
 /// Sets the session's account's username: `PUT`.
 const USERNAME: &str = "/account/username";
 
-/// The usernames no account takes.
-const RESERVED: [&str; 4] = ["skald", "admin", "support", "root"];
-
-/// The most characters of a `name`.
-const NAME_MAX: usize = 63;
-
 /// The last migration of a server whose accounts had no username.
 const BEFORE_USERNAMES: i64 = 20261115000000;
 
 /// An OIDC provider's issuer, for a method of a provider other than GitHub.
 const GOOGLE: &str = "https://accounts.google.com";
-
-/// A session's account as `GET /session` gives it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Who {
-    account: String,
-    username: String,
-    github_login: Option<String>,
-}
-
-impl Who {
-    /// The account in `response`, a `200` answer to `GET /session`.
-    fn of(response: &Response) -> Self {
-        assert_eq!(response.status, 200, "{}", text(response));
-        let body = json(response);
-        let account = body["account"].as_str().expect("an account ID").to_owned();
-        let username = body["username"]
-            .as_str()
-            .unwrap_or_else(|| panic!("no username in {body}"))
-            .to_owned();
-        let github_login = match body.get("github_login") {
-            None => None,
-            Some(Value::String(login)) => Some(login.clone()),
-            Some(other) => panic!("github_login {other} in {body}"),
-        };
-        Who {
-            account,
-            username,
-            github_login,
-        }
-    }
-}
-
-/// Whether `text` has the form of a `name` in an agent address.
-fn is_name(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let alnum = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
-    (1..=NAME_MAX).contains(&bytes.len())
-        && alnum(&bytes[0])
-        && alnum(&bytes[bytes.len() - 1])
-        && bytes.iter().all(|byte| alnum(byte) || *byte == b'-')
-}
-
-/// Checks that `username` is one an account can have: a `name`, not reserved.
-fn assert_valid(username: &str) {
-    assert!(is_name(username), "not a name: {username:?}");
-    assert!(!RESERVED.contains(&username), "reserved: {username:?}");
-}
 
 /// The account of the web session in the `Cookie` header `cookie`.
 fn of_cookie(flow: &DeviceFlow, cookie: &str) -> Who {

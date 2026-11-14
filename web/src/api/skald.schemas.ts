@@ -166,6 +166,64 @@ export interface Session {
 }
 
 /**
+ * A space's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+ */
+export type SpaceId = string;
+
+/**
+ * A space's name: a valid `name` (docs/protocol/README.md, "Agent address"), unique on the server.
+ * @pattern ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+ */
+export type SpaceName = string;
+
+export interface Space {
+  space: SpaceId;
+  name: SpaceName;
+}
+
+export interface Spaces {
+  spaces: Space[];
+}
+
+export interface SpaceRequest {
+  name: SpaceName;
+}
+
+/**
+ * A channel's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+ */
+export type ChannelId = string;
+
+export interface NewChannel {
+  channel: ChannelId;
+}
+
+/**
+ * A roster revision's CBOR bytes (docs/protocol/membership.md, "Roster") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type RosterRevision = string;
+
+export interface RosterRevisions {
+  revisions: RosterRevision[];
+}
+
+export interface RosterRevisionRequest {
+  revision: RosterRevision;
+}
+
+export interface StoredRosterRevision {
+  space: SpaceId;
+  /**
+   * The revision's number.
+   * @minimum 1
+   */
+  revision: number;
+}
+
+/**
  * The protocol version the request states.
  */
 export type ProtocolVersionParameter = number;

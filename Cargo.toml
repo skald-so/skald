@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0-beta.1"
+version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
@@ -25,3 +25,11 @@ path = "repository.rs"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Debug builds and tests: line tables only, enough for the file and line of each frame in our
+# crates; no debug info in dependencies. A fresh target/ is about a third smaller.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

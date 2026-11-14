@@ -9,7 +9,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
-- release-plz of the version in `script/lib/release.sh`, for the Release PR tests: `cargo install release-plz --version <version> --locked`.
+- release-plz, patched, for the Release PR tests: `script/install-release-plz` builds it into `skald/` in `CARGO_HOME`, `~/.cargo` by default, and the tests run that one.
 - dist of the version in `dist-workspace.toml`, only to build the release archives by hand, `dist build`; `script/test` does not run it: `cargo install cargo-dist --version <version> --locked`.
 - Docker: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots.
 - Node.js 26 with npm.
@@ -41,13 +41,22 @@ read -rs SKALD_GITHUB_CLIENT_SECRET && export SKALD_GITHUB_CLIENT_SECRET  # past
 SKALD_DATABASE_URL=postgres://postgres:skald@127.0.0.1:5432/postgres cargo run -p skald-server -- \
   --public-url http://127.0.0.1:8080 --github-client-id <client ID>
 ```
-Then open `http://127.0.0.1:8080/auth/github`. Without the client ID and secret, sign-in is off. `skald-server --help` lists the other settings.
+Then open `http://127.0.0.1:8080/auth/github`. Without the client ID and secret, GitHub sign-in is off. `skald-server --help` lists the other settings.
+
+Google sign-in needs a Google OAuth client of your own (Google Cloud console → Google Auth Platform → Clients, type "Web application") with the authorized redirect URI `http://127.0.0.1:8080/auth/google/callback`. Its client secret goes only in `SKALD_GOOGLE_CLIENT_SECRET`; `--google-issuer` defaults to Google's:
+```sh
+read -rs SKALD_GOOGLE_CLIENT_SECRET && export SKALD_GOOGLE_CLIENT_SECRET  # paste the secret
+SKALD_DATABASE_URL=postgres://postgres:skald@127.0.0.1:5432/postgres cargo run -p skald-server -- \
+  --public-url http://127.0.0.1:8080 --google-client-id <client ID>
+```
+Then open `http://127.0.0.1:8080/auth/google`. Without the client ID and secret, Google sign-in is off. Both providers' settings can be given at once.
 
 `skald`:
 ```sh
 cargo run -p skald-client -- --version
 cargo run -p skald-client -- sign-in --server http://127.0.0.1:8080
 ```
+Plain `http://` goes only to a server on this machine, as here: [Network](docs/dev/architecture.md#network).
 `SKALD_STATE_DIR` sets the directory of its local state and secrets file; `SKALD_KEY_STORAGE=file` keeps its secrets in that file instead of the system's key storage.
 
 Web UI: [web/README.md](web/README.md).

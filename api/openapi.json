@@ -591,6 +591,200 @@
         }
       }
     },
+    "/auth/google": {
+      "get": {
+        "operationId": "startGoogleSignIn",
+        "summary": "Start a Google sign-in",
+        "description": "Opened by the browser. Sends it to Google's authorization endpoint, by OpenID Connect's authorization code flow, asking for the scopes `openid` and `email` only, with a `state` that the cookie this response sets binds to this browser and a `nonce` and an S256 PKCE challenge of this sign-in. The `state` works once, until it expires; its lifetime is the server setting `--sign-in-state-lifetime`. The server reads Google's metadata from its issuer, the setting `--google-issuer`, at the first sign-in start that reaches it.",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "required": false,
+            "description": "The page of this server to return to once signed in: a path such as `/settings?tab=devices`. Anything else, such as another site's address, returns to `/`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To Google's authorization endpoint.",
+            "headers": {
+              "Location": {
+                "description": "Google's authorization endpoint with the client ID, the redirect URI `<public URL>/auth/google/callback`, `response_type=code`, the scopes `openid email`, `state`, `nonce`, `code_challenge` and `code_challenge_method=S256`.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "The cookie that binds `state` to this browser: `HttpOnly`, `SameSite=Lax`, `Secure` under an https public URL, for the callback's path only.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Google sign-in is off: the server has no Google settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Google is unreachable, or its metadata or keys are malformed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/google/callback": {
+      "get": {
+        "operationId": "finishGoogleSignIn",
+        "summary": "Google's callback",
+        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. Keeps no email, ID token or Google token.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "description": "The code Google gives.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "The `state` of the sign-in start.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "description": "Google's error, such as `access_denied`, instead of a code.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed in: a page that sends the browser to the sign-in's return page.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "The session cookie `skald_session`: `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; and the removal of the cookie that bound `state`.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No one is signed in: `state` is missing, wrong, from another browser, expired or used; or Google gave an error or no code, refused the code, or gave an ID token that fails a check, such as one with another sign-in's `nonce`.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Google sign-in is off: the server has no Google settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "No one is signed in: the database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "No one is signed in: Google failed, is unreachable or refused the client ID and secret.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/token": {
       "post": {
         "operationId": "requestDeviceToken",
@@ -1294,6 +1488,687 @@
         }
       }
     },
+    "/spaces": {
+      "get": {
+        "operationId": "getSpaces",
+        "summary": "The account's spaces",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The spaces the session's account gets.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Spaces"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createSpace",
+        "summary": "Create a space",
+        "description": "The server issues the space's ID; the session's account creates and owns it, and stores its revision 1 (docs/protocol/membership.md, \"Roster\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpaceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The space the session's account created with this name and that has no revision yet: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Space"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Space"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body or a name that is not a valid `name`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another space has the name, or the account's space with it has a revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/channels": {
+      "post": {
+        "operationId": "createChannel",
+        "summary": "A new channel ID",
+        "description": "The server issues a channel ID for the space; a roster revision adds only channels whose IDs the server issued for its space.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Issued.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewChannel"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/devices": {
+      "get": {
+        "operationId": "getSpaceDevices",
+        "summary": "The space's devices",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The devices of the accounts the space's revisions list, each with its certificate as the device sent it, or `null` while it has none.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Devices"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/revisions": {
+      "get": {
+        "operationId": "getRosterRevisions",
+        "summary": "The space's roster revisions",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The space's revisions as stored, from revision 1 on, in order.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RosterRevisions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "storeRosterRevision",
+        "summary": "Store a roster revision",
+        "description": "The server stores revision 1, then revision n+1 only after revision n, as the bytes it got (docs/protocol/membership.md, \"Roster\"). Only a session of the space's creator stores revision 1, which lists that account as an admin; only a session of an admin in revision n stores revision n+1. Its `signer` is a device of the session's account with a certificate on the server.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RosterRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The space has this revision with these bytes: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredRosterRevision"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredRosterRevision"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the revision is refused: a malformed body; bytes that do not decode as a `roster`; another space or name than this one; a `signer` that is no device of the session's account with a certificate, or a signature that does not verify with its key; revision 1 that does not list the creator as an admin; checks 2 to 4 of \"Roster\" failed, on revision 1 checks 3 and 4; or a channel whose ID the server did not issue for this space.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account gets the space, but is not its creator for revision 1, or no admin in revision n for revision n+1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The space has no revision n for this revision n+1, or has another revision with this number.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ws": {
       "get": {
         "operationId": "openWebSocket",
@@ -1362,6 +2237,15 @@
           "type": "integer",
           "minimum": 1
         }
+      },
+      "Space": {
+        "name": "space",
+        "in": "path",
+        "required": true,
+        "description": "The space's ID.",
+        "schema": {
+          "$ref": "#/components/schemas/SpaceId"
+        }
       }
     },
     "headers": {
@@ -1387,7 +2271,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "skald_session",
-        "description": "The web session that a GitHub sign-in gives."
+        "description": "The web session that a sign-in in the browser gives, with GitHub or Google."
       },
       "bearer": {
         "type": "http",
@@ -1405,6 +2289,11 @@
         "description": "A device certificate's CBOR bytes (docs/protocol/membership.md, \"Device certificate\") in base64url without padding (RFC 4648, §5).",
         "type": "string",
         "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "ChannelId": {
+        "description": "A channel's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
       },
       "Device": {
         "type": "object",
@@ -1632,6 +2521,16 @@
         },
         "additionalProperties": false
       },
+      "NewChannel": {
+        "type": "object",
+        "required": ["channel"],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/ChannelId"
+          }
+        },
+        "additionalProperties": false
+      },
       "OAuthError": {
         "description": "An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5).",
         "type": "object",
@@ -1723,6 +2622,34 @@
         "type": "string",
         "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
       },
+      "RosterRevision": {
+        "description": "A roster revision's CBOR bytes (docs/protocol/membership.md, \"Roster\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "RosterRevisionRequest": {
+        "type": "object",
+        "required": ["revision"],
+        "properties": {
+          "revision": {
+            "$ref": "#/components/schemas/RosterRevision"
+          }
+        },
+        "additionalProperties": false
+      },
+      "RosterRevisions": {
+        "type": "object",
+        "required": ["revisions"],
+        "properties": {
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RosterRevision"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Session": {
         "type": "object",
         "required": ["account", "username"],
@@ -1736,6 +2663,67 @@
           "github_login": {
             "description": "The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one.",
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Space": {
+        "type": "object",
+        "required": ["space", "name"],
+        "properties": {
+          "space": {
+            "$ref": "#/components/schemas/SpaceId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/SpaceName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SpaceId": {
+        "description": "A space's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "SpaceName": {
+        "description": "A space's name: a valid `name` (docs/protocol/README.md, \"Agent address\"), unique on the server.",
+        "type": "string",
+        "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      },
+      "SpaceRequest": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/SpaceName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Spaces": {
+        "type": "object",
+        "required": ["spaces"],
+        "properties": {
+          "spaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Space"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "StoredRosterRevision": {
+        "type": "object",
+        "required": ["space", "revision"],
+        "properties": {
+          "space": {
+            "$ref": "#/components/schemas/SpaceId"
+          },
+          "revision": {
+            "description": "The revision's number.",
+            "type": "integer",
+            "minimum": 1
           }
         },
         "additionalProperties": false

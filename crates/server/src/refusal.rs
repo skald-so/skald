@@ -3,13 +3,15 @@
 
 use std::collections::HashMap;
 
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::de::{DeserializeOwned, IgnoredAny};
 use sqlx::PgPool;
 
 use crate::sign_in::{not_signed_in, signed_in};
-use crate::{database_failed, problem};
+use crate::{AppState, database_failed, problem};
 
 /// Why the server refuses a request.
 pub(crate) enum Refusal {
@@ -24,6 +26,15 @@ pub(crate) enum Refusal {
     MasterKeyTaken,
     UsernameReserved,
     UsernameTaken,
+    /// No such space, or the session's account does not get it.
+    NoSpace,
+    /// The session's account may not do this in the space, for the reason it holds.
+    NotAllowed(String),
+    /// A roster revision the server does not store, for the reason it holds.
+    Roster(String),
+    SpaceNameTaken,
+    /// A roster revision out of order or with a taken number, for the reason it holds.
+    RevisionConflict(String),
     /// The database failed at what it holds, such as `read a session`.
     Database(&'static str, sqlx::Error),
 }
@@ -65,6 +76,30 @@ impl IntoResponse for Refusal {
                 "Username taken",
                 "Another account has this username.",
             ),
+            Refusal::NoSpace => problem(
+                StatusCode::NOT_FOUND,
+                "no-space",
+                "No such space",
+                "No such space, or the session's account does not get it.",
+            ),
+            Refusal::NotAllowed(detail) => {
+                problem(StatusCode::FORBIDDEN, "not-allowed", "Not allowed", &detail)
+            }
+            Refusal::Roster(detail) => {
+                problem(bad, "invalid-roster", "Invalid roster revision", &detail)
+            }
+            Refusal::SpaceNameTaken => problem(
+                conflict,
+                "space-name-taken",
+                "Space name taken",
+                "Another space has this name, or the account's space with it has a revision.",
+            ),
+            Refusal::RevisionConflict(detail) => problem(
+                conflict,
+                "revision-conflict",
+                "Revision out of order",
+                &detail,
+            ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }
     }
@@ -84,6 +119,17 @@ pub(crate) async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, 
         .await
         .map_err(|err| Refusal::Database("read a session", err))?;
     Ok(session.ok_or(Refusal::NotSignedIn)?.account)
+}
+
+/// The ID of the account of the request's session, as a handler's argument.
+pub(crate) struct SignedIn(pub String);
+
+impl FromRequestParts<AppState> for SignedIn {
+    type Rejection = Refusal;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
+        Ok(SignedIn(account(&state.db, &parts.headers).await?))
+    }
 }
 
 /// The JSON object `body` as a `T`.

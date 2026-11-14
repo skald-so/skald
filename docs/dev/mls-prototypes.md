@@ -3,7 +3,7 @@
 Prototypes on OpenMLS and mls-rs for choosing the crypto core's MLS library ([roadmap.md, "Preparation"](roadmap.md#preparation-before-mvp)).
 
 - Code: [`prototypes/mls/`](../../prototypes/mls), a cargo workspace apart from the product crates. `mls-scenario` holds the library-neutral suite; `mls-proto-openmls` and `mls-proto-mls-rs` implement its `Device` and `Observer` on each library; their examples are the [WASM](#wasm) modules whose size the report gives. `mls-interop` runs the [interoperability](#interoperability) scenarios on both. `mls-bench` holds the [benchmarks](#benchmarks).
-- Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0, and the `js` feature in WASM; mls-rs 0.57.0 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0, with the `browser` feature in WASM.
+- Versions: OpenMLS 0.9.2 with `openmls_rust_crypto` 0.6.0, and the `js` feature in WASM; mls-rs 0.57.1 with the `external_client` and `last_resort_key_package_ext` features and `mls-rs-crypto-rustcrypto` 0.23.0, with the `browser` feature in WASM.
 - Profile: [membership.md](../protocol/membership.md#mls-profile), "MLS profile". The device's Ed25519 signing key is generated outside the library.
 - Every step of a device loads its saved state and saves it after the step, as one-shot mode does ([architecture.md](architecture.md#components)). A failed step leaves the saved state as it was.
 - Run: `cargo test --manifest-path prototypes/mls/Cargo.toml`. In WASM, in Node.js, from `prototypes/mls`: `cargo test --target wasm32-unknown-unknown -p mls-proto-openmls -p mls-proto-mls-rs --test scenarios`; tools: [CONTRIBUTING.md](../../CONTRIBUTING.md#requirements). `script/test` runs both.
@@ -312,7 +312,6 @@ Object sizes, the same on every run but OpenMLS's saved state ([OpenMLS](#openml
 - "MLS profile" says only that the server keeps the latest GroupInfo. Without a check, one member could give joiners and browsers a GroupInfo of another group.
 - [Envelope](../protocol/README.md#envelope) has a browser take the members from the latest GroupInfo, but names its checks of that GroupInfo's channel, epoch and members only in [Wraps](../protocol/membership.md#wraps), before the browser writes entries.
 - [Group changes](../protocol/membership.md#group-changes) says a joining device checks a GroupInfo's or a Welcome's members, but not what it does when one is not admitted. In the prototypes it refuses and joins by itself once a member has removed that device.
-- [KeyPackages](../protocol/membership.md#keypackages) bounds a device's own KeyPackages to 60 days, but not those it adds. RFC 9420, §7.2, asks applications to bound a lifetime's length.
 
 ## Comparison
 OpenMLS 0.9.2 against mls-rs 0.57.0. Facts from outside this repository were checked on 2026-11-11 at the linked sources.
@@ -404,7 +403,7 @@ The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls
 - **Signing key:** the device's Ed25519 key goes into `SignatureSecretKey` as the 64 bytes of the seed and the public key ("Signing key format").
 - **Sender:** the device reads the roster before processing, to take the credentials of the sender and the removed members from their leaf indexes ("Sender"). An external Commit's joiner comes from the new epoch's roster ("Processing an external Commit").
 - **Checks before saving:** a processed Commit's sender, Adds, Removes and `authenticated_data`, and a Welcome's signer and members, are checked before `write_to_storage()`; a failed check drops the group unsaved ("Reading before merging", "Checking a Welcome").
-- **Admission:** the `IdentityProvider` refuses devices that are not admitted only in the client that commits an Add; members remove such devices after processing ("Credential check").
+- **Admission:** only the device that commits an Add checks its KeyPackage against the admitted devices, before the Add; members remove such devices after processing ("Credential check").
 - **KeyPackages:** `key_package_lifetime` of 60 days from an hour back ("KeyPackage lifetime").
 - **GroupInfo:** `CommitOptions::with_allow_external_commit`; after an external Commit, `group_info_message_allowing_ext_commit(true)` ("GroupInfo", "External Commit").
 - **Rejoining:** `with_removal` of the old leaf, found by its signature key and accepted by `valid_successor`; the device drops its old state of the group before the build ("External Commit").
@@ -412,7 +411,6 @@ The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls
 - **Delivery Service:** processes a copy of its `ExternalGroup` and keeps it only if the sender check passes ("Outside party").
 - **Client:** built per step by a function returning `Client<impl MlsConfig>` ("Client").
 
-Requirements mls-rs does not meet, each left for its own spec change:
-- [threat-model.md](../threat-model.md#a-stolen-device), "A stolen device": keys live in the OS key store or a 0600 file. mls-rs copies the device's signing key into each group's saved state, in the local state ("Signing key in the state").
+The device's signing key, which mls-rs copies into each group's state ("Signing key in the state"), reaches the local state only sealed ([architecture.md](architecture.md#cryptography)).
 
 Of the [membership.md](../protocol/membership.md) requirements the prototypes exercised, mls-rs meets each, with the workarounds above. The gaps in [Spec](#spec) are the spec's own.

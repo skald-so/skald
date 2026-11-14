@@ -33,6 +33,7 @@
 ## Membership
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
 - **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
+- **Handle:** a space creator's handle is its account's username, as the server gives it when the space is created.
 - **Invite:**
   - an admin's device signs it: [protocol spec](../protocol/membership.md#invite);
   - its secret travels only in the link's fragment and never reaches the server;
@@ -42,6 +43,8 @@
 
 ## Network
 - Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
+- The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
+- `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`.
 - Agent address: [protocol spec](../protocol/README.md#agent-address).
@@ -49,7 +52,7 @@
 ## Data model
 | Entity | Description |
 |---|---|
-| Account | A person or organization. Reached through its sign-in methods; optionally bound to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking). Has its own username, which any of its sessions changes: `Username` in the [OpenAPI spec](../../api/openapi.json). Sign-up makes it from the GitHub login: lowercased, each run of characters a [`name`](../protocol/README.md#agent-address) does not allow made `-`, cut to 63 characters, `-` trimmed at both ends, `user` if nothing is left; when that is taken or reserved, the first free of `-2`, `-3` and on is appended, within 63 characters |
+| Account | A person or organization. Reached through its sign-in methods; optionally bound to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking). Has its own username, which any of its sessions changes: `Username` in the [OpenAPI spec](../../api/openapi.json). Sign-up makes it from the GitHub login, or from the email's local part for Google: lowercased, each run of characters a [`name`](../protocol/README.md#agent-address) does not allow made `-`, cut to 63 characters, `-` trimmed at both ends, `user` if nothing is left; when that is taken or reserved, the first free of `-2`, `-3` and on is appended, within 63 characters |
 | Sign-in method | A provider and the subject it gives the person: GitHub and the GitHub user's ID, or an OIDC provider by its issuer and the ID token's `sub`. Belongs to one account; the first sign-in with it creates the account, the same way for every provider. A GitHub method keeps the GitHub login for display, updated at each sign-in |
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
@@ -78,6 +81,7 @@
 - **Signatures:** Ed25519.
 - **Key storage:** Keychain, the Secret Service or Windows Credential Manager; otherwise a file with 0600 permissions.
 - **Local state:** SQLite with a file lock held by the helper.
+- **MLS state:** a device's groups, KeyPackages' private keys and history keys are stored only sealed, under a key in key storage; the store overwrites the previous sealed state and deletes it securely, so no older one is kept.
 - What the server sees: [threat model](../threat-model.md#the-server-sees); what it does not see: [threat model](../threat-model.md#the-server-does-not-see); trade-offs: [threat model](../threat-model.md#trade-offs).
 
 ## Delivery semantics
@@ -89,8 +93,8 @@
 - `skald send` sends a message and `skald enqueue` a task; the MCP server has both as tools, with `claim` and `complete` for tasks.
 - `skald connect` asks only whether the machine takes its own account's tasks. What it takes from others, [per queue](../protocol/queues.md#running-a-task), the user turns on and changes at any time with `skald serve`, only in the CLI on the machine:
   - `skald serve`: each queue's settings;
-  - `skald serve <queue> --dir <folder> --member read-only`, and `--service` for service agents;
-  - `skald serve <queue> --member approve --in session`;
+  - `skald serve <queue> --dir <folder> --peer read-only`, and `--service` for service agents;
+  - `skald serve <queue> --peer approve --in session`;
   - `skald serve <queue> --off`.
 - `skald approve` lists the tasks waiting for the user's yes and answers them.
 - The web UI shows each device's queues and tiers from its presence.

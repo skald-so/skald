@@ -3,12 +3,16 @@
 mod connection;
 mod device;
 mod devices;
+mod follow;
 mod secrets;
+mod set_username;
 mod sign_in;
 mod sign_out;
+mod spaces;
 mod state;
 #[cfg(test)]
 mod test_dir;
+mod tls;
 mod update;
 
 use std::num::NonZeroU64;
@@ -79,7 +83,8 @@ struct Cli {
 enum Command {
     /// Shows whether the server is reachable and speaks a compatible protocol version.
     Status {
-        /// The server's URL, such as http://localhost:8080.
+        /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
+        /// http://localhost:8080.
         #[arg(long, value_name = "URL")]
         server: String,
     },
@@ -90,7 +95,8 @@ enum Command {
     /// registers the device. The account's first device creates the account's master key and
     /// issues its own certificate with it; any other device waits for linking.
     SignIn {
-        /// The server's URL, such as http://localhost:8080.
+        /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
+        /// http://localhost:8080.
         #[arg(long, value_name = "URL")]
         server: String,
         /// Whether this is the account's first device, for scripts [default: ask].
@@ -110,6 +116,34 @@ enum Command {
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
     /// account resumes the same device.
     SignOut,
+    /// Sets the username of the account this machine signed in to, on the server of its session.
+    /// The server refuses a username that is invalid, reserved or another account's, and the
+    /// account keeps its old one.
+    SetUsername {
+        /// The new username, such as ada-lovelace.
+        #[arg(value_name = "USERNAME", allow_hyphen_values = true)]
+        username: String,
+    },
+    /// Creates a team space on the server of this machine's session: this device signs the space's
+    /// first roster revision as its first admin, with the account's username as its handle. Run
+    /// again after a lost answer, it finishes the same space.
+    CreateSpace {
+        /// The space's name, such as acme: a-z, 0-9 and '-' inside, 1 to 63 characters.
+        #[arg(value_name = "NAME", allow_hyphen_values = true)]
+        name: String,
+    },
+    /// Lists the spaces this device follows, as their last accepted roster revisions give them:
+    /// each one's name, the account's role and handle in it, and its ID. Signed in, it first accepts
+    /// the revisions the server has of each, and warns of each one that has no effect.
+    Spaces,
+    /// Shows the members of a space this device follows, as its last accepted roster revision gives
+    /// them: each one's handle and role, and its devices with a valid certificate. It first accepts
+    /// the revisions the server has, and warns of each one that has no effect.
+    Members {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -178,6 +212,27 @@ fn main() -> ExitCode {
         Command::SignOut => {
             let result = state::dir(cli.state_dir)
                 .and_then(|dir| sign_out::run(&dir, cli.key_storage, speaks, timeout));
+            exit(result)
+        }
+        Command::SetUsername { username } => {
+            let result = state::dir(cli.state_dir).and_then(|dir| {
+                set_username::run(&dir, cli.key_storage, speaks, timeout, &username)
+            });
+            exit(result)
+        }
+        Command::CreateSpace { name } => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| spaces::create(&dir, cli.key_storage, speaks, timeout, &name));
+            exit(result)
+        }
+        Command::Spaces => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| spaces::list(&dir, cli.key_storage, speaks, timeout));
+            exit(result)
+        }
+        Command::Members { space } => {
+            let result = state::dir(cli.state_dir)
+                .and_then(|dir| spaces::members(&dir, cli.key_storage, speaks, timeout, &space));
             exit(result)
         }
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
