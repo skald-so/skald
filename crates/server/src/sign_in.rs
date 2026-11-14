@@ -13,8 +13,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use skald_proto::ServerName;
 use sqlx::PgPool;
-use url::Url;
+use url::{Host, Url};
 
 use crate::accounts::{self, GITHUB, Method};
 use crate::github::{GitHubApp, Refusal, http_url};
@@ -54,6 +55,15 @@ impl PublicUrl {
     /// The origin, as a browser's `Origin` header gives it, such as `https://skald.example`.
     pub(crate) fn origin(&self) -> String {
         self.0.origin().ascii_serialization()
+    }
+
+    /// Its host, in A-label form, as a server name, unless that is not a valid one, such as an IP
+    /// address.
+    pub fn server_name(&self) -> Option<ServerName> {
+        match self.0.host()? {
+            Host::Domain(domain) => domain.parse().ok(),
+            Host::Ipv4(_) | Host::Ipv6(_) => None,
+        }
     }
 }
 

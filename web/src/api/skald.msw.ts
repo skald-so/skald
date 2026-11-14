@@ -25,6 +25,7 @@ import type {
   ProtocolProblem,
   RosterRevisionRequest,
   RosterRevisions,
+  Server,
   Session,
   SignInMethods,
   Space,
@@ -658,6 +659,48 @@ export const getGetProtocolResponseMock200 = (
 });
 
 export const getGetProtocolResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetServerResponseMock = (
+  overrideResponse: Partial<Extract<Server, object>> = {},
+): Server => ({
+  name: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp(
+      "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+    ),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetServerResponseMock200 = (
+  overrideResponse: Partial<Extract<Server, object>> = {},
+): Server => ({
+  name: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp(
+      "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+    ),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetServerResponseMock400 = (
   overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
 ): ProtocolProblem => ({
   type: faker.helpers.arrayElement([
@@ -2576,6 +2619,77 @@ export const getGetProtocolMockHandler400 = (
   );
 };
 
+export const getGetServerMockHandler = (
+  overrideResponse?:
+    | Server
+    | ((info: Parameters<HttpResponseResolver>[0]) => Promise<Server> | Server),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/server",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetServerResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetServerMockHandler200 = (
+  overrideResponse?:
+    | Server
+    | ((info: Parameters<HttpResponseResolver>[0]) => Promise<Server> | Server),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/server",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetServerResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetServerMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/server",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetServerResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetSessionMockHandler = (
   overrideResponse?:
     | Session
@@ -3848,6 +3962,7 @@ export const getSkaldAPIMock = () => [
   getGetHealthMockHandler(),
   getGetOpenApiSpecMockHandler(),
   getGetProtocolMockHandler(),
+  getGetServerMockHandler(),
   getGetSessionMockHandler(),
   getGetSpacesMockHandler(),
   getCreateSpaceMockHandler(),

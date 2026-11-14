@@ -83,6 +83,14 @@ impl World {
         }
     }
 
+    /// As [`World::start`], the server's public address under `host`, as [`Cloud::on_host`] sets.
+    pub fn on_host(host: &str) -> Self {
+        World {
+            cloud: Cloud::on_host(host, 120, 1),
+            browser: Browser::launch(),
+        }
+    }
+
     /// A new account of GitHub user `id` with `login`, whose first machine, on the host `host`,
     /// signs in.
     pub fn sign_up(&self, id: u64, login: &str, host: &'static str) -> Person {

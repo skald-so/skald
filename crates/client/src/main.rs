@@ -1,5 +1,6 @@
 //! The `skald` client binary.
 
+mod agents;
 mod channels;
 mod connection;
 mod device;
@@ -84,6 +85,11 @@ struct Cli {
         default_value = "auto"
     )]
     key_storage: secrets::Storage,
+
+    /// Acts as the agent of this name on this device, such as claude-api: a-z, 0-9 and '-' inside,
+    /// 1 to 63 characters; user is reserved. The name never leaves this machine.
+    #[arg(long, value_name = "NAME", global = true)]
+    agent: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -208,6 +214,11 @@ enum Command {
         #[arg(value_name = "FOLDER")]
         folder: Option<PathBuf>,
     },
+    /// Shows the address of the agent --agent names in the space of the working directory,
+    /// space/owner/agent@server: the space's name and the account's handle in its last accepted
+    /// roster revision, and the server's name. A folder in no space, or a server without a valid
+    /// name, gives no address.
+    Address,
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -242,6 +253,10 @@ fn main() -> ExitCode {
     let timeout = cli
         .timeout
         .map_or(TIMEOUT, |seconds| Duration::from_secs(seconds.get()));
+    let agent = match cli.agent.as_deref().map(agents::name).transpose() {
+        Ok(agent) => agent,
+        Err(err) => return exit(Err(err)),
+    };
     match cli.command {
         Command::Status { server } => status(&server, speaks, timeout),
         Command::SignIn {
@@ -325,6 +340,15 @@ fn main() -> ExitCode {
         Command::Folder { folder } => {
             exit(state::dir(cli.state_dir).and_then(|dir| folders::show(&dir, folder.as_deref())))
         }
+        Command::Address => exit(
+            agent
+                .ok_or_else(|| "name the agent: skald --agent <name> address".to_owned())
+                .and_then(|agent| {
+                    state::dir(cli.state_dir).and_then(|dir| {
+                        agents::address(&dir, cli.key_storage, &agent, speaks, timeout)
+                    })
+                }),
+        ),
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
 }

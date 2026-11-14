@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router, middleware};
 use serde::Serialize;
+use skald_proto::ServerName;
 use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
@@ -71,6 +72,9 @@ pub struct Settings {
     /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
     /// limit without it.
     pub owned_spaces_limit: Option<u32>,
+    /// The server's name in agent addresses; without it, the host of sign-in's public address, if
+    /// that is a valid server name.
+    pub server_name: Option<ServerName>,
 }
 
 /// The state the handlers share.
@@ -81,11 +85,18 @@ struct AppState {
     sign_in: Option<Arc<SignInSettings>>,
     google: Option<Arc<google::Google>>,
     owned_spaces_limit: Option<u32>,
+    server_name: Option<ServerName>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
+    let server_name = settings.server_name.or_else(|| {
+        settings
+            .sign_in
+            .as_ref()
+            .and_then(|sign_in| sign_in.public_url.server_name())
+    });
     let checked =
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
@@ -137,6 +148,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             "/protocol",
             get(protocol_versions).layer(checked(Statement::Header)),
         )
+        .route("/server", get(server).layer(checked(Statement::Header)))
         .route(
             "/session",
             get(sign_in::session)
@@ -169,6 +181,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             db,
             versions,
             owned_spaces_limit: settings.owned_spaces_limit,
+            server_name,
             google: settings
                 .sign_in
                 .as_ref()
@@ -243,6 +256,18 @@ struct Protocol {
 async fn protocol_versions(State(state): State<AppState>) -> Json<Protocol> {
     Json(Protocol {
         supported: state.versions.supported(),
+    })
+}
+
+/// `Server` in the spec.
+#[derive(Serialize)]
+struct Server {
+    name: Option<String>,
+}
+
+async fn server(State(state): State<AppState>) -> Json<Server> {
+    Json(Server {
+        name: state.server_name.as_ref().map(ToString::to_string),
     })
 }
 
