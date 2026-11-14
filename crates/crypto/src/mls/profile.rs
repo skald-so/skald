@@ -72,7 +72,7 @@ pub(super) fn device_of(leaf: &SigningIdentity) -> Result<(DeviceId, [u8; 32]), 
 /// The identity provider of the profile. mls-rs asks it of every leaf it validates: a KeyPackage's,
 /// each leaf of a tree it joins or a GroupInfo gives, and a Commit's UpdatePath leaf.
 #[derive(Debug, Clone, Copy)]
-struct Profile;
+pub(super) struct Profile;
 
 impl IdentityProvider for Profile {
     type Error = ProfileError;
