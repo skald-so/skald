@@ -10,8 +10,8 @@ mod sign;
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
 pub use hpke::HpkeKey;
 pub use mls::{
-    Decrypted, GroupChange, HistoryKey, Joining, KeyPackage, MemberDevice, MlsDevice, MlsError,
-    Processed,
+    ChannelView, Decrypted, GroupChange, HistoryKey, Joining, KeyPackage, MemberDevice, MlsDevice,
+    MlsError, Processed,
 };
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
