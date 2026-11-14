@@ -386,8 +386,9 @@ fn main() -> ExitCode {
             agent
                 .ok_or_else(|| "name the agent: skald --agent <name> address".to_owned())
                 .and_then(|agent| {
-                    state::dir(cli.state_dir)
-                        .and_then(|dir| agents::address(&dir, &agent, speaks, timeout))
+                    state::dir(cli.state_dir).and_then(|dir| {
+                        agents::address(&dir, cli.key_storage, &agent, speaks, timeout)
+                    })
                 }),
         ),
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
