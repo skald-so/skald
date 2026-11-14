@@ -24,11 +24,6 @@ skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
 
-# Builds the acceptance tests of the wraps (tests/wraps/), which fail until the code they test
-# lands. Removed with the gate in tests/wraps/main.rs once it does.
-[features]
-acceptance = []
-
 # In WASM: the random generator of the browser or Node.js.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }

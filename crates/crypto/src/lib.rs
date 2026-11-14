@@ -7,6 +7,7 @@ mod mls;
 mod roster;
 mod sealed;
 mod sign;
+mod wrap;
 
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
@@ -18,3 +19,4 @@ pub use mls::{
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
 pub use sign::{SignatureError, SigningKey, verify};
+pub use wrap::{OpenedWrap, open_wrap};

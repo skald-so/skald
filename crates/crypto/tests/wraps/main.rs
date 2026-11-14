@@ -4,14 +4,11 @@
 //! key or to an account's recovery HPKE key and signs the wrap; a reader opens it with its HPKE
 //! key, verifies the signature with the certificate of `signer` and reads the history from it.
 
-// The acceptance tests of the wraps, which fail until the code they test lands; the implementation
-// removes this gate and the `acceptance` feature.
-#![cfg(feature = "acceptance")]
-
 #[path = "../rosters/cbor.rs"]
 mod cbor;
 #[path = "../common/mod.rs"]
 mod common;
+mod errors;
 mod fixtures;
 mod history;
 mod objects;

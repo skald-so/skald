@@ -254,19 +254,21 @@ impl HistoryMessage {
     }
 }
 
-/// Why a history link or entry is not made or read.
+/// Why a history link, entry or wrap is not made or read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HistoryError {
-    /// A link's epoch and `prev` are not `1 <= prev < epoch`, or an entry is of epoch 0.
+    /// A link's epoch and `prev` are not `1 <= prev < epoch`, or an entry or a wrap is of epoch 0.
     Bounds,
+    /// A wrap's recipient key is of small order.
+    RecipientKey,
     /// It does not decrypt with the key.
     Open,
     /// It holds no 16-byte key or no history plaintext, or a body breaks its CDDL.
     Malformed,
     /// The body is of another channel than the entry.
     OtherChannel,
-    /// The certificate is not of the body's sender.
+    /// The certificate is not of the body's sender or the wrap's signer.
     NotSender,
     /// The signature does not verify with the certificate's key.
     Signature,
@@ -276,6 +278,7 @@ impl fmt::Display for HistoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Bounds => "an epoch or prev outside the key chain's bounds",
+            Self::RecipientKey => "the recipient's key is of small order",
             Self::Open => "it does not decrypt with the key",
             Self::Malformed => "it holds no history key or plaintext, or the body is malformed",
             Self::OtherChannel => "the body is of another channel than the entry",

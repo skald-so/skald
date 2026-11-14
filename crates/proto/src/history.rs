@@ -1,8 +1,8 @@
-//! A channel's history: `docs/protocol/membership.md`, "Key chain" and "History entry".
+//! A channel's history: `docs/protocol/membership.md`, "Key chain", "Wraps" and "History entry".
 
 use crate::cbor::{self, Codec, DecodeError, FieldProblem, Item, MapOut, Unknown, field_error};
 use crate::content::Content;
-use crate::id::{ChannelId, DeviceId, MessageId};
+use crate::id::{AccountId, ChannelId, DeviceId, MessageId};
 use crate::signed::{Signed, SignedBody};
 
 /// The label of a history plaintext's signature.
@@ -57,6 +57,51 @@ impl HistoryEntry {
     }
 }
 
+/// An epoch's history key sealed to a browser or an account's recovery key, signed by `signer`
+/// over `["skald wrap", body]`.
+pub type HistoryWrap = Signed<HistoryWrapBody>;
+
+/// The body of a [`HistoryWrap`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryWrapBody {
+    pub channel: ChannelId,
+    /// At least 1.
+    pub epoch: u64,
+    pub recipient: WrapRecipient,
+    /// A member device of the epoch.
+    pub signer: DeviceId,
+    /// The HPKE encapsulated key.
+    pub enc: [u8; 32],
+    /// The epoch's key, sealed.
+    pub ct: Vec<u8>,
+    pub unknown: Unknown,
+}
+
+impl HistoryWrapBody {
+    /// The associated data of a wrap's seal: the encoded `[channel, epoch, recipient]`.
+    pub fn associated_data(channel: ChannelId, epoch: u64, recipient: &WrapRecipient) -> Vec<u8> {
+        cbor::array([cbor::id(&channel), cbor::uint(epoch), recipient.encode()])
+    }
+}
+
+impl SignedBody for HistoryWrapBody {
+    const LABEL: &'static str = "skald wrap";
+    const FIELDS: [&'static str; 3] = [
+        "history-wrap",
+        "history-wrap.body",
+        "history-wrap.signature",
+    ];
+}
+
+/// Whom a wrap is sealed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrapRecipient {
+    /// A `browser` device, to the `hpke` key of its certificate.
+    Browser(DeviceId),
+    /// An account's recovery key, to the recovery HPKE key of its record.
+    Recovery(AccountId),
+}
+
 /// What a [`HistoryEntry`] encrypts: its body signed by `sender` over `["skald history", body]`.
 pub type HistoryPlaintext = Signed<HistoryBody>;
 
@@ -94,7 +139,7 @@ fn at_least(item: &Item<'_>, field: &'static str, min: u64) -> Result<u64, Decod
     Ok(value)
 }
 
-/// The fields a link and an entry begin with, `channel` and `epoch`, and the `unknown` ones.
+/// The fields a link, an entry and a wrap begin with, `channel` and `epoch`, and the `unknown` ones.
 fn head(unknown: &Unknown, channel: &ChannelId, epoch: u64) -> MapOut {
     MapOut::new(unknown)
         .put(1, cbor::id(channel))
@@ -203,4 +248,62 @@ impl Codec for HistoryBody {
     }
 }
 
-cbor::cbor!(HistoryLink, HistoryEntry, HistoryBody);
+impl Codec for HistoryWrapBody {
+    fn encode(&self) -> Vec<u8> {
+        head(&self.unknown, &self.channel, self.epoch)
+            .put(3, self.recipient.encode())
+            .put(4, cbor::id(&self.signer))
+            .put(5, cbor::bytes(&self.enc))
+            .put(6, cbor::bytes(&self.ct))
+            .finish()
+    }
+
+    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
+        let mut fields = item.map("history-wrap-body")?;
+        Ok(Self {
+            channel: fields
+                .required(1, "history-wrap-body.channel")?
+                .id("history-wrap-body.channel")?,
+            epoch: at_least(
+                fields.required(2, "history-wrap-body.epoch")?,
+                "history-wrap-body.epoch",
+                1,
+            )?,
+            recipient: WrapRecipient::decode(fields.required(3, "history-wrap-body.recipient")?)?,
+            signer: fields
+                .required(4, "history-wrap-body.signer")?
+                .id("history-wrap-body.signer")?,
+            enc: fields
+                .required(5, "history-wrap-body.enc")?
+                .fixed("history-wrap-body.enc")?,
+            ct: fields
+                .required(6, "history-wrap-body.ct")?
+                .bytes("history-wrap-body.ct")?
+                .to_vec(),
+            unknown: fields.unknown(),
+        })
+    }
+}
+
+impl Codec for WrapRecipient {
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Browser(device) => cbor::array([cbor::uint(1), cbor::id(device)]),
+            Self::Recovery(account) => cbor::array([cbor::uint(2), cbor::id(account)]),
+        }
+    }
+
+    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
+        let [kind, id] = item.tuple("wrap-recipient")?;
+        match kind.uint("wrap-recipient.kind")? {
+            1 => Ok(Self::Browser(id.id("wrap-recipient.device")?)),
+            2 => Ok(Self::Recovery(id.id("wrap-recipient.account")?)),
+            other => Err(field_error(
+                "wrap-recipient.kind",
+                FieldProblem::Value(other),
+            )),
+        }
+    }
+}
+
+cbor::cbor!(HistoryLink, HistoryEntry, HistoryBody, HistoryWrapBody);
