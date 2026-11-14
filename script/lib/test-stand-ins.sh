@@ -1,9 +1,9 @@
 # test_stand_ins <dir>: a copy of script/test in <dir> that runs no check, for the tests of which
 # checks it runs: <dir>/script/test with script/changed-parts and stand-ins for everything else it
-# runs, the other scripts, PostgreSQL's functions and, in <dir>/bin, the tools. Each stand-in that
-# runs a check appends it to <dir>/checks as `<directory>\t<command>`, the directory relative to
-# <dir>; those of the tools only the prerequisites probe, rustc, wasm-bindgen-test-runner and
-# python3, append nothing. git is the real one. Run it as PATH="<dir>/bin:$PATH" <dir>/script/test.
+# runs, the other scripts, the functions of PostgreSQL and of the S3-compatible server and, in
+# <dir>/bin, the tools. Each stand-in that runs a check appends it to <dir>/checks as
+# `<directory>\t<command>`, the directory relative to <dir>; those of the tools only the
+# prerequisites probe, rustc, wasm-bindgen-test-runner and python3, append nothing. git is the real one. Run it as PATH="<dir>/bin:$PATH" <dir>/script/test.
 # Sourced by script/changed-parts-test; script/ci-workflow-test runs it with bash.
 test_stand_ins() {
   local root dir name
@@ -15,6 +15,7 @@ test_stand_ins() {
   cp "$root/script/test" "$root/script/changed-parts" "$dir/script/"
   echo 'postgres_start() { :; }; postgres_wait() { :; }; postgres_stop() { :; }' \
     >"$dir/script/lib/postgres.sh"
+  echo 's3_start() { :; }; s3_wait() { :; }; s3_stop() { :; }' >"$dir/script/lib/s3.sh"
   printf 'name = "wasm-bindgen"\nversion = "0.0.0"\n' >"$dir/prototypes/mls/Cargo.lock"
   for name in "$root"/script/*; do
     name=${name#"$root"/}

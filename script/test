@@ -4,9 +4,10 @@
 # part per job. SKALD_TEST_SINCE=<base> limits it to the parts that the changes from where HEAD
 # branched off <base> to the working tree touch, by script/changed-parts --since; with none, or when
 # that cannot tell, it checks every part.
-#   workspace  build, fmt, clippy and tests of the crates in crates/, with PostgreSQL, those of
-#              script/check-github-sign-in and script/check-google-sign-in among them, and, for the
-#              server's GitHub sign-in and the client's sign-in, Chrome Headless Shell
+#   workspace  build, fmt, clippy and tests of the crates in crates/, with PostgreSQL and a local
+#              S3-compatible server, those of script/check-github-sign-in and
+#              script/check-google-sign-in among them, and, for the server's GitHub sign-in and the
+#              client's sign-in, Chrome Headless Shell
 #   wasm       clippy of skald-proto and skald-crypto in WASM, the tests of skald-crypto and
 #              skald-proto's of ID generation there (script/wasm-test)
 #   image      the skald-server image, built and tested with PostgreSQL in containers
@@ -32,6 +33,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source script/lib/postgres.sh
+source script/lib/s3.sh
 
 all='workspace wasm image mls agents edits repository tooling web'
 rust='workspace wasm image mls agents edits repository'
@@ -137,11 +139,11 @@ if ! command -v jq >/dev/null; then
   exit 1
 fi
 if checks_any $rust tooling && ! command -v curl >/dev/null; then
-  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the server's tests run script/check-github-sign-in and script/check-google-sign-in, the release tag test script/release-pr-merged, and script/install-git-cliff downloads git-cliff: https://curl.se" >&2
+  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the attachment storage tests sign requests to the S3-compatible server with it, the server's tests run script/check-github-sign-in and script/check-google-sign-in, the release tag test script/release-pr-merged, and script/install-git-cliff downloads git-cliff: https://curl.se" >&2
   exit 1
 fi
 if checks_any $rust tooling web && ! command -v docker >/dev/null; then
-  echo "script/test: docker is missing; the integration tests run PostgreSQL and the kit page screenshots run Chrome in containers" >&2
+  echo "script/test: docker is missing; the integration tests run PostgreSQL and an S3-compatible server and the kit page screenshots run Chrome in containers" >&2
   exit 1
 fi
 if ! command -v npm >/dev/null; then
@@ -175,9 +177,11 @@ if checks repository; then
 fi
 
 if checks workspace; then
-  # PostgreSQL for the integration tests starts while the workspace builds; removed on exit.
-  trap postgres_stop EXIT
+  # PostgreSQL and the S3-compatible server for the integration tests start while the workspace
+  # builds; removed on exit.
+  trap 'postgres_stop; s3_stop' EXIT
   postgres_start
+  s3_start
 
   cargo build --workspace --all-targets --locked
   cargo fmt --all --check
@@ -185,6 +189,7 @@ if checks workspace; then
 
   web_packages
   postgres_wait
+  s3_wait
   cargo test --workspace --locked
 fi
 
