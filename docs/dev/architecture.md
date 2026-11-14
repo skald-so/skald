@@ -132,7 +132,7 @@ Adapters are separate modules with e2e tests against real CLIs.
 ## Notifications
 - To Telegram, Slack or a webhook.
 - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
-- The person's device triggers the events that come from content: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a key changed. The server only relays them, so they need a running device of the person.
+- The person's device triggers the events that come from content or its agents' sessions: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a session waiting on its agent CLI's own permission prompt, an invalid task result ([protocol spec](../protocol/queues.md#results)), a key changed. The server only relays them, so they need a running device of the person.
 - A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 
 ## Security
