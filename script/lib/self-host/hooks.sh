@@ -6,6 +6,7 @@
 source /self-host/params
 run=/self-host/run/$self_host_scenario
 jq=/opt/self-host-test/bin/jq
+self_host_path=$PATH
 
 # self_host_step <step>: marks the start of the guide's step in the scenario's output.
 self_host_step() { echo "self-host-test: step $1"; }
@@ -61,7 +62,8 @@ self_host_missing_values() {
 
 # self_host_override: exports COMPOSE_FILE: the stack's compose files and, last, an override that
 # only stands in for the internet. It adds to the server's and Caddy's services, found by their
-# images, the test CA in SSL_CERT_FILE and the network of the stand-ins, keeping their own networks.
+# images, the test CA in SSL_CERT_FILE and the network of the stand-ins, keeping their own networks;
+# to the server's, the addresses of the GitHub and Google stand-ins.
 self_host_override() {
   local files name
   files=$(sed -n 's/^COMPOSE_FILE=//p' .env | tail -n 1)
@@ -83,14 +85,19 @@ self_host_override() {
     done
   fi
   docker compose config --format json | "$jq" --arg image "$self_host_image" \
-    --arg ca "$self_host_ca" --arg internet "$self_host_internet" '
+    --arg ca "$self_host_ca" --arg internet "$self_host_internet" \
+    --arg github "$self_host_github_url" --arg google "$self_host_google_issuer" '
     [.services | to_entries[]
       | select(.value.image == $image or ((.value.image // "") | test("(^|/)caddy[:@]")))]
     | {
         services: map({
           key,
           value: {
-            environment: {SSL_CERT_FILE: "/etc/self-host-test/ca.pem"},
+            environment: ({SSL_CERT_FILE: "/etc/self-host-test/ca.pem"}
+              + if .value.image == $image then
+                  {SKALD_GITHUB_URL: $github, SKALD_GITHUB_API_URL: $github,
+                    SKALD_GOOGLE_ISSUER: $google}
+                else {} end),
             volumes: [{type: "bind", source: $ca, target: "/etc/self-host-test/ca.pem", read_only: true}],
             networks: ((.value.networks // {default: null}) + {"self-host-test-internet": null})
           }
@@ -116,9 +123,22 @@ self_host_wait_https() {
 }
 
 # self_host_trust_acme, self_host_trust_system: what skald trusts in the guide's `status` step:
-# only the local ACME server's root, then again the system's roots.
+# only the local ACME server's root, then again the system's roots, without the stand-ins' addresses
+# of self_host_trust_checks.
 self_host_trust_acme() { export SSL_CERT_FILE=$self_host_acme_root; }
-self_host_trust_system() { unset SSL_CERT_FILE; }
+self_host_trust_system() {
+  unset SSL_CERT_FILE GITHUB_URL GOOGLE_ISSUER
+  PATH=$self_host_path
+}
+
+# self_host_trust_checks: what the guide's sign-in checks reach: the GitHub and Google stand-ins in
+# GITHUB_URL and GOOGLE_ISSUER, and the roots they trust, the local ACME server's and the test CA.
+# The checks need jq besides curl, as on the admin's own machine: it joins PATH.
+self_host_trust_checks() {
+  cat "$self_host_acme_root" "$self_host_ca" >"$run/trust.pem"
+  export SSL_CERT_FILE=$run/trust.pem GITHUB_URL=$self_host_github_url \
+    GOOGLE_ISSUER=$self_host_google_issuer PATH=/opt/self-host-test/checks:$PATH
+}
 
 # proxy_caddyfile <ACME directory> <ACME server's TLS root> [<storage>]: the admin's proxy's
 # Caddyfile: the guide's site block, its certificate from the local ACME server.

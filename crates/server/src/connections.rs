@@ -197,17 +197,18 @@ struct Proved {
 /// Takes `socket`, of the protocol version `version`, once it proves its device, and serves it
 /// until it closes or its session ends.
 async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
-    let proved = match prove(&state, &mut socket).await {
-        Ok(Some(proved)) => proved,
-        Ok(None) => return finish(socket).await,
-        Err(closing) => return close(socket, closing).await,
-    };
-    let sender = Sender {
-        device: proved.device,
-        account: proved.account,
-        version,
-    };
-    hold(&state, socket, proved.ended, &sender).await;
+    match prove(&state, &mut socket).await {
+        Ok(Some(proved)) => {
+            let sender = Sender {
+                device: proved.device,
+                account: proved.account,
+                version,
+            };
+            hold(&state, socket, proved.ended, &sender).await;
+        }
+        Ok(None) => finish(socket).await,
+        Err(closing) => close(socket, closing).await,
+    }
 }
 
 /// Why the server stops serving a connection.
@@ -234,7 +235,7 @@ async fn hold(
     );
     loop {
         let served = tokio::select! {
-            // Once the session ends, no queued frame is answered.
+            // Once the session ends, nothing more is served.
             biased;
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
             () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,

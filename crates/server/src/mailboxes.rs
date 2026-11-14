@@ -69,7 +69,19 @@ pub(crate) async fn send(
         report,
         ttl: header.ttl,
     };
-    answer(db, sender, header, Some((wakers, outgoing))).await
+    let answer = answer(db, sender, header, Some(outgoing)).await?;
+    // A retry's wake finds no new entry.
+    if let Frame::Stored(Stored {
+        send_key: SendKey {
+            recipient: Some(recipient),
+            ..
+        },
+        ..
+    }) = &answer
+    {
+        wakers.wake(*recipient);
+    }
+    Ok(answer)
 }
 
 /// The answer to `sender`'s send of an `hpke` envelope with `header`, whose `recipients` is not one
@@ -82,14 +94,13 @@ pub(crate) async fn misaddressed(
     answer(db, sender, header, None).await
 }
 
-/// The answer to `sender`'s send of an envelope with `header`, which is `envelope`, with the wakers
-/// of its recipient's connections, or `None` if it cannot be stored. A retry gets the first answer,
-/// whatever its bytes.
+/// The answer to `sender`'s send of an envelope with `header`, which is `envelope`, or `None` if
+/// it cannot be stored. A retry gets the first answer, whatever its bytes.
 async fn answer(
     db: &PgPool,
     sender: &Sender,
     header: &Header,
-    envelope: Option<(&Wakers, Outgoing<'_>)>,
+    envelope: Option<Outgoing<'_>>,
 ) -> Result<Frame, sqlx::Error> {
     let key = send_key(header);
     let outcome = match (recipient(db, sender, header).await?, envelope) {
@@ -100,15 +111,9 @@ async fn answer(
     };
     // A send answered before keeps its answer: keeping this one finds its key taken.
     loop {
-        let kept = match &outcome {
-            Ok((recipient, (wakers, envelope))) => {
-                let stored = store(db, sender, &key, *recipient, envelope).await?;
-                if stored.is_some() {
-                    wakers.wake(*recipient);
-                }
-                stored
-            }
-            Err(problem) => refuse(db, sender, &key, *problem).await?,
+        let kept = match outcome {
+            Ok((recipient, envelope)) => store(db, sender, &key, recipient, envelope).await?,
+            Err(problem) => refuse(db, sender, &key, problem).await?,
         };
         if let Some(answer) = kept {
             return Ok(answer);
@@ -252,6 +257,7 @@ async fn refuse(
 }
 
 /// An envelope to store: its bytes, whether it gets statuses, and its `ttl`.
+#[derive(Clone, Copy)]
 struct Outgoing<'a> {
     bytes: &'a [u8],
     report: bool,
@@ -265,7 +271,7 @@ async fn store(
     sender: &Sender,
     key: &SendKey,
     recipient: DeviceId,
-    envelope: &Outgoing<'_>,
+    envelope: Outgoing<'_>,
 ) -> Result<Option<Frame>, sqlx::Error> {
     let mut tx = db.begin().await?;
     let Some(stored) = keep(&mut tx, sender, key, None).await? else {
