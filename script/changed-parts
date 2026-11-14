@@ -8,8 +8,8 @@
 #   prototypes/mls/, prototypes/agents/, prototypes/edits/: mls, agents and edits, each with
 #     repository; prototypes/mls/Cargo.lock also wasm: the crates' WASM tests take its wasm-bindgen
 #   any other path in prototypes/: every part of the Rust code, all but tooling and web
-#   web/: web; its package.json and package-lock.json also workspace and self-host: the server's,
-#     the client's and the self-host stack's sign-in tests drive Chrome with its playwright-core
+#   web/: web; its package.json and package-lock.json also workspace, whose sign-in tests drive
+#     Chrome with its playwright-core, and self-host
 #   docker-compose.yml, Caddyfile, docs/self-host.md (the self-host stack and its guide): self-host
 #   other paths in docs/, Markdown files in the root: none
 #   any other path: all; the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
