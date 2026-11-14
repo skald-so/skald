@@ -2,6 +2,7 @@
 
 mod agents;
 mod channels;
+mod connect;
 mod connection;
 mod device;
 mod devices;

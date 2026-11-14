@@ -90,6 +90,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([architecture.md, "Components"](dev/architecture.md#components)).
 
 **Defenses:**
+- A session alone reads and acks no mailbox: a WebSocket takes a proof by the key of a `client` device with a certificate ([Connecting](protocol/delivery.md#connecting)).
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
 - The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
