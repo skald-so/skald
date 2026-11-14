@@ -62,6 +62,8 @@ skald set-username <name>  # change the account's username
 skald create-space <name>  # create a team space, with the account as its first admin
 skald spaces               # the device's spaces and the account's role in each
 skald members <space>      # a space's members, their roles and their devices with a valid certificate
+skald create-channel <space>  # add a channel to a space, as its admin
+skald channels <space>     # a space's channels and their members
 skald sign-out             # sign out; the device's keys and certificate stay on the machine
 skald update               # update to the latest stable release, never a beta; npm installs update through npm
 ```

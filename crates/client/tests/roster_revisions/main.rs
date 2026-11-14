@@ -40,33 +40,25 @@ mod keys;
 mod machine;
 #[path = "../sign_in/relay.rs"]
 mod relay;
-
-use std::time::{SystemTime, UNIX_EPOCH};
+mod world;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use browser::Browser;
 use cloud::Cloud;
 use machine::{Finished, Machine};
 use serde_json::{Value, json};
 use skald_crypto::{RosterError, SigningKey, accept_next, check_roster, issue};
-use skald_github_stand_in::User;
 use skald_proto::{
-    AccountId, Cbor, Cert, CertBody, DeviceId, DeviceKind, Member, Name, NonEmpty, Role, Roster,
-    RosterBody, SpaceId, Unknown,
+    AccountId, Cbor, Cert, CertBody, DeviceId, DeviceKind, Member, Name, Role, Roster, SpaceId,
+    Unknown,
+};
+use world::{
+    ADMIN, MEMBER, MEMBERS, Person, SPACES, World, assert_role, create, holds_word, members, next,
+    next_by, now, plain_lines, revisions_request, run, set_role, space_certs, store, warnings,
+    words,
 };
 
-/// The commands that create a space, list the device's spaces and show a space's members.
-const CREATE_SPACE: &str = "create-space";
-const SPACES: &str = "spaces";
-const MEMBERS: &str = "members";
-
-/// The roles as the CLI shows them.
-const ADMIN: &str = "admin";
-const MEMBER: &str = "member";
-
-/// What a warning says, and what the warnings of a forked roster and of a changed `master` also say.
-const WARNING: &str = "warning";
+/// What the warnings of a forked roster and of a changed `master` also say.
 const FORK: &str = "fork";
 const MASTER: &str = "master";
 
@@ -77,151 +69,6 @@ const TRUDY: &str = "trudy";
 /// The space every test creates, and a second one.
 const ACME: &str = "acme";
 const GLOBEX: &str = "globex";
-
-/// A person's account and its first machine, signed in, which holds a valid certificate.
-struct Person {
-    user: User,
-    machine: Machine,
-    /// The machine's session token.
-    token: String,
-    account: AccountId,
-    master: [u8; 32],
-    /// The account's username, its handle in the spaces it is in.
-    handle: Name,
-    /// The machine's device.
-    device: DeviceId,
-    /// The machine's host name, its device certificate's `name`.
-    host: &'static str,
-    /// The device's signing key, as its secrets file holds it.
-    key: SigningKey,
-}
-
-impl Person {
-    /// The person's entry in a roster, with `role`.
-    fn member(&self, role: Role) -> Member {
-        Member {
-            account: self.account,
-            handle: self.handle.clone(),
-            role,
-            master: self.master,
-            invite: None,
-            excluded: None,
-            unknown: Unknown::default(),
-        }
-    }
-}
-
-/// A server whose codes live for 2 minutes and poll every second, behind the relay, and a browser
-/// for the people who approve their machines' codes.
-struct World {
-    cloud: Cloud,
-    browser: Browser,
-}
-
-impl World {
-    fn start() -> Self {
-        World {
-            cloud: Cloud::start(120, 1),
-            browser: Browser::launch(),
-        }
-    }
-
-    /// A new account of GitHub user `id` with `login`, whose first machine, on the host `host`,
-    /// signs in.
-    fn sign_up(&self, id: u64, login: &str, host: &'static str) -> Person {
-        let cloud = &self.cloud;
-        let user = cloud.user(id, login);
-        let (machine, signed_in) = cloud.first_machine(&self.browser.page(), &user, host);
-        assert!(signed_in.success, "{signed_in:?}");
-        let token = cloud.last_token();
-        let (status, session) = cloud.session_of(&token);
-        assert_eq!(status, 200, "GET /session: {session}");
-        let handle: Name = session["username"]
-            .as_str()
-            .and_then(|name| name.parse().ok())
-            .unwrap_or_else(|| panic!("a username that is a valid name: {session}"));
-        let devices = cloud.devices(&token);
-        assert_eq!(devices.len(), 1, "the account's devices: {devices:?}");
-        let cert = devices[0]
-            .cert
-            .clone()
-            .expect("the first device's certificate");
-        let key = keys::signing_key(&machine.files_holding(&token), &cert.body().signing);
-        Person {
-            account: cloud.account_of(&token),
-            master: cloud.master(&token).expect("the account's master key"),
-            user,
-            machine,
-            token,
-            handle,
-            device: devices[0].id,
-            host,
-            key,
-        }
-    }
-}
-
-/// Seconds since the Unix epoch.
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("a clock after 1970")
-        .as_secs()
-}
-
-/// Runs `skald` with `args` on `machine`.
-fn run(machine: &Machine, args: &[&str]) -> Finished {
-    machine.start(args).finish()
-}
-
-/// `person`'s machine creates the space `name`; gives its revision 1, as the server holds it.
-fn create(cloud: &Cloud, person: &Person, name: &str) -> Roster {
-    let created = run(&person.machine, &[CREATE_SPACE, name]);
-    assert!(created.success, "{name}: {created:?}");
-    let (status, body) = cloud.get_as("/spaces", &person.token);
-    assert_eq!(status, 200, "GET /spaces: {body}");
-    let space: SpaceId = body["spaces"]
-        .as_array()
-        .and_then(|spaces| spaces.iter().find(|space| space["name"] == json!(name)))
-        .and_then(|space| space["space"].as_str())
-        .and_then(|id| id.parse().ok())
-        .unwrap_or_else(|| panic!("the server has no space {name}: {body}"));
-    let revisions = cloud.revisions(&person.token, space);
-    assert_eq!(revisions.len(), 1, "{name}: {revisions:?}");
-    revisions[0].1.clone()
-}
-
-/// The revision after `previous`, signed by `signer` with `key`, with the members `members`
-/// gives.
-fn next(
-    previous: &Roster,
-    (signer, key): (DeviceId, &SigningKey),
-    members: impl FnOnce(&mut Vec<Member>),
-) -> Roster {
-    let mut body: RosterBody = previous.body().clone();
-    body.revision += 1;
-    body.prev = Some(previous.hash());
-    body.signer = signer;
-    body.timestamp = now();
-    let mut list = body.members.clone().into_vec();
-    members(&mut list);
-    body.members = NonEmpty::from_vec(list).expect("a member");
-    skald_crypto::sign_roster(&body, key).expect("a revision")
-}
-
-/// The revision after `previous`, signed by `person`'s device.
-fn next_by(previous: &Roster, person: &Person, members: impl FnOnce(&mut Vec<Member>)) -> Roster {
-    next(previous, (person.device, &person.key), members)
-}
-
-/// Sets the role of `account` in `members` to `role`.
-fn set_role(members: &mut [Member], account: AccountId, role: Role) {
-    members
-        .iter_mut()
-        .find(|member| member.account == account)
-        .expect("a member")
-        .role = role;
-}
 
 /// A member a forged revision adds: a made-up account with a master key of its own.
 fn made_up_member(handle: &str) -> Member {
@@ -243,42 +90,7 @@ fn broken_signature(roster: &Roster) -> Roster {
     Roster::from_parts(roster.body_bytes().to_vec(), signature).expect("a revision")
 }
 
-/// Stores `roster` on the server as the session `token`, through the API; fails unless the server
-/// stores it.
-fn store(cloud: &Cloud, token: &str, roster: &Roster) {
-    let space = roster.body().space;
-    let path = format!("/spaces/{space}/revisions");
-    let request = json!({ "revision": URL_SAFE_NO_PAD.encode(roster.to_cbor()) }).to_string();
-    let agent = ureq::Agent::config_builder()
-        .proxy(None)
-        .http_status_as_error(false)
-        .build()
-        .new_agent();
-    let mut response = agent
-        .post(format!("{}{path}", cloud.url))
-        .header(
-            skald_proto::VERSION_HEADER,
-            skald_proto::PROTOCOL_VERSION.to_string(),
-        )
-        .header("authorization", format!("Bearer {token}"))
-        .header("content-type", "application/json")
-        .send(request.as_bytes())
-        .unwrap_or_else(|err| panic!("POST {path}: {err}"));
-    let status = response.status().as_u16();
-    let body = response.body_mut().read_to_string().unwrap_or_default();
-    assert_eq!(
-        status,
-        201,
-        "the server did not store revision {}: {body}",
-        roster.body().revision
-    );
-}
-
-/// The request for `space`'s revisions, and the one for the devices of its accounts, as their lines
-/// start.
-fn revisions_request(space: SpaceId) -> String {
-    format!("GET /spaces/{space}/revisions")
-}
+/// The request for the devices of `space`'s accounts, as its line starts.
 fn devices_request(space: SpaceId) -> String {
     format!("GET /spaces/{space}/devices")
 }
@@ -317,26 +129,6 @@ fn entry(device: DeviceId, cert: &Cert) -> Value {
     json!({ "device": device.to_string(), "cert": URL_SAFE_NO_PAD.encode(cert.to_cbor()) })
 }
 
-/// The certificates of the devices of `space`'s accounts, as the server gives them to the session
-/// `token`, straight from the server.
-fn space_certs(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<Cert> {
-    let path = format!("/spaces/{space}/devices");
-    let (status, body) = cloud.get_as(&path, token);
-    assert_eq!(status, 200, "GET {path}: {body}");
-    body["devices"]
-        .as_array()
-        .unwrap_or_else(|| panic!("GET {path}: {body}"))
-        .iter()
-        .filter_map(|device| device["cert"].as_str())
-        .map(|cert| {
-            let bytes = URL_SAFE_NO_PAD
-                .decode(cert)
-                .expect("a certificate in base64url");
-            Cert::from_cbor(&bytes).expect("a certificate")
-        })
-        .collect()
-}
-
 /// A device a test makes up on `account`, named `name`, with a certificate signed by a key of its
 /// own instead of the account's master key, as a server would sign it: the device, its signing key
 /// and its certificate.
@@ -357,63 +149,6 @@ fn certified_by_the_server(account: AccountId, name: &str) -> (DeviceId, Signing
     };
     let cert = issue(&body, &SigningKey::generate(), &key).expect("a certificate");
     (device, key, cert)
-}
-
-/// The words of `line`: its runs of ASCII letters, digits and `-`.
-fn words(line: &str) -> Vec<&str> {
-    line.split(|char: char| !(char.is_ascii_alphanumeric() || char == '-'))
-        .filter(|word| !word.is_empty())
-        .collect()
-}
-
-/// The lines of `finished` that are no warnings, on either output.
-fn plain_lines(finished: &Finished) -> Vec<String> {
-    finished
-        .shown()
-        .lines()
-        .filter(|line| !line.to_lowercase().contains(WARNING))
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The warning lines of `finished`, on either output, in lowercase.
-fn warnings(finished: &Finished) -> Vec<String> {
-    finished
-        .shown()
-        .lines()
-        .map(str::to_lowercase)
-        .filter(|line| line.contains(WARNING))
-        .collect()
-}
-
-/// Whether a line of `lines` holds the word `word`.
-fn holds_word(lines: &[String], word: &str) -> bool {
-    lines.iter().any(|line| words(line).contains(&word))
-}
-
-/// Runs `skald members <space>` on `machine`; fails unless it succeeds.
-fn members(machine: &Machine, space: &str) -> Finished {
-    let shown = run(machine, &[MEMBERS, space]);
-    assert!(shown.success, "{shown:?}");
-    shown
-}
-
-/// Fails unless `shown` shows `handle` with the role `role` and never with the other role.
-fn assert_role(shown: &Finished, handle: &Name, role: &str) {
-    let other = if role == ADMIN { MEMBER } else { ADMIN };
-    let lines = plain_lines(shown);
-    let of_handle: Vec<&String> = lines
-        .iter()
-        .filter(|line| words(line).contains(&handle.as_str()))
-        .collect();
-    assert!(
-        of_handle.iter().any(|line| words(line).contains(&role)),
-        "{handle} is not shown as {role}: {shown:?}"
-    );
-    assert!(
-        !of_handle.iter().any(|line| words(line).contains(&other)),
-        "{handle} is shown as {other}: {shown:?}"
-    );
 }
 
 /// Fails unless `shown` shows `device` on a line with its certificate's name `name`.

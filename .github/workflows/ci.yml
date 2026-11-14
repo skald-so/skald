@@ -3,22 +3,34 @@ name: CI
 on:
   pull_request:
     branches: [dev]
+  # After every merge, every part: a check that a PR's selection missed fails on dev.
+  push:
+    branches: [dev]
 
 permissions:
   contents: read
 
+# A PR's new push cancels the PR's older run; a push to dev has a group of its own, its commit, so
+# no run of another push or of a PR cancels it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Each job runs one part of script/test, only when the PR changes it: see script/changed-parts.
-# A job skipped by its condition counts as passed.
+# On a PR, each job runs its part of script/test only when the PR changes it: see
+# script/changed-parts. A job skipped by its condition counts as passed. On a push to dev, every job
+# runs.
 jobs:
   changes:
     name: Changed parts
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.parts.outputs.rust }}
+      workspace: ${{ steps.parts.outputs.workspace }}
+      wasm: ${{ steps.parts.outputs.wasm }}
+      image: ${{ steps.parts.outputs.image }}
+      mls: ${{ steps.parts.outputs.mls }}
+      agents: ${{ steps.parts.outputs.agents }}
+      edits: ${{ steps.parts.outputs.edits }}
+      repository: ${{ steps.parts.outputs.repository }}
       tooling: ${{ steps.parts.outputs.tooling }}
       web: ${{ steps.parts.outputs.web }}
     steps:
@@ -28,65 +40,147 @@ jobs:
           persist-credentials: false
           fetch-depth: 2
       - id: parts
+        if: github.event_name == 'pull_request'
         shell: bash # -o pipefail: a failure of changed-parts fails the step
         run: script/changed-parts HEAD^1 | tee -a "$GITHUB_OUTPUT"
 
-  rust:
-    name: Rust
+  # The Rust code: one job per part of script/test, each on a runner of its own, with the tools of
+  # every part and a cache of the Cargo workspaces it builds.
+  rust-workspace:
+    name: 'Rust: workspace'
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.workspace == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy \
-            --target wasm32-unknown-unknown
-          rustup default stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: ./.github/actions/rust-tools
         with:
-          workspaces: |
-            . -> target
-            prototypes/mls -> target
-            prototypes/edits -> target
-            prototypes/agents -> target
-      # The WASM tests of the crates and the MLS prototypes need the wasm-bindgen-cli of the
-      # prototypes' Cargo.lock.
-      - id: wasm-bindgen
-        shell: bash # -o pipefail: a failure of awk fails the step
-        run: >-
-          awk '$0 == "name = \"wasm-bindgen\"" { getline; gsub(/"/, "", $3); print "version=" $3 }'
-          prototypes/mls/Cargo.lock | tee -a "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
-        with:
-          tool: cargo-deny@0.20.2,wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
-      # release-plz: the Release PR tests, also in the Rust part.
-      - name: Install release-plz
-        uses: ./.github/actions/install-release-plz
-      # The WASM tests run in Node.js; the server's and the client's sign-in tests drive Chrome
-      # Headless Shell, which script/test installs with the playwright-core of web/ on a cache miss.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/package-lock.json') }}
-          restore-keys: ms-playwright-${{ runner.os }}-${{ runner.arch }}-
+          workspaces: . -> target
       - run: ./script/test
         env:
-          SKALD_TEST_PARTS: rust
+          SKALD_TEST_PARTS: workspace
+
+  rust-wasm:
+    name: 'Rust: WASM'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.wasm == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-tools
+        with:
+          workspaces: . -> target
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: wasm
+
+  rust-image:
+    name: 'Rust: server image'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-tools
+        with:
+          workspaces: . -> target
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: image
+
+  rust-mls:
+    name: 'Rust: MLS prototypes'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.mls == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-tools
+        with:
+          workspaces: prototypes/mls -> target
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: mls
+
+  rust-agents:
+    name: 'Rust: delivery prototypes'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.agents == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-tools
+        with:
+          workspaces: prototypes/agents -> target
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: agents
+
+  rust-edits:
+    name: 'Rust: edit prototype'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.edits == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-tools
+        with:
+          workspaces: prototypes/edits -> target
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: edits
+
+  rust-repository:
+    name: 'Rust: repository'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.repository == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-tools
+        with:
+          workspaces: . -> target
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: repository
+
+  # The check Rust that dev requires: it passes only when every job of the Rust code passed or was
+  # skipped, its part unchanged. It runs whatever they end with, a failure or a cancelled run too:
+  # a required check that is skipped counts as passed.
+  rust:
+    name: Rust
+    needs: [changes, rust-workspace, rust-wasm, rust-image, rust-mls, rust-agents, rust-edits, rust-repository]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq --raw-output 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq --exit-status '.changes.result == "success"
+            and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null
 
   # The tests of the client, the one crate whose behavior depends on the OS, on Windows; script/test
-  # runs them on Linux. Outside script/test, in the Rust part.
+  # runs them on Linux. Outside script/test, with the workspace part.
   client-windows:
     name: Client on Windows
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.workspace == 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -161,14 +255,13 @@ jobs:
   tooling:
     name: Tooling
     needs: changes
-    if: needs.changes.outputs.tooling == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.tooling == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The tests of script/mutants run it on a scratch Cargo workspace, and script/release-plz-test
-      # runs release-plz on fixture copies of this one.
+      # The tests of script/mutants run it on a scratch Cargo workspace.
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -176,8 +269,6 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-mutants@27.1.0
-      - name: Install release-plz
-        uses: ./.github/actions/install-release-plz
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
@@ -188,7 +279,7 @@ jobs:
   web:
     name: Web
     needs: changes
-    if: needs.changes.outputs.web == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
