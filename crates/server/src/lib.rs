@@ -24,6 +24,7 @@ mod github;
 mod google;
 mod http_client;
 mod links;
+mod mailboxes;
 mod oidc;
 mod protocol;
 mod refusal;

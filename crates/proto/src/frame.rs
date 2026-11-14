@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 use crate::cbor::{
     self, Cbor, Codec, DecodeError, FieldProblem, Item, decode_embedded, field_error,
 };
-use crate::envelope::Envelope;
+use crate::envelope::{Envelope, Header, HpkePayload, Scheme};
 use crate::id::{DeviceId, SpaceId};
 use crate::receipt::{DeliveryStatus, STORED, SendKey, Stored};
 
@@ -139,6 +139,29 @@ const ACK: u64 = 7;
 const BATCH: u64 = 8;
 const SPACE_NOTICE: u64 = 9;
 const AUTH: u64 = 10;
+
+impl Frame {
+    /// The header of the envelope in the `send` frame `bytes`, when all that keeps the frame from
+    /// decoding is an `hpke` header whose `recipients` is not one device. A server refuses such a
+    /// send by its header, with `unknown-recipient`, rather than as a malformed frame.
+    pub fn misaddressed_send(bytes: &[u8]) -> Option<Header> {
+        let item = cbor::parse(bytes).ok()?;
+        if frame_type(&item, "frame.type").ok()? != SEND {
+            return None;
+        }
+        let [_, envelope, report] = item.tuple("send").ok()?;
+        report.boolean("send.report").ok()?;
+        let envelope = cbor::parse(envelope.bytes("send.envelope").ok()?).ok()?;
+        let [header, payload] = envelope.tuple("envelope").ok()?;
+        let header = Header::decode_fields(header).ok()?;
+        payload.embedded::<HpkePayload>("envelope.payload").ok()?;
+        let one = header
+            .recipients
+            .as_ref()
+            .is_some_and(|devices| devices.len() == 1);
+        (header.scheme == Scheme::Hpke && !one).then_some(header)
+    }
+}
 
 /// The type of the frame `item`: the first item of an array.
 fn frame_type(item: &Item<'_>, field: &'static str) -> Result<u64, DecodeError> {
