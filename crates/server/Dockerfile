@@ -11,10 +11,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo install cargo-chef --version 0.1.78 --locked
 WORKDIR /src
 
-# The dependencies of the workspace, from its manifests alone. Not `--bin skald-server`: it drops the
-# root manifest, a package of its own.
+# The dependencies of the workspace, from its manifests alone.
 FROM chef AS plan
-COPY Cargo.toml Cargo.lock repository.rs ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -26,7 +25,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo chef cook --release --locked --package skald-server --recipe-path recipe.json
 
 FROM deps AS build
-COPY Cargo.toml Cargo.lock repository.rs ./
+COPY Cargo.toml Cargo.lock ./
 COPY api/openapi.json api/
 COPY crates crates
 # cook deletes what it built for its stand-ins of the workspace crates; the touch also makes cargo
