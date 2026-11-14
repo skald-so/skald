@@ -398,5 +398,13 @@ pub fn vectors() -> Vec<Vector> {
             "Frame `space-notice`",
             Frame::Push(Push::SpaceNotice { space: space() }),
         ),
+        vector(
+            "Frame `auth`",
+            Frame::Auth {
+                challenge: (0..32).collect(),
+                device: alice_device(),
+                signature: SIGNATURE,
+            },
+        ),
     ]
 }

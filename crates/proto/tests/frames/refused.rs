@@ -12,8 +12,8 @@ use crate::fixtures::{
 #[test]
 fn a_frame_of_an_unknown_type_decodes_as_unknown() {
     for (text, frame_type) in [
-        ("81 0a", 10),
-        ("83 0a 6178 a1 01 02", 10),
+        ("81 1864", 100),
+        ("83 1864 6178 a1 01 02", 100),
         ("82 1903e8 40", 1000),
         ("82 1bffffffffffffffff 80", u64::MAX),
     ] {
@@ -46,21 +46,21 @@ fn a_frame_without_a_type_is_malformed_not_unknown() {
 #[test]
 fn a_frame_of_an_unknown_type_still_follows_the_encoding_rules() {
     assert_eq!(
-        frame("82 0a 1805"),
+        frame("82 1864 1805"),
         Err(DecodeError::Encoding {
-            at: 2,
+            at: 3,
             problem: EncodingProblem::NotShortest
         })
     );
     assert_eq!(
-        frame("82 0a a2 02 00 01 00"),
+        frame("82 1864 a2 02 00 01 00"),
         Err(DecodeError::Encoding {
-            at: 5,
+            at: 6,
             problem: EncodingProblem::UnsortedKeys
         })
     );
-    assert_eq!(frame("82 0a"), Err(DecodeError::Truncated));
-    assert_eq!(frame("81 0a 00"), Err(DecodeError::TrailingBytes(1)));
+    assert_eq!(frame("82 1864"), Err(DecodeError::Truncated));
+    assert_eq!(frame("81 1864 00"), Err(DecodeError::TrailingBytes(1)));
     // A known type in a non-shortest form is not an unknown type.
     assert_eq!(
         frame("82 1804 07"),

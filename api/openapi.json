@@ -1931,6 +1931,85 @@
         }
       }
     },
+    "/session/challenge": {
+      "post": {
+        "operationId": "issueChallenge",
+        "summary": "A challenge for a WebSocket",
+        "description": "A new challenge for the device session of the request's bearer token, which the first frame of a WebSocket signs to prove its device (docs/protocol/delivery.md, \"Connecting\"). It works once, for less than a minute, while its session lasts. The request has no body.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The challenge.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Challenge"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no `Authorization` header, one that is not `Bearer <token>`, or the token of no device session, such as a web session's or an ended one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sign-in-methods": {
       "get": {
         "operationId": "getSignInMethodsPage",
@@ -2686,7 +2765,7 @@
       "get": {
         "operationId": "openWebSocket",
         "summary": "WebSocket opening request",
-        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. The connection carries no frames yet.",
+        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. Its first frame, `auth`, proves the connection's device on a challenge of `POST /session/challenge` (docs/protocol/delivery.md, \"Connecting\"); a connection without a valid proof is closed as \"Connecting\" there says. The server takes no other frame yet.",
         "parameters": [
           {
             "name": "Sec-WebSocket-Protocol",
@@ -2802,6 +2881,18 @@
         "description": "A device certificate's CBOR bytes (docs/protocol/membership.md, \"Device certificate\") in base64url without padding (RFC 4648, §5).",
         "type": "string",
         "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "Challenge": {
+        "type": "object",
+        "required": ["challenge"],
+        "properties": {
+          "challenge": {
+            "description": "32 random bytes in base64url without padding (RFC 4648, §5).",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+          }
+        },
+        "additionalProperties": false
       },
       "ChannelId": {
         "description": "A channel's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",

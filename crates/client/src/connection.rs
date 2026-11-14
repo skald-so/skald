@@ -10,12 +10,17 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use serde::Deserialize;
+use skald_crypto::SigningKey;
 use skald_proto::{
-    LATEST_HEADER, VERSION_HEADER, VersionProblem, VersionRange, describe_versions, parse_version,
+    AUTH_LABEL, Cbor as _, DeviceId, Frame, LATEST_HEADER, VERSION_HEADER, VersionProblem,
+    VersionRange, describe_versions, parse_version,
 };
+use tungstenite::Message;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::handshake::HandshakeError;
 use tungstenite::http::{HeaderMap, HeaderValue, Uri, header};
@@ -27,6 +32,10 @@ use crate::tls::Roots;
 
 /// How long a request to the server may take by default.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A device session's challenge for a WebSocket, `POST`: `docs/protocol/delivery.md`,
+/// "Connecting".
+const CHALLENGE_PATH: &str = "/session/challenge";
 
 /// An open WebSocket to the server.
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
@@ -188,6 +197,19 @@ fn loopback(host: &str) -> bool {
     match host.strip_prefix('[').and_then(|ip| ip.strip_suffix(']')) {
         Some(ip) => ip.parse::<Ipv6Addr>().is_ok_and(|ip| ip.is_loopback()),
         None => host.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback()),
+    }
+}
+
+/// The origin (RFC 6454) of the server at `base`, a server URL, in its ASCII serialization: such as
+/// `https://api.skald.so`, without a path or its scheme's port.
+fn origin(base: &str) -> String {
+    let uri: Uri = base.parse().expect("a server URL is a URI");
+    let scheme = uri.scheme_str().unwrap_or_default().to_ascii_lowercase();
+    let host = uri.host().unwrap_or_default().to_ascii_lowercase();
+    let default = if scheme == "https" { 443 } else { 80 };
+    match uri.port_u16().filter(|&port| port != default) {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
     }
 }
 
@@ -366,6 +388,12 @@ struct OAuthError {
     error: String,
     #[serde(default)]
     error_description: String,
+}
+
+/// `Challenge` in the API spec.
+#[derive(Deserialize)]
+struct Challenge {
+    challenge: String,
 }
 
 /// The fields of a problem details object the client reads.
@@ -565,6 +593,37 @@ impl Connection {
                 Err(HandshakeError::Failure(err)) => Err(Error::Unexpected(err.to_string())),
             }
         })
+    }
+
+    /// Opens a WebSocket at `path` as the device `device`, whose signing key is `key`, on the device
+    /// session of `token`: its first frame, `auth`, signs a new challenge of the session over the
+    /// server's origin (`docs/protocol/delivery.md`, "Connecting").
+    pub fn open_websocket_as(
+        &mut self,
+        path: &str,
+        token: &str,
+        device: DeviceId,
+        key: &SigningKey,
+    ) -> Result<WebSocket, Error> {
+        let answer = self.post_as(CHALLENGE_PATH, token)?;
+        let challenge = serde_json::from_slice::<Challenge>(&answer)
+            .ok()
+            .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
+            .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))?;
+        let signature = key.sign(AUTH_LABEL, &[&challenge, origin(&self.base).as_bytes()]);
+        let auth = Frame::Auth {
+            challenge,
+            device,
+            signature,
+        };
+        let mut socket = self.open_websocket(path)?;
+        socket
+            .send(Message::Binary(auth.to_cbor().into()))
+            .map_err(|err| match err {
+                tungstenite::Error::Io(err) => io_error(err, self.timeout),
+                err => Error::Unreachable(err.to_string()),
+            })?;
+        Ok(socket)
     }
 
     /// Sends a request with `send`, which states the version it is given, and acts on the answer:
@@ -837,6 +896,20 @@ mod tests {
         assert_eq!(port_of("wss://api.skald.so:8443/ws"), 8443);
         assert_eq!(port_of("ws://localhost:8080/ws"), 8080);
         assert_eq!(host(&"wss://[::1]:8443/ws".parse().unwrap()), "::1");
+    }
+
+    #[test]
+    fn origin_is_the_server_urls_without_a_path_or_its_schemes_port() {
+        for (base, expected) in [
+            ("https://api.skald.so", "https://api.skald.so"),
+            ("HTTPS://API.Skald.so:443/base", "https://api.skald.so"),
+            ("https://api.skald.so:8443", "https://api.skald.so:8443"),
+            ("http://localhost:80", "http://localhost"),
+            ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("http://[::1]:8080", "http://[::1]:8080"),
+        ] {
+            assert_eq!(origin(base), expected, "{base}");
+        }
     }
 
     #[test]
