@@ -94,11 +94,16 @@ fn at_least(item: &Item<'_>, field: &'static str, min: u64) -> Result<u64, Decod
     Ok(value)
 }
 
+/// The fields a link and an entry begin with, `channel` and `epoch`, and the `unknown` ones.
+fn head(unknown: &Unknown, channel: &ChannelId, epoch: u64) -> MapOut {
+    MapOut::new(unknown)
+        .put(1, cbor::id(channel))
+        .put(2, cbor::uint(epoch))
+}
+
 impl Codec for HistoryLink {
     fn encode(&self) -> Vec<u8> {
-        MapOut::new(&self.unknown)
-            .put(1, cbor::id(&self.channel))
-            .put(2, cbor::uint(self.epoch))
+        head(&self.unknown, &self.channel, self.epoch)
             .put(3, cbor::uint(self.prev))
             .put(4, cbor::bytes(&self.nonce))
             .put(5, cbor::bytes(&self.ciphertext))
@@ -135,9 +140,7 @@ impl Codec for HistoryLink {
 
 impl Codec for HistoryEntry {
     fn encode(&self) -> Vec<u8> {
-        MapOut::new(&self.unknown)
-            .put(1, cbor::id(&self.channel))
-            .put(2, cbor::uint(self.epoch))
+        head(&self.unknown, &self.channel, self.epoch)
             .put(3, cbor::bytes(&self.nonce))
             .put(4, cbor::bytes(&self.ciphertext))
             .finish()

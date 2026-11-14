@@ -21,6 +21,7 @@ mod framing;
 mod group_info;
 mod history;
 mod history_entries;
+mod history_errors;
 mod history_objects;
 mod key_chain;
 mod key_packages;
