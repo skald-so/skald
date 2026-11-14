@@ -104,12 +104,23 @@ impl Cloud {
     /// A server with the settings of `providers`, whose codes work for `lifetime` seconds and poll
     /// every `interval`.
     pub fn with(providers: Providers, lifetime: u64, interval: u64) -> Self {
+        // Chrome resolves every *.test host to the server.
+        Self::serving(providers, "skald.test", lifetime, interval)
+    }
+
+    /// As [`Cloud::start`], the server's public address `http://<host>:<port>`, such as
+    /// `localhost` or `127.0.0.1`, which Chrome reaches.
+    pub fn on_host(host: &str, lifetime: u64, interval: u64) -> Self {
+        Self::serving(Providers::GitHub, host, lifetime, interval)
+    }
+
+    /// As [`Cloud::with`], the server's public address `http://<host>:<port>`.
+    fn serving(providers: Providers, host: &str, lifetime: u64, interval: u64) -> Self {
         let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
         let mut public_url = String::new();
         let server = Server::start_with(|addr| {
-            // Chrome resolves every *.test host to the server.
-            let public = format!("http://skald.test:{}", addr.port());
+            let public = format!("http://{host}:{}", addr.port());
             let stand_in = GitHub::start(App {
                 client_id: CLIENT_ID.to_owned(),
                 client_secret: CLIENT_SECRET.to_owned(),
