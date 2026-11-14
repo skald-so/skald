@@ -81,10 +81,10 @@ pub struct Settings {
     /// The server's name in agent addresses; without it, the host of sign-in's public address, if
     /// that is a valid server name.
     pub server_name: Option<ServerName>,
-    /// How long an undelivered mailbox entry waits at most, and the least time the server keeps an
-    /// idempotency key (`docs/protocol/delivery.md`, "Send" and "Mailbox"); without it, entries
-    /// wait for their device's ack, unless an envelope's `ttl` ends first, and keys are kept for
-    /// good.
+    /// How long an undelivered mailbox entry waits at most, up to 100 years, and the least time the
+    /// server keeps an idempotency key (`docs/protocol/delivery.md`, "Send" and "Mailbox"); without
+    /// it, entries wait for their device's ack, unless an envelope's `ttl` ends first, and keys are
+    /// kept for good.
     pub mailbox_retention: Option<Duration>,
 }
 
