@@ -103,7 +103,7 @@ fn malformed_machine_requests_are_refused() {
 }
 
 #[test]
-fn device_flow_is_off_without_github_settings() {
+fn device_flow_is_off_without_sign_in_settings() {
     let db = TestDb::create();
     let server = Server::start(&db);
     let spec = spec();
@@ -136,7 +136,7 @@ fn device_flow_is_off_without_github_settings() {
         assert_eq!(response.status, 404, "{method} {path}: {}", text(&response));
         assert_eq!(
             json(&response)["type"],
-            "https://skald.so/problems/github-sign-in-off"
+            "https://skald.so/problems/sign-in-off"
         );
         let violations = operation_violations(&spec, method, path, &response);
         assert_eq!(violations, Vec::<String>::new());

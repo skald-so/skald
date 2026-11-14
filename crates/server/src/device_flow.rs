@@ -1,5 +1,6 @@
 //! The device flow (RFC 8628): a machine without a browser gets a device session once its person,
-//! signed in with GitHub in a browser elsewhere, approves its user code on the verification page.
+//! signed in with any provider in a browser elsewhere, approves its user code on the verification
+//! page.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -12,7 +13,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::sign_in::{self, Session, digest, escape, off, param, random_token, web_session};
+use crate::sign_in::{
+    self, Session, digest, escape, flows, off, param, random_token, sign_in_links, web_session,
+};
 use crate::{AppState, database_failed};
 
 /// The verification page's path under the public address.
@@ -137,7 +140,7 @@ struct DeviceAuthorization {
 
 /// `POST /auth/device`: device authorization (RFC 8628, §3.1).
 pub(crate) async fn authorize(State(state): State<AppState>, body: Bytes) -> Response {
-    let Some((settings, _)) = sign_in::github(&state) else {
+    let Some(settings) = sign_in::settings(&state) else {
         return off();
     };
     if let Err(refusal) = machine_form(&body) {
@@ -203,7 +206,7 @@ struct DeviceToken {
 
 /// `POST /auth/token`: the token endpoint (RFC 8628, §3.4).
 pub(crate) async fn token(State(state): State<AppState>, body: Bytes) -> Response {
-    if sign_in::github(&state).is_none() {
+    if sign_in::settings(&state).is_none() {
         return off();
     }
     let device_code = match device_code(&body) {
@@ -329,8 +332,9 @@ fn failed(doing: &str, err: sqlx::Error) -> Response {
     sign_in::form_page_failed(doing, err, PAGE_POLICY)
 }
 
-/// The link that signs in with GitHub and returns to the verification page with `user_code`.
-fn sign_in_link(user_code: &str) -> String {
+/// Links that sign in with each provider the server has settings for and return to the
+/// verification page with `user_code`.
+fn sign_in_here(state: &AppState, user_code: &str) -> String {
     let mut to = VERIFICATION_PATH.to_owned();
     if !user_code.is_empty() {
         let query = url::form_urlencoded::Serializer::new(String::new())
@@ -338,14 +342,7 @@ fn sign_in_link(user_code: &str) -> String {
             .finish();
         to = format!("{to}?{query}");
     }
-    let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("return_to", &to)
-        .finish();
-    format!(
-        "<a href=\"{}?{}\">Sign in with GitHub</a>",
-        sign_in::START_PATH,
-        escape(&query)
-    )
+    sign_in_links(&flows(state), "", &to)
 }
 
 /// `GET /device`: the verification page.
@@ -354,7 +351,7 @@ pub(crate) async fn page(
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if sign_in::github(&state).is_none() {
+    if sign_in::settings(&state).is_none() {
         return off();
     }
     let user_code = param(query.as_deref(), "user_code").unwrap_or_default();
@@ -365,7 +362,7 @@ pub(crate) async fn page(
             "Sign in a machine",
             &format!(
                 "<h1>Sign in a machine</h1><p>To sign a machine in to your Skald account, sign in first. {}</p>",
-                sign_in_link(&user_code)
+                sign_in_here(&state, &user_code)
             ),
         ),
         Err(err) => failed("read a session", err),
@@ -404,7 +401,7 @@ pub(crate) async fn decide(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some((settings, _)) = sign_in::github(&state) else {
+    let Some(settings) = sign_in::settings(&state) else {
         return off();
     };
     let again = format!("<a href=\"{VERIFICATION_PATH}\">Try again</a>");
@@ -422,7 +419,7 @@ pub(crate) async fn decide(
             return page_of(
                 StatusCode::FORBIDDEN,
                 "Not signed in",
-                &format!("<p>Not signed in. {}</p>", sign_in_link("")),
+                &format!("<p>Not signed in. {}</p>", sign_in_here(&state, "")),
             );
         }
         Err(err) => return failed("read a session", err),

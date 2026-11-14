@@ -8,15 +8,14 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use sqlx::PgPool;
-use url::form_urlencoded;
 
 use crate::accounts::{GITHUB, Method};
 use crate::refusal::{Refusal, account, answer};
 use crate::sign_in::{
-    self, Failure, Flow, GITHUB_FLOW, Provider, SignInSettings, escape, form_page,
-    form_page_failed, from_this_server, refresh_page, session_hashes, start_with,
+    self, Failure, Flow, Provider, SignInSettings, escape, flows, form_page, form_page_failed,
+    from_this_server, off, refresh_page, session_hashes, sign_in_links, start_with,
 };
-use crate::{AppState, google, problem};
+use crate::{AppState, google};
 
 /// The page of the account's sign-in methods.
 pub(crate) const PAGE_PATH: &str = "/sign-in-methods";
@@ -27,37 +26,6 @@ pub(crate) const GOOGLE_PATH: &str = "/auth/google/link";
 /// `form-action` would block.
 const PAGE_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
 
-/// The flows of the providers the server has settings for.
-fn flows(state: &AppState) -> Vec<Flow<'_>> {
-    let mut flows = Vec::new();
-    if sign_in::github(state).is_some() {
-        flows.push(GITHUB_FLOW);
-    }
-    if let Some((_, google)) = google::google(state) {
-        flows.push(google.flow());
-    }
-    flows
-}
-
-/// Links that sign in with each of `flows` and return to the page of the account's methods.
-fn sign_in_links(flows: &[Flow], again: &str) -> String {
-    let query = form_urlencoded::Serializer::new(String::new())
-        .append_pair("return_to", PAGE_PATH)
-        .finish();
-    let links: Vec<String> = flows
-        .iter()
-        .map(|flow| {
-            format!(
-                "<a href=\"{}?{}\">Sign in{again} with {}</a>",
-                flow.start,
-                escape(&query),
-                flow.name
-            )
-        })
-        .collect();
-    links.join(" ")
-}
-
 /// A page of the account's methods of `status` with `title` and `body`.
 fn page_of(status: StatusCode, title: &str, body: &str) -> Response {
     form_page(status, title, body, PAGE_POLICY)
@@ -66,16 +34,6 @@ fn page_of(status: StatusCode, title: &str, body: &str) -> Response {
 /// The page's answer when the database fails.
 fn failed(doing: &str, err: sqlx::Error) -> Response {
     form_page_failed(doing, err, PAGE_POLICY)
-}
-
-/// The answer while the server has no sign-in settings.
-fn off() -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        "sign-in-off",
-        "Sign-in is off",
-        "This server has no sign-in settings.",
-    )
 }
 
 /// A sign-in method of an account, as the database holds it.
@@ -132,7 +90,7 @@ pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> R
                 "Sign-in methods",
                 &format!(
                     "<h1>Sign-in methods</h1><p>Sign in to see your account's sign-in methods. {}</p>",
-                    sign_in_links(&flows, "")
+                    sign_in_links(&flows, "", PAGE_PATH)
                 ),
             );
         }
@@ -215,7 +173,7 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
 /// `POST /auth/github/link`: starts a link of a GitHub method.
 pub(crate) async fn github(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some((settings, github)) = sign_in::github(&state) else {
-        return sign_in::off();
+        return sign_in::github_off();
     };
     start(&state, settings, github, &headers).await
 }
@@ -281,14 +239,17 @@ async fn start<P: Provider>(
                 "Sign in again",
                 &format!(
                     "<p>To link a sign-in method, sign in again first: your last sign-in is too old. {}</p>",
-                    sign_in_links(&flows, " again")
+                    sign_in_links(&flows, " again", PAGE_PATH)
                 ),
             )
         }
         Ok(None) => page_of(
             StatusCode::FORBIDDEN,
             "Not signed in",
-            &format!("<p>Not signed in. {}</p>", sign_in_links(&flows(state), "")),
+            &format!(
+                "<p>Not signed in. {}</p>",
+                sign_in_links(&flows(state), "", PAGE_PATH)
+            ),
         ),
         Err(err) => failed("read a session", err),
     }
