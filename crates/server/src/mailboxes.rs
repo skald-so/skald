@@ -1,7 +1,7 @@
 //! Storing sent envelopes: `docs/protocol/delivery.md`, "Send" and "Mailbox". The server answers a
 //! device's `send` with `stored` once the envelope and its mailbox entry are committed, or with
-//! `send-refused` and its problem, storing nothing. It stores at most one envelope per idempotency
-//! key and answers a retry as it answered the first send.
+//! `send-refused` and its problem, storing nothing of the envelope. It stores at most one envelope
+//! per idempotency key and answers a retry as it answered the first send.
 
 use std::num::NonZeroU64;
 
@@ -9,7 +9,7 @@ use skald_proto::{
     AccountId, Cbor as _, DeviceId, Frame, Header, RawEnvelope, Roster, Scheme, SendKey, SpaceId,
     Stored,
 };
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
@@ -28,15 +28,11 @@ enum Problem {
 }
 
 impl Problem {
-    fn refusal(self, send_key: SendKey) -> Frame {
-        let problem = match self {
+    fn name(self) -> &'static str {
+        match self {
             Self::VersionMismatch => "version-mismatch",
             Self::NotAMember => "not-a-member",
             Self::UnknownRecipient => "unknown-recipient",
-        };
-        Frame::SendRefused {
-            send_key,
-            problem: problem.to_owned(),
         }
     }
 }
@@ -59,31 +55,13 @@ pub(crate) async fn send(
     sender: &Sender,
     envelope: &RawEnvelope,
 ) -> Result<Frame, sqlx::Error> {
-    let header = &envelope.envelope().header;
-    let key = send_key(header);
-    let answer = |timestamp| {
-        Frame::Stored(Stored {
-            send_key: key.clone(),
-            timestamp,
-        })
-    };
-    // A retry gets the first answer, whatever its bytes.
-    if let Some(timestamp) = stored_at(db, sender, &key).await? {
-        return Ok(answer(timestamp));
-    }
-    let recipient = match recipient(db, sender, header).await? {
-        Ok(recipient) => recipient,
-        Err(problem) => return Ok(problem.refusal(key)),
-    };
-    loop {
-        if let Some(timestamp) = store(db, sender, &key, recipient, envelope.bytes()).await? {
-            return Ok(answer(timestamp));
-        }
-        // A send of the same key stored it meanwhile.
-        if let Some(timestamp) = stored_at(db, sender, &key).await? {
-            return Ok(answer(timestamp));
-        }
-    }
+    answer(
+        db,
+        sender,
+        &envelope.envelope().header,
+        Some(envelope.bytes()),
+    )
+    .await
 }
 
 /// The answer to `sender`'s send of an `hpke` envelope with `header`, whose `recipients` is not one
@@ -93,11 +71,52 @@ pub(crate) async fn misaddressed(
     sender: &Sender,
     header: &Header,
 ) -> Result<Frame, sqlx::Error> {
-    let problem = recipient(db, sender, header)
-        .await?
-        .err()
-        .unwrap_or(Problem::UnknownRecipient);
-    Ok(problem.refusal(send_key(header)))
+    answer(db, sender, header, None).await
+}
+
+/// The answer to `sender`'s send of an envelope with `header`, whose bytes are `envelope`, or
+/// `None` if it cannot be stored. A retry gets the first answer, whatever its bytes.
+async fn answer(
+    db: &PgPool,
+    sender: &Sender,
+    header: &Header,
+    envelope: Option<&[u8]>,
+) -> Result<Frame, sqlx::Error> {
+    let key = send_key(header);
+    let outcome = match (recipient(db, sender, header).await?, envelope) {
+        (Ok(recipient), Some(envelope)) => Ok((recipient, envelope)),
+        // `recipient` refuses a send without one recipient; this is in case it does not.
+        (Ok(_), None) => Err(Problem::UnknownRecipient),
+        (Err(problem), _) => Err(problem),
+    };
+    // A send answered before keeps its answer: keeping this one finds its key taken.
+    loop {
+        let kept = match outcome {
+            Ok((recipient, envelope)) => store(db, sender, &key, recipient, envelope).await?,
+            Err(problem) => refuse(db, sender, &key, problem).await?,
+        };
+        if let Some(answer) = kept {
+            return Ok(answer);
+        }
+        if let Some(answer) = answered(db, sender, &key).await? {
+            return Ok(answer);
+        }
+    }
+}
+
+/// The answer to the send with `key`: its refusal for `problem`, or else its `stored` at
+/// `timestamp`, in seconds since the Unix epoch.
+fn frame(key: &SendKey, timestamp: i64, problem: Option<String>) -> Frame {
+    match problem {
+        Some(problem) => Frame::SendRefused {
+            send_key: key.clone(),
+            problem,
+        },
+        None => Frame::Stored(Stored {
+            send_key: key.clone(),
+            timestamp: timestamp.try_into().expect("a time after 1970"),
+        }),
+    }
 }
 
 /// The one recipient device that `sender`'s envelope with `header` is stored for, or the problem
@@ -163,14 +182,14 @@ async fn certified_account(
     Ok(found.map(|(account,)| account.parse().expect("a stored account ID")))
 }
 
-/// When the send of `sender` with `key` was stored, in seconds since the Unix epoch, if it was.
-async fn stored_at(
+/// The answer the send of `sender` with `key` got, if it was answered.
+async fn answered(
     db: &PgPool,
     sender: &Sender,
     key: &SendKey,
-) -> Result<Option<u64>, sqlx::Error> {
-    let found: Option<(i64,)> = sqlx::query_as(
-        "SELECT floor(extract(epoch FROM stored_at))::bigint FROM sends
+) -> Result<Option<Frame>, sqlx::Error> {
+    let found: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT floor(extract(epoch FROM answered_at))::bigint, problem FROM sends
          WHERE sender_id = $1::uuid AND msg_id = $2::uuid
            AND recipient_id IS NOT DISTINCT FROM $3::uuid",
     )
@@ -179,31 +198,55 @@ async fn stored_at(
     .bind(key.recipient.map(|device| device.to_string()))
     .fetch_optional(db)
     .await?;
-    Ok(found.map(|(timestamp,)| timestamp.try_into().expect("a time after 1970")))
+    Ok(found.map(|(timestamp, problem)| frame(key, timestamp, problem)))
+}
+
+/// Keeps the answer to the send of `sender` with `key` on `conn`: its refusal for `problem`, or
+/// else its `stored`. Gives the answer; `None` if a send with `key` is answered already.
+async fn keep(
+    conn: &mut PgConnection,
+    sender: &Sender,
+    key: &SendKey,
+    problem: Option<Problem>,
+) -> Result<Option<Frame>, sqlx::Error> {
+    let problem = problem.map(Problem::name);
+    // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
+    let inserted: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO sends (sender_id, msg_id, recipient_id, answered_at, problem)
+         VALUES ($1::uuid, $2::uuid, $3::uuid, now(), $4)
+         ON CONFLICT DO NOTHING RETURNING floor(extract(epoch FROM answered_at))::bigint",
+    )
+    .bind(sender.device.to_string())
+    .bind(key.msg_id.to_string())
+    .bind(key.recipient.map(|device| device.to_string()))
+    .bind(problem)
+    .fetch_optional(conn)
+    .await?;
+    Ok(inserted.map(|(timestamp,)| frame(key, timestamp, problem.map(str::to_owned))))
+}
+
+/// Keeps the refusal of the send of `sender` with `key` for `problem`, and gives it; `None` if a
+/// send with `key` is answered already.
+async fn refuse(
+    db: &PgPool,
+    sender: &Sender,
+    key: &SendKey,
+    problem: Problem,
+) -> Result<Option<Frame>, sqlx::Error> {
+    keep(&mut *db.acquire().await?, sender, key, Some(problem)).await
 }
 
 /// Stores `envelope`, the send of `sender` with `key`, with its entry in `recipient`'s mailbox, and
-/// gives when, in seconds since the Unix epoch; `None` if a send with `key` is stored already.
+/// gives its `stored`; `None` if a send with `key` is answered already.
 async fn store(
     db: &PgPool,
     sender: &Sender,
     key: &SendKey,
     recipient: DeviceId,
     envelope: &[u8],
-) -> Result<Option<u64>, sqlx::Error> {
+) -> Result<Option<Frame>, sqlx::Error> {
     let mut tx = db.begin().await?;
-    // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
-    let inserted: Option<(i64,)> = sqlx::query_as(
-        "INSERT INTO sends (sender_id, msg_id, recipient_id, stored_at)
-         VALUES ($1::uuid, $2::uuid, $3::uuid, now())
-         ON CONFLICT DO NOTHING RETURNING floor(extract(epoch FROM stored_at))::bigint",
-    )
-    .bind(sender.device.to_string())
-    .bind(key.msg_id.to_string())
-    .bind(key.recipient.map(|device| device.to_string()))
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some((timestamp,)) = inserted else {
+    let Some(stored) = keep(&mut tx, sender, key, None).await? else {
         return Ok(None);
     };
     // The mailbox's row lock makes stores to it wait for each other, so its entries are numbered in
@@ -223,5 +266,5 @@ async fn store(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    Ok(Some(timestamp.try_into().expect("a time after 1970")))
+    Ok(Some(stored))
 }

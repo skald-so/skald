@@ -7,13 +7,15 @@ CREATE TABLE envelopes (
     envelope bytea NOT NULL
 );
 
--- A stored send by its idempotency key: its sending device, its msg_id and, under hpke, its
--- recipient device; and when it was committed, which the answer to each retry repeats.
+-- An answered send by its idempotency key: its sending device, its msg_id and, under hpke, its
+-- recipient device; when it was answered, and the problem it was refused with, NULL if it was
+-- stored. Each retry gets the same answer.
 CREATE TABLE sends (
     sender_id uuid NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
     msg_id uuid NOT NULL,
     recipient_id uuid,
-    stored_at timestamptz NOT NULL,
+    answered_at timestamptz NOT NULL,
+    problem text,
     UNIQUE NULLS NOT DISTINCT (sender_id, msg_id, recipient_id)
 );
 

@@ -220,6 +220,8 @@ async fn hold(
 ) {
     loop {
         let bytes = tokio::select! {
+            // Once the session ends, no queued frame is answered.
+            biased;
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => bytes,
