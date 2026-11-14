@@ -25,11 +25,11 @@ use crate::steps::{
 };
 
 const HOUR: u64 = 3_600;
-const DAY: u64 = 24 * HOUR;
+pub const DAY: u64 = 24 * HOUR;
 
 /// A KeyPackage, in an `MLSMessage`, of device `seed` on mls-rs, its lifetime from `from` to
 /// `from` plus `span`.
-fn foreign_key_package(seed: u8, from: u64, span: u64) -> MlsMessage {
+pub fn foreign_key_package(seed: u8, from: u64, span: u64) -> MlsMessage {
     let identity = device_id(seed);
     foreign::client(seed, identity.as_bytes(), SUITE, Duration::from_secs(span))
         .generate_key_package_message(

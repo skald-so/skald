@@ -11,9 +11,11 @@
 use skald_crypto::{ChannelView, MemberDevice, SealedState};
 use skald_proto::ChannelId;
 
+use crate::commit_checks::{DAY, foreign_key_package};
 use crate::commits::{empty, process, processes_own_remove, remove, store};
-use crate::fixtures::{device_id, load, signing_key};
+use crate::fixtures::{NOW, device_id, load, signing_key};
 use crate::foreign;
+use crate::foreign_member::{commit, with_foreign_member};
 use crate::group_info::{self, EXTERNAL_PUB, GroupInfo, RATCHET_TREE, replace_once, resigned};
 use crate::steps::{add, bytes, channel_of, join, send, step, stored, with_key_packages};
 
@@ -419,4 +421,42 @@ fn a_malformed_or_truncated_group_info_or_commit_is_refused_without_a_panic() {
         assert_refused(&view, &commit[..len], "a truncated Commit");
     }
     assert_eq!(view.follow(&commit).expect("the whole Commit").epoch(), 2);
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_group_info_or_commit_with_a_leaf_whose_lifetime_spans_more_than_sixty_days_is_refused() {
+    let channel = ChannelId::generate();
+    let (mut states, mut group) = with_foreign_member(channel, &[44, 45], 46);
+    let view = observe(channel, &group_info_of(44, &mut states[0], channel));
+    let long = || foreign_key_package(47, NOW, 60 * DAY + 1);
+    let added = commit(&mut group, |builder| {
+        builder
+            .add_member(long())
+            .expect("mls-rs adds the KeyPackage")
+    });
+    assert_refused(
+        &view,
+        &added,
+        "an Add of a KeyPackage spanning 60 days and a second",
+    );
+    let added = commit(&mut group, |builder| {
+        (builder.add_member(foreign_key_package(47, NOW, 60 * DAY)))
+            .expect("mls-rs adds the KeyPackage")
+    });
+    let next = view
+        .follow(&added)
+        .expect("an Add of a KeyPackage spanning 60 days");
+    assert_eq!(next.members(), [44, 45, 46, 47].map(member).to_vec());
+
+    let package = long().to_bytes().expect("the KeyPackage's bytes");
+    let (group, _) = foreign::group(48, device_id(48).as_bytes(), channel, &[&package]);
+    let group_info = group
+        .group_info_message_allowing_ext_commit(true)
+        .and_then(|message| message.to_bytes())
+        .expect("a GroupInfo of mls-rs");
+    assert!(
+        ChannelView::observe(channel, &group_info).is_err(),
+        "refused: a GroupInfo with a leaf spanning 60 days and a second"
+    );
 }

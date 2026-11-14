@@ -7,9 +7,6 @@
 //! channel seen from outside its group, from its GroupInfo and Commits. Every step loads the state
 //! the previous step sealed, as one-shot mode does.
 
-// The acceptance tests of a channel seen from outside its group, which fail until the code they
-// test lands; the implementation removes the gates with the `acceptance` feature.
-#[cfg(feature = "acceptance")]
 mod channel_view;
 mod channels;
 mod commit_checks;
@@ -18,7 +15,6 @@ mod fixtures;
 mod foreign;
 mod foreign_member;
 mod framing;
-#[cfg(feature = "acceptance")]
 mod group_info;
 mod key_packages;
 mod messages;
