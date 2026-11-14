@@ -3,7 +3,8 @@
 # runs, the other scripts, the functions of PostgreSQL and of the S3-compatible server and, in
 # <dir>/bin, the tools. Each stand-in that runs a check appends it to <dir>/checks as
 # `<directory>\t<command>`, the directory relative to <dir>; those of the tools only the
-# prerequisites probe, rustc, wasm-bindgen-test-runner and python3, append nothing. git is the real one. Run it as PATH="<dir>/bin:$PATH" <dir>/script/test.
+# prerequisites probe, rustc, wasm-bindgen-test-runner and python3, append nothing. git is the real
+# one. Run it as PATH="<dir>/bin:$PATH" <dir>/script/test.
 # Sourced by script/changed-parts-test; script/ci-workflow-test runs it with bash.
 test_stand_ins() {
   local root dir name
