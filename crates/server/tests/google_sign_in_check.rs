@@ -44,6 +44,8 @@ const PREFIX: &str = "check-google-sign-in: ";
 /// The steps the tests name.
 const PAGE_STEP: &str = "verification page";
 const AUTHORIZATION_STEP: &str = "authorization";
+/// The check's own step that reads the issuer's metadata.
+const METADATA_STEP: &str = "metadata";
 /// The verification page.
 const VERIFICATION_PAGE: &str = "/device";
 /// The stand-in's authorization endpoint and metadata, under its issuer.
@@ -665,6 +667,41 @@ fn check_fails_at_authorization_when_the_provider_redirects_to_its_error_page() 
 
         let run = stage.check(
             &format!("the provider's error page of status {status} says {error}"),
+            CLIENT_ID,
+            unchanged(),
+        );
+        assert_fails_at(&run, AUTHORIZATION_STEP);
+    }
+}
+
+#[test]
+fn check_fails_at_metadata_when_it_names_another_issuer() {
+    let stage = Stage::start();
+    stage.at_provider(on("GET", METADATA, |answer| {
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&answer.body).expect("JSON metadata");
+        metadata["issuer"] = format!("http://{ELSEWHERE}").into();
+        Answer {
+            body: metadata.to_string().into_bytes(),
+            ..answer
+        }
+    }));
+
+    let run = stage.check("the metadata names another issuer", CLIENT_ID, unchanged());
+    assert_fails_at(&run, METADATA_STEP);
+}
+
+#[test]
+fn check_fails_at_authorization_when_the_provider_answers_an_http_error() {
+    let stage = Stage::start();
+    for status in [403, 500] {
+        stage.at_provider(Arc::new(move |_, path, answer| match path {
+            AUTHORIZE => html(status, "<h1>Something went wrong</h1>"),
+            _ => answer,
+        }));
+
+        let run = stage.check(
+            &format!("the provider answers HTTP {status}"),
             CLIENT_ID,
             unchanged(),
         );
