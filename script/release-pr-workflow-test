@@ -1,16 +1,14 @@
 #!/usr/bin/env bash
 # Tests the workflow that keeps the Release PR open, named in script/lib/release.sh: it runs only on
 # pushes to dev, one run at a time per branch, so the Release PR ends up on the latest dev; no step up
-# to release-plz has a condition; release-plz runs `release-pr`, and `release` only to tag
-# (script/release-tag-workflow-test), with a token of the GitHub App narrowed to contents and pull
-# requests, so the PR checks run on the Release PR; only the release-plz jobs use the App's
-# environment and secrets, in this workflow and in all others; every job's own token reads
-# contents at most and no job requests an OIDC token; actions are pinned to commits, and tools are
-# installed by taiki-e/install-action at exact versions it checks against checksums, release-plz by
-# script/install-release-plz, the one script/release-plz-test runs, through the action
-# .github/actions/install-release-plz before the App token exists. That action restores it from the
-# Actions cache under the key of the build and the runner, or builds it and saves it right after;
-# it pins its actions and reads no secret or token.
+# to script/release-pr has a condition; one job runs script/release-pr and one script/release-tag
+# (script/release-tag-workflow-test), and neither takes arguments; script/release-pr runs with a
+# token of the GitHub App narrowed to contents and pull requests, so the PR checks run on the
+# Release PR; only those jobs use the App's environment and secrets, in this workflow and in all
+# others; every job's own token reads contents at most and no job requests an OIDC token; actions
+# are pinned to commits, and tools are installed by taiki-e/install-action at exact versions it
+# checks against checksums, git-cliff by script/install-git-cliff, the one script/release-pr-test
+# runs, before the App token exists.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -18,7 +16,7 @@ source "$root/script/lib/release.sh"
 failures=0
 
 fail() {
-  echo "release-plz-workflow-test: $*" >&2
+  echo "release-pr-workflow-test: $*" >&2
   failures=$((failures + 1))
 }
 
@@ -29,54 +27,55 @@ to_json() {
 }
 
 if [[ ! -f $root/$release_workflow ]]; then
-  echo "release-plz-workflow-test: $release_workflow is missing" >&2
+  echo "release-pr-workflow-test: $release_workflow is missing" >&2
   exit 1
 fi
 workflow=$(to_json "$root/$release_workflow")
 
 # check <what> <jq filter>: the filter is true for the workflow. The filter gets $env, $id_secret,
-# $key_secret, $action, the action that installs release-plz, and these definitions:
+# $key_secret and these definitions:
 #   effective(job)  the permissions of the job's own token;
-#   releases        the jobs that run release-plz, as {key, value} entries;
-#   opener          the job that runs `release-plz release-pr`;
+#   releases        the jobs that run script/release-pr or script/release-tag, as {key, value}
+#                   entries;
+#   opener          the job that runs script/release-pr;
 #   step(prefix)    the steps of the opener that use an action whose name starts with prefix;
 #   token_id        the id of the opener's step that creates the App token;
 #   index_of(f)     the index of the first step f is true for, or an error.
 definitions='
   def effective($job): $job.permissions // .permissions;
-  def runs: (.run // "") | test("(^|[^-/A-Za-z0-9_])release-plz\\s+[a-z]");
+  def runs: (.run // "") | test("script/release-(pr|tag)($|[^-A-Za-z0-9_])");
   def releases: [.jobs | to_entries[] | select([.value.steps[]? | runs] | any)];
   def environment: .environment | if type == "object" then .name else . end;
-  def opener: [.jobs[] | select([.steps[]? | .run // "" | test("release-plz\\s+release-pr")] | any)]
-    | if length == 1 then .[0] else error("not one job runs release-plz release-pr") end;
+  def is_pr: .run // "" | test("script/release-pr($|[^-A-Za-z0-9_])");
+  def opener: [.jobs[] | select([.steps[]? | is_pr] | any)]
+    | if length == 1 then .[0] else error("not one job runs script/release-pr") end;
   def step($prefix): [opener.steps[] | select(.uses // "" | startswith($prefix))];
   def token_id: step("actions/create-github-app-token@")[0].id;
   def index_of(f): (map(f) | index(true)) // error("no such step");
 '
 check() {
   jq --exit-status --arg env "$release_environment" --arg id_secret "$release_app_id_secret" \
-    --arg key_secret "$release_app_key_secret" --arg action "$release_install_action" \
-    "$definitions $2" <<<"$workflow" >/dev/null 2>&1 || fail "$1"
+    --arg key_secret "$release_app_key_secret" "$definitions $2" <<<"$workflow" >/dev/null 2>&1 ||
+    fail "$1"
 }
 
 # The trigger and the order of runs.
 check "it runs on pushes to dev and on nothing else" '.on == {"push": {"branches": ["dev"]}}'
-check "one job runs release-plz release-pr" 'opener | type == "object"'
+check "one job runs script/release-pr" 'opener | type == "object"'
 check "the job that opens the Release PR runs on every push to dev, in skald-so/skald" \
   'opener | (has("if") | not) or (.if | test(
     "^(\\$\\{\\{ *)?github\\.repository *== *'\''skald-so/skald'\''( *\\}\\})?$"))'
-check "no step up to release-plz release-pr has a condition, so each runs on every push" \
-  'opener.steps | .[:index_of(.run // "" | test("release-plz\\s+release-pr")) + 1]
-    | all(has("if") | not)'
+check "no step up to script/release-pr has a condition, so each runs on every push" \
+  'opener.steps | .[:index_of(is_pr) + 1] | all(has("if") | not)'
 check "runs wait for each other, so the Release PR ends up on the latest dev: a concurrency group
     that names no commit or run" \
   '(opener.concurrency // .concurrency) as $c | $c != null
     and ($c | if type == "object" then .group else . end | type == "string"
       and (test("github\\.(sha|run_id|run_number|run_attempt|event\\.after|event\\.head_commit)")
         | not))'
-check "release-plz runs only release-pr and release, which tags (script/release-tag-workflow-test)" \
-  '[.jobs[].steps[]? | .run // "" | scan("release-plz\\s+([a-z][a-z-]*)") | .[0]]
-    | any(. == "release-pr") and all(. == "release-pr" or . == "release")'
+check "the release scripts take no arguments, and their failures fail their steps" \
+  '[.jobs[].steps[]? | .run // "" | split("\n")[] | select(test("script/release-(pr|tag)($|[^-A-Za-z0-9_])"))]
+    | length == 2 and all(test("^\\s*script/release-(pr|tag)\\s*$"))'
 
 # The App token.
 check "one step creates the App token, with an id" \
@@ -98,17 +97,17 @@ check "the App token is for skald-so/skald only, revoked after the job, from git
         or .repositories == "${{ github.event.repository.name }}")
       and (keys - ["client-id", "app-id", "private-key", "owner", "repositories",
         "permission-contents", "permission-pull-requests"] == [])'
-check "release-plz release-pr runs with the App token, not the job's own token" \
-  'token_id as $id | [opener.steps[] | select(.run // "" | test("release-plz\\s+release-pr"))]
-    | length == 1 and all([.. | strings] | (any(contains("steps.\($id).outputs.token"))
-      and (any(test("secrets\\.GITHUB_TOKEN|github\\.token")) | not)))'
-check "the App token is created before the checkout and release-plz use it" \
-  'opener.steps | index_of(.uses // "" | startswith("actions/create-github-app-token@"))
-    < index_of(.run // "" | test("release-plz\\s+release-pr"))
+check "script/release-pr runs with the App token as GH_TOKEN, not the job's own token" \
+  'token_id as $id | [opener.steps[] | select(is_pr)]
+    | length == 1 and all(.env.GH_TOKEN == "${{ steps.\($id).outputs.token }}"
+      and ([.. | strings] | any(test("secrets\\.GITHUB_TOKEN|github\\.token")) | not))'
+check "the App token is created before script/release-pr uses it, and after the checkout unless the
+    checkout takes it" \
+  'opener.steps | index_of(.uses // "" | startswith("actions/create-github-app-token@")) < index_of(is_pr)
     and (.[index_of(.uses // "" | startswith("actions/checkout@"))].with.token == null
       or index_of(.uses // "" | startswith("actions/create-github-app-token@"))
         < index_of(.uses // "" | startswith("actions/checkout@")))'
-check "the checkout fetches the whole history and the tags, where release-plz finds the last release" \
+check "the checkout fetches the whole history and the tags, where the last release is" \
   'step("actions/checkout@") | length == 1 and (.[0].with["fetch-depth"] | . == 0 or . == "0")'
 check "the checkout keeps no credentials but the App token" \
   'token_id as $id | step("actions/checkout@")[0].with
@@ -117,7 +116,7 @@ check "the checkout keeps no credentials but the App token" \
 # The environment and the secrets.
 check "the job that opens the Release PR uses the environment $release_environment" \
   'opener | environment == $env'
-check "only the jobs that run release-plz use the environment $release_environment" \
+check "only the jobs that run the release scripts use the environment $release_environment" \
   '[.jobs | to_entries[] | select(.value | environment == $env) | .key] == [releases[].key]'
 check "it uses no secret but the App's" \
   '[.. | strings | scan("secrets\\.[A-Za-z0-9_]+")] - ["secrets.\($id_secret)", "secrets.\($key_secret)"]
@@ -134,54 +133,19 @@ check "no job requests an OIDC token" '[.. | objects | has("id-token")] | any | 
 # Actions and tools.
 check "every action is pinned to a commit" \
   '[.. | objects | .uses? // empty | strings] | all(startswith("./") or test("@[0-9a-f]{40}$"))'
-check "no step installs a tool but taiki-e/install-action and script/install-release-plz, which check
-    checksums: no release-plz/action, cargo-binstall, curl, wget or cargo install" \
-  '[.jobs[].steps[]?] | all((.uses // "" | test("^(release-plz/action|cargo-bins/cargo-binstall)@")
-    | not) and (.run // "" | test("\\b(curl|wget|cargo[ -]binstall|cargo +install)\\b") | not))'
+check "no step installs a tool but taiki-e/install-action and script/install-git-cliff, which check
+    checksums: no cargo-binstall, curl, wget or cargo install" \
+  '[.jobs[].steps[]?] | all((.uses // "" | test("^cargo-bins/cargo-binstall@") | not)
+    and (.run // "" | test("\\b(curl|wget|cargo[ -]binstall|cargo +install)\\b") | not))'
 check "taiki-e/install-action installs each tool at an exact version and checks its checksum" \
   '[.jobs[].steps[]? | select(.uses // "" | startswith("taiki-e/install-action@")) | .with]
     | all((.tool // "" | split("[,\\s]+"; null) | map(select(. != ""))
       | length > 0 and all(test("^[a-z0-9_-]+@[0-9]+\\.[0-9]+\\.[0-9]+$")))
       and (.checksum | . != false and . != "false"))'
-check "the action $release_install_action installs release-plz before the App token is created" \
-  'opener.steps | index_of(.uses // "" | . == "./\($action)")
-    < index_of(.uses // "" | startswith("actions/create-github-app-token@"))'
-
-# The action that installs release-plz.
-if [[ -f $root/$release_install_action/action.yml ]]; then
-  action=$(to_json "$root/$release_install_action/action.yml")
-else
-  fail "$release_install_action/action.yml is missing"
-  action='{}'
-fi
-# check_action <what> <jq filter>: the filter is true for the action. It gets these definitions:
-#   step(n)  the action's step n;
-#   key      the cache key the restore step looks up.
-check_action() {
-  jq --exit-status "def step(\$n): .runs.steps[\$n]; def key: step(1).with.key; $2" \
-    <<<"$action" >/dev/null 2>&1 || fail "$release_install_action: $1"
-}
-check_action "a composite action of four steps: the cache key, the restore, the install, the save" \
-  '.runs.using == "composite" and (.runs.steps | length == 4)
-    and (step(0) | .id == "key" and .run == "script/install-release-plz --cache-key >>\"$GITHUB_OUTPUT\"")
-    and (step(1) | .id == "restore" and (.uses | startswith("actions/cache/restore@")))
-    and (step(2) | .run == "script/install-release-plz")
-    and (step(3).uses | startswith("actions/cache/save@"))'
-check_action "only the save has a condition: it runs on a cache miss" \
-  '([.runs.steps[] | has("if")] == [false, false, false, true])
-    and step(3).if == "steps.restore.outputs.cache-hit != '\''true'\''"'
-check_action "the key names the runner's OS and architecture and the key of the build, and is looked
-    up alone" \
-  '(key | contains("${{ runner.os }}") and contains("${{ runner.arch }}")
-    and contains("${{ steps.key.outputs.key }}"))
-    and (step(1).with | keys == ["key", "path"])'
-check_action "the save stores the restored path under the key the restore looked up" \
-  'step(1).with.path == "${{ steps.key.outputs.path }}"
-    and step(3).with == {"path": "${{ steps.key.outputs.path }}",
-      "key": "${{ steps.restore.outputs.cache-primary-key }}"}'
-check_action "it pins its actions to commits and reads no secret or token" \
-  '([.. | objects | .uses? // empty | strings] | all(test("@[0-9a-f]{40}$")))
-    and ([.. | strings] | any(test("secrets\\.|token"; "i")) | not)'
+check "script/install-git-cliff runs before the App token is created, without a condition" \
+  'opener.steps | index_of(.run // "" | test("^\\s*script/install-git-cliff\\s*$"))
+    < index_of(.uses // "" | startswith("actions/create-github-app-token@"))
+    and (.[index_of(.run // "" | test("script/install-git-cliff"))] | has("if") | not)'
 
 # No other workflow uses the environment or the App's secrets.
 for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
@@ -197,7 +161,7 @@ for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
 done
 
 if ((failures > 0)); then
-  echo "release-plz-workflow-test: $failures case(s) failed" >&2
+  echo "release-pr-workflow-test: $failures case(s) failed" >&2
   exit 1
 fi
-echo "release-plz-workflow-test: all cases passed"
+echo "release-pr-workflow-test: all cases passed"

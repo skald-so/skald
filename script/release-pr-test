@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+# Tests the Release PR, script/release-update and script/release-pr, with the git-cliff of
+# script/install-git-cliff, on fixture repositories: copies of this working tree, released as
+# 0.40.5 and tagged v0.40.5 or not released yet, with PRs squash-merged since, their titles their
+# commits. GitHub is a stand-in, script/lib/github-api-stub.mjs.
+#   - The next release sets one version for every crate of the workspace, in Cargo.toml and
+#     Cargo.lock, and adds a section to CHANGELOG.md under `## [Unreleased]`, in the format of the
+#     v0.1.0 section, with every PR merged since the last vX.Y.Z tag, whatever it changes, once
+#     each, and not the Release PRs' commits; past sections stay as they are.
+#   - The version: "Release" in docs/dev/infrastructure.md. In 0.x a breaking change bumps the minor
+#     version and any other PR the patch version; from 1.0 a breaking change the major, a feature the
+#     minor. A version set by hand that is newer than the last release stays; so does the version
+#     with no release tag; an older one is an error. Beta tags do not count.
+#   - Nothing to release, no PR since the last release tag or the version tagged already: no change,
+#     exit 1.
+#   - The Release PR: opened into dev from a new branch of this repository, its commit made with
+#     createCommitOnBranch on the checked-out commit, its title passing script/check-pr-title; a
+#     later push updates the open Release PR in place and opens no other; a person's PR or a fork's
+#     is never taken for it; with nothing to release the open one is closed.
+#   - The section git-cliff writes for v0.1.0 from this repository's history matches the v0.1.0
+#     section of CHANGELOG.md, but for the differences listed at the end.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+failures=0
+export LC_ALL=C
+
+fail() {
+  echo "release-pr-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+"$root/script/install-git-cliff"
+
+tmp=$(mktemp -d)
+stub=
+trap '[[ -z $stub ]] || { kill "$stub" && wait "$stub"; } 2>/dev/null || true; rm -rf "$tmp"' EXIT
+
+fixture_git "$tmp"
+
+copy_tree "$root" "$tmp/tree"
+
+# The workspace's crates, one name per line.
+members=$(cargo metadata --no-deps --offline --format-version 1 --manifest-path "$tmp/tree/Cargo.toml" |
+  jq -r '.packages[].name' | sort)
+[[ -n $members ]] || fail "the workspace has no crates"
+
+# locked <lock> <version>: <lock> with every crate of the workspace, by its name, at <version>: the
+# check of the Cargo.lock script/release-update writes, apart from set_version.
+locked() {
+  awk -v version="$2" -v members="$(paste -sd , - <<<"$members")" '
+    BEGIN { n = split(members, names, ","); for (i = 1; i <= n; i++) crate["name = \"" names[i] "\""] }
+    $0 in crate { print; getline; $0 = "version = \"" version "\"" }
+    { print }
+  ' "$1"
+}
+
+set_version "$tmp/tree" 0.40.5
+
+# merge <dir> <title> <path>: squash-merges a PR titled <title> that changes <path>.
+merge() {
+  case $3 in
+    *.rs | *.ts | *.tsx) printf '\n// %s\n' "$2" ;;
+    *.md) printf '\n%s\n' "$2" ;;
+    *) printf '\n# %s\n' "$2" ;;
+  esac >>"$1/$3"
+  git -C "$1" add --all
+  git -C "$1" commit --quiet --message "$2"
+}
+
+# release <dir> <version>: merges the Release PR in <dir>, what script/release-update wrote or
+# nothing, and tags it v<version>.
+pr=100
+release() {
+  git -C "$1" add --all
+  git -C "$1" commit --quiet --allow-empty --message "chore: release v$2 (#$((++pr)))"
+  git -C "$1" tag "v$2"
+}
+
+# unreleased <name>: sets $dir to a new fixture repository on dev: the tree, never released.
+unreleased() {
+  dir=$tmp/$1
+  cp -R "$tmp/tree" "$dir"
+  git -C "$dir" init --quiet --initial-branch dev
+  git -C "$dir" add --all
+  git -C "$dir" commit --quiet --message "chore: import the repository (#$((++pr)))"
+}
+
+# fixture <name>: sets $dir to a new fixture repository on dev: the tree with a PR merged before
+# the release v0.40.5.
+fixture() {
+  unreleased "$1"
+  merge "$dir" "feat(client): add the change before the release (#$((++pr)))" crates/client/src/main.rs
+  release "$dir" 0.40.5
+}
+
+# update: runs script/release-update in $dir, as script/release-pr does; sets $status and $printed
+# and keeps the files it may change in $tmp/before.
+update() {
+  rm -rf "$tmp/before"
+  mkdir "$tmp/before"
+  cp "$dir/CHANGELOG.md" "$dir/Cargo.toml" "$dir/Cargo.lock" "$tmp/before/"
+  status=0
+  printed=$(cd "$dir" && script/release-update 2>"$tmp/update.log") || status=$?
+}
+
+# expect_release <case> <version>: script/release-update printed <version>; every crate in $dir is at
+# it, in Cargo.toml and Cargo.lock, which changed in nothing else; it changed CHANGELOG.md and no
+# other file. False when it failed.
+expect_release() {
+  local found changed
+  if [[ $status != 0 ]]; then
+    fail "$1: script/release-update exited $status: $(tail -n 5 "$tmp/update.log")"
+    return 1
+  fi
+  [[ $printed == "$2" ]] || fail "$1: script/release-update printed '$printed', not $2"
+  found=$(cargo metadata --no-deps --offline --format-version 1 --manifest-path "$dir/Cargo.toml" |
+    jq -r '.packages[] | "\(.name) \(.version)"' | sort)
+  [[ $found == "$(sed "s/\$/ $2/" <<<"$members")" ]] ||
+    fail "$1: the crates are not all at $2: $(tr '\n' ',' <<<"$found")"
+  locked "$tmp/before/Cargo.lock" "$2" | cmp -s - "$dir/Cargo.lock" ||
+    fail "$1: Cargo.lock is not the one before with every crate at $2"
+  changed=$(git -C "$dir" status --porcelain --untracked-files=all | cut -c4-)
+  grep -qx CHANGELOG.md <<<"$changed" || fail "$1: CHANGELOG.md is unchanged"
+  ! grep -vxE 'CHANGELOG\.md|Cargo\.toml|Cargo\.lock' <<<"$changed" >/dev/null ||
+    fail "$1: it changed other files: $(grep -vxE 'CHANGELOG\.md|Cargo\.toml|Cargo\.lock' <<<"$changed" | paste -sd ' ' -)"
+}
+
+# expect_nothing <case>: script/release-update exited 1 and changed nothing.
+expect_nothing() {
+  [[ $status == 1 ]] ||
+    fail "$1: script/release-update exited $status, not 1: $(tail -n 5 "$tmp/update.log")"
+  [[ -z $(git -C "$dir" status --porcelain) ]] ||
+    fail "$1: it changed $(git -C "$dir" status --porcelain | paste -sd ' ' -)"
+}
+
+# trim <file>: <file> without the blank lines at its start and end.
+trim() {
+  sed -e '/./,$!d' "$1" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+}
+
+# section: writes the section CHANGELOG.md in $dir got to $tmp/section; false unless the file is the
+# one before with that section added right under `## [Unreleased]`.
+section() {
+  awk '/^## \[/ { if (seen) exit; if (inside) seen = 1 } inside && seen; $0 == "## [Unreleased]" { inside = 1 }' \
+    "$dir/CHANGELOG.md" >"$tmp/section.raw"
+  trim "$tmp/section.raw" >"$tmp/section"
+  SECTION=$(cat "$tmp/section") awk '{ print } $0 == "## [Unreleased]" { print ""; print ENVIRON["SECTION"] }' \
+    "$tmp/before/CHANGELOG.md" | cmp -s - "$dir/CHANGELOG.md"
+}
+
+# expect_listed <case> <heading> <summary>...: CHANGELOG.md in $dir got one section, headed
+# <heading>, and it lists each <summary> once.
+expect_listed() {
+  local summary count
+  if ! section; then
+    fail "$1: CHANGELOG.md is not the one before with one section added under '## [Unreleased]'"
+    return
+  fi
+  [[ $(head -n 1 "$tmp/section") == "$2" ]] ||
+    fail "$1: the section's heading is '$(head -n 1 "$tmp/section")', not '$2'"
+  for summary in "${@:3}"; do
+    count=$(grep -cF -- "$summary" "$tmp/section" || true)
+    [[ $count == 1 ]] || fail "$1: the section lists '$summary' $count times, not once"
+  done
+}
+
+# expect_not_listed <case> <summary>...: the section lists none of them.
+expect_not_listed() {
+  local summary
+  for summary in "${@:2}"; do
+    ! grep -qF -- "$summary" "$tmp/section" || fail "$1: the section lists '$summary'"
+  done
+}
+
+link=https://github.com/skald-so/skald
+# heading <version> [<previous>]: the section's heading for <version> today, with a link to the
+# changes since the release <previous>, or to the release.
+heading() {
+  if [[ -n ${2:-} ]]; then
+    echo "## [$1]($link/compare/v$2...v$1) - $(date -u +%Y-%m-%d)"
+  else
+    echo "## [$1]($link/releases/tag/v$1) - $(date -u +%Y-%m-%d)"
+  fi
+}
+
+# The exact section: the groups of Keep a Changelog in the order of their names, the newest PR
+# first in each, a scope in italics, a breaking change marked, the PR linked; a PR that changes only
+# a crate, one that changes only prototypes/ and one with an unconventional title listed too.
+fixture exact
+merge "$dir" "feat(client): add the change alpha (#201)" crates/client/src/main.rs
+merge "$dir" "fix(server): fix the change bravo (#202)" crates/server/src/main.rs
+merge "$dir" "docs: describe the change charlie (#203)" docs/threat-model.md
+merge "$dir" "feat(proto)!: change the change delta (#204)" crates/proto/src/lib.rs
+merge "$dir" "Update the change echo (#205)" README.md
+merge "$dir" "fix(prototypes): fix the change foxtrot (#206)" prototypes/edits/Cargo.toml
+merge "$dir" "ci: check the change golf (#207)" .github/workflows/ci.yml
+case="the exact section since v0.40.5"
+update
+if expect_release "$case" 0.41.0; then
+  cat >"$tmp/expected" <<EOF
+$(heading 0.41.0 0.40.5)
+
+### Added
+
+- *(proto)* [**breaking**] change the change delta ([#204]($link/pull/204))
+- *(client)* add the change alpha ([#201]($link/pull/201))
+
+### Fixed
+
+- *(prototypes)* fix the change foxtrot ([#206]($link/pull/206))
+- *(server)* fix the change bravo ([#202]($link/pull/202))
+
+### Other
+
+- check the change golf ([#207]($link/pull/207))
+- Update the change echo ([#205]($link/pull/205))
+- describe the change charlie ([#203]($link/pull/203))
+EOF
+  if ! section; then
+    fail "$case: CHANGELOG.md is not the one before with one section added under '## [Unreleased]'"
+  elif ! cmp -s "$tmp/expected" "$tmp/section"; then
+    fail "$case: the section differs from the expected one: $(diff "$tmp/expected" "$tmp/section" || true)"
+  fi
+fi
+
+# Every type of PR, none of them breaking: the patch version in 0.x, a feature's too.
+fixture every-type
+merge "$dir" "feat(client): add the change hotel (#$((++pr)))" crates/client/src/main.rs
+merge "$dir" "perf(proto): speed up the change india (#$((++pr)))" crates/proto/src/lib.rs
+merge "$dir" "refactor(crypto): simplify the change juliet (#$((++pr)))" crates/crypto/src/lib.rs
+merge "$dir" "test(mcp): cover the change kilo (#$((++pr)))" crates/mcp/src/lib.rs
+merge "$dir" "build(adapters): build the change lima (#$((++pr)))" crates/adapters/Cargo.toml
+merge "$dir" "chore(deps): update the change mike (#$((++pr)))" crates/server/Cargo.toml
+merge "$dir" "style(proto): format the change november (#$((++pr)))" crates/proto/src/lib.rs
+merge "$dir" "revert: revert the change oscar (#$((++pr)))" crates/client/src/main.rs
+merge "$dir" "feat(web): show the change papa (#$((++pr)))" web/src/App.tsx
+case="every PR type since v0.40.5"
+update
+if expect_release "$case" 0.40.6; then
+  expect_listed "$case" "$(heading 0.40.6 0.40.5)" "add the change hotel" "speed up the change india" \
+    "simplify the change juliet" "cover the change kilo" "build the change lima" \
+    "update the change mike" "format the change november" "revert the change oscar" \
+    "show the change papa"
+  expect_not_listed "$case" "add the change before the release" "release v0.40.5"
+fi
+
+# A breaking change in a commit's footer.
+fixture footer
+git -C "$dir" commit --quiet --allow-empty --message "fix(client): fix the change quebec (#$((++pr)))
+
+BREAKING CHANGE: the change quebec"
+case="a breaking change in a footer since v0.40.5"
+update
+expect_release "$case" 0.41.0 || true
+
+# From 1.0: a breaking change bumps the major version, a feature the minor, a fix the patch.
+for bump in "feat(client)!: change the change romeo|2.0.0" "feat(client): add the change sierra|1.3.0" \
+  "fix(client): fix the change tango|1.2.4"; do
+  unreleased "one-${bump##*|}"
+  set_version "$dir" 1.2.3
+  git -C "$dir" commit --quiet --all --message "chore: release v1.2.3 (#$((++pr)))"
+  git -C "$dir" tag v1.2.3
+  merge "$dir" "${bump%|*} (#$((++pr)))" crates/client/src/main.rs
+  case="'${bump%|*}' since v1.2.3"
+  update
+  expect_release "$case" "${bump##*|}" || true
+done
+
+# Two releases: the second section lists only the PRs since the second tag.
+fixture two-releases
+merge "$dir" "fix(client): fix the change uniform (#$((++pr)))" crates/client/src/main.rs
+update
+case="the first of two releases"
+if expect_release "$case" 0.40.6; then
+  release "$dir" 0.40.6
+  merge "$dir" "fix(server): fix the change victor (#$((++pr)))" crates/server/src/main.rs
+  case="a PR since v0.40.6, the last of two release tags"
+  update
+  if expect_release "$case" 0.40.7; then
+    expect_listed "$case" "$(heading 0.40.7 0.40.6)" "fix the change victor"
+    expect_not_listed "$case" "fix the change uniform" "release v0.40.6"
+  fi
+fi
+
+# Nothing since the release tag.
+fixture nothing
+case="no PR since v0.40.5"
+update
+expect_nothing "$case"
+
+# An older version set by hand.
+fixture older
+set_version "$dir" 0.40.4
+git -C "$dir" commit --quiet --all --message "chore: set an older version (#$((++pr)))"
+case="a version older than v0.40.5"
+update
+[[ $status == 2 && -z $(git -C "$dir" status --porcelain) ]] ||
+  fail "$case: script/release-update exited $status, not 2, or changed files"
+
+# A beta, then the release: each keeps the version a PR set for it; the beta's tag and its Release
+# PR's commit do not count, so each section lists every PR since v0.40.5.
+fixture betas
+merge "$dir" "feat(client): add the change whiskey (#$((++pr)))" crates/client/src/main.rs
+set_version "$dir" 0.41.0-beta.1
+git -C "$dir" commit --quiet --all --message "chore: set the version of a beta (#$((++pr)))"
+case="a beta's version set since v0.40.5"
+update
+if expect_release "$case" 0.41.0-beta.1; then
+  expect_listed "$case" "$(heading 0.41.0-beta.1 0.40.5)" "add the change whiskey" \
+    "set the version of a beta"
+  release "$dir" 0.41.0-beta.1
+  case="the beta tagged, nothing since"
+  update
+  expect_nothing "$case"
+  merge "$dir" "fix(proto): fix the change x-ray (#$((++pr)))" crates/proto/src/lib.rs
+  case="a PR since the beta, its version tagged already"
+  update
+  expect_nothing "$case"
+  set_version "$dir" 0.41.0
+  git -C "$dir" commit --quiet --all --message "chore: set the version of the release (#$((++pr)))"
+  case="the release's version set after the beta"
+  update
+  if expect_release "$case" 0.41.0; then
+    expect_listed "$case" "$(heading 0.41.0 0.40.5)" "add the change whiskey" \
+      "set the version of a beta" "fix the change x-ray" "set the version of the release"
+    expect_not_listed "$case" "release v0.41.0-beta.1"
+  fi
+fi
+
+# The first release, with no release tag: the version in Cargo.toml and every PR so far.
+unreleased first-release
+merge "$dir" "feat(client): add the change yankee (#$((++pr)))" crates/client/src/main.rs
+merge "$dir" "docs(protocol): describe the change zulu (#$((++pr)))" docs/protocol/README.md
+case="the first release, with no release tag"
+update
+if expect_release "$case" 0.40.5; then
+  expect_listed "$case" "$(heading 0.40.5)" "add the change yankee" "describe the change zulu" \
+    "import the repository"
+fi
+
+# The Release PR through the stand-in for the GitHub API.
+: >"$tmp/requests.log"
+echo '[]' >"$tmp/listed.json"
+node "$root/script/lib/github-api-stub.mjs" "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" \
+  "$tmp/associated.json" "$tmp/refs.json" "$tmp/listed.json" &
+stub=$!
+for _ in $(seq 100); do
+  [[ ! -s $tmp/port ]] || break
+  sleep 0.1
+done
+[[ -s $tmp/port ]] || {
+  echo "release-pr-test: the stand-in for the GitHub API did not start" >&2
+  exit 1
+}
+api=http://127.0.0.1:$(cat "$tmp/port")
+
+# release_pr <case>: resets $dir to its last commit, as a new checkout, and runs script/release-pr
+# there against the stand-in, as the workflow does; the log keeps only this run's requests. False
+# when it fails.
+release_pr() {
+  git -C "$dir" checkout --quiet -- .
+  : >"$tmp/requests.log"
+  if ! (cd "$dir" && GITHUB_API_URL=$api/api/v3 GITHUB_GRAPHQL_URL=$api/api/graphql \
+    GITHUB_REPOSITORY=skald-so/skald GH_TOKEN=fixture-token script/release-pr) \
+    >"$tmp/release-pr.log" 2>&1; then
+    fail "$1: script/release-pr failed: $(tail -n 5 "$tmp/release-pr.log")"
+    return 1
+  fi
+}
+
+# requests <jq condition>: the requests of the last run it is true for, as a JSON array.
+requests() {
+  jq -sc "[.[] | select($1)]" "$tmp/requests.log"
+}
+
+# open_pr <jq filter>: the filter on the stand-in's open PRs.
+open_pr() {
+  jq -r "[.[] | select(.state == \"open\")] | $1" "$tmp/pulls.json"
+}
+
+# expect_pr <case> <version> <summary>: the stand-in has one open PR, by the App, from a branch of
+# skald-so/skald into dev, titled for <version> to pass script/check-pr-title and listing <summary>;
+# the run created a branch at the checked-out commit and made one commit on it with
+# createCommitOnBranch, its files the ones script/release-update writes there. Sets $branch to the
+# commit's branch.
+expect_pr() {
+  local title commits sha
+  branch=
+  sha=$(git -C "$dir" rev-parse HEAD)
+  if [[ $(open_pr length) != 1 ]]; then
+    fail "$1: not one open Release PR: $(jq -c 'map({number, state, title})' "$tmp/pulls.json")"
+    return
+  fi
+  [[ $(open_pr '.[0] | .base.ref == "dev" and .user.login == "skald-release[bot]"
+    and .head.repo.full_name == "skald-so/skald"') == true ]] ||
+    fail "$1: the Release PR is not the App's, from skald-so/skald into dev"
+  title=$(open_pr '.[0].title')
+  [[ $title == "chore: release v$2" ]] && "$root/script/check-pr-title" "$title" 2>/dev/null ||
+    fail "$1: the Release PR's title is '$title', not 'chore: release v$2' passing script/check-pr-title"
+  open_pr '.[0].body' | grep -qF -- "$3" || fail "$1: the Release PR's description does not list '$3'"
+  commits=$(requests '.url == "/api/graphql"')
+  if [[ $(jq length <<<"$commits") != 1 ]]; then
+    fail "$1: not one createCommitOnBranch: $(jq -c 'map(.body | fromjson | .variables.input | del(.fileChanges))' <<<"$commits")"
+    return
+  fi
+  branch=$(jq -r '.[0].body | fromjson | .variables.input.branch.branchName' <<<"$commits")
+  [[ $(requests ".method == \"POST\" and .url == \"/api/v3/repos/skald-so/skald/git/refs\"
+    and (.body | fromjson) == {ref: \"refs/heads/$branch\", sha: \"$sha\"}" | jq length) == 1 ]] ||
+    fail "$1: the commit's branch, $branch, was not created at the checked-out commit $sha"
+  git -C "$dir" checkout --quiet -- .
+  (cd "$dir" && script/release-update >/dev/null 2>&1) || fail "$1: script/release-update fails in $dir"
+  {
+    echo "$sha"
+    for file in Cargo.toml Cargo.lock CHANGELOG.md; do
+      echo "$file $(base64 <"$dir/$file" | tr -d '\n')"
+    done
+  } >"$tmp/expected-commit"
+  jq -r '.[0].body | fromjson | .variables.input | .expectedHeadOid,
+    (.fileChanges.additions[] | "\(.path) \(.contents)")' <<<"$commits" >"$tmp/commit"
+  cmp -s "$tmp/expected-commit" "$tmp/commit" ||
+    fail "$1: the commit is not on $sha with Cargo.toml, Cargo.lock and CHANGELOG.md for $2"
+  git -C "$dir" checkout --quiet -- .
+}
+
+fixture release-pr
+merge "$dir" "fix(client): fix the change alpha (#$((++pr)))" crates/client/src/main.rs
+# Open PRs that are not the Release PR: a person's from a branch named like the Release PR's, and
+# one by the App's login from a fork.
+jq -n '[{number: 900, state: "open", title: "chore: release v9.9.9", base: {ref: "dev"},
+    user: {login: "a-person", type: "User"},
+    head: {ref: "release-pr-person", repo: {full_name: "skald-so/skald"}}},
+  {number: 901, state: "open", title: "chore: release v9.9.9", base: {ref: "dev"},
+    user: {login: "skald-release[bot]", type: "Bot"},
+    head: {ref: "release-pr-fork", repo: {full_name: "someone/skald"}}}]' >"$tmp/listed.json"
+case="the Release PR opened after a push"
+if release_pr "$case"; then
+  expect_pr "$case" 0.40.6 "fix the change alpha"
+  first=$branch
+  [[ $(requests '.method == "POST" and (.url | endswith("/pulls"))' | jq length) == 1 ]] ||
+    fail "$case: not one PR opened"
+  [[ $(requests '.method != "GET" and (.url | test("/pulls/90[01]$"))' | jq length) == 0 ]] ||
+    fail "$case: it changed a person's PR or a fork's"
+  number=$(open_pr '.[0].number')
+  merge "$dir" "feat(proto)!: change the change bravo (#$((++pr)))" crates/proto/src/lib.rs
+  case="the open Release PR after a later push"
+  if release_pr "$case"; then
+    expect_pr "$case" 0.41.0 "change the change bravo"
+    [[ $(open_pr '.[0].number') == "$number" ]] || fail "$case: the open Release PR is not #$number"
+    [[ $(requests '.method == "POST" and (.url | endswith("/pulls"))' | jq length) == 0 ]] ||
+      fail "$case: it opened another PR"
+    [[ $branch != "$first" ]] || fail "$case: the commit is on the PR's branch, moved to a commit of dev"
+    [[ $(requests ".method == \"PATCH\" and (.url | endswith(\"/git/refs/heads/$first\"))
+      and (.body | fromjson | .force == true)" | jq length) == 1 ]] ||
+      fail "$case: the PR's branch $first was not moved once, with force"
+    jq -e --arg ref "refs/heads/$first" --arg next "refs/heads/$branch" \
+      'map(select(.ref == $ref and .method == "PATCH")) | length == 1' "$tmp/refs.json" >/dev/null ||
+      fail "$case: the PR's branch $first did not move"
+    [[ $(requests ".method == \"DELETE\" and (.url | endswith(\"/git/refs/heads/$branch\"))" |
+      jq length) == 1 ]] || fail "$case: the commit's branch $branch is left"
+  fi
+  # The Release PR merged and tagged: nothing to release, and an open Release PR is closed.
+  (cd "$dir" && script/release-update >/dev/null 2>&1) || fail "$case: script/release-update fails"
+  release "$dir" 0.41.0
+  case="the open Release PR with nothing to release"
+  if release_pr "$case"; then
+    [[ $(open_pr length) == 0 ]] || fail "$case: the Release PR is still open"
+    [[ $(requests '.url == "/api/graphql" or (.url | contains("/git/"))' | jq length) == 0 ]] ||
+      fail "$case: it committed or wrote refs"
+  fi
+fi
+
+# v0.1.0 from this repository's history, without the commits and tags after it.
+case="the section of v0.1.0 from this repository's history"
+if ! git -C "$root" rev-parse --quiet --verify 'refs/tags/v0.1.0^{commit}' >/dev/null; then
+  fail "$case: the tag v0.1.0 is missing; fetch the history and the tags: git fetch --tags"
+else
+  git clone --quiet --local --no-checkout "$root" "$tmp/history"
+  git -C "$tmp/history" checkout --quiet --detach v0.1.0
+  git -C "$tmp/history" tag --no-merged v0.1.0 | while IFS= read -r tag; do
+    git -C "$tmp/history" tag -d "$tag" >/dev/null
+  done
+  if git-cliff --config "$root/cliff.toml" --repository "$tmp/history" --latest \
+    >"$tmp/written.raw" 2>"$tmp/cliff.log"; then
+    trim "$tmp/written.raw" >"$tmp/written"
+    awk '/^## \[/ { inside = $0 ~ /^## \[0\.1\.0\]/ } inside' "$root/CHANGELOG.md" >"$tmp/kept.raw"
+    trim "$tmp/kept.raw" >"$tmp/kept"
+    # entries <section>: its entries as `<group heading><tab><entry>`, sorted.
+    entries() {
+      awk '/^### / { group = $0 } /^- / { print group "\t" $0 }' "$1" | sort
+    }
+    # The differences from release-plz, each with its reason:
+    #   - it listed the merge of the beta's Release PR; Release PRs are not listed now;
+    #   - it did not list a PR that changed only prototypes/; every PR is listed now.
+    # The order is not compared: release-plz put the PRs that change only a crate after the others in
+    # each group; each group is newest first now.
+    {
+      entries "$tmp/kept" | grep -vxF "### Other	- release v0.1.0-beta.1 ([#152]($link/pull/152))"
+      printf '### Fixed\t%s\n' "- *(prototypes)* give each step of the app-server failure tests its own deadline ([#116]($link/pull/116))"
+    } | sort >"$tmp/expected-entries"
+    entries "$tmp/written" >"$tmp/written-entries"
+    cmp -s "$tmp/expected-entries" "$tmp/written-entries" ||
+      fail "$case: the entries differ: $(diff "$tmp/expected-entries" "$tmp/written-entries" || true)"
+    [[ $(grep -E '^##' "$tmp/kept") == "$(grep -E '^##' "$tmp/written")" ]] ||
+      fail "$case: the headings differ: $(diff <(grep -E '^##' "$tmp/kept") <(grep -E '^##' "$tmp/written") || true)"
+  else
+    fail "$case: git-cliff failed: $(cat "$tmp/cliff.log")"
+  fi
+fi
+
+if ((failures > 0)); then
+  echo "release-pr-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "release-pr-test: all cases passed"
