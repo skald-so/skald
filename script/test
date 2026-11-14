@@ -131,11 +131,11 @@ if checks tooling && ! command -v cargo-mutants >/dev/null; then
   exit 1
 fi
 if ! command -v jq >/dev/null; then
-  echo "script/test: jq is missing; the copied code check, the license policy test, the edge workflow test and the sign-in checks read JSON with it: https://jqlang.org" >&2
+  echo "script/test: jq is missing; the copied code check, the license policy test, the edge workflow test, script/check-github-sign-in and script/check-google-sign-in read JSON with it: https://jqlang.org" >&2
   exit 1
 fi
 if checks_any $rust tooling && ! command -v curl >/dev/null; then
-  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the server's tests run the sign-in checks, and the release tag test script/release-pr-merged: https://curl.se" >&2
+  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the server's tests run script/check-github-sign-in and script/check-google-sign-in, and the release tag test script/release-pr-merged: https://curl.se" >&2
   exit 1
 fi
 if checks_any $rust tooling web && ! command -v docker >/dev/null; then
