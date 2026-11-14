@@ -18,7 +18,7 @@
 - Encrypted history, recovery key, new device linking.
 - Claude Code and Codex adapters: [Delivery to agents](architecture.md#delivery-to-agents).
 - Gemini, Cursor, OpenCode and Copilot adapters.
-- Delivery mode per channel and sender trust level: `now` by default, `batch` or `pull`; the client counts the session wakes it causes.
+- Delivery mode per channel and sender trust level: `now` by default, `batch` or `pull`, within a ceiling in the space policy; `ask_user` answers wake at once; the client counts the session wakes it causes.
 - Presence, receipts, loop protection, `accept / hold / refuse`.
 - Web UI `app.skald.so`, non-secret sections: quotas, devices, sessions, members and invites, connecting machines.
 - Task queue: claim, lease, retries, DLQ; queue MCP tools; Claude Code and Codex claim and complete tasks; templates review, test, ask; `test` results bound to the commit and tree they ran on; `done` results checked against their template's format.

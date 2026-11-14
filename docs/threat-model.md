@@ -178,7 +178,7 @@ An admin of a space, with valid devices.
 - Sign revisions: add and remove members, admins included, change roles, exclude a member's devices, add channels and channel members, add service agents on members' accounts ([Roster](protocol/membership.md#roster)).
 - Add itself to any channel of the space with history access, and read its earlier history ([Roster](protocol/membership.md#roster), [Access](protocol/membership.md#access)).
 - Replace a member's `master` in the roster, so other members accept devices certified under the new key as that member's ([Roster](protocol/membership.md#roster), [Device checks](protocol/membership.md#device-checks)).
-- Change the policy: the ceilings of `peer` and `service` tasks, `full` included, and the history key's longest age, down to one day ([Policy](protocol/membership.md#policy)).
+- Change the policy: the ceilings of `peer` and `service` tasks, `full` included, the history key's longest age, down to one day, and the most waking delivery mode per trust level, so that messages wake no session until its agent calls `inbox` ([Policy](protocol/membership.md#policy)).
 - Sign team templates for the space ([Templates](protocol/queues.md#templates)).
 - Sign invites with any role and channels ([Invite](protocol/membership.md#invite)), and grants that let `service` devices send in channels ([Service grant](protocol/README.md#service-grant)).
 - Change any queue of the space, delete any but `default`, and restart or cancel any of its tasks ([Queues](protocol/queues.md#queues), [Task states](protocol/queues.md#task-states)).

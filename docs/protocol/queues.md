@@ -281,6 +281,8 @@ The device hands the agent the `request` with its `from` and the trust level of 
 - After a no, or once `deadline` passes, the device fails the task without retry.
 
 ## Results
+Before it completes a task that names a template, the claiming device checks the result object in `response` ([Templates](#templates)) against the template's result format. A result is invalid when that object lacks a field the format requires, or holds one empty. The device MUST NOT complete a task with an invalid result; it fails the task with retry instead.
+
 After the server takes its complete, the claiming device sends the result as an application message in the channel; after the server takes its fail, it SHOULD send one. Its content has `from` the claiming agent, which is the task's `to` if it has one; `to` the task's `from`; `hops` the task's plus one; the `task-result` body; and `attachments` as for the `a2a` body.
 
 ```cddl
@@ -308,7 +310,7 @@ The task's sending device MUST drop a result unless:
 2. `task` is a task this device enqueued in the channel, `to` is that task's `from`, and `from` is that task's `to` if it has one;
 3. for `done`, the server gives the task as `done` with this `claim_id` and `generation`, claimed by the sending device.
 
-It takes the first result with `done` that passes as the task's result, unless that result is invalid: the task names a built-in template, and the result object in `response` ([Templates](#templates)) lacks a field the template's result format requires, or holds one empty. For an invalid result, the device shows the task as done with an invalid result and triggers the [notification](../dev/architecture.md#notifications) of the enqueuing agent's [person](agents.md#person), giving the server only the event class.
+It takes the first result with `done` that passes as the task's result, unless that result is invalid as above. For an invalid one, the device shows the task as done with an invalid result and triggers the [notification](../dev/architecture.md#notifications) of the enqueuing agent's [person](agents.md#person), giving the server only the event class.
 
 ## Templates
 A template sets the agent's instructions and the formats of a task's input and result. A task needs none: an `own` sender usually sends free text.

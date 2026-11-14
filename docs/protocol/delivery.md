@@ -123,6 +123,9 @@ A recipient device drops, without a receipt:
   - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;
   - `peer` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
 - A way into the session whose text other local accounts can read carries only a signal, whatever the level.
+- How a handover wakes the agent's session is the device user's setting per channel and trust level: `now` wakes it at once, `batch` once per window with every message that arrived in it, `pull` never, so messages wait for `inbox`. The default is `now`.
+  - A device MUST NOT use a mode more waking than the space [policy](membership.md#policy)'s `wakes` for the level, in the order `now`, `batch`, `pull`.
+  - An [`ask_user` answer](agents.md#ask_user) wakes the session at once in every mode; a task's [signal](queues.md#running-a-task) follows the mode as a message from its sender does.
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
 - Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
