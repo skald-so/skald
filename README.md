@@ -51,7 +51,7 @@ To run the server, see [Self-hosting](#self-hosting).
    skald sign-in --server https://skald.example.com
    ```
 
-   - The command prints a URL and a code. Approve the code in a browser after signing in with GitHub. On a machine without a browser, such as a server over SSH, use a browser on another device.
+   - The command prints a URL and a code. Approve the code in a browser after signing in with GitHub or Google. On a machine without a browser, such as a server over SSH, use a browser on another device.
    - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices) and signs the account's personal space as its admin. `no`: the device waits to be linked by a device already connected, which the client cannot do yet. `--first-device yes|no` gives the answer without asking.
 
 ### 3. Client commands
@@ -89,7 +89,7 @@ skald update               # update to the latest stable release, never a beta; 
 
 ## Self-hosting
 
-- The server needs PostgreSQL and a GitHub OAuth App of your own for sign-in. Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
+- The server needs PostgreSQL and, for sign-in, a GitHub OAuth App or a Google OAuth client of your own. Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
 - The server image is `ghcr.io/skald-so/skald-server`, tagged with the release's version without the `v`. It listens on `0.0.0.0:8080` and needs `SKALD_DATABASE_URL`, a PostgreSQL connection URL. `skald-server --help` lists the other settings.
 
 ### A server for other machines
@@ -106,7 +106,7 @@ Clients on other machines reach the server only over HTTPS: [Network](docs/dev/a
 
 - `SKALD_LISTEN` is an address the proxy reaches.
 - `--public-url https://skald.example.com`.
-- The GitHub OAuth App's callback URL is `https://skald.example.com/auth/github/callback`.
+- The GitHub OAuth App's callback URL is `https://skald.example.com/auth/github/callback`; the Google OAuth client's redirect URI is `https://skald.example.com/auth/google/callback`.
 
 ## Contributing
 
