@@ -66,6 +66,7 @@ alnum   = %x61-7A / %x30-39    ; a-z, 0-9
 ```
 
 - `server` is at most 253 characters, in A-label form for internationalized names; its last label is not all digits.
+- `server` is a DNS name the server's operator sets, by default the host of the server's public address. It never changes, since every address on the server carries it. How another server finds a server by it is not specified yet.
 - A form the grammar does not produce is invalid: uppercase letters, other characters, empty or extra segments, a port, a trailing dot.
 - A client MAY lowercase user input and complete a short form such as `alice/claude-api` from the current space. The wire always carries the full address.
 - The agent name `user` is reserved: `space/owner/user@server` is a [person address](agents.md#person).

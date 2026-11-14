@@ -16,6 +16,7 @@ import type {
   ProtocolProblem,
   RosterRevisionRequest,
   RosterRevisions,
+  Server,
   Session,
   SignInMethods,
   Space,
@@ -682,6 +683,52 @@ export const getProtocol = async (
     status: res.status,
     headers: res.headers,
   } as getProtocolResponse;
+};
+
+export type getServerResponse200 = {
+  data: Server;
+  status: 200;
+};
+
+export type getServerResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getServerResponseSuccess = getServerResponse200 & {
+  headers: Headers;
+};
+export type getServerResponseError = getServerResponse400 & {
+  headers: Headers;
+};
+
+export type getServerResponse =
+  getServerResponseSuccess | getServerResponseError;
+
+export const getGetServerUrl = () => {
+  return `/server`;
+};
+
+/**
+ * The `server` of every agent address on this server (docs/protocol/README.md, "Agent address"): its operator's setting, by default the host of its public address. It never changes.
+ * @summary The server's name in agent addresses
+ */
+export const getServer = async (
+  options?: RequestInit,
+): Promise<getServerResponse> => {
+  const res = await fetch(getGetServerUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getServerResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getServerResponse;
 };
 
 export type getSessionResponse200 = {

@@ -173,16 +173,11 @@ pub fn approve(dir: &Path, folder: &Path) -> Result<(), String> {
 /// it, by the state in `dir`; warns of each `.skald.toml` it skipped.
 pub fn show(dir: &Path, folder: Option<&Path>) -> Result<(), String> {
     let folder = match folder {
-        Some(folder) => folder.to_owned(),
-        None => std::env::current_dir()
-            .map_err(|err| format!("cannot read the working directory: {err}"))?,
+        Some(folder) => canonical(folder)?,
+        None => working_dir()?,
     };
-    let folder = canonical(&folder)?;
     let state = readable(dir)?;
-    let (bound, warnings) = bound(state.as_ref(), &folder)?;
-    for warning in warnings {
-        eprintln!("skald: warning: {warning}");
-    }
+    let bound = warned(state.as_ref(), &folder)?;
     println!("Folder: {}", shown(&folder));
     match bound {
         Bound::By { by, name, space } => {
@@ -204,6 +199,47 @@ pub fn show(dir: &Path, folder: Option<&Path>) -> Result<(), String> {
         ),
     }
     Ok(())
+}
+
+/// The space of the working directory, by the state in `dir`, with that state; warns of each
+/// `.skald.toml` it skipped. Fails, saying why, when the working directory is in no space.
+pub fn working_space(dir: &Path) -> Result<(State, state::Space), String> {
+    let folder = working_dir()?;
+    let state = readable(dir)?;
+    let in_none = |why: String| format!("{} is in no space: {why}", shown(&folder));
+    let space = match warned(state.as_ref(), &folder)? {
+        Bound::By {
+            space: Some(space), ..
+        }
+        | Bound::Unbound(Some(space)) => space,
+        Bound::By { name, .. } => {
+            return Err(in_none(format!("this device is not in the space {name}")));
+        }
+        Bound::Unbound(None) => {
+            return Err(in_none(
+                "nothing binds it, and this device pinned no personal space".to_owned(),
+            ));
+        }
+    };
+    let state = state.ok_or_else(|| in_none("this device has no local state".to_owned()))?;
+    Ok((state, space))
+}
+
+/// The working directory's canonical path.
+fn working_dir() -> Result<PathBuf, String> {
+    let folder = std::env::current_dir()
+        .map_err(|err| format!("cannot read the working directory: {err}"))?;
+    canonical(&folder)
+}
+
+/// The space of `folder`, a canonical path, as [`bound`] gives it; warns of each `.skald.toml`
+/// skipped on the way.
+fn warned(state: Option<&State>, folder: &Path) -> Result<Bound, String> {
+    let (bound, warnings) = bound(state, folder)?;
+    for warning in warnings {
+        eprintln!("skald: warning: {warning}");
+    }
+    Ok(bound)
 }
 
 fn space_line(space: &state::Space) -> String {

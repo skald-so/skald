@@ -198,6 +198,18 @@ export interface Protocol {
 }
 
 /**
+ * A server's name: `server` of an agent address (docs/protocol/README.md, "Agent address"), a DNS name in A-label form of at most 253 characters, its last label not all digits.
+ * @maxLength 253
+ * @pattern ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+ */
+export type ServerName = string;
+
+export interface Server {
+  /** The server's name; `null` without a valid one, such as with no public address or an IP address as its host. */
+  name: ServerName | null;
+}
+
+/**
  * An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
  * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
  */
