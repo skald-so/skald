@@ -66,7 +66,7 @@ timestamp = uint       ; seconds since the Unix epoch
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
 - `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
 - The client and the server each ignore a frame of a type they do not know.
-- The server closes a connection on a frame that does not decode.
+- The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request states the cursor; its answer is a `batch`, empty if nothing arrived before its timeout.
@@ -82,7 +82,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
   - `auth` is the first frame and comes within a few seconds of the opening;
   - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection has used it before; a challenge works once, used or refused;
   - the device is a `client` device with a certificate on the server, of the challenge's session's account;
-  - `signature` verifies with the device's signing key over `origin` the server's public address.
+  - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
 - Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
 
 | Reason | The connection |
@@ -93,7 +93,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
 - A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends.
-- A server that fails to check a proof, such as when its database fails, closes the connection with code 1011 (internal error).
+- A server that fails to check a proof, such as when its database fails, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.

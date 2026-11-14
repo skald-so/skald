@@ -12,6 +12,7 @@
 //   - each part script/changed-parts prints is an output of its job and the part of one job; those
 //     jobs need only the job of script/changed-parts; on a PR one runs exactly when one of its parts
 //     changed, whatever the other parts, and on a push to dev it runs;
+//   - the part self-host runs alone in a job of its own, which the job Rust needs;
 //   - the job Rust needs the job of script/changed-parts and every job that runs script/test and is
 //     not a required check itself; it runs whatever their results, a cancelled run's too, and fails
 //     unless the job of script/changed-parts succeeded and each other one succeeded or was skipped;
@@ -294,6 +295,15 @@ if (gateKey && partsJob) {
       if (passes({ [partsJob]: result })) fail(`job ${gateKey} passes when job ${partsJob} ends ${result}`);
     }
   }
+}
+
+// The self-host stack's part: alone in a job of the Rust code, on a runner of its own, which the job
+// Rust needs.
+const selfHost = testJobs.filter((j) => j.parts.includes('self-host'));
+if (selfHost.length !== 1 || selfHost[0].parts.length !== 1) {
+  fail(`the part self-host does not run alone in one job: ${selfHost.map((j) => `${j.key} (${j.parts.join(' ')})`).join(', ') || 'none'}`);
+} else if (gateKey && !needsOf(jobs[gateKey]).includes(selfHost[0].key)) {
+  fail(`job ${gateKey} does not need job ${selfHost[0].key}, which runs the part self-host`);
 }
 
 // The jobs of the Rust code set up the same tools.
