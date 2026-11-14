@@ -55,10 +55,14 @@ pub struct Setup<'a> {
     /// The server's public address is `http://127.0.0.1:<port>`, where the test itself sends
     /// requests, instead of `http://skald.test:<port>`.
     pub local: bool,
+    /// The server's public address, such as a front's in front of it, instead of one of the above.
+    pub public: Option<&'a str>,
     /// The server has GitHub's settings too, against the GitHub stand-in.
     pub github: bool,
     /// The server has no Google settings.
     pub no_google: bool,
+    /// The issuer the server has, if not the stand-in's, such as a front's in front of it.
+    pub issuer: Option<&'a str>,
     /// The provider is down when the server starts.
     pub down: bool,
     /// The client secret the server has, if not the client's.
@@ -90,10 +94,12 @@ impl Google {
         if setup.down {
             provider.stop();
         }
-        let issuer = provider.issuer().to_owned();
+        let issuer = setup.issuer.unwrap_or(provider.issuer()).to_owned();
         let db = TestDb::create();
         let (github, server, public) = on_free_port(Duration::from_secs(30), |port| {
-            let public = if let Some(browser) = setup.https {
+            let public = if let Some(public) = setup.public {
+                public.to_owned()
+            } else if let Some(browser) = setup.https {
                 let proxy = browser.tls_proxy(&format!("http://127.0.0.1:{port}"));
                 format!("https://{HOST}:{proxy}")
             } else if setup.local {
