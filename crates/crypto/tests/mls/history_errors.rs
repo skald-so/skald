@@ -83,11 +83,11 @@ fn a_history_error_says_what_failed() {
         ),
         (
             HistoryError::NotSender,
-            "the certificate is not the sender's",
+            "the certificate is not the sender's or the signer's",
         ),
         (
             HistoryError::Signature,
-            "the signature does not verify with the sender's key",
+            "the signature does not verify with the sender's or the signer's key",
         ),
     ] {
         assert_eq!(error.to_string(), message);

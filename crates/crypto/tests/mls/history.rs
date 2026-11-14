@@ -10,6 +10,7 @@ use skald_proto::{Cbor, ChannelId, DeviceId, HistoryBody, HistoryEntry, HistoryL
 
 use crate::cbor::{Value, bytes, text};
 use crate::commits::{empty, process, store};
+use crate::fields::a2a_fields;
 use crate::fixtures::{admitted, device_id, signing_key};
 use crate::steps;
 
@@ -148,21 +149,9 @@ pub fn signed(seed: u8, label: &str, body: &[u8]) -> Vec<u8> {
     plaintext_cbor(body, &signing_key(seed).sign(label, &[body]))
 }
 
-/// The fields of content with an A2A message, as in `docs/protocol/test-vectors.md`, "Content
-/// with an A2A message and an attachment", without the attachment.
+/// The fields of content with an A2A message, its text "Here is the diff".
 pub fn content_fields() -> Vec<(i64, Value)> {
-    vec![
-        (1, text("acme/alice/claude-api@skald.example")),
-        (2, text("acme/bob/codex@skald.example")),
-        (3, Value::Uint(7)),
-        (4, Value::Uint(1)),
-        (
-            6,
-            text(
-                r#"{"messageId":"019a6f20-1a00-7c00-8a00-000000000004","contextId":"019a6f20-0000-7000-8000-00000000c0de","role":"ROLE_USER","parts":[{"text":"Here is the diff"}]}"#,
-            ),
-        ),
-    ]
+    a2a_fields("Here is the diff")
 }
 
 /// The encoded content of [`content_fields`].

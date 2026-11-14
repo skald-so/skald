@@ -14,6 +14,8 @@ mod channel_view;
 mod channels;
 mod commit_checks;
 mod commits;
+#[path = "../common/fields.rs"]
+mod fields;
 mod fixtures;
 mod follow_links;
 mod foreign;

@@ -30,6 +30,16 @@ impl HpkeKey {
         Self(StaticSecret::from(*secret))
     }
 
+    /// The recovery HPKE key of an account's 32-byte `recovery` key: `DeriveKeyPair(recovery)` of
+    /// DHKEM(X25519, HKDF-SHA256) (RFC 9180, §7.1.3), as `docs/protocol/membership.md`, "Account",
+    /// says. Its [`HpkeKey::to_bytes`] are the derived private key, clamped.
+    pub fn from_recovery_key(recovery: &[u8; 32]) -> Self {
+        let (key, _) = <Dhkem as Kem>::derive_keypair(recovery);
+        let mut secret = Zeroizing::new([0; 32]);
+        key.write_exact(secret.as_mut());
+        Self::from_bytes(&secret)
+    }
+
     /// A new key from the cryptographically secure generator of the operating system, or in WASM
     /// of the browser or Node.js.
     ///

@@ -21,7 +21,10 @@ pub use cbor::{
 pub use cert::{CERT_LABEL, CERT_NAME_MAX, Cert, CertBody, DeviceKind, PROOF_LABEL};
 pub use content::{Attachment, Body, Content, Delegation, DelegationBody, Grant, GrantBody};
 pub use envelope::{Envelope, Header, HpkePayload, HpkePlaintext, Scheme};
-pub use history::{HISTORY_LABEL, HistoryBody, HistoryEntry, HistoryLink, HistoryPlaintext};
+pub use history::{
+    HISTORY_LABEL, HistoryBody, HistoryEntry, HistoryLink, HistoryPlaintext, HistoryWrap,
+    HistoryWrapBody, WrapRecipient,
+};
 pub use id::{
     AccountId, BlobId, ChannelId, ClaimId, DeviceId, Id, IdError, InviteId, Issued, Kind,
     MessageId, QueueId, SpaceId, TaskId, kind,
