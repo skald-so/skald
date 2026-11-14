@@ -17,6 +17,7 @@ mod commits;
 #[path = "../common/fields.rs"]
 mod fields;
 mod fixtures;
+mod follow_links;
 mod foreign;
 mod foreign_member;
 mod framing;

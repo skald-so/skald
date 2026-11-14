@@ -100,9 +100,11 @@ impl HistoryKey {
         }
         let bytes = body.to_cbor();
         let signature = sender.sign(HISTORY_LABEL, &[&bytes]);
-        let plaintext = HistoryPlaintext::from_parts(bytes, signature)
-            .map_err(|_| HistoryError::Malformed)?
-            .to_cbor();
+        let plaintext = Zeroizing::new(
+            HistoryPlaintext::from_parts(bytes, signature)
+                .map_err(|_| HistoryError::Malformed)?
+                .to_cbor(),
+        );
         let (nonce, ciphertext) = self.seal(
             &HistoryEntry::associated_data(body.channel, epoch),
             &plaintext,

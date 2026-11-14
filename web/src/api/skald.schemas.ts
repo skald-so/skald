@@ -78,6 +78,23 @@ export interface MasterKeyRequest {
 }
 
 /**
+ * A space's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+ */
+export type SpaceId = string;
+
+/**
+ * A space's name: a valid `name` (docs/protocol/README.md, "Agent address"), unique on the server.
+ * @pattern ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
+ */
+export type SpaceName = string;
+
+export interface Space {
+  space: SpaceId;
+  name: SpaceName;
+}
+
+/**
  * `github`, or `google` for the server's OIDC provider.
  */
 export type SignInMethodProvider =
@@ -191,23 +208,6 @@ export interface Session {
   username: Username;
   /** The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one. */
   github_login?: string;
-}
-
-/**
- * A space's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
- * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
- */
-export type SpaceId = string;
-
-/**
- * A space's name: a valid `name` (docs/protocol/README.md, "Agent address"), unique on the server.
- * @pattern ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$
- */
-export type SpaceName = string;
-
-export interface Space {
-  space: SpaceId;
-  name: SpaceName;
 }
 
 export interface Spaces {

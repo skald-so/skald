@@ -200,6 +200,84 @@ export const getPutMasterKeyResponseMock500 = (
   ...overrideResponse,
 });
 
+export const getTakePersonalSpaceResponseMock = (
+  overrideResponse: Partial<Extract<Space, object>> = {},
+): Space =>
+  faker.helpers.arrayElement([
+    {
+      space: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+      ...overrideResponse,
+    },
+    {
+      space: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getTakePersonalSpaceResponseMock200 = (
+  overrideResponse: Partial<Extract<Space, object>> = {},
+): Space => ({
+  space: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+  ...overrideResponse,
+});
+
+export const getTakePersonalSpaceResponseMock201 = (
+  overrideResponse: Partial<Extract<Space, object>> = {},
+): Space => ({
+  space: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+  ...overrideResponse,
+});
+
+export const getTakePersonalSpaceResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getTakePersonalSpaceResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getTakePersonalSpaceResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getListSignInMethodsResponseMock = (
   overrideResponse: Partial<Extract<SignInMethods, object>> = {},
 ): SignInMethods => ({
@@ -1510,6 +1588,153 @@ export const getPutMasterKeyMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getPutMasterKeyResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getTakePersonalSpaceMockHandler = (
+  overrideResponse?:
+    | Space
+    | ((info: Parameters<HttpResponseResolver>[0]) => Promise<Space> | Space),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/account/personal-space",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getTakePersonalSpaceResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getTakePersonalSpaceMockHandler200 = (
+  overrideResponse?:
+    | Space
+    | ((info: Parameters<HttpResponseResolver>[0]) => Promise<Space> | Space),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/account/personal-space",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getTakePersonalSpaceResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getTakePersonalSpaceMockHandler201 = (
+  overrideResponse?:
+    | Space
+    | ((info: Parameters<HttpResponseResolver>[0]) => Promise<Space> | Space),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/account/personal-space",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getTakePersonalSpaceResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getTakePersonalSpaceMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/account/personal-space",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getTakePersonalSpaceResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getTakePersonalSpaceMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/account/personal-space",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getTakePersonalSpaceResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getTakePersonalSpaceMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/account/personal-space",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getTakePersonalSpaceResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -3576,6 +3801,7 @@ export const getStoreRosterRevisionMockHandler500 = (
 export const getSkaldAPIMock = () => [
   getGetMasterKeyMockHandler(),
   getPutMasterKeyMockHandler(),
+  getTakePersonalSpaceMockHandler(),
   getListSignInMethodsMockHandler(),
   getPutUsernameMockHandler(),
   getGetDevicesMockHandler(),

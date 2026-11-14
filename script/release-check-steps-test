@@ -1,0 +1,338 @@
+#!/usr/bin/env node
+// Tests which steps of the release check, script/release-check, run where; script/release-check-test
+// tests the steps themselves.
+//   - SKALD_RELEASE_CHECK_STEPS=install runs only the installer, npx and skald update: against a
+//     stand-in release (script/lib/release-check-stub.mjs) that is not immutable and has no
+//     attestation, image, signature or provenance, it passes after it downloads the installer and
+//     the npm package, and runs no gh attestation, cosign or docker. Any value but all and install
+//     stops it before it checks anything.
+//   - Every step runs when a file of the release fails to download: the check names that file,
+//     still verifies the attestation of its checksum file, the image and the npm package, and
+//     prints how many steps failed. A file whose download breaks off part way fails only as one
+//     that cannot be downloaded, not also as one that does not match its checksum.
+//   - skald update when GitHub's API rate limit of the machine's address is used up: the check
+//     waits for its reset, before skald update or after it answers 403 or names the limit, then
+//     runs it again and passes; a reset more than 20 minutes away fails it naming the rate limit; a
+//     403 that is not the rate limit fails it as before. skald update gets no GITHUB_TOKEN or
+//     GH_TOKEN the check has, so it asks GitHub's API without a token, as the limit it reads.
+//   - .github/workflows/release-check.yml: on a push of a release tag, a Linux runner, which has
+//     docker with buildx, runs every step, so the release is verified.
+import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { imageName, serve } from './lib/release-check-stub.mjs';
+import { commands, event, isUnknown, open, readWorkflow, template } from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+let failures = 0;
+const fail = (what) => {
+  console.error(`release-check-steps-test: ${what}`);
+  failures++;
+};
+const runsCheck = (line) => /(^|[\s;&|(/"'])script\/release-check(?=$|[\s"';&|)])/.test(line);
+
+// The workflow: the steps each runner of the check runs on a push of a release tag.
+const workflow = readWorkflow(path.join(root, '.github/workflows/release-check.yml'));
+const tagPush = event('push', 'refs/tags/v1.2.3');
+const verifiers = [];
+for (const [key, job] of Object.entries(workflow.jobs ?? {})) {
+  for (const step of (job.steps ?? []).filter((s) => commands(s.run).some(runsCheck))) {
+    for (const combo of [].concat(job.strategy?.matrix?.include ?? [{}])) {
+      const scope = { contexts: { github: tagPush.github, inputs: open({ tag: 'v1.2.3' }), matrix: open(combo) }, status: {} };
+      const value = template(String(step.env?.SKALD_RELEASE_CHECK_STEPS ?? job.env?.SKALD_RELEASE_CHECK_STEPS ?? 'all'), scope);
+      const runner = template(String(job['runs-on']), scope);
+      if (isUnknown(value) || isUnknown(runner)) fail(`job ${key}: its runners and their steps are set in the workflow`);
+      else if (value === 'all' && /^ubuntu-/.test(runner)) verifiers.push(runner);
+    }
+  }
+}
+if (verifiers.length === 0) fail('on a push of a release tag, no Linux runner of the release check runs every step: nothing verifies the release');
+
+// The stand-in releases: their installers, the archive of this machine and its checksum, and
+// their npm packages.
+const target = {
+  'Darwin/arm64': 'aarch64-apple-darwin',
+  'Darwin/x86_64': 'x86_64-apple-darwin',
+  'Linux/aarch64': 'aarch64-unknown-linux-gnu',
+  'Linux/x86_64': 'x86_64-unknown-linux-gnu',
+}[`${os.type()}/${os.machine()}`];
+if (!target) {
+  console.error(`release-check-steps-test: no stand-in release for ${os.type()} on ${os.machine()}`);
+  process.exit(1);
+}
+const tag = 'v0.0.1';
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-check-steps-test-')));
+const sh = (command, ...args) => {
+  const result = spawnSync(command, args, { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`${command} ${args.join(' ')}: ${result.stderr}`);
+  return result.stdout;
+};
+try {
+  // build <tag> <skald> <name>: the files and the npm package of the release <tag> under <name>,
+  // its skald the script <skald>.
+  const build = (t, skald, name) => {
+    const files = path.join(scratch, name, 'release');
+    const unpacked = path.join(scratch, name, 'archive', `skald-client-${target}`);
+    fs.mkdirSync(unpacked, { recursive: true });
+    fs.writeFileSync(path.join(unpacked, 'skald'), skald, { mode: 0o755 });
+    const archive = path.join(files, `skald-client-${target}.tar.gz`);
+    fs.mkdirSync(files);
+    sh('tar', '-czf', archive, '-C', path.dirname(unpacked), path.basename(unpacked));
+    const sum = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
+    fs.writeFileSync(`${archive}.sha256`, `${sum} *${path.basename(archive)}\n`);
+    sh(path.join(root, 'script/release-installers'), t, files);
+    const npm = path.join(scratch, name, 'npm');
+    sh(path.join(root, 'script/release-npm'), t, npm);
+    const tgz = path.join(npm, `skald-so-${t.slice(1)}.tgz`);
+    const manifest = JSON.parse(sh('tar', '-xzOf', tgz, 'package/package.json'));
+    return { files, tgz, manifest };
+  };
+  const printing = (t) => `#!/bin/sh\necho 'skald ${t.slice(1)}'\n`;
+  const { files, tgz, manifest } = build(tag, printing(tag), 'first');
+  const world = {
+    releases: [{ tag, prerelease: false, immutable: false, dir: files }],
+    latest: tag,
+    npm: { versions: { [tag.slice(1)]: { tgz, manifest } }, distTags: { latest: tag.slice(1) }, provenance: {} },
+    requests: [],
+  };
+
+  // proxy <url> <unserved> <partial> <limit>: a server in front of the stand-in at <url> that
+  // answers 404 for the path <unserved>, or with <partial> sends part of it and breaks off, and
+  // passes on every other request. <limit>, if any, is GitHub's API rate limit, {wait, stale,
+  // forbidden}: requests without a token, those of skald update with the user agent
+  // skald/<version>, counted in <limit>.asked and, with an Authorization header, in
+  // <limit>.authorized, are answered 403 until <wait> seconds after the
+  // first such request or read of /api/rate_limit past the first <stale> reads, which report some
+  // left; /api/rate_limit reports none left until then. With <forbidden> they are always answered
+  // 403, while /api/rate_limit reports some left.
+  const proxy = (url, unserved, partial, limit) =>
+    new Promise((resolve) => {
+      const server = http.createServer(async (request, response) => {
+        if (limit) {
+          const now = Math.floor(Date.now() / 1000);
+          const tokenless = String(request.headers['user-agent'] ?? '').startsWith('skald/');
+          if (tokenless) limit.asked = (limit.asked ?? 0) + 1;
+          if (tokenless && request.headers.authorization) limit.authorized = (limit.authorized ?? 0) + 1;
+          const read = request.url === '/api/rate_limit';
+          const stale = read && limit.reset === undefined && (limit.stale ?? 0) > 0;
+          if (stale) limit.stale--;
+          else if (read || tokenless) limit.reset ??= now + limit.wait;
+          const usedUp = !limit.forbidden && now < limit.reset;
+          if (read) {
+            const left = !usedUp || stale;
+            const core = { limit: 60, used: left ? 0 : 60, remaining: left ? 60 : 0, reset: left ? now + 3600 : limit.reset };
+            return response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ resources: { core }, rate: core }));
+          }
+          if (request.url.startsWith('/api/') && tokenless && (usedUp || limit.forbidden)) {
+            return response.writeHead(403, { 'content-type': 'application/json' }).end(JSON.stringify({ message: usedUp ? 'API rate limit exceeded' : 'Forbidden' }));
+          }
+        }
+        if (request.url === unserved && partial) {
+          const whole = Buffer.from(await (await fetch(url + request.url)).arrayBuffer());
+          response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': whole.length });
+          return response.write(whole.subarray(0, whole.length >> 1), () => response.destroy());
+        }
+        if (request.url === unserved) return response.writeHead(404).end();
+        const answer = await fetch(url + request.url, { method: request.method, headers: { 'user-agent': request.headers['user-agent'] ?? '' } });
+        response.writeHead(answer.status, { 'content-type': answer.headers.get('content-type') ?? 'application/octet-stream' });
+        response.end(Buffer.from(await answer.arrayBuffer()));
+      });
+      server.listen(0, '127.0.0.1', () =>
+        resolve({
+          url: `http://127.0.0.1:${server.address().port}`,
+          close: () => new Promise((done) => (server.closeAllConnections(), server.close(done))),
+        }),
+      );
+    });
+
+  // check <steps> [<unserved> [<partial> [<w> <t> [<more>]]]]: script/release-check <t>, by default
+  // <tag>, run with SKALD_RELEASE_CHECK_STEPS=<steps> and the variables <more> against the world
+  // <w>, by default <world>; the
+  // release's file <unserved>, if any, fails to download, with <partial> after part of it arrives;
+  // <w>.apiLimit, if any, is the proxy's <limit>.
+  const check = async (steps, unserved, partial = false, w = world, t = tag, more = {}) => {
+    const server = await serve(w);
+    const releases = unserved || w.apiLimit ? await proxy(server.url, unserved && `/download/${t}/${unserved}`, partial, w.apiLimit) : server;
+    try {
+      const dir = fs.mkdtempSync(path.join(scratch, 'run-'));
+      const bin = path.join(dir, 'bin');
+      fs.mkdirSync(bin);
+      const state = path.join(dir, 'state.json');
+      const calls = path.join(dir, 'calls.jsonl');
+      fs.writeFileSync(calls, '');
+      const curl = sh('sh', '-c', 'command -v curl').trim();
+      fs.writeFileSync(state, JSON.stringify({ server: server.url, curl, calls, image: { name: imageName, tags: {} }, signatures: [], attestations: [] }));
+      const stub = path.join(root, 'script/lib/release-check-stub.mjs');
+      for (const tool of ['gh', 'cosign', 'docker', 'crane', 'curl', 'wget']) {
+        fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nexec node '${stub}' '${state}' ${tool} "$@"\n`, { mode: 0o755 });
+      }
+      fs.mkdirSync(path.join(dir, 'home'));
+      fs.writeFileSync(path.join(dir, 'npmrc'), '');
+      const env = {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        HOME: path.join(dir, 'home'),
+        TMPDIR: dir,
+        SKALD_RELEASE_CHECK_STEPS: steps,
+        SKALD_RELEASES_URL: `${releases.url}/download`,
+        SKALD_GITHUB_API_URL: `${releases.url}/api`,
+        npm_config_registry: `${server.url}/npm/`,
+        npm_config_userconfig: path.join(dir, 'npmrc'),
+        npm_config_update_notifier: 'false',
+        ...more,
+      };
+      // Asynchronous, so the stand-in GitHub in this process answers.
+      const child = spawn(path.join(root, 'script/release-check'), [t], { cwd: root, env });
+      let output = '';
+      child.stdout.on('data', (d) => (output += d));
+      child.stderr.on('data', (d) => (output += d));
+      const status = await new Promise((resolve) => child.on('close', (code) => resolve(code)));
+      const ran = fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      return { status, output, ran };
+    } finally {
+      if (releases !== server) await releases.close();
+      await server.close();
+    }
+  };
+
+  const tail = (output) => output.trim().split('\n').slice(-6).join(' | ');
+  let r = await check('install');
+  if (r.status !== 0) fail(`with SKALD_RELEASE_CHECK_STEPS=install it verifies nothing and passes, but exits ${r.status}: ${tail(r.output)}`);
+  const verifying = r.ran.filter((c) => (c.tool === 'gh' && c.args[0] === 'attestation') || c.tool === 'cosign' || c.tool === 'docker');
+  if (verifying.length > 0) fail(`with SKALD_RELEASE_CHECK_STEPS=install it verifies nothing, but it ran: ${verifying.map((c) => `${c.tool} ${c.args.join(' ')}`).join('; ')}`);
+  for (const wanted of [`/download/${tag}/install.sh`, '/npm/skald-so']) {
+    if (!world.requests.some((q) => q.path === wanted)) fail(`with SKALD_RELEASE_CHECK_STEPS=install it installs the release, but it did not download ${wanted}`);
+  }
+  world.requests.length = 0;
+  r = await check('verify');
+  if (r.status !== 2 || world.requests.length > 0) {
+    fail(`with SKALD_RELEASE_CHECK_STEPS=verify, no value it knows, it stops with status 2 before it checks anything, not ${r.status} after ${world.requests.length} request(s): ${tail(r.output)}`);
+  }
+
+  // Another machine's archive and its checksum, which no install downloads; the archive fails to
+  // download.
+  const other = target === 'x86_64-unknown-linux-gnu' ? 'aarch64-unknown-linux-gnu' : 'x86_64-unknown-linux-gnu';
+  const unserved = `skald-client-${other}.tar.gz`;
+  const otherBytes = Buffer.from("another machine's archive\n");
+  fs.writeFileSync(path.join(files, unserved), otherBytes);
+  fs.writeFileSync(path.join(files, `${unserved}.sha256`), `${crypto.createHash('sha256').update(otherBytes).digest('hex')} *${unserved}\n`);
+  world.requests.length = 0;
+  r = await check('all', unserved);
+  const lines = r.output.split('\n');
+  const label = `when ${unserved} fails to download`;
+  if (r.status === 0) fail(`${label}, the check fails, but exits 0: ${tail(r.output)}`);
+  if (!lines.some((l) => l.startsWith(`release-check: ${unserved}: failed: cannot download`))) {
+    fail(`${label}, the check names it in a line 'release-check: ${unserved}: failed: cannot download ...', not: ${tail(r.output)}`);
+  }
+  const later = {
+    [`the attestation of ${unserved}.sha256`]: r.ran.some(
+      (c) => c.tool === 'gh' && c.args[0] === 'attestation' && c.args.some((a) => a.endsWith(`${path.sep}${unserved}.sha256`)),
+    ),
+    'the image': r.ran.some((c) => c.tool === 'docker' && c.args.includes('imagetools')),
+    "the npm package's provenance": world.requests.some((q) => q.path.startsWith('/npm/-/npm/v1/attestations/')),
+    'how many steps failed': lines.some((l) => new RegExp(`^release-check: ${tag.replace(/\./g, '\\.')}: \\d+ step\\(s\\) failed$`).test(l)),
+  };
+  for (const [what, ran] of Object.entries(later)) {
+    if (!ran) fail(`${label}, the check still checks ${what}, but did not: ${tail(r.output)}`);
+  }
+
+  // The archive's download breaks off part way: the partial file is not checked against its checksum.
+  world.requests.length = 0;
+  r = await check('all', unserved, true);
+  const partialLabel = `when the download of ${unserved} breaks off part way`;
+  const named = r.output.split('\n').filter((l) => l.startsWith(`release-check: ${unserved}: failed:`));
+  if (r.status === 0) fail(`${partialLabel}, the check fails, but exits 0: ${tail(r.output)}`);
+  if (named.length !== 1 || !named[0].startsWith(`release-check: ${unserved}: failed: cannot download`)) {
+    fail(`${partialLabel}, the only failure naming it is 'cannot download', not: ${named.join(' | ') || tail(r.output)}`);
+  }
+
+  // The stable release v0.0.2 after v0.0.1, whose skald updates itself from the latest release of
+  // the stand-in API with the user agent skald/0.0.1 and, as skald update does, the token in
+  // GITHUB_TOKEN or GH_TOKEN, if any. A 403 it names as the answer, or, with STANDIN_NAMES_LIMIT set,
+  // as GitHub's API limit, as later releases of skald do.
+  const updating = `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === '--version') console.log('skald 0.0.1');
+else if (args[0] === 'update') (async () => {
+  const api = (process.env.SKALD_GITHUB_API_URL || 'https://api.github.com').replace(/\\/+$/, '');
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  const headers = { 'user-agent': 'skald/0.0.1', ...(token ? { authorization: 'Bearer ' + token } : {}) };
+  const answer = await fetch(api + '/repos/skald-so/skald/releases/latest', { headers });
+  if (answer.status === 403 && process.env.STANDIN_NAMES_LIMIT) {
+    console.error("skald: GitHub's API limit for this address is used up: try again later or set GITHUB_TOKEN");
+    process.exit(1);
+  }
+  if (answer.status !== 200) {
+    console.error('skald: cannot get the latest release: the answer is ' + answer.status);
+    process.exit(1);
+  }
+  const latest = (await answer.json()).tag_name.slice(1);
+  fs.writeFileSync(fs.realpathSync(process.argv[1]), "#!/bin/sh\\necho 'skald " + latest + "'\\n");
+})();
+`;
+  const stable = 'v0.0.2';
+  const earlier = build(tag, updating, 'earlier');
+  const next = build(stable, printing(stable), 'stable');
+  const limited = (apiLimit) => ({
+    releases: [
+      { tag, prerelease: false, immutable: false, dir: earlier.files },
+      { tag: stable, prerelease: false, immutable: false, dir: next.files },
+    ],
+    latest: stable,
+    npm: { versions: { [stable.slice(1)]: { tgz: next.tgz, manifest: next.manifest } }, distTags: { latest: stable.slice(1) }, provenance: {} },
+    requests: [],
+    apiLimit,
+  });
+  const updates = (w) => w.apiLimit.asked ?? 0;
+  for (const [name, apiLimit, more] of [
+    ['before skald update', { wait: 3 }, {}],
+    ['after skald update answers 403', { wait: 3, stale: 1 }, {}],
+    ["after skald update names GitHub's API limit", { wait: 3, stale: 1 }, { STANDIN_NAMES_LIMIT: '1' }],
+  ]) {
+    const w = limited(apiLimit);
+    const runs = apiLimit.stale ? 2 : 1;
+    r = await check('install', undefined, false, w, stable, more);
+    const label = `when GitHub's API rate limit is used up ${name} and resets in 3 s`;
+    if (r.status !== 0 || !r.output.includes('release-check: skald update: ok')) {
+      fail(`${label}, the check waits for the reset and passes, but exits ${r.status}: ${tail(r.output)}`);
+    }
+    if (!/rate limit.*waiting/.test(r.output)) fail(`${label}, the check says it waits for the reset, but: ${tail(r.output)}`);
+    if (updates(w) !== runs) fail(`${label}, the check runs skald update ${runs} time(s), but it ran ${updates(w)}`);
+  }
+
+  let w = limited({ wait: 3600 });
+  r = await check('install', undefined, false, w, stable);
+  let limitLabel = "when GitHub's API rate limit is used up and resets in an hour";
+  const line = r.output.split('\n').find((l) => l.startsWith('release-check: skald update: failed:')) ?? '';
+  if (r.status === 0 || !/rate limit/.test(line) || /skald update of the skald/.test(line)) {
+    fail(`${limitLabel}, the check fails without waiting and names the rate limit, not the release, but exits ${r.status}: ${tail(r.output)}`);
+  }
+  if (updates(w) > 0) fail(`${limitLabel}, the check runs no skald update, but ran ${updates(w)}`);
+
+  w = limited({ forbidden: true });
+  r = await check('install', undefined, false, w, stable);
+  limitLabel = 'when skald update answers 403 with the rate limit not used up';
+  if (r.status === 0 || !r.output.includes(`release-check: skald update: failed: skald update of the skald of ${tag} failed`)) {
+    fail(`${limitLabel}, the check fails naming skald update of ${tag}, but exits ${r.status}: ${tail(r.output)}`);
+  }
+  if (/waiting/.test(r.output) || updates(w) !== 1) fail(`${limitLabel}, the check waits for nothing and runs skald update once, but ran it ${updates(w)} time(s): ${tail(r.output)}`);
+
+  w = limited({ wait: 0 });
+  r = await check('install', undefined, false, w, stable, { GITHUB_TOKEN: 'stand-in-token', GH_TOKEN: 'stand-in-token' });
+  limitLabel = 'with GITHUB_TOKEN and GH_TOKEN set';
+  if (r.status !== 0 || !r.output.includes('release-check: skald update: ok')) fail(`${limitLabel}, the check passes, but exits ${r.status}: ${tail(r.output)}`);
+  if (updates(w) !== 1 || w.apiLimit.authorized) {
+    fail(`${limitLabel}, skald update asks GitHub's API once, without a token, but asked ${updates(w)} time(s), ${w.apiLimit.authorized ?? 0} with one`);
+  }
+} finally {
+  fs.rmSync(scratch, { recursive: true, force: true });
+}
+
+if (failures > 0) {
+  console.error(`release-check-steps-test: ${failures} case(s) failed`);
+  process.exit(1);
+}
+console.log('release-check-steps-test: all cases passed');

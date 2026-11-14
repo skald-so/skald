@@ -148,7 +148,7 @@ pub(crate) async fn create(
         return taken(true, space(id));
     }
     let again: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM spaces s WHERE name = $1 AND creator_id = $2::uuid
+        "SELECT id::text FROM spaces s WHERE name = $1 AND creator_id = $2::uuid AND NOT personal
            AND NOT EXISTS (SELECT 1 FROM roster_revisions r WHERE r.space_id = s.id)",
     )
     .bind(name.as_str())
@@ -158,6 +158,41 @@ pub(crate) async fn create(
     .map_err(|err| Refusal::Database("read a space", err))?;
     let (id,) = again.ok_or(Refusal::SpaceNameTaken)?;
     taken(false, space(id))
+}
+
+/// `POST /account/personal-space`: the personal space of the session's account, which the first
+/// request creates, named from the account's username.
+pub(crate) async fn personal(State(state): State<AppState>, SignedIn(account): SignedIn) -> Answer {
+    // Each round inserts the space, finds the one an earlier request inserted, or finds the name
+    // taken by a space that another request inserted meanwhile, which the next round sees.
+    loop {
+        // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
+        let created: Option<(String, String)> = sqlx::query_as(
+            "INSERT INTO spaces (id, name, creator_id, personal)
+             SELECT $1::uuid, free_space_name(username), id, true FROM accounts WHERE id = $2::uuid
+             ON CONFLICT DO NOTHING RETURNING id::text, name",
+        )
+        .bind(SpaceId::generate().to_string())
+        .bind(&account)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|err| Refusal::Database("create the personal space", err))?;
+        if let Some((space, name)) = created {
+            return taken(true, Space { space, name });
+        }
+        // No row once the account is gone.
+        let found: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT s.id::text, s.name FROM accounts a
+             LEFT JOIN spaces s ON s.creator_id = a.id AND s.personal WHERE a.id = $1::uuid",
+        )
+        .bind(&account)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|err| Refusal::Database("read the personal space", err))?;
+        if let (Some(space), Some(name)) = found.ok_or(Refusal::NotSignedIn)? {
+            return taken(false, Space { space, name });
+        }
+    }
 }
 
 /// `GET /spaces`: the spaces the session's account gets.
