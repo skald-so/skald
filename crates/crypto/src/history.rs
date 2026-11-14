@@ -284,8 +284,10 @@ impl fmt::Display for HistoryError {
             Self::Open => "it does not decrypt with the key",
             Self::Malformed => "it holds no history key or plaintext, or the body is malformed",
             Self::OtherChannel => "the body is of another channel than the entry",
-            Self::NotSender => "the certificate is not the sender's",
-            Self::Signature => "the signature does not verify with the sender's key",
+            Self::NotSender => "the certificate is not the sender's or the signer's",
+            Self::Signature => {
+                "the signature does not verify with the sender's or the signer's key"
+            }
         })
     }
 }
