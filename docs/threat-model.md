@@ -243,14 +243,14 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 
 ## The server sees
 - accounts: sign-in methods and usernames;
-- the roster: members, roles, devices and service agents of each space, and the devices of each channel;
+- the roster: members, roles, devices and service agents of each space, the devices of each channel, and the space's policy, its wake ceilings included;
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
 - IP addresses and times of connections;
 - queue names and settings, task templates;
 - when presence changes, and its size in steps of 4 KB, not its value;
-- notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question;
+- notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question; for an invalid result, which task's result failed the check, as it follows that task's `done` and its result;
 - space, channel and device identifiers;
 - which device messages whom;
 - message size and time;

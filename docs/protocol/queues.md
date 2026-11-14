@@ -281,7 +281,7 @@ The device hands the agent the `request` with its `from` and the trust level of 
 - After a no, or once `deadline` passes, the device fails the task without retry.
 
 ## Results
-Before it completes a task that names a template, the claiming device checks the result object in `response` ([Templates](#templates)) against the template's result format. A result is invalid when that object lacks a field the format requires, or holds one empty. The device MUST NOT complete a task with an invalid result; it fails the task with retry instead.
+Before it completes a task that names a template, the claiming device checks the result object in `response` ([Templates](#templates)) against the template's result format. A result is invalid when `response` has no result object, or the object lacks a field the format requires or holds it as null or an empty string, array or map; a number, 0 included, is never empty. The device MUST NOT complete a task with an invalid result; it fails the task with retry instead.
 
 After the server takes its complete, the claiming device sends the result as an application message in the channel; after the server takes its fail, it SHOULD send one. Its content has `from` the claiming agent, which is the task's `to` if it has one; `to` the task's `from`; `hops` the task's plus one; the `task-result` body; and `attachments` as for the `a2a` body.
 
