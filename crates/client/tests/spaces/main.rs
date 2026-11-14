@@ -411,7 +411,7 @@ fn revision_1_answer_lost_with_the_cli_killed_is_recovered_by_the_next_run() {
 }
 
 /// A name another account's space has creates nothing: the run fails saying why, the account gets
-/// no space and lists none, and the other space keeps its one revision.
+/// no space beside its personal space and lists none, and the other space keeps its one revision.
 #[test]
 fn taken_name_creates_nothing_and_says_why() {
     let (cloud, browser) = setup();
@@ -448,7 +448,7 @@ fn taken_name_creates_nothing_and_says_why() {
 }
 
 /// A name that is no valid `name` of an agent address creates nothing: the run fails saying why,
-/// and the account gets no space and lists none.
+/// and the account gets no space beside its personal space and lists none.
 #[test]
 fn invalid_name_creates_nothing_and_says_why() {
     let (cloud, browser) = setup();
@@ -490,7 +490,8 @@ fn invalid_name_creates_nothing_and_says_why() {
 }
 
 /// A device of the account without a certificate creates nothing: the run fails saying the device
-/// is not linked yet and sends no request to create a space; the account gets no space.
+/// is not linked yet and sends no request to create a space; the account gets no space beside its
+/// personal space.
 #[test]
 fn device_without_a_certificate_creates_nothing_and_says_it_is_not_linked() {
     let (cloud, browser) = setup();

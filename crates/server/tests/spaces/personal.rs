@@ -73,6 +73,8 @@ fn personal_space_is_created_at_the_first_request_and_the_same_one_is_given_afte
 
     let created = alice.session.personal_response();
     assert_eq!(created.status, 201, "{}", text(&created));
+    let later = alice.session.personal_response();
+    assert_eq!(later.status, 200, "{}", text(&later));
     let (space, name) = alice.session.personal();
     assert_eq!(space, space_of(&created), "another space");
     assert_eq!(name, username);

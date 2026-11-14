@@ -301,6 +301,70 @@ fn existing_accounts_machine_signs_revision_1_of_its_personal_space_on_its_next_
     assert_marked(&ada.machine, name, &ada);
 }
 
+/// What a run says when it could not set up the account's personal space.
+const NOT_SET_UP: &str = "the account's personal space is not set up yet";
+
+/// The first machine's sign-in says it signed revision 1 of the account's personal space, with the
+/// space's name and ID and the machine's handle.
+#[test]
+fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let user = cloud.user(4_120_701_501, "ada-said-standin");
+    let host = "ada-workstation";
+    let (machine, signed_in) = cloud.first_machine(&world.browser.page(), &user, host);
+    assert!(signed_in.success, "{signed_in:?}");
+    let ada = world.person(user, machine, host);
+    let (space, _) = assert_personal(cloud, &ada, ada.handle.as_str());
+
+    let said = format!(
+        "This device signed revision 1 of the account's personal space {} ({space}) as its admin, \
+         with the handle {}.",
+        ada.handle.as_str(),
+        ada.handle.as_str()
+    );
+    assert!(signed_in.stdout.contains(&said), "{signed_in:?}");
+    assert!(!signed_in.stderr.contains(NOT_SET_UP), "{signed_in:?}");
+}
+
+/// A machine of an existing account, without a personal space, creates a team space while the
+/// server answers the request for the personal space as a server without it would: both runs warn
+/// that the personal space is not set up. Its next run gets the personal space, signs its
+/// revision 1 and lists it as personal, and leaves the team space unmarked.
+#[test]
+fn machine_following_a_team_space_signs_revision_1_of_its_personal_space_on_its_next_run() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    cloud.relay.refuse(PERSONAL_REQUEST, "404 Not Found");
+    let user = cloud.user(4_120_701_601, "ada-team-standin");
+    let host = "ada-old-workstation";
+    let (machine, signed_in) = cloud.first_machine(&world.browser.page(), &user, host);
+    assert!(signed_in.stderr.contains(NOT_SET_UP), "{signed_in:?}");
+    let ada = world.person(user, machine, host);
+    let created = run(&ada.machine, &[world::CREATE_SPACE, ACME]);
+    assert!(created.success, "{created:?}");
+    assert!(created.stderr.contains(NOT_SET_UP), "{created:?}");
+    let team: Vec<String> = server_spaces(cloud, &ada.token).into_values().collect();
+    assert_eq!(team, vec![ACME.to_owned()]);
+    cloud.relay.stop_refusing();
+
+    spaces(&ada.machine);
+
+    let name = ada.handle.as_str();
+    assert_personal(cloud, &ada, name);
+    assert_eq!(server_spaces(cloud, &ada.token).len(), 2, "two spaces");
+    assert_marked(&ada.machine, name, &ada);
+    let listed = spaces(&ada.machine);
+    let lines = plain_lines(&listed);
+    let team: Vec<Vec<&str>> = lines
+        .iter()
+        .map(|line| words(line))
+        .filter(|words| words.contains(&ACME))
+        .collect();
+    assert_eq!(team.len(), 1, "{listed:?}");
+    assert!(!team[0].contains(&PERSONAL), "{listed:?}");
+}
+
 /// After the machine pinned its personal space, the proxy gives another space for it, one of the
 /// account's or a made-up one, and marks another space as personal in the account's spaces, as a
 /// compromised server would: the list's mark stays on the pinned space, and the machine signs no
