@@ -4,7 +4,7 @@
 //! Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, behind a
 //! recording relay that can lose answers or hold requests, with a test playing the person on the
 //! verification page in headless Chrome. Each machine keeps its state in a directory of its own and
-//! its secrets in the 0600 file there, never in the system's key storage.
+//! its secrets in a file there, never in the system's key storage.
 //!
 //! The CLI, as these tests use it:
 //! - `skald sign-in --server <url> --first-device yes|no`: the flag answers whether this is the

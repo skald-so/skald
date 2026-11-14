@@ -2,7 +2,7 @@
 //! server gives, never by its GitHub login, and `skald set-username` changes it through the API.
 //! Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, behind
 //! the recording relay, with a test playing the person on the verification page in headless
-//! Chrome. Each machine keeps its state in a directory of its own and its secrets in the 0600 file
+//! Chrome. Each machine keeps its state in a directory of its own and its secrets in a file
 //! there, never in the system's key storage.
 //!
 //! The CLI, as these tests use it:

@@ -44,7 +44,7 @@ rusqlite = { version = "0.39", default-features = false, features = ["bundled", 
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-server = { path = "../server" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
-tokio = { version = "1.54", features = ["net", "rt-multi-thread"] }
+tokio = { version = "1.54", features = ["net", "rt-multi-thread", "test-util", "time"] }
 toml = "1.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]

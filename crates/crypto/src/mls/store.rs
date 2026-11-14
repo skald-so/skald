@@ -1,6 +1,7 @@
 //! The store mls-rs keeps a device's groups and KeyPackages in: mls-rs's in-memory storages have
 //! no save or load, so this one gives each group and each KeyPackage as an item to seal, and takes
-//! them back.
+//! them back. It keeps a group's 3 prior epochs, as mls-rs's own stores do by default, and deletes
+//! older ones: `docs/protocol/membership.md`, "MLS profile".
 
 use std::{
     collections::BTreeMap,
@@ -26,6 +27,9 @@ struct Contents {
     groups: BTreeMap<Vec<u8>, Group>,
     key_packages: BTreeMap<Vec<u8>, KeyPackageData>,
 }
+
+/// How many prior epochs of a group the store keeps.
+const KEPT_EPOCHS: usize = 3;
 
 /// A group's state and its prior epochs, as mls-rs writes them.
 #[derive(Default)]
@@ -189,6 +193,9 @@ impl GroupStateStorage for Store {
         group.state = state.data;
         for record in epoch_inserts.into_iter().chain(epoch_updates) {
             group.epochs.insert(record.id, record.data);
+        }
+        while group.epochs.len() > KEPT_EPOCHS {
+            group.epochs.pop_first();
         }
         Ok(())
     }

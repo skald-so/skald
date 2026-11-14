@@ -4,6 +4,7 @@ mod connection;
 mod device;
 mod devices;
 mod follow;
+mod plain_path;
 mod secrets;
 mod set_username;
 mod sign_in;
@@ -12,6 +13,8 @@ mod spaces;
 mod state;
 #[cfg(test)]
 mod test_dir;
+#[cfg(test)]
+mod test_dir_tests;
 mod tls;
 mod update;
 
@@ -64,8 +67,13 @@ struct Cli {
     state_dir: Option<PathBuf>,
 
     /// Where secrets, such as the session token, go: auto keeps them in the system's key storage,
-    /// or in a 0600 file in the state directory when the system has none; file keeps them only in
-    /// the file.
+    /// or in a file in the state directory when the system has none; file keeps them only in the
+    /// file.
+    #[cfg_attr(unix, doc = "The file has 0600 permissions.")]
+    #[cfg_attr(
+        windows,
+        doc = "The file has the access rights it inherits from the state directory."
+    )]
     #[arg(
         long,
         env = "SKALD_KEY_STORAGE",
