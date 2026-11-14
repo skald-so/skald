@@ -6,6 +6,7 @@ pub mod accounts;
 pub mod browser;
 pub mod device_flow;
 pub mod devices;
+pub mod google;
 pub mod sign_in;
 pub mod spec;
 

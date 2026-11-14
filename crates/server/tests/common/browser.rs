@@ -281,6 +281,13 @@ impl Page<'_> {
         self.visit("click", json!({ "selector": selector }))
     }
 
+    /// Clicks the element `selector` finds as [`Page::click`] does, then follows each page that
+    /// refreshes itself as [`Page::goto_settled`] does. The visit's status stays that of the click's
+    /// navigation.
+    pub fn click_settled(&self, selector: &str) -> Visit {
+        self.visit("click", json!({ "selector": selector, "settle": true }))
+    }
+
     /// Evaluates the script `expression`, which starts a navigation of the page, and waits until
     /// the network has been idle for 0.5 s.
     pub fn navigate_by(&self, expression: &str) -> Visit {

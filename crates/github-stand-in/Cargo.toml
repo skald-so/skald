@@ -17,6 +17,7 @@ clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_urlencoded = "0.7"
+sha2 = { version = "0.11", default-features = false }
 tokio = { version = "1.54", features = ["macros", "net", "rt", "sync"] }
 
 [dev-dependencies]

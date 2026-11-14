@@ -213,6 +213,87 @@
         }
       }
     },
+    "/account/sign-in-methods": {
+      "get": {
+        "operationId": "listSignInMethods",
+        "summary": "The account's sign-in methods",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sign-in methods of the session's account: each signs in to it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInMethods"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/username": {
       "put": {
         "operationId": "putUsername",
@@ -416,7 +497,7 @@
       "get": {
         "operationId": "startGitHubSignIn",
         "summary": "Start a GitHub sign-in",
-        "description": "Opened by the browser. Sends it to GitHub's authorization page, asking for no scope, with a `state` that the cookie this response sets binds to this browser. The `state` works once, until it expires; its lifetime is the server setting `--sign-in-state-lifetime`.",
+        "description": "Opened by the browser. Sends it to GitHub's authorization page, asking for no scope, with a `state` that the cookie this response sets binds to this browser and an S256 PKCE challenge of this sign-in. The `state` works once, until it expires; its lifetime is the server setting `--sign-in-state-lifetime`.",
         "parameters": [
           {
             "name": "return_to",
@@ -433,7 +514,7 @@
             "description": "To GitHub's authorization page.",
             "headers": {
               "Location": {
-                "description": "GitHub's authorization page with the app's client ID, the callback `<public URL>/auth/github/callback` and `state`.",
+                "description": "GitHub's authorization page with the app's client ID, the callback `<public URL>/auth/github/callback`, `state`, `code_challenge` and `code_challenge_method=S256`.",
                 "required": true,
                 "schema": {
                   "type": "string"
@@ -480,7 +561,7 @@
       "get": {
         "operationId": "finishGitHubSignIn",
         "summary": "GitHub's callback",
-        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and reads the GitHub user. The first sign-in of a GitHub user creates an account with the user's GitHub ID as its GitHub sign-in method; later ones reach the account that holds that method and update the method's GitHub login. Keeps no GitHub token.",
+        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and the sign-in's PKCE verifier and reads the GitHub user. The first sign-in of a GitHub user creates an account with the user's GitHub ID as its GitHub sign-in method; later ones reach the account that holds that method and update the method's GitHub login. Keeps no GitHub token. For a link, started by `POST /auth/github/link`, it adds the GitHub sign-in method to the account of the web session that started the link instead of signing in.",
         "parameters": [
           {
             "name": "code",
@@ -512,11 +593,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Signed in: a page that sends the browser to the sign-in's return page.",
+            "description": "Signed in or linked: a page that sends the browser to the return page. For a link whose request lacks the cookie of the web session that started it, as one from another site lacks the `SameSite=Strict` cookie, first, once, a page that opens this callback again from this server.",
             "headers": {
               "Set-Cookie": {
-                "description": "The session cookie `skald_session`: `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; and the removal of the cookie that bound `state`.",
-                "required": true,
+                "description": "Signed in: the session cookie `skald_session`, `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; signed in or linked: the removal of the cookie that bound `state`.",
+                "required": false,
                 "schema": {
                   "type": "string"
                 }
@@ -534,7 +615,125 @@
             }
           },
           "400": {
-            "description": "No one is signed in: `state` is missing, wrong, from another browser, expired or used, or GitHub gave no code or refused it.",
+            "description": "No one is signed in, or nothing is linked: `state` is missing, wrong, from another browser, expired or used, also by the end of the web session that started a link, or GitHub gave no code or refused it.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub sign-in is off: the server has no GitHub settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A link that links nothing: another account has this GitHub sign-in method. Accounts never merge or move a method.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "No one is signed in, or nothing is linked: the database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "No one is signed in, or nothing is linked: GitHub failed or refused the app's client ID and secret.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/github/link": {
+      "post": {
+        "operationId": "startGitHubLink",
+        "summary": "Start a link of a GitHub sign-in method",
+        "description": "Submitted by the form of `GET /sign-in-methods`, with the web session's cookie, from a page of this server: a request whose `Origin` is another site's, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to GitHub as `GET /auth/github` does, with a `state` that also binds the link to this web session; GitHub comes back through `GET /auth/github/callback`. The link works only while the session lasts.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To GitHub's authorization page.",
+            "headers": {
+              "Location": {
+                "description": "GitHub's authorization page, as `GET /auth/github` sends the browser to.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "The cookie that binds `state` to this browser, as `GET /auth/github` sets it.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Nothing is linked: the request has no web session, comes from another site, or its session's sign-in is older than `--link-sign-in-age`: then a page that asks to sign in again.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -559,22 +758,7 @@
             }
           },
           "500": {
-            "description": "No one is signed in: the database failed.",
-            "headers": {
-              "Cache-Control": {
-                "$ref": "#/components/headers/NoStore"
-              }
-            },
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "No one is signed in: GitHub failed or refused the app's client ID and secret.",
+            "description": "The database failed.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -674,7 +858,7 @@
       "get": {
         "operationId": "finishGoogleSignIn",
         "summary": "Google's callback",
-        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. Keeps no email, ID token or Google token.",
+        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. Keeps no email, ID token or Google token. For a link, started by `POST /auth/google/link`, it adds the Google sign-in method to the account of the web session that started the link instead of signing in.",
         "parameters": [
           {
             "name": "code",
@@ -706,11 +890,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Signed in: a page that sends the browser to the sign-in's return page.",
+            "description": "Signed in or linked: a page that sends the browser to the return page. For a link whose request lacks the cookie of the web session that started it, as one from another site lacks the `SameSite=Strict` cookie, first, once, a page that opens this callback again from this server.",
             "headers": {
               "Set-Cookie": {
-                "description": "The session cookie `skald_session`: `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; and the removal of the cookie that bound `state`.",
-                "required": true,
+                "description": "Signed in: the session cookie `skald_session`, `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; signed in or linked: the removal of the cookie that bound `state`.",
+                "required": false,
                 "schema": {
                   "type": "string"
                 }
@@ -728,7 +912,125 @@
             }
           },
           "400": {
-            "description": "No one is signed in: `state` is missing, wrong, from another browser, expired or used; or Google gave an error or no code, refused the code, or gave an ID token that fails a check, such as one with another sign-in's `nonce`.",
+            "description": "No one is signed in, or nothing is linked: `state` is missing, wrong, from another browser, expired or used, also by the end of the web session that started a link; or Google gave an error or no code, refused the code, or gave an ID token that fails a check, such as one with another sign-in's `nonce`.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Google sign-in is off: the server has no Google settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A link that links nothing: another account has this Google sign-in method. Accounts never merge or move a method.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "No one is signed in, or nothing is linked: the database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "No one is signed in, or nothing is linked: Google failed, is unreachable or refused the client ID and secret.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/google/link": {
+      "post": {
+        "operationId": "startGoogleLink",
+        "summary": "Start a link of a Google sign-in method",
+        "description": "Submitted by the form of `GET /sign-in-methods`, with the web session's cookie, from a page of this server: a request whose `Origin` is another site's, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to Google as `GET /auth/google` does, with `prompt=select_account`, so that the person chooses the Google account, with a `state` that also binds the link to this web session; Google comes back through `GET /auth/google/callback`. The link works only while the session lasts.",
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To Google's authorization page.",
+            "headers": {
+              "Location": {
+                "description": "Google's authorization page, as `GET /auth/google` sends the browser to, with `prompt=select_account`, so that the person chooses the Google account.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "The cookie that binds `state` to this browser, as `GET /auth/google` sets it.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Nothing is linked: the request has no web session, comes from another site, or its session's sign-in is older than `--link-sign-in-age`: then a page that asks to sign in again.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -753,7 +1055,7 @@
             }
           },
           "500": {
-            "description": "No one is signed in: the database failed.",
+            "description": "The database failed.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -768,7 +1070,7 @@
             }
           },
           "502": {
-            "description": "No one is signed in: Google failed, is unreachable or refused the client ID and secret.",
+            "description": "Google is unreachable, or its metadata or keys are malformed.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -1481,6 +1783,61 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sign-in-methods": {
+      "get": {
+        "operationId": "getSignInMethodsPage",
+        "summary": "The page of the account's sign-in methods",
+        "description": "Opened by the browser. With a web session, it lists the account's sign-in methods, each with its provider, when it was linked and, for GitHub, its login, and has a form for each provider the server has settings for, Link GitHub and Link Google, that submits `POST /auth/github/link` or `POST /auth/google/link`. Without one, links to sign in with each of those providers that return to this page.",
+        "security": [
+          {
+            "session": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "The page.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Sign-in is off: the server has no sign-in settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2663,6 +3020,42 @@
           "github_login": {
             "description": "The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one.",
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SignInMethod": {
+        "description": "A sign-in method: a provider and the subject it gives the person, which the server does not show.",
+        "type": "object",
+        "required": ["provider", "linked_at"],
+        "properties": {
+          "provider": {
+            "description": "`github`, or `google` for the server's OIDC provider.",
+            "type": "string",
+            "enum": ["github", "google"]
+          },
+          "linked_at": {
+            "description": "When the method was linked, or the account created with it.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "github_login": {
+            "description": "A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SignInMethods": {
+        "type": "object",
+        "required": ["methods"],
+        "properties": {
+          "methods": {
+            "description": "Oldest first.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignInMethod"
+            }
           }
         },
         "additionalProperties": false

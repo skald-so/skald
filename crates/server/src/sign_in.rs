@@ -1,6 +1,7 @@
-//! Sign-in in the browser and the web session it ends in, the parts every provider shares; and
-//! GitHub sign-in: OAuth 2.0's authorization code flow (RFC 6749, §4.1) with a GitHub OAuth App,
-//! asking for no scope. Google sign-in is in `google`.
+//! Sign-in in the browser and the web session it ends in, the parts every provider shares, links of
+//! a sign-in method among them; and GitHub sign-in: OAuth 2.0's authorization code flow (RFC 6749,
+//! §4.1) with a GitHub OAuth App and PKCE (RFC 7636), asking for no scope. Google sign-in is in
+//! `google`; starting a link and the account's sign-in methods in `links`.
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -17,6 +18,7 @@ use url::Url;
 
 use crate::accounts::{self, GITHUB, Method};
 use crate::github::{GitHubApp, Refusal, http_url};
+use crate::links;
 use crate::oidc::OidcSettings;
 use crate::{AppState, database_failed, problem};
 
@@ -82,6 +84,8 @@ pub struct SignInSettings {
     pub google: Option<OidcSettings>,
     /// How long a sign-in's `state` works.
     pub state_lifetime: Duration,
+    /// How recent a web session's sign-in has to be to start a link.
+    pub link_age: Duration,
     /// How long a device flow's codes work.
     pub device_code_lifetime: Duration,
     /// The least time between a device flow's polls.
@@ -126,14 +130,17 @@ pub(crate) struct Flow<'a> {
     pub start: &'static str,
     /// The callback's path under the public address.
     pub callback: &'static str,
+    /// The link start's path under the public address.
+    pub link: &'static str,
 }
 
 /// GitHub sign-in.
-const GITHUB_FLOW: Flow<'static> = Flow {
+pub(crate) const GITHUB_FLOW: Flow<'static> = Flow {
     name: "GitHub",
     provider: GITHUB,
     start: START_PATH,
     callback: CALLBACK_PATH,
+    link: links::GITHUB_PATH,
 };
 
 /// The sign-in settings and the GitHub OAuth App, while the server has GitHub's settings.
@@ -142,51 +149,116 @@ pub(crate) fn github(state: &AppState) -> Option<(&SignInSettings, &GitHubApp)> 
     Some((settings, settings.github.as_ref()?))
 }
 
-/// What an OIDC sign-in keeps beside its `state` until its callback: its `nonce` and PKCE verifier.
+/// What a sign-in keeps beside its `state` until its callback: its PKCE verifier and an OIDC
+/// sign-in's `nonce`.
 pub(crate) struct Secrets {
-    pub nonce: String,
     pub verifier: String,
+    pub nonce: Option<String>,
 }
 
-/// Starts a sign-in of `flow` for the start's `query`: stores a new `state`, the return address and
-/// an OIDC sign-in's `secrets` until the `state` expires. Gives the `state`.
-pub(crate) async fn begin(
+impl Secrets {
+    /// New secrets of a sign-in, with a `nonce` if it is an OIDC one.
+    fn new(oidc: bool) -> Self {
+        Secrets {
+            verifier: random_token(),
+            nonce: oidc.then(random_token),
+        }
+    }
+
+    /// The S256 PKCE challenge of the verifier (RFC 7636, §4.2).
+    pub(crate) fn challenge(&self) -> String {
+        s256(&self.verifier)
+    }
+}
+
+/// The S256 PKCE challenge of `verifier`.
+fn s256(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+/// A person a provider brought back.
+pub(crate) struct Identity {
+    /// The subject the provider gives the person: for GitHub, the user's ID in decimal.
+    pub subject: String,
+    /// A GitHub user's login.
+    pub login: Option<String>,
+    /// What a sign-up makes the username from, such as the GitHub login.
+    pub source: String,
+}
+
+/// A provider people sign in with in the browser.
+pub(crate) trait Provider {
+    fn flow(&self) -> Flow<'_>;
+
+    /// The address of the provider's authorization request of a sign-in, or of a link if `link`,
+    /// with `state` and the challenge, and an OIDC sign-in's `nonce`, of `secrets`.
+    async fn authorize(
+        &self,
+        settings: &SignInSettings,
+        state: &str,
+        secrets: &Secrets,
+        link: bool,
+    ) -> Result<String, Failure>;
+
+    /// The person that the provider's callback with `query` brings back from the sign-in of
+    /// `secrets`.
+    async fn identify(
+        &self,
+        settings: &SignInSettings,
+        query: Option<&str>,
+        secrets: Secrets,
+    ) -> Result<Identity, Failure>;
+}
+
+/// Starts a sign-in with `provider`, or a link of the web session whose token's SHA-256 is `link`:
+/// stores a new `state`, the return address `return_to`, if a page of this server, else `/`, and
+/// the sign-in's secrets until the `state` expires; sends the browser to the provider.
+pub(crate) async fn start_with<P: Provider>(
     db: &PgPool,
     settings: &SignInSettings,
-    flow: &Flow<'_>,
-    query: Option<&str>,
-    secrets: Option<&Secrets>,
-) -> Result<String, Failure> {
+    provider: &P,
+    return_to: Option<&str>,
+    link: Option<&[u8]>,
+) -> Response {
+    let flow = provider.flow();
     let public = &settings.public_url;
-    let return_to = param(query, "return_to")
-        .and_then(|to| public.page(&to))
+    let return_to = return_to
+        .and_then(|to| public.page(to))
         .unwrap_or_else(|| public.page("/").expect("the root is a page of the server"));
+    let secrets = Secrets::new(flow.provider != GITHUB);
     let token = random_token();
-    sqlx::query(
+    let stored = sqlx::query(
         "WITH expired AS (DELETE FROM sign_in_states WHERE expires_at <= now())
-         INSERT INTO sign_in_states (state_hash, provider, return_to, nonce, code_verifier, expires_at)
-         VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))",
+         INSERT INTO sign_in_states
+             (state_hash, provider, return_to, nonce, code_verifier, link_session, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))",
     )
     .bind(digest(&token))
     .bind(flow.provider)
     .bind(return_to.as_str())
-    .bind(secrets.map(|secrets| secrets.nonce.as_str()))
-    .bind(secrets.map(|secrets| secrets.verifier.as_str()))
+    .bind(secrets.nonce.as_deref())
+    .bind(&secrets.verifier)
+    .bind(link)
     .bind(settings.state_lifetime.as_secs() as f64)
     .execute(db)
-    .await
-    .map_err(Failure::Database)?;
-    Ok(token)
+    .await;
+    let authorize = match stored {
+        Ok(_) => {
+            provider
+                .authorize(settings, &token, &secrets, link.is_some())
+                .await
+        }
+        Err(err) => Err(Failure::Database(err)),
+    };
+    match authorize {
+        Ok(authorize) => redirect(settings, &flow, &authorize, &token),
+        Err(failure) => failure.page(&flow, link.is_some()),
+    }
 }
 
 /// Sends the browser to `authorize`, the provider's authorization request of a sign-in of `flow`,
 /// with the cookie that binds its `state` to the browser.
-pub(crate) fn redirect(
-    settings: &SignInSettings,
-    flow: &Flow,
-    authorize: &str,
-    state: &str,
-) -> Response {
+fn redirect(settings: &SignInSettings, flow: &Flow, authorize: &str, state: &str) -> Response {
     let mut response = StatusCode::FOUND.into_response();
     let headers = response.headers_mut();
     headers.insert(
@@ -201,14 +273,16 @@ pub(crate) fn redirect(
     response
 }
 
-/// The return address and the secrets of the sign-in of `flow` whose `state` the callback's
-/// `query` gives, if the browser's cookie binds that `state` and it works; it works no more.
-pub(crate) async fn take(
-    db: &PgPool,
-    flow: &Flow<'_>,
-    headers: &HeaderMap,
-    query: Option<&str>,
-) -> Result<(String, Option<Secrets>), Failure> {
+/// A sign-in in progress, as its callback takes it.
+struct Taken {
+    return_to: String,
+    secrets: Secrets,
+    /// A link's web session, by its token's SHA-256; `None` for a sign-in.
+    link: Option<Vec<u8>>,
+}
+
+/// The SHA-256 of the `state` that the callback's `query` gives, if the browser's cookie binds it.
+fn bound_state(headers: &HeaderMap, query: Option<&str>) -> Result<Vec<u8>, Failure> {
     let given = param(query, "state")
         .filter(|given| !given.is_empty())
         .ok_or(Failure::Refused("the sign-in has no state."))?;
@@ -216,43 +290,175 @@ pub(crate) async fn take(
     if !cookies(headers, STATE_COOKIE).any(|cookie| digest(cookie) == hash) {
         return Err(Failure::Refused("this browser did not start this sign-in."));
     }
-    let (return_to, nonce, verifier): (String, Option<String>, Option<String>) = sqlx::query_as(
-        "DELETE FROM sign_in_states WHERE state_hash = $1 AND provider = $2 AND expires_at > now()
-         RETURNING return_to, nonce, code_verifier",
+    Ok(hash)
+}
+
+/// The sign-in of `flow` whose `state` the callback's `query` gives, if the browser's cookie binds
+/// that `state` and it works; it works no more.
+async fn take(
+    db: &PgPool,
+    flow: &Flow<'_>,
+    headers: &HeaderMap,
+    query: Option<&str>,
+) -> Result<Taken, Failure> {
+    let hash = bound_state(headers, query)?;
+    let (return_to, verifier, nonce, link): (String, String, Option<String>, Option<Vec<u8>>) =
+        sqlx::query_as(
+            "DELETE FROM sign_in_states
+             WHERE state_hash = $1 AND provider = $2 AND expires_at > now()
+             RETURNING return_to, code_verifier, nonce, link_session",
+        )
+        .bind(&hash)
+        .bind(flow.provider)
+        .fetch_optional(db)
+        .await
+        .map_err(Failure::Database)?
+        .ok_or(Failure::Refused("the sign-in expired or was used."))?;
+    Ok(Taken {
+        return_to,
+        secrets: Secrets { verifier, nonce },
+        link,
+    })
+}
+
+/// The page that opens a link's callback of `flow` with `query` again from this server, once, if
+/// the request lacks the cookie of the link's session: so does the provider's redirect from another
+/// site, as browsers send `SameSite=Strict` cookies only from this server's pages. `None` for any
+/// other request.
+async fn hop(
+    db: &PgPool,
+    settings: &SignInSettings,
+    flow: &Flow<'_>,
+    headers: &HeaderMap,
+    query: Option<&str>,
+) -> Option<Response> {
+    let hash = bound_state(headers, query).ok()?;
+    // Once: a browser without that cookie then meets the refusal, not a loop.
+    let reopened = sqlx::query(
+        "UPDATE sign_in_states SET reopened = true
+         WHERE state_hash = $1 AND provider = $2 AND expires_at > now() AND NOT reopened
+             AND link_session IS NOT NULL AND link_session <> ALL($3)",
     )
     .bind(&hash)
     .bind(flow.provider)
-    .fetch_optional(db)
+    .bind(session_hashes(headers))
+    .execute(db)
     .await
-    .map_err(Failure::Database)?
-    .ok_or(Failure::Refused("the sign-in expired or was used."))?;
-    let secrets = nonce
-        .zip(verifier)
-        .map(|(nonce, verifier)| Secrets { nonce, verifier });
-    Ok((return_to, secrets))
+    .ok()?;
+    if reopened.rows_affected() == 0 {
+        return None;
+    }
+    let again = escape(&format!(
+        "{}?{}",
+        settings.public_url.at(flow.callback),
+        query.unwrap_or_default()
+    ));
+    let body = format!(
+        "<meta http-equiv=\"refresh\" content=\"0;url={again}\"><p>Linking. <a href=\"{again}\">Continue</a></p>"
+    );
+    Some(page(StatusCode::OK, "Linking", &body))
+}
+
+/// The provider's callback with `query`: checks `state`, then signs the person it brings back in,
+/// finding or creating their account, or links their method to the account of the link's session.
+pub(crate) async fn callback_with<P: Provider>(
+    db: &PgPool,
+    settings: &SignInSettings,
+    provider: &P,
+    headers: &HeaderMap,
+    query: Option<&str>,
+) -> Response {
+    let flow = provider.flow();
+    if let Some(hop) = hop(db, settings, &flow, headers, query).await {
+        return hop;
+    }
+    let taken = match take(db, &flow, headers, query).await {
+        Ok(taken) => taken,
+        Err(failure) => return failure.page(&flow, false),
+    };
+    let link = taken.link.is_some();
+    finish(db, settings, provider, &flow, headers, query, taken)
+        .await
+        .unwrap_or_else(|failure| failure.page(&flow, link))
+}
+
+/// The page that ends the sign-in or the link `taken`, whose provider's callback has `query`.
+async fn finish<P: Provider>(
+    db: &PgPool,
+    settings: &SignInSettings,
+    provider: &P,
+    flow: &Flow<'_>,
+    headers: &HeaderMap,
+    query: Option<&str>,
+    taken: Taken,
+) -> Result<Response, Failure> {
+    let Taken {
+        return_to,
+        secrets,
+        link,
+    } = taken;
+    if let Some(session) = &link
+        && !session_hashes(headers).contains(session)
+    {
+        return Err(Failure::Session(
+            "this browser is not under the session that started the link.",
+        ));
+    }
+    let identity = provider.identify(settings, query, secrets).await?;
+    let method = Method {
+        provider: flow.provider,
+        subject: identity.subject,
+        login: identity.login.as_deref(),
+    };
+    match link {
+        Some(session) => {
+            let added = links::add(db, &session, &method).await?;
+            Ok(links::linked_page(settings, flow, added, &return_to))
+        }
+        None => {
+            let session = accounts::sign_in(db, &method, &identity.source)
+                .await
+                .map_err(Failure::Database)?;
+            Ok(signed_in_page(settings, flow, &session, &return_to))
+        }
+    }
 }
 
 /// The page that ends a sign-in of `flow` in the web session `session` and sends the browser to
 /// `return_to`.
-pub(crate) fn signed_in_page(
+fn signed_in_page(
     settings: &SignInSettings,
     flow: &Flow,
     session: &str,
+    return_to: &str,
+) -> Response {
+    let mut response = refresh_page(settings, flow, "Signed in", "Signed in.", return_to);
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        settings.cookie(SESSION_COOKIE, session, "/", "Strict", None),
+    );
+    response
+}
+
+/// The page of `title` that says `done` of a sign-in or link of `flow`, sends the browser to
+/// `return_to` and removes the cookie that bound its `state`.
+pub(crate) fn refresh_page(
+    settings: &SignInSettings,
+    flow: &Flow,
+    title: &str,
+    done: &str,
     return_to: &str,
 ) -> Response {
     // A page, not a redirect: the browser's navigation to the return page then starts on this
     // site, so it carries the `SameSite=Strict` session cookie.
     let to = escape(return_to);
     let body = format!(
-        "<meta http-equiv=\"refresh\" content=\"0;url={to}\"><p>Signed in. <a href=\"{to}\">Continue</a></p>"
+        "<meta http-equiv=\"refresh\" content=\"0;url={to}\"><p>{done} <a href=\"{to}\">Continue</a></p>"
     );
-    let mut response = page(StatusCode::OK, "Signed in", &body);
-    let headers = response.headers_mut();
-    headers.append(
-        header::SET_COOKIE,
-        settings.cookie(SESSION_COOKIE, session, "/", "Strict", None),
-    );
-    headers.append(header::SET_COOKIE, settings.state_cookie(flow, "", 0));
+    let mut response = page(StatusCode::OK, title, &body);
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, settings.state_cookie(flow, "", 0));
     response
 }
 
@@ -289,6 +495,11 @@ fn cookies<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'
         })
 }
 
+/// The SHA-256 of each session token in the request's cookies.
+pub(crate) fn session_hashes(headers: &HeaderMap) -> Vec<Vec<u8>> {
+    cookies(headers, SESSION_COOKIE).map(digest).collect()
+}
+
 /// The answer while the server has no GitHub settings.
 pub(crate) fn off() -> Response {
     problem(
@@ -299,63 +510,139 @@ pub(crate) fn off() -> Response {
     )
 }
 
-/// `GET /auth/github`: sends the browser to GitHub with a new `state`, bound to it by a cookie.
+impl Provider for GitHubApp {
+    fn flow(&self) -> Flow<'_> {
+        GITHUB_FLOW
+    }
+
+    async fn authorize(
+        &self,
+        settings: &SignInSettings,
+        state: &str,
+        secrets: &Secrets,
+        _link: bool,
+    ) -> Result<String, Failure> {
+        let mut authorize = Url::parse(&self.url.at("/login/oauth/authorize"))
+            .expect("GitHub's address and a path make a URL");
+        authorize
+            .query_pairs_mut()
+            .append_pair("client_id", &self.client_id)
+            .append_pair("redirect_uri", &settings.public_url.at(CALLBACK_PATH))
+            .append_pair("state", state)
+            .append_pair("code_challenge", &secrets.challenge())
+            .append_pair("code_challenge_method", "S256");
+        Ok(authorize.into())
+    }
+
+    async fn identify(
+        &self,
+        settings: &SignInSettings,
+        query: Option<&str>,
+        secrets: Secrets,
+    ) -> Result<Identity, Failure> {
+        if param(query, "error").is_some() {
+            return Err(Failure::Refused("GitHub did not authorize it."));
+        }
+        let code = param(query, "code")
+            .filter(|code| !code.is_empty())
+            .ok_or(Failure::Refused("GitHub gave no code."))?;
+        let github = self.clone();
+        let callback = settings.public_url.at(CALLBACK_PATH);
+        let user =
+            tokio::task::spawn_blocking(move || github.user(&code, &callback, &secrets.verifier))
+                .await
+                .map_err(|err| Failure::Provider(format!("the request to GitHub failed: {err}")))?
+                .map_err(|refusal| match refusal {
+                    Refusal::Code => Failure::Refused("GitHub refused the code."),
+                    Refusal::GitHub(reason) => Failure::Provider(reason),
+                })?;
+        Ok(Identity {
+            subject: user.id.to_string(),
+            source: user.login.clone(),
+            login: Some(user.login),
+        })
+    }
+}
+
+/// `GET /auth/github`: sends the browser to GitHub with a new `state`, bound to it by a cookie, and
+/// a PKCE challenge.
 pub(crate) async fn start(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
     let Some((settings, github)) = self::github(&state) else {
         return off();
     };
-    let flow = &GITHUB_FLOW;
-    let token = match begin(&state.db, settings, flow, query.as_deref(), None).await {
-        Ok(token) => token,
-        Err(failure) => return failure.page(flow),
-    };
-    let mut authorize = Url::parse(&github.url.at("/login/oauth/authorize"))
-        .expect("GitHub's address and a path make a URL");
-    authorize
-        .query_pairs_mut()
-        .append_pair("client_id", &github.client_id)
-        .append_pair("redirect_uri", &settings.public_url.at(CALLBACK_PATH))
-        .append_pair("state", &token);
-    redirect(settings, flow, authorize.as_str(), &token)
+    let return_to = param(query.as_deref(), "return_to");
+    start_with(&state.db, settings, github, return_to.as_deref(), None).await
 }
 
-/// Why a sign-in signed no one in.
+/// `GET /auth/github/callback`: checks `state`, reads the GitHub user, then finds or creates their
+/// account and starts a session, or links their method.
+pub(crate) async fn callback(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let Some((settings, github)) = self::github(&state) else {
+        return off();
+    };
+    callback_with(&state.db, settings, github, &headers, query.as_deref()).await
+}
+
+/// Why a sign-in signed no one in, or a link linked nothing.
 #[derive(Debug)]
 pub(crate) enum Failure {
     /// The request or the person's answer: a missing, wrong, expired or used `state`, no code, or
     /// a refused one.
     Refused(&'static str),
+    /// A link's callback is not under the web session that started it, or that session ended.
+    Session(&'static str),
+    /// A link of a method that another account has.
+    OtherAccount,
     /// The provider failed, is unreachable or refused the server's client.
     Provider(String),
     Database(sqlx::Error),
 }
 
 impl Failure {
-    /// The page that says the sign-in of `flow` failed; failures of the provider or the database
-    /// also go to the server's output.
-    pub(crate) fn page(self, flow: &Flow) -> Response {
+    /// The page that says the sign-in of `flow`, or its link if `link`, failed; failures of the
+    /// provider or the database also go to the server's output.
+    pub(crate) fn page(self, flow: &Flow, link: bool) -> Response {
         let name = flow.name;
+        let what = if link { "link" } else { "sign-in" };
         let (status, message) = match self {
             Failure::Refused(message) => (StatusCode::BAD_REQUEST, message.to_owned()),
+            Failure::Session(message) => (StatusCode::FORBIDDEN, message.to_owned()),
+            Failure::OtherAccount => (
+                StatusCode::CONFLICT,
+                format!(
+                    "this {name} account signs in to another Skald account. Accounts never merge."
+                ),
+            ),
             Failure::Provider(reason) => {
-                eprintln!("skald-server: {name} sign-in failed: {reason}");
+                eprintln!("skald-server: {name} {what} failed: {reason}");
                 (
                     StatusCode::BAD_GATEWAY,
-                    format!("{name} did not complete the sign-in."),
+                    format!("{name} did not complete the {what}."),
                 )
             }
             Failure::Database(err) => {
-                eprintln!("skald-server: {name} sign-in failed: the database failed: {err}");
+                eprintln!("skald-server: {name} {what} failed: the database failed: {err}");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "The server failed.".to_owned(),
                 )
             }
         };
-        let body = format!(
-            "<p>Not signed in: {message} <a href=\"{}\">Sign in again</a></p>",
-            flow.start
-        );
+        let body = if link {
+            format!(
+                "<p>Not linked: {message} <a href=\"{}\">Your sign-in methods</a></p>",
+                links::PAGE_PATH
+            )
+        } else {
+            format!(
+                "<p>Not signed in: {message} <a href=\"{}\">Sign in again</a></p>",
+                flow.start
+            )
+        };
         page(status, "Sign-in failed", &body)
     }
 }
@@ -378,6 +665,49 @@ pub(crate) fn page(status: StatusCode, title: &str, body: &str) -> Response {
         .into_response()
 }
 
+/// A page of a form that posts to this server, as [`page`] serves pages, under the content security
+/// policy `policy`. Its referrer goes only to this server: under `no-referrer`, browsers state the
+/// origin of its form's submissions as `null`.
+pub(crate) fn form_page(
+    status: StatusCode,
+    title: &str,
+    body: &str,
+    policy: &'static str,
+) -> Response {
+    let mut response = page(status, title, body);
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(policy),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    response
+}
+
+/// The answer of a form page under `policy`, as [`form_page`] serves it, when the database fails at
+/// `doing`, such as `read a session`; the failure also goes to the server's output.
+pub(crate) fn form_page_failed(doing: &str, err: sqlx::Error, policy: &'static str) -> Response {
+    eprintln!("skald-server: cannot {doing}: {err}");
+    form_page(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed",
+        "<p>The server failed. Try again later.</p>",
+        policy,
+    )
+}
+
+/// Whether the request comes from a page of this server, as its `Origin` says: browsers state the
+/// origin of every `POST`.
+pub(crate) fn from_this_server(settings: &SignInSettings, headers: &HeaderMap) -> bool {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    origin == Some(settings.public_url.origin().as_str())
+}
+
 /// `text` safe in HTML text and attributes.
 pub(crate) fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -385,60 +715,6 @@ pub(crate) fn escape(text: &str) -> String {
         .replace('\'', "&#39;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-/// `GET /auth/github/callback`: checks `state`, reads the GitHub user, finds or creates their
-/// account and starts a session.
-pub(crate) async fn callback(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    RawQuery(query): RawQuery,
-) -> Response {
-    let Some((settings, github)) = self::github(&state) else {
-        return off();
-    };
-    let flow = &GITHUB_FLOW;
-    match finish(&state.db, settings, github, &headers, query.as_deref()).await {
-        Ok((session, return_to)) => signed_in_page(settings, flow, &session, &return_to),
-        Err(failure) => failure.page(flow),
-    }
-}
-
-/// The session token and the return address of a sign-in that GitHub's callback with `query`
-/// completes.
-async fn finish(
-    db: &PgPool,
-    settings: &SignInSettings,
-    github: &GitHubApp,
-    headers: &HeaderMap,
-    query: Option<&str>,
-) -> Result<(String, String), Failure> {
-    let (return_to, _) = take(db, &GITHUB_FLOW, headers, query).await?;
-    if param(query, "error").is_some() {
-        return Err(Failure::Refused("GitHub did not authorize it."));
-    }
-    let code = param(query, "code")
-        .filter(|code| !code.is_empty())
-        .ok_or(Failure::Refused("GitHub gave no code."))?;
-
-    let github = github.clone();
-    let callback = settings.public_url.at(CALLBACK_PATH);
-    let user = tokio::task::spawn_blocking(move || github.user(&code, &callback))
-        .await
-        .map_err(|err| Failure::Provider(format!("the request to GitHub failed: {err}")))?
-        .map_err(|refusal| match refusal {
-            Refusal::Code => Failure::Refused("GitHub refused the code."),
-            Refusal::GitHub(reason) => Failure::Provider(reason),
-        })?;
-    let method = Method {
-        provider: GITHUB,
-        subject: user.id.to_string(),
-        login: Some(&user.login),
-    };
-    let session = accounts::sign_in(db, &method, &user.login)
-        .await
-        .map_err(Failure::Database)?;
-    Ok((session, return_to))
 }
 
 /// `Session` in the spec: a session's account.
@@ -483,12 +759,7 @@ pub(crate) async fn web_session(
     db: &PgPool,
     headers: &HeaderMap,
 ) -> Result<Option<Session>, sqlx::Error> {
-    find(
-        db,
-        "web",
-        cookies(headers, SESSION_COOKIE).map(digest).collect(),
-    )
-    .await
+    find(db, "web", session_hashes(headers)).await
 }
 
 /// The token of the request's only `Authorization` header, `Bearer <token>`; `None` without one,
@@ -600,6 +871,15 @@ mod tests {
         assert_eq!(
             escape(r#"<a href="x">'&'</a>"#),
             "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
+        );
+    }
+
+    #[test]
+    fn challenge_is_s256_of_the_verifier() {
+        // RFC 7636, Appendix B.
+        assert_eq!(
+            s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
     }
 
