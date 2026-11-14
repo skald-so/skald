@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/skald-so/skald/compare/v0.1.0...v0.1.1) - 2026-11-14
+
+### Added
+
+- sign in on a self-hosted server with GitHub and Google ([#199](https://github.com/skald-so/skald/pull/199))
+- *(server)* take websocket connections only as a certified device ([#197](https://github.com/skald-so/skald/pull/197))
+- bring up a self-hosted server by docker compose with https ([#198](https://github.com/skald-so/skald/pull/198))
+- *(server)* check attachment storage in a directory or a bucket at start ([#195](https://github.com/skald-so/skald/pull/195))
+- *(proto)* encode and decode the delivery frames ([#193](https://github.com/skald-so/skald/pull/193))
+- *(client)* isolate an agent to its folder's space ([#191](https://github.com/skald-so/skald/pull/191))
+- give agents addresses in their folder's space ([#189](https://github.com/skald-so/skald/pull/189))
+- *(server)* check a server's google sign-in without a person ([#187](https://github.com/skald-so/skald/pull/187))
+- *(client)* bind a folder to a space by a rule or an approved .skald.toml ([#183](https://github.com/skald-so/skald/pull/183))
+- *(server)* limit the spaces an account owns ([#185](https://github.com/skald-so/skald/pull/185))
+- *(server)* sign machines in by device flow with any sign-in method ([#178](https://github.com/skald-so/skald/pull/178))
+- *(crypto)* wrap history keys to browsers and the recovery key ([#186](https://github.com/skald-so/skald/pull/186))
+- *(crypto)* chain history keys and seal signed message copies ([#182](https://github.com/skald-so/skald/pull/182))
+- give each account a personal space that its first machine signs ([#179](https://github.com/skald-so/skald/pull/179))
+- *(release)* check every published release before main moves ([#145](https://github.com/skald-so/skald/pull/145))
+- *(crypto)* seal and open stateless hpke messages ([#180](https://github.com/skald-so/skald/pull/180))
+- *(crypto)* see a channel's epoch and members from outside its group ([#177](https://github.com/skald-so/skald/pull/177))
+- *(client)* create channels in a space by signed roster revisions ([#168](https://github.com/skald-so/skald/pull/168))
+- *(server)* link a second sign-in method to an account ([#171](https://github.com/skald-so/skald/pull/171))
+- *(crypto)* keep only the 3 past epochs for forward secrecy ([#172](https://github.com/skald-so/skald/pull/172))
+- *(crypto)* commit removes and empty commits and check others' commits ([#165](https://github.com/skald-so/skald/pull/165))
+
+### Fixed
+
+- *(client)* retry a busy binary in skald update and fix the windows test flakes ([#181](https://github.com/skald-so/skald/pull/181))
+- *(client)* explain github's api rate limit and use GITHUB_TOKEN in skald update ([#174](https://github.com/skald-so/skald/pull/174))
+- *(client)* print plain Windows paths and clean up after the update tests ([#160](https://github.com/skald-so/skald/pull/160))
+
+### Other
+
+- *(protocol)* say that an addressee does not make a message private ([#196](https://github.com/skald-so/skald/pull/196))
+- add wake modes, permission prompt alerts and task result checks ([#194](https://github.com/skald-so/skald/pull/194))
+- share roster member lookup and the spaces test helpers ([#192](https://github.com/skald-so/skald/pull/192))
+- *(server)* share sign-in code between github and google ([#190](https://github.com/skald-so/skald/pull/190))
+- *(crypto)* share history signature checks and test fixtures ([#188](https://github.com/skald-so/skald/pull/188))
+- *(release)* share the helpers the release scripts and tests copied ([#184](https://github.com/skald-so/skald/pull/184))
+- *(release)* open the release pr with git-cliff instead of release-plz ([#176](https://github.com/skald-so/skald/pull/176))
+- drive one headless shell per test binary ([#173](https://github.com/skald-so/skald/pull/173))
+- split the rust checks and run every part after a merge ([#166](https://github.com/skald-so/skald/pull/166))
+- *(deps)* group renovate's updates into a weekly pr ([#175](https://github.com/skald-so/skald/pull/175))
+- add the README ([#164](https://github.com/skald-so/skald/pull/164))
+- keep only line tables in debug builds and no debug info for dependencies ([#163](https://github.com/skald-so/skald/pull/163))
+
 ## [0.1.0](https://github.com/skald-so/skald/releases/tag/v0.1.0) - 2026-11-13
 
 ### Added
