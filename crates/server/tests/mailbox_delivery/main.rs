@@ -39,5 +39,6 @@ mod scene;
 
 mod acks;
 mod catch_up;
+mod catch_up_end;
 mod connections;
 mod receipts;
