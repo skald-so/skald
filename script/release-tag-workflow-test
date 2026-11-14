@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tests how the workflows tag releases, beyond script/release-pr-workflow-test:
 #   - one job runs script/release-tag, the tagging job, in the workflow named in
-#     script/lib/release.sh, which runs only on pushes to dev; it runs on every push, and no
-#     concurrency group holds it back, so a newer push cannot cancel the tagging of a Release PR's
+#     script/lib/release.sh, which runs only on pushes to dev; it runs on every push, no condition
+#     on its steps up to the tagging, and no concurrency group holds it back, so a newer push cannot cancel the tagging of a Release PR's
 #     merge while it waits;
 #   - it checks out the pushed commit with the whole history and the tags, so script/release-tag
 #     tags that commit and sees an already tagged version; script/release-tag runs only after
@@ -82,8 +82,11 @@ check "no concurrency group holds the tagging job back: none, or one per commit 
   '(tagging.concurrency // .concurrency) as $c | $c == null
     or ($c | if type == "object" then .group else . end
       | test("github\\.(sha|run_id|event\\.after)"))'
-check "no step before script/release-tag has a condition" \
-  'tagging.steps[:index_of(is_release)] | all(has("if") | not)'
+check "no step before script/release-tag has a condition, nor the step that runs it when that step
+    runs script/release-pr-merged itself" \
+  '(tagging.steps[:index_of(is_release)] | all(has("if") | not))
+    and (tagging.steps[index_of(is_release)]
+      | (.run | test("script/release-pr-merged") | not) or (has("if") | not))'
 
 # The checkout and the gate.
 check "the tagging job checks out the pushed commit, with the whole history and the tags" \
