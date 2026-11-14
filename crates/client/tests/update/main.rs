@@ -12,12 +12,16 @@
 //! package's launcher writes it beside the `skald` it unpacks.
 
 mod release;
+#[allow(dead_code)]
+#[path = "../../src/test_dir.rs"]
+mod test_dir;
 #[path = "../common/tls.rs"]
 mod tls;
 
 use std::fmt;
 use std::fs;
 use std::net::TcpListener;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
 use std::sync::Arc;
@@ -26,6 +30,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use release::{Certificates, Proxy, Release, StandIn, TARGET, archive, checksum, checksum_of};
+use test_dir::TestDir;
 
 /// The running version: the version of the `skald` these tests build.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -70,30 +75,37 @@ fn older() -> String {
     }
 }
 
-/// A machine with a copy of `skald` in a temporary directory, removed on drop.
+/// A machine with a copy of `skald` in a temporary directory, `skald-update-<name>-<pid>`, removed
+/// on drop.
 struct Machine {
-    dir: PathBuf,
     skald: PathBuf,
     original: Vec<u8>,
     certificates: Certificates,
+    /// Last: it goes once the rest of the machine has.
+    dir: TestDir,
 }
 
 impl Machine {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("skald-update-{name}-{}", process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("bin")).expect("create the machine's directory");
+        Self::with_certificates(name, release::certificates)
+    }
+
+    /// The machine `name`, with the certificates `make` makes in a directory of it.
+    fn with_certificates(name: &str, make: impl FnOnce(&Path) -> Certificates) -> Self {
+        // Removed on drop from here on: also when making the machine fails, before it exists.
+        let dir = TestDir::named(&format!("skald-update-{name}-{}", process::id()));
+        fs::create_dir(dir.join("bin")).expect("create the machine's directory");
         let skald = dir
             .join("bin")
             .join(format!("skald{}", std::env::consts::EXE_SUFFIX));
         fs::copy(env!("CARGO_BIN_EXE_skald"), &skald).expect("copy skald");
         let original = fs::read(&skald).expect("read the copy of skald");
-        let certificates = release::certificates(&dir.join("tls"));
+        let certificates = make(&dir.join("tls"));
         Machine {
-            dir,
             skald,
             original,
             certificates,
+            dir,
         }
     }
 
@@ -165,12 +177,6 @@ impl Machine {
             fs::read(&self.skald).ok().as_deref() == Some(&self.original[..]),
             "the copy of skald changed"
         );
-    }
-}
-
-impl Drop for Machine {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -482,6 +488,20 @@ fn npm_install_is_left_alone() {
         run.says("npm"),
         "skald update does not say to update through npm: {run}"
     );
+    // It names the copy of skald as people write its path: on Windows without the prefix `\\?\`
+    // that `fs::canonicalize` gives.
+    let named = run
+        .stderr
+        .trim()
+        .strip_prefix("skald: ")
+        .and_then(|error| error.strip_suffix(" is installed from npm: update it through npm"))
+        .unwrap_or_else(|| panic!("the error does not name the copy of skald: {run}"));
+    assert!(!named.starts_with(r"\\?\"), "a verbatim path: {run}");
+    assert_eq!(
+        fs::canonicalize(named).ok(),
+        fs::canonicalize(&machine.skald).ok(),
+        "the error names another file than the copy of skald: {run}"
+    );
     assert_eq!(
         releases.archives(),
         Vec::<String>::new(),
@@ -600,4 +620,40 @@ fn files_set_aside_by_earlier_updates_are_removed() {
     assert_current(&machine, &releases, &run);
     assert!(!aside.exists(), "the file set aside is still there");
     assert!(other.exists(), "another program's file is removed");
+}
+
+/// A machine's directory goes with the machine once `skald` ran from it, also when the test fails,
+/// and also when making the machine fails before it exists.
+#[test]
+fn machine_leaves_no_directory_also_when_a_test_fails() {
+    let machine = Machine::new("removed");
+    machine.assert_unchanged();
+    let dir = machine.dir.to_path_buf();
+    drop(machine);
+    assert!(!dir.exists(), "{dir:?} is left");
+
+    let mut dir = None;
+    let failed = panic::catch_unwind(AssertUnwindSafe(|| {
+        let machine = Machine::new("test-fails");
+        machine.assert_unchanged();
+        dir = Some(machine.dir.to_path_buf());
+        panic!("the test fails");
+    }));
+    assert!(failed.is_err(), "the test did not fail");
+    let dir = dir.expect("the machine was made");
+    assert!(!dir.exists(), "{dir:?} is left");
+
+    // As on a machine without openssl: the copy of skald and the openssl config are there.
+    let mut dir = None;
+    let failed = panic::catch_unwind(AssertUnwindSafe(|| {
+        Machine::with_certificates("making-fails", |tls| {
+            fs::create_dir(tls).expect("create the certificates' directory");
+            fs::write(tls.join("openssl.cnf"), "").expect("write the openssl config");
+            dir = tls.parent().map(Path::to_path_buf);
+            panic!("openssl fails");
+        })
+    }));
+    assert!(failed.is_err(), "making the machine did not fail");
+    let dir = dir.expect("the machine's directory was made");
+    assert!(!dir.exists(), "{dir:?} is left");
 }

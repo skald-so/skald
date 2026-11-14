@@ -399,7 +399,7 @@ How each library meets the requirements of [membership.md](../protocol/membershi
 ## For the crypto core
 The crypto core takes these workarounds from the mls-rs prototype ([mls-rs](#mls-rs)):
 - **Features:** `external_client` for the Delivery Service and the browser, `last_resort_key_package_ext`; `browser` of `mls-rs-crypto-rustcrypto` in WASM.
-- **Storage:** one store implementing `GroupStateStorage` and `KeyPackageStorage` over the local state, with a direct `mls-rs-core` dependency; it also drops a group ("Saving state", "Dropping a group").
+- **Storage:** one store implementing `GroupStateStorage` and `KeyPackageStorage` over the local state, with a direct `mls-rs-core` dependency; it also drops a group ("Saving state", "Dropping a group") and keeps only the prior epochs [MLS profile](../protocol/membership.md#mls-profile) allows: mls-rs trims none in a custom store.
 - **Signing key:** the device's Ed25519 key goes into `SignatureSecretKey` as the 64 bytes of the seed and the public key ("Signing key format").
 - **Sender:** the device reads the roster before processing, to take the credentials of the sender and the removed members from their leaf indexes ("Sender"). An external Commit's joiner comes from the new epoch's roster ("Processing an external Commit").
 - **Checks before saving:** a processed Commit's sender, Adds, Removes and `authenticated_data`, and a Welcome's signer and members, are checked before `write_to_storage()`; a failed check drops the group unsaved ("Reading before merging", "Checking a Welcome").

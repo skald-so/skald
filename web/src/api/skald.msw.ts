@@ -26,6 +26,7 @@ import type {
   RosterRevisionRequest,
   RosterRevisions,
   Session,
+  SignInMethods,
   Space,
   SpaceRequest,
   Spaces,
@@ -190,6 +191,78 @@ export const getPutMasterKeyResponseMock409 = (
 });
 
 export const getPutMasterKeyResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListSignInMethodsResponseMock = (
+  overrideResponse: Partial<Extract<SignInMethods, object>> = {},
+): SignInMethods => ({
+  methods: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    provider: faker.helpers.arrayElement(["github", "google"] as const),
+    linked_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    github_login: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  ...overrideResponse,
+});
+
+export const getListSignInMethodsResponseMock200 = (
+  overrideResponse: Partial<Extract<SignInMethods, object>> = {},
+): SignInMethods => ({
+  methods: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    provider: faker.helpers.arrayElement(["github", "google"] as const),
+    linked_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    github_login: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  ...overrideResponse,
+});
+
+export const getListSignInMethodsResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getListSignInMethodsResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListSignInMethodsResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -1437,6 +1510,135 @@ export const getPutMasterKeyMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getPutMasterKeyResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSignInMethodsMockHandler = (
+  overrideResponse?:
+    | SignInMethods
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<SignInMethods> | SignInMethods),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/sign-in-methods",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSignInMethodsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSignInMethodsMockHandler200 = (
+  overrideResponse?:
+    | SignInMethods
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<SignInMethods> | SignInMethods),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/sign-in-methods",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSignInMethodsResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSignInMethodsMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/sign-in-methods",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSignInMethodsResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSignInMethodsMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/sign-in-methods",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSignInMethodsResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSignInMethodsMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/sign-in-methods",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSignInMethodsResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -3374,6 +3576,7 @@ export const getStoreRosterRevisionMockHandler500 = (
 export const getSkaldAPIMock = () => [
   getGetMasterKeyMockHandler(),
   getPutMasterKeyMockHandler(),
+  getListSignInMethodsMockHandler(),
   getPutUsernameMockHandler(),
   getGetDevicesMockHandler(),
   getRegisterDeviceMockHandler(),

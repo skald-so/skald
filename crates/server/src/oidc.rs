@@ -245,13 +245,14 @@ impl OidcProvider {
 
     /// The authorization request (OpenID Connect Core 1.0, §3.1.2.1) of a sign-in that the provider
     /// sends back to `redirect_uri` with `state`, its ID token with `nonce`, and whose PKCE
-    /// `challenge` is S256's: asking for `openid` and `email` only.
+    /// `challenge` is S256's: asking for `openid` and `email` only, with `prompt` if given.
     pub(crate) fn authorization_url(
         &self,
         redirect_uri: &str,
         state: &str,
         nonce: &str,
         challenge: &str,
+        prompt: Option<&str>,
     ) -> Url {
         let mut url = self.authorization_endpoint.clone();
         url.query_pairs_mut()
@@ -263,6 +264,9 @@ impl OidcProvider {
             .append_pair("nonce", nonce)
             .append_pair("code_challenge", challenge)
             .append_pair("code_challenge_method", "S256");
+        if let Some(prompt) = prompt {
+            url.query_pairs_mut().append_pair("prompt", prompt);
+        }
         url
     }
 

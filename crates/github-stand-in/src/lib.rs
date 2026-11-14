@@ -3,9 +3,11 @@
 //! - `GET /login/oauth/authorize`: a person signed in to the stand-in in their browser authorizes the
 //!   app and goes back to `redirect_uri` with `code` and `state`: at once, as after an earlier
 //!   authorization, or by a link on a page that asks first, as at the first one; without that
-//!   sign-in, a sign-in page that leads nowhere;
+//!   sign-in, a sign-in page that leads nowhere. A PKCE `code_challenge` (RFC 7636), with
+//!   `code_challenge_method` `S256` or `plain`, the default, binds the code to its verifier;
 //! - `POST /login/oauth/access_token`: gives a token for a code, once, to the app's client ID and
-//!   secret, in the body or by HTTP Basic; a refusal is a `200` with `error`;
+//!   secret, in the body or by HTTP Basic, and, for a code with a challenge, only with its
+//!   `code_verifier`; a refusal is a `200` with `error`;
 //! - `GET /user`: the user of a token, `Authorization: Bearer <token>` or `token <token>`, to a
 //!   request with a `User-Agent`.
 //!
@@ -34,9 +36,10 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
 /// The cookie that holds who is signed in to the stand-in in a browser: `<id>`, or `<id>.ask` when
@@ -113,6 +116,8 @@ pub struct Request {
 struct Grant {
     user: u64,
     redirect_uri: Option<String>,
+    /// `code_challenge` and `code_challenge_method`, if the request had a challenge.
+    challenge: Option<(String, String)>,
     used: bool,
 }
 
@@ -315,6 +320,25 @@ async fn authorize(
             return (StatusCode::BAD_REQUEST, Html("<h1>No redirect_uri</h1>")).into_response();
         }
     };
+    let challenge = match (
+        params.get("code_challenge"),
+        params.get("code_challenge_method").map(String::as_str),
+    ) {
+        (None, None) => None,
+        (Some(challenge), method @ (None | Some("S256" | "plain"))) => {
+            Some((challenge.clone(), method.unwrap_or("plain").to_owned()))
+        }
+        _ => {
+            return back(
+                &redirect_uri,
+                &[
+                    ("error", "invalid_request"),
+                    ("error_description", "Invalid code_challenge_method."),
+                ],
+                state,
+            );
+        }
+    };
     let Some((user, asks)) = signed_in(&shared, &headers) else {
         return Html("<h1>Sign in to GitHub</h1>").into_response();
     };
@@ -341,6 +365,7 @@ async fn authorize(
         Grant {
             user,
             redirect_uri: params.get("redirect_uri").cloned(),
+            challenge,
             used: false,
         },
     );
@@ -482,6 +507,16 @@ async fn access_token(
             "The redirect_uri MUST match the registered callback URL for this application.",
         );
     }
+    if let Some((challenge, method)) = &grant.challenge {
+        let verifier = params.get("code_verifier").map(String::as_str);
+        if !verifier.is_some_and(|verifier| verifies(verifier, challenge, method)) {
+            return token_error(
+                json,
+                "bad_verification_code",
+                "The code_verifier does not match the code_challenge.",
+            );
+        }
+    }
     grant.used = true;
     let user = grant.user;
     let token = format!("gho_{}", random_hex(18));
@@ -495,6 +530,14 @@ async fn access_token(
         Json(json!({ "access_token": token, "token_type": "bearer", "scope": "" })).into_response()
     } else {
         form_response(&fields)
+    }
+}
+
+/// Whether `verifier` is the PKCE verifier of `challenge` under `method` (RFC 7636, §4.6).
+fn verifies(verifier: &str, challenge: &str, method: &str) -> bool {
+    match method {
+        "S256" => URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())) == challenge,
+        _ => verifier == challenge,
     }
 }
 

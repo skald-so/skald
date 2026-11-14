@@ -17,6 +17,7 @@ import type {
   RosterRevisionRequest,
   RosterRevisions,
   Session,
+  SignInMethods,
   Space,
   SpaceRequest,
   Spaces,
@@ -179,6 +180,65 @@ export const putMasterKey = async (
     status: res.status,
     headers: res.headers,
   } as putMasterKeyResponse;
+};
+
+export type listSignInMethodsResponse200 = {
+  data: SignInMethods;
+  status: 200;
+};
+
+export type listSignInMethodsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listSignInMethodsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listSignInMethodsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listSignInMethodsResponseSuccess = listSignInMethodsResponse200 & {
+  headers: Headers;
+};
+export type listSignInMethodsResponseError = (
+  | listSignInMethodsResponse400
+  | listSignInMethodsResponse401
+  | listSignInMethodsResponse500
+) & {
+  headers: Headers;
+};
+
+export type listSignInMethodsResponse =
+  listSignInMethodsResponseSuccess | listSignInMethodsResponseError;
+
+export const getListSignInMethodsUrl = () => {
+  return `/account/sign-in-methods`;
+};
+
+/**
+ * @summary The account's sign-in methods
+ */
+export const listSignInMethods = async (
+  options?: RequestInit,
+): Promise<listSignInMethodsResponse> => {
+  const res = await fetch(getListSignInMethodsUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSignInMethodsResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listSignInMethodsResponse;
 };
 
 export type putUsernameResponse204 = {
