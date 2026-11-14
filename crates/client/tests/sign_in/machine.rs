@@ -115,16 +115,24 @@ impl Machine {
 
     /// Starts `skald` with `args`.
     pub fn start(&self, args: &[&str]) -> Run {
-        self.spawn(args, Stdio::null())
+        self.spawn(args, Stdio::null(), None)
+    }
+
+    /// Starts `skald` with `args` in the working directory `dir`.
+    pub fn start_in(&self, dir: &Path, args: &[&str]) -> Run {
+        self.spawn(args, Stdio::null(), Some(dir))
     }
 
     /// Starts `skald` with `args` and its input open, for [`Run::answer`].
     pub fn start_asking(&self, args: &[&str]) -> Run {
-        self.spawn(args, Stdio::piped())
+        self.spawn(args, Stdio::piped(), None)
     }
 
-    fn spawn(&self, args: &[&str], stdin: Stdio) -> Run {
+    fn spawn(&self, args: &[&str], stdin: Stdio, dir: Option<&Path>) -> Run {
         let mut command = bare_skald();
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
         command
             .args(args)
             .env("PATH", self.root.join("bin"))
