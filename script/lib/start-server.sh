@@ -2,7 +2,7 @@
 # first line of its output, in the background with its output in <log>, and waits until it prints
 # that line or exits, up to 60 s: node may take that long to start on a slow runner. Sets server_pid
 # to its PID and server_port to the port; on a server that did not start, returns 1 and sets
-# server_failure to why. Sourced by script/installers-test and script/npm-package-test.
+# server_failure to why. Sourced by script/lib/release-files.sh.
 start_server() {
   local log=$1 tick
   shift

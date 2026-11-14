@@ -55,46 +55,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-windows=false
-case $(uname -s) in
-  MINGW* | MSYS* | CYGWIN*) windows=true ;;
-esac
-# native <path>: the path as node and npm on this OS take it.
-native() {
-  if $windows; then cygpath -m "$1"; else printf '%s' "$1"; fi
-}
-# sha256 <file>: the file's SHA-256 in hex.
-sha256() {
-  node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$(native "$1")"
-}
-# checksum <archive>: writes <archive>.sha256 as dist writes it: `<hex> *<name>` and a blank line.
-checksum() {
-  printf '%s *%s\n\n' "$(sha256 "$1")" "${1##*/}" >"$1.sha256"
-}
-
-# stand_in <dir> <target> <line>: a skald laid out as dist lays it out in <dir>/skald-client-<target>,
-# which prints <line> for --version, `args:` and each argument in brackets for anything else, and
-# exits with <n> for `exit-with <n>`. Each run appends its own path, symlinks resolved, to the file
-# $STAND_IN_RAN.
-stand_in() {
-  mkdir -p "$1/skald-client-$2"
-  cat >"$1/skald-client-$2/skald" <<EOF
-#!/bin/sh
-if [ -n "\${STAND_IN_RAN:-}" ]; then
-  printf '%s\n' "\$(cd "\$(dirname "\$0")" && pwd -P)/\$(basename "\$0")" >>"\$STAND_IN_RAN"
-fi
-case \${1:-} in
-  --version) echo "$3" ;;
-  exit-with) exit "\$2" ;;
-  *)
-    printf 'args:'
-    for arg in "\$@"; do printf ' [%s]' "\$arg"; done
-    echo
-    ;;
-esac
-EOF
-  chmod 755 "$1/skald-client-$2/skald"
-}
+source "$root/script/lib/release-files.sh"
 
 if [[ $# -eq 3 ]]; then
   release=$1 tag=$2 target=$3
@@ -118,13 +79,8 @@ else
       exit 1
       ;;
   esac
+  stand_in_release "$tmp" "$version"
   release=$tmp/release
-  mkdir -p "$release"
-  for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
-    stand_in "$tmp/build" "$t" "skald $version $t"
-    tar -czf "$release/skald-client-$t.tar.gz" -C "$tmp/build" "skald-client-$t"
-    checksum "$release/skald-client-$t.tar.gz"
-  done
   expected="skald $version $target"
   standin=true
 fi
@@ -174,19 +130,6 @@ for other in v1.2.3 v1.2.3-beta.1; do
   fi
 done
 
-source "$root/script/lib/start-server.sh"
-# serve <dir> <log> <var> [<cert> <key>]: serves the files of <dir> as GitHub serves release files,
-# over HTTPS with the certificate <cert> and its key <key>, each request's path a line of <log>
-# after the port; sets the variable <var> to the server's address, http://127.0.0.1:<port>.
-serve() {
-  local tls=()
-  [[ $# -eq 3 ]] || tls=("$(native "$4")" "$(native "$5")")
-  start_server "$2" node "$(native "$root/script/lib/serve.mjs")" "$(native "$1")" ${tls[@]+"${tls[@]}"} || {
-    echo "npm-package-test: the server of the release files did not start: $server_failure" >&2
-    exit 1
-  }
-  printf -v "$3" '%s' "http://127.0.0.1:$server_port"
-}
 
 # npx_run <root> <url> <args>...: runs `npx skald-so <args>` from the packed package as a user runs
 # it, in an empty directory, with the home, npm cache and config and temporary directory of <root>,
@@ -372,39 +315,8 @@ done
 run_env=()
 
 # The refused releases, each a copy of the release's archive for this machine and its checksum,
-# served on its own: one whose checksum does not match the archive, one with no checksum, one with
-# an empty checksum, and one whose archive was replaced under its checksum.
-refused=(mismatched missing empty replaced)
-refusal() {
-  case $1 in
-    mismatched) echo 'a checksum that does not match the archive' ;;
-    missing) echo 'no checksum of the archive' ;;
-    empty) echo 'an empty checksum of the archive' ;;
-    replaced) echo 'an archive replaced under its checksum' ;;
-  esac
-}
-for case in "${refused[@]}"; do
-  mkdir "$tmp/$case"
-  cp "$release/$archive" "$tmp/$case/"
-  [[ ! -f $release/$archive.sha256 ]] || cp "$release/$archive.sha256" "$tmp/$case/"
-done
-# The SHA-256 of nothing: a well-formed checksum, of another file.
-printf '%s *%s\n\n' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "$archive" \
-  >"$tmp/mismatched/$archive.sha256"
-rm -f "$tmp/missing/$archive.sha256"
-: >"$tmp/empty/$archive.sha256"
-# A skald of its own, laid out as the release's, under the release's checksum.
-if $windows; then
-  mkdir "$tmp/replacement"
-  echo 'skald replaced' >"$tmp/replacement/skald.exe"
-  rm -f "$tmp/replaced/$archive"
-  powershell -NoProfile -Command "Compress-Archive -Force -Path '$(cygpath -w "$tmp/replacement/skald.exe")' -DestinationPath '$(cygpath -w "$tmp/replaced/$archive")'"
-else
-  stand_in "$tmp/replacement" "$target" 'skald replaced'
-  tar -czf "$tmp/replaced/$archive" -C "$tmp/replacement" "skald-client-$target"
-fi
-[[ $(sha256 "$tmp/replaced/$archive") != "$(sha256 "$release/$archive")" ]] ||
-  fail "the replaced archive is the release's own"
+# served on its own.
+refused_releases "$release" "$archive" "$target" "$tmp"
 for case in "${refused[@]}"; do
   serve "$tmp/$case" "$tmp/$case.requests" refused_url
   what=$(refusal "$case")

@@ -17,8 +17,8 @@
 //     requests no OIDC token, as it pushes with the deploy key;
 //   - only this job moves main: no other step of any workflow runs script/move-main or pushes to
 //     main with git, gh or an HTTP call.
-import fs from 'node:fs';
 import path from 'node:path';
+import { reporter } from './lib/report.mjs';
 import {
   commands,
   condition,
@@ -27,36 +27,21 @@ import {
   jobsFor,
   needsOf,
   permissions,
-  readWorkflow,
+  readWorkflows,
   stepSkipped,
   template,
   truth,
   unknown,
+  unpublishedEvents,
   words,
+  writes,
 } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const releaseFile = '.github/workflows/release.yml';
-let failures = 0;
-const fail = (what) => {
-  console.error(`move-main-workflow-test: ${what}`);
-  failures++;
-};
-const done = () => {
-  if (failures > 0) {
-    console.error(`move-main-workflow-test: ${failures} case(s) failed`);
-    process.exit(1);
-  }
-  console.log('move-main-workflow-test: all cases passed');
-};
+const { fail, done } = reporter('move-main-workflow-test');
 
-const workflowDir = path.join(root, '.github/workflows');
-const workflows = Object.fromEntries(
-  fs
-    .readdirSync(workflowDir)
-    .filter((f) => /\.ya?ml$/.test(f))
-    .map((f) => [`.github/workflows/${f}`, readWorkflow(path.join(workflowDir, f))]),
-);
+const workflows = readWorkflows(root);
 const release = workflows[releaseFile];
 if (!release) {
   console.error(`move-main-workflow-test: ${releaseFile} is missing`);
@@ -86,17 +71,8 @@ if (jobsFor(release, stable)[key].skipped) fail(`a push of the tag v1.2.3, a sta
 const quiet = [
   ['push', 'refs/tags/v1.2.3-beta.1'],
   ['push', 'refs/tags/v0.41.0-beta.12'],
-  ['push', 'refs/heads/dev'],
-  ['push', 'refs/heads/main'],
-  ['push', 'refs/heads/v1.2.3'],
-  ['push', 'refs/tags/1.2.3'],
-  ['push', 'refs/tags/release-1.2.3'],
-  ['push', 'refs/tags/skald-v1.2.3'],
-  ['pull_request', 'refs/pull/7/merge'],
-  ['workflow_dispatch', 'refs/heads/dev'],
   ['workflow_dispatch', 'refs/heads/main'],
-  ['workflow_dispatch', 'refs/tags/v1.2.3'],
-  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
+  ...unpublishedEvents,
 ];
 for (const [name, ref] of quiet) {
   if (!jobsFor(release, event(name, ref))[key].skipped) fail(`a ${name} on ${ref} leaves main where it is, but job ${key} may run`);
@@ -127,7 +103,6 @@ const expressions = (value) => {
 const readsAllSecrets = (value) =>
   value?.secrets === 'inherit' ||
   expressions(value).some((e) => /\bsecrets\b/i.test(e.replace(/\bsecrets\s*(?:\.\s*[A-Za-z0-9_]+|\[\s*'[^']+'\s*\])/gi, '')));
-const writes = (p) => (p ? Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope) : []);
 const publisher = (workflow, j) => {
   const p = permissions(workflow, j);
   if (p === null) return 'its permissions are not set';

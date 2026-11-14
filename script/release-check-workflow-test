@@ -18,8 +18,9 @@
 //     permissions set, writing nothing and requesting no OIDC token; no secret but GITHUB_TOKEN;
 //     tools that taiki-e/install-action installs pinned to exact versions; no cache restored;
 //   - "PR checks" in docs/dev/infrastructure.md names script/release-check.
-import fs from 'node:fs';
 import path from 'node:path';
+import { infrastructureSection } from './lib/release-docs.mjs';
+import { reporter } from './lib/report.mjs';
 import {
   commands,
   condition,
@@ -30,7 +31,7 @@ import {
   open,
   pathTriggers,
   permissions,
-  readWorkflow,
+  readWorkflows,
   runsFor,
   template,
   toText,
@@ -38,31 +39,14 @@ import {
   truth,
   unknown,
   words,
+  writes,
 } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const releaseFile = '.github/workflows/release.yml';
-let failures = 0;
-const fail = (what) => {
-  console.error(`release-check-workflow-test: ${what}`);
-  failures++;
-};
-const finish = () => {
-  if (failures > 0) {
-    console.error(`release-check-workflow-test: ${failures} case(s) failed`);
-    process.exit(1);
-  }
-  console.log('release-check-workflow-test: all cases passed');
-  process.exit(0);
-};
+const { fail, failed, done } = reporter('release-check-workflow-test');
 
-const dir = path.join(root, '.github/workflows');
-const workflows = new Map(
-  fs
-    .readdirSync(dir)
-    .filter((f) => /\.ya?ml$/.test(f))
-    .map((f) => [`.github/workflows/${f}`, readWorkflow(path.join(dir, f))]),
-);
+const workflows = new Map(Object.entries(readWorkflows(root)));
 const release = workflows.get(releaseFile);
 const runsCheck = (line) => /(^|[\s;&|(/"'])script\/release-check(?=$|[\s"';&|)])/.test(line);
 const stepsChecking = (job) => (job.steps ?? []).map((step, index) => ({ step, index })).filter(({ step }) => commands(step.run).some(runsCheck));
@@ -83,7 +67,7 @@ for (const [file, workflow] of workflows) {
 }
 if (!release) fail(`${releaseFile} is missing`);
 if (checkers.length === 0) fail(`no job of ${releaseFile}, or of a workflow it calls, runs script/release-check`);
-if (failures > 0) finish();
+if (failed() > 0) done();
 const where = (c, step, index) => `${c.file} job ${c.key}${step ? ` step ${step.name ?? step.id ?? index + 1}` : ''}`;
 
 // scopeOf <checker> <event> <inputs>: the expression scope of the checker's job, and whether it is
@@ -351,7 +335,7 @@ for (const { label, workflow, job } of entries) {
   const p = permissions(workflow, job);
   if (p === null) fail(`${label}: its permissions are set`);
   else {
-    const written = Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope);
+    const written = writes(p);
     if (written.length > 0) fail(`${label}: the release check publishes nothing, so its token writes nothing, not: ${written.join(', ')}`);
     if (p['id-token'] === 'write' || p.all === 'write') fail(`${label}: the release check signs and attests nothing, so it requests no OIDC token`);
   }
@@ -378,8 +362,7 @@ for (const { label, workflow, job } of entries) {
 }
 
 // "PR checks" names it.
-const docs = fs.readFileSync(path.join(root, 'docs/dev/infrastructure.md'), 'utf8');
-const prChecks = docs.match(/^## PR checks\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? '';
+const prChecks = infrastructureSection(root, 'PR checks');
 if (!/script\/release-check(?![\w-])/.test(prChecks)) fail('"PR checks" in docs/dev/infrastructure.md names the release check, script/release-check');
 
-finish();
+done();

@@ -1,5 +1,5 @@
 # The names and helpers the Release PR workflow and its tests share, sourced by
-# script/release-update, script/install-git-cliff and their tests. The GitHub App skald-release, its environment and its
+# script/release-update, script/install-git-cliff and the tests of the Release PR and the tag. The GitHub App skald-release, its environment and its
 # secrets are set up on GitHub under these names; a rename changes them here and in the workflow.
 
 # The workflow that tags the merge of a Release PR and keeps the Release PR open.
@@ -67,4 +67,23 @@ copy_tree() {
       if [[ -e $path || -L $path ]]; then printf '%s\0' "$path"; fi
     done | tar --null -T - -cf -
   ) | tar -C "$2" -xf -
+}
+
+# start_api_stub <log> <pulls> <port file> [<stub argument>...]: starts the stand-in GitHub API,
+# script/lib/github-api-stub.mjs, with these arguments, in the background; sets stub to its PID and
+# api to its address once it accepts connections. Exits 1 when it does not start in 10 s.
+start_api_stub() {
+  local root
+  root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+  node "$root/script/lib/github-api-stub.mjs" "$@" &
+  stub=$!
+  for _ in $(seq 100); do
+    [[ ! -s $3 ]] || break
+    sleep 0.1
+  done
+  [[ -s $3 ]] || {
+    echo "${0##*/}: the stand-in for the GitHub API did not start" >&2
+    exit 1
+  }
+  api=http://127.0.0.1:$(cat "$3")
 }

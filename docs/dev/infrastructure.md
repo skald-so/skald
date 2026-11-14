@@ -85,14 +85,14 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - The notes are the version's CHANGELOG section, by `script/release-notes`; a beta's release is a prerelease.
   - GitHub Releases hold `skald` only; `skald-server` ships as the image.
   - Linux binaries are built on Ubuntu 22.04: they need glibc 2.35 or later.
-  - Before it publishes, the job that creates the release attests every file of the release, the installers and checksums included, with `actions/attest`; a dry run attests nothing.
+  - Before it publishes, the job that creates the release attests every file of the release, the installers and checksums included, with `actions/attest`.
   - That job writes contents, and attestations with an OIDC token.
 - **Image:** on a push of a `v*` tag, a job of the same workflow builds the `skald-server` image at the tag's commit from `crates/server/Dockerfile`, the definition `script/image-test` tests, with no cache, and pushes it to GHCR as `:X.Y.Z`, or `:X.Y.Z-beta.N` for a beta. It does not retag `:edge`.
   - A version GHCR already has is not pushed again: the job fails before it builds. It moves no tag, and there is no `:latest`.
-  - It signs the pushed digest with cosign, keyless, and attests its build provenance with `actions/attest`; a dry run builds the image and pushes, signs and attests nothing.
+  - It signs the pushed digest with cosign, keyless, and attests its build provenance with `actions/attest`.
   - This job writes packages, and attestations with an OIDC token. No other job writes packages.
 - **npm:** on a push of a `v*` tag, once the GitHub Release is published, a job of the same workflow publishes the package `skald-so`, `npm/` packed by `script/release-npm` with the release's version, under the dist-tag `latest`, or `next` for a beta.
-  - Before the GitHub Release is published, each build runner runs `skald` from the release's files through the packed package (`script/npm-package-test`); a dry run publishes nothing.
+  - Before the GitHub Release is published, each build runner runs `skald` from the release's files through the packed package (`script/npm-package-test`).
   - It publishes with provenance; npm accepts the job's OIDC token only from the package's trusted publisher, `skald-so/skald`, `release.yml` and the environment `npm`. The package's publishing access requires 2FA and disallows tokens.
   - The job's token writes nothing but `id-token`.
 - **Release check:** on a push of a `v*` tag, once the GitHub Release, the npm package and the image are published, the release workflow runs `script/release-check` on the tag, on a runner of each OS and architecture: `.github/workflows/release-check.yml`.
@@ -101,7 +101,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - The `ubuntu-22.04` runner also verifies the release with the commands of "Trust in builds", pinned to its tag: the release is immutable, every file matches its checksum and has its attestation, the image has its signature and attestation, and the npm package its provenance and the dist-tag `latest`, or `next` for a beta.
   - A failed step prints `release-check: <step>: failed: <why>`.
   - Its jobs read the release and publish nothing: their token reads contents and attestations, and they read no secret.
-- **Main:** on a push of a stable release's tag, `vX.Y.Z`, once the GitHub Release, the npm package and the image are published and the release check passes, a job of the same workflow moves `main` to the tag's commit with `script/move-main` and the deploy key ("PR checks", "Secrets"). A beta, or a release whose publishing failed, leaves `main` where it is.
+- **Main:** on a push of a stable release's tag, `vX.Y.Z`, once the release check passes, a job of the same workflow moves `main` to the tag's commit with `script/move-main` and the deploy key ("PR checks", "Secrets"). A beta, or a release whose publishing failed, leaves `main` where it is.
   - `main` only moves forward: a tag whose commit does not descend from `main` as `origin` has it is refused, and `main` stays.
   - The job's token writes nothing, and it requests no OIDC token.
 - **npm package:** `npx skald-so` downloads the release's archive for the machine's OS and architecture, checks it against its `.sha256` and runs `skald`; on a mismatch or a missing or empty checksum it stops and runs nothing. It unpacks the archive into the package's directory once, with a file `installed-by-npm` beside `skald`. `SKALD_DOWNLOAD_URL` sets where the release's files are, as for the installers.

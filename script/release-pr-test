@@ -343,18 +343,8 @@ fi
 # The Release PR through the stand-in for the GitHub API.
 : >"$tmp/requests.log"
 echo '[]' >"$tmp/listed.json"
-node "$root/script/lib/github-api-stub.mjs" "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" \
-  "$tmp/associated.json" "$tmp/refs.json" "$tmp/listed.json" &
-stub=$!
-for _ in $(seq 100); do
-  [[ ! -s $tmp/port ]] || break
-  sleep 0.1
-done
-[[ -s $tmp/port ]] || {
-  echo "release-pr-test: the stand-in for the GitHub API did not start" >&2
-  exit 1
-}
-api=http://127.0.0.1:$(cat "$tmp/port")
+start_api_stub "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" "$tmp/associated.json" \
+  "$tmp/refs.json" "$tmp/listed.json"
 
 # release_pr <case>: resets $dir to its last commit, as a new checkout, and runs script/release-pr
 # there against the stand-in, as the workflow does; the log keeps only this run's requests. False

@@ -38,6 +38,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { reporter } from './lib/report.mjs';
 import {
   certificateIdentity,
   imageName,
@@ -45,23 +46,15 @@ import {
   provenanceType,
   releaseWorkflow,
   repository,
+  localTarget as local,
   serve,
+  standInTools,
 } from './lib/release-check-stub.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const check = path.join(root, 'script/release-check');
-let failures = 0;
-const fail = (what) => {
-  console.error(`release-check-test: ${what}`);
-  failures++;
-};
+const { fail, done } = reporter('release-check-test');
 
-const local = {
-  'Darwin/arm64': 'aarch64-apple-darwin',
-  'Darwin/x86_64': 'x86_64-apple-darwin',
-  'Linux/aarch64': 'aarch64-unknown-linux-gnu',
-  'Linux/x86_64': 'x86_64-unknown-linux-gnu',
-}[`${os.type()}/${os.machine()}`];
 if (!local) {
   console.error(`release-check-test: no stand-in release for ${os.type()} on ${os.machine()}`);
   process.exit(1);
@@ -297,10 +290,7 @@ async function runCheck(dir, w, args) {
       stateFile,
       JSON.stringify({ server: server.url, curl, calls, image: w.image, signatures: w.signatures, attestations: w.attestations }),
     );
-    const stub = path.join(root, 'script/lib/release-check-stub.mjs');
-    for (const tool of ['gh', 'cosign', 'docker', 'crane', 'curl', 'wget']) {
-      fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nexec node '${stub}' '${stateFile}' ${tool} "$@"\n`, { mode: 0o755 });
-    }
+    standInTools(bin, stateFile);
     const npmrc = path.join(dir, 'npmrc');
     fs.writeFileSync(npmrc, '');
     const env = {
@@ -680,8 +670,4 @@ try {
   fs.rmSync(scratch, { recursive: true, force: true });
 }
 
-if (failures > 0) {
-  console.error(`release-check-test: ${failures} case(s) failed`);
-  process.exit(1);
-}
-console.log('release-check-test: all cases passed');
+done();

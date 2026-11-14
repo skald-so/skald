@@ -31,6 +31,7 @@ on:
       # The npm package skald-so.
       - npm/**
       - script/installers-test
+      - script/lib/release-files.sh
       - script/lib/release-tag-args.sh
       - script/lib/proxy.mjs
       - script/lib/serve.mjs

@@ -11,6 +11,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 source "$root/script/lib/release.sh"
+source "$root/script/lib/yaml.sh"
 failures=0
 
 fail() {
@@ -21,8 +22,8 @@ fail() {
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# The step's script. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
-npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/$release_workflow" |
+# The step's script.
+to_json "$root/$release_workflow" |
   jq -r '[.jobs[].steps[]? | select(.run // "" | test("script/release-tag($|[^-A-Za-z0-9_])"))
     | .run] | if length == 1 then .[0] else error("not one step runs script/release-tag") end' \
   >"$tmp/step.sh" || {

@@ -17,20 +17,14 @@ error() {
   exit 2
 }
 
-for name in GITHUB_API_URL GITHUB_GRAPHQL_URL GITHUB_REPOSITORY GH_TOKEN; do
-  [[ -n ${!name:-} ]] || error "$name is not set"
-done
+source "$root/script/lib/github-api.sh"
+require_vars GITHUB_API_URL GITHUB_GRAPHQL_URL GITHUB_REPOSITORY GH_TOKEN
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# call <method> <url> [<JSON file>]: a call of the GitHub API; prints the response.
+# call <method> <url> [<JSON file>]: github_api, an error when it fails.
 call() {
-  local args=(--fail-with-body --silent --show-error --max-time 60 --request "$1"
-    --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json'
-    --header 'X-GitHub-Api-Version: 2022-11-28')
-  [[ $1 != GET ]] || args+=(--retry 3)
-  [[ -z ${3:-} ]] || args+=(--header 'Content-Type: application/json' --data-binary "@$3")
-  curl "${args[@]}" "$2" || error "$1 $2 failed"
+  github_api "$@" || error "$1 $2 failed"
 }
 # rest <method> <path> [<jq argument>...]: a call of the REST API of the repository, with the body
 # `jq -n <jq argument>...` makes, if any.

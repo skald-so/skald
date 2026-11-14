@@ -28,46 +28,33 @@
 //     no job restores a cache.
 import fs from 'node:fs';
 import path from 'node:path';
+import { reporter } from './lib/report.mjs';
 import {
   commands,
+  dryRunEvents,
   event,
   jobsFor,
   pathTriggers,
   permissions,
-  readWorkflow,
+  readWorkflows,
   runsFor,
   stepSkipped,
   triggers,
+  unpublishedEvents,
   words,
+  writes,
 } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const releaseFile = '.github/workflows/release.yml';
-let failures = 0;
-const fail = (what) => {
-  console.error(`release-workflow-test: ${what}`);
-  failures++;
-};
-const done = () => {
-  if (failures > 0) {
-    console.error(`release-workflow-test: ${failures} case(s) failed`);
-    process.exit(1);
-  }
-  console.log('release-workflow-test: all cases passed');
-};
+const { fail, done } = reporter('release-workflow-test');
 
 if (!fs.existsSync(path.join(root, releaseFile))) {
   console.error(`release-workflow-test: ${releaseFile} is missing`);
   process.exit(1);
 }
 
-const workflowDir = path.join(root, '.github/workflows');
-const workflows = Object.fromEntries(
-  fs
-    .readdirSync(workflowDir)
-    .filter((f) => /\.ya?ml$/.test(f))
-    .map((f) => [`.github/workflows/${f}`, readWorkflow(path.join(workflowDir, f))]),
-);
+const workflows = readWorkflows(root);
 const release = workflows[releaseFile];
 
 // The release workflow and the local workflows it calls, each once.
@@ -87,7 +74,6 @@ const jobs = files.flatMap((file) =>
 );
 const steps = (entry) => (entry.job.steps ?? []).map((step, index) => ({ ...entry, step, index }));
 const where = (s) => `${s.file} job ${s.key}${s.step ? ` step ${s.step.name ?? s.step.id ?? s.index + 1}` : ''}`;
-const writes = (p) => (p ? Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope) : []);
 
 // The triggers.
 const on = triggers(release);
@@ -128,16 +114,7 @@ const publisher = (workflow, job) => {
   return null;
 };
 const quiet = [
-  ['push', 'refs/heads/dev'],
-  ['push', 'refs/heads/main'],
-  ['push', 'refs/heads/v1.2.3'],
-  ['push', 'refs/tags/1.2.3'],
-  ['push', 'refs/tags/release-1.2.3'],
-  ['push', 'refs/tags/skald-v1.2.3'],
-  ['pull_request', 'refs/pull/7/merge'],
-  ['workflow_dispatch', 'refs/heads/dev'],
-  ['workflow_dispatch', 'refs/tags/v1.2.3'],
-  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
+  ...unpublishedEvents,
   ...events
     .filter((e) => !['push', 'pull_request', 'workflow_dispatch'].includes(e))
     .flatMap((e) => [
@@ -378,10 +355,7 @@ const labels = (job) => {
   });
 };
 const all = ['Linux x86_64', 'Linux arm64', 'macOS x86_64', 'macOS arm64', 'Windows x86_64', 'Windows arm64'];
-for (const [name, ref] of [
-  ['pull_request', 'refs/pull/7/merge'],
-  ['workflow_dispatch', 'refs/heads/dev'],
-]) {
+for (const [name, ref] of dryRunEvents) {
   const states = jobsFor(release, event(name, ref));
   const covered = new Set(
     Object.entries(release.jobs ?? {})
