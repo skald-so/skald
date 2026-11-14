@@ -1224,7 +1224,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`application/problem+json`), or gives no token (`application/json`, RFC 8628, §3.5): `authorization_pending` until the person decides; `slow_down` to a poll less than `interval` seconds after the previous one; `access_denied` once the person denied the code; `expired_token` once the codes expired; `invalid_grant` for an unknown device code or one that already gave its token; `invalid_request`, `invalid_client` or `unsupported_grant_type` for a malformed request.",
+            "description": "The server refuses the stated version (`application/problem+json`), or gives no token (`application/json`, RFC 8628, §3.5): `authorization_pending` until the person decides; `slow_down` to a poll that comes over 1 second sooner than `interval` seconds after the previous one, the server allowing 1 second of clock error; `access_denied` once the person denied the code; `expired_token` once the codes expired; `invalid_grant` for an unknown device code or one that already gave its token; `invalid_request`, `invalid_client` or `unsupported_grant_type` for a malformed request.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"

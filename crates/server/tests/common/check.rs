@@ -93,7 +93,32 @@ impl Run {
 /// Runs `script` with `args` and the environment variables `envs`, no proxy among them; fails if it
 /// does not end within 90 seconds.
 pub fn run_script(case: &str, script: &str, args: &[&str], envs: &[(&str, &str)]) -> Run {
+    run_script_with(case, script, args, envs, false)
+}
+
+/// As [`run_script`], but `script` finds the pipe of its output full and gets SIGCHLD every 10 ms
+/// from 0.5 s to 2 s after it starts; only then does the pipe drain. A shell can get SIGCHLD from
+/// a child it has already waited for; a write that waits for the pipe then must not fail.
+pub fn run_script_signalled(case: &str, script: &str, args: &[&str], envs: &[(&str, &str)]) -> Run {
+    run_script_with(case, script, args, envs, true)
+}
+
+/// More than a pipe holds.
+const FILL: usize = 1 << 20;
+
+fn run_script_with(
+    case: &str,
+    script: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    signalled: bool,
+) -> Run {
     let (mut reader, writer) = io::pipe().expect("a pipe");
+    if signalled {
+        let mut filler = writer.try_clone().expect("clone a pipe");
+        // NULs, which a check never prints; the output drops them.
+        thread::spawn(move || filler.write_all(&[0; FILL]).expect("fill the pipe"));
+    }
     let mut command = Command::new(script);
     command
         .args(args)
@@ -108,9 +133,24 @@ pub fn run_script(case: &str, script: &str, args: &[&str], envs: &[(&str, &str)]
         .spawn()
         .unwrap_or_else(|err| panic!("run {script}: {err}"));
     drop(command);
+    if signalled {
+        let started = Instant::now();
+        thread::sleep(Duration::from_millis(500));
+        // Not waited for yet, the script keeps its process ID even if it has ended.
+        while started.elapsed() < Duration::from_secs(2) {
+            let _ = Command::new("kill")
+                .args(["-s", "CHLD", &child.id().to_string()])
+                .stderr(Stdio::null())
+                .status();
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
     let read = thread::spawn(move || {
         let mut output = Vec::new();
         reader.read_to_end(&mut output).expect("read the output");
+        if signalled {
+            output.retain(|&byte| byte != 0);
+        }
         String::from_utf8_lossy(&output).into_owned()
     });
     let within = Duration::from_secs(90);
