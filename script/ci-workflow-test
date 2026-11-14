@@ -17,8 +17,8 @@
 //     unless the job of script/changed-parts succeeded and each other one succeeded or was skipped;
 //   - the jobs Rust needs that run script/test set up the same tools: their steps differ only in the
 //     Cargo workspaces they cache and in SKALD_TEST_PARTS;
-//   - every action of the workflow is pinned to a commit, a checkout keeps no credentials, and a
-//     job's token reads contents at most.
+//   - every action of the workflow, and of the local actions it runs, is pinned to a commit, a
+//     checkout keeps no credentials, and a job's token reads contents at most.
 // And the job that runs the client's tests on Windows:
 //   - one job of a PR into dev runs `cargo test -p skald-client --locked --no-fail-fast` on a
 //     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
@@ -299,7 +299,7 @@ const setUp = ({ job }) =>
   JSON.stringify(
     (job.steps ?? []).map((step) => {
       const copy = structuredClone(step);
-      if (String(copy.uses ?? '').startsWith('Swatinem/rust-cache@')) delete copy.with?.workspaces;
+      delete copy.with?.workspaces;
       if (runsTest(copy)) delete copy.env?.SKALD_TEST_PARTS;
       return copy;
     }),
@@ -311,10 +311,26 @@ for (const j of behind.slice(1)) {
 }
 
 // The rules of every workflow, for every job: pinned actions, no kept credentials, a read-only token.
+// pinned <steps> <where> <seen>: each action of the steps, and of the local actions among them, is
+// pinned to a commit.
+const pinned = (steps, where, seen = new Set()) => {
+  for (const step of steps ?? []) {
+    const uses = String(step.uses ?? '');
+    if (uses.startsWith('./')) {
+      const dir = path.join(root, uses);
+      const file = ['action.yml', 'action.yaml'].map((name) => path.join(dir, name)).find((f) => fs.existsSync(f));
+      if (!file) fail(`${where} uses ${uses}, which has no action.yml`);
+      else if (!seen.has(file)) {
+        seen.add(file);
+        pinned(readWorkflow(file).runs?.steps, `${where}, through ${uses},`, seen);
+      }
+    } else if (uses && !/@[0-9a-f]{40}$/.test(uses)) fail(`${where} uses ${uses}, not pinned to a commit`);
+  }
+};
 for (const [key, job] of Object.entries(jobs)) {
+  pinned(job.steps, `job ${key}`);
   for (const step of job.steps ?? []) {
     const uses = String(step.uses ?? '');
-    if (uses && !uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(uses)) fail(`job ${key} uses ${uses}, not pinned to a commit`);
     if (uses.startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false && step.with?.['persist-credentials'] !== 'false') {
       fail(`a checkout of job ${key} keeps the credentials: no persist-credentials: false`);
     }
