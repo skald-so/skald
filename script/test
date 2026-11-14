@@ -147,7 +147,7 @@ if ! command -v npm >/dev/null; then
   exit 1
 fi
 if checks_any $rust && ! command -v openssl >/dev/null; then
-  echo "script/test: openssl is missing; the server's sign-in tests and the client's update tests make TLS certificates with it: https://openssl.org" >&2
+  echo "script/test: openssl is missing; the server's sign-in tests and the client's update and HTTPS tests make TLS certificates with it: https://openssl.org" >&2
   exit 1
 fi
 if checks_any $rust && ! command -v tar >/dev/null; then
@@ -249,6 +249,7 @@ if checks tooling; then
   script/ci-workflow-test
   script/edge-workflow-test
   script/release-plz-workflow-test
+  script/install-release-plz-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.
   npx --yes --package renovate@44.225.1 -- renovate-config-validator --strict --no-global renovate.json
 fi

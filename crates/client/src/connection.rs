@@ -1,13 +1,17 @@
 //! The client's connection to a Skald server: it states the protocol version on every request and
 //! WebSocket opening request and acts on the answers as `docs/protocol/README.md`, "Server answers",
-//! says.
+//! says. It goes over HTTPS and WSS, or in plain HTTP and WS to this machine only:
+//! `docs/dev/architecture.md`, "Network".
 
 use std::fmt;
 use std::io;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
 use std::num::NonZeroU64;
+use std::sync::Arc;
 use std::time::Duration;
 
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use serde::Deserialize;
 use skald_proto::{
     LATEST_HEADER, VERSION_HEADER, VersionProblem, VersionRange, describe_versions, parse_version,
@@ -16,6 +20,10 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::handshake::HandshakeError;
 use tungstenite::http::{HeaderMap, HeaderValue, Uri, header};
 use tungstenite::stream::MaybeTlsStream;
+use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
+use ureq::unversioned::transport::NextTimeout;
+
+use crate::tls::Roots;
 
 /// How long a request to the server may take by default.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
@@ -28,6 +36,9 @@ pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 pub enum Error {
     /// The server URL is not one the client connects to.
     Url(String),
+    /// The server URL is plain HTTP to another machine: what the client sends would cross the
+    /// network in the clear.
+    Cleartext(String),
     /// No answer from the server.
     Unreachable(String),
     /// No answer from the server within the timeout.
@@ -55,7 +66,7 @@ impl Error {
     pub fn reached(&self) -> bool {
         !matches!(
             self,
-            Error::Url(_) | Error::Unreachable(_) | Error::Timeout(_)
+            Error::Url(_) | Error::Cleartext(_) | Error::Unreachable(_) | Error::Timeout(_)
         )
     }
 
@@ -70,7 +81,12 @@ impl fmt::Display for Error {
         match self {
             Error::Url(url) => write!(
                 f,
-                "{url:?} is not a server URL the client connects to: it must start with http://"
+                "{url:?} is not a server URL the client connects to: use https://"
+            ),
+            Error::Cleartext(url) => write!(
+                f,
+                "{url:?} is plain HTTP to another machine: use https://; plain http:// goes only \
+                 to this machine: localhost, 127.0.0.0/8 or [::1]"
             ),
             Error::Unreachable(cause) => {
                 write!(f, "cannot reach the server: {}", printable(cause))
@@ -135,17 +151,114 @@ fn unanswered(err: ureq::Error, timeout: Duration) -> Error {
     }
 }
 
-/// A TCP connection to the host and port of `uri` whose connect, reads and writes each fail after
-/// `timeout`.
-fn connect(uri: &Uri, timeout: Duration) -> Result<TcpStream, Error> {
+/// How the client reaches a server.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Scheme {
+    /// `https://`, to any host: over TLS.
+    Https,
+    /// `http://` to this machine: in the clear, never crossing a network.
+    Loopback,
+}
+
+/// How the client reaches the server at `server`: over `https://` to any host, over `http://` only
+/// to this machine.
+fn scheme(server: &str) -> Result<Scheme, Error> {
+    let not_a_server = || Error::Url(server.to_owned());
+    let uri: Uri = server.parse().map_err(|_| not_a_server())?;
+    let host = uri.host().filter(|host| !host.is_empty());
+    match (uri.scheme_str(), host) {
+        (Some("https"), Some(_)) => Ok(Scheme::Https),
+        (Some("http"), Some(host)) if loopback(host) => Ok(Scheme::Loopback),
+        (Some("http"), Some(_)) => Err(Error::Cleartext(server.to_owned())),
+        _ => Err(not_a_server()),
+    }
+}
+
+/// Whether `host`, as a URL has it, is this machine: `localhost`, an address in `127.0.0.0/8` or
+/// `[::1]`.
+fn loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    match host.strip_prefix('[').and_then(|ip| ip.strip_suffix(']')) {
+        Some(ip) => ip.parse::<Ipv6Addr>().is_ok_and(|ip| ip.is_loopback()),
+        None => host.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback()),
+    }
+}
+
+/// The URL of the WebSocket at `path` on the server at `base`: `wss://` over TLS, otherwise
+/// `ws://`.
+fn websocket_url(base: &str, path: &str, tls: bool) -> String {
+    let (_, rest) = base.split_once("://").expect("a server URL has a scheme");
+    let scheme = if tls { "wss" } else { "ws" };
+    format!("{scheme}://{rest}{path}")
+}
+
+/// The host of `uri`, an IPv6 address without its brackets.
+fn host(uri: &Uri) -> &str {
     let host = uri.host().unwrap_or_default();
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let addrs = (host, uri.port_u16().unwrap_or(80))
-        .to_socket_addrs()
-        .map_err(|err| Error::Unreachable(err.to_string()))?;
+    host.trim_start_matches('[').trim_end_matches(']')
+}
+
+/// The port of `uri`: its own, or its scheme's, 443 for `https://` and `wss://`, 80 for `http://`
+/// and `ws://`.
+fn port(uri: &Uri) -> u16 {
+    let default = match uri.scheme_str() {
+        Some("https" | "wss") => 443,
+        _ => 80,
+    };
+    uri.port_u16().unwrap_or(default)
+}
+
+/// The resolver of the server connection, for its HTTP requests and its WebSockets. It answers
+/// `localhost` itself, with 127.0.0.1 and ::1, so plain HTTP to it stays on this machine whatever a
+/// resolver would answer; any other host goes to `system`.
+#[derive(Clone, Debug)]
+struct Pinned {
+    system: Arc<dyn Resolver>,
+}
+
+impl Resolver for Pinned {
+    fn resolve(
+        &self,
+        uri: &Uri,
+        config: &ureq::config::Config,
+        timeout: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        if !host(uri).eq_ignore_ascii_case("localhost") {
+            return self.system.resolve(uri, config, timeout);
+        }
+        let mut addrs = self.empty();
+        addrs.push((Ipv4Addr::LOCALHOST, port(uri)).into());
+        addrs.push((Ipv6Addr::LOCALHOST, port(uri)).into());
+        Ok(addrs)
+    }
+}
+
+/// A TCP connection to the host and port of `uri`, its addresses from `resolver` with `config`,
+/// whose lookup, connect, reads and writes each fail after `timeout`.
+fn connect(
+    uri: &Uri,
+    timeout: Duration,
+    resolver: &Pinned,
+    config: &ureq::config::Config,
+) -> Result<TcpStream, Error> {
+    let host = uri.host().unwrap_or_default();
+    // The resolver takes only HTTP URLs.
+    let lookup: Uri = format!("http://{host}:{}", port(uri))
+        .parse()
+        .map_err(|err: tungstenite::http::uri::InvalidUri| Error::Unreachable(err.to_string()))?;
+    let within = NextTimeout {
+        after: timeout.into(),
+        reason: ureq::Timeout::Resolve,
+        ..NextTimeout::default()
+    };
+    let addrs = resolver
+        .resolve(&lookup, config, within)
+        .map_err(|err| unanswered(err, timeout))?;
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("no address for {host}"));
-    for addr in addrs {
-        match TcpStream::connect_timeout(&addr, timeout) {
+    for addr in addrs.iter() {
+        match TcpStream::connect_timeout(addr, timeout) {
             Ok(stream) => {
                 stream
                     .set_read_timeout(Some(timeout))
@@ -167,9 +280,27 @@ fn io_error(err: io::Error, timeout: Duration) -> Error {
     }
 }
 
+/// `stream`, a connection to the server of `uri`, under TLS by `config`; the handshake runs on its
+/// first read or write.
+fn over_tls(
+    config: &Arc<ClientConfig>,
+    uri: &Uri,
+    stream: TcpStream,
+) -> Result<StreamOwned<ClientConnection, TcpStream>, Error> {
+    let name = ServerName::try_from(host(uri).to_owned())
+        .map_err(|err| Error::Unreachable(err.to_string()))?;
+    let client = ClientConnection::new(Arc::clone(config), name)
+        .map_err(|err| Error::Unreachable(err.to_string()))?;
+    Ok(StreamOwned::new(client, stream))
+}
+
 /// A connection to the server at one base URL.
 pub struct Connection {
     base: String,
+    /// The TLS config of its WebSockets, to an `https://` server.
+    tls: Option<Arc<ClientConfig>>,
+    /// The resolver of its WebSockets; its HTTP requests' is in `agent`.
+    resolver: Pinned,
     speaks: VersionRange,
     timeout: Duration,
     agent: ureq::Agent,
@@ -242,20 +373,48 @@ struct Problem {
 }
 
 impl Connection {
-    /// A connection to the server at `server`, such as `http://localhost:8080`, speaking `speaks`.
-    /// A request fails if the server does not answer it within `timeout`.
+    /// A connection to the server at `server`, such as `https://api.skald.so` or, on this machine,
+    /// `http://localhost:8080`, speaking `speaks`. A request fails if the server does not answer it
+    /// within `timeout`.
     pub fn new(server: &str, speaks: VersionRange, timeout: Duration) -> Result<Self, Error> {
-        if !server.starts_with("http://") {
-            return Err(Error::Url(server.to_owned()));
-        }
-        let agent = ureq::Agent::config_builder()
+        Self::resolving(
+            server,
+            speaks,
+            timeout,
+            Arc::new(DefaultResolver::default()),
+        )
+    }
+
+    /// As [`Connection::new`], with `system` resolving every host but `localhost`.
+    fn resolving(
+        server: &str,
+        speaks: VersionRange,
+        timeout: Duration,
+        system: Arc<dyn Resolver>,
+    ) -> Result<Self, Error> {
+        let roots = match scheme(server)? {
+            Scheme::Https => Some(Roots::load()),
+            Scheme::Loopback => None,
+        };
+        let mut config = ureq::Agent::config_builder()
             .proxy(None)
             .http_status_as_error(false)
-            .timeout_global(Some(timeout))
-            .build()
-            .new_agent();
+            // A redirect could take a request to another host, in the clear.
+            .max_redirects(0)
+            .timeout_global(Some(timeout));
+        if let Some(roots) = &roots {
+            config = config.tls_config(roots.ureq());
+        }
+        let resolver = Pinned { system };
+        let agent = ureq::Agent::with_parts(
+            config.build(),
+            ureq::unversioned::transport::DefaultConnector::new(),
+            resolver.clone(),
+        );
         Ok(Connection {
             base: server.trim_end_matches('/').to_owned(),
+            tls: roots.map(|roots| roots.rustls()),
+            resolver,
             speaks,
             timeout,
             agent,
@@ -355,8 +514,11 @@ impl Connection {
     /// Opens a WebSocket at `path`, offering the subprotocol `skald.<n>`. The connect and each read
     /// and write of the socket, after the opening too, fail after the connection's timeout.
     pub fn open_websocket(&mut self, path: &str) -> Result<WebSocket, Error> {
-        let url = format!("{}{path}", self.base.replacen("http://", "ws://", 1));
+        let url = websocket_url(&self.base, path, self.tls.is_some());
         let timeout = self.timeout;
+        let tls = self.tls.clone();
+        let resolver = self.resolver.clone();
+        let agent = self.agent.clone();
         self.exchange(|version| {
             let mut request = url
                 .as_str()
@@ -367,7 +529,11 @@ impl Connection {
             request
                 .headers_mut()
                 .insert(header::SEC_WEBSOCKET_PROTOCOL, offer);
-            let stream = MaybeTlsStream::Plain(connect(request.uri(), timeout)?);
+            let stream = connect(request.uri(), timeout, &resolver, agent.config())?;
+            let stream = match &tls {
+                Some(config) => MaybeTlsStream::Rustls(over_tls(config, request.uri(), stream)?),
+                None => MaybeTlsStream::Plain(stream),
+            };
             match tungstenite::client(request, stream) {
                 Ok((socket, response)) => Ok(Answer::Served(socket, latest(response.headers()))),
                 // A blocking stream is interrupted only when a read or write times out.
@@ -486,11 +652,35 @@ fn content(headers: &HeaderMap) -> Content {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
+    use std::net::{SocketAddr, TcpListener};
 
     use super::*;
 
     const SECOND: Duration = Duration::from_secs(1);
+
+    /// A resolver that answers `at` for every host, as one that sends `localhost` off the machine.
+    #[derive(Debug)]
+    struct Elsewhere(SocketAddr);
+
+    impl Resolver for Elsewhere {
+        fn resolve(
+            &self,
+            _: &Uri,
+            _: &ureq::config::Config,
+            _: NextTimeout,
+        ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+            let mut addrs = self.empty();
+            addrs.push(self.0);
+            Ok(addrs)
+        }
+    }
+
+    /// The resolver of a connection on the system's resolver.
+    fn system() -> Pinned {
+        Pinned {
+            system: Arc::new(DefaultResolver::default()),
+        }
+    }
 
     #[test]
     fn io_timeouts_are_timeouts() {
@@ -522,6 +712,116 @@ mod tests {
     }
 
     #[test]
+    fn https_goes_to_any_host_and_http_only_to_this_machine() {
+        for server in [
+            "https://api.skald.so",
+            "https://api.skald.so/",
+            "HTTPS://API.SKALD.SO",
+            "https://203.0.113.7:8443",
+            "https://[2001:db8::1]",
+            "https://localhost:8443",
+        ] {
+            assert_eq!(scheme(server).ok(), Some(Scheme::Https), "{server}");
+        }
+        for server in [
+            "http://localhost:8080",
+            "http://LocalHost",
+            "http://127.0.0.1:8080/",
+            "http://127.0.0.0",
+            "http://127.255.255.255:1",
+            "http://[::1]:8080",
+            "http://[0:0:0:0:0:0:0:1]",
+            "http://someone@localhost",
+        ] {
+            assert_eq!(scheme(server).ok(), Some(Scheme::Loopback), "{server}");
+        }
+    }
+
+    #[test]
+    fn http_to_another_machine_is_cleartext() {
+        for server in [
+            "http://api.skald.so",
+            "http://0.0.0.0:8080",
+            "http://10.0.0.1",
+            "http://126.255.255.255",
+            "http://128.0.0.1",
+            "http://127.1",
+            "http://127.0.0.01",
+            "http://[::]",
+            "http://[::2]",
+            "http://[::ffff:127.0.0.1]",
+            "http://localhost.skald.test",
+            "http://127.0.0.1.skald.test",
+            "http://localhost@skald.test",
+            "http://localhost.",
+        ] {
+            let error = scheme(server).expect_err(server);
+            assert!(
+                matches!(&error, Error::Cleartext(url) if url == server),
+                "{error:?}"
+            );
+            assert!(!error.reached());
+        }
+        assert_eq!(
+            Error::Cleartext("http://api.skald.so".to_owned()).to_string(),
+            "\"http://api.skald.so\" is plain HTTP to another machine: use https://; plain http:// \
+             goes only to this machine: localhost, 127.0.0.0/8 or [::1]"
+        );
+    }
+
+    #[test]
+    fn other_urls_are_no_server_urls() {
+        for server in [
+            "",
+            "api.skald.so",
+            "localhost:8080",
+            "ws://localhost:8080",
+            "wss://api.skald.so",
+            "ftp://api.skald.so",
+            "https://",
+            "http://",
+            "http:///ws",
+            "https://:443",
+            "http://:8080",
+            "http://@:8080",
+            "https://api skald so",
+        ] {
+            let error = scheme(server).expect_err(server);
+            assert!(
+                matches!(&error, Error::Url(url) if url == server),
+                "{error:?}"
+            );
+            assert!(!error.reached());
+        }
+        assert_eq!(
+            Error::Url("ftp://api.skald.so".to_owned()).to_string(),
+            "\"ftp://api.skald.so\" is not a server URL the client connects to: use https://"
+        );
+    }
+
+    #[test]
+    fn websocket_goes_over_tls_to_an_https_server() {
+        assert_eq!(
+            websocket_url("https://api.skald.so", "/ws", true),
+            "wss://api.skald.so/ws"
+        );
+        assert_eq!(
+            websocket_url("HTTPS://api.skald.so:8443/base", "/ws", true),
+            "wss://api.skald.so:8443/base/ws"
+        );
+        assert_eq!(
+            websocket_url("http://127.0.0.1:8080", "/ws", false),
+            "ws://127.0.0.1:8080/ws"
+        );
+        let port_of = |url: &str| port(&url.parse().unwrap());
+        assert_eq!(port_of("wss://api.skald.so/ws"), 443);
+        assert_eq!(port_of("ws://localhost/ws"), 80);
+        assert_eq!(port_of("wss://api.skald.so:8443/ws"), 8443);
+        assert_eq!(port_of("ws://localhost:8080/ws"), 8080);
+        assert_eq!(host(&"wss://[::1]:8443/ws".parse().unwrap()), "::1");
+    }
+
+    #[test]
     fn closed_port_is_unreachable() {
         let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let uri: Uri = format!("ws://{}/ws", closed.local_addr().unwrap())
@@ -530,7 +830,13 @@ mod tests {
         drop(closed);
 
         // Windows refuses a connection to a closed port only after retrying it for about 2 s.
-        let error = connect(&uri, SECOND * 10).expect_err("nothing listens");
+        let error = connect(
+            &uri,
+            SECOND * 10,
+            &system(),
+            &ureq::config::Config::default(),
+        )
+        .expect_err("nothing listens");
 
         assert!(matches!(error, Error::Unreachable(_)), "{error:?}");
     }
@@ -542,9 +848,64 @@ mod tests {
             .parse()
             .unwrap();
 
-        let stream = connect(&uri, SECOND).expect("connect");
+        let stream =
+            connect(&uri, SECOND, &system(), &ureq::config::Config::default()).expect("connect");
 
         assert_eq!(stream.read_timeout().unwrap(), Some(SECOND));
         assert_eq!(stream.write_timeout().unwrap(), Some(SECOND));
+    }
+
+    #[test]
+    fn localhost_is_only_this_machine() {
+        let elsewhere: SocketAddr = "192.0.2.1:8080".parse().unwrap();
+        let resolver = Pinned {
+            system: Arc::new(Elsewhere(elsewhere)),
+        };
+        let resolve = |url: &str| {
+            let addrs = resolver
+                .resolve(
+                    &url.parse().unwrap(),
+                    &ureq::config::Config::default(),
+                    NextTimeout::default(),
+                )
+                .expect(url);
+            addrs.to_vec()
+        };
+        let loopback = |port| -> Vec<SocketAddr> {
+            vec![
+                (Ipv4Addr::LOCALHOST, port).into(),
+                (Ipv6Addr::LOCALHOST, port).into(),
+            ]
+        };
+
+        assert_eq!(resolve("http://localhost:8080/ws"), loopback(8080));
+        assert_eq!(resolve("http://LocalHost"), loopback(80));
+        assert_eq!(resolve("https://localhost"), loopback(443));
+        assert_eq!(resolve("http://api.skald.so:8080"), vec![elsewhere]);
+    }
+
+    /// The connection's HTTP requests and WebSockets reach `localhost` at 127.0.0.1, never where
+    /// the system's resolver points: here another listener on this machine.
+    #[test]
+    fn connection_reaches_localhost_only_at_loopback() {
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let elsewhere = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let port = server.local_addr().unwrap().port();
+        let system = Arc::new(Elsewhere(elsewhere.local_addr().unwrap()));
+        let url = format!("http://localhost:{port}");
+        let mut connection =
+            Connection::resolving(&url, VersionRange::default(), SECOND / 4, system)
+                .expect("a loopback URL");
+
+        // Nothing answers: each request fails, once its connection is made.
+        connection.get("/status").expect_err("no answer");
+        connection.open_websocket("/ws").expect_err("no answer");
+
+        let accepted = |listener: &TcpListener| {
+            listener.set_nonblocking(true).unwrap();
+            std::iter::from_fn(|| listener.accept().ok()).count()
+        };
+        assert_eq!(accepted(&server), 2);
+        assert_eq!(accepted(&elsewhere), 0);
     }
 }

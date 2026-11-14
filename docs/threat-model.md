@@ -153,7 +153,7 @@ A member of a space, with valid devices.
 
 **Can:**
 - Read every channel it is in, with their presence and the history its `history` flag allows. Without history access, it holds its join epoch's key, which opens the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
-- Send as its own agents at the `member` trust level; enqueue tasks that another account's device runs only where its user turned on `member` tasks, within the policy's `member` ceiling unless that user approves them ([Trust levels](protocol/membership.md#trust-levels), [Running a task](protocol/queues.md#running-a-task)).
+- Send as its own agents at the `peer` trust level; enqueue tasks that another account's device runs only where its user turned on `peer` tasks, within the policy's `peer` ceiling unless that user approves them ([Trust levels](protocol/membership.md#trust-levels), [Running a task](protocol/queues.md#running-a-task)).
 - List any agent of its account in its presence, with any status and `note` ([agents.md](protocol/agents.md#security-considerations)).
 - Claim tasks of its channels and return any result; release a task it started, so an `at-most-once` task runs again ([queues.md](protocol/queues.md#security-considerations)).
 - Upload a wrong link, wrap or queue key object first, so history, or tasks that non-member `service` devices seal, become unreadable ([membership.md](protocol/membership.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
@@ -178,7 +178,7 @@ An admin of a space, with valid devices.
 - Sign revisions: add and remove members, admins included, change roles, exclude a member's devices, add channels and channel members, add service agents on members' accounts ([Roster](protocol/membership.md#roster)).
 - Add itself to any channel of the space with history access, and read its earlier history ([Roster](protocol/membership.md#roster), [Access](protocol/membership.md#access)).
 - Replace a member's `master` in the roster, so other members accept devices certified under the new key as that member's ([Roster](protocol/membership.md#roster), [Device checks](protocol/membership.md#device-checks)).
-- Change the policy: the ceilings of `member` and `service` tasks, `full` included, and the history key's longest age, down to one day ([Policy](protocol/membership.md#policy)).
+- Change the policy: the ceilings of `peer` and `service` tasks, `full` included, and the history key's longest age, down to one day ([Policy](protocol/membership.md#policy)).
 - Sign team templates for the space ([Templates](protocol/queues.md#templates)).
 - Sign invites with any role and channels ([Invite](protocol/membership.md#invite)), and grants that let `service` devices send in channels ([Service grant](protocol/README.md#service-grant)).
 - Change any queue of the space, delete any but `default`, and restart or cancel any of its tasks ([Queues](protocol/queues.md#queues), [Task states](protocol/queues.md#task-states)).

@@ -36,8 +36,6 @@ mod machine;
 #[path = "../sign_in/relay.rs"]
 mod relay;
 
-use std::fs;
-
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::{Browser, Page};
@@ -97,18 +95,14 @@ fn setup(github_id: u64, login: &str) -> (Cloud, Browser, Ada) {
         .collect();
     assert_eq!(certs.len(), 1, "the first device's certificate: {certs:?}");
     let cert = certs.remove(0);
-    let holders = machine.files_holding(&token);
-    assert_eq!(holders.len(), 1, "the secrets file: {holders:?}");
-    let secrets = fs::read(&holders[0]).expect("read the secrets file");
-    let seed = keys::private_key(&secrets, &cert.body().signing, keys::ed25519)
-        .expect("the secrets file holds the signing key");
+    let key = keys::signing_key(&machine.files_holding(&token), &cert.body().signing);
     let ada = Ada {
         user,
         machine,
         name,
         account,
         cert,
-        key: SigningKey::from_bytes(&seed),
+        key,
     };
     (cloud, browser, ada)
 }

@@ -591,6 +591,200 @@
         }
       }
     },
+    "/auth/google": {
+      "get": {
+        "operationId": "startGoogleSignIn",
+        "summary": "Start a Google sign-in",
+        "description": "Opened by the browser. Sends it to Google's authorization endpoint, by OpenID Connect's authorization code flow, asking for the scopes `openid` and `email` only, with a `state` that the cookie this response sets binds to this browser and a `nonce` and an S256 PKCE challenge of this sign-in. The `state` works once, until it expires; its lifetime is the server setting `--sign-in-state-lifetime`. The server reads Google's metadata from its issuer, the setting `--google-issuer`, at the first sign-in start that reaches it.",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "required": false,
+            "description": "The page of this server to return to once signed in: a path such as `/settings?tab=devices`. Anything else, such as another site's address, returns to `/`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "To Google's authorization endpoint.",
+            "headers": {
+              "Location": {
+                "description": "Google's authorization endpoint with the client ID, the redirect URI `<public URL>/auth/google/callback`, `response_type=code`, the scopes `openid email`, `state`, `nonce`, `code_challenge` and `code_challenge_method=S256`.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "description": "The cookie that binds `state` to this browser: `HttpOnly`, `SameSite=Lax`, `Secure` under an https public URL, for the callback's path only.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Google sign-in is off: the server has no Google settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Google is unreachable, or its metadata or keys are malformed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/google/callback": {
+      "get": {
+        "operationId": "finishGoogleSignIn",
+        "summary": "Google's callback",
+        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. Keeps no email, ID token or Google token.",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "description": "The code Google gives.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "The `state` of the sign-in start.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "description": "Google's error, such as `access_denied`, instead of a code.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed in: a page that sends the browser to the sign-in's return page.",
+            "headers": {
+              "Set-Cookie": {
+                "description": "The session cookie `skald_session`: `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; and the removal of the cookie that bound `state`.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No one is signed in: `state` is missing, wrong, from another browser, expired or used; or Google gave an error or no code, refused the code, or gave an ID token that fails a check, such as one with another sign-in's `nonce`.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Google sign-in is off: the server has no Google settings.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "No one is signed in: the database failed.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "No one is signed in: Google failed, is unreachable or refused the client ID and secret.",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/token": {
       "post": {
         "operationId": "requestDeviceToken",
@@ -2077,7 +2271,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "skald_session",
-        "description": "The web session that a GitHub sign-in gives."
+        "description": "The web session that a sign-in in the browser gives, with GitHub or Google."
       },
       "bearer": {
         "type": "http",

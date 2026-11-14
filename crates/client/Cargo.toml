@@ -29,7 +29,9 @@ sha2 = { version = "0.11", default-features = false }
 skald-crypto = { path = "../crypto" }
 skald-proto = { path = "../proto" }
 tar = { version = "0.4", default-features = false }
-tungstenite = "0.30"
+# rustls for WSS. The client hands tungstenite its own TLS stream, so tungstenite never loads the
+# native roots this feature brings.
+tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider"] }
 zeroize = "1"
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
@@ -37,6 +39,8 @@ zip = { version = "9.5", default-features = false, features = ["deflate-flate2"]
 [dev-dependencies]
 axum = "0.8.9"
 curve25519-dalek = "5"
+# `trace` lets a state test run another connection in the middle of a read.
+rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-server = { path = "../server" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }

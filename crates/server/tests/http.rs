@@ -8,7 +8,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::spec::{spec, spec_bytes, spec_violations};
-use common::{Response, SERVER, Server, TestDb, on_free_port, start_failure};
+use common::{Response, SERVER, Server, TestDb, on_free_port, run, start_failure};
 use serde_json::{Value, json};
 
 impl Response {
@@ -217,6 +217,39 @@ fn exits_with_error_when_address_is_taken() {
         stderr.starts_with(&format!("skald-server: cannot listen on {addr}: ")),
         "stderr: {stderr:?}"
     );
+}
+
+#[test]
+fn exits_with_error_on_a_google_issuer_neither_https_nor_http_on_loopback() {
+    // A closed port: a server that took the issuer would fail at the database instead.
+    let url = "postgres://postgres@127.0.0.1:1/postgres";
+    let secret = [("SKALD_GOOGLE_CLIENT_SECRET", "stand-in-google-secret")];
+    for issuer in [
+        "http://accounts.google.example",
+        "ftp://127.0.0.1",
+        "not a URL",
+    ] {
+        let (started, output) = run(
+            &[
+                "--listen",
+                "127.0.0.1:0",
+                "--database-url",
+                url,
+                "--public-url",
+                "http://127.0.0.1:8080",
+                "--google-client-id",
+                "stand-in-google-client",
+                "--google-issuer",
+                issuer,
+            ],
+            &secret,
+        );
+        assert!(!started, "{issuer}: {output}");
+        assert!(
+            output.starts_with(&format!("skald-server: the issuer {issuer:?}: ")),
+            "{issuer}: {output}"
+        );
+    }
 }
 
 /// The tests' servers whose address must be known before they start: the port they are given can

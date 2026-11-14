@@ -23,11 +23,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+use super::tls::Ca;
 
 /// The repository of the releases.
 const REPO: &str = "skald-so/skald";
@@ -248,133 +248,20 @@ fn skald_printing(version: &str) -> PathBuf {
 }
 
 /// A test CA, and a server certificate it issued for 127.0.0.1 and for `releases.skald.test`, a name
-/// no resolver knows, made with openssl.
+/// no resolver knows.
 pub struct Certificates {
     /// The CA's certificate, PEM.
     pub ca: PathBuf,
     config: Arc<ServerConfig>,
 }
 
-/// The certificates' config: the CA's name, the server's name and the extensions of each.
-const OPENSSL_CONFIG: &str = "\
-[req]
-prompt = no
-distinguished_name = ca_name
-
-[ca_name]
-CN = skald update test CA
-
-[server_name]
-CN = releases.skald.test
-
-[ca]
-basicConstraints = critical, CA:true
-keyUsage = critical, keyCertSign, cRLSign
-subjectKeyIdentifier = hash
-
-[server]
-basicConstraints = critical, CA:false
-keyUsage = critical, digitalSignature, keyEncipherment
-extendedKeyUsage = serverAuth
-subjectAltName = DNS:releases.skald.test, IP:127.0.0.1
-subjectKeyIdentifier = hash
-authorityKeyIdentifier = keyid
-";
-
 /// Makes the certificates in `dir`.
 pub fn certificates(dir: &Path) -> Certificates {
-    fs::create_dir_all(dir).expect("create the certificates' directory");
-    fs::write(dir.join("openssl.cnf"), OPENSSL_CONFIG).expect("write the openssl config");
-    // The server's request names the server, with the same config.
-    fs::write(
-        dir.join("server.cnf"),
-        OPENSSL_CONFIG.replace(
-            "distinguished_name = ca_name",
-            "distinguished_name = server_name",
-        ),
-    )
-    .expect("write the openssl config");
-    let path = |name: &str| dir.join(name).to_str().expect("a UTF-8 path").to_owned();
-    let (config, server_config) = (path("openssl.cnf"), path("server.cnf"));
-    openssl(&[
-        "req",
-        "-x509",
-        "-config",
-        &config,
-        "-extensions",
-        "ca",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-days",
-        "2",
-        "-keyout",
-        &path("ca.key"),
-        "-out",
-        &path("ca.pem"),
-    ]);
-    openssl(&[
-        "req",
-        "-new",
-        "-config",
-        &server_config,
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-keyout",
-        &path("server.key"),
-        "-out",
-        &path("server.csr"),
-    ]);
-    openssl(&[
-        "x509",
-        "-req",
-        "-in",
-        &path("server.csr"),
-        "-CA",
-        &path("ca.pem"),
-        "-CAkey",
-        &path("ca.key"),
-        "-set_serial",
-        "1",
-        "-days",
-        "2",
-        "-extfile",
-        &config,
-        "-extensions",
-        "server",
-        "-out",
-        &path("server.pem"),
-    ]);
-    let chain = CertificateDer::pem_file_iter(path("server.pem"))
-        .expect("read the server's certificate")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("parse the server's certificate");
-    let key = PrivateKeyDer::from_pem_file(path("server.key")).expect("read the server's key");
-    let tls =
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .expect("TLS versions")
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
-            .expect("a TLS config of the server's certificate");
+    let ca = Ca::new(dir);
     Certificates {
-        ca: dir.join("ca.pem"),
-        config: Arc::new(tls),
+        config: ca.issue("DNS:releases.skald.test, IP:127.0.0.1"),
+        ca: ca.cert,
     }
-}
-
-fn openssl(args: &[&str]) {
-    let output = Command::new("openssl")
-        .args(args)
-        .output()
-        .expect("run openssl; script/test needs it");
-    assert!(
-        output.status.success(),
-        "openssl {} failed: {}",
-        args[0],
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 /// A request the stand-in got.
