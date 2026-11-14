@@ -148,6 +148,13 @@ pub struct Space {
     pub pending: Option<Vec<u8>>,
 }
 
+impl Space {
+    /// Whether its pending revision is its revision 1, which the server has not taken yet.
+    pub fn first_waits(&self) -> bool {
+        self.pending.as_ref() == Some(&self.anchor)
+    }
+}
+
 /// What the state holds of the revisions the device accepted of a space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Accepted {
@@ -658,7 +665,10 @@ mod tests {
         let acme = SpaceId::generate();
         state.add_space(acme, "acme", &[1]).unwrap();
         let pending = |state: &State| state.spaces().unwrap()[0].pending.clone();
+        let first_waits = |state: &State| state.spaces().unwrap()[0].first_waits();
+        assert!(first_waits(&state), "revision 1 waits");
         state.clear_pending(acme, &[1]).unwrap();
+        assert!(!first_waits(&state));
 
         assert!(
             !state.set_pending(acme, &[9], None, &[2]).unwrap(),
@@ -667,6 +677,7 @@ mod tests {
         assert!(!state.set_pending(acme, &[1], Some(&[3]), &[2]).unwrap());
         assert_eq!(pending(&state), None);
         assert!(state.set_pending(acme, &[1], None, &[2]).unwrap());
+        assert!(!first_waits(&state), "a later revision waits");
         assert!(
             !state.set_pending(acme, &[1], None, &[4]).unwrap(),
             "one waits"

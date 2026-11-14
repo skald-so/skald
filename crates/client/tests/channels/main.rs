@@ -53,10 +53,13 @@ use machine::{Finished, Machine};
 use relay::{Lose, strings_named};
 use serde_json::{Value, json};
 use skald_crypto::accept_next;
-use skald_proto::{Channel, ChannelId, ChannelMember, Name, Role, Roster, SpaceId, Unknown};
+use skald_proto::{
+    Cbor as _, Channel, ChannelId, ChannelMember, Name, Role, Roster, SpaceId, Unknown,
+};
 use world::{
-    ADMIN, MEMBER, Person, World, assert_role, create, members, next_by, next_with, plain_lines,
-    post_as, revisions_request, run, set_role, space_certs, store, warnings, words,
+    ADMIN, CREATE_SPACE, MEMBER, Person, SPACES, World, assert_role, create, members, next_by,
+    next_with, plain_lines, post_as, revisions_request, run, set_role, space_certs, store,
+    warnings, words,
 };
 
 /// The commands that create a channel in a space and list a space's channels.
@@ -569,6 +572,20 @@ fn waiting_revision_keeps_the_space_until_it_goes_on_top_of_another_admins() {
     let failed = create_channel(&ada.machine, ACME);
     assert!(!failed.success, "{failed:?}");
     let issued = issued_since(cloud, since);
+    // Only a waiting revision 1 is one the server has not taken of the space.
+    let listed = run(&ada.machine, &[SPACES]);
+    assert!(listed.success, "{listed:?}");
+    assert!(
+        !plain_lines(&listed)
+            .iter()
+            .any(|line| line.contains("not on the server")),
+        "{listed:?}"
+    );
+    let again = run(&ada.machine, &[CREATE_SPACE, ACME]);
+    assert!(
+        again.success && again.shown().contains("already"),
+        "{again:?}"
+    );
     store_revisions(cloud);
     let bobs = issue_channel(cloud, &bob.token, space);
     let fourth = next_with(&third, (bob.device, &bob.key), |body| {
@@ -593,6 +610,64 @@ fn waiting_revision_keeps_the_space_until_it_goes_on_top_of_another_admins() {
     let rosters = server_rosters(cloud, &ada.token, space);
     assert_eq!(rosters.len(), 5, "the space's revisions: {rosters:?}");
     assert_eq!(rosters[3], fourth, "Bob's revision 4 is not kept");
+    let adas = assert_adds_a_channel(cloud, &fourth, &rosters[4], &ada);
+    assert_eq!(
+        adas.to_string(),
+        issued[0],
+        "another channel than the one issued"
+    );
+    assert_channel(&listed, general, &[&ada.handle], &[&bob.handle]);
+    assert_channel(&listed, bobs, &[&bob.handle], &[&ada.handle]);
+    assert_channel(&listed, adas, &[&ada.handle], &[&bob.handle]);
+}
+
+/// Ada's device adds a channel by revision 3, then signs a revision 4 with another, which the server
+/// fails to store; Bob's device then stores revision 4 with a channel of its own. Ada's local state
+/// then holds Bob's revision as accepted while its own revision 4 waits, as a run killed between
+/// accepting and signing again leaves it. The next run that sends it again adds Ada's second
+/// channel on top of Bob's revision, keeping both channels before it.
+#[test]
+fn waiting_revision_whose_state_accepted_the_one_that_came_first_goes_on_top_of_it() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_120_691_801, "ada-killed-meanwhile", "ada-workstation");
+    let bob = world.sign_up(4_120_691_802, "bob-in-between", "bob-workstation");
+    let [first, _] = acme_with(cloud, &ada, &[(&bob, Role::Admin)]);
+    let space = first.body().space;
+    assert!(create_channel(&ada.machine, ACME).success);
+    let third = server_rosters(cloud, &ada.token, space).remove(2);
+    let general = third.body().channels[0].id;
+    refuse_revisions(cloud);
+    let since = cloud.relay.mark();
+    assert!(!create_channel(&ada.machine, ACME).success);
+    let issued = issued_since(cloud, since);
+    store_revisions(cloud);
+    let bobs = issue_channel(cloud, &bob.token, space);
+    let fourth = next_with(&third, (bob.device, &bob.key), |body| {
+        body.channels.push(channel(bobs, &[(&bob, true)]));
+    });
+    store(cloud, &bob.token, &fourth);
+    let state = rusqlite::Connection::open(ada.machine.state_dir().join("state.sqlite3"))
+        .expect("Ada's local state");
+    let id = space.to_string();
+    state
+        .execute(
+            "UPDATE space SET accepted = ?2 WHERE space = ?1",
+            rusqlite::params![id, fourth.to_cbor()],
+        )
+        .expect("accept Bob's revision 4");
+    state
+        .execute(
+            "INSERT INTO accepted_revision (space, revision, hash) VALUES (?1, 3, ?2)",
+            rusqlite::params![id, third.hash().as_slice()],
+        )
+        .expect("record revision 3");
+    drop(state);
+
+    let listed = channels(&ada.machine, ACME);
+
+    let rosters = server_rosters(cloud, &ada.token, space);
+    assert_eq!(rosters.len(), 5, "the space's revisions: {rosters:?}");
     let adas = assert_adds_a_channel(cloud, &fourth, &rosters[4], &ada);
     assert_eq!(
         adas.to_string(),

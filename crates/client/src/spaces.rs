@@ -75,11 +75,7 @@ pub fn create(
     let mut existing = None;
     for space in state.spaces().map_err(text)? {
         // A later revision waits for a command that uses its space.
-        if let Some(pending) = space
-            .pending
-            .as_ref()
-            .filter(|pending| **pending == space.anchor)
-        {
+        if let Some(pending) = space.pending.as_ref().filter(|_| space.first_waits()) {
             send(
                 &mut connection,
                 &state,
@@ -94,7 +90,7 @@ pub fn create(
     }
     if let Some(space) = existing {
         let roster = follow::decode(&space.anchor, &space.name)?;
-        println!("{}", created(&roster, space.pending.is_none()));
+        println!("{}", created(&roster, !space.first_waits()));
         return Ok(());
     }
 
@@ -340,10 +336,7 @@ impl Follower {
     /// after revision 1 that the device signed is sent first, warning if it is not stored; while it
     /// waits, the space stays at its last accepted revision.
     pub fn sync(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
-        let waiting = space
-            .pending
-            .as_ref()
-            .filter(|pending| **pending != space.anchor);
+        let waiting = space.pending.as_ref().filter(|_| !space.first_waits());
         if let Some(pending) = waiting
             && let Err(unsent) = self.store(space, pending.clone())
         {
@@ -355,11 +348,15 @@ impl Follower {
             }
         }
         self.follow(space)
+            .map(|(roster, devices, _)| (roster, devices))
     }
 
-    /// Accepts the revisions the server has of `space`: its last accepted revision and the devices
-    /// of its accounts.
-    fn follow(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
+    /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
+    /// its accounts and the revisions the server gives.
+    fn follow(
+        &mut self,
+        space: &state::Space,
+    ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
         follow::sync(
             &mut self.connection,
             &self.state,
@@ -400,14 +397,17 @@ impl Follower {
                 }
                 Sent::Failed(err) => return Err(waits(err)),
                 Sent::Conflict(_) => {
-                    // Another revision came first.
-                    let base = follow::read(&self.state, id, name)
-                        .and_then(|held| follow::decode(&held.last, name))
-                        .map_err(waits)?;
-                    let (latest, _) = self.follow(space).map_err(waits)?;
+                    // Another revision came first. The change is what `pending` adds to the
+                    // revision it was signed on, which the state may have accepted others after.
+                    let (latest, _, given) = self.follow(space).map_err(waits)?;
+                    let prev = roster.body().prev;
+                    let base = given
+                        .into_iter()
+                        .find(|given| Some(given.hash()) == prev)
+                        .unwrap_or_else(|| latest.clone());
                     if latest.hash() == base.hash() {
-                        "the server holds another revision with its number, which this device \
-                         does not accept"
+                        "the server gives no revision this device accepts in its place, or not \
+                         the one it was signed on"
                             .to_owned()
                     } else if !admin_device(&latest, self.own.account, self.this) {
                         no_admin(&latest)
@@ -577,7 +577,7 @@ pub fn list(
                 }
                 None => follow::decode(&space.accepted, &space.name)?,
             };
-            lines.push(line(&roster, account, space.pending.is_some()));
+            lines.push(line(&roster, account, space.first_waits()));
         }
         lines
     } else {

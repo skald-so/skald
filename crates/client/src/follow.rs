@@ -48,14 +48,14 @@ pub struct SpaceDevices {
 
 /// Fetches the revisions of `space`, the space the state holds, and the devices of its accounts, as
 /// the session `token`, accepts the new revisions, records them in `state` and prints the warnings:
-/// gives the space's last accepted revision and its devices.
+/// gives the space's last accepted revision, its devices and the revisions the server gives.
 pub fn sync(
     connection: &mut Connection,
     state: &State,
     token: &str,
     space: &state::Space,
     own: &Own,
-) -> Result<(Roster, SpaceDevices), String> {
+) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
     let (id, name) = (space.id, &space.name);
     let body = connection
         .get_as(&format!("/spaces/{id}/revisions"), token)
@@ -85,7 +85,7 @@ pub fn sync(
     for warning in warnings.iter().chain(&followed) {
         eprintln!("skald: warning: {warning}");
     }
-    Ok((current, devices))
+    Ok((current, devices, given))
 }
 
 /// The devices of the accounts of the space `id`, as the server gives them to the session `token`.
