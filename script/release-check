@@ -8,7 +8,10 @@
 #   npx: `npx skald-so@<version>` runs skald, which prints the release's version;
 #   skald update: for a stable release with an earlier one, the release published before it, a beta
 #     included, the skald that release's installer installs updates itself with `skald update`, then
-#     prints the release's version;
+#     prints the release's version. skald update asks GitHub's API without a token, so a runner's
+#     shared address can use up its rate limit: before it, and once more if it answers 403, the check
+#     reads the limit, which costs none of it, and when none is left waits for its reset, if that is
+#     at most 20 minutes away, and runs it again; a later reset fails the step naming the limit;
 #   the verifications: the release is immutable; every file of the release matches its checksum, if
 #     it has one, and has an attestation of the release workflow at the tag; the image of the
 #     release's version is signed with cosign by that workflow at that tag and has its attestation;
@@ -46,6 +49,8 @@ image=ghcr.io/skald-so/skald-server
 issuer=https://token.actions.githubusercontent.com
 releases_url=${SKALD_RELEASES_URL:-https://github.com/$repository/releases/download}
 releases_url=${releases_url%/}
+github_api=${SKALD_GITHUB_API_URL:-https://api.github.com}
+github_api=${github_api%/}
 registry=${npm_config_registry:-https://registry.npmjs.org/}
 registry=${registry%/}
 
@@ -180,15 +185,44 @@ else
   fail npx "npx skald-so@$version prints '$output', not 'skald $version'"
 fi
 
+# api_limit: 1, with the step failed, if GitHub's API has no requests without a token left for
+# this machine's address and resets more than 20 minutes from now; otherwise 0, once it has some
+# left, with waited=true if it waited for the reset. A limit it cannot read counts as some left.
+api_limit() {
+  local remaining reset left
+  waited=false
+  curl -fsS "$github_api/rate_limit" -o "$tmp/rate_limit.json" 2>/dev/null || return 0
+  remaining=$(json '.resources.core.remaining // empty' "$tmp/rate_limit.json")
+  reset=$(json '.resources.core.reset // empty' "$tmp/rate_limit.json")
+  [[ $remaining == 0 && $reset =~ ^[0-9]+$ ]] || return 0
+  left=$((reset - $(date +%s)))
+  if ((left > 1200)); then
+    : >"$tmp/output"
+    fail "skald update" "GitHub's API rate limit of this machine's address is used up for $left s more, not a fault of the release"
+    return 1
+  fi
+  echo "release-check: skald update: GitHub's API rate limit of this machine's address is used up; waiting for its reset"
+  if ((left >= 0)); then sleep $((left + 1)); fi
+  waited=true
+}
+# update <skald>: <skald> updates itself with skald update, run once more after a wait for the rate
+# limit if it answers 403; 1, with the step failed, if it does not.
+update() {
+  api_limit || return 1
+  run "$1" update && return 0
+  if grep -qw 403 "$tmp/output"; then
+    api_limit || return 1
+    if $waited; then run "$1" update && return 0; fi
+  fi
+  fail "skald update" "skald update of the skald of $earlier failed"
+  return 1
+}
 if ! $beta && [[ -n $earlier ]]; then
   skald=$tmp/update/skald
   if $windows; then skald=$tmp/update/skald.exe; fi
-  if install "$earlier" "$tmp/update" "skald update"; then
-    if ! run "$skald" update; then
-      fail "skald update" "skald update of the skald of $earlier failed"
-    elif prints "$skald" "$version" "skald update" "after skald update, the skald of $earlier"; then
-      passed "skald update"
-    fi
+  if install "$earlier" "$tmp/update" "skald update" && update "$skald" &&
+    prints "$skald" "$version" "skald update" "after skald update, the skald of $earlier"; then
+    passed "skald update"
   fi
 fi
 

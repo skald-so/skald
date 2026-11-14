@@ -13,6 +13,11 @@
 //   npm         the package skald-so: versions, each version to {tgz, manifest}; distTags;
 //               provenance, each version to its provenance {repo, workflow, ref}, or none
 //   requests    every request served: {method, path, agent}
+//   apiLimit    optional: {wait, stale, forbidden}. Requests without a token, those of skald update
+//               with the user agent skald/<version>, are answered 403 until <wait> seconds after
+//               the first such request or read of /rate_limit past the first <stale> reads, which
+//               report some left; /rate_limit reports none left until then. With <forbidden> they
+//               are always answered 403, while /rate_limit reports some left.
 // <state>, a JSON file the commands read: server, the stand-in's URL; curl, the real curl; calls, a
 // file each command appends a JSON line to: {tool, args, status, subjects}; image, {name, tags},
 // each tag of the image to its digest; signatures, cosign's: {digest, identity, issuer};
@@ -132,6 +137,21 @@ export function serve(world) {
       const release = world.releases.find((r) => r.tag === m[1]);
       const name = release && path.join(release.dir, m[2]);
       return name && fs.statSync(name, { throwIfNoEntry: false })?.isFile() ? file(name) : missing();
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const limit = world.apiLimit;
+    const tokenless = String(request.headers['user-agent'] ?? '').startsWith('skald/');
+    const stale = Boolean(limit) && route === '/api/rate_limit' && limit.reset === undefined && (limit.stale ?? 0) > 0;
+    if (stale) limit.stale--;
+    else if (limit && (route === '/api/rate_limit' || tokenless)) limit.reset ??= now + limit.wait;
+    const usedUp = Boolean(limit && !limit.forbidden && now < limit.reset);
+    if (route === '/api/rate_limit') {
+      const left = !usedUp || stale;
+      const core = { limit: 60, used: left ? 0 : 60, remaining: left ? 60 : 0, reset: left ? now + 3600 : limit.reset };
+      return json({ resources: { core }, rate: core });
+    }
+    if (route.startsWith('/api/') && tokenless && (usedUp || limit?.forbidden)) {
+      return response.writeHead(403, { 'content-type': 'application/json' }).end(JSON.stringify({ message: usedUp ? 'API rate limit exceeded' : 'Forbidden' }));
     }
     m = route.match(/^\/api\/repos\/([^/]+)\/([^/]+)\/releases(\/.*)?$/i);
     if (m) {

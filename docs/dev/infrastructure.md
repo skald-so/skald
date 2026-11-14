@@ -88,6 +88,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - The job's token writes nothing but `id-token`.
 - **Release check:** on a push of a `v*` tag, once the GitHub Release, the npm package and the image are published, the release workflow runs `script/release-check` on the tag, on a runner of each OS and architecture: `.github/workflows/release-check.yml`.
   - Each runner installs the release with `install.sh`, or `install.ps1` on Windows, and with `npx skald-so`, and each `skald` prints the release's version. For a stable release with an earlier one, the release published before it, a beta included, that release's `skald` updates itself with `skald update` and then prints the release's version.
+  - `skald update` asks GitHub's API without a token, so a runner's shared address can use up its rate limit. The check then waits for the limit's reset, at most 20 minutes, and runs it again; a later reset fails the step, naming the rate limit.
   - The `ubuntu-22.04` runner also verifies the release with the commands of "Trust in builds", pinned to its tag: the release is immutable, every file matches its checksum and has its attestation, the image has its signature and attestation, and the npm package its provenance and the dist-tag `latest`, or `next` for a beta.
   - A failed step prints `release-check: <step>: failed: <why>`.
   - Its jobs read the release and publish nothing: their token reads contents and attestations, and they read no secret.
