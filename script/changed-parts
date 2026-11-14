@@ -26,7 +26,7 @@ if [[ $# -eq 1 && $1 != -* ]]; then
 elif [[ $# -eq 2 && $1 == --since ]]; then
   fork=$(git merge-base "$2" HEAD)
   paths=$(git -c core.quotePath=false diff --name-only --no-renames "$fork")
-  untracked=$(git -c core.quotePath=false ls-files --others --exclude-standard)
+  untracked=$(git -c core.quotePath=false ls-files --others --exclude-standard --full-name :/)
   paths+=$'\n'$untracked
 else
   echo "usage: $0 [--since] <base>" >&2

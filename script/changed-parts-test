@@ -187,6 +187,10 @@ since 'agents edits repository' "$base"
 git reset --quiet --hard
 apply web/new.ts
 since 'edits repository web' "$base"
+# From a directory below the root too.
+mkdir -p crates
+got=$(cd crates && "$root/script/changed-parts" --since "$base" | sed -n 's/=true$//p' | paste -sd ' ' -)
+[[ $got == 'edits repository web' ]] || fail "--since in crates/: got '$got', want 'edits repository web'"
 rm web/new.ts
 branch=$(git rev-parse HEAD)
 git checkout --quiet --detach "$base"
