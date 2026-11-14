@@ -1,5 +1,6 @@
-//! The account's sign-in methods: the page names them and offers a link for each provider the
-//! server has settings for; the API gives the list to the account's sessions only.
+//! The account's sign-in methods: the page names them and when each was linked, offers a link for
+//! each provider the server has settings for and, without a session, signs in back to itself; the
+//! API gives the list to the account's sessions only.
 
 use serde_json::Value;
 
@@ -9,7 +10,8 @@ use super::common::google::Google;
 use super::common::sign_in::page_get;
 use super::{
     LINK_GITHUB, LINK_GOOGLE, METHODS, METHODS_PAGE, Method, both, github_and_google, github_only,
-    github_page, google_page, link_github, listed, methods, methods_in,
+    github_page, github_session, google_page, link_github, listed, methods, methods_in,
+    open_methods_page,
 };
 
 /// Checks that the page of the account's sign-in methods in `page`'s browser offers a link to
@@ -32,6 +34,43 @@ fn assert_page(page: &Page, public: &str, (github, google): (bool, bool), names:
     for name in names {
         assert!(text.contains(name), "the page names {name:?}: {text:?}");
     }
+}
+
+/// Checks that the page of the account's sign-in methods in `page`'s browser names the day each of
+/// the account's methods was linked, as the API gives it.
+#[track_caller]
+fn assert_page_dates(google: &Google, page: &Page) {
+    let body = listed(google, page);
+    let days: Vec<String> = body["methods"]
+        .as_array()
+        .expect("methods")
+        .iter()
+        .map(|item| item["linked_at"].as_str().expect("linked_at")[..10].to_owned())
+        .collect();
+    open_methods_page(google, page);
+    let text = page.text();
+    for day in days {
+        assert!(text.contains(&day), "the page names {day}: {text:?}");
+    }
+}
+
+/// Signs in on the page of the account's sign-in methods, without a session, by its link `link`,
+/// after `provider_session` signs the browser in to the provider; checks that the sign-in returns
+/// to that page; gives the page.
+fn sign_in_from_methods_page<'a>(
+    google: &Google,
+    browser: &'a Browser,
+    provider_session: impl Fn(&Page),
+    link: &str,
+) -> Page<'a> {
+    let page = browser.page();
+    provider_session(&page);
+    open_methods_page(google, &page);
+    assert_eq!(page.count(link), 1, "the page offers {link}");
+    let visit = page.click_settled(link);
+    let back = format!("{}{METHODS_PAGE}", google.public);
+    assert_eq!(visit.url, back, "back on the page: {visit:?}");
+    page
 }
 
 /// The methods of `body`, a `GET /account/sign-in-methods` answer, each as its JSON, in order.
@@ -59,6 +98,7 @@ fn page_names_the_methods_and_offers_a_link_per_provider_with_settings() {
         (true, true),
         &["Google", "GitHub", &bob.login],
     );
+    assert_page_dates(&google, &page);
 
     // Google's settings only.
     let only_google = Google::start();
@@ -81,6 +121,29 @@ fn page_names_the_methods_and_offers_a_link_per_provider_with_settings() {
     let (status, body) = page_get(&page, &flow.stand.public, METHODS);
     assert_eq!(status, 200, "{body}");
     assert_eq!(methods_in(&body), github_only(&dan));
+}
+
+#[test]
+fn page_without_a_session_signs_in_and_returns_to_it() {
+    let browser = Browser::launch();
+    let google = both(&[]);
+    let ada = google.person("110248495921238988320", "ada.back@example.com");
+    let bob = google.github_user(5_310_448_330, "bob-back-standin", "bob.back@example.org");
+
+    let page = sign_in_from_methods_page(
+        &google,
+        &browser,
+        |page| google.provider_session(page, &ada),
+        "role=link[name=/sign in with google/i]",
+    );
+    assert_eq!(methods(&google, &page), vec![Method::Google]);
+    let page = sign_in_from_methods_page(
+        &google,
+        &browser,
+        |page| github_session(&google, page, &bob),
+        "role=link[name=/sign in with github/i]",
+    );
+    assert_eq!(methods(&google, &page), github_only(&bob));
 }
 
 #[test]
