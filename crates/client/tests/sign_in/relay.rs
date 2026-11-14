@@ -389,14 +389,18 @@ fn pipe(
     let mut to = to.try_clone().expect("clone a stream");
     let reads = Arc::clone(reads);
     let shared = Arc::clone(shared);
+    let (source, sink) = if to_server {
+        ("machine", "server")
+    } else {
+        ("server", "machine")
+    };
     thread::spawn(move || {
         let mut buffer = [0; 16 * 1024];
         loop {
             let count = match from.read(&mut buffer) {
                 Ok(0) => break,
                 Err(err) => {
-                    let side = if to_server { "machine" } else { "server" };
-                    eprintln!("relay: connection {connection}: cannot read the {side}: {err}");
+                    eprintln!("relay: connection {connection}: cannot read the {source}: {err}");
                     break;
                 }
                 Ok(count) => count,
@@ -426,14 +430,18 @@ fn pipe(
                         break;
                     }
                     Fate::Send(bytes) => {
-                        if to.write_all(&bytes).is_err() {
+                        if let Err(err) = to.write_all(&bytes) {
+                            eprintln!(
+                                "relay: connection {connection}: cannot write to the {sink}: {err}"
+                            );
                             break;
                         }
                         continue;
                     }
                 }
             }
-            if to.write_all(&buffer[..count]).is_err() {
+            if let Err(err) = to.write_all(&buffer[..count]) {
+                eprintln!("relay: connection {connection}: cannot write to the {sink}: {err}");
                 break;
             }
         }

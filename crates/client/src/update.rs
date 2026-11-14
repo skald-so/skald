@@ -448,16 +448,14 @@ fn rename(from: &Path, to: &Path) -> io::Result<()> {
     rename_within(from, to, BUSY_LIMIT)
 }
 
-/// Moves `from` to `to`, tried again while another program has either open, for up to `limit`.
+/// Moves `from` to `to`, tried again every 50 ms while another program has either open, for up to
+/// `limit`.
 fn rename_within(from: &Path, to: &Path, limit: Duration) -> io::Result<()> {
+    const WAIT: Duration = Duration::from_millis(50);
     let started = Instant::now();
-    let mut wait = Duration::from_millis(10);
     loop {
         match fs::rename(from, to) {
-            Err(err) if busy(&err) && started.elapsed() + wait <= limit => {
-                thread::sleep(wait);
-                wait = (wait * 2).min(Duration::from_millis(500));
-            }
+            Err(err) if busy(&err) && started.elapsed() + WAIT <= limit => thread::sleep(WAIT),
             result => return result,
         }
     }
