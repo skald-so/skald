@@ -43,7 +43,7 @@ pub struct SendKey {
 }
 
 /// The frame type of [`Stored`].
-const STORED: u64 = 2;
+pub(crate) const STORED: u64 = 2;
 
 /// A server status of one message for one recipient device, unsigned: the payload of a
 /// `status` frame.

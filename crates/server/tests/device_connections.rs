@@ -41,6 +41,7 @@ use common::{Response, Server, WebSocket, send};
 use skald_crypto::SigningKey;
 use skald_proto::{CertBody, DeviceId, DeviceKind, PROTOCOL_VERSION, VERSION_HEADER};
 use tungstenite::Message;
+use tungstenite::protocol::CloseFrame;
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 
@@ -622,5 +623,60 @@ fn challenge_request_states_the_protocol_version() {
     assert_eq!(
         json(&response)["type"],
         "https://skald.so/problems/protocol-version-invalid"
+    );
+}
+
+/// Signing out closes the session's connection with the reason `session-ended`.
+#[test]
+fn signing_out_closes_the_connection_as_its_session_ended() {
+    let flow = DeviceFlow::start();
+    let ada = linked(&flow, 3_121_220_019, "ada-session-ended-standin");
+    let mut socket = connect_as(&flow, &ada, &challenge(&flow, &ada.machine.token));
+    assert_connection_taken(&flow.stand.server, &mut socket);
+
+    assert_eq!(ada.machine.sign_out().status, 204);
+
+    assert_closed_with(&mut socket, "session-ended");
+}
+
+/// A refused proof uses its challenge up: the device's own proof with it is refused after.
+#[test]
+fn refused_proof_uses_its_challenge_up() {
+    let flow = DeviceFlow::start();
+    let ada = linked(&flow, 3_121_220_020, "ada-refused-once-standin");
+    let challenge = challenge(&flow, &ada.machine.token);
+    let other = Key::generate();
+    let mut refused = connect(
+        &flow.stand.server,
+        &challenge,
+        ada.device.id,
+        &other.key,
+        &flow.stand.public,
+    );
+    assert_closed_with(&mut refused, SIGNATURE_REFUSED);
+
+    let mut socket = connect_as(&flow, &ada, &challenge);
+
+    assert_closed_with(&mut socket, CHALLENGE_REFUSED);
+}
+
+/// The server answers the close of a taken connection with the closing handshake.
+#[test]
+fn taken_connection_closes_with_the_closing_handshake() {
+    let flow = DeviceFlow::start();
+    let ada = linked(&flow, 3_121_220_021, "ada-closes-standin");
+    let mut socket = connect_as(&flow, &ada, &challenge(&flow, &ada.machine.token));
+    assert_connection_taken(&flow.stand.server, &mut socket);
+
+    let close = CloseFrame {
+        code: CloseCode::Normal,
+        reason: "done".into(),
+    };
+    socket.close(Some(close)).expect("send a close");
+
+    let closed = closing(&mut socket, CLOSE_WITHIN);
+    assert!(
+        matches!(closed, Some(Closed::Frame(CloseCode::Normal, _))),
+        "{closed:?}"
     );
 }

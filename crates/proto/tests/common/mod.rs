@@ -8,9 +8,9 @@ use std::num::NonZeroU64;
 
 use skald_proto::{
     Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation, DelegationBody,
-    DeliveryStatus, DeviceId, Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload,
-    HpkePlaintext, MessageId, NonEmpty, Receipt, ReceiptStatus, Scheme, SendKey, ServerStatus,
-    SpaceId, Stored, Unknown,
+    DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody, Header, HpkePayload,
+    HpkePlaintext, MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus, Scheme, SendKey,
+    ServerStatus, SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -271,29 +271,30 @@ pub fn vectors() -> Vec<Vector> {
         content: hpke_content,
         signature: SIGNATURE,
     };
+    let mls_envelope = Envelope {
+        header: header(msg(1), Scheme::Mls),
+        payload: hex("000100020102030405060708090a0b0c0d0e0f"),
+    };
+    let hpke_envelope = Envelope {
+        header: Header {
+            recipients: Some(NonEmpty::new(bob_device())),
+            ttl: Some(86_400),
+            ..header(msg(2), Scheme::Hpke)
+        },
+        payload: HpkePayload {
+            enc: [0xe0; 32],
+            ct: hex("c0c1c2c3c4c5c6c7c8c9cacbcccdcecf"),
+        }
+        .to_cbor(),
+    };
+    let raw = |envelope: &Envelope| RawEnvelope::from_bytes(envelope.to_cbor()).unwrap();
+    let status = |seq, status| Push::Status {
+        seq: nonzero(seq),
+        status: delivery_status(status),
+    };
     vec![
-        vector(
-            "Envelope under `mls`",
-            Envelope {
-                header: header(msg(1), Scheme::Mls),
-                payload: hex("000100020102030405060708090a0b0c0d0e0f"),
-            },
-        ),
-        vector(
-            "Envelope under `hpke`",
-            Envelope {
-                header: Header {
-                    recipients: Some(NonEmpty::new(bob_device())),
-                    ttl: Some(86_400),
-                    ..header(msg(2), Scheme::Hpke)
-                },
-                payload: HpkePayload {
-                    enc: [0xe0; 32],
-                    ct: hex("c0c1c2c3c4c5c6c7c8c9cacbcccdcecf"),
-                }
-                .to_cbor(),
-            },
-        ),
+        vector("Envelope under `mls`", mls_envelope.clone()),
+        vector("Envelope under `hpke`", hpke_envelope.clone()),
         vector("HPKE plaintext", hpke_plaintext),
         vector(
             "Content with an A2A message and an attachment",
@@ -355,6 +356,55 @@ pub fn vectors() -> Vec<Vector> {
         vector(
             "Server status `expired`",
             delivery_status(ServerStatus::Expired),
+        ),
+        vector(
+            "Frame `send`",
+            Frame::Send {
+                envelope: raw(&mls_envelope),
+                report: true,
+            },
+        ),
+        vector(
+            "Frame `send-refused`",
+            Frame::SendRefused {
+                send_key: SendKey {
+                    msg_id: msg(2),
+                    recipient: Some(bob_device()),
+                },
+                problem: "unknown-recipient".to_owned(),
+            },
+        ),
+        vector("Frame `sync`", Frame::Sync { cursor: 7 }),
+        vector(
+            "Frame `message`",
+            Frame::Push(Push::Message {
+                seq: nonzero(8),
+                envelope: raw(&hpke_envelope),
+            }),
+        ),
+        vector(
+            "Frame `status`",
+            Frame::Push(status(9, ServerStatus::Delivered)),
+        ),
+        vector("Frame `ack`", Frame::Ack { seq: nonzero(9) }),
+        vector(
+            "Frame `batch`",
+            Frame::Batch(vec![
+                status(10, ServerStatus::Expired),
+                Push::SpaceNotice { space: space() },
+            ]),
+        ),
+        vector(
+            "Frame `space-notice`",
+            Frame::Push(Push::SpaceNotice { space: space() }),
+        ),
+        vector(
+            "Frame `auth`",
+            Frame::Auth {
+                challenge: (0..32).collect(),
+                device: alice_device(),
+                signature: SIGNATURE,
+            },
         ),
     ]
 }

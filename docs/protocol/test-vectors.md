@@ -6,7 +6,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant and of the delegation from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's [`stored` frame](delivery.md#frames), and its `delivery-status` for `delivered` and `expired`. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, and each other [frame](delivery.md#frames). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -21,6 +21,15 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Server status `stored`](#server-status-stored)
 - [Server status `delivered`](#server-status-delivered)
 - [Server status `expired`](#server-status-expired)
+- [Frame `send`](#frame-send)
+- [Frame `send-refused`](#frame-send-refused)
+- [Frame `sync`](#frame-sync)
+- [Frame `message`](#frame-message)
+- [Frame `status`](#frame-status)
+- [Frame `ack`](#frame-ack)
+- [Frame `batch`](#frame-batch)
+- [Frame `space-notice`](#frame-space-notice)
+- [Frame `auth`](#frame-auth)
 
 ## Envelope under `mls`
 
@@ -332,4 +341,188 @@ a40150019a6f201a007c008a000000000000010250188e6ae45b2d8247b1e158
 ```hex
 a40150019a6f201a007c008a000000000000010250188e6ae45b2d8247b1e158
 3b84bd49c70302041a69127c80
+```
+
+## Frame `send`
+
+```cbor-diag
+[
+  1,
+  <<[
+    {
+      1: 1,
+      2: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+      3: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+      4: h'019a6f201a007c008a00000000000001',
+      5: 1
+    },
+    h'000100020102030405060708090a0b0c0d0e0f'
+  ]>>,
+  true
+]
+```
+
+```hex
+8301585082a501010250019a6f1e2b3c7d4e8f5061a2b3c4d5e60350019a6f1e
+2b3c7d4e8f5061a2b3c4d5e70450019a6f201a007c008a000000000000010501
+53000100020102030405060708090a0b0c0d0e0ff5
+```
+
+## Frame `send-refused`
+
+```cbor-diag
+[
+  3,
+  [
+    h'019a6f201a007c008a00000000000002',
+    h'188e6ae45b2d8247b1e1583b84bd49c7'
+  ],
+  "unknown-recipient"
+]
+```
+
+```hex
+83038250019a6f201a007c008a0000000000000250188e6ae45b2d8247b1e158
+3b84bd49c771756e6b6e6f776e2d726563697069656e74
+```
+
+## Frame `sync`
+
+```cbor-diag
+[
+  4,
+  7
+]
+```
+
+```hex
+820407
+```
+
+## Frame `message`
+
+```cbor-diag
+[
+  5,
+  8,
+  <<[
+    {
+      1: 1,
+      2: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+      3: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+      4: h'019a6f201a007c008a00000000000002',
+      5: 2,
+      6: [
+        h'188e6ae45b2d8247b1e1583b84bd49c7'
+      ],
+      7: 86400
+    },
+    <<[
+      h'e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0',
+      h'c0c1c2c3c4c5c6c7c8c9cacbcccdcecf'
+    ]>>
+  ]>>
+]
+```
+
+```hex
+830508588b82a701010250019a6f1e2b3c7d4e8f5061a2b3c4d5e60350019a6f
+1e2b3c7d4e8f5061a2b3c4d5e70450019a6f201a007c008a0000000000000205
+02068150188e6ae45b2d8247b1e1583b84bd49c7071a000151805834825820e0
+e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e050
+c0c1c2c3c4c5c6c7c8c9cacbcccdcecf
+```
+
+## Frame `status`
+
+```cbor-diag
+[
+  6,
+  9,
+  {
+    1: h'019a6f201a007c008a00000000000001',
+    2: h'188e6ae45b2d8247b1e1583b84bd49c7',
+    3: 1,
+    4: 1762819200
+  }
+]
+```
+
+```hex
+830609a40150019a6f201a007c008a000000000000010250188e6ae45b2d8247
+b1e1583b84bd49c70301041a69127c80
+```
+
+## Frame `ack`
+
+```cbor-diag
+[
+  7,
+  9
+]
+```
+
+```hex
+820709
+```
+
+## Frame `batch`
+
+```cbor-diag
+[
+  8,
+  [
+    [
+      6,
+      10,
+      {
+        1: h'019a6f201a007c008a00000000000001',
+        2: h'188e6ae45b2d8247b1e1583b84bd49c7',
+        3: 2,
+        4: 1762819200
+      }
+    ],
+    [
+      9,
+      h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6'
+    ]
+  ]
+]
+```
+
+```hex
+82088283060aa40150019a6f201a007c008a000000000000010250188e6ae45b
+2d8247b1e1583b84bd49c70302041a69127c80820950019a6f1e2b3c7d4e8f50
+61a2b3c4d5e6
+```
+
+## Frame `space-notice`
+
+```cbor-diag
+[
+  9,
+  h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6'
+]
+```
+
+```hex
+820950019a6f1e2b3c7d4e8f5061a2b3c4d5e6
+```
+
+## Frame `auth`
+
+```cbor-diag
+[
+  10,
+  h'000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f',
+  h'19ac5f784938823586a6c5809a18f6dd',
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+840a5820000102030405060708090a0b0c0d0e0f101112131415161718191a1b
+1c1d1e1f5019ac5f784938823586a6c5809a18f6dd58405a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 ```
