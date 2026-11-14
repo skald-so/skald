@@ -51,13 +51,6 @@ fixture_git "$tmp"
 
 copy_tree "$root" "$tmp/tree"
 
-# set_version <dir> <version>: sets the workspace version in Cargo.toml and lets cargo move the
-# crates in Cargo.lock to it.
-set_version() {
-  perl -0pi -e "s/(\\[workspace\\.package\\]\\nversion = )\"[^\"]*\"/\$1\"$2\"/" "$1/Cargo.toml"
-  cargo metadata --offline --format-version 1 --manifest-path "$1/Cargo.toml" >/dev/null 2>&1 ||
-    fail "cargo metadata failed on $1 at $2"
-}
 set_version "$tmp/tree" 0.40.5
 
 # commit <title> [<version>]: squash-merges into $dir a PR titled <title> that adds a line to

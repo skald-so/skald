@@ -1,5 +1,5 @@
-# The names the Release PR workflow and its tests share, sourced by script/release-update,
-# script/install-git-cliff and their tests. The GitHub App skald-release, its environment and its
+# The names and helpers the Release PR workflow and its tests share, sourced by
+# script/release-update, script/install-git-cliff and their tests. The GitHub App skald-release, its environment and its
 # secrets are set up on GitHub under these names; a rename changes them here and in the workflow.
 
 # The workflow that tags the merge of a Release PR and keeps the Release PR open.
@@ -23,6 +23,29 @@ git_cliff_archives=(
 git_cliff_url=https://github.com/orhun/git-cliff/releases/download
 git_cliff_root=${CARGO_HOME:-$HOME/.cargo}/skald/git-cliff-$git_cliff_version
 PATH=$git_cliff_root/bin:$PATH
+
+# set_version <dir> <version>: sets the workspace version in [workspace.package] of <dir>/Cargo.toml
+# and of every crate of the workspace, the packages without a source, in <dir>/Cargo.lock. It needs
+# no cargo registry. False, changing nothing, when Cargo.toml has no such version.
+set_version() {
+  awk -v version="$2" '
+    /^\[/ { section = $0 }
+    section == "[workspace.package]" && /^version *=/ { $0 = "version = \"" version "\""; set = 1 }
+    { print }
+    END { exit !set }
+  ' "$1/Cargo.toml" >"$1/Cargo.toml.new" || {
+    rm -f "$1/Cargo.toml.new"
+    return 1
+  }
+  awk -v version="$2" '
+    held != "" { print ($0 ~ /^source = / ? held : "version = \"" version "\""); held = "" }
+    name && /^version = / { held = $0; name = 0; next }
+    { name = /^name = /; print }
+    END { if (held != "") print "version = \"" version "\"" }
+  ' "$1/Cargo.lock" >"$1/Cargo.lock.new"
+  mv "$1/Cargo.toml.new" "$1/Cargo.toml"
+  mv "$1/Cargo.lock.new" "$1/Cargo.lock"
+}
 
 # fixture_git <dir>: isolates the git of the release fixtures in <dir> from the user's config and
 # from any repository around <dir>.

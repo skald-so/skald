@@ -72,19 +72,6 @@ section=$(cliff --unreleased --tag "v$version" | sed -e '/./,$!d')
 
 SECTION=$section awk '{ print } $0 == "## [Unreleased]" { print ""; print ENVIRON["SECTION"] }' \
   "$root/CHANGELOG.md" >"$tmp/CHANGELOG.md"
-awk -v version="$version" '
-  /^\[/ { section = $0 }
-  section == "[workspace.package]" && /^version *=/ { $0 = "version = \"" version "\"" }
-  { print }
-' "$root/Cargo.toml" >"$tmp/Cargo.toml"
-# The crates of the workspace are the packages in Cargo.lock without a source.
-awk -v version="$version" '
-  held != "" { print ($0 ~ /^source = / ? held : "version = \"" version "\""); held = "" }
-  name && /^version = / { held = $0; name = 0; next }
-  { name = /^name = /; print }
-  END { if (held != "") print "version = \"" version "\"" }
-' "$root/Cargo.lock" >"$tmp/Cargo.lock"
-for file in CHANGELOG.md Cargo.toml Cargo.lock; do
-  cat "$tmp/$file" >"$root/$file"
-done
+set_version "$root" "$version" || error "Cargo.toml has no version in [workspace.package]"
+cat "$tmp/CHANGELOG.md" >"$root/CHANGELOG.md"
 echo "$version"
