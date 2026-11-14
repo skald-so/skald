@@ -56,6 +56,8 @@ mod browser;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::process::Command;
 
 use machine::{FIRST_DEVICE, Finished, Machine, NO};
 use skald_proto::SpaceId;
@@ -420,13 +422,116 @@ fn skald_toml_is_approved_only_for_its_folder() {
     desk.assert_skipped(&clone, CLIENT_B, by, "work/clientB/vendor");
 }
 
-/// A folder without a binding is in the personal space the device pinned, also when the proxy
-/// marks `clienta` as personal in the account's spaces and gives `clienta`'s ID, or a made-up one,
+/// An approval holds neither for a copy of the file in a folder below its own nor for a
+/// `.skald.toml` elsewhere that is a symlink to the approved one: each binds nothing, with the
+/// warning.
+#[test]
+fn approval_holds_neither_below_its_folder_nor_through_a_symlink() {
+    let desk = Desk::start(4_120_801_801, "ada-below-standin");
+    let repo = desk.dir("work/repo");
+    write_config(&repo, CLIENT_B);
+    desk.approve(&repo);
+    let vendor = desk.dir("work/repo/vendor");
+    fs::copy(repo.join(CONFIG), vendor.join(CONFIG)).expect("copy the .skald.toml");
+    let by = By::Config("work/repo");
+    desk.assert_skipped(&vendor, CLIENT_B, by, "work/repo/vendor");
+
+    #[cfg(unix)]
+    {
+        let other = desk.dir("work/other");
+        std::os::unix::fs::symlink(repo.join(CONFIG), other.join(CONFIG))
+            .expect("link to the approved .skald.toml");
+        desk.assert_skipped(&other, &desk.personal, By::Personal, "work/other");
+    }
+}
+
+/// A `.skald.toml` that is no regular file, such as a FIFO a cloned repository brings, or holds
+/// more than 64 KiB binds nothing, with a warning, and is not approved; no run waits on it.
+#[test]
+fn skald_toml_that_is_no_small_regular_file_binds_nothing() {
+    let machine = Machine::new();
+    let big = dir_of(&machine, "work/big");
+    let padding = "#".repeat(64 * 1024);
+    fs::write(
+        big.join(CONFIG),
+        format!("space = \"{CLIENT_A}\"\n{padding}\n"),
+    )
+    .expect("write a big .skald.toml");
+    let mut folders = vec![("work/big", big)];
+    #[cfg(unix)]
+    {
+        let fifo = dir_of(&machine, "work/fifo");
+        let made = Command::new("mkfifo")
+            .arg(fifo.join(CONFIG))
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success(), "mkfifo: {made}");
+        folders.push(("work/fifo", fifo));
+    }
+
+    for (rel, dir) in folders {
+        let approved = run(&machine, &[APPROVE, path(&dir)]);
+        assert!(!approved.success, "{rel} is approved: {approved:?}");
+        let shown = folder(&machine, &dir);
+        assert!(shown.success, "{shown:?}");
+        let tail = tail(rel).to_lowercase();
+        assert!(
+            warnings(&shown)
+                .iter()
+                .any(|line| line.contains(CONFIG) && line.contains(&tail)),
+            "no warning of the {CONFIG} of {rel}: {shown:?}"
+        );
+        assert_in_none(&shown, None, &[CLIENT_A]);
+    }
+}
+
+/// `skald rules` says there are none before a rule is added and once the last is removed.
+/// Approving the `.skald.toml` of a folder says the folder's rule wins over it only when the folder
+/// has one.
+#[test]
+fn rules_and_approvals_say_what_holds() {
+    let machine = Machine::new();
+    let ok = |args: &[&str]| {
+        let finished = run(&machine, args);
+        assert!(finished.success, "{args:?}: {finished:?}");
+        finished
+    };
+    let no_rules = |listed: &Finished| {
+        assert!(
+            plain_lines(listed)
+                .iter()
+                .any(|line| line.to_lowercase().contains("no rules")),
+            "{listed:?}"
+        );
+    };
+    let rule_wins = |approved: &Finished| {
+        let lines = plain_lines(approved);
+        holds_word(&lines, RULE) && holds_word(&lines, "wins")
+    };
+    no_rules(&ok(&[RULES]));
+
+    let a = dir_of(&machine, "work/clientA");
+    let b = dir_of(&machine, "work/clientB");
+    write_config(&a, CLIENT_B);
+    ok(&[ADD_RULE, path(&b), CLIENT_B]);
+    let approved = ok(&[APPROVE, path(&a)]);
+    assert!(!rule_wins(&approved), "{approved:?}");
+    ok(&[ADD_RULE, path(&a), CLIENT_A]);
+    let approved = ok(&[APPROVE, path(&a)]);
+    assert!(rule_wins(&approved), "{approved:?}");
+
+    ok(&[REMOVE_RULE, path(&a)]);
+    ok(&[REMOVE_RULE, path(&b)]);
+    no_rules(&ok(&[RULES]));
+}
+
+/// A folder without a binding is in the personal space the device pinned, which sorts after the
+/// team spaces by name, also when the proxy marks `clienta` as personal in the account's spaces and gives `clienta`'s ID, or a made-up one,
 /// as the personal space. The account's next machine, not linked, pinned none: its folder is in no
 /// space.
 #[test]
 fn folder_without_a_binding_is_in_the_pinned_personal_space() {
-    let desk = Desk::start(4_120_801_501, "ada-personal-standin");
+    let desk = Desk::start(4_120_801_501, "zoe-personal-standin");
     let cloud = &desk.world.cloud;
     let notes = desk.dir("notes");
     desk.assert_in(&notes, &desk.personal, By::Personal);

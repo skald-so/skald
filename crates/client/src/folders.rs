@@ -4,7 +4,7 @@
 //! the file's bytes.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -18,6 +18,9 @@ use crate::state::{self, State};
 
 /// The file that binds its folder.
 const CONFIG: &str = ".skald.toml";
+
+/// The most bytes a `.skald.toml` may hold.
+const CONFIG_LIMIT: u64 = 64 * 1024;
 
 /// What a run says of a binding to a space the device is not in.
 const NOT_IN: &str = "This device is not in that space, so they are in no space until it is.";
@@ -114,7 +117,7 @@ pub fn remove_rule(dir: &Path, folder: &Path) -> Result<(), String> {
         .map_err(text)?
         .into_iter()
         .map(|(stored, _)| stored)
-        .find(|stored| Path::new(stored) == folder || plain(Path::new(stored)) == plain(&folder));
+        .find(|stored| plain(Path::new(stored)) == plain(&folder));
     match stored {
         Some(stored) if state.remove_rule(&stored).map_err(text)? => {
             println!("Removed the rule for {}.", shown(&folder));
@@ -129,7 +132,7 @@ pub fn remove_rule(dir: &Path, folder: &Path) -> Result<(), String> {
 pub fn approve(dir: &Path, folder: &Path) -> Result<(), String> {
     let folder = canonical(folder)?;
     let file = folder.join(CONFIG);
-    let bytes = fs::read(&file).map_err(|err| {
+    let bytes = read_config(&file).map_err(|err| {
         format!(
             "cannot read the {CONFIG} in {}: {err}; nothing is approved",
             shown(&folder)
@@ -221,7 +224,7 @@ fn bound(state: Option<&State>, folder: &Path) -> Result<(Bound, Vec<String>), S
         let (by, name) = if let Some((_, space)) = ruled {
             (By::Rule(at.to_owned()), space.clone())
         } else {
-            let bytes = match fs::read(at.join(CONFIG)) {
+            let bytes = match read_config(&at.join(CONFIG)) {
                 Ok(bytes) => bytes,
                 Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
                 Err(err) => {
@@ -264,6 +267,27 @@ fn bound(state: Option<&State>, folder: &Path) -> Result<(Bound, Vec<String>), S
         None => None,
     };
     Ok((Bound::Unbound(personal), warnings))
+}
+
+/// The bytes of `file`, a `.skald.toml`. Fails unless it is a regular file, also through a
+/// symlink, of at most [`CONFIG_LIMIT`] bytes: it never opens a FIFO, which would block.
+fn read_config(file: &Path) -> io::Result<Vec<u8>> {
+    let irregular = || io::Error::other("it is not a regular file");
+    if !fs::metadata(file)?.is_file() {
+        return Err(irregular());
+    }
+    let opened = fs::File::open(file)?;
+    if !opened.metadata()?.is_file() {
+        return Err(irregular());
+    }
+    let mut bytes = Vec::new();
+    opened.take(CONFIG_LIMIT + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > CONFIG_LIMIT {
+        return Err(io::Error::other(format!(
+            "it holds more than {CONFIG_LIMIT} bytes"
+        )));
+    }
+    Ok(bytes)
 }
 
 /// The space `bytes`, a `.skald.toml`, names.
