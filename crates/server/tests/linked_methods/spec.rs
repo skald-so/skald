@@ -11,7 +11,7 @@ use skald_proto::{PROTOCOL_VERSION, VERSION_HEADER};
 use super::common::google::{CALLBACK as GOOGLE_CALLBACK, Google, Setup};
 use super::common::sign_in::{CALLBACK as GITHUB_CALLBACK, Jar, cookie_set, param};
 use super::common::spec::{operation_violations, spec};
-use super::common::{Response, get_url, post_form};
+use super::common::{Response, Server, TestDb, get_url, post_form};
 use super::{
     GITHUB_LINK, GOOGLE_LINK, LINK_AGE, METHODS, METHODS_PAGE, Method, github_and_google,
     methods_in,
@@ -230,6 +230,17 @@ fn old_session_link_response_conforms_to_spec() {
     assert_eq!(listed.status, 200, "an old session still gets its list");
     let body = serde_json::from_slice(&listed.body).expect("JSON");
     assert_eq!(methods_in(&body), vec![Method::Google]);
+}
+
+#[test]
+fn methods_page_is_off_without_sign_in_settings() {
+    let db = TestDb::create();
+    let server = Server::start(&db);
+    let response = server.get(METHODS_PAGE);
+    assert_eq!(response.status, 404, "GET {METHODS_PAGE}");
+    let body: Value = serde_json::from_slice(&response.body).expect("JSON");
+    assert_eq!(body["type"], "https://skald.so/problems/sign-in-off");
+    conforms(&spec(), "get", METHODS_PAGE, &response);
 }
 
 #[test]

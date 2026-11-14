@@ -9,9 +9,9 @@ use std::cell::{Cell, RefCell};
 use std::future::{Ready, ready};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use common::{SETUP_ATTEMPTS, Server, retried_on_reset, test_databases};
+use common::{SETUP_ATTEMPTS, Server, close, connect, retried_on_reset, server, test_databases};
 
 /// An I/O error of `kind`, as sqlx gives it.
 fn io_error(kind: io::ErrorKind) -> sqlx::Error {
@@ -103,4 +103,47 @@ fn a_server_drops_its_database_also_when_it_fails_to_start() {
     }));
     assert!(failed.is_err(), "the server started");
     assert_eq!(test_databases(), Vec::<String>::new());
+}
+
+/// PostgreSQL on Windows resets a connection as its session ends, also one that a `Terminate`
+/// ends: closing a connection whose session has ended is no failure.
+#[test]
+fn a_connection_whose_session_ended_closes() {
+    let runtime = tokio::runtime::Runtime::new().expect("start a tokio runtime");
+    runtime.block_on(async {
+        let url = format!("{}/postgres", server());
+        let mut ended = connect(&url).await.expect("connect");
+        let mut other = connect(&url).await.expect("connect");
+        let (pid,): (i32,) = sqlx::query_as("SELECT pg_backend_pid()")
+            .fetch_one(&mut ended)
+            .await
+            .expect("the backend's PID");
+        sqlx::query("SELECT pg_terminate_backend($1)")
+            .bind(pid)
+            .execute(&mut other)
+            .await
+            .expect("end the session");
+        let started = Instant::now();
+        loop {
+            let (left,): (i64,) =
+                sqlx::query_as("SELECT count(*) FROM pg_stat_activity WHERE pid = $1")
+                    .bind(pid)
+                    .fetch_one(&mut other)
+                    .await
+                    .expect("the sessions");
+            if left == 0 {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the session goes on"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The reset reaches the connection.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        close(ended).await;
+        close(other).await;
+    });
 }

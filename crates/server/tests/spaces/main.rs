@@ -17,6 +17,8 @@
 //!   the devices of the accounts the space's revisions list.
 //! - `POST /spaces/<ID>/channels`, without a body: `{"channel": <ID>}`, a new channel ID for the
 //!   space.
+//! - `POST /account/personal-space`, without a body: `{"space": <ID>, "name": <name>, ...}`, the
+//!   session's account's personal space; `201` when the request creates it, `200` after.
 //!
 //! Bytes are base64url without padding (RFC 4648, §5); a revision is its CBOR bytes, as is a
 //! certificate. Taken: `200` or `201`. Refused, with a problem details object: `401` without a
@@ -32,6 +34,7 @@ mod channels;
 mod checks;
 mod create;
 mod order;
+mod personal;
 mod refusals;
 mod retry;
 mod rosters;

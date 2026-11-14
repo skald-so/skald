@@ -7,7 +7,7 @@
 use serde::Deserialize;
 use skald_proto::{Cbor as _, Channel, ChannelId, ChannelMember, Roster, SpaceId, Unknown};
 
-use crate::connection::{Connection, Method};
+use crate::connection::Connection;
 use crate::devices::text;
 use crate::spaces::{CHANGED_MEANWHILE, Synced, admin_device, no_admin};
 
@@ -66,9 +66,7 @@ pub fn create(synced: Synced) -> Result<(), String> {
 /// `token`.
 fn issue(connection: &mut Connection, token: &str, id: SpaceId) -> Result<ChannelId, String> {
     let path = format!("/spaces/{id}/channels");
-    let body = connection
-        .send_json_as(Method::Post, &path, token, b"{}")
-        .map_err(text)?;
+    let body = connection.post_as(&path, token).map_err(text)?;
     let unexpected = || "unexpected answer from the server: a channel without its ID".to_owned();
     let issued: NewChannel = serde_json::from_slice(&body).map_err(|_| unexpected())?;
     issued.channel.parse().map_err(|_| unexpected())

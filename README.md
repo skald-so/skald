@@ -52,7 +52,7 @@ To run the server, see [Self-hosting](#self-hosting).
    ```
 
    - The command prints a URL and a code. Approve the code in a browser after signing in with GitHub or Google. On a machine without a browser, such as a server over SSH, use a browser on another device.
-   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices). `no`: the device waits to be linked by a device already connected, which the client cannot do yet. `--first-device yes|no` gives the answer without asking.
+   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices) and signs the account's personal space as its admin. `no`: the device waits to be linked by a device already connected, which the client cannot do yet. `--first-device yes|no` gives the answer without asking.
 
 ### 3. Client commands
 
@@ -60,7 +60,7 @@ To run the server, see [Self-hosting](#self-hosting).
 skald devices              # the account's devices, their certificates checked
 skald set-username <name>  # change the account's username
 skald create-space <name>  # create a team space, with the account as its first admin
-skald spaces               # the device's spaces and the account's role in each
+skald spaces               # the device's spaces, its personal space marked, and the account's role in each
 skald members <space>      # a space's members, their roles and their devices with a valid certificate
 skald create-channel <space>  # add a channel to a space, as its admin
 skald channels <space>     # a space's channels and their members
@@ -89,7 +89,7 @@ skald update               # update to the latest stable release, never a beta; 
 
 ## Self-hosting
 
-- The server needs PostgreSQL and a GitHub OAuth App of your own for sign-in. Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
+- The server needs PostgreSQL and, for sign-in, a GitHub OAuth App or a Google OAuth client of your own. Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
 - The server image is `ghcr.io/skald-so/skald-server`, tagged with the release's version without the `v`. It listens on `0.0.0.0:8080` and needs `SKALD_DATABASE_URL`, a PostgreSQL connection URL. `skald-server --help` lists the other settings.
 
 ### A server for other machines
@@ -106,7 +106,7 @@ Clients on other machines reach the server only over HTTPS: [Network](docs/dev/a
 
 - `SKALD_LISTEN` is an address the proxy reaches.
 - `--public-url https://skald.example.com`.
-- The GitHub OAuth App's callback URL is `https://skald.example.com/auth/github/callback`.
+- The GitHub OAuth App's callback URL is `https://skald.example.com/auth/github/callback`; the Google OAuth client's redirect URI is `https://skald.example.com/auth/google/callback`.
 
 ## Contributing
 

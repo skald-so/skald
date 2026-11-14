@@ -46,6 +46,8 @@ jobs:
 
   # The Rust code: one job per part of script/test, each on a runner of its own, with the tools of
   # every part and a cache of the Cargo workspaces it builds.
+  # The whole history and the tags: script/release-pr-test, in the part repository, checks the
+  # CHANGELOG section of v0.1.0 against them.
   rust-workspace:
     name: 'Rust: workspace'
     needs: changes
@@ -55,6 +57,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: . -> target
@@ -71,6 +74,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: . -> target
@@ -87,6 +91,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: . -> target
@@ -103,6 +108,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: prototypes/mls -> target
@@ -119,6 +125,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: prototypes/agents -> target
@@ -135,6 +142,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: prototypes/edits -> target
@@ -151,6 +159,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: . -> target

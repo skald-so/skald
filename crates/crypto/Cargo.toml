@@ -6,10 +6,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Seals history links and entries.
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
 # Seals the MLS state.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
+# Stateless HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM.
+hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }
 # 0.57.1 refuses too-short UpdatePaths and filters proposals correctly. `external_client` for the
 # Delivery Service and the browser, `last_resort_key_package_ext` for the last-resort KeyPackage.
 mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_package_ext"] }
