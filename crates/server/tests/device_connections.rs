@@ -680,3 +680,30 @@ fn taken_connection_closes_with_the_closing_handshake() {
         "{closed:?}"
     );
 }
+
+/// With the database down, a challenge request answers `500` and a proof closes its connection
+/// with code 1011 and the reason `server-error`, using up nothing.
+#[test]
+fn database_failures_answer_500_and_close_with_1011() {
+    let flow = DeviceFlow::start();
+    let ada = linked(&flow, 3_121_220_022, "ada-database-down-standin");
+    let challenge = challenge(&flow, &ada.machine.token);
+    let bearer = format!("Bearer {}", ada.machine.token);
+
+    flow.stand.db.set_reachable(false);
+    let response = challenge_response(&flow, &[("authorization", &bearer)], true);
+    let mut socket = connect_as(&flow, &ada, &challenge);
+
+    assert_eq!(response.status, 500, "{}", text(&response));
+    assert_eq!(
+        json(&response)["type"],
+        "https://skald.so/problems/server-error"
+    );
+    assert_eq!(
+        closing(&mut socket, CLOSE_WITHIN),
+        Some(Closed::Frame(CloseCode::Error, "server-error".to_owned()))
+    );
+    flow.stand.db.set_reachable(true);
+    let mut socket = connect_as(&flow, &ada, &challenge);
+    assert_connection_taken(&flow.stand.server, &mut socket);
+}
