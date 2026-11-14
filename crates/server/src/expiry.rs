@@ -19,6 +19,8 @@ use crate::delivery::{Wakers, remove, removing};
 const SWEEP: Duration = Duration::from_secs(5);
 /// How many expired entries the server removes at a time.
 const PAGE: i64 = 100;
+/// How long the server waits between two pages of expired entries.
+const PAUSE: Duration = Duration::from_millis(10);
 
 /// The mailbox retention `retention` in seconds, as the queries take it; `None` without one.
 pub(crate) fn seconds(retention: Option<Duration>) -> Option<f64> {
@@ -64,6 +66,8 @@ async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(
         if remove(db, wakers, query, ServerStatus::Expired).await? == 0 {
             break;
         }
+        // Leaves the database to other work between pages.
+        tokio::time::sleep(PAUSE).await;
     }
     sqlx::query("DELETE FROM sends WHERE stored_at <= now() - make_interval(secs => $1)")
         .bind(retention)
