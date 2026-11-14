@@ -12,7 +12,7 @@ const proxy = Object.fromEntries(
   Object.keys(spec.paths).map((path) => [`/${path.split("/")[1]}`, api]),
 );
 
-/** The tests in headless Chrome: the local one, and the pinned one in Docker. */
+/** The tests in headless Chrome: Chrome Headless Shell, and the pinned Chrome in Docker. */
 const browserTests = [
   "kit.test.ts",
   "cabinet.test.ts",
@@ -35,7 +35,7 @@ export default defineConfig({
       },
       // One file at a time, after the unit tests. A container that Docker starts or removes changes
       // the network, and Chrome aborts its requests in flight with ERR_NETWORK_CHANGED: a page in
-      // the local Chrome of one file would not render while another file starts the pinned Chrome.
+      // Chrome Headless Shell of one file would not render while another file starts the pinned Chrome.
       // The browsers do not compete for the processor either.
       {
         extends: true,
