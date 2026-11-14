@@ -31,13 +31,8 @@ pub const DAY: u64 = 24 * HOUR;
 /// `from` plus `span`.
 pub fn foreign_key_package(seed: u8, from: u64, span: u64) -> MlsMessage {
     let identity = device_id(seed);
-    foreign::client(seed, identity.as_bytes(), SUITE, Duration::from_secs(span))
-        .generate_key_package_message(
-            ExtensionList::new(),
-            ExtensionList::new(),
-            Some(MlsTime::from(from)),
-        )
-        .expect("a KeyPackage of mls-rs")
+    let client = foreign::client(seed, identity.as_bytes(), SUITE, Duration::from_secs(span));
+    message(&foreign::key_package_of(&client, from))
 }
 
 /// Each of the tests' devices `ours`, with its state in `states`, refuses `commit` and stays in

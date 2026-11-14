@@ -60,16 +60,16 @@ pub fn client(
 /// A KeyPackage, in an `MLSMessage`, of a client with key `seed` and credential `identity`, made
 /// at the tests' time.
 pub fn key_package(seed: u8, identity: &[u8]) -> Vec<u8> {
-    key_package_of(&client(seed, identity, SUITE, LIFETIME))
+    key_package_of(&client(seed, identity, SUITE, LIFETIME), NOW)
 }
 
-/// A KeyPackage, in an `MLSMessage`, of `client`, made at the tests' time.
-pub fn key_package_of<C: MlsConfig>(client: &Client<C>) -> Vec<u8> {
+/// A KeyPackage, in an `MLSMessage`, of `client`, made at `at`.
+pub fn key_package_of<C: MlsConfig>(client: &Client<C>, at: u64) -> Vec<u8> {
     client
         .generate_key_package_message(
             ExtensionList::new(),
             ExtensionList::new(),
-            Some(MlsTime::from(NOW)),
+            Some(MlsTime::from(at)),
         )
         .and_then(|message| message.to_bytes())
         .expect("a KeyPackage of mls-rs")

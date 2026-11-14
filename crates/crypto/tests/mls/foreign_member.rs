@@ -24,7 +24,7 @@ pub fn with_foreign_member(
 ) -> (Vec<SealedState>, Group<impl MlsConfig + use<>>) {
     let identity = device_id(foreign);
     let client = foreign::client(foreign, identity.as_bytes(), SUITE, LIFETIME);
-    let package = foreign::key_package_of(&client);
+    let package = foreign::key_package_of(&client, NOW);
     let (states, welcome) = channel_with(channel, ours[0], &ours[1..], &[&package]);
     let welcome = MlsMessage::from_bytes(&welcome).expect("a Welcome message");
     let (group, _) = client
