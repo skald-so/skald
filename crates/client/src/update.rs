@@ -6,15 +6,14 @@
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use ureq::tls::{Certificate, RootCerts, TlsConfig};
 
 use crate::connection::printable;
+use crate::tls::Roots;
 
 /// The base URL of GitHub's REST API.
 pub const GITHUB_API_URL: &str = "https://api.github.com";
@@ -245,20 +244,9 @@ fn parse_checksum(file: &[u8]) -> Option<[u8; 32]> {
     Some(sum)
 }
 
-/// The HTTPS client of the releases: the platform's root certificates, or those `SSL_CERT_FILE`
-/// and `SSL_CERT_DIR` name; the proxy `HTTPS_PROXY` names, as `ureq` reads it; redirects followed,
-/// to HTTPS only.
+/// The HTTPS client of the releases: the client's TLS, [`crate::tls`]; the proxy `HTTPS_PROXY`
+/// names, as `ureq` reads it; redirects followed, to HTTPS only.
 fn agent(timeout: Duration) -> ureq::Agent {
-    let roots: Vec<Certificate<'static>> = rustls_native_certs::load_native_certs()
-        .certs
-        .into_iter()
-        .map(|der| Certificate::from_der(der.as_ref()).to_owned())
-        .collect();
-    let provider = rustls::crypto::ring::default_provider();
-    let tls = TlsConfig::builder()
-        .root_certs(RootCerts::Specific(Arc::new(roots)))
-        .unversioned_rustls_crypto_provider(Arc::new(provider))
-        .build();
     ureq::Agent::config_builder()
         .https_only(true)
         .http_status_as_error(false)
@@ -266,7 +254,7 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .timeout_per_read(Some(timeout))
         .timeout_per_write(Some(timeout))
         .user_agent(concat!("skald/", env!("CARGO_PKG_VERSION")))
-        .tls_config(tls)
+        .tls_config(Roots::load().ureq())
         .build()
         .new_agent()
 }

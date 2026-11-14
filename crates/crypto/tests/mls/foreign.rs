@@ -32,7 +32,7 @@ pub fn client(
     identity: &[u8],
     suite: CipherSuite,
     lifetime: Duration,
-) -> Client<impl MlsConfig> {
+) -> Client<impl MlsConfig + use<>> {
     let key = signing_key(seed);
     let public = key.public_key();
     // mls-rs takes an Ed25519 secret key as its seed followed by its public key.

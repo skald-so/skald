@@ -5,10 +5,11 @@
 mod common;
 
 use std::net::TcpListener;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use common::{Output, Server, Stub, response, skald, skald_with_timeout};
+use common::{Output, Server, Stub, cleartext, elsewhere, response, skald, skald_with_timeout};
 use skald_proto::PROTOCOL_VERSION;
 
 /// The range the server accepts: N = 3, N−1 = 2.
@@ -288,19 +289,70 @@ fn closed_port_is_unreachable() {
 }
 
 #[test]
-fn url_other_than_http_is_refused() {
+fn url_other_than_https_or_http_is_refused() {
     for url in [
-        "https://skald.example",
+        "ftp://skald.example",
         "ws://localhost:8080",
         "localhost:8080",
     ] {
         let output = status(url, Some("3"));
 
-        let stderr = format!(
-            "skald: {url:?} is not a server URL the client connects to: it must start with http://\n"
-        );
+        let stderr =
+            format!("skald: {url:?} is not a server URL the client connects to: use https://\n");
         assert_output(&output, false, "", &stderr);
     }
+}
+
+#[test]
+fn http_to_another_machine_is_refused_before_any_request() {
+    let stub = Stub::start(|_| response("200 OK", "application/json", "{}"));
+    let url = elsewhere(&stub);
+
+    let output = status(&url, Some("3"));
+
+    assert_output(&output, false, "", &cleartext(&url));
+    assert_eq!(stub.requests(), Vec::<String>::new());
+}
+
+#[test]
+fn http_to_localhost_reaches_the_server() {
+    let server = Server::start(Some(RANGE));
+    let port = server.url.rsplit(':').next().expect("the server's port");
+    let url = format!("http://localhost:{port}");
+
+    let output = status(&url, Some("3"));
+
+    let stdout = format!("Server {url}: reachable\nProtocol: version 3, compatible\n");
+    assert_output(&output, true, &stdout, "");
+}
+
+/// A redirect could take a request to another host, in plain HTTP: the client follows none.
+#[test]
+fn redirect_is_not_followed() {
+    static ELSEWHERE: OnceLock<String> = OnceLock::new();
+    let elsewhere = Stub::start(|_| response("200 OK", "application/json", "{}"));
+    ELSEWHERE
+        .set(elsewhere.url.clone())
+        .expect("one test sets it");
+    let stub = Stub::start(|path| {
+        let location = format!(
+            "{}{path}",
+            ELSEWHERE.get().expect("set before the stub runs")
+        );
+        format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nlocation: {location}\r\ncontent-length: 0\r\n\
+             connection: close\r\n\r\n"
+        )
+    });
+    let url = &stub.url;
+
+    let output = status(url, Some("3"));
+
+    let stdout = format!("Server {url}: reachable\n");
+    let stderr = "skald: unexpected answer from the server: HTTP 307\n";
+    assert_output(&output, false, &stdout, stderr);
+    assert_eq!(stub.requests().len(), 1);
+    assert_eq!(elsewhere.requests(), Vec::<String>::new());
 }
 
 #[test]

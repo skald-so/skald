@@ -56,6 +56,7 @@ Then open `http://127.0.0.1:8080/auth/google`. Without the client ID and secret,
 cargo run -p skald-client -- --version
 cargo run -p skald-client -- sign-in --server http://127.0.0.1:8080
 ```
+Plain `http://` goes only to a server on this machine, as here: [Network](docs/dev/architecture.md#network).
 `SKALD_STATE_DIR` sets the directory of its local state and secrets file; `SKALD_KEY_STORAGE=file` keeps its secrets in that file instead of the system's key storage.
 
 Web UI: [web/README.md](web/README.md).

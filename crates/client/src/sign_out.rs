@@ -1,5 +1,7 @@
 //! `skald sign-out`: ends the machine's session on the server and deletes its session token. The
-//! device's keys, its certificate and the rest of the local state stay for its next sign-in.
+//! device's keys, its certificate and the rest of the local state stay for its next sign-in. A
+//! session an older skald stored for plain HTTP to another machine is only forgotten: nothing is
+//! sent to its server, where it ends when it expires.
 
 use std::path::Path;
 use std::time::Duration;
@@ -39,7 +41,19 @@ pub fn run(
         return Ok(());
     };
 
-    let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+    let mut connection = match Connection::new(&server, speaks, timeout) {
+        Ok(connection) => connection,
+        Err(connection::Error::Cleartext(_)) => {
+            sign_in::forget(&state, &secrets, &mut stored).map_err(text)?;
+            println!(
+                "Signed out on this machine only: {server} is plain HTTP to another machine, so \
+                 nothing was sent to it; the session there ends when it expires. This device stays \
+                 for its next sign-in."
+            );
+            return Ok(());
+        }
+        Err(err) => return Err(text(err)),
+    };
     match connection.delete_as("/session", &token) {
         // A session the server refuses has ended already.
         Ok(()) | Err(connection::Error::Refused { status: 401, .. }) => {}

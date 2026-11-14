@@ -1,7 +1,8 @@
 //! MLS on a device, on mls-rs: KeyPackages and channel groups to `docs/protocol/membership.md`,
 //! "MLS profile", KeyPackages kept and checked as "KeyPackages" says, groups formed as "Creating a
-//! channel" says, their messages, and the history key of each epoch the device enters ("History
-//! key"). The device's state reaches the caller only sealed ([`SealedState`]).
+//! channel" says, their messages, Commits that change them ("Group changes", "Commit ordering"),
+//! and the history key of each epoch the device enters ("History key"). The device's state reaches
+//! the caller only sealed ([`SealedState`]).
 
 mod key_package;
 mod profile;
@@ -13,9 +14,12 @@ use std::{
 };
 
 use mls_rs::{
-    ExtensionList, Group, MlsMessage, WireFormat, client_builder::MlsConfig,
-    extension::recommended::LastResortKeyPackageExt, group::ReceivedMessage,
-    identity::SigningIdentity, time::MlsTime,
+    ExtensionList, Group, MlsMessage, WireFormat,
+    client_builder::MlsConfig,
+    extension::recommended::LastResortKeyPackageExt,
+    group::{CommitEffect, ReceivedMessage, proposal::Proposal},
+    identity::SigningIdentity,
+    time::MlsTime,
 };
 use skald_proto::{Cert, ChannelId, DeviceId};
 use zeroize::Zeroizing;
@@ -299,17 +303,155 @@ impl MlsDevice {
         Ok(())
     }
 
+    /// Commits the Remove of `devices` from `channel`'s group at `now`, such as every device of
+    /// an account; gives the Commit, a PublicMessage that carries `authenticated_data`, such as
+    /// the revocations of "Group changes". The Commit stays pending as one of
+    /// [`MlsDevice::add_devices`] does; once stored, it gives no Welcome.
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`;
+    /// [`MlsError::NotMember`] if a device of `devices` is not a member; [`MlsError::Mls`] if
+    /// mls-rs refuses the Remove, such as one of the device itself, a Commit is pending already or
+    /// mls-rs fails. A refused Commit leaves nothing pending.
+    pub fn remove_devices(
+        &mut self,
+        channel: ChannelId,
+        devices: &[DeviceId],
+        authenticated_data: &[u8],
+        now: u64,
+    ) -> Result<Vec<u8>, MlsError> {
+        self.store.delete_expired(now);
+        let mut group = self.group(channel)?;
+        let members = members_by_index(&group)?;
+        let mut commit = group
+            .commit_builder()
+            .authenticated_data(authenticated_data.to_vec())
+            .commit_time(MlsTime::from(now));
+        for &device in devices {
+            let index = members
+                .iter()
+                .find_map(|(&index, member)| (member.device == device).then_some(index))
+                .ok_or(MlsError::NotMember(device))?;
+            commit = commit.remove_member(index)?;
+        }
+        let commit = commit.build()?.commit_message.to_bytes()?;
+        group.write_to_storage()?;
+        Ok(commit)
+    }
+
+    /// An empty Commit in `channel`'s group at `now`, an UpdatePath and no proposals, which starts
+    /// an epoch with the same members ("History key"); otherwise as
+    /// [`MlsDevice::remove_devices`].
+    ///
+    /// # Errors
+    /// As [`MlsDevice::remove_devices`].
+    pub fn commit_empty(
+        &mut self,
+        channel: ChannelId,
+        authenticated_data: &[u8],
+        now: u64,
+    ) -> Result<Vec<u8>, MlsError> {
+        self.remove_devices(channel, &[], authenticated_data, now)
+    }
+
+    /// Processes `commit`, another device's Commit in `channel`'s group, a PublicMessage, at
+    /// `now`. A Commit of the device's own that is pending is dropped ("Commit ordering").
+    ///
+    /// `check` gets the new epoch, the Commit's sender, the devices it adds and removes and its
+    /// `authenticated_data` before the epoch is saved; `false` refuses the epoch, and the device
+    /// stays in the old one, its pending Commit kept. The device then keeps the epoch's history
+    /// key. A Commit that removes the device is not given to `check`: the device drops the group,
+    /// keeps its history keys and can be added again from a Welcome.
+    ///
+    /// Refused: an Add whose KeyPackage's lifetime does not hold at `now`, and a Commit after
+    /// which a leaf's lifetime spans more than 60 days; a leaf that breaks the profile, such as an
+    /// UpdatePath that changes a member's key.
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Malformed`]
+    /// if `commit` is not another device's Commit in a PublicMessage; [`MlsError::Lifetime`] if a
+    /// leaf's lifetime spans more than 60 days; [`MlsError::Refused`] if `check` refuses the
+    /// epoch; [`MlsError::Mls`] if mls-rs refuses the Commit, such as one of another epoch or
+    /// group, an Add not valid at `now` or a leaf that breaks the profile, or fails. A refused
+    /// Commit leaves the device as it was.
+    pub fn process_commit(
+        &mut self,
+        channel: ChannelId,
+        commit: &[u8],
+        now: u64,
+        check: impl FnOnce(&GroupChange) -> bool,
+    ) -> Result<Processed, MlsError> {
+        self.store.delete_expired(now);
+        let commit = message(commit, WireFormat::PublicMessage)?;
+        let mut group = self.group(channel)?;
+        let before = members_by_index(&group)?;
+        let own = group.current_member_index();
+        let ReceivedMessage::Commit(description) =
+            group.process_incoming_message_with_time(commit, MlsTime::from(now))?
+        else {
+            return Err(MlsError::Malformed);
+        };
+        // mls-rs merges the device's own pending Commit; the caller says it was stored instead.
+        if description.committer == own && !description.is_external {
+            return Err(MlsError::Malformed);
+        }
+        let new_epoch = match description.effect {
+            CommitEffect::NewEpoch(new_epoch) => new_epoch,
+            CommitEffect::Removed { .. } => {
+                self.store.remove_group(channel.as_bytes());
+                self.welcomes.remove(&channel);
+                return Ok(Processed::Removed);
+            }
+            CommitEffect::ReInit(_) => return Err(MlsError::Malformed),
+        };
+        key_package::check_spans(&group.export_tree())?;
+        let mut removed = BTreeSet::new();
+        let mut added = Vec::new();
+        for applied in &new_epoch.applied_proposals {
+            match &applied.proposal {
+                Proposal::Remove(remove) => {
+                    removed.insert(remove.to_remove());
+                }
+                // Adds fill the leftmost blank leaves in their order: leaf order.
+                Proposal::Add(add) => added.push(member_device(add.signing_identity())?),
+                _ => {}
+            }
+        }
+        let sender = group
+            .member_at_index(description.committer)
+            .ok_or(MlsError::Malformed)?;
+        let change = GroupChange {
+            epoch: new_epoch.epoch,
+            sender: member_device(&sender.signing_identity)?.device,
+            added,
+            removed: (before.into_iter())
+                .filter_map(|(index, member)| removed.contains(&index).then_some(member))
+                .collect(),
+            authenticated_data: description.authenticated_data,
+        };
+        if !check(&change) {
+            return Err(MlsError::Refused);
+        }
+        self.save(channel, &mut group)?;
+        self.welcomes.remove(&channel);
+        Ok(Processed::Entered {
+            epoch: change.epoch,
+        })
+    }
+
     /// Joins a channel's group from `welcome`, an `MLSMessage`, at `now`; gives the channel.
     /// `check` gets the Welcome's signer and members for the checks of "Group changes" before the
     /// group is saved; `false` refuses the Welcome. A Welcome to a KeyPackage that expired before
-    /// `now` fails, its private keys deleted. The lifetimes of the members' leaves are not
-    /// checked: a member's leaf keeps its KeyPackage's lifetime until the member commits.
+    /// `now` fails, its private keys deleted. Whether the lifetimes of the members' leaves hold is
+    /// not checked: a member's leaf keeps its KeyPackage's lifetime until the member commits; but
+    /// one that spans more than 60 days is refused, as RFC 9420, §7.2, requires a bound.
     ///
     /// # Errors
     /// [`MlsError::Malformed`] if `welcome` is not a Welcome of a channel's group;
     /// [`MlsError::GroupExists`] if the device holds a group for its channel: mls-rs would replace
     /// it; [`MlsError::Refused`] if `check` refuses it; [`MlsError::Profile`] if a leaf breaks the
-    /// profile; [`MlsError::Mls`] if mls-rs refuses it, such as one not for this device or to a
+    /// profile; [`MlsError::Lifetime`] if a leaf's lifetime spans more than 60 days;
+    /// [`MlsError::Mls`] if mls-rs refuses it, such as one not for this device or to a
     /// KeyPackage whose private keys are gone, or fails. A refused Welcome leaves no group.
     pub fn join(
         &mut self,
@@ -329,6 +471,7 @@ impl MlsDevice {
         if self.store.has_group(channel.as_bytes()) {
             return Err(MlsError::GroupExists(channel));
         }
+        key_package::check_spans(&group.export_tree())?;
         let members = members_of(&group)?;
         let signer = group
             .member_at_index(info.sender)
@@ -455,13 +598,20 @@ fn message(bytes: &[u8], wire_format: WireFormat) -> Result<MlsMessage, MlsError
     }
 }
 
-/// The member devices of `group`, in leaf order.
-fn members_of(group: &Group<impl MlsConfig>) -> Result<Vec<MemberDevice>, MlsError> {
+/// The member devices of `group` by their leaf indexes.
+fn members_by_index(
+    group: &Group<impl MlsConfig>,
+) -> Result<BTreeMap<u32, MemberDevice>, MlsError> {
     group
         .roster()
         .members_iter()
-        .map(|member| member_device(&member.signing_identity))
+        .map(|member| Ok((member.index, member_device(&member.signing_identity)?)))
         .collect()
+}
+
+/// The member devices of `group`, in leaf order.
+fn members_of(group: &Group<impl MlsConfig>) -> Result<Vec<MemberDevice>, MlsError> {
+    Ok(members_by_index(group)?.into_values().collect())
 }
 
 fn member_device(leaf: &SigningIdentity) -> Result<MemberDevice, MlsError> {
@@ -479,6 +629,31 @@ pub struct Joining {
     pub signer: MemberDevice,
     /// Every member, in leaf order.
     pub members: Vec<MemberDevice>,
+}
+
+/// Another device's Commit a device processes, before the new epoch is saved: what the caller
+/// checks as "Group changes" says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupChange {
+    /// The new epoch.
+    pub epoch: u64,
+    /// The device ID of the Commit's sender.
+    pub sender: DeviceId,
+    /// The devices the Commit adds, in leaf order.
+    pub added: Vec<MemberDevice>,
+    /// The devices the Commit removes, in leaf order.
+    pub removed: Vec<MemberDevice>,
+    /// The Commit's `authenticated_data`, such as revocations.
+    pub authenticated_data: Vec<u8>,
+}
+
+/// What processing another device's Commit did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Processed {
+    /// The device entered the new epoch.
+    Entered { epoch: u64 },
+    /// The Commit removed the device: it dropped the group and kept its history keys.
+    Removed,
 }
 
 /// An application message a device decrypted.
@@ -543,15 +718,18 @@ pub enum MlsError {
     GroupExists(ChannelId),
     /// A leaf or a KeyPackage breaks the MLS profile.
     Profile,
-    /// A KeyPackage's lifetime does not hold at the caller's time or spans more than 60 days.
+    /// A KeyPackage's lifetime does not hold at the caller's time, or a lifetime spans more than
+    /// 60 days.
     Lifetime,
     /// The caller does not give the device as admitted.
     NotAdmitted(DeviceId),
+    /// The device is not a member of the group.
+    NotMember(DeviceId),
     /// A lifetime from the caller's time would end past the last second `u64` holds.
     Time,
     /// No Commit is pending in the channel's group.
     NoCommitPending(ChannelId),
-    /// The caller refused the Welcome.
+    /// The caller refused the Welcome or the new epoch.
     Refused,
     /// The input is not an MLS message of the kind the step takes, or not of a channel's group.
     Malformed,
@@ -566,15 +744,16 @@ impl fmt::Display for MlsError {
             Self::NoGroup(channel) => write!(f, "no group for the channel {channel}"),
             Self::GroupExists(channel) => write!(f, "a group for the channel {channel} already"),
             Self::Profile => f.write_str("a leaf or a KeyPackage breaks the MLS profile"),
-            Self::Lifetime => f.write_str(
-                "a KeyPackage's lifetime does not hold at the caller's time or spans over 60 days",
-            ),
+            Self::Lifetime => {
+                f.write_str("a lifetime does not hold at the caller's time or spans over 60 days")
+            }
             Self::NotAdmitted(device) => write!(f, "the device {device} is not admitted"),
+            Self::NotMember(device) => write!(f, "the device {device} is not a member"),
             Self::Time => f.write_str("the caller's time is out of range"),
             Self::NoCommitPending(channel) => {
                 write!(f, "no Commit pending in the channel {channel}")
             }
-            Self::Refused => f.write_str("the caller refused the Welcome"),
+            Self::Refused => f.write_str("the caller refused the Welcome or the epoch"),
             Self::Malformed => f.write_str("not an MLS message of the kind the step takes"),
             Self::Mls(error) => write!(f, "mls-rs: {error}"),
         }
@@ -970,6 +1149,7 @@ mod tests {
             MlsError::Profile,
             MlsError::Lifetime,
             MlsError::NotAdmitted(device),
+            MlsError::NotMember(device),
             MlsError::Time,
             MlsError::NoCommitPending(channel),
             MlsError::Refused,
@@ -988,9 +1168,10 @@ mod tests {
             message
         })
         .collect();
-        assert_eq!(messages.len(), 11, "{messages:?}");
+        assert_eq!(messages.len(), 12, "{messages:?}");
         assert!(messages.contains(&format!("no group for the channel {channel}")));
         assert!(messages.contains(&format!("the device {device} is not admitted")));
+        assert!(messages.contains(&format!("the device {device} is not a member")));
     }
 
     /// The IDs of the KeyPackages whose private keys `device` holds.
@@ -1014,7 +1195,7 @@ mod tests {
         let [id] = <[_; 1]>::try_from(key_package_ids(&device)).unwrap();
 
         type Step = fn(&mut MlsDevice, ChannelId, u64);
-        let steps: [(&str, Step); 5] = [
+        let steps: [(&str, Step); 8] = [
             ("a KeyPackage", |device, _, now| {
                 device.key_package(now).unwrap();
             }),
@@ -1033,6 +1214,15 @@ mod tests {
             ("a refused Welcome", |device, _, now| {
                 assert!(device.join(b"not a Welcome", now, |_| true).is_err());
             }),
+            ("a Remove", |device, channel, now| {
+                device.remove_devices(channel, &[], b"", now).unwrap();
+            }),
+            ("an empty Commit", |device, channel, now| {
+                device.commit_empty(channel, b"", now).unwrap();
+            }),
+            ("a refused Commit", |device, channel, now| {
+                assert!(device.process_commit(channel, b"", now, |_| true).is_err());
+            }),
         ];
         for (what, step) in steps {
             for (now, kept) in [(expires, true), (expires + 1, false)] {
@@ -1045,6 +1235,92 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `channel`'s group of devices `seeds` in epoch 1, the first its creator.
+    fn group_of(channel: ChannelId, seeds: &[u8]) -> Vec<MlsDevice> {
+        let mut devices: Vec<MlsDevice> = seeds.iter().map(|&seed| seeded(seed)).collect();
+        let packages: Vec<KeyPackage> = (devices[1..].iter_mut())
+            .map(|device| device.key_package(NOW).unwrap())
+            .collect();
+        devices[0].create_group(channel, NOW).unwrap();
+        devices[0]
+            .add_devices(channel, &packages, &admitted(), NOW)
+            .unwrap();
+        let welcome = devices[0].commit_stored(channel).unwrap().unwrap();
+        for device in &mut devices[1..] {
+            device.join(&welcome, NOW, |_| true).unwrap();
+        }
+        devices
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_devices_own_commit_is_refused_as_another_devices_and_stays_pending() {
+        let channel = ChannelId::from_bytes([16; 16]);
+        let [mut creator, _] = <[_; 2]>::try_from(group_of(channel, &[11, 12]))
+            .ok()
+            .unwrap();
+        let commit = creator.commit_empty(channel, b"", NOW).unwrap();
+        assert!(matches!(
+            creator.process_commit(channel, &commit, NOW, |_| true),
+            Err(MlsError::Malformed)
+        ));
+        assert_eq!(creator.epoch(channel).unwrap(), 1);
+        assert!(creator.commit_stored(channel).unwrap().is_none());
+        assert_eq!(creator.epoch(channel).unwrap(), 2);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_pending_commits_welcome_is_dropped_with_it_by_another_devices_commit() {
+        let channel = ChannelId::from_bytes([17; 16]);
+        let no_device: [&[u8]; 0] = [];
+        let [mut first, mut second, mut third] =
+            <[_; 3]>::try_from(group_of(channel, &[13, 14, 15]))
+                .ok()
+                .unwrap();
+
+        // The second device's Add is pending when the first's Commit is stored.
+        let package = seeded(16).key_package(NOW).unwrap();
+        second
+            .add_devices(channel, &[&package], &admitted(), NOW)
+            .unwrap();
+        let commit = first.commit_empty(channel, b"", NOW).unwrap();
+        first.commit_stored(channel).unwrap();
+        let entered = second.process_commit(channel, &commit, NOW, |_| true);
+        assert_eq!(entered.unwrap(), Processed::Entered { epoch: 2 });
+        third
+            .process_commit(channel, &commit, NOW, |_| true)
+            .unwrap();
+        second = reloaded(&second);
+        second
+            .add_devices(channel, &no_device, &admitted(), NOW)
+            .unwrap();
+        assert!(second.commit_stored(channel).unwrap().is_none());
+
+        // The third device's Add is pending when a Commit removes it; a Welcome adds it again.
+        let package = seeded(17).key_package(NOW).unwrap();
+        third
+            .add_devices(channel, &[&package], &admitted(), NOW)
+            .unwrap();
+        let removal = first
+            .remove_devices(channel, &[third.id()], b"", NOW)
+            .unwrap();
+        first.commit_stored(channel).unwrap();
+        let removed = third.process_commit(channel, &removal, NOW, |_| true);
+        assert_eq!(removed.unwrap(), Processed::Removed);
+        let package = third.key_package(NOW).unwrap();
+        first
+            .add_devices(channel, &[&package], &admitted(), NOW)
+            .unwrap();
+        let welcome = first.commit_stored(channel).unwrap().unwrap();
+        third.join(&welcome, NOW, |_| true).unwrap();
+        third = reloaded(&third);
+        third
+            .add_devices(channel, &no_device, &admitted(), NOW)
+            .unwrap();
+        assert!(third.commit_stored(channel).unwrap().is_none());
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use skald_proto::VersionRange;
 
-use crate::connection::{self, Connection, Method, printable};
-use crate::devices::{signed_in, text};
+use crate::connection::{self, Method, printable};
+use crate::devices::{signed_in, text, to_session};
 use crate::secrets;
 
 /// Sets `username` as the username of the account the machine whose state is in `dir` signed in
@@ -22,7 +22,7 @@ pub fn run(
 ) -> Result<(), String> {
     let (state, server, token) = signed_in(dir, storage)?;
 
-    let mut connection = Connection::new(&server, speaks, timeout).map_err(text)?;
+    let mut connection = to_session(&server, speaks, timeout)?;
     let body = serde_json::json!({ "username": username }).to_string();
     match connection.send_json_as(Method::Put, "/account/username", &token, body.as_bytes()) {
         Ok(_) => {}
