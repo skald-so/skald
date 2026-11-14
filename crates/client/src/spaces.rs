@@ -46,6 +46,10 @@ pub const CHANGED_MEANWHILE: &str =
 const NOT_FOLLOWING: &str = "this device is not linked yet: it holds no certificate signed by the \
                              account's master key, so it follows no space";
 
+/// What a run within [`Scope::Only`] says of another space, alike for every space it is given.
+pub const OUT_OF_SCOPE: &str = "as an agent, skald shows only the space of the agent's folder; \
+                                skald --agent <name> spaces lists it";
+
 /// The account's personal space, `POST`.
 const PERSONAL_PATH: &str = "/account/personal-space";
 
@@ -628,18 +632,54 @@ pub struct Synced {
     pub devices: SpaceDevices,
 }
 
+/// The spaces a run covers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Every space the device follows: a person's run.
+    All,
+    /// Only this one, the space of an agent's folder. The run takes no personal space and sends
+    /// nothing of another space.
+    Only(SpaceId),
+}
+
+impl Scope {
+    /// Whether the space `id` is outside the scope.
+    pub fn excludes(self, id: SpaceId) -> bool {
+        matches!(self, Scope::Only(only) if only != id)
+    }
+}
+
+/// The follower of the machine whose state is in `dir`, its secrets in `storage`, for `scope`:
+/// [`Follower::new`] for all spaces, [`Follower::open`] for one.
+fn follower(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    scope: Scope,
+) -> Result<Option<Follower>, String> {
+    match scope {
+        Scope::All => Follower::new(dir, storage, speaks, timeout),
+        Scope::Only(_) => Follower::open(dir, storage, speaks, timeout),
+    }
+}
+
 /// The space named `name` that the device of the machine whose state is in `dir`, its secrets in
-/// `storage`, follows, synced ([`Follower::sync`]).
+/// `storage`, follows, synced ([`Follower::sync`]); within `scope`.
 pub fn synced(
     dir: &Path,
     storage: secrets::Storage,
     speaks: VersionRange,
     timeout: Duration,
     name: &str,
+    scope: Scope,
 ) -> Result<Synced, String> {
     let mut follower =
-        Follower::new(dir, storage, speaks, timeout)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
+        follower(dir, storage, speaks, timeout, scope)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
     let space = follower.space(name)?;
+    if scope.excludes(space.id) {
+        return Err(OUT_OF_SCOPE.to_owned());
+    }
     let (roster, devices) = follower.sync(&space)?;
     Ok(Synced {
         follower,
@@ -677,17 +717,18 @@ pub fn no_admin(roster: &Roster) -> String {
 /// Lists the spaces the device of the machine whose state is in `dir`, its secrets in `storage`,
 /// follows, each at its last accepted revision. A signed-in machine with a certified device first
 /// accepts the revisions the server has of each; a space it fails to follow shows as the local
-/// state holds it, saying why.
+/// state holds it, saying why. Only the spaces within `scope`.
 pub fn list(
     dir: &Path,
     storage: secrets::Storage,
     speaks: VersionRange,
     timeout: Duration,
+    scope: Scope,
 ) -> Result<(), String> {
     let lines = if dir.is_dir() {
         let state = State::open(dir).map_err(text)?;
         let mut follower = match state.session().map_err(text)? {
-            Some(_) => Follower::new(dir, storage, speaks, timeout).unwrap_or_else(|err| {
+            Some(_) => follower(dir, storage, speaks, timeout, scope).unwrap_or_else(|err| {
                 eprintln!("skald: the spaces show their last accepted revisions: {err}");
                 None
             }),
@@ -695,7 +736,8 @@ pub fn list(
         };
         let account = own_account(&state)?;
         let mut lines = Vec::new();
-        for space in state.spaces().map_err(text)? {
+        let spaces = state.spaces().map_err(text)?;
+        for space in spaces.into_iter().filter(|space| !scope.excludes(space.id)) {
             let synced = follower.as_mut().map(|follower| follower.sync(&space));
             let roster = match synced {
                 Some(Ok((roster, _))) => roster,

@@ -30,6 +30,7 @@ use clap::{Parser, Subcommand};
 use connection::{Connection, TIMEOUT};
 use device::First;
 use skald_proto::VersionRange;
+use spaces::Scope;
 
 /// Message broker and task queue for AI agents.
 #[derive(Parser)]
@@ -237,6 +238,21 @@ enum Command {
     },
 }
 
+impl Command {
+    /// The CLI's name of this command if it is one of the person's, which an agent cannot run.
+    fn person_only(&self) -> Option<&'static str> {
+        match self {
+            Command::CreateSpace { .. } => Some("create-space"),
+            Command::CreateChannel { .. } => Some("create-channel"),
+            Command::AddRule { .. } => Some("add-rule"),
+            Command::Rules => Some("rules"),
+            Command::RemoveRule { .. } => Some("remove-rule"),
+            Command::ApproveBinding { .. } => Some("approve-binding"),
+            _ => None,
+        }
+    }
+}
+
 /// An answer to a question.
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Answer {
@@ -257,6 +273,11 @@ fn main() -> ExitCode {
         Ok(agent) => agent,
         Err(err) => return exit(Err(err)),
     };
+    if agent.is_some()
+        && let Some(command) = cli.command.person_only()
+    {
+        return exit(Err(agents::person_only(command)));
+    }
     match cli.command {
         Command::Status { server } => status(&server, speaks, timeout),
         Command::SignIn {
@@ -281,7 +302,10 @@ fn main() -> ExitCode {
                 let mut connection =
                     Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
                 sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())?;
-                spaces::take_personal(&dir, options.storage, speaks, timeout);
+                // An agent's run takes nothing of another space than its folder's.
+                if agent.is_none() {
+                    spaces::take_personal(&dir, options.storage, speaks, timeout);
+                }
                 Ok(())
             });
             exit(result)
@@ -308,24 +332,44 @@ fn main() -> ExitCode {
             exit(result)
         }
         Command::Spaces => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| spaces::list(&dir, cli.key_storage, speaks, timeout));
+            let result = state::dir(cli.state_dir).and_then(|dir| match agent {
+                Some(_) => agents::spaces(&dir, cli.key_storage, speaks, timeout),
+                None => spaces::list(&dir, cli.key_storage, speaks, timeout, Scope::All),
+            });
             exit(result)
         }
         Command::Members { space } => exit(
-            state::dir(cli.state_dir)
-                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
-                .and_then(spaces::members),
+            synced(
+                cli.state_dir,
+                cli.key_storage,
+                speaks,
+                timeout,
+                &space,
+                agent.is_some(),
+            )
+            .and_then(spaces::members),
         ),
         Command::CreateChannel { space } => exit(
-            state::dir(cli.state_dir)
-                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
-                .and_then(channels::create),
+            synced(
+                cli.state_dir,
+                cli.key_storage,
+                speaks,
+                timeout,
+                &space,
+                agent.is_some(),
+            )
+            .and_then(channels::create),
         ),
         Command::Channels { space } => exit(
-            state::dir(cli.state_dir)
-                .and_then(|dir| spaces::synced(&dir, cli.key_storage, speaks, timeout, &space))
-                .and_then(channels::list),
+            synced(
+                cli.state_dir,
+                cli.key_storage,
+                speaks,
+                timeout,
+                &space,
+                agent.is_some(),
+            )
+            .and_then(channels::list),
         ),
         Command::AddRule { folder, space } => {
             exit(state::dir(cli.state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space)))
@@ -337,9 +381,10 @@ fn main() -> ExitCode {
         Command::ApproveBinding { folder } => {
             exit(state::dir(cli.state_dir).and_then(|dir| folders::approve(&dir, &folder)))
         }
-        Command::Folder { folder } => {
-            exit(state::dir(cli.state_dir).and_then(|dir| folders::show(&dir, folder.as_deref())))
-        }
+        Command::Folder { folder } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| folders::show(&dir, folder.as_deref(), agent.is_some())),
+        ),
         Command::Address => exit(
             agent
                 .ok_or_else(|| "name the agent: skald --agent <name> address".to_owned())
@@ -351,6 +396,21 @@ fn main() -> ExitCode {
         ),
         Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
     }
+}
+
+/// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an
+/// `agent`, only the space of the working directory ([`agents::scope`]).
+fn synced(
+    state_dir: Option<PathBuf>,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    space: &str,
+    agent: bool,
+) -> Result<spaces::Synced, String> {
+    let dir = state::dir(state_dir)?;
+    let scope = agents::scope(&dir, space, agent)?;
+    spaces::synced(&dir, storage, speaks, timeout, space, scope)
 }
 
 /// Exits as `result` says, printing its error.
