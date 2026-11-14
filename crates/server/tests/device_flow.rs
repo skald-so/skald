@@ -8,6 +8,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::sync::Barrier;
 use std::thread;
+use std::time::Duration;
 
 use common::browser::{APPROVE, Browser, CODE_FIELD, DENY, SIGN_IN_LINK, SUBMIT};
 use common::device_flow::{
@@ -254,6 +255,25 @@ fn polling_answers_pending_and_slow_down_when_too_fast() {
         flow.poll(&grant.device_code),
         Poll::Error("authorization_pending".to_owned())
     );
+}
+
+#[test]
+fn polling_allows_a_second_of_clock_error() {
+    let flow = DeviceFlow::start_with(&[INTERVAL, "3"]);
+    let grant = flow.authorize();
+    assert_eq!(grant.interval, 3);
+    let pending = Poll::Error("authorization_pending".to_owned());
+    flow.assert_pending(&grant);
+
+    // Up to 1 s before the interval ends, and at the interval, it is pending.
+    thread::sleep(Duration::from_millis(2_300));
+    assert_eq!(flow.poll(&grant.device_code), pending);
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(flow.poll(&grant.device_code), pending);
+    // More than 1 s before, it slows the machine down.
+    thread::sleep(Duration::from_millis(1_700));
+    let too_fast = flow.poll(&grant.device_code);
+    assert_eq!(too_fast, Poll::Error("slow_down".to_owned()));
 }
 
 #[test]
@@ -557,7 +577,8 @@ fn device_flow_requests_state_the_protocol_version() {
 #[test]
 fn device_flow_responses_conform_to_spec() {
     let browser = Browser::launch();
-    let flow = DeviceFlow::start();
+    // An interval over the 1 s of clock error the server allows, so a poll can be too fast.
+    let flow = DeviceFlow::start_with(&[INTERVAL, "2"]);
     let ada = flow.stand.user(3_120_664_517, "ada-spec-standin");
     let page = browser.page();
     flow.signed_in(&page, &ada);
