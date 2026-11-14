@@ -4,7 +4,7 @@
 mod common;
 
 use common::{hex, vectors};
-use skald_proto::{Cbor, DecodeError, EncodingProblem, MAX_DEPTH, Receipt};
+use skald_proto::{Cbor, DecodeError, EncodingProblem, Frame, MAX_DEPTH, Receipt};
 
 /// The encoding of a 16-byte ID.
 const ID: &str = "50019a6f1e2b3c7d4e8f5061a2b3c4d5e6";
@@ -237,7 +237,8 @@ fn nesting_is_limited() {
 }
 
 /// Every one-byte change of every vector decodes to an error or to a value that encodes back to
-/// the changed bytes: no panic, and the spec's encoding is the only one accepted.
+/// the changed bytes: no panic, and the spec's encoding is the only one accepted. A frame of a
+/// type `proto` does not know is ignored, not encoded again.
 #[test]
 fn changed_vectors_are_rejected_or_round_trip() {
     for vector in vectors() {
@@ -245,7 +246,9 @@ fn changed_vectors_are_rejected_or_round_trip() {
             for mask in [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xff] {
                 let mut bytes = vector.bytes.clone();
                 bytes[at] ^= mask;
-                if let Ok(encoded) = (vector.decode)(&bytes) {
+                if let Ok(encoded) = (vector.decode)(&bytes)
+                    && !matches!(Frame::from_cbor(&bytes), Ok(Frame::Unknown(_)))
+                {
                     assert_eq!(
                         encoded, bytes,
                         "{} with byte {at} ^ {mask:#04x}",
