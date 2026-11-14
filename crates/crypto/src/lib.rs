@@ -8,7 +8,7 @@ mod sealed;
 mod sign;
 
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
-pub use hpke::HpkeKey;
+pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
 pub use mls::{
     ChannelView, Decrypted, GroupChange, HistoryKey, Joining, KeyPackage, MemberDevice, MlsDevice,
     MlsError, Processed,

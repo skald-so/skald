@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Run in a checkout of dev with its history and tags: opens the Release PR into dev, or updates the
+# open one in place, with the next release script/release-update writes; closes it when there is
+# nothing to release. A Release PR is one the GitHub App skald-release, skald-release[bot], opened
+# from a branch of $GITHUB_REPOSITORY. Its commit is made with the GraphQL mutation
+# createCommitOnBranch on a branch from the checked-out commit; an open Release PR's branch is moved
+# to it. It calls the GitHub API at $GITHUB_API_URL and $GITHUB_GRAPHQL_URL with the token $GH_TOKEN.
+# Exits 2 on an error. .github/workflows/release-pr.yml runs it; script/release-pr-test tests it.
+# Usage: script/release-pr
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+app='skald-release[bot]'
+
+error() {
+  echo "release-pr: $*" >&2
+  exit 2
+}
+
+for name in GITHUB_API_URL GITHUB_GRAPHQL_URL GITHUB_REPOSITORY GH_TOKEN; do
+  [[ -n ${!name:-} ]] || error "$name is not set"
+done
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# call <method> <url> [<JSON file>]: a call of the GitHub API; prints the response.
+call() {
+  local args=(--fail-with-body --silent --show-error --max-time 60 --request "$1"
+    --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json'
+    --header 'X-GitHub-Api-Version: 2022-11-28')
+  [[ $1 != GET ]] || args+=(--retry 3)
+  [[ -z ${3:-} ]] || args+=(--header 'Content-Type: application/json' --data-binary "@$3")
+  curl "${args[@]}" "$2" || error "$1 $2 failed"
+}
+# rest <method> <path> [<jq argument>...]: a call of the REST API of the repository, with the body
+# `jq -n <jq argument>...` makes, if any.
+rest() {
+  local url=$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$2 method=$1
+  shift 2
+  if (($#)); then
+    jq -n "$@" >"$tmp/request.json"
+    call "$method" "$url" "$tmp/request.json"
+  else
+    call "$method" "$url"
+  fi
+}
+
+base=$(git -C "$root" rev-parse --verify 'HEAD^{commit}') || error "no commit is checked out"
+release_prs=$(rest GET '/pulls?state=open&base=dev&per_page=100' |
+  jq -c --arg app "$app" --arg repo "$GITHUB_REPOSITORY" '[.[] | select(.user.login == $app
+    and .user.type == "Bot" and .head.repo.full_name == $repo) | {number, branch: .head.ref}]') ||
+  error "the GitHub API sent an unreadable list of PRs"
+
+status=0
+version=$("$root/script/release-update") || status=$?
+if ((status == 1)); then
+  for number in $(jq '.[].number' <<<"$release_prs"); do
+    rest PATCH "/pulls/$number" '{state: "closed"}' >/dev/null
+    echo "release-pr: closed #$number: nothing to release"
+  done
+  exit 0
+fi
+((status == 0)) || exit 2
+title="chore: release v$version"
+"$root/script/release-notes" "$version" >"$tmp/notes" || exit 2
+
+# commit <branch>: makes the release's commit on <branch>, a new branch at $base; prints its SHA.
+commit() {
+  rest POST /git/refs --arg ref "refs/heads/$1" --arg sha "$base" '{$ref, $sha}' >/dev/null
+  jq -n --arg repo "$GITHUB_REPOSITORY" --arg branch "$1" --arg base "$base" --arg title "$title" \
+    --rawfile toml "$root/Cargo.toml" --rawfile lock "$root/Cargo.lock" \
+    --rawfile changelog "$root/CHANGELOG.md" '{
+      query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+      variables: {input: {
+        branch: {repositoryNameWithOwner: $repo, branchName: $branch},
+        message: {headline: $title}, expectedHeadOid: $base,
+        fileChanges: {additions: [
+          {path: "Cargo.toml", contents: ($toml | @base64)},
+          {path: "Cargo.lock", contents: ($lock | @base64)},
+          {path: "CHANGELOG.md", contents: ($changelog | @base64)}]}}}}' >"$tmp/commit.json"
+  call POST "$GITHUB_GRAPHQL_URL" "$tmp/commit.json" |
+    jq -er 'if .errors then error(.errors | tostring) else .data.createCommitOnBranch.commit.oid end' ||
+    error "the commit on $1 failed"
+}
+
+stamp=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+if [[ $(jq length <<<"$release_prs") == 0 ]]; then
+  branch=release-pr-$stamp
+  commit "$branch" >/dev/null
+  number=$(rest POST /pulls --arg title "$title" --arg head "$branch" --rawfile body "$tmp/notes" \
+    '{$title, $head, base: "dev", $body}' | jq -r .number)
+  echo "release-pr: opened #$number for v$version"
+else
+  number=$(jq '.[0].number' <<<"$release_prs")
+  branch=$(jq -r '.[0].branch' <<<"$release_prs")
+  # The commit goes on a branch of its own first: the PR's branch never points to a commit of dev.
+  next=$branch-next-$stamp
+  sha=$(commit "$next")
+  rest PATCH "/git/refs/heads/$branch" --arg sha "$sha" '{$sha, force: true}' >/dev/null
+  rest DELETE "/git/refs/heads/$next" >/dev/null
+  rest PATCH "/pulls/$number" --arg title "$title" --rawfile body "$tmp/notes" '{$title, $body}' \
+    >/dev/null
+  echo "release-pr: updated #$number for v$version"
+fi

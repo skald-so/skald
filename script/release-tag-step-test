@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Runs the step of .github/workflows/release-plz.yml that runs release-plz release as GitHub runs a
-# step without `shell`, `bash -e`, with stand-ins for script/release-pr-merged and release-plz:
-#   - script/release-pr-merged exits 0: release-plz release runs, and its failure fails the step;
-#   - it exits 1, not the merge of a Release PR: release-plz does not run, and the step passes;
-#   - it exits with any other code, an error: release-plz does not run, and the step fails.
+# Runs the step of the workflow named in script/lib/release.sh that runs script/release-tag as
+# GitHub runs a step without `shell`, `bash -e`, with stand-ins for script/release-pr-merged and
+# script/release-tag:
+#   - script/release-pr-merged exits 0: script/release-tag runs, and its failure fails the step;
+#   - it exits 1, not the merge of a Release PR: script/release-tag does not run, and the step passes;
+#   - it exits with any other code, an error: script/release-tag does not run, and the step fails.
 # Runs script/release-pr-merged with its defaults, as the workflow does, against a GitHub API that
 # lists no PR: 6 calls, 5 pauses of 10 s between them, then exit 1. No workflow overrides them.
 set -euo pipefail
@@ -22,37 +23,36 @@ trap 'rm -rf "$tmp"' EXIT
 
 # The step's script. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
 npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/$release_workflow" |
-  jq -r '[.jobs[].steps[]? | select(.run // "" | test("release-plz\\s+release($|[^-A-Za-z0-9_])"))
-    | .run] | if length == 1 then .[0] else error("not one step runs release-plz release") end' \
+  jq -r '[.jobs[].steps[]? | select(.run // "" | test("script/release-tag($|[^-A-Za-z0-9_])"))
+    | .run] | if length == 1 then .[0] else error("not one step runs script/release-tag") end' \
   >"$tmp/step.sh" || {
-  echo "release-tag-step-test: not one step of $release_workflow runs release-plz release" >&2
+  echo "release-tag-step-test: not one step of $release_workflow runs script/release-tag" >&2
   exit 1
 }
 
-# The stand-ins exit with $GATE and $RELEASE; release-plz logs that it ran.
-mkdir -p "$tmp/work/script" "$tmp/bin"
+# The stand-ins exit with $GATE and $RELEASE; script/release-tag logs that it ran.
+mkdir -p "$tmp/work/script"
 cat >"$tmp/work/script/release-pr-merged" <<'EOF'
 #!/usr/bin/env bash
 exit "$GATE"
 EOF
-cat >"$tmp/bin/release-plz" <<EOF
+cat >"$tmp/work/script/release-tag" <<EOF
 #!/usr/bin/env bash
-echo "\$*" >>"$tmp/release-plz.log"
+echo "\$*" >>"$tmp/release-tag.log"
 exit "\$RELEASE"
 EOF
-chmod +x "$tmp/work/script/release-pr-merged" "$tmp/bin/release-plz"
+chmod +x "$tmp/work/script/release-pr-merged" "$tmp/work/script/release-tag"
 
-# expect <gate> <release> <step exit: 0 or failed> <release-plz runs: yes or no>
+# expect <gate> <release> <step exit: 0 or failed> <script/release-tag runs: yes or no>
 expect() {
   local status=0 ran=no
-  rm -f "$tmp/release-plz.log"
-  (cd "$tmp/work" && GATE=$1 RELEASE=$2 PATH="$tmp/bin:$PATH" \
-    bash -e "$tmp/step.sh") >/dev/null 2>&1 || status=$?
-  [[ ! -f $tmp/release-plz.log ]] || ran=yes
+  rm -f "$tmp/release-tag.log"
+  (cd "$tmp/work" && GATE=$1 RELEASE=$2 bash -e "$tmp/step.sh") >/dev/null 2>&1 || status=$?
+  [[ ! -f $tmp/release-tag.log ]] || ran=yes
   [[ $ran == "$4" ]] ||
-    fail "script/release-pr-merged exits $1: release-plz runs: $ran, not $4"
+    fail "script/release-pr-merged exits $1: script/release-tag runs: $ran, not $4"
   if [[ $3 == 0 && $status != 0 ]] || [[ $3 == failed && $status == 0 ]]; then
-    fail "script/release-pr-merged exits $1, release-plz $2: the step exits $status, not $3"
+    fail "script/release-pr-merged exits $1, script/release-tag $2: the step exits $status, not $3"
   fi
 }
 

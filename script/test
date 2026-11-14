@@ -16,14 +16,16 @@
 #   agents     the delivery prototypes in prototypes/agents
 #   edits      the edit comparison prototype in prototypes/edits
 #   repository copied code in crates/ and prototypes/ (script/duplicates); cargo-deny; the Release
-#              PR and the release tags on fixture repositories, with release-plz
+#              PR and the release tags on fixture repositories, with git-cliff, and the CHANGELOG
+#              section of v0.1.0 from the history
 #   tooling    copied code in script/; tests of the scripts in script/, the staging deploy's against a
 #              local sshd and the staging status check's on recorded GitHub API responses, of the CI
 #              workflow, of the edge image and staging deploy workflow, of the Release PR workflow and
 #              its release tags, of the release workflow, its release notes, the attestations of its
 #              files and its image, its npm package, the move of main to a stable release, on fixture
 #              repositories too, and of the installers in installers/ and the npm package on this
-#              machine; Renovate config validation
+#              machine; of the release check and its jobs, against stand-ins for a release and the
+#              verification commands; Renovate config validation
 #   web        copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #              references) and build
 set -euo pipefail
@@ -135,7 +137,7 @@ if ! command -v jq >/dev/null; then
   exit 1
 fi
 if checks_any $rust tooling && ! command -v curl >/dev/null; then
-  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the server's tests run script/check-github-sign-in, and the release tag test script/release-pr-merged: https://curl.se" >&2
+  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the server's tests run script/check-github-sign-in, the release tag test script/release-pr-merged, and script/install-git-cliff downloads git-cliff: https://curl.se" >&2
   exit 1
 fi
 if checks_any $rust tooling web && ! command -v docker >/dev/null; then
@@ -252,16 +254,15 @@ if checks tooling; then
   script/staging-status-test
   script/ci-workflow-test
   script/edge-workflow-test
-  script/release-plz-workflow-test
-  script/install-release-plz-test
+  script/release-pr-workflow-test
+  script/install-git-cliff-test
   # A pinned version: a newer Renovate can deprecate options and fail --strict on an unchanged config.
   npx --yes --package renovate@44.225.1 -- renovate-config-validator --strict --no-global renovate.json
 fi
 
-# The Release PR on fixture repositories, with release-plz.
+# The Release PR on fixture repositories, with git-cliff.
 if checks repository; then
-  script/release-plz-config-test
-  script/release-plz-test
+  script/release-pr-test
 fi
 
 # Web UI: lint, tests (including the check that the API client is generated from the spec and the
@@ -278,7 +279,7 @@ if checks web; then
   )
 fi
 
-# The release tags: the tagging workflow, and the tags on fixture repositories, with release-plz.
+# The release tags: the tagging workflow, and the tags on fixture repositories.
 if checks tooling; then
   script/release-tag-workflow-test
   script/release-tag-step-test
@@ -291,7 +292,8 @@ fi
 # its publishing step, the release notes, the attestations of the release files and how to verify
 # them, the release image and how to verify it, the npm package and how to verify it, the move of
 # main to a stable release, on fixture repositories too, and the installers and the npm package
-# against a stand-in release.
+# against a stand-in release; the release check's jobs, and the release check against stand-ins for
+# a release and the verification commands.
 if checks tooling; then
   script/release-workflow-test
   script/release-jobs-test
@@ -304,4 +306,7 @@ if checks tooling; then
   script/release-npm-workflow-test
   script/move-main-workflow-test
   script/move-main-test
+  script/release-check-workflow-test
+  script/release-check-test
+  script/release-check-steps-test
 fi

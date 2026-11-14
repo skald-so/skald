@@ -5,6 +5,11 @@
 //! the server takes it. Listing spaces or their members first accepts the revisions the server has
 //! ([`crate::follow`]).
 //!
+//! The account's first device signs the revision 1 of the account's personal space the same way,
+//! once the server has taken its certificate: at its sign-in, or at any later command that uses
+//! spaces. It pins that space as its personal space when it signs it, and never takes another from
+//! the server.
+//!
 //! A later revision the device signs is written before it is sent too. Any command that uses the
 //! space sends it again first, until the server takes it; only then does it count as accepted, and
 //! until then the space stays at its last accepted revision. When another revision came first, the
@@ -41,6 +46,12 @@ pub const CHANGED_MEANWHILE: &str =
 const NOT_FOLLOWING: &str = "this device is not linked yet: it holds no certificate signed by the \
                              account's master key, so it follows no space";
 
+/// The account's personal space, `POST`.
+const PERSONAL_PATH: &str = "/account/personal-space";
+
+/// When the personal space's revision 1 is sent again.
+const PERSONAL_AGAIN: &str = "a later skald command sends it again";
+
 /// `Space` in the API spec.
 #[derive(Deserialize)]
 struct Created {
@@ -65,24 +76,16 @@ pub fn create(
             printable(name)
         )
     })?;
-    let (state, server, token, stored) = signed_in_with_secrets(dir, storage)?;
-    let (device, master, cert) = certified(&state)?.ok_or_else(|| NOT_LINKED.to_owned())?;
-    let keys = device::known_keys(&stored, Some(&device))
-        .map_err(text)?
-        .ok_or_else(|| device::Error::MissingKeys.to_string())?;
-    let mut connection = to_session(&server, speaks, timeout)?;
+    let mut follower =
+        Follower::new(dir, storage, speaks, timeout)?.ok_or_else(|| NOT_LINKED.to_owned())?;
+    let keys = follower.keys()?;
+    let again = format!("run skald create-space {} again", name.as_str());
 
     let mut existing = None;
-    for space in state.spaces().map_err(text)? {
+    for space in follower.state.spaces().map_err(text)? {
         // A later revision waits for a command that uses its space.
         if let Some(pending) = space.pending.as_ref().filter(|_| space.first_waits()) {
-            send(
-                &mut connection,
-                &state,
-                &token,
-                (space.id, &space.name),
-                pending,
-            )?;
+            follower.send_first((space.id, &space.name), pending, &again)?;
         }
         if space.name == name.as_str() {
             existing = Some(space);
@@ -94,37 +97,58 @@ pub fn create(
         return Ok(());
     }
 
-    let account = cert.body().account;
-    let handle = handle(&mut connection, &token, account)?;
-    let space = create_on_server(&mut connection, &token, &name)?;
-    let body = RosterBody::first(
-        space,
-        name.clone(),
-        account,
-        handle,
-        master,
-        device.id,
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs()),
-    );
-    let roster = skald_crypto::sign_roster(&body, keys.signing())
-        .map_err(|err| format!("revision 1 of the space fails: {err}"))?;
-    skald_crypto::check_roster(&roster, std::slice::from_ref(&cert))
-        .map_err(|err| format!("revision 1 of the space fails: {err}"))?;
+    let handle = handle(
+        &mut follower.connection,
+        &follower.token,
+        follower.own.account,
+    )?;
+    let space = create_on_server(&mut follower.connection, &follower.token, &name)?;
+    let roster = follower.sign_first(&keys, space, name.clone(), handle)?;
     let bytes = roster.to_cbor();
-    state
+    follower
+        .state
         .add_space(space, name.as_str(), &bytes)
         .map_err(text)?;
-    send(
-        &mut connection,
-        &state,
-        &token,
-        (space, name.as_str()),
-        &bytes,
-    )?;
+    follower.send_first((space, name.as_str()), &bytes, &again)?;
     println!("{}", created(&roster, false));
     Ok(())
+}
+
+/// After `skald sign-in` on the machine whose state is in `dir`, its secrets in `storage`: takes
+/// the account's personal space if the device holds its certificate
+/// ([`Follower::take_personal`]), saying so, or warns why it did not.
+pub fn take_personal(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+) {
+    let taken = Follower::open(dir, storage, speaks, timeout).and_then(|follower| match follower {
+        Some(mut follower) => follower.take_personal(),
+        None => Ok(None),
+    });
+    match taken {
+        Ok(Some(first)) => println!("{}", personal_taken(&first)),
+        Ok(None) => {}
+        Err(err) => personal_warning(&err),
+    }
+}
+
+/// Warns that the account's personal space is not set up, for the reason `err`.
+fn personal_warning(err: &str) {
+    eprintln!("skald: warning: the account's personal space is not set up yet: {err}");
+}
+
+/// What the device says when it signed `first`, revision 1 of the account's personal space.
+fn personal_taken(first: &Roster) -> String {
+    let body = first.body();
+    let handle = creator_handle(first);
+    format!(
+        "This device signed revision 1 of the account's personal space {} ({}) as its admin, with \
+         the handle {handle}.",
+        body.name.as_str(),
+        body.space
+    )
 }
 
 /// This machine's device, with the master key it pinned and its certificate, once the server took
@@ -146,10 +170,7 @@ fn certified(state: &State) -> Result<Option<(state::Device, [u8; 32], Cert)>, S
 /// or, `already`, that it had created it on an earlier run.
 fn created(first: &Roster, already: bool) -> String {
     let body = first.body();
-    let handle = body
-        .members
-        .first()
-        .map_or("", |member| member.handle.as_str());
+    let handle = creator_handle(first);
     let (name, id) = (body.name.as_str(), body.space);
     if already {
         format!(
@@ -162,6 +183,15 @@ fn created(first: &Roster, already: bool) -> String {
              device signed its revision 1."
         )
     }
+}
+
+/// The handle of the creator of the space whose revision 1 is `first`.
+fn creator_handle(first: &Roster) -> &str {
+    first
+        .body()
+        .members
+        .first()
+        .map_or("", |member| member.handle.as_str())
 }
 
 /// The handle of `account`, the account of the session `token`: its username, as the server gives
@@ -213,31 +243,20 @@ fn create_on_server(
     created.space.parse().map_err(|_| unexpected().to_owned())
 }
 
-/// `POST /spaces/<id>/revisions`: sends `pending`, the revision of `space`, its ID and name, that
-/// the device signed, as the session `token`, and records that the server took it. A revision the
-/// server refuses is dropped with its space, which the server never took a revision of.
-fn send(
-    connection: &mut Connection,
-    state: &State,
-    token: &str,
-    (id, name): (SpaceId, &str),
-    pending: &[u8],
-) -> Result<(), String> {
-    match post_revision(connection, token, id, pending) {
-        Sent::Taken => state.clear_pending(id, pending).map_err(text),
-        Sent::Conflict(detail) | Sent::Refused(detail) => {
-            state.remove_space(id).map_err(text)?;
-            Err(format!(
-                "the server refused revision 1 of the space {name}: {}; this device dropped the \
-                 space",
-                printable(&detail)
-            ))
-        }
-        Sent::Failed(err) => Err(format!(
-            "{err}; the space {name} waits for the server to take its revision 1: run skald \
-             create-space {name} again"
-        )),
-    }
+/// `POST /account/personal-space`: the account's personal space, as the server gives it to the
+/// session `token`.
+fn personal_on_server(connection: &mut Connection, token: &str) -> Result<(SpaceId, Name), String> {
+    let body = connection.post_as(PERSONAL_PATH, token).map_err(text)?;
+    let unexpected = || "unexpected answer from the server: a space without its ID or name";
+    let given: Created = serde_json::from_slice(&body).map_err(|_| unexpected())?;
+    let id = given.space.parse().map_err(|_| unexpected())?;
+    let name = given.name.parse().map_err(|err| {
+        format!(
+            "unexpected answer from the server: the space name \"{}\" {err}",
+            printable(&given.name)
+        )
+    })?;
+    Ok((id, name))
 }
 
 /// What the server did with a revision the device sent.
@@ -287,12 +306,31 @@ pub struct Follower {
     pub own: Own,
     device: state::Device,
     pub this: DeviceId,
+    /// The device's certificate.
+    cert: Cert,
 }
 
 impl Follower {
     /// The follower of the machine whose state is in `dir`, its secrets in `storage`; `None` if it
-    /// has no certified device.
+    /// has no certified device. It takes the account's personal space first
+    /// ([`Follower::take_personal`]), warning if it cannot.
     fn new(
+        dir: &Path,
+        storage: secrets::Storage,
+        speaks: VersionRange,
+        timeout: Duration,
+    ) -> Result<Option<Self>, String> {
+        let mut follower = Self::open(dir, storage, speaks, timeout)?;
+        if let Some(follower) = follower.as_mut()
+            && let Err(err) = follower.take_personal()
+        {
+            personal_warning(&err);
+        }
+        Ok(follower)
+    }
+
+    /// As [`Follower::new`], without taking the personal space.
+    fn open(
         dir: &Path,
         storage: secrets::Storage,
         speaks: VersionRange,
@@ -314,7 +352,104 @@ impl Follower {
             },
             this: device.id,
             device,
+            cert,
         }))
+    }
+
+    /// The device's keys.
+    fn keys(&self) -> Result<device::Keys, String> {
+        device::known_keys(&self.stored, Some(&self.device))
+            .map_err(text)?
+            .ok_or_else(|| device::Error::MissingKeys.to_string())
+    }
+
+    /// Revision 1 of the new space `space` named `name`, signed by this device with `keys`, its
+    /// account the only member and admin, with `handle`, checked as a new space's revision.
+    fn sign_first(
+        &self,
+        keys: &device::Keys,
+        space: SpaceId,
+        name: Name,
+        handle: Name,
+    ) -> Result<Roster, String> {
+        let body = RosterBody::first(
+            space,
+            name,
+            self.own.account,
+            handle,
+            self.own.master,
+            self.this,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs()),
+        );
+        let fails = |err: String| format!("revision 1 of the space fails: {err}");
+        let roster = skald_crypto::sign_roster(&body, keys.signing())
+            .map_err(|err| fails(err.to_string()))?;
+        skald_crypto::check_roster(&roster, std::slice::from_ref(&self.cert))
+            .map_err(|err| fails(err.to_string()))?;
+        Ok(roster)
+    }
+
+    /// `POST /spaces/<id>/revisions`: sends `pending`, revision 1 of `space`, its ID and name,
+    /// which the device signed, and records that the server took it; while it waits, `again` says
+    /// when it is sent again. A revision the server refuses is dropped with its space, which the
+    /// server never took a revision of.
+    fn send_first(
+        &mut self,
+        (id, name): (SpaceId, &str),
+        pending: &[u8],
+        again: &str,
+    ) -> Result<(), String> {
+        match post_revision(&mut self.connection, &self.token, id, pending) {
+            Sent::Taken => self.state.clear_pending(id, pending).map_err(text),
+            Sent::Conflict(detail) | Sent::Refused(detail) => {
+                self.state.remove_space(id).map_err(text)?;
+                Err(format!(
+                    "the server refused revision 1 of the space {name}: {}; this device dropped \
+                     the space",
+                    printable(&detail)
+                ))
+            }
+            Sent::Failed(err) => Err(format!(
+                "{err}; the space {name} waits for the server to take its revision 1: {again}"
+            )),
+        }
+    }
+
+    /// Takes the account's personal space, unless the device pinned one already, whose revision 1
+    /// it sends again while the server has not taken it. Otherwise it gets the space from the
+    /// server and, unless another device stored its revision 1, signs that revision, pins the
+    /// space and stores the revision as `skald create-space` does. Gives the revision 1 it signed.
+    fn take_personal(&mut self) -> Result<Option<Roster>, String> {
+        let spaces = self.state.spaces().map_err(text)?;
+        if let Some(space) = spaces.iter().find(|space| space.personal) {
+            if space.first_waits() {
+                self.send_first((space.id, &space.name), &space.anchor, PERSONAL_AGAIN)?;
+            }
+            return Ok(None);
+        }
+        let keys = self.keys()?;
+        let (id, name) = personal_on_server(&mut self.connection, &self.token)?;
+        if spaces.iter().any(|space| space.id == id) {
+            return Err(format!(
+                "the server gives the space {} ({id}), which this device follows already, as the \
+                 account's personal space",
+                name.as_str()
+            ));
+        }
+        // A device that signed none of its revisions gets the space from one that did.
+        if !follow::listed(&mut self.connection, &self.token, id)?.is_empty() {
+            return Ok(None);
+        }
+        let handle = handle(&mut self.connection, &self.token, self.own.account)?;
+        let first = self.sign_first(&keys, id, name.clone(), handle)?;
+        let bytes = first.to_cbor();
+        self.state
+            .add_personal_space(id, name.as_str(), &bytes)
+            .map_err(text)?;
+        self.send_first((id, name.as_str()), &bytes, PERSONAL_AGAIN)?;
+        Ok(Some(first))
     }
 
     /// The space named `name`, as the state holds it now.
@@ -455,9 +590,7 @@ impl Follower {
 
     /// The revision after `latest`, with `channels` added, signed by this device.
     pub fn next_with(&self, latest: &Roster, channels: &[Channel]) -> Result<Roster, String> {
-        let keys = device::known_keys(&self.stored, Some(&self.device))
-            .map_err(text)?
-            .ok_or_else(|| device::Error::MissingKeys.to_string())?;
+        let keys = self.keys()?;
         let mut body = latest.body().clone();
         body.revision = body
             .revision
@@ -577,7 +710,7 @@ pub fn list(
                 }
                 None => follow::decode(&space.accepted, &space.name)?,
             };
-            lines.push(line(&roster, account, space.first_waits()));
+            lines.push(line(&roster, account, space.first_waits(), space.personal));
         }
         lines
     } else {
@@ -670,8 +803,9 @@ fn role(role: Role) -> &'static str {
 }
 
 /// The line of a space whose last accepted revision is `roster`: its name, the role and handle of
-/// `account` in it, and its ID; marked if the server has not taken the revision yet.
-fn line(roster: &Roster, account: Option<AccountId>, pending: bool) -> String {
+/// `account` in it, and its ID; marked if it is the device's `personal` space, and if the server
+/// has not taken the revision yet.
+fn line(roster: &Roster, account: Option<AccountId>, pending: bool, personal: bool) -> String {
     let body = roster.body();
     let member =
         account.and_then(|account| body.members.iter().find(|member| member.account == account));
@@ -680,6 +814,9 @@ fn line(roster: &Roster, account: Option<AccountId>, pending: bool) -> String {
         None => ("no member", "-"),
     };
     let mut line = format!("{}  {role}  {handle}  {}", body.name.as_str(), body.space);
+    if personal {
+        line.push_str("  personal");
+    }
     if pending {
         line.push_str("  (not on the server yet)");
     }
@@ -713,19 +850,23 @@ mod tests {
         let roster = first(account);
         let id = roster.body().space;
         assert_eq!(
-            line(&roster, Some(account), false),
+            line(&roster, Some(account), false, false),
             format!("acme  admin  ada  {id}")
         );
         assert_eq!(
-            line(&roster, Some(account), true),
+            line(&roster, Some(account), true, false),
             format!("acme  admin  ada  {id}  (not on the server yet)")
         );
         assert_eq!(
-            line(&roster, Some(AccountId::generate()), false),
+            line(&roster, Some(account), true, true),
+            format!("acme  admin  ada  {id}  personal  (not on the server yet)")
+        );
+        assert_eq!(
+            line(&roster, Some(AccountId::generate()), false, false),
             format!("acme  no member  -  {id}")
         );
         assert_eq!(
-            line(&roster, None, false),
+            line(&roster, None, false, false),
             format!("acme  no member  -  {id}")
         );
     }

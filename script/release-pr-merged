@@ -6,7 +6,7 @@
 # with the token $GH_TOKEN. Every push to dev is a PR's merge, so an empty list is one GitHub has
 # not filled yet: it asks again, $RELEASE_PR_MERGED_ATTEMPTS times in all (6 by default),
 # $RELEASE_PR_MERGED_PAUSE seconds apart (10), before it exits 1.
-# .github/workflows/release-plz.yml tags a commit only after it exits 0; script/release-tag-test
+# .github/workflows/release-pr.yml tags a commit only after it exits 0; script/release-tag-test
 # tests it.
 set -euo pipefail
 

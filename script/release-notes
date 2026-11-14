@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Prints the notes of the release of <version>: its section of CHANGELOG.md, the one release-plz
-# writes, without the heading. Fails when the CHANGELOG has no section for <version>, or more than
-# one, or the section is empty.
+# Prints the notes of the release of <version>: its section of CHANGELOG.md, the one
+# script/release-update writes, without the heading. Fails when the CHANGELOG has no section for
+# <version>, or more than one, or the section is empty.
 # Usage: script/release-notes <version> [<changelog>], <changelog> CHANGELOG.md in the root by default.
 set -euo pipefail
 

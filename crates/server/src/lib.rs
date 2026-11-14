@@ -92,6 +92,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/account/personal-space",
+            post(spaces::personal).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/sign-in-methods",
             get(links::list).layer(checked(Statement::Header)),
         )

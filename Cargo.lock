@@ -1356,6 +1356,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "hpke"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f512e325a1a71bf3273fb9b7fc9e5d96dac136fb4a95d0e6637001b12ea3e09"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "curve25519-dalek",
+ "getrandom 0.4.3",
+ "hkdf 0.13.0",
+ "hybrid-array",
+ "rand_core 0.10.1",
+ "sha2 0.11.1",
+ "subtle",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "http"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2870,6 +2889,7 @@ dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
  "getrandom 0.4.3",
+ "hpke",
  "mls-rs",
  "mls-rs-core",
  "mls-rs-crypto-rustcrypto",
@@ -2920,10 +2940,6 @@ dependencies = [
  "sha2 0.11.1",
  "wasm-bindgen-test",
 ]
-
-[[package]]
-name = "skald-repository"
-version = "0.1.0"
 
 [[package]]
 name = "skald-server"

@@ -182,6 +182,73 @@ export const putMasterKey = async (
   } as putMasterKeyResponse;
 };
 
+export type takePersonalSpaceResponse200 = {
+  data: Space;
+  status: 200;
+};
+
+export type takePersonalSpaceResponse201 = {
+  data: Space;
+  status: 201;
+};
+
+export type takePersonalSpaceResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type takePersonalSpaceResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type takePersonalSpaceResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type takePersonalSpaceResponseSuccess = (
+  takePersonalSpaceResponse200 | takePersonalSpaceResponse201
+) & {
+  headers: Headers;
+};
+export type takePersonalSpaceResponseError = (
+  | takePersonalSpaceResponse400
+  | takePersonalSpaceResponse401
+  | takePersonalSpaceResponse500
+) & {
+  headers: Headers;
+};
+
+export type takePersonalSpaceResponse =
+  takePersonalSpaceResponseSuccess | takePersonalSpaceResponseError;
+
+export const getTakePersonalSpaceUrl = () => {
+  return `/account/personal-space`;
+};
+
+/**
+ * The one personal space of the session's account, which owns it and stores its revision 1 (docs/protocol/membership.md, "Roster"). The first request creates it, named as docs/dev/architecture.md, "Membership", says. The request has no body.
+ * @summary The account's personal space
+ */
+export const takePersonalSpace = async (
+  options?: RequestInit,
+): Promise<takePersonalSpaceResponse> => {
+  const res = await fetch(getTakePersonalSpaceUrl(), {
+    ...options,
+    method: "POST",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: takePersonalSpaceResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as takePersonalSpaceResponse;
+};
+
 export type listSignInMethodsResponse200 = {
   data: SignInMethods;
   status: 200;

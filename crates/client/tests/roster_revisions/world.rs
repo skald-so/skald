@@ -82,10 +82,16 @@ impl World {
     /// A new account of GitHub user `id` with `login`, whose first machine, on the host `host`,
     /// signs in.
     pub fn sign_up(&self, id: u64, login: &str, host: &'static str) -> Person {
-        let cloud = &self.cloud;
-        let user = cloud.user(id, login);
-        let (machine, signed_in) = cloud.first_machine(&self.browser.page(), &user, host);
+        let user = self.cloud.user(id, login);
+        let (machine, signed_in) = self.cloud.first_machine(&self.browser.page(), &user, host);
         assert!(signed_in.success, "{signed_in:?}");
+        self.person(user, machine, host)
+    }
+
+    /// The person of GitHub user `user` whose first machine, on the host `host`, holds the session
+    /// the server gave last and a valid certificate.
+    pub fn person(&self, user: User, machine: Machine, host: &'static str) -> Person {
+        let cloud = &self.cloud;
         let token = cloud.last_token();
         let (status, session) = cloud.session_of(&token);
         assert_eq!(status, 200, "GET /session: {session}");

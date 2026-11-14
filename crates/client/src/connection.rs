@@ -318,7 +318,7 @@ enum Body<'a> {
     None,
     /// None: a `DELETE`.
     Delete,
-    /// None: a `POST`.
+    /// A `POST` without a body.
     Post,
     /// A form: a `POST`.
     Form(&'a [(&'a str, &'a str)]),
@@ -455,7 +455,8 @@ impl Connection {
         self.http(path, Some(token), Body::Delete).map(drop)
     }
 
-    /// `POST <path>` without a body as the session of `token`.
+    /// `POST <path>` without a body as the session of `token`; the body of the answer that serves
+    /// it.
     pub fn post_as(&mut self, path: &str, token: &str) -> Result<Vec<u8>, Error> {
         self.http(path, Some(token), Body::Post)
     }

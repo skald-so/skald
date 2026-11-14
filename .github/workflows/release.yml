@@ -6,7 +6,9 @@ name: Release
 # creates the release with all of them. Each runner also runs skald from those files through the npm
 # package skald-so, which a job then publishes to npm. Another job builds the skald-server image at
 # the tag's commit, pushes it to GHCR under its version, signs its digest with cosign and attests it.
-# Once all three are published, a stable release, vX.Y.Z, moves main to the tag with the deploy key.
+# Once all three are published, the release check runs on every OS and architecture
+# (release-check.yml); once it passes, a stable release, vX.Y.Z, moves main to the tag with the
+# deploy key.
 # Any other run is the dry run: it builds and checks everything and publishes nothing, and it runs the
 # tests of `skald update` on macOS and Windows; a PR that changes the release config, this workflow
 # or `skald update` starts it, and so does a manual run.
@@ -342,10 +344,23 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
 
-  # main follows stable releases only, forward only, once every channel is published.
+  # The release check, once every channel is published: .github/workflows/release-check.yml.
+  check-release:
+    name: Check the release
+    needs: [plan, release, publish-npm, publish-image]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      attestations: read
+      contents: read
+    uses: ./.github/workflows/release-check.yml
+    with:
+      tag: ${{ needs.plan.outputs.tag }}
+
+  # main follows stable releases only, forward only, once every channel is published and the release
+  # check passes.
   move-main:
     name: Move main
-    needs: [plan, release, publish-npm, publish-image]
+    needs: [plan, release, publish-npm, publish-image, check-release]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
     runs-on: ubuntu-latest
     # The deploy key, its only secret; only this job uses the environment, and only v* tags may.

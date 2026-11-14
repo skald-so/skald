@@ -66,6 +66,9 @@ const MIGRATIONS: &[&str] = &[
         hash BLOB NOT NULL CHECK (length(hash) = 32),
         PRIMARY KEY (space, revision)
     ) STRICT",
+    // The device's personal space: the one it pinned when it signed its revision 1. At most one.
+    "ALTER TABLE space ADD COLUMN personal INTEGER NOT NULL DEFAULT 0 CHECK (personal IN (0, 1));
+    CREATE UNIQUE INDEX space_personal ON space (personal) WHERE personal = 1;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -147,6 +150,8 @@ pub struct Space {
     pub accepted: Vec<u8>,
     /// The revision the device signed that the server has not taken yet, in CBOR.
     pub pending: Option<Vec<u8>>,
+    /// Whether it is the device's personal space.
+    pub personal: bool,
 }
 
 impl Space {
@@ -345,9 +350,9 @@ impl State {
 
     /// The spaces the device accepted a revision of, by name.
     pub fn spaces(&self) -> Result<Vec<Space>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT space, name, anchor, accepted, pending FROM space ORDER BY name")?;
+        let mut query = self.db.prepare(
+            "SELECT space, name, anchor, accepted, pending, personal FROM space ORDER BY name",
+        )?;
         let rows = query.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -355,10 +360,11 @@ impl State {
                 row.get(2)?,
                 row.get(3)?,
                 row.get(4)?,
+                row.get(5)?,
             ))
         })?;
         rows.map(|row| {
-            let (id, name, anchor, accepted, pending) = row?;
+            let (id, name, anchor, accepted, pending, personal) = row?;
             let id = id
                 .parse()
                 .map_err(|err| Error::Malformed(format!("the space ID {id:?}: {err}")))?;
@@ -368,6 +374,7 @@ impl State {
                 anchor,
                 accepted,
                 pending,
+                personal,
             })
         })
         .collect()
@@ -376,9 +383,26 @@ impl State {
     /// Records the space `id` named `name` that the device created, with its revision 1 `first`,
     /// in CBOR, as its anchor and last accepted revision, and as pending until the server takes it.
     pub fn add_space(&self, id: SpaceId, name: &str, first: &[u8]) -> Result<(), Error> {
+        self.insert_space(id, name, first, false)
+    }
+
+    /// Records the space `id` as [`State::add_space`] does, pinned as the device's personal space;
+    /// fails if the device pinned one.
+    pub fn add_personal_space(&self, id: SpaceId, name: &str, first: &[u8]) -> Result<(), Error> {
+        self.insert_space(id, name, first, true)
+    }
+
+    fn insert_space(
+        &self,
+        id: SpaceId,
+        name: &str,
+        first: &[u8],
+        personal: bool,
+    ) -> Result<(), Error> {
         self.db.execute(
-            "INSERT INTO space (space, name, anchor, accepted, pending) VALUES (?1, ?2, ?3, ?3, ?3)",
-            params![id.to_string(), name, first],
+            "INSERT INTO space (space, name, anchor, accepted, pending, personal)
+             VALUES (?1, ?2, ?3, ?3, ?3, ?4)",
+            params![id.to_string(), name, first, personal],
         )?;
         Ok(())
     }
@@ -637,6 +661,7 @@ mod tests {
             anchor: bytes.to_vec(),
             accepted: bytes.to_vec(),
             pending: pending.then(|| bytes.to_vec()),
+            personal: false,
         };
         let state = State::open(&dir).unwrap();
         assert_eq!(
@@ -657,6 +682,38 @@ mod tests {
             .unwrap();
         let error = state.spaces().expect_err("malformed");
         assert!(matches!(error, Error::Malformed(_)), "{error:?}");
+    }
+
+    #[test]
+    fn personal_space_is_pinned_once_and_kept_across_opens_until_dropped() {
+        let dir = TestDir::new("state-personal");
+        let state = State::open(&dir).unwrap();
+        let (ada, acme) = (SpaceId::generate(), SpaceId::generate());
+        state.add_space(acme, "acme", &[1]).unwrap();
+        state.add_personal_space(ada, "ada", &[2]).unwrap();
+        assert!(
+            state
+                .add_personal_space(SpaceId::generate(), "other", &[3])
+                .is_err(),
+            "a second personal space"
+        );
+        let personal = |state: &State| -> Vec<(String, bool)> {
+            let spaces = state.spaces().unwrap();
+            spaces.into_iter().map(|s| (s.name, s.personal)).collect()
+        };
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            personal(&state),
+            vec![("acme".to_owned(), false), ("ada".to_owned(), true)]
+        );
+        state.remove_space(ada).unwrap();
+        state
+            .add_personal_space(SpaceId::generate(), "other", &[3])
+            .unwrap();
+        assert_eq!(
+            personal(&state),
+            vec![("acme".to_owned(), false), ("other".to_owned(), true)]
+        );
     }
 
     #[test]
