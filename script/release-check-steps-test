@@ -98,12 +98,35 @@ try {
     requests: [],
   };
 
-  // proxy <url> <unserved> <partial>: a server in front of the stand-in at <url> that answers 404
-  // for the path <unserved>, or with <partial> sends part of it and breaks off, and passes on every
-  // other request.
-  const proxy = (url, unserved, partial) =>
+  // proxy <url> <unserved> <partial> <limit>: a server in front of the stand-in at <url> that
+  // answers 404 for the path <unserved>, or with <partial> sends part of it and breaks off, and
+  // passes on every other request. <limit>, if any, is GitHub's API rate limit, {wait, stale,
+  // forbidden}: requests without a token, those of skald update with the user agent
+  // skald/<version>, counted in <limit>.asked, are answered 403 until <wait> seconds after the
+  // first such request or read of /api/rate_limit past the first <stale> reads, which report some
+  // left; /api/rate_limit reports none left until then. With <forbidden> they are always answered
+  // 403, while /api/rate_limit reports some left.
+  const proxy = (url, unserved, partial, limit) =>
     new Promise((resolve) => {
       const server = http.createServer(async (request, response) => {
+        if (limit) {
+          const now = Math.floor(Date.now() / 1000);
+          const tokenless = String(request.headers['user-agent'] ?? '').startsWith('skald/');
+          if (tokenless) limit.asked = (limit.asked ?? 0) + 1;
+          const read = request.url === '/api/rate_limit';
+          const stale = read && limit.reset === undefined && (limit.stale ?? 0) > 0;
+          if (stale) limit.stale--;
+          else if (read || tokenless) limit.reset ??= now + limit.wait;
+          const usedUp = !limit.forbidden && now < limit.reset;
+          if (read) {
+            const left = !usedUp || stale;
+            const core = { limit: 60, used: left ? 0 : 60, remaining: left ? 60 : 0, reset: left ? now + 3600 : limit.reset };
+            return response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ resources: { core }, rate: core }));
+          }
+          if (request.url.startsWith('/api/') && tokenless && (usedUp || limit.forbidden)) {
+            return response.writeHead(403, { 'content-type': 'application/json' }).end(JSON.stringify({ message: usedUp ? 'API rate limit exceeded' : 'Forbidden' }));
+          }
+        }
         if (request.url === unserved && partial) {
           const whole = Buffer.from(await (await fetch(url + request.url)).arrayBuffer());
           response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': whole.length });
@@ -124,10 +147,11 @@ try {
 
   // check <steps> [<unserved> [<partial> [<w> <t>]]]: script/release-check <t>, by default <tag>,
   // run with SKALD_RELEASE_CHECK_STEPS=<steps> against the world <w>, by default <world>; the
-  // release's file <unserved>, if any, fails to download, with <partial> after part of it arrives.
+  // release's file <unserved>, if any, fails to download, with <partial> after part of it arrives;
+  // <w>.apiLimit, if any, is the proxy's <limit>.
   const check = async (steps, unserved, partial = false, w = world, t = tag) => {
     const server = await serve(w);
-    const releases = unserved ? await proxy(server.url, `/download/${t}/${unserved}`, partial) : server;
+    const releases = unserved || w.apiLimit ? await proxy(server.url, unserved && `/download/${t}/${unserved}`, partial, w.apiLimit) : server;
     try {
       const dir = fs.mkdtempSync(path.join(scratch, 'run-'));
       const bin = path.join(dir, 'bin');
@@ -149,7 +173,7 @@ try {
         TMPDIR: dir,
         SKALD_RELEASE_CHECK_STEPS: steps,
         SKALD_RELEASES_URL: `${releases.url}/download`,
-        SKALD_GITHUB_API_URL: `${server.url}/api`,
+        SKALD_GITHUB_API_URL: `${releases.url}/api`,
         npm_config_registry: `${server.url}/npm/`,
         npm_config_userconfig: path.join(dir, 'npmrc'),
         npm_config_update_notifier: 'false',
@@ -163,7 +187,7 @@ try {
       const ran = fs.readFileSync(calls, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
       return { status, output, ran };
     } finally {
-      if (unserved) await releases.close();
+      if (releases !== server) await releases.close();
       await server.close();
     }
   };
@@ -250,7 +274,7 @@ else if (args[0] === 'update') (async () => {
     requests: [],
     apiLimit,
   });
-  const updates = (w) => w.requests.filter((q) => q.agent.startsWith('skald/')).length;
+  const updates = (w) => w.apiLimit.asked ?? 0;
   for (const [name, apiLimit] of [
     ['before skald update', { wait: 3 }],
     ['after skald update answers 403', { wait: 3, stale: 1 }],
