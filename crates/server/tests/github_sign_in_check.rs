@@ -17,20 +17,19 @@
 
 mod common;
 
-use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::process::{Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::net::TcpListener;
 
 use serde_json::{Value, json};
 use skald_github_stand_in::{App, GitHub};
 use url::Url;
 
-use common::device_flow::{DEVICE_AUTHORIZATION, INTERVAL, TOKEN, json as json_of, text};
-use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn, with_param};
-use common::{Response, Server, TestDb, get_url, send};
+use common::check::{
+    Answer, ELSEWHERE, Front, Run, Tamper, answer_with, assert_no_codes, callbacks_off, on,
+    run_script, set_param, to_provider, unchanged,
+};
+use common::device_flow::{DEVICE_AUTHORIZATION, INTERVAL, TOKEN, json as json_of};
+use common::sign_in::{CALLBACK, CLIENT_ID, CLIENT_SECRET, START, SignIn};
+use common::{Server, TestDb};
 
 /// The check.
 const CHECK: &str = concat!(
@@ -41,18 +40,6 @@ const CHECK: &str = concat!(
 const PREFIX: &str = "check-github-sign-in: ";
 /// The verification page.
 const VERIFICATION_PAGE: &str = "/device";
-/// A host no address resolves to.
-const ELSEWHERE: &str = "elsewhere.test";
-/// The variables that would send the check's requests through a proxy.
-const PROXIES: [&str; 6] = [
-    "http_proxy",
-    "HTTP_PROXY",
-    "https_proxy",
-    "HTTPS_PROXY",
-    "all_proxy",
-    "ALL_PROXY",
-];
-
 /// A step of the check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
@@ -84,13 +71,6 @@ enum Line {
     Step(Step, bool),
     /// The check's result: whether it passed.
     Result(bool),
-}
-
-/// A run of the check: how it exited and everything it printed, stdout and stderr as they came.
-struct Run {
-    case: String,
-    status: ExitStatus,
-    output: String,
 }
 
 impl Run {
@@ -170,271 +150,17 @@ impl Run {
 
 /// Runs the check against `address` with the expected client ID `client_id` and GitHub at `github`.
 fn run_check(case: &str, address: &str, client_id: &str, github: &str) -> Run {
-    let (mut reader, writer) = io::pipe().expect("a pipe");
-    let mut command = Command::new(CHECK);
-    command
-        .args([address, client_id])
-        .env("GITHUB_URL", github)
-        .stdin(Stdio::null())
-        .stdout(writer.try_clone().expect("clone a pipe"))
-        .stderr(writer);
-    for proxy in PROXIES {
-        command.env_remove(proxy);
-    }
-    let mut child = command
-        .spawn()
-        .unwrap_or_else(|err| panic!("run {CHECK}: {err}"));
-    drop(command);
-    let read = thread::spawn(move || {
-        let mut output = Vec::new();
-        reader.read_to_end(&mut output).expect("read the output");
-        String::from_utf8_lossy(&output).into_owned()
-    });
-    let within = Duration::from_secs(90);
-    let deadline = Instant::now() + within;
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait for the check") {
-            break status;
-        }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("{case}: the check did not end within {within:?}");
-        }
-        thread::sleep(Duration::from_millis(50));
-    };
-    let output = read.join().expect("read the output");
-    Run {
-        case: case.to_owned(),
-        status,
-        output,
-    }
-}
-
-/// Checks that `run` printed none of `codes`, in any case, with or without its hyphen.
-fn assert_no_codes(run: &Run, codes: &[String]) {
-    let output = run.output.to_lowercase();
-    for code in codes {
-        for form in [code.to_lowercase(), code.replace('-', "").to_lowercase()] {
-            assert!(
-                !output.contains(&form),
-                "{}: the check printed a code it got\n{}",
-                run.case,
-                run.output
-            );
-        }
-    }
-}
-
-/// A server's answer, as the front gives it to the check.
-type Answer = Response;
-
-impl Answer {
-    /// An answer of `status` with the body `body`, `content_type`.
-    fn made(status: u16, content_type: &str, body: &str) -> Self {
-        Answer {
-            status,
-            content_type: content_type.to_owned(),
-            headers: vec![("cache-control".to_owned(), "no-store".to_owned())],
-            body: body.as_bytes().to_vec(),
-        }
-    }
-
-    fn of_json(status: u16, body: &Value) -> Self {
-        Self::made(status, "application/json", &body.to_string())
-    }
-
-    fn problem(status: u16) -> Self {
-        let body = json!({ "type": "about:blank", "title": "The server failed", "status": status });
-        Self::made(status, "application/problem+json", &body.to_string())
-    }
-
-    /// Sets the header `name` to `value`.
-    fn set_header(&mut self, name: &str, value: &str) {
-        self.headers.retain(|(header, _)| header != name);
-        self.headers.push((name.to_owned(), value.to_owned()));
-    }
-}
-
-/// Gives the answer the check gets instead of the server's answer to `<method> <path>`, the path
-/// without its query.
-type Tamper = Arc<dyn Fn(&str, &str, Answer) -> Answer + Send + Sync>;
-
-/// A tamper that changes only the answers to `<method> <path>`, by `change`.
-fn on(
-    method: &'static str,
-    path: &'static str,
-    change: impl Fn(Answer) -> Answer + Send + Sync + 'static,
-) -> Tamper {
-    Arc::new(move |asked, at, answer| {
-        if asked == method && at == path {
-            change(answer)
-        } else {
-            answer
-        }
-    })
-}
-
-/// A tamper that answers `<method> <path>` with `answer` instead.
-fn answer_with(method: &'static str, path: &'static str, answer: Answer) -> Tamper {
-    on(method, path, move |_| answer.clone())
+    run_script(
+        case,
+        CHECK,
+        &[address, client_id],
+        &[("GITHUB_URL", github)],
+    )
 }
 
 /// A tamper that changes the address the sign-in start sends the browser to, by `change`.
 fn to_github(change: impl Fn(&mut Url) + Send + Sync + 'static) -> Tamper {
-    on("GET", START, move |mut answer| {
-        let location = answer
-            .header("location")
-            .unwrap_or_else(|| panic!("the sign-in start sends the browser on: {}", text(&answer)));
-        let mut url = Url::parse(location).expect("a URL");
-        change(&mut url);
-        answer.set_header("location", url.as_str());
-        answer
-    })
-}
-
-/// Sets the query parameter `name` of `url` to `value`, or removes it if `value` is `None`.
-fn set_param(url: &mut Url, name: &str, value: Option<&str>) {
-    *url = with_param(url.as_str(), name, value)
-        .parse()
-        .expect("a URL");
-}
-
-/// A local HTTP front for the server: forwards each request and gives the check the answer its
-/// tamper makes of the server's. It keeps the codes the server's device authorizations gave.
-struct Front {
-    url: String,
-    listener: Option<TcpListener>,
-    tamper: Arc<Mutex<Tamper>>,
-    codes: Arc<Mutex<Vec<String>>>,
-}
-
-impl Front {
-    /// A front on a free local port, not yet forwarding.
-    fn bind() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-        let url = format!("http://{}", listener.local_addr().expect("local address"));
-        Front {
-            url,
-            listener: Some(listener),
-            tamper: Arc::new(Mutex::new(unchanged())),
-            codes: Arc::default(),
-        }
-    }
-
-    /// Forwards every request to the server at `base`, such as `http://127.0.0.1:41234`.
-    fn serve(&mut self, base: &str) {
-        let listener = self.listener.take().expect("the front serves once");
-        let base = base.to_owned();
-        let tamper = Arc::clone(&self.tamper);
-        let codes = Arc::clone(&self.codes);
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
-                let (base, tamper, codes) = (base.clone(), Arc::clone(&tamper), Arc::clone(&codes));
-                thread::spawn(move || {
-                    let _ = relay(stream, &base, &tamper, &codes);
-                });
-            }
-        });
-    }
-
-    fn set_tamper(&self, tamper: Tamper) {
-        *self.tamper.lock().expect("the front's tamper") = tamper;
-    }
-
-    fn codes(&self) -> Vec<String> {
-        self.codes.lock().expect("the front's codes").clone()
-    }
-}
-
-/// Forwards the one request on `stream` to `base` and answers it as `tamper` says.
-fn relay(
-    mut stream: TcpStream,
-    base: &str,
-    tamper: &Mutex<Tamper>,
-    codes: &Mutex<Vec<String>>,
-) -> io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    let mut parts = line.split_whitespace();
-    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
-        return Ok(());
-    };
-    let (method, target) = (method.to_owned(), target.to_owned());
-    let mut headers = Vec::new();
-    let mut length = 0;
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 {
-            break;
-        }
-        let header = header.trim_end();
-        if header.is_empty() {
-            break;
-        }
-        let Some((name, value)) = header.split_once(':') else {
-            continue;
-        };
-        let (name, value) = (name.trim().to_ascii_lowercase(), value.trim().to_owned());
-        if name == "content-length" {
-            length = value.parse().unwrap_or(0);
-        }
-        let hop = [
-            "host",
-            "content-length",
-            "connection",
-            "expect",
-            "transfer-encoding",
-        ];
-        if !hop.contains(&name.as_str()) {
-            headers.push((name, value));
-        }
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body)?;
-
-    let url = format!("{base}{target}");
-    let headers: Vec<(&str, &str)> = headers
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-        .collect();
-    let path = target.split('?').next().unwrap_or_default();
-    let answer = match method.as_str() {
-        "GET" => get_url(&url, &headers),
-        "POST" => send("post", &url, &headers, &body),
-        _ => Answer::problem(405),
-    };
-    if method == "POST" && path == DEVICE_AUTHORIZATION && answer.status == 200 {
-        let grant = json_of(&answer);
-        let mut codes = codes.lock().expect("the front's codes");
-        for name in ["device_code", "user_code"] {
-            if let Some(code) = grant[name].as_str() {
-                codes.push(code.to_owned());
-            }
-        }
-    }
-    let tamper = Arc::clone(&*tamper.lock().expect("the front's tamper"));
-    let answer = tamper(&method, path, answer);
-
-    let mut head = format!("HTTP/1.1 {} Answer\r\n", answer.status);
-    if !answer.content_type.is_empty() {
-        head.push_str(&format!("content-type: {}\r\n", answer.content_type));
-    }
-    for (name, value) in &answer.headers {
-        if !["content-length", "transfer-encoding", "connection"].contains(&name.as_str()) {
-            head.push_str(&format!("{name}: {value}\r\n"));
-        }
-    }
-    head.push_str(&format!(
-        "content-length: {}\r\nconnection: close\r\n\r\n",
-        answer.body.len()
-    ));
-    stream.write_all(head.as_bytes())?;
-    stream.write_all(&answer.body)?;
-    stream.flush()
+    to_provider(START, change)
 }
 
 /// A server with GitHub sign-in through the stand-in, its codes polled every second, behind a
@@ -462,6 +188,7 @@ impl Stage {
     fn check(&self, case: &str, client_id: &str, tamper: Tamper) -> Run {
         self.front.set_tamper(tamper);
         let run = run_check(case, self.address(), client_id, self.stand.github.url());
+        self.front.assert_tamper_held();
         assert_no_codes(&run, &self.front.codes());
         run
     }
@@ -471,11 +198,6 @@ impl Stage {
     fn assert_fails_at(&self, step: Step, case: &str, tamper: Tamper) {
         self.check(case, CLIENT_ID, tamper).assert_fails_at(step);
     }
-}
-
-/// A tamper that changes nothing.
-fn unchanged() -> Tamper {
-    Arc::new(|_, _, answer| answer)
 }
 
 #[test]
@@ -681,27 +403,7 @@ fn check_fails_at_the_verification_page_with_another_client_id() {
 #[test]
 fn check_fails_at_the_verification_page_with_a_callback_off_that_server() {
     let stage = Stage::start();
-    let front = Url::parse(stage.address()).expect("a URL");
-    let port = front.port().expect("a port");
-    let other_port = if port == u16::MAX { port - 1 } else { port + 1 };
-    let callbacks = [
-        (
-            "a callback on another host",
-            format!("http://{ELSEWHERE}:{port}{CALLBACK}"),
-        ),
-        (
-            "a callback on another port",
-            format!("http://127.0.0.1:{other_port}{CALLBACK}"),
-        ),
-        (
-            "a callback over another scheme",
-            format!("https://127.0.0.1:{port}{CALLBACK}"),
-        ),
-        (
-            "a callback on another host after the server's address",
-            format!("http://127.0.0.1:{port}@{ELSEWHERE}{CALLBACK}"),
-        ),
-    ];
+    let callbacks = callbacks_off(stage.address(), CALLBACK);
     for (case, callback) in callbacks {
         let tamper = to_github(move |url| set_param(url, "redirect_uri", Some(&callback)));
         stage.assert_fails_at(Step::VerificationPage, case, tamper);

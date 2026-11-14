@@ -6,23 +6,16 @@
 use mls_rs::{CipherSuite, CipherSuiteProvider, CryptoProvider};
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use skald_crypto::{HistoryKey, SealedState};
-use skald_proto::{Cbor, ChannelId, DeviceId, HistoryBody, HistoryEntry, HistoryLink, MessageId};
+use skald_proto::{Cbor, ChannelId, HistoryBody, HistoryEntry, HistoryLink, MessageId};
 
 use crate::cbor::{Value, bytes, text};
 use crate::commits::{empty, process, store};
-use crate::fields::a2a_fields;
+use crate::fields::{a2a_fields, body_cbor, signed_cbor};
 use crate::fixtures::{admitted, device_id, signing_key};
 use crate::steps;
 
 /// The label of a history plaintext's signature.
 pub const LABEL: &str = "skald history";
-/// The time a history body states, in seconds since the Unix epoch.
-pub const SENT: u64 = 1_800_000_123;
-
-/// Map fields of a later version, which decoding keeps and encoding gives back.
-pub fn unknown() -> Vec<(i64, Value)> {
-    vec![(-3, text("later")), (24, Value::Bool(true))]
-}
 
 /// The history key of `channel` in `epoch` as device `seed` holds it in `state`.
 pub fn key(seed: u8, state: &SealedState, channel: ChannelId, epoch: u64) -> HistoryKey {
@@ -121,32 +114,9 @@ pub fn entry_cbor(sealed: Sealed<'_>, unknown: Vec<(i64, Value)>) -> Vec<u8> {
     map(fields, unknown)
 }
 
-/// An encoded `history-body` of these fields, `content` already encoded, and `unknown` ones.
-pub fn body_cbor(
-    sender: DeviceId,
-    channel: ChannelId,
-    msg_id: MessageId,
-    content: &[u8],
-    unknown: Vec<(i64, Value)>,
-) -> Vec<u8> {
-    let fields = vec![
-        (1, bytes(sender.as_bytes())),
-        (2, bytes(channel.as_bytes())),
-        (3, bytes(msg_id.as_bytes())),
-        (4, Value::Uint(SENT)),
-        (5, bytes(content)),
-    ];
-    map(fields, unknown)
-}
-
-/// An encoded `history-plaintext`: `body` and its `signature`.
-pub fn plaintext_cbor(body: &[u8], signature: &[u8]) -> Vec<u8> {
-    Value::Array(vec![bytes(body), bytes(signature)]).encode()
-}
-
 /// `body` signed by device `seed` over `[label, body]`, as a `history-plaintext`.
 pub fn signed(seed: u8, label: &str, body: &[u8]) -> Vec<u8> {
-    plaintext_cbor(body, &signing_key(seed).sign(label, &[body]))
+    signed_cbor(body, &signing_key(seed).sign(label, &[body]))
 }
 
 /// The fields of content with an A2A message, its text "Here is the diff".

@@ -14,6 +14,8 @@ mod channel_view;
 mod channels;
 mod commit_checks;
 mod commits;
+#[path = "../common/devices.rs"]
+mod devices;
 #[path = "../common/fields.rs"]
 mod fields;
 mod fixtures;

@@ -4,6 +4,7 @@
 
 pub mod accounts;
 pub mod browser;
+pub mod check;
 pub mod device_flow;
 pub mod devices;
 pub mod google;

@@ -7,4 +7,6 @@
 mod common;
 mod fixtures;
 mod messages;
+#[path = "../common/rfc9180.rs"]
+mod rfc9180;
 mod single_shot;

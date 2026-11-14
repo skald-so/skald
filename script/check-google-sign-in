@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Checks a server's Google sign-in without a person, in these steps, each only after the one before
+# passed:
+#   metadata              $GOOGLE_ISSUER/.well-known/openid-configuration names that issuer and an
+#                         authorization endpoint
+#   device authorization  POST <server>/auth/device gives a user code, a device code and a
+#                         verification page on that server
+#   verification page     the page, without a session, has a link on that server whose text names
+#                         Google, and the link sends the browser to the authorization endpoint with
+#                         <client ID>, the callback <server>/auth/google/callback, the scopes openid
+#                         and email only, a state, a nonce and an S256 PKCE challenge
+#   authorization         that address, followed through the provider's redirects, answers neither
+#                         an HTTP error nor a page that says redirect_uri_mismatch or invalid_client
+# Google's issuer is $GOOGLE_ISSUER, https://accounts.google.com by default. No one signs in.
+# Prints a line `<step>: pass` or `<step>: fail: <reason>` per step it runs, then `pass` or `fail`;
+# never a code the server gave, a state, a nonce or a PKCE challenge, nor curl's own messages. Exits 0
+# only when every step passes, 1 when one fails, 2 on wrong usage.
+# crates/server/tests/google_sign_in_check.rs tests it.
+# Usage: script/check-google-sign-in <server address> <client ID>
+set -euo pipefail
+
+source "$(dirname "$0")/lib/sign-in-check.sh"
+check_start check-google-sign-in "$@"
+
+issuer=${GOOGLE_ISSUER:-https://accounts.google.com}
+issuer=${issuer%/}
+if [[ ! $issuer =~ $url_parts ]]; then
+  echo "check-google-sign-in: GOOGLE_ISSUER is not a URL" >&2
+  exit 2
+fi
+
+metadata() {
+  local status endpoint
+  status=$(get metadata "$issuer/.well-known/openid-configuration") || {
+    echo "no answer from $issuer/.well-known/openid-configuration"
+    return 1
+  }
+  [[ $status == 200 ]] || {
+    echo "HTTP $status from $issuer/.well-known/openid-configuration"
+    return 1
+  }
+  jq -e --arg issuer "$issuer" 'objects | .issuer | strings | rtrimstr("/") == $issuer' \
+    "$tmp/metadata" >/dev/null 2>&1 || {
+    echo "the metadata does not name the issuer $issuer"
+    return 1
+  }
+  endpoint=$(jq -r '.authorization_endpoint | strings' "$tmp/metadata")
+  normal_url "$endpoint" >"$tmp/endpoint" && [[ $endpoint == http*://* ]] || {
+    echo "the metadata names no authorization endpoint"
+    return 1
+  }
+}
+
+verification_page() {
+  local query values scopes name
+  sign_in_start '[^<]*Google[^<]*' 'Google sign-in link' "$(cat "$tmp/endpoint")" \
+    /auth/google/callback || return 1
+  query=$(cat "$tmp/query")
+  scopes=$(param "$query" scope)
+  [[ $scopes != *$'\n'* && $(tr ' ' '\n' <<<"$scopes" | sort) == $'email\nopenid' ]] || {
+    echo "the sign-in start does not ask for the scopes openid and email only"
+    return 1
+  }
+  for name in state nonce; do
+    values=$(param "$query" "$name")
+    [[ -n $values && $values != *$'\n'* ]] || {
+      echo "the sign-in start does not send one $name"
+      return 1
+    }
+  done
+  values=$(param "$query" code_challenge_method)
+  [[ $values == S256 && $(param "$query" code_challenge) =~ ^[A-Za-z0-9_-]{43}$ ]] || {
+    echo "the sign-in start does not send an S256 PKCE challenge"
+    return 1
+  }
+}
+
+authorization() {
+  local status error
+  status=$(get authorization "$(cat "$tmp/location")" --location --max-redirs 10) || {
+    echo "no answer from the authorization endpoint"
+    return 1
+  }
+  for error in redirect_uri_mismatch invalid_client; do
+    if grep -aqE "(^|[^A-Za-z0-9_])$error([^A-Za-z0-9_]|\$)" "$tmp/authorization" \
+      "$tmp/authorization.headers"; then
+      echo "the provider answers $error"
+      return 1
+    fi
+  done
+  [[ $status == [123]?? ]] || {
+    echo "HTTP $status from the provider"
+    return 1
+  }
+}
+
+run_steps metadata device_authorization verification_page authorization

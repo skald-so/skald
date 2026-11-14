@@ -3,8 +3,9 @@
 use skald_crypto::{HistoryError, HistoryKey};
 use skald_proto::{ChannelId, MessageId};
 
+use crate::fields::body_cbor;
 use crate::fixtures::{admitted, device_id, signing_key};
-use crate::history::{LABEL, body, body_cbor, content, forged_entry, forged_link, signed};
+use crate::history::{LABEL, body, content, forged_entry, forged_link, signed};
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

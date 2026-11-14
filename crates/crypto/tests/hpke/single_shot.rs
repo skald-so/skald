@@ -4,16 +4,11 @@
 use skald_crypto::HpkeKey;
 
 use crate::fixtures::{Device, hex, hex32};
+use crate::rfc9180::{AAD, CT, ENC, INFO, PT};
 
-/// RFC 9180, Appendix A.1.1: base mode of this suite, and its encryption at sequence number 0.
+/// The recipient's key pair of [`crate::rfc9180`].
 const SK_RM: &str = "4612c550263fc8ad58375df3f557aac531d26850903e55a9f23f21d8534e8ac8";
 const PK_RM: &str = "3948cfe0ad1ddb695d780e59077195da6c56506b027329794ab02bca80815c4d";
-const ENC: &str = "37fda3567bdbd628e88668c3c8d7e97d1d1253b6d4ea6d44c150f741f1bf4431";
-const INFO: &str = "4f6465206f6e2061204772656369616e2055726e";
-const PT: &str = "4265617574792069732074727574682c20747275746820626561757479";
-const AAD: &str = "436f756e742d30";
-const CT: &str = "f938558b5d72f1a23810b4be2ab4f84331acc02fc97babc53a52ae8218a355a9
-6d8770ac83d07bea87e13c512a";
 
 fn bytes(opened: impl AsRef<[u8]>) -> Vec<u8> {
     opened.as_ref().to_vec()

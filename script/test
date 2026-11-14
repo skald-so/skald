@@ -5,8 +5,8 @@
 # branched off <base> to the working tree touch, by script/changed-parts --since; with none, or when
 # that cannot tell, it checks every part.
 #   workspace  build, fmt, clippy and tests of the crates in crates/, with PostgreSQL, those of
-#              script/check-github-sign-in among them, and, for the server's GitHub sign-in and the
-#              client's sign-in, Chrome Headless Shell
+#              script/check-github-sign-in and script/check-google-sign-in among them, and, for the
+#              server's GitHub sign-in and the client's sign-in, Chrome Headless Shell
 #   wasm       clippy of skald-proto and skald-crypto in WASM, the tests of skald-crypto and
 #              skald-proto's of ID generation there (script/wasm-test)
 #   image      the skald-server image, built and tested with PostgreSQL in containers
@@ -133,11 +133,11 @@ if checks tooling && ! command -v cargo-mutants >/dev/null; then
   exit 1
 fi
 if ! command -v jq >/dev/null; then
-  echo "script/test: jq is missing; the copied code check, the license policy test, the edge workflow test and script/check-github-sign-in read JSON with it: https://jqlang.org" >&2
+  echo "script/test: jq is missing; the copied code check, the license policy test, the edge workflow test, script/check-github-sign-in and script/check-google-sign-in read JSON with it: https://jqlang.org" >&2
   exit 1
 fi
 if checks_any $rust tooling && ! command -v curl >/dev/null; then
-  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the server's tests run script/check-github-sign-in, the release tag test script/release-pr-merged, and script/install-git-cliff downloads git-cliff: https://curl.se" >&2
+  echo "script/test: curl is missing; the image test and the staging status check call the server's health check with it, the server's tests run script/check-github-sign-in and script/check-google-sign-in, the release tag test script/release-pr-merged, and script/install-git-cliff downloads git-cliff: https://curl.se" >&2
   exit 1
 fi
 if checks_any $rust tooling web && ! command -v docker >/dev/null; then
