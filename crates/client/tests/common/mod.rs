@@ -147,7 +147,7 @@ impl Server {
                 )
                 .fetch_all(&mut conn)
                 .await?;
-                conn.close().await?;
+                close(conn).await;
                 Ok::<_, sqlx::Error>(tables.into_iter().map(|(table,)| table).collect())
             })
             .expect("read the database's rows")
@@ -160,7 +160,8 @@ impl Server {
             .block_on(async {
                 let mut conn = connect(&self.db.url()).await?;
                 sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut conn).await?;
-                conn.close().await
+                close(conn).await;
+                Ok::<_, sqlx::Error>(())
             })
             .unwrap_or_else(|err| panic!("run {sql:?} on the database: {err}"));
     }
@@ -205,8 +206,14 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
 
 /// A new connection to the database at `url`, tried again while PostgreSQL resets it. Only
 /// opening it is: a statement may have run when its connection resets.
-async fn connect(url: &str) -> Result<PgConnection, sqlx::Error> {
+pub async fn connect(url: &str) -> Result<PgConnection, sqlx::Error> {
     retried_on_reset("connect to PostgreSQL", || PgConnection::connect(url)).await
+}
+
+/// Closes `conn`, its statements done. An error of the close says nothing of them: PostgreSQL on
+/// Windows resets a connection as its session ends, so the close fails when the reset comes first.
+pub async fn close(conn: PgConnection) {
+    let _ = conn.close().await;
 }
 
 /// The names of the test databases this process has on the PostgreSQL server.
@@ -219,7 +226,7 @@ pub fn test_databases() -> Vec<String> {
             let names: Vec<(String,)> = sqlx::query_as("SELECT datname FROM pg_database")
                 .fetch_all(&mut conn)
                 .await?;
-            conn.close().await?;
+            close(conn).await;
             Ok::<_, sqlx::Error>(names)
         })
         .expect("list the databases")
@@ -231,7 +238,7 @@ pub fn test_databases() -> Vec<String> {
 
 /// The PostgreSQL server at `SKALD_TEST_DATABASE_URL`: a connection URL without a database name,
 /// e.g. `postgres://postgres:password@127.0.0.1:5432`; `script/test` sets it.
-fn server() -> String {
+pub fn server() -> String {
     env::var("SKALD_TEST_DATABASE_URL")
         .expect("SKALD_TEST_DATABASE_URL is not set: run the tests with script/test")
 }
@@ -276,15 +283,19 @@ impl TestDb {
 
     /// Runs `statements` one by one in the `postgres` maintenance database of the server: some,
     /// like `CREATE DATABASE`, cannot share a transaction.
-    fn admin(&self, runtime: &Runtime, statements: &[String]) -> Result<(), sqlx::Error> {
+    fn admin(&self, runtime: &Runtime, statements: &[String]) -> Result<(), String> {
         runtime.block_on(async {
-            let mut conn = connect(&format!("{}/postgres", self.server)).await?;
+            let mut conn = connect(&format!("{}/postgres", self.server))
+                .await
+                .map_err(|err| format!("connect: {err:?}"))?;
             for sql in statements {
                 sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
                     .execute(&mut conn)
-                    .await?;
+                    .await
+                    .map_err(|err| format!("{sql}: {err:?}"))?;
             }
-            conn.close().await
+            close(conn).await;
+            Ok(())
         })
     }
 }

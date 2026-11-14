@@ -204,9 +204,19 @@ impl Relay {
         let target = target.to_owned();
         thread::spawn(move || {
             for (connection, machine) in listener.incoming().enumerate() {
-                let Ok(machine) = machine else { continue };
-                let Ok(server) = TcpStream::connect(&target) else {
-                    continue;
+                let machine = match machine {
+                    Ok(machine) => machine,
+                    Err(err) => {
+                        eprintln!("relay: connection {connection}: cannot accept: {err}");
+                        continue;
+                    }
+                };
+                let server = match TcpStream::connect(&target) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        eprintln!("relay: connection {connection}: cannot reach {target}: {err}");
+                        continue;
+                    }
                 };
                 pipe(&machine, &server, connection, true, &kept, &rules);
                 pipe(&server, &machine, connection, false, &kept, &rules);
@@ -379,11 +389,20 @@ fn pipe(
     let mut to = to.try_clone().expect("clone a stream");
     let reads = Arc::clone(reads);
     let shared = Arc::clone(shared);
+    let (source, sink) = if to_server {
+        ("machine", "server")
+    } else {
+        ("server", "machine")
+    };
     thread::spawn(move || {
         let mut buffer = [0; 16 * 1024];
         loop {
             let count = match from.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
+                Err(err) => {
+                    eprintln!("relay: connection {connection}: cannot read the {source}: {err}");
+                    break;
+                }
                 Ok(count) => count,
             };
             reads.lock().expect("the relay's reads").push(Chunk {
@@ -411,14 +430,18 @@ fn pipe(
                         break;
                     }
                     Fate::Send(bytes) => {
-                        if to.write_all(&bytes).is_err() {
+                        if let Err(err) = to.write_all(&bytes) {
+                            eprintln!(
+                                "relay: connection {connection}: cannot write to the {sink}: {err}"
+                            );
                             break;
                         }
                         continue;
                     }
                 }
             }
-            if to.write_all(&buffer[..count]).is_err() {
+            if let Err(err) = to.write_all(&buffer[..count]) {
+                eprintln!("relay: connection {connection}: cannot write to the {sink}: {err}");
                 break;
             }
         }

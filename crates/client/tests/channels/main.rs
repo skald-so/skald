@@ -51,7 +51,7 @@ use std::time::{Duration, Instant};
 use cloud::Cloud;
 use machine::{Finished, Machine};
 use relay::{Lose, strings_named};
-use serde_json::{Value, json};
+use serde_json::Value;
 use skald_crypto::accept_next;
 use skald_proto::{
     Cbor as _, Channel, ChannelId, ChannelMember, Name, Role, Roster, SpaceId, Unknown,
@@ -72,6 +72,18 @@ const ACME: &str = "acme";
 /// The request that issues a channel ID for `space`, as its line starts.
 fn channel_request(space: SpaceId) -> String {
     format!("POST /spaces/{space}/channels")
+}
+
+/// The length of the body of the request whose head, in lowercase, is `head`; fails on a chunked
+/// body.
+fn body_length(head: &str) -> usize {
+    assert!(
+        !head.contains("transfer-encoding"),
+        "a chunked body: {head}"
+    );
+    head.lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .map_or(0, |length| length.trim().parse().expect("a length"))
 }
 
 /// The request that stores a revision of `space`, as its line starts.
@@ -103,7 +115,7 @@ fn server_rosters(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<Roster> {
 /// A channel ID the server issues for `space` to the session `token`, through the API.
 fn issue_channel(cloud: &Cloud, token: &str, space: SpaceId) -> ChannelId {
     let path = format!("/spaces/{space}/channels");
-    let (status, body) = post_as(cloud, token, &path, &json!({}));
+    let (status, body) = post_as(cloud, token, &path, None);
     assert_eq!(status, 201, "POST {path}: {body}");
     body["channel"]
         .as_str()
@@ -310,6 +322,19 @@ fn admin_device_creates_two_channels_and_lists_both() {
     assert_ne!(general, random, "one channel twice");
     assert!(one.shown().contains(&general.to_string()), "{one:?}");
     assert!(two.shown().contains(&random.to_string()), "{two:?}");
+    // The API's channel request has none: a body the server leaves unread resets the connection,
+    // and on Windows the answer with it.
+    let issues: Vec<String> = cloud
+        .relay
+        .sent()
+        .into_iter()
+        .map(|sent| sent.head)
+        .filter(|head| head.starts_with(&channel_request(space).to_lowercase()))
+        .collect();
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    for head in &issues {
+        assert_eq!(body_length(head), 0, "a body: {head}");
+    }
 
     let listed = channels(&ada.machine, ACME);
     assert_eq!(warnings(&listed), Vec::<String>::new(), "{listed:?}");

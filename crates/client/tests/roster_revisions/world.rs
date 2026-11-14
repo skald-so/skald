@@ -198,24 +198,28 @@ pub fn set_role(members: &mut [Member], account: AccountId, role: Role) {
         .role = role;
 }
 
-/// Sends `POST <path>` with the JSON `request` as the session `token`, through the API: the status
-/// and the body.
-pub fn post_as(cloud: &Cloud, token: &str, path: &str, request: &Value) -> (u16, Value) {
+/// Sends `POST <path>` with the JSON `request`, or without a body if `None`, as the session
+/// `token`, through the API: the status and the body.
+pub fn post_as(cloud: &Cloud, token: &str, path: &str, request: Option<&Value>) -> (u16, Value) {
     let agent = ureq::Agent::config_builder()
         .proxy(None)
         .http_status_as_error(false)
         .build()
         .new_agent();
-    let mut response = agent
+    let post = agent
         .post(format!("{}{path}", cloud.url))
         .header(
             skald_proto::VERSION_HEADER,
             skald_proto::PROTOCOL_VERSION.to_string(),
         )
-        .header("authorization", format!("Bearer {token}"))
-        .header("content-type", "application/json")
-        .send(request.to_string().as_bytes())
-        .unwrap_or_else(|err| panic!("POST {path}: {err}"));
+        .header("authorization", format!("Bearer {token}"));
+    let sent = match request {
+        Some(request) => post
+            .header("content-type", "application/json")
+            .send(request.to_string().as_bytes()),
+        None => post.send_empty(),
+    };
+    let mut response = sent.unwrap_or_else(|err| panic!("POST {path}: {err}"));
     let status = response.status().as_u16();
     let body = response.body_mut().read_to_string().unwrap_or_default();
     (status, serde_json::from_str(&body).unwrap_or(Value::Null))
@@ -227,7 +231,7 @@ pub fn store(cloud: &Cloud, token: &str, roster: &Roster) {
     let space = roster.body().space;
     let path = format!("/spaces/{space}/revisions");
     let request = json!({ "revision": URL_SAFE_NO_PAD.encode(roster.to_cbor()) });
-    let (status, body) = post_as(cloud, token, &path, &request);
+    let (status, body) = post_as(cloud, token, &path, Some(&request));
     assert_eq!(
         status,
         201,
