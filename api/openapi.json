@@ -615,7 +615,7 @@
             }
           },
           "400": {
-            "description": "No one is signed in, or nothing is linked: `state` is missing, wrong, from another browser, expired or used, or GitHub gave no code or refused it.",
+            "description": "No one is signed in, or nothing is linked: `state` is missing, wrong, from another browser, expired or used, also by the end of the web session that started a link, or GitHub gave no code or refused it.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -630,7 +630,7 @@
             }
           },
           "403": {
-            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended.",
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -912,7 +912,7 @@
             }
           },
           "400": {
-            "description": "No one is signed in, or nothing is linked: `state` is missing, wrong, from another browser, expired or used; or Google gave an error or no code, refused the code, or gave an ID token that fails a check, such as one with another sign-in's `nonce`.",
+            "description": "No one is signed in, or nothing is linked: `state` is missing, wrong, from another browser, expired or used, also by the end of the web session that started a link; or Google gave an error or no code, refused the code, or gave an ID token that fails a check, such as one with another sign-in's `nonce`.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -927,7 +927,7 @@
             }
           },
           "403": {
-            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended.",
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
