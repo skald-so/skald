@@ -9,9 +9,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use skald_proto::{Address, Name, PERSON, ServerName, VersionRange};
 
-use crate::connection::printable;
-use crate::devices::{text, to_session};
-use crate::{folders, follow, spaces};
+use crate::connection::{Connection, printable};
+use crate::devices::text;
+use crate::{folders, secrets, spaces};
 
 /// The server's name, `GET`.
 const SERVER_PATH: &str = "/server";
@@ -36,34 +36,33 @@ pub fn name(text: &str) -> Result<Name, String> {
 }
 
 /// `skald --agent <agent> address`: shows the address of `agent` in the space of the working
-/// directory, by the state in `dir`, with the name of the server of the machine's session.
+/// directory, by the state in `dir`, its secrets in `storage`, once the space is synced
+/// ([`spaces::synced`]), with the name of the server of the machine's session.
 pub fn address(
     dir: &Path,
+    storage: secrets::Storage,
     agent: &Name,
     speaks: VersionRange,
     timeout: Duration,
 ) -> Result<(), String> {
     let no_address = |why: String| format!("the agent {agent} has no address: {why}");
-    let (state, space) = folders::working_space(dir).map_err(no_address)?;
-    let roster = follow::decode(&space.accepted, &space.name)?;
-    let body = roster.body();
-    let member = spaces::own_account(&state)?
-        .and_then(|account| body.members.iter().find(|member| member.account == account));
-    let Some(member) = member else {
+    let (_, space) = folders::working_space(dir).map_err(no_address)?;
+    let mut synced =
+        spaces::synced(dir, storage, speaks, timeout, &space.name).map_err(no_address)?;
+    let body = synced.roster.body();
+    let account = synced.follower.own.account;
+    let Some(member) = body.members.iter().find(|member| member.account == account) else {
         return Err(no_address(format!(
             "this account is no member of the space {} in its last accepted revision",
             body.name
         )));
     };
-    let session = state.session().map_err(text)?.ok_or_else(|| {
-        no_address("this machine is signed in to no server; run skald sign-in".to_owned())
-    })?;
-    let server = server_name(&session.server, speaks, timeout)?.ok_or_else(|| {
-        no_address(format!(
-            "the server {} has no valid name for addresses, such as when its public address has \
-             an IP address as its host",
-            session.server
-        ))
+    let server = server_name(&mut synced.follower.connection)?.ok_or_else(|| {
+        no_address(
+            "the server of this machine's session has no valid name for addresses, such as when \
+             its public address has an IP address as its host"
+                .to_owned(),
+        )
     })?;
     let address = Address::new(
         body.name.clone(),
@@ -75,15 +74,9 @@ pub fn address(
     Ok(())
 }
 
-/// The name of the server at `url`, if it has a valid one.
-fn server_name(
-    url: &str,
-    speaks: VersionRange,
-    timeout: Duration,
-) -> Result<Option<ServerName>, String> {
-    let body = to_session(url, speaks, timeout)?
-        .get(SERVER_PATH)
-        .map_err(text)?;
+/// The name of the server `connection` reaches, if it has a valid one.
+fn server_name(connection: &mut Connection) -> Result<Option<ServerName>, String> {
+    let body = connection.get(SERVER_PATH).map_err(text)?;
     let unexpected = |err: String| format!("unexpected answer from the server to its name: {err}");
     let server: Server =
         serde_json::from_slice(&body).map_err(|err| unexpected(err.to_string()))?;

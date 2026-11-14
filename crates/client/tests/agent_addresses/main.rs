@@ -362,3 +362,23 @@ fn without_a_valid_server_name_an_agent_gets_no_address() {
 
     desk.assert_never_sent(&[agent]);
 }
+
+/// The address follows a revision an admin's device stored that changes the owner's handle, with
+/// no other command run before it.
+#[test]
+fn address_accepts_the_revisions_the_server_has() {
+    let desk = Desk::start(4_120_901_401, "ada-synced-standin");
+    let agent = "claude-5ync3d";
+    let a = desk.dir("work/clientA");
+    desk.add_rule(&a, CLIENT_A);
+    desk.assert_address(&a, agent, CLIENT_A, desk.ada.handle.as_str());
+
+    let renamed: Name = "ada-synced-at-clienta".parse().expect("a valid handle");
+    let second = next_by(&desk.client_a, &desk.ada, |members| {
+        members[0].handle = renamed.clone();
+    });
+    store(&desk.world.cloud, &desk.ada.token, &second);
+    desk.assert_address(&a, agent, CLIENT_A, renamed.as_str());
+
+    desk.assert_never_sent(&[agent]);
+}
