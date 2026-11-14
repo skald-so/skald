@@ -158,3 +158,42 @@ self_host_proxy_in_container() {
     --volume "$run/proxy/Caddyfile:/etc/caddy/Caddyfile:ro" \
     --volume "$self_host_ca:/etc/self-host-test/ca.pem:ro" "$self_host_caddy_image" >/dev/null
 }
+
+# self_host_resume <scenario>: continues in the stack of an earlier scenario: its directory and its
+# compose files.
+self_host_resume() {
+  cd "$(cat "/self-host/run/$1/dir")"
+  COMPOSE_FILE=$(cat "/self-host/run/$1/compose-file")
+  export COMPOSE_FILE
+}
+
+# backup_finds <backup> <env> [<label>=<text>]...: what the backup holds, as lines: `checked <label>`
+# for each <text> and each secret value of the .env <env>, a value whose name has PASSWORD or SECRET,
+# labelled by that name; `holds <label>` for each the backup holds. It looks in the backup's bytes
+# and, when it is a tar archive, compressed or not, in its members' bytes, gunzipped when they are
+# gzip-compressed.
+backup_finds() {
+  local backup=$1 env=$2 dir pair name value label text member
+  shift 2
+  dir=$(mktemp -d)
+  mkdir -p "$dir/content/members"
+  cp "$backup" "$dir/content/backup"
+  if gzip -t "$backup" 2>/dev/null; then gzip -dc "$backup" >"$dir/content/backup.gunzipped"; fi
+  tar -xf "$backup" -C "$dir/content/members" 2>/dev/null || true
+  while IFS= read -r -d '' member; do
+    if gzip -t "$member" 2>/dev/null; then gzip -dc "$member" >"$member.gunzipped"; fi
+  done < <(find "$dir/content/members" -type f -print0)
+  {
+    for pair in "$@"; do printf '%s\t%s\n' "${pair%%=*}" "${pair#*=}"; done
+    while IFS='=' read -r name value; do
+      value=${value#[\"\']}
+      value=${value%[\"\']}
+      if [[ $name =~ (PASSWORD|SECRET) && -n $value ]]; then printf '%s\t%s\n' "$name" "$value"; fi
+    done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$env")
+  } >"$dir/needles"
+  while IFS=$'\t' read -r label text; do
+    echo "checked $label"
+    if grep -rqaF -- "$text" "$dir/content"; then echo "holds $label"; fi
+  done <"$dir/needles"
+  rm -rf "$dir"
+}

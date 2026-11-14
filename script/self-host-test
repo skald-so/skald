@@ -20,6 +20,9 @@
 #   bucket               adds the bucket's settings to .env; its secret key read from standard input
 #   up                   starts the stack
 #   status               checks the server with skald status
+#   backup               backs the stack up into `<backup file>`, in the stack's directory, after `up`
+#   restore              restores `<backup file>` into a new stack, in its directory, before its first
+#                        `up`
 #   proxy-host           the proxy variant's .env for a proxy on the machine
 #   proxy-host-site      the site block of a Caddy on the machine (Caddyfile)
 #   proxy-join           the proxy variant's .env for a proxy in a container that joins the stack's
@@ -62,6 +65,23 @@
 #     container on a network that exists before the stack. The stack starts no Caddy; the server's
 #     port is published only on loopback in the first form and not at all in the others, and does not
 #     answer on the machine's address; /health and skald status answer through the proxy.
+#   backup: release, files, env, github, google, up. Machines sign in by device flow, one's person
+#     with GitHub and another's with Google, and create spaces; files go into the attachments volume.
+#     The guide's backup, the part's path for `<backup file>`, writes one file readable only by its
+#     owner, holding the files and none of the secret values of .env; after it, /health answers and
+#     the machines list the same devices and spaces. A backup to a full disk fails, and after it too.
+#     With the attachments volume emptied, the guide's restore into that stack, whose database holds
+#     data, fails and changes neither its database nor its volume.
+#   restore-files: release, files, env, github, google; the stack's containers created and removed,
+#     files in its attachments volume. The guide's restore fails, leaves the volume as it was and
+#     the database without a table.
+#   restored: release, files, env, github, google, restore of the backup, up. The machines, still
+#     signed in, list the same devices and spaces, the attachments volume holds the same files, and
+#     each machine creates a space and lists it.
+#   bucket-backup, bucket-restored: as backup and restored with the bucket and GitHub: the backup
+#     holds neither a file of the attachments volume nor an object of the bucket, the object stays,
+#     and the restored stack's machine lists the same devices and spaces, its volume without a file.
+#   The .env of each has mode 0600, and the output shows no secret value of it.
 #   image: release and image-check with :edge's digest fail for its missing signature.
 # README's "Self-hosting" and infrastructure.md's "Self-host" link to the guide.
 #
@@ -167,6 +187,7 @@ touch "$work/blocks/list"
 before=$failures
 steps='release files image-check env bucket up status proxy-host proxy-host-site proxy-join
   proxy-join-connect proxy-network proxy-container-site'
+steps+=' backup restore'
 while read -r n step; do
   # $steps unquoted: one word per step.
   # shellcheck disable=SC2086
@@ -727,6 +748,287 @@ if [[ $status -eq 0 ]]; then
   fail "image: the guide's image check passes :edge, $edge_digest"
 elif ! grep -qiE 'no (matching )?signatures' "$work/run/image/output"; then
   fail "image: the guide's image check refuses :edge for another reason than its missing signature:"$'\n'"$(tail -n 20 "$work/run/image/output")"
+fi
+
+# --- Backup and restore, of the stack of a machine that signed in and created spaces.
+backups=/self-host/backups
+m mkdir -p "$backups"
+
+# with_backup <scenario> <path>: the scenario's script with <path> for `<backup file>`.
+with_backup() {
+  sed -i.bak "s|<backup file>|$2|g" "$work/run/$1/script.sh"
+  rm "$work/run/$1/script.sh.bak"
+  docker cp "$work/run/$1/script.sh" "$machine:/self-host/run/$1/script.sh"
+}
+
+# run_refused <scenario> <step>: runs the scenario's script on the machine, as run_scenario does,
+# where it ends with the guide's <step>; fails unless the script reaches <step> and exits non-zero.
+run_refused() {
+  local status=0
+  mi env HOME=/root sh -c "cd /root && timeout 1500 bash /self-host/run/$1/script.sh" \
+    >"$work/run/$1/output" 2>&1 </dev/null || status=$?
+  if ! grep -qx "self-host-test: step $2" "$work/run/$1/output"; then
+    fail "$1: the script does not reach the guide's $2; its output's end:"$'\n'"$(tail -n 40 "$work/run/$1/output")"
+    return 1
+  fi
+  if [[ $status -eq 0 ]]; then
+    fail "$1: the guide's $2 succeeds; its output's end:"$'\n'"$(tail -n 20 "$work/run/$1/output")"
+    return 1
+  fi
+}
+
+# volume <scenario> <volume>: the name of the stack's volume <volume> of its compose file.
+volume() {
+  in_stack "$1" docker compose config --format json | jq --raw-output --exit-status --arg volume "$2" \
+    '.volumes[$volume].name'
+}
+
+# in_volume <scenario> <command>: runs the shell <command> as root in a container with the stack's
+# attachments volume at /a.
+in_volume() {
+  local name
+  name=$(volume "$1" attachments) || return 1
+  m docker run --rm --volume "$name:/a" --entrypoint sh skald-self-host-caddy:test -c "$2"
+}
+
+# put_attachments <scenario> <directory> <text>: files in the stack's attachments volume, the
+# server's user's: <directory>/note with <text>, <directory>/blob with 2 MB of random bytes.
+put_attachments() {
+  in_volume "$1" "mkdir -p /a/$2 && echo '$3' >/a/$2/note && head -c 2097152 /dev/urandom >/a/$2/blob &&
+    chown -R 65532:65532 /a/$2" || fail "$1: cannot put files into the attachments volume"
+}
+
+# attachment_files <scenario>: what the stack's attachments volume holds: `<owner> <type> <path>
+# [<SHA-256>]` lines, the digest of each file.
+attachment_files() {
+  in_volume "$1" 'cd /a && find . | sort | while read -r path; do
+      if [ -f "$path" ]; then echo "$(stat -c "%u %F" "$path") $path $(sha256sum <"$path" | cut -d " " -f 1)"
+      else echo "$(stat -c "%u %F" "$path") $path"; fi
+    done'
+}
+
+# database_print <scenario>: a digest of the stack's database, PostgreSQL started for it.
+database_print() {
+  local id
+  in_stack "$1" docker compose up --detach --wait postgres >/dev/null 2>&1 || return 1
+  id=$(container "$1" "$postgres_image") || return 1
+  m sh -c "docker exec $id sh -c 'pg_dump --username \"\$POSTGRES_USER\" --dbname \"\$POSTGRES_DB\"' |
+    grep -vE '^.(un)?restrict ' | sha256sum"
+}
+
+# database_tables <scenario>: the number of tables in the stack's database outside PostgreSQL's
+# own schemas, PostgreSQL started for it.
+database_tables() {
+  local id
+  in_stack "$1" docker compose up --detach --wait postgres >/dev/null 2>&1 || return 1
+  id=$(container "$1" "$postgres_image") || return 1
+  m docker exec "$id" sh -c 'psql --tuples-only --no-align --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+    --command "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('\''pg_catalog'\'', '\''information_schema'\'')"'
+}
+
+# listing <scenario>/<machine>: what skald devices and skald spaces show on the machine of
+# new_machine, their output, errors included, and exit codes.
+listing() {
+  local dir=/self-host/run/$1
+  m sh -c "$dir/skald devices 2>&1; echo \"devices: exit code \$?\"; $dir/skald spaces 2>&1;
+    echo \"spaces: exit code \$?\""
+}
+
+# lists_as_before <scenario> <scenario>/<machine> <when> <listing>: after <when>, the machine lists
+# the same devices and spaces as <listing>.
+lists_as_before() {
+  local now
+  now=$(listing "$2")
+  [[ $now == "$4" ]] ||
+    fail "$1: after $3, $2 lists other devices or spaces:"$'\n'"before:"$'\n'"$4"$'\n'"after:"$'\n'"$now"
+}
+
+# answers_health <scenario> <when>: after <when>, the domain's /health answers over HTTPS.
+answers_health() {
+  m bash -c "self_host_scenario=$1 && source /self-host/hooks.sh && self_host_wait_https" >/dev/null 2>&1 ||
+    fail "$1: after $2, https://$domain/health does not answer"
+}
+
+# backup_private <scenario> <backup>: the backup is a file of root, the user who made it, that no
+# one else may read.
+backup_private() {
+  local owner mode
+  if ! read -r owner mode < <(m stat -c '%u %a' "$2" 2>/dev/null); then
+    fail "$1: the guide's backup writes no file at $2"
+    return 1
+  fi
+  m test -f "$2" || fail "$1: the backup $2 is not a file"
+  [[ $owner == 0 ]] || fail "$1: the backup belongs to the user $owner, not to root, who made it"
+  ((8#$mode & 8#077)) && fail "$1: the backup has mode $mode: others than its owner may read it"
+  return 0
+}
+
+# backup_holds <scenario> <backup> <setup scenario> [<label>=<text>]...: sets holds to what the backup
+# holds of each <text> and of the secret values of the setup scenario's .env (backup_finds), and
+# fails unless it checked the database password and two secrets more.
+backup_holds() {
+  local scenario=$1 file=$2 setup=$3 found secrets
+  shift 3
+  found=$(m bash -c 'self_host_scenario=$1 && source /self-host/hooks.sh && shift && backup_finds "$@"' \
+    sh "$scenario" "$file" "/self-host/run/$setup/env" "$@") || fail "$scenario: cannot read the backup $file"
+  holds=$(sed -n 's/^holds //p' <<<"$found")
+  secrets=$(grep -cE '^checked [A-Z_]*(PASSWORD|SECRET)' <<<"$found" || true)
+  grep -qx 'checked SKALD_DATABASE_PASSWORD' <<<"$found" && ((secrets >= 3)) ||
+    fail "$scenario: the .env of $setup gives too few secrets to look for:"$'\n'"$(grep '^checked ' <<<"$found")"
+  return 0
+}
+
+# no_secret_held <scenario>: the backup of backup_holds holds no secret value of .env.
+no_secret_held() {
+  local label
+  for label in $(grep -E '(PASSWORD|SECRET)' <<<"$holds" || true); do
+    fail "$1: the backup holds the value of $label in .env"
+  done
+}
+
+marker=self-host-test-attachment-$(openssl rand -hex 8)
+backup_file=$backups/skald-backup
+
+# backup: the stack of two signed-in machines with spaces and files in the attachments volume.
+scenario backup release files env github google :before_up up :wait_https
+backup_ok=
+if run_scenario backup <<<"$providers"; then
+  backup_ok=1
+  if sign_in backup ada-machine GitHub; then creates_spaces backup ada-machine gale hollow; else backup_ok=; fi
+  if sign_in backup grace-machine Google; then creates_spaces backup grace-machine isle juniper; else backup_ok=; fi
+fi
+check_env backup
+if [[ -n $backup_ok ]]; then
+  put_attachments backup notes "$marker"
+  files_before=$(attachment_files backup)
+  ada_before=$(listing backup/ada-machine)
+  grace_before=$(listing backup/grace-machine)
+  for before in "$ada_before" "$grace_before"; do
+    if grep -q '^skald:' <<<"$before"; then fail "backup: a machine lists with errors:"$'\n'"$before"; fi
+  done
+
+  # The guide's backup.
+  scenario backup-run ":resume backup" backup
+  with_backup backup-run "$backup_file"
+  if run_scenario backup-run </dev/null && backup_private backup-run "$backup_file"; then
+    backup_holds backup-run "$backup_file" backup "attachments=$marker"
+    grep -qx attachments <<<"$holds" || fail "backup-run: the backup does not hold the attachments volume's files"
+    no_secret_held backup-run
+  else
+    backup_ok=
+  fi
+  answers_health backup "the guide's backup"
+  lists_as_before backup backup/ada-machine "the guide's backup" "$ada_before"
+  lists_as_before backup backup/grace-machine "the guide's backup" "$grace_before"
+
+  # A backup that fails: its disk full.
+  m sh -c 'mkdir -p /self-host/full && mount -t tmpfs -o size=4k tmpfs /self-host/full'
+  scenario backup-full ":resume backup" backup
+  with_backup backup-full /self-host/full/skald-backup
+  run_refused backup-full backup || true
+  answers_health backup "a backup that fails"
+  lists_as_before backup backup/ada-machine "a backup that fails" "$ada_before"
+  lists_as_before backup backup/grace-machine "a backup that fails" "$grace_before"
+  m umount /self-host/full
+
+  # A restore into a stack whose database holds data, its attachments volume empty.
+  if [[ -n $backup_ok ]]; then
+    in_stack backup docker compose down >/dev/null 2>&1 || fail "backup: docker compose down fails"
+    in_volume backup 'find /a -mindepth 1 -maxdepth 1 -exec rm -rf {} +' || fail "backup: cannot empty the attachments volume"
+    database=$(database_print backup) || fail "backup: cannot read the database"
+    files=$(attachment_files backup)
+    in_stack backup docker compose down >/dev/null 2>&1 || fail "backup: docker compose down fails"
+    scenario restore-data ":resume backup" restore
+    with_backup restore-data "$backup_file"
+    run_refused restore-data restore || true
+    [[ $(database_print backup || true) == "$database" ]] ||
+      fail "restore-data: the refused restore changes the stack's database"
+    [[ $(attachment_files backup) == "$files" ]] ||
+      fail "restore-data: the refused restore changes the stack's attachments volume"
+  fi
+fi
+stack_down backup
+
+# restore-files: a new stack whose attachments volume holds files, its database none.
+if [[ -n $backup_ok ]]; then
+  scenario restore-files release files env github google :before_up
+  if run_scenario restore-files <<<"$providers"; then
+    in_stack restore-files docker compose create >/dev/null 2>&1 || fail "restore-files: docker compose create fails"
+    put_attachments restore-files kept "self-host-test-kept-$(openssl rand -hex 8)"
+    in_stack restore-files docker compose down >/dev/null 2>&1 || fail "restore-files: docker compose down fails"
+    files=$(attachment_files restore-files)
+    scenario restore-files-run ":resume restore-files" restore
+    with_backup restore-files-run "$backup_file"
+    run_refused restore-files-run restore || true
+    [[ $(attachment_files restore-files) == "$files" ]] ||
+      fail "restore-files: the refused restore changes the stack's attachments volume"
+    tables=$(database_tables restore-files || true)
+    [[ $tables == 0 ]] || fail "restore-files: after the refused restore, the database holds tables: '$tables'"
+  fi
+  check_env restore-files
+  stack_down restore-files
+fi
+
+# restored: the backup in a new stack with new volumes.
+if [[ -n $backup_ok ]]; then
+  scenario restored release files env github google :before_up restore up :wait_https
+  with_backup restored "$backup_file"
+  if run_scenario restored <<<"$providers"; then
+    lists_as_before restored backup/ada-machine "the restore into a new stack" "$ada_before"
+    lists_as_before restored backup/grace-machine "the restore into a new stack" "$grace_before"
+    [[ $(attachment_files restored) == "$files_before" ]] ||
+      fail "restored: the new stack's attachments volume does not hold the backup's files:"$'\n'"$(attachment_files restored)"
+    creates_spaces backup ada-machine kestrel
+    creates_spaces backup grace-machine linden
+  fi
+  check_env restored
+  stack_down restored
+fi
+
+# bucket-backup, bucket-restored: with the bucket, the backup holds the database only.
+bucket_marker=self-host-test-bucket-$(openssl rand -hex 8)
+volume_marker=self-host-test-volume-$(openssl rand -hex 8)
+bucket_backup=$backups/skald-bucket-backup
+scenario bucket-backup release files env bucket github :before_up up :wait_https
+bucket_backup_ok=
+if run_scenario bucket-backup <<<"$bucket_secret"$'\n'"$github_secret"; then
+  if sign_in bucket-backup ada-machine GitHub; then
+    creates_spaces bucket-backup ada-machine moss
+    bucket_backup_ok=1
+  fi
+fi
+check_env bucket-backup
+if [[ -n $bucket_backup_ok ]]; then
+  put_attachments bucket-backup notes "$volume_marker"
+  m docker exec self-host-bucket sh -c "echo '$bucket_marker' >/data/$bucket_name/self-host-test-object" ||
+    fail "bucket-backup: cannot put an object into the bucket"
+  bucket_ada_before=$(listing bucket-backup/ada-machine)
+  scenario bucket-backup-run ":resume bucket-backup" backup
+  with_backup bucket-backup-run "$bucket_backup"
+  if run_scenario bucket-backup-run </dev/null && backup_private bucket-backup-run "$bucket_backup"; then
+    backup_holds bucket-backup-run "$bucket_backup" bucket-backup "volume=$volume_marker" "bucket=$bucket_marker"
+    grep -qx volume <<<"$holds" && fail "bucket-backup-run: with the bucket, the backup holds the attachments volume's files"
+    grep -qx bucket <<<"$holds" && fail "bucket-backup-run: the backup holds the bucket's objects"
+    no_secret_held bucket-backup-run
+  else
+    bucket_backup_ok=
+  fi
+  [[ $(m docker exec self-host-bucket cat "/data/$bucket_name/self-host-test-object" || true) == "$bucket_marker" ]] ||
+    fail "bucket-backup-run: after the backup, the bucket's object is gone"
+  answers_health bucket-backup "the guide's backup"
+  lists_as_before bucket-backup bucket-backup/ada-machine "the guide's backup" "$bucket_ada_before"
+fi
+stack_down bucket-backup
+if [[ -n $bucket_backup_ok ]]; then
+  scenario bucket-restored release files env bucket github :before_up restore up :wait_https
+  with_backup bucket-restored "$bucket_backup"
+  if run_scenario bucket-restored <<<"$bucket_secret"$'\n'"$github_secret"; then
+    lists_as_before bucket-restored bucket-backup/ada-machine "the restore into a new stack" "$bucket_ada_before"
+    [[ $(attachment_files bucket-restored) != *" ./"* ]] ||
+      fail "bucket-restored: the new stack's attachments volume holds files:"$'\n'"$(attachment_files bucket-restored)"
+  fi
+  check_env bucket-restored
+  stack_down bucket-restored
 fi
 
 finish
