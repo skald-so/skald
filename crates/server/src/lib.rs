@@ -29,6 +29,7 @@ mod sign_in;
 mod spaces;
 
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
+use google::Google;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
 pub use protocol::Versions;
 use protocol::{Stated, Statement};
@@ -79,7 +80,7 @@ struct AppState {
     db: PgPool,
     versions: Versions,
     sign_in: Option<Arc<SignInSettings>>,
-    google: Option<Arc<google::Google>>,
+    google: Option<Arc<Google>>,
     owned_spaces_limit: Option<u32>,
 }
 
@@ -111,12 +112,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             "/auth/device",
             post(device_flow::authorize).layer(checked(Statement::Header)),
         )
-        .route(sign_in::START_PATH, get(sign_in::start))
-        .route(CALLBACK_PATH, get(sign_in::callback))
-        .route(links::GITHUB_PATH, post(links::github))
-        .route(google::START_PATH, get(google::start))
-        .route(google::CALLBACK_PATH, get(google::callback))
-        .route(links::GOOGLE_PATH, post(links::google))
+        .route(sign_in::START_PATH, get(sign_in::start::<GitHubApp>))
+        .route(CALLBACK_PATH, get(sign_in::callback::<GitHubApp>))
+        .route(links::GITHUB_PATH, post(links::start::<GitHubApp>))
+        .route(google::START_PATH, get(sign_in::start::<Google>))
+        .route(google::CALLBACK_PATH, get(sign_in::callback::<Google>))
+        .route(links::GOOGLE_PATH, post(links::start::<Google>))
         .route(
             "/auth/token",
             post(device_flow::token).layer(checked(Statement::Header)),
@@ -173,7 +174,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .sign_in
                 .as_ref()
                 .and_then(|sign_in| sign_in.google.clone())
-                .map(|google| Arc::new(google::Google::new(google))),
+                .map(|google| Arc::new(Google::new(google))),
             sign_in: settings.sign_in.map(Arc::new),
         })
 }

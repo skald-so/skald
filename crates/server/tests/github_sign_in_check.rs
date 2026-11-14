@@ -24,7 +24,7 @@ use skald_github_stand_in::{App, GitHub};
 use url::Url;
 
 use common::check::{
-    Answer, ELSEWHERE, Front, Run, Tamper, answer_with, assert_no_codes, callbacks_off, on,
+    self, Answer, ELSEWHERE, Front, Run, Tamper, answer_with, assert_no_codes, callbacks_off, on,
     run_script, set_param, to_provider, unchanged,
 };
 use common::device_flow::{DEVICE_AUTHORIZATION, INTERVAL, TOKEN, json as json_of};
@@ -74,34 +74,18 @@ enum Line {
 }
 
 impl Run {
-    /// The output's lines, each read as a [`Line`]; fails on any other line.
+    /// The output's lines, each read as a [`Line`]; fails on any other line, a step of another name
+    /// among them.
     fn lines(&self) -> Vec<Line> {
-        self.output
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                let line = line.strip_prefix(PREFIX).unwrap_or(line);
-                let read = match line {
-                    "pass" => Some(Line::Result(true)),
-                    "fail" => Some(Line::Result(false)),
-                    _ => Step::ALL.into_iter().find_map(|step| {
-                        let rest = line.strip_prefix(step.name())?.strip_prefix(": ")?;
-                        if rest == "pass" {
-                            Some(Line::Step(step, true))
-                        } else if rest == "fail" || rest.starts_with("fail: ") {
-                            Some(Line::Step(step, false))
-                        } else {
-                            None
-                        }
-                    }),
-                };
-                read.unwrap_or_else(|| {
-                    panic!(
-                        "{}: a line that is neither a step nor the result: {line:?}\n{}",
-                        self.case, self.output
-                    )
-                })
+        let step = |name: &str| {
+            let step = Step::ALL.into_iter().find(|step| step.name() == name);
+            step.unwrap_or_else(|| panic!("{}: no step {name:?}\n{}", self.case, self.output))
+        };
+        self.read_lines(PREFIX)
+            .into_iter()
+            .map(|line| match line {
+                check::Line::Step(name, passed) => Line::Step(step(&name), passed),
+                check::Line::Result(passed) => Line::Result(passed),
             })
             .collect()
     }

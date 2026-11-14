@@ -1100,7 +1100,7 @@
       "post": {
         "operationId": "startGoogleLink",
         "summary": "Start a link of a Google sign-in method",
-        "description": "Submitted by the form of `GET /sign-in-methods`, with the web session's cookie, from a page of this server: a request whose `Origin` is another site's, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to Google as `GET /auth/google` does, with `prompt=select_account`, so that the person chooses the Google account, with a `state` that also binds the link to this web session; Google comes back through `GET /auth/google/callback`. The link works only while the session lasts.",
+        "description": "Starts a link as `POST /auth/github/link` does, with Google: sends the browser to Google as `GET /auth/google` does, with `prompt=select_account`, so that the person chooses the Google account; Google comes back through `GET /auth/google/callback`.",
         "security": [
           {
             "session": []

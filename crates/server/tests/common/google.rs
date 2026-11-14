@@ -20,12 +20,12 @@ use std::time::Duration;
 use super::accounts::Who;
 use super::browser::{Browser, Page, Visit};
 use super::sign_in::{
-    CALLBACK as GITHUB_CALLBACK, CLIENT_ID as GITHUB_CLIENT_ID,
-    CLIENT_SECRET as GITHUB_CLIENT_SECRET, Jar, SESSION, page_session, start_url,
-    to_github_callback,
+    CLIENT_SECRET as GITHUB_CLIENT_SECRET, Jar, SECRET_ENV as GITHUB_SECRET_ENV, SESSION,
+    authorize_link, github_args, github_session, github_stand_in, page_session, start_url,
+    to_callback, to_github_callback,
 };
 use super::{Response, Server, TestDb, get_url, on_free_port};
-use skald_github_stand_in::{App, GitHub, User};
+use skald_github_stand_in::{GitHub, User};
 use skald_oidc_stand_in::{Client, Key, Person, Provider};
 
 /// The server's OAuth client at the provider.
@@ -112,13 +112,7 @@ impl Google {
                 client_secret: CLIENT_SECRET.to_owned(),
                 redirect_uri: format!("{public}{CALLBACK}"),
             });
-            let github = setup.github.then(|| {
-                GitHub::start(App {
-                    client_id: GITHUB_CLIENT_ID.to_owned(),
-                    client_secret: GITHUB_CLIENT_SECRET.to_owned(),
-                    callback: Some(format!("{public}{GITHUB_CALLBACK}")),
-                })
-            });
+            let github = setup.github.then(|| github_stand_in(&public));
             let mut args = vec!["--public-url", public.as_str()];
             let mut envs = Vec::new();
             if !setup.no_google {
@@ -126,14 +120,8 @@ impl Google {
                 envs.push((SECRET_ENV, setup.secret.unwrap_or(CLIENT_SECRET)));
             }
             if let Some(github) = &github {
-                args.extend(["--github-client-id", GITHUB_CLIENT_ID]);
-                args.extend([
-                    "--github-url",
-                    github.url(),
-                    "--github-api-url",
-                    github.url(),
-                ]);
-                envs.push(("SKALD_GITHUB_CLIENT_SECRET", GITHUB_CLIENT_SECRET));
+                args.extend(github_args(github));
+                envs.push((GITHUB_SECRET_ENV, GITHUB_CLIENT_SECRET));
             }
             args.extend_from_slice(setup.args);
             let server = Server::try_launch(&db, &format!("127.0.0.1:{port}"), &args, &envs)?;
@@ -190,12 +178,7 @@ impl Google {
 
     /// Signs `page`'s browser in to GitHub as `user`, then to the server with GitHub.
     pub fn github_sign_in(&self, page: &Page, user: &User) {
-        let visit = page.goto(&self.github().sign_in_url(user.id));
-        assert_eq!(
-            visit.status,
-            Some(200),
-            "GitHub stand-in sign-in: {visit:?}"
-        );
+        github_session(page, self.github(), user);
         page.goto(&format!("{}{GITHUB_START}", self.public));
     }
 
@@ -210,34 +193,18 @@ impl Google {
 
     /// The link of the provider's page that asks to continue, where `visit` ended.
     pub fn authorize_link(&self, page: &Page, visit: &Visit) -> String {
-        let authorize = format!("{}?", self.provider.authorize_url());
-        assert!(
-            visit.url.starts_with(&authorize),
-            "at the provider: {visit:?}"
-        );
-        let link = page.evaluate(r#"document.getElementById("authorize").href"#);
-        let link = link.as_str().expect("a link to continue");
-        let callback = format!("{}{CALLBACK}?", self.public);
-        assert!(link.starts_with(&callback), "to the callback: {link}");
-        link.to_owned()
+        let callback = format!("{}{CALLBACK}", self.public);
+        authorize_link(page, visit, &self.provider.authorize_url(), &callback)
     }
 
     /// Runs a sign-in of `person` by plain HTTP, straight to the server whatever its public
     /// address, up to the provider's redirect back: the cookies the start set and the callback URL
     /// on the server.
     pub fn to_callback(&self, person: &Person) -> (Jar, String) {
-        let start = self.server.get(START);
-        assert_eq!(start.status, 302, "GET {START}: {}", text(&start));
+        let sign_in = self.provider.sign_in_url(&person.subject);
+        let (start, callback) = to_callback(&self.server, &self.public, START, &sign_in);
         let mut jar = Jar::default();
         jar.take(&start);
-        let mut provider = Jar::default();
-        provider.take(&get_url(&self.provider.sign_in_url(&person.subject), &[]));
-        let authorize = start
-            .header("location")
-            .expect("a redirect to the provider");
-        let back = get_url(authorize, &[("cookie", &provider.header())]);
-        let callback = back.header("location").expect("the provider goes back");
-        let callback = callback.replacen(&self.public, self.server.base(), 1);
         (jar, callback)
     }
 
