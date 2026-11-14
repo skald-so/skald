@@ -58,9 +58,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use machine::{FIRST_DEVICE, Finished, Machine, NO};
-use serde_json::{Value, json};
 use skald_proto::SpaceId;
-use world::{Person, SPACES, World, create, holds_word, plain_lines, run, warnings, words};
+use world::{
+    Person, SPACES, World, create, give_as_personal, holds_word, mark_as_personal, plain_lines,
+    run, warnings, words,
+};
 
 /// The commands that add, list and remove rules, approve a `.skald.toml` and show a folder's space.
 const ADD_RULE: &str = "add-rule";
@@ -78,10 +80,6 @@ const NO_SPACE: &str = "no space";
 /// The team spaces the device is in.
 const CLIENT_A: &str = "clienta";
 const CLIENT_B: &str = "clientb";
-
-/// The requests for the account's personal space and for its spaces, as their lines start.
-const PERSONAL_REQUEST: &str = "POST /account/personal-space ";
-const LIST_REQUEST: &str = "GET /spaces ";
 
 /// A person's first machine, in its personal space, `clienta` and `clientb`.
 struct Desk {
@@ -433,19 +431,9 @@ fn folder_without_a_binding_is_in_the_pinned_personal_space() {
     let notes = desk.dir("notes");
     desk.assert_in(&notes, &desk.personal, By::Personal);
 
-    let marked = desk.client_a.to_string();
-    cloud.relay.rewrite(LIST_REQUEST, move |body| {
-        let mut list: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-        for space in list["spaces"].as_array_mut().into_iter().flatten() {
-            space["personal"] = json!(space["space"] == json!(marked));
-        }
-        list.to_string()
-    });
+    mark_as_personal(cloud, desk.client_a);
     for (other, name) in [(desk.client_a, CLIENT_A), (SpaceId::generate(), "globex")] {
-        let answer = json!({ "space": other.to_string(), "name": name }).to_string();
-        cloud
-            .relay
-            .rewrite(PERSONAL_REQUEST, move |_| answer.clone());
+        give_as_personal(cloud, other, name);
         // Its result does not matter: a run that asks the server for the account's spaces.
         run(&desk.ada.machine, &[SPACES]);
 
