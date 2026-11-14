@@ -184,12 +184,14 @@ pub(crate) async fn open(
         .on_upgrade(move |socket| serve(state, socket, version))
 }
 
-/// A connection's device and account, once its `auth` proved them, and its hold: the receiver
-/// fires when the session ends.
+/// A connection, once its `auth` proved its device, held as the device's.
 struct Proved {
     device: DeviceId,
     account: AccountId,
-    held: (Registration, oneshot::Receiver<()>),
+    /// Lets the connection go when dropped.
+    _registration: Registration,
+    /// Fires when the session ends.
+    ended: oneshot::Receiver<()>,
 }
 
 /// Takes `socket`, of the protocol version `version`, once it proves its device, and serves it
@@ -200,13 +202,12 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
         Ok(None) => return finish(socket).await,
         Err(closing) => return close(socket, closing).await,
     };
-    let (_registration, ended) = proved.held;
     let sender = Sender {
         device: proved.device,
         account: proved.account,
         version,
     };
-    hold(&state, socket, ended, &sender).await;
+    hold(&state, socket, proved.ended, &sender).await;
 }
 
 /// Why the server stops serving a connection.
@@ -368,11 +369,12 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
         &signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
-    let account = account.parse().expect("a stored account ID");
+    let (registration, ended) = held;
     Ok(Some(Proved {
         device,
-        account,
-        held,
+        account: account.parse().expect("a stored account ID"),
+        _registration: registration,
+        ended,
     }))
 }
 

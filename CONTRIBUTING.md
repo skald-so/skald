@@ -11,7 +11,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
 - git-cliff for the Release PR tests: they install it with `script/install-git-cliff` into `skald/` in `CARGO_HOME`, `~/.cargo` by default.
 - dist of the version in `dist-workspace.toml`, only to build the release archives by hand, `dist build`; `script/test` does not run it: `cargo install cargo-dist --version <version> --locked`.
-- Docker: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots.
+- Docker that runs privileged containers: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots, the self-host stack's clean machine.
 - Node.js 26 with npm.
 - git 2.40 or newer: the edit comparison prototype reads the conflicts of `git merge-tree` and the attributes of a commit with `git check-attr --source`.
 - `curl`, `jq`, `openssl` and `tar`: the tests run them.
