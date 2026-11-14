@@ -6,13 +6,25 @@ use crate::cbor::{
     self, Cbor, Codec, DecodeError, FieldProblem, Item, decode_embedded, field_error,
 };
 use crate::envelope::Envelope;
-use crate::id::SpaceId;
+use crate::id::{DeviceId, SpaceId};
 use crate::receipt::{DeliveryStatus, STORED, SendKey, Stored};
+
+/// The label of `auth`'s signature.
+pub const AUTH_LABEL: &str = "skald auth";
 
 /// A frame between a client and the server. A frame of a type this version does not know decodes
 /// as [`Frame::Unknown`], so its reader can ignore it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
+    /// `auth`, client → server: the first frame on a WebSocket, which proves the connection's
+    /// device.
+    Auth {
+        /// The challenge the server issued to the client's session.
+        challenge: Vec<u8>,
+        device: DeviceId,
+        /// By the device's signing key over `["skald auth", challenge, origin]`.
+        signature: [u8; 64],
+    },
     /// `send`, client → server: an envelope to store.
     Send {
         envelope: RawEnvelope,
@@ -126,6 +138,7 @@ const STATUS: u64 = 6;
 const ACK: u64 = 7;
 const BATCH: u64 = 8;
 const SPACE_NOTICE: u64 = 9;
+const AUTH: u64 = 10;
 
 /// The type of the frame `item`: the first item of an array.
 fn frame_type(item: &Item<'_>, field: &'static str) -> Result<u64, DecodeError> {
@@ -138,6 +151,16 @@ fn frame_type(item: &Item<'_>, field: &'static str) -> Result<u64, DecodeError> 
 impl Codec for Frame {
     fn encode(&self) -> Vec<u8> {
         match self {
+            Self::Auth {
+                challenge,
+                device,
+                signature,
+            } => cbor::array([
+                cbor::uint(AUTH),
+                cbor::bytes(challenge),
+                cbor::id(device),
+                cbor::bytes(signature),
+            ]),
             Self::Send { envelope, report } => cbor::array([
                 cbor::uint(SEND),
                 cbor::bytes(&envelope.bytes),
@@ -162,6 +185,14 @@ impl Codec for Frame {
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         Ok(match frame_type(item, "frame.type")? {
+            AUTH => {
+                let [_, challenge, device, signature] = item.tuple("auth")?;
+                Self::Auth {
+                    challenge: challenge.bytes("auth.challenge")?.to_vec(),
+                    device: device.id("auth.device")?,
+                    signature: signature.fixed("auth.signature")?,
+                }
+            }
             SEND => {
                 let [_, envelope, report] = item.tuple("send")?;
                 Self::Send {
@@ -244,7 +275,7 @@ impl Codec for Push {
                 })
             }
             // A `batch` holds no frame of another known type.
-            other @ (SEND | STORED | SEND_REFUSED | SYNC | ACK | BATCH) => {
+            other @ (SEND | STORED | SEND_REFUSED | SYNC | ACK | BATCH | AUTH) => {
                 Err(field_error("batch.frame.type", FieldProblem::Value(other)))
             }
             other => Ok(Self::Unknown(UnknownPush {

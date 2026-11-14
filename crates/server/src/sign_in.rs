@@ -837,7 +837,7 @@ pub(crate) async fn web_session(
 
 /// The token of the request's only `Authorization` header, `Bearer <token>`; `None` without one,
 /// `Some(None)` for any other.
-fn bearer(headers: &HeaderMap) -> Option<Option<&str>> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<Option<&str>> {
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let first = values.next()?;
     if values.next().is_some() {
@@ -858,17 +858,22 @@ pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -
     }
 }
 
-/// `DELETE /session`: ends the device session of the request's bearer token.
+/// `DELETE /session`: ends the device session of the request's bearer token and closes its
+/// connections.
 pub(crate) async fn end(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(Some(token)) = bearer(&headers) else {
         return not_signed_in();
     };
+    let session = digest(token);
     let ended = sqlx::query("DELETE FROM sessions WHERE kind = 'device' AND token_hash = $1")
-        .bind(digest(token))
+        .bind(&session)
         .execute(&state.db)
         .await;
     match ended {
-        Ok(done) if done.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
+        Ok(done) if done.rows_affected() > 0 => {
+            state.connections.end_session(&session);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(_) => not_signed_in(),
         Err(err) => database_failed("end a session", err),
     }

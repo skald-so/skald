@@ -7,6 +7,7 @@ CDDL rules not defined here, such as `envelope` and `id`, are in [README.md](REA
 ## Contents
 - [Hops](#hops)
 - [Frames](#frames)
+- [Connecting](#connecting)
 - [Send](#send)
 - [Mailbox](#mailbox)
 - [Device to agent](#device-to-agent)
@@ -28,9 +29,10 @@ A message reaches an agent in three hops: the sending device → the server → 
 Client and server exchange envelopes, answers and statuses as frames: CBOR items carried as [Encoding](README.md#encoding) says.
 
 ```cddl
-frame = send / stored / send-refused / sync / message / status / ack / batch / space-notice
+frame = auth / send / stored / send-refused / sync / message / status / ack / batch / space-notice
 
 ; client → server
+auth = [10, challenge: bstr, device: id, signature: bstr .size 64]
 send = [1, envelope: bstr .cbor envelope, report: bool]
 sync = [4, cursor: uint]
 ack = [7, seq]
@@ -69,6 +71,28 @@ timestamp = uint       ; seconds since the Unix epoch
   - HTTPS: `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request states the cursor; its answer is a `batch`, empty if nothing arrived before its timeout.
   - SSE: one `message`, `status` or `space-notice` per event, the event's `id` the `seq` of a `message` or `status`; `Last-Event-ID` states the cursor. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
+
+## Connecting
+A WebSocket carries other frames only once its first frame, `auth`, proves the key of the connection's device.
+
+- Before opening it, the client gets a challenge for its device session: `POST /session/challenge`.
+- `auth` names the device and signs, with the label `skald auth`, `["skald auth", challenge, origin]`. `origin` is the origin [[RFC 6454](https://www.rfc-editor.org/rfc/rfc6454)] of the server URL the client connects to, such as `https://skald.example`, its ASCII serialization as a byte string.
+- The server takes the connection, as the device's, only if:
+  - `auth` is the first frame and comes within a few seconds of the opening;
+  - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection has used it before; a challenge works once, used or refused;
+  - the device is a `client` device with a certificate on the server, of the challenge's session's account;
+  - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
+- Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
+
+| Reason | The connection |
+|---|---|
+| `auth-required` | Sends another frame first, or none in time |
+| `challenge-refused` | Names a challenge that is unknown, used, expired or of an ended session |
+| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account |
+| `signature-refused` | Carries a signature that does not verify over the server's public address |
+
+- A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends.
+- A server that fails to check a proof, such as when its database fails, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
@@ -214,6 +238,7 @@ attachment = {
 - Only devices that receive the channel's envelopes can download its blobs.
 
 ## Security considerations
+- A session alone reads and acks no mailbox: a connection takes the device's key. The signature covers the origin the client connects to, so a malicious server cannot relay another server's challenge: that server refuses the proof.
 - `stored`, `delivered` and `expired` are the server's word. Only receipt messages and replies are end-to-end: encrypted, and signed by the recipient device.
 - Gap detection catches a message the server drops once a later message from the same sending device in the same channel under the same scheme reaches the recipient. It does not catch the drop of:
   - a sender's latest messages in a channel under a scheme, until it sends another there under it; for a message with `to`, the sender still sees no `read`;

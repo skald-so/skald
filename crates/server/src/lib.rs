@@ -5,11 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::extract::ws::{WebSocket, WebSocketUpgrade};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use axum::{Extension, Json, Router, middleware};
+use axum::{Json, Router, middleware};
 use serde::Serialize;
 use skald_proto::ServerName;
 use sqlx::migrate::Migrator;
@@ -18,6 +17,7 @@ use sqlx::{Connection, PgConnection, PgPool};
 
 mod accounts;
 mod attachments;
+mod connections;
 mod device_flow;
 mod devices;
 mod github;
@@ -34,8 +34,8 @@ pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 use google::Google;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
+use protocol::Statement;
 pub use protocol::Versions;
-use protocol::{Stated, Statement};
 pub use sign_in::{CALLBACK_PATH, PublicUrl, SignInSettings};
 
 /// The OpenAPI spec the server implements: `api/openapi.json`, served at `GET /openapi.json`.
@@ -89,6 +89,7 @@ struct AppState {
     google: Option<Arc<Google>>,
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
+    connections: Arc<connections::Connections>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
@@ -158,6 +159,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .delete(sign_in::end)
                 .layer(checked(Statement::Header)),
         )
+        .route(
+            "/session/challenge",
+            post(connections::challenge).layer(checked(Statement::Header)),
+        )
         .route(links::PAGE_PATH, get(links::page))
         .route(
             "/spaces",
@@ -179,12 +184,16 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .post(spaces::store)
                 .layer(checked(Statement::Header)),
         )
-        .route("/ws", get(websocket).layer(checked(Statement::Subprotocol)))
+        .route(
+            "/ws",
+            get(connections::open).layer(checked(Statement::Subprotocol)),
+        )
         .with_state(AppState {
             db,
             versions,
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
+            connections: Arc::default(),
             google: settings
                 .sign_in
                 .as_ref()
@@ -272,19 +281,4 @@ async fn server(State(state): State<AppState>) -> Json<Server> {
     Json(Server {
         name: state.server_name.as_ref().map(ToString::to_string),
     })
-}
-
-/// Opens a WebSocket with the subprotocol that states the accepted version.
-async fn websocket(
-    Extension(Stated(version)): Extension<Stated>,
-    upgrade: WebSocketUpgrade,
-) -> Response {
-    upgrade
-        .protocols([skald_proto::subprotocol(version)])
-        .on_upgrade(hold)
-}
-
-/// Keeps a WebSocket open, answering pings, until the client closes it; it carries no frames yet.
-async fn hold(mut socket: WebSocket) {
-    while let Some(Ok(_)) = socket.recv().await {}
 }

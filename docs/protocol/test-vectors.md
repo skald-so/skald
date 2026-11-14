@@ -29,6 +29,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Frame `ack`](#frame-ack)
 - [Frame `batch`](#frame-batch)
 - [Frame `space-notice`](#frame-space-notice)
+- [Frame `auth`](#frame-auth)
 
 ## Envelope under `mls`
 
@@ -506,4 +507,22 @@ b1e1583b84bd49c70301041a69127c80
 
 ```hex
 820950019a6f1e2b3c7d4e8f5061a2b3c4d5e6
+```
+
+## Frame `auth`
+
+```cbor-diag
+[
+  10,
+  h'000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f',
+  h'19ac5f784938823586a6c5809a18f6dd',
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+840a5820000102030405060708090a0b0c0d0e0f101112131415161718191a1b
+1c1d1e1f5019ac5f784938823586a6c5809a18f6dd58405a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 ```
