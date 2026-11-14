@@ -1,0 +1,5 @@
+# Caddy of the self-host stack, docker-compose.yml: a certificate for $SKALD_DOMAIN from Let's
+# Encrypt, HTTP redirected to HTTPS, HTTPS and WebSocket passed to the server.
+{$SKALD_DOMAIN} {
+	reverse_proxy skald-server:8080
+}

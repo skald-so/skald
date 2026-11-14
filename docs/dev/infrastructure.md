@@ -24,7 +24,7 @@ A human takes one action per release: merging the Release PR.
 - `dev` — the main and default branch; PRs from people and agents go here.
   - Changes only through PRs with all required checks green; no approvals required; a PR need not be up to date with `dev`.
   - Required checks: `Changed parts`, `Rust`, `Web`, `Tooling`, `Conventional Commits` (accepted only from GitHub Actions), `license/cla`. A job skipped by path filters counts as passed; `Changed parts` is required because its failure skips the jobs after it.
-  - `Rust` runs whatever the jobs of the Rust code end with and passes only if `Changed parts` succeeded and each of them succeeded or was skipped.
+  - `Rust` runs whatever the jobs of the Rust code end with, the self-host stack's included, and passes only if `Changed parts` succeeded and each of them succeeded or was skipped.
   - Not required: `Client on Windows`, `Windows` (the edit comparison prototype's job), the jobs of the release dry run and of the release check.
   - Squash merges only; the PR title becomes the commit title.
 - `main` — the latest stable release; only CI moves it ("Release", "Main").
@@ -42,6 +42,8 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **Rust:** one job per part of the Rust code (`script/test`), each on a runner of its own: `fmt`, `clippy`, tests; integration tests with PostgreSQL in a container, those of `script/check-github-sign-in` and `script/check-google-sign-in` among them, some also in headless Chrome ([CONTRIBUTING.md](../../CONTRIBUTING.md#requirements)); `skald-crypto`'s tests, `skald-proto`'s of ID generation and the MLS prototypes' natively and in WASM, in Node.js (`script/wasm-test` for the crates), with `clippy` of `skald-proto` and `skald-crypto` in WASM; the delivery prototypes' and the edit comparison prototype's tests.
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust code's part `image`.
+- **Self-host stack:** `script/self-host-test`, the Rust code's part `self-host`, alone in a job: the stack by [self-host.md](../self-host.md) on a clean machine, a privileged Docker-in-Docker container, with stand-ins for Let's Encrypt and the bucket.
+  - `script/changed-parts` marks it for the paths of the part `image`, `web/package.json` and `web/package-lock.json` (the tests' browser), `docker-compose.yml`, `Caddyfile`, the guide and its tests; the guide is the one path in `docs/` that marks a part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
 - **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the Release PR workflow (`script/release-pr-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of `script/install-git-cliff` and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the release check against stand-ins for a release and the verification commands, and its jobs (`script/release-check-test`, `script/release-check-steps-test`, `script/release-check-workflow-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust code's part `repository`, on fixture repositories: `script/release-pr-test` and `script/release-tag-test`. `script/release-pr-test` also checks the section git-cliff writes for `v0.1.0` against `CHANGELOG.md`, so the Rust jobs check out the whole history and the tags.
@@ -64,7 +66,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - After the tests, also when one fails, a `skald-update-*` or `skald-client-*` directory left in the temporary directory fails the job.
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
-- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
+- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, the Docker base images and the images of `docker-compose.yml`, its PostgreSQL kept on major version 19, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
   - Only on Mondays, 00:00–06:00 UTC, open PRs included: one PR with every patch and digest update and every minor update from 1.0 on; a PR of its own for each major update and each minor update of a 0.x version, which breaks under SemVer; the lock file refresh.
   - A fix for a known vulnerability (GitHub's alerts and OSV) comes at once, in a PR of its own.
 
@@ -176,5 +178,4 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **Addresses:** `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation.
 
 ## Self-host
-- `docker compose up` brings up `skald-server`, PostgreSQL and Caddy. The user sets their domain in a single variable, and HTTPS works right away.
-- Attachments are kept in a disk volume by default; an external S3-compatible bucket is optional.
+- `docker compose up` brings up `skald-server`, PostgreSQL and Caddy for the domain in `.env`, with HTTPS from the first start; attachments stay in a volume or an S3-compatible bucket: [self-host.md](../self-host.md).

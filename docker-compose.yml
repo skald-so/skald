@@ -1,0 +1,80 @@
+# The self-host stack: skald-server, PostgreSQL and Caddy for one domain. Setup, .env and the proxy
+# variant: docs/self-host.md. script/self-host-test tests it.
+name: skald
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    restart: unless-stopped
+    logging: *logging
+    depends_on: [skald-server]
+    environment:
+      - SKALD_DOMAIN=${SKALD_DOMAIN:?set SKALD_DOMAIN in .env}
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [edge]
+
+  skald-server:
+    image: ${SKALD_IMAGE:?set SKALD_IMAGE in .env}
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # The bucket's settings pass only when .env sets them.
+    environment:
+      - SKALD_DATABASE_URL=postgres://skald:${SKALD_DATABASE_PASSWORD:?set SKALD_DATABASE_PASSWORD in .env}@postgres:5432/skald
+      - SKALD_PUBLIC_URL=https://${SKALD_DOMAIN:?set SKALD_DOMAIN in .env}
+      - SKALD_ATTACHMENTS_BUCKET
+      - SKALD_ATTACHMENTS_BUCKET_ENDPOINT
+      - SKALD_ATTACHMENTS_BUCKET_REGION
+      - SKALD_ATTACHMENTS_BUCKET_ACCESS_KEY_ID
+      - SKALD_ATTACHMENTS_BUCKET_SECRET_KEY
+    volumes:
+      - attachments:/var/lib/skald/attachments
+    networks: [edge, database]
+
+  postgres:
+    # Renovate keeps it on major version 19: renovate.json.
+    image: postgres:19rc1@sha256:4b3e4b2edcf554492dd1c5e008237208c1d6e6faf2f15c24bf5fc5c4bcf0a21d
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      - POSTGRES_USER=skald
+      - POSTGRES_DB=skald
+      - POSTGRES_PASSWORD=${SKALD_DATABASE_PASSWORD:?set SKALD_DATABASE_PASSWORD in .env}
+    healthcheck:
+      test: [CMD, pg_isready, --username, skald, --dbname, skald]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - database:/var/lib/postgresql
+    networks: [database]
+
+# edge: Caddy and the server; database: the server and PostgreSQL, without the internet.
+networks:
+  edge: {}
+  database:
+    internal: true
+
+volumes:
+  database: {}
+  attachments: {}
+  caddy-data: {}
+  caddy-config: {}
