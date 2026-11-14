@@ -2,7 +2,7 @@
 # Tests the release tags on fixture repositories: copies of this working tree, released as 0.40.5 and
 # tagged v0.40.5, with PRs squash-merged after the tag. Each push to dev is tagged as the workflow
 # that tags releases does it (script/release-tag-workflow-test): script/release-pr-merged, then, only
-# if it exits 0, release-plz release with the repository's own config. GitHub is a stand-in,
+# if it exits 0, script/release-tag. GitHub is a stand-in,
 # script/lib/github-api-stub.mjs: it lists the PRs each commit is the merge of and records the tags
 # created through it.
 #   script/release-pr-merged, run in a checkout of dev, exits 0 if the commit checked out is the merge
@@ -10,8 +10,8 @@
 #   skald-release[bot], opened from a branch of this repository, $GITHUB_REPOSITORY, and that was
 #   merged into dev as that commit. It reads the commit's PRs from the GitHub API at
 #   $GITHUB_API_URL with the token $GH_TOKEN.
-#   - The merge of a Release PR with a version change gets one tag, v<version>, on its commit; a beta
-#     its beta tag, vX.Y.Z-beta.N. release-plz creates no GitHub Release and publishes no crate.
+#   - The merge of a Release PR with a version change gets one annotated tag, v<version>, on its
+#     commit; a beta its beta tag, vX.Y.Z-beta.N. No GitHub Release is created.
 #   - The GitHub API may list a commit's PRs late: on an empty list script/release-pr-merged asks
 #     again, 6 times in all, before it exits 1.
 #   - An already tagged version gets no tag: a run again on a tagged commit, and a Release PR that
@@ -32,15 +32,12 @@ fail() {
   failures=$((failures + 1))
 }
 
-if [[ $(release-plz --version 2>/dev/null) != "release-plz $release_plz_version" ]]; then
-  echo "release-tag-test: release-plz $release_plz_version is missing; install it:" \
-    "script/install-release-plz" >&2
-  exit 1
-fi
-if [[ ! -x $root/script/release-pr-merged ]]; then
-  echo "release-tag-test: script/release-pr-merged is missing or not executable" >&2
-  exit 1
-fi
+for script in release-pr-merged release-tag; do
+  if [[ ! -x $root/script/$script ]]; then
+    echo "release-tag-test: script/$script is missing or not executable" >&2
+    exit 1
+  fi
+done
 
 tmp=$(mktemp -d)
 stub=
@@ -50,23 +47,7 @@ stop_stub() {
 }
 trap 'stop_stub; rm -rf "$tmp"' EXIT
 
-# The fixtures' git, isolated from the user's config and from any repository around $tmp.
-export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-export GIT_CEILING_DIRECTORIES=$(cd "$tmp" && pwd -P)
-export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
-export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
-
-# cargo, logging its arguments to $tmp/cargo.log: release-plz must not run `cargo publish`.
-real_cargo=$(command -v cargo)
-mkdir "$tmp/bin"
-cat >"$tmp/bin/cargo" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >>"$tmp/cargo.log"
-exec "$real_cargo" "\$@"
-EOF
-chmod +x "$tmp/bin/cargo"
-export PATH=$tmp/bin:$PATH
-unset CARGO
+fixture_git "$tmp"
 
 copy_tree "$root" "$tmp/tree"
 
@@ -126,7 +107,7 @@ pull() {
     }'
 }
 app=skald-release[bot]
-branch=release-plz-2026-01-01T00-00-00Z
+branch=release-pr-2026-01-01T00-00-00Z
 
 # release_pull <merge commit>: the App's Release PR, from this repository, merged as that commit.
 release_pull() {
@@ -147,7 +128,7 @@ associate() {
 tag() {
   local port
   stop_stub
-  rm -f "$tmp/port" "$tmp/refs.json" "$tmp/cargo.log"
+  rm -f "$tmp/port" "$tmp/refs.json"
   : >"$tmp/requests.log"
   echo '[]' >"$tmp/refs.json"
   node "$root/script/lib/github-api-stub.mjs" "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" \
@@ -173,24 +154,21 @@ tag() {
     unset RELEASE_PR_MERGED_ATTEMPTS
     script/release-pr-merged
   ) >"$tmp/gate.log" 2>&1 || gate=$?
-  if [[ $gate == 0 ]] && ! (cd "$dir" && release-plz release --forge github \
-    --repo-url "http://127.0.0.1:$port/skald-so/skald" --git-token fixture-token) \
-    >"$tmp/release-plz.log" 2>&1; then
-    fail "$1: release-plz release failed: $(tail -n 20 "$tmp/release-plz.log")"
+  if [[ $gate == 0 ]] && ! (cd "$dir" && GITHUB_API_URL=http://127.0.0.1:$port/api/v3 \
+    GITHUB_REPOSITORY=skald-so/skald GH_TOKEN=fixture-token script/release-tag) \
+    >"$tmp/release-tag.log" 2>&1; then
+    fail "$1: script/release-tag failed: $(tail -n 20 "$tmp/release-tag.log")"
   fi
   stop_stub
   tags=$(cat "$tmp/refs.json")
   if grep -q '/releases' "$tmp/requests.log"; then
-    fail "$1: release-plz called the GitHub Releases API:" \
+    fail "$1: it called the GitHub Releases API:" \
       "$(jq -c 'select(.url | contains("/releases")) | {method, url}' "$tmp/requests.log")"
-  fi
-  if grep -qE '(^| )publish( |$)' "$tmp/cargo.log" 2>/dev/null; then
-    fail "$1: release-plz ran cargo publish: $(grep -E '(^| )publish( |$)' "$tmp/cargo.log")"
   fi
 }
 
 # expect_tag <case> <version>: the merge of a Release PR, $head: one ref written, the tag
-# v<version> created on $head.
+# v<version> created on $head, from a tag object of $head.
 expect_tag() {
   if [[ $gate != 0 ]]; then
     fail "$1: script/release-pr-merged exited $gate, not 0, for the merge of a Release PR:" \
@@ -200,6 +178,10 @@ expect_tag() {
   jq -e --arg ref "refs/tags/v$2" --arg head "$head" \
     '. == [{method: "POST", ref: $ref, commit: $head}]' <<<"$tags" >/dev/null ||
     fail "$1: not one tag v$2 on its commit $head; refs written: $(jq -c . <<<"$tags")"
+  jq -se --arg tag "v$2" --arg head "$head" '[.[] | select(.url | endswith("/git/tags"))
+    | .body | fromjson] | length == 1 and .[0].tag == $tag and .[0].object == $head
+    and .[0].type == "commit"' "$tmp/requests.log" >/dev/null ||
+    fail "$1: not one tag object v$2 of $head"
 }
 
 # expect_no_tag <case> <gate>: no ref written; script/release-pr-merged exited <gate>, or anything

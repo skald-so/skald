@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Writes the next release into this checkout of dev, which has its history and tags: the version in
+# [workspace.package] of Cargo.toml and for every workspace crate in Cargo.lock, and its section in
+# CHANGELOG.md under `## [Unreleased]`, made by the git-cliff of script/lib/release.sh with cliff.toml.
+# Prints the version. Exits 1 and changes nothing when there is nothing to release: no PR merged
+# since the last release tag, or the version tagged already; 2 on an error. The rule: "Release" in
+# docs/dev/infrastructure.md. script/release-pr runs it; script/release-pr-test tests it.
+# Usage: script/release-update
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+
+error() {
+  echo "release-update: $*" >&2
+  exit 2
+}
+
+if [[ $(git-cliff --version 2>/dev/null) != "git-cliff $git_cliff_version" ]]; then
+  error "git-cliff $git_cliff_version is missing; install it: script/install-git-cliff"
+fi
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# cliff <option>...: git-cliff on this repository with cliff.toml; its log only on a failure.
+cliff() {
+  git-cliff --config "$root/cliff.toml" --repository "$root" "$@" 2>"$tmp/cliff.log" ||
+    error "git-cliff $* failed: $(cat "$tmp/cliff.log")"
+}
+
+# The PRs since the last release tag, vX.Y.Z, and that tag, if any.
+context=$(cliff --unreleased --context)
+listed=$(jq '.[0].commits | length' <<<"$context")
+last=$(jq -r '.[0].previous.version // "" | ltrimstr("v")' <<<"$context")
+
+current=$("$root/script/release-version") || exit 2
+release='^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$'
+[[ $current =~ $release ]] || error "the workspace version $current is not X.Y.Z or X.Y.Z-beta.N"
+
+# newer <version> <release>: <version> comes after <release>, an X.Y.Z.
+newer() {
+  local a b c x y z
+  IFS=. read -r a b c <<<"${1%%-*}"
+  IFS=. read -r x y z <<<"$2"
+  ((a != x)) && { ((a > x)); return; }
+  ((b != y)) && { ((b > y)); return; }
+  ((c > z))
+}
+
+if [[ -z $last ]] || newer "$current" "$last"; then
+  # The first release, or a version set by hand: it stays.
+  version=$current
+elif [[ $current == "$last" ]]; then
+  version=$(cliff --bumped-version)
+  version=${version#v}
+else
+  error "the workspace version $current is older than the last release, $last"
+fi
+
+if ((listed == 0)) || git -C "$root" rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+  echo "release-update: nothing to release: no PR since the last release, or v$version is tagged" >&2
+  exit 1
+fi
+if grep -qE "^## \\[${version//./\\.}\\]" "$root/CHANGELOG.md"; then
+  error "CHANGELOG.md has a section for $version already"
+fi
+[[ $(grep -cxF '## [Unreleased]' "$root/CHANGELOG.md") == 1 ]] ||
+  error "CHANGELOG.md has not one '## [Unreleased]' heading"
+
+# The section, without the blank lines around it.
+section=$(cliff --unreleased --tag "v$version" | sed -e '/./,$!d')
+
+SECTION=$section awk '{ print } $0 == "## [Unreleased]" { print ""; print ENVIRON["SECTION"] }' \
+  "$root/CHANGELOG.md" >"$tmp/CHANGELOG.md"
+awk -v version="$version" '
+  /^\[/ { section = $0 }
+  section == "[workspace.package]" && /^version *=/ { $0 = "version = \"" version "\"" }
+  { print }
+' "$root/Cargo.toml" >"$tmp/Cargo.toml"
+# The crates of the workspace are the packages in Cargo.lock without a source.
+awk -v version="$version" '
+  held != "" { print ($0 ~ /^source = / ? held : "version = \"" version "\""); held = "" }
+  name && /^version = / { held = $0; name = 0; next }
+  { name = /^name = /; print }
+  END { if (held != "") print "version = \"" version "\"" }
+' "$root/Cargo.lock" >"$tmp/Cargo.lock"
+for file in CHANGELOG.md Cargo.toml Cargo.lock; do
+  cat "$tmp/$file" >"$root/$file"
+done
+echo "$version"

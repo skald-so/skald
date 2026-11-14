@@ -9,7 +9,7 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
 - `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
-- release-plz, patched, for the Release PR tests: `script/install-release-plz` builds it into `skald/` in `CARGO_HOME`, `~/.cargo` by default, and the tests run that one.
+- git-cliff for the Release PR tests: they install it with `script/install-git-cliff` into `skald/` in `CARGO_HOME`, `~/.cargo` by default.
 - dist of the version in `dist-workspace.toml`, only to build the release archives by hand, `dist build`; `script/test` does not run it: `cargo install cargo-dist --version <version> --locked`.
 - Docker: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots.
 - Node.js 26 with npm.
@@ -21,8 +21,6 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 - Google Chrome: the web tests ([web/README.md](web/README.md)) and the server's and the client's sign-in tests run it headless; `SKALD_CHROME` points to another Chrome or Chromium binary.
 
 ## Running locally
-The root `Cargo.toml` is a package too, for release-plz: in the root, `cargo build`, `cargo test` and `cargo clippy` cover the crates only with `--workspace` or `-p <crate>`.
-
 PostgreSQL 19 in a container:
 ```sh
 docker run --detach --name skald-postgres --env POSTGRES_PASSWORD=skald \

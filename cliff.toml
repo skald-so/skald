@@ -1,0 +1,57 @@
+# git-cliff: the CHANGELOG.md section and the bumped version of the Release PR, written by
+# script/release-update and tested by script/release-pr-test. Docs: https://git-cliff.org/docs/configuration
+# The format of the v0.1.0 section.
+
+[changelog]
+# The section alone: script/release-update puts it under `## [Unreleased]`.
+header = ""
+# `version` is the tag, vX.Y.Z or vX.Y.Z-beta.N; `previous.version` the last release's tag, if any.
+body = """
+## [{{ version | trim_start_matches(pat="v") }}]\
+({% if previous.version %}https://github.com/skald-so/skald/compare/{{ previous.version }}...{{ version }}\
+{% else %}https://github.com/skald-so/skald/releases/tag/{{ version }}{% endif %}) \
+- {{ timestamp | date(format="%Y-%m-%d") }}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+
+{% for commit in commits %}
+{%- if commit.scope -%}
+- *({{commit.scope}})* {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}
+{% else -%}
+- {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message }}
+{% endif -%}
+{% endfor -%}
+{% endfor %}"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+protect_breaking_commits = false
+filter_commits = false
+# The last release is the last vX.Y.Z tag: beta tags do not count.
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+topo_order = false
+sort_commits = "newest"
+commit_preprocessors = [
+  { pattern = '\(#([0-9]+)\)', replace = "([#${1}](https://github.com/skald-so/skald/pull/${1}))" },
+]
+# The groups of Keep a Changelog, in the order of their names. A Release PR's own commit is not
+# listed.
+commit_parsers = [
+  { message = "^chore: release v[0-9]", skip = true },
+  { message = "^feat", group = "added" },
+  { message = "^changed", group = "changed" },
+  { message = "^deprecated", group = "deprecated" },
+  { message = "^removed", group = "removed" },
+  { message = "^fix", group = "fixed" },
+  { message = "^security", group = "security" },
+  { message = ".*", group = "other" },
+]
+
+[bump]
+# In 0.x a breaking change bumps the minor version, a feature the patch version.
+features_always_bump_minor = false
+breaking_always_bump_major = false

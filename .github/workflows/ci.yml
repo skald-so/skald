@@ -37,9 +37,12 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
+      # The whole history and the tags: script/release-pr-test checks the CHANGELOG section of
+      # v0.1.0 against it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt,clippy \
@@ -62,9 +65,6 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-deny@0.20.2,wasm-bindgen@${{ steps.wasm-bindgen.outputs.version }}
-      # release-plz: the Release PR tests, also in the Rust part.
-      - name: Install release-plz
-        uses: ./.github/actions/install-release-plz
       # The WASM tests run in Node.js; the server's and the client's sign-in tests
       # drive the runner's Google Chrome with the playwright-core of web/.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -150,11 +150,14 @@ jobs:
     if: needs.changes.outputs.tooling == 'true'
     runs-on: ubuntu-latest
     steps:
+      # The whole history and the tags: script/release-pr-test checks the CHANGELOG section of
+      # v0.1.0 against it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The tests of script/mutants run it on a scratch Cargo workspace, and script/release-plz-test
-      # runs release-plz on fixture copies of this one.
+          fetch-depth: 0
+      # The tests of script/mutants run it on a scratch Cargo workspace, and the release tests read
+      # the workspace of fixture copies of this one with cargo metadata.
       - name: Install Rust
         run: |
           rustup toolchain install stable --profile minimal
@@ -162,8 +165,6 @@ jobs:
       - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: cargo-mutants@27.1.0
-      - name: Install release-plz
-        uses: ./.github/actions/install-release-plz
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26

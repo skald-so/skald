@@ -3,7 +3,7 @@
 ## Flow
 ```
 PR (agent or contributor) → CI checks → dev → staging (automatic, :edge image)
-dev → release-plz keeps a Release PR open (version + CHANGELOG)
+dev → a Release PR stays open (version + CHANGELOG)
 merge Release PR → tag vX.Y.Z → dist builds → GitHub Releases, npm, GHCR
                               → main moves to the tag
                               → production (same image, one click)
@@ -42,11 +42,11 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
 - **Frontend:** lint, tests, build; kit page screenshots against their references ([web/README.md](../../web/README.md#reference-screenshots)).
 - **Server image:** `crates/server/Dockerfile` is built and a container from it is tested with PostgreSQL by `script/image-test`, in the Rust part.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow's job `Client on Windows` (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the release-plz workflow (`script/release-plz-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
-- **Release PR and tag:** in the Rust and the Tooling parts, release-plz on fixture repositories: `script/release-plz-test` and `script/release-tag-test`, and `script/release-plz-config-test` for `release-plz.toml` against this repository.
+- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow's job `Client on Windows` (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the Release PR workflow (`script/release-pr-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of `script/install-git-cliff` and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
+- **Release PR and tag:** in the Rust and the Tooling parts, on fixture repositories: `script/release-pr-test` and `script/release-tag-test`. `script/release-pr-test` also checks the section git-cliff writes for `v0.1.0` against `CHANGELOG.md`, so these jobs check out the whole history and the tags.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
 - **Secrets:** PR checks need none. Live checks of agent CLIs take keys from an untracked `.env`, named in [`.env.example`](../../.env.example); deploys, from GitHub environment secrets.
-  - The release-plz workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only the release-plz jobs use it.
+  - The Release PR workflow takes the ID and private key of the GitHub App `skald-release` from `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY`, secrets of the environment `release-plz`. Only `dev` deploys from it; only that workflow's jobs use it.
   - The App: installed only on `skald-so/skald`; contents and pull requests read-write, metadata read; webhook off; it bypasses no ruleset but the creation of `v*` tags ("Branches").
   - The release workflow's job `publish-npm` runs in the environment `npm`, which holds no secret ("Release", "npm"). Only `v*` tags deploy from it; only that job uses it.
   - The release workflow's job `move-main` takes the deploy key that moves `main` from `MAIN_DEPLOY_KEY`, the only secret of the environment `move-main`. Only `v*` tags deploy from it; only that job uses it, and only its step that runs `script/move-main` reads the key. The key has write access and is the repository's only deploy key.
@@ -62,16 +62,17 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies and the Docker base images, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
 
 ## Release
-- **Tools:** release-plz (version, CHANGELOG, tag) and dist (the archives of `skald` and a checksum of each).
-  - release-plz is 0.4.3 with `script/lib/release-plz.patch`: it adds the PRs of `changelog_include` before the first release tag too; 0.4.3 adds them only once one exists.
-  - The patch goes once a release-plz release fixes [release-plz#3325](https://github.com/release-plz/release-plz/issues/3325): the workflows and the tests then run that release, without the patch and the build.
-  - `script/install-release-plz` builds it from its crates on crates.io, each checked against its SHA-256 in `script/lib/release.sh`, with the dependencies of its `Cargo.lock`.
-  - In CI, `.github/actions/install-release-plz` restores the build from the Actions cache under a key of the runner's OS and architecture, the versions and the SHA-256 of the patch and of `script/install-release-plz`; on a miss it builds it and saves it right after. A job runs it before it creates any token. The release-plz jobs run on `dev` and restore only caches saved on `dev`; a PR's runs restore those or their own.
-- **Release PR:** on every push to `dev`, `.github/workflows/release-plz.yml` runs release-plz with `release-plz.toml` on the latest `dev` and its tags; it opens the Release PR or updates the open one. Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
-- **Release tag:** on the push of a Release PR's merge, the same workflow first tags that commit `vX.Y.Z`, or `vX.Y.Z-beta.N` for a beta, with `release-plz release`. Its token is the App's, narrowed to contents, so the workflows that run on tags start.
-  - A Release PR is one the App opened from a branch of `skald-so/skald`; `script/release-pr-merged` checks it through the GitHub API before release-plz runs.
+- **Tools:** git-cliff (the next version and the CHANGELOG section, `cliff.toml`), our scripts (the Release PR and the tag) and dist (the archives of `skald` and a checksum of each).
+  - `script/install-git-cliff` installs the git-cliff pinned in `script/lib/release.sh` from its official release archive, checked against its SHA-256 there. The Release PR job runs it before it creates any token; the tests run it too.
+- **Release PR:** on every push to `dev`, `.github/workflows/release-pr.yml` runs `script/release-pr` on the latest `dev` and its tags.
+  - `script/release-update` writes the next version into `Cargo.toml` and `Cargo.lock` and its section into `CHANGELOG.md`.
+  - `script/release-pr` commits them with the GraphQL mutation `createCommitOnBranch` on a new branch from `dev`, then opens the Release PR from it, or moves the open Release PR's branch to that commit and updates its title and description.
+  - With nothing to release it opens none and closes an open one.
+  - Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
+- **Release tag:** on the push of a Release PR's merge, the same workflow first tags that commit `vX.Y.Z`, or `vX.Y.Z-beta.N` for a beta, the workspace version, with `script/release-tag`: an annotated tag created through the GitHub API. Its token is the App's, narrowed to contents, so the workflows that run on tags start.
+  - A Release PR is one the App opened from a branch of `skald-so/skald`; `script/release-pr-merged` checks it through the GitHub API before `script/release-tag` runs.
   - No other push gets a tag, whatever its PR's branch is named, and a version already tagged gets none.
-  - It publishes no crate to crates.io and creates no GitHub Release.
+  - It creates no GitHub Release.
 - **GitHub Release:** on a push of a `v*` tag, `.github/workflows/release.yml` builds `skald` with dist (`dist-workspace.toml`) for macOS, Linux and Windows on x86_64 and arm64, each on a runner of its own; each runner installs it with its installer from the release's files; then one `gh release create` publishes the tag's release with all its files: the archives, a `.sha256` checksum of each, `install.sh` and `install.ps1`.
   - A pushed tag other than `v` and the workspace version fails the run before it builds.
   - The notes are the version's CHANGELOG section, by `script/release-notes`; a beta's release is a prerelease.
@@ -97,14 +98,16 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
   - `install.ps1`: into `%LOCALAPPDATA%\Programs\skald`, added to the user's `PATH`.
   - `SKALD_INSTALL_DIR` sets the directory; `SKALD_DOWNLOAD_URL`, where the release's files are instead of GitHub.
 - **One version for everything:** client, server, plugin; for the crates, `[workspace.package]` in `Cargo.toml`. Before 1.0: `0.x` versions.
-- **Bumps in `0.x`:** of the PRs the CHANGELOG lists, one whose title has `!` bumps the minor version; any other, of any type, the patch version.
-- **Last release:** the last `vX.Y.Z` tag, not crates.io; beta tags do not count.
-- **CHANGELOG:** `CHANGELOG.md` in the root lists the titles of the PRs merged since the last release, except those of PRs that change only `prototypes/`: prototypes ship in no release, and they belong to no package of the workspace, whose files release-plz counts.
-- **First Release PR:** with no release tag yet, it keeps the version in `Cargo.toml` and lists every PR merged into `dev` so far. The exception for `prototypes/` holds from the commit that added the root package on: release-plz cannot list that package's files at earlier commits.
+- **Last release:** the last `vX.Y.Z` tag; beta tags do not count.
+- **Next version,** by `script/release-update`:
+  - A version in `Cargo.toml` newer than the last release, set by a PR, stays; so does the version in `Cargo.toml` with no release tag yet. One older than the last release is an error.
+  - Otherwise git-cliff bumps the last release by the PRs since it. In `0.x`: a breaking change (`!`, or a `BREAKING CHANGE:` footer) bumps the minor version, any other PR the patch version. From `1.0`: a breaking change the major, a `feat` the minor, any other the patch.
+  - Nothing to release, so no Release PR: no PR merged since the last release, or the version is tagged already.
+- **CHANGELOG:** `CHANGELOG.md` in the root gets a section per release under `## [Unreleased]`, in the groups of Keep a Changelog: the titles of every PR merged since the last release, whatever it changes, newest first; not the Release PRs' commits, `chore: release v…`.
 - **The protocol** has its own version number: [protocol spec](../protocol/README.md#protocol-version).
 - **Cadence:** we release when ready, aiming for every 1–2 weeks. Fixes ship at any time.
 - **Betas:** `vX.Y.Z-beta.N`.
-  - A PR sets a beta's version in `[workspace.package]` of `Cargo.toml`; the Release PR keeps it, after the beta too, until a PR sets the next beta's or the release's.
+  - A PR sets a beta's version in `[workspace.package]` of `Cargo.toml`; the Release PR keeps it. Once the beta is tagged, there is no Release PR until a PR sets the next beta's or the release's version.
   - As beta tags do not count, the CHANGELOG section of a beta or a release lists the PRs of the betas before it too.
 - **Updates for users:** `skald update` and plugin auto-update from the marketplace.
   - `skald update` looks up the latest stable release through GitHub's API. If it is newer than the running `skald`, it downloads the release's archive for the machine's OS and architecture, checks it against its `.sha256` and replaces the running binary in place. It trusts the checksum because releases are immutable ("Trust in builds").
@@ -131,7 +134,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
   - signature: `cosign verify ghcr.io/skald-so/skald-server@sha256:<digest> --certificate-identity https://github.com/skald-so/skald/.github/workflows/release.yml@refs/tags/vX.Y.Z --certificate-oidc-issuer https://token.actions.githubusercontent.com`;
   - attestation, as a release file's: `gh attestation verify oci://ghcr.io/skald-so/skald-server@sha256:<digest> --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`.
 - The npm package's provenance, here of `vX.Y.Z`, with gh 2.97.0 or later: `npm pack skald-so@X.Y.Z`; `curl -fsSL https://registry.npmjs.org/-/npm/v1/attestations/skald-so@X.Y.Z | jq -c '.attestations[] | select(.predicateType == "https://slsa.dev/provenance/v1") | .bundle' >skald-so.jsonl`; then `gh attestation verify skald-so-X.Y.Z.tgz --bundle skald-so.jsonl --digest-alg sha512 --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`. Provenance made on any other ref, or by another workflow or repository, fails it.
-- Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums; release-plz is built from checked sources ("Release").
+- Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums; git-cliff is installed from its release archive, checked against a SHA-256 ("Release").
 - dist is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
 - Releases are immutable, a repository setting: a published release's files and checksums never change.
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.
