@@ -40,6 +40,7 @@ mod browser;
 mod cloud;
 #[path = "../common/mod.rs"]
 mod common;
+mod fixtures;
 mod front;
 #[path = "../device_keys/keys.rs"]
 mod keys;
@@ -51,32 +52,22 @@ mod relay;
 mod world;
 
 use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
-use std::thread;
 use std::time::{Duration, Instant};
 
-use browser::Browser;
-use cloud::{Cloud, WAIT};
+use cloud::Cloud;
+use fixtures::{
+    Channel, Issuer, Keyed, TIMEOUT, acme, ada_and_bob, add_device, cert_of, database, fronted,
+    hex, keyed, kill_once, last_channel, msg_id, person_address, recipient, send, send_args, strs,
+};
 use front::{Answers, Front, Sent};
-use machine::{Finished, Machine, Run};
+use machine::Finished;
 use serde_json::Value;
-use skald_crypto::{HpkeKey, SigningKey, issue, open_message};
-use skald_proto::{
-    AccountId, Body, Cbor as _, Cert, CertBody, ChannelId, ChannelMember, Content, DeviceId,
-    DeviceKind, MessageId, NonEmpty, Role, Roster, Scheme, SpaceId, Unknown,
-};
+use skald_crypto::open_message;
+use skald_proto::{Body, Cert, ChannelId, Content, DeviceId, MessageId, Scheme};
 use world::{
-    ACME, AGENT, CLIENT_A, CLIENT_B, CREATE_CHANNEL, Desk, HOST, Person, World, create, next_by,
-    next_with, now, run, space_id, store,
+    ACME, AGENT, CLIENT_A, CLIENT_B, CREATE_CHANNEL, Desk, HOST, Person, World, run, space_id,
 };
-
-/// The command that sends a message.
-const SEND: &str = "send";
-
-/// The setting of the request timeout, and the one the tests give a run that retries.
-const TIMEOUT_SETTING: &str = "SKALD_TIMEOUT";
-const TIMEOUT: Duration = Duration::from_secs(4);
 
 /// What the CLI says of an envelope the server stored, and when no device can receive a message.
 const STORED: &str = "stored";
@@ -89,204 +80,6 @@ const THIRD: &str = "rolling back the canary in five minutes";
 
 /// The agent the tests send as.
 const CLAUDE: &str = "claude-k3s8vq";
-
-/// A world whose server's public address is that of a front before the relay, which forwards to
-/// it, and the front.
-fn fronted() -> (World, Front) {
-    let front = Front::bind();
-    let cloud = Cloud::fronted(HOST, front.port(), 120, 1);
-    front.forward_to(cloud.relay.url.trim_start_matches("http://"));
-    let world = World {
-        cloud,
-        browser: Browser::launch(),
-    };
-    (world, front)
-}
-
-/// `person`, its runs retrying for [`TIMEOUT`].
-fn retrying_for_the_timeout(mut person: Person) -> Person {
-    person.machine = person
-        .machine
-        .with_env(TIMEOUT_SETTING, TIMEOUT.as_secs().to_string());
-    person
-}
-
-/// Runs `skald send <channel> <text>` on `machine`.
-fn send(machine: &Machine, channel: ChannelId, text: &str) -> Finished {
-    machine.start(&strs(&send_args(channel, text))).finish()
-}
-
-/// The arguments of `skald send <channel> <text>`.
-fn send_args(channel: ChannelId, text: &str) -> Vec<String> {
-    vec![SEND.to_owned(), channel.to_string(), text.to_owned()]
-}
-
-/// `args` as arguments.
-fn strs(args: &[String]) -> Vec<&str> {
-    args.iter().map(String::as_str).collect()
-}
-
-/// A device whose HPKE key the test holds, to open what is sealed to it.
-struct Keyed {
-    id: DeviceId,
-    hpke: HpkeKey,
-}
-
-/// The certificate of `person`'s machine's device, as the server holds it.
-fn cert_of(cloud: &Cloud, person: &Person) -> Cert {
-    cloud
-        .devices(&person.token)
-        .into_iter()
-        .find(|device| device.id == person.device)
-        .and_then(|device| device.cert)
-        .expect("the device's certificate")
-}
-
-/// `person`'s machine's device, its HPKE key read from its secrets file.
-fn keyed(cloud: &Cloud, person: &Person) -> Keyed {
-    let public = cert_of(cloud, person).body().hpke;
-    let holders = person.machine.files_holding(&person.token);
-    assert_eq!(holders.len(), 1, "the secrets file: {holders:?}");
-    let secrets = fs::read(&holders[0]).expect("read the secrets file");
-    let secret = keys::private_key(&secrets, &public, keys::x25519)
-        .expect("the secrets file holds the HPKE key");
-    Keyed {
-        id: person.device,
-        hpke: HpkeKey::from_bytes(&secret),
-    }
-}
-
-/// Who issued the certificate of a device a test writes to the server's database.
-enum Issuer<'a> {
-    /// The device of this person's machine: a valid certificate.
-    Device(&'a Person),
-    /// A key of no device, in place of the account's master key, as only a server could sign it.
-    Server,
-    /// Nobody: the device has no certificate.
-    Nobody,
-}
-
-/// Writes to the server's database a `client` device of `account` named `name`, its certificate
-/// issued as `issuer` says.
-fn add_device(cloud: &Cloud, account: AccountId, name: &str, issuer: &Issuer) -> Keyed {
-    let signing = SigningKey::generate();
-    let hpke = HpkeKey::generate();
-    let id = DeviceId::from_signing_key(&signing.public_key());
-    let body = |issuer| CertBody {
-        account,
-        device: id,
-        kind: DeviceKind::Client,
-        signing: signing.public_key(),
-        hpke: hpke.public_key(),
-        issuer,
-        issued: now(),
-        ssh: None,
-        name: name.to_owned(),
-        unknown: Unknown::default(),
-    };
-    let cert = match issuer {
-        Issuer::Device(person) => Some(issue(&body(Some(person.device)), &person.key, &signing)),
-        Issuer::Server => Some(issue(&body(None), &SigningKey::generate(), &signing)),
-        Issuer::Nobody => None,
-    }
-    .map(|cert| cert.expect("a certificate").to_cbor());
-    let bytes = |bytes: &[u8]| format!("'\\x{}'::bytea", hex(bytes));
-    let columns = [
-        format!("'{id}'::uuid"),
-        format!("'{account}'::uuid"),
-        "'client'".to_owned(),
-        bytes(&signing.public_key()),
-        bytes(&hpke.public_key()),
-        bytes(name.as_bytes()),
-        cert.as_deref().map_or_else(|| "NULL".to_owned(), bytes),
-    ];
-    cloud.execute(&format!(
-        "INSERT INTO devices (id, account_id, kind, signing, hpke, name, cert) VALUES ({})",
-        columns.join(", ")
-    ));
-    Keyed { id, hpke }
-}
-
-/// `bytes` in lowercase hex.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// A space of Ada's and the one channel Ada's machine created in it.
-struct Channel {
-    space: SpaceId,
-    id: ChannelId,
-}
-
-/// Ada's machine creates `acme`, whose revision 2 adds `members`, and a channel in it; revision 4,
-/// which Ada's device signs and the server stores while the machine has not accepted it yet, adds
-/// `joining` to the channel and has each member's account of `excluded` bar its device.
-fn acme(
-    cloud: &Cloud,
-    ada: &Person,
-    members: &[&Person],
-    joining: &[&Person],
-    excluded: &[(AccountId, DeviceId)],
-) -> Channel {
-    let first = create(cloud, ada, ACME);
-    let space = first.body().space;
-    let second = next_by(&first, ada, |list| {
-        list.extend(members.iter().map(|person| person.member(Role::Member)));
-    });
-    store(cloud, &ada.token, &second);
-    let created = run(&ada.machine, &[CREATE_CHANNEL, ACME]);
-    assert!(created.success, "a channel: {created:?}");
-    let (third, id) = last_channel(cloud, ada, space);
-    if !joining.is_empty() || !excluded.is_empty() {
-        let fourth = next_with(&third, (ada.device, &ada.key), |body| {
-            let channel = body
-                .channels
-                .iter_mut()
-                .find(|channel| channel.id == id)
-                .expect("the channel");
-            channel
-                .members
-                .extend(joining.iter().map(|person| ChannelMember {
-                    account: person.account,
-                    history: false,
-                }));
-            let mut members = body.members.clone().into_vec();
-            for (account, device) in excluded {
-                let member = members
-                    .iter_mut()
-                    .find(|member| member.account == *account)
-                    .expect("a member");
-                member.excluded = Some(NonEmpty::new(*device));
-            }
-            body.members = NonEmpty::from_vec(members).expect("a member");
-        });
-        store(cloud, &ada.token, &fourth);
-    }
-    Channel { space, id }
-}
-
-/// The last revision of `space` the server holds and the ID of its last channel.
-fn last_channel(cloud: &Cloud, person: &Person, space: SpaceId) -> (Roster, ChannelId) {
-    let (_, last) = cloud
-        .revisions(&person.token, space)
-        .pop()
-        .expect("a revision");
-    let id = last.body().channels.last().expect("a channel").id;
-    (last, id)
-}
-
-/// The recipient device of `sent`, an envelope under `hpke` to one device.
-fn recipient(sent: &Sent) -> DeviceId {
-    let header = &sent.envelope.envelope().header;
-    match header.recipients.as_deref() {
-        Some([device]) => *device,
-        other => panic!("not one recipient device: {other:?}"),
-    }
-}
-
-fn msg_id(sent: &Sent) -> MessageId {
-    sent.envelope.envelope().header.msg_id
-}
 
 /// The `send` frames the front saw after its first `from`.
 fn sent_after(front: &Front, from: usize) -> Vec<Sent> {
@@ -393,16 +186,6 @@ fn assert_content(content: &Content, from: &str, counter: u64, msg_id: MessageId
     );
 }
 
-/// The person address of `person` in `space`.
-fn person_address(space: &str, person: &Person) -> String {
-    format!("{space}/{}/user@{HOST}", person.handle)
-}
-
-/// What the server's database holds, in lowercase, byte strings in hex.
-fn database(cloud: &Cloud) -> String {
-    cloud.rows().concat().to_lowercase()
-}
-
 /// Fails unless the server's database holds each of `envelopes` as its bytes.
 #[track_caller]
 fn assert_held(cloud: &Cloud, envelopes: &[&Sent]) {
@@ -454,17 +237,6 @@ fn assert_left_with(finished: &Finished, msg_id: MessageId, devices: &[DeviceId]
     }
 }
 
-/// Waits for up to [`WAIT`] until `done` holds, then kills `run`; fails if `run` exits first.
-fn kill_once(mut run: Run, what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + WAIT;
-    while !done() {
-        run.assert_running();
-        assert!(Instant::now() < deadline, "no {what}: {}", run.shown());
-        thread::sleep(Duration::from_millis(20));
-    }
-    drop(run);
-}
-
 /// Ada, Bob and the channel of `acme` they are both in, Ada's machine retrying for [`TIMEOUT`].
 struct Pair {
     world: World,
@@ -479,10 +251,8 @@ struct Pair {
 impl Pair {
     fn start(ids: [u64; 2], logins: [&str; 2]) -> Self {
         let (world, front) = fronted();
-        let ada = retrying_for_the_timeout(world.sign_up(ids[0], logins[0], "ada-workstation"));
-        let bob = world.sign_up(ids[1], logins[1], "bob-workstation");
+        let (ada, bob, channel) = ada_and_bob(&world, ids, logins);
         let cloud = &world.cloud;
-        let channel = acme(cloud, &ada, &[&bob], &[&bob], &[]);
         Pair {
             bob_keyed: keyed(cloud, &bob),
             ada_cert: cert_of(cloud, &ada),

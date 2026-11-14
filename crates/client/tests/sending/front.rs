@@ -4,15 +4,22 @@
 //! It can also, as a network or a compromised server would, lose the server's `stored` answers,
 //! turn them into `send-refused`, swallow a machine's `send` before the server gets it, and take
 //! the server down for delivery: close each connection that asks for a challenge or a WebSocket.
+//! For delivery, it knows each connection's device by its `auth` and can swallow a machine's acks,
+//! an `ack` or a `sync` after the connection's first, or cut the connection at the first; hold back
+//! the server's `message` pushes or the empty `batch` that ends catch-up; and put envelopes into a
+//! device's catch-up as `message` pushes before that `batch`, numbered after every `seq` the
+//! connection stated or carried, or numbered as the cursor its first `sync` stated, as a
+//! redelivery.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use skald_proto::{Cbor as _, Frame, RawEnvelope};
+use skald_proto::{Cbor as _, DeviceId, Frame, Push, RawEnvelope};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -29,6 +36,17 @@ pub enum Answers {
     Lose,
     /// Gives the machine a `send-refused` with this problem instead, for the same envelope.
     Refuse(String),
+}
+
+/// What the front does with a machine's acks: an `ack`, or a `sync` after the connection's first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acks {
+    /// Forwards them.
+    Forward,
+    /// Swallows them, so the server never gets them.
+    Swallow,
+    /// Closes the connection, both ways, at the first, which the server never gets.
+    Cut,
 }
 
 /// A `send` a machine sent.
@@ -51,6 +69,53 @@ struct State {
     swallowed: usize,
     /// How many connections were closed for asking for delivery while the server was down.
     refused: usize,
+    acks: Acks,
+    /// How many acks the machines sent.
+    acked: usize,
+    /// Whether it holds back the server's `message` pushes and the `batch` that ends catch-up.
+    hold_messages: bool,
+    /// How many `message` pushes it held back.
+    held_messages: usize,
+    /// Whether it holds back the `batch` that ends catch-up.
+    hold_end: bool,
+    /// The envelopes to put into the next catch-up of each device, in order.
+    injections: Vec<(DeviceId, Vec<RawEnvelope>)>,
+    /// The envelopes to put into the next catch-up of each device that states a cursor above 0,
+    /// numbered as that cursor.
+    redeliveries: Vec<(DeviceId, RawEnvelope)>,
+    /// How many envelopes it put into catch-ups.
+    injected: usize,
+}
+
+/// What the front knows of one WebSocket connection.
+#[derive(Default)]
+struct Link {
+    /// The device its `auth` names.
+    device: Mutex<Option<DeviceId>>,
+    /// Whether the machine has sent its first `sync`.
+    synced: AtomicBool,
+    /// The cursor its first `sync` stated.
+    cursor: Mutex<Option<u64>>,
+    /// The highest `seq` the machine stated or the server pushed on it.
+    last_seq: Mutex<u64>,
+}
+
+impl Link {
+    fn device(&self) -> Option<DeviceId> {
+        *self.device.lock().expect("a connection's device")
+    }
+
+    fn saw(&self, seq: u64) {
+        let mut last = self.last_seq.lock().expect("a connection's seq");
+        *last = (*last).max(seq);
+    }
+
+    /// The `seq` after the highest it saw, which it then holds.
+    fn next_seq(&self) -> NonZeroU64 {
+        let mut last = self.last_seq.lock().expect("a connection's seq");
+        *last += 1;
+        NonZeroU64::new(*last).expect("above 0")
+    }
 }
 
 struct Shared {
@@ -87,6 +152,14 @@ impl Front {
                 swallow: false,
                 swallowed: 0,
                 refused: 0,
+                acks: Acks::Forward,
+                acked: 0,
+                hold_messages: false,
+                held_messages: 0,
+                hold_end: false,
+                injections: Vec::new(),
+                redeliveries: Vec::new(),
+                injected: 0,
             }),
             down: AtomicBool::new(false),
         });
@@ -153,6 +226,49 @@ impl Front {
     pub fn refused(&self) -> usize {
         self.shared.state().refused
     }
+
+    /// From now on, does `acks` with the machines' acks.
+    pub fn acks(&self, acks: Acks) {
+        self.shared.state().acks = acks;
+    }
+
+    /// How many acks the machines sent so far, forwarded or not.
+    pub fn acked(&self) -> usize {
+        self.shared.state().acked
+    }
+
+    /// From now on, holds back the server's `message` pushes and the `batch` that ends catch-up if
+    /// `hold`.
+    pub fn hold_messages(&self, hold: bool) {
+        self.shared.state().hold_messages = hold;
+    }
+
+    /// How many `message` pushes it held back so far.
+    pub fn held_messages(&self) -> usize {
+        self.shared.state().held_messages
+    }
+
+    /// From now on, holds back the `batch` that ends catch-up if `hold`.
+    pub fn hold_end(&self, hold: bool) {
+        self.shared.state().hold_end = hold;
+    }
+
+    /// Puts `envelopes` into the next catch-up of `device`, in order, as `message` pushes before
+    /// the `batch` that ends it.
+    pub fn inject(&self, device: DeviceId, envelopes: Vec<RawEnvelope>) {
+        self.shared.state().injections.push((device, envelopes));
+    }
+
+    /// Puts `envelope` into the next catch-up of `device` that states a cursor above 0, as a
+    /// `message` push with that cursor as its `seq`, before the `batch` that ends it.
+    pub fn redeliver(&self, device: DeviceId, envelope: RawEnvelope) {
+        self.shared.state().redeliveries.push((device, envelope));
+    }
+
+    /// How many envelopes it put into catch-ups so far.
+    pub fn injected(&self) -> usize {
+        self.shared.state().injected
+    }
 }
 
 /// Forwards `machine`'s connection, number `connection`, to the target, both ways.
@@ -168,12 +284,14 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
         return;
     };
     let upgrading = Arc::new(AtomicBool::new(false));
+    let link = Arc::new(Link::default());
     let from_machine = {
         let (machine, server) = (clone(&machine), clone(&server));
         let (shared, upgrading) = (Arc::clone(shared), Arc::clone(&upgrading));
-        thread::spawn(move || to_server(machine, server, &shared, &upgrading))
+        let link = Arc::clone(&link);
+        thread::spawn(move || to_server(machine, server, &shared, &upgrading, &link))
     };
-    to_machine(clone(&server), clone(&machine), shared, &upgrading);
+    to_machine(clone(&server), clone(&machine), shared, &upgrading, &link);
     let _ = from_machine.join();
 }
 
@@ -188,6 +306,7 @@ fn to_server(
     mut server: TcpStream,
     shared: &Shared,
     upgrading: &AtomicBool,
+    link: &Link,
 ) {
     let mut frames = None::<Vec<u8>>;
     let mut buffer = [0; 16 * 1024];
@@ -224,16 +343,49 @@ fn to_server(
             continue;
         };
         pending.extend_from_slice(chunk);
-        while let Some((frame, length)) = ws_frame(pending) {
-            let raw: Vec<u8> = pending.drain(..length).collect();
-            if frame.is_binary()
-                && let Ok(Frame::Send { envelope, report }) = Frame::from_cbor(&frame.payload)
-            {
-                let mut state = shared.state();
-                state.sent.push(Sent { envelope, report });
-                if state.swallow {
-                    state.swallowed += 1;
-                    continue;
+        while let Some((decoded, raw)) = next_frame(pending) {
+            let ack = match decoded {
+                Some(Frame::Send { envelope, report }) => {
+                    let mut state = shared.state();
+                    state.sent.push(Sent { envelope, report });
+                    if state.swallow {
+                        state.swallowed += 1;
+                        continue;
+                    }
+                    false
+                }
+                Some(Frame::Auth { device, .. }) => {
+                    *link.device.lock().expect("a connection's device") = Some(device);
+                    false
+                }
+                Some(Frame::Sync { cursor }) => {
+                    link.saw(cursor);
+                    let later = link.synced.swap(true, Ordering::SeqCst);
+                    if !later {
+                        *link.cursor.lock().expect("a connection's cursor") = Some(cursor);
+                    }
+                    later
+                }
+                Some(Frame::Ack { seq }) => {
+                    link.saw(seq.get());
+                    true
+                }
+                _ => false,
+            };
+            if ack {
+                let acks = {
+                    let mut state = shared.state();
+                    state.acked += 1;
+                    state.acks
+                };
+                match acks {
+                    Acks::Forward => {}
+                    Acks::Swallow => continue,
+                    Acks::Cut => {
+                        let _ = machine.shutdown(Shutdown::Both);
+                        let _ = server.shutdown(Shutdown::Both);
+                        return;
+                    }
                 }
             }
             if server.write_all(&raw).is_err() {
@@ -251,6 +403,7 @@ fn to_machine(
     mut machine: TcpStream,
     shared: &Shared,
     upgrading: &AtomicBool,
+    link: &Link,
 ) {
     let mut head = Vec::new();
     let mut frames = None::<Vec<u8>>;
@@ -263,7 +416,7 @@ fn to_machine(
         let chunk = &buffer[..count];
         if let Some(pending) = frames.as_mut() {
             pending.extend_from_slice(chunk);
-            if !forward_answers(pending, &mut machine, shared) {
+            if !forward_answers(pending, &mut machine, shared, link) {
                 break;
             }
             continue;
@@ -284,7 +437,7 @@ fn to_machine(
             break;
         }
         if answer.starts_with(b"HTTP/1.1 101") {
-            if !forward_answers(&mut rest, &mut machine, shared) {
+            if !forward_answers(&mut rest, &mut machine, shared, link) {
                 break;
             }
             frames = Some(rest);
@@ -300,13 +453,13 @@ fn to_machine(
 
 /// Forwards to `machine` each whole frame in `pending`, the server's, as the rules say; whether
 /// the machine is still there.
-fn forward_answers(pending: &mut Vec<u8>, machine: &mut TcpStream, shared: &Shared) -> bool {
-    while let Some((frame, length)) = ws_frame(pending) {
-        let raw: Vec<u8> = pending.drain(..length).collect();
-        let decoded = frame
-            .is_binary()
-            .then(|| Frame::from_cbor(&frame.payload).ok())
-            .flatten();
+fn forward_answers(
+    pending: &mut Vec<u8>,
+    machine: &mut TcpStream,
+    shared: &Shared,
+    link: &Link,
+) -> bool {
+    while let Some((decoded, raw)) = next_frame(pending) {
         let out = match decoded {
             Some(Frame::Stored(stored)) => {
                 let mut state = shared.state();
@@ -330,6 +483,21 @@ fn forward_answers(pending: &mut Vec<u8>, machine: &mut TcpStream, shared: &Shar
                 shared.state().answered.push(refused);
                 Some(raw)
             }
+            Some(Frame::Push(Push::Message { seq, .. })) => {
+                link.saw(seq.get());
+                let mut state = shared.state();
+                if state.hold_messages {
+                    state.held_messages += 1;
+                    None
+                } else {
+                    Some(raw)
+                }
+            }
+            Some(Frame::Push(Push::Status { seq, .. })) => {
+                link.saw(seq.get());
+                Some(raw)
+            }
+            Some(Frame::Batch(entries)) if entries.is_empty() => end_of_catch_up(raw, shared, link),
             _ => Some(raw),
         };
         if let Some(out) = out
@@ -339,6 +507,67 @@ fn forward_answers(pending: &mut Vec<u8>, machine: &mut TcpStream, shared: &Shar
         }
     }
     true
+}
+
+/// The `batch` `raw` that ends a catch-up, as the rules say: held back, or after the envelopes to
+/// put into the catch-up of the connection's device, as `message` pushes numbered after the
+/// highest `seq` it saw.
+fn end_of_catch_up(raw: Vec<u8>, shared: &Shared, link: &Link) -> Option<Vec<u8>> {
+    let mut state = shared.state();
+    if state.hold_messages || state.hold_end {
+        return None;
+    }
+    let device = link.device();
+    let mut out = Vec::new();
+    let cursor = link
+        .cursor
+        .lock()
+        .expect("a connection's cursor")
+        .and_then(NonZeroU64::new);
+    if let Some(cursor) = cursor
+        && let Some(at) = state
+            .redeliveries
+            .iter()
+            .position(|(to, _)| Some(*to) == device)
+    {
+        let (_, envelope) = state.redeliveries.remove(at);
+        state.injected += 1;
+        let push = Push::Message {
+            seq: cursor,
+            envelope,
+        };
+        out.extend(server_frame(&Frame::Push(push).to_cbor()));
+    }
+    let envelopes = match state
+        .injections
+        .iter()
+        .position(|(to, _)| Some(*to) == device)
+    {
+        Some(at) => state.injections.remove(at).1,
+        None => Vec::new(),
+    };
+    state.injected += envelopes.len();
+    for envelope in envelopes {
+        let push = Push::Message {
+            seq: link.next_seq(),
+            envelope,
+        };
+        out.extend(server_frame(&Frame::Push(push).to_cbor()));
+    }
+    out.extend(raw);
+    Some(out)
+}
+
+/// Takes the whole WebSocket frame at the start of `pending`, once it has come: the delivery frame
+/// it carries, if it is a binary one that decodes, and its bytes on the wire.
+fn next_frame(pending: &mut Vec<u8>) -> Option<(Option<Frame>, Vec<u8>)> {
+    let (frame, length) = ws_frame(pending)?;
+    let raw: Vec<u8> = pending.drain(..length).collect();
+    let decoded = frame
+        .is_binary()
+        .then(|| Frame::from_cbor(&frame.payload).ok())
+        .flatten();
+    Some((decoded, raw))
 }
 
 /// A WebSocket frame: its opcode and its payload, unmasked.
