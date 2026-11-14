@@ -16,6 +16,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
 mod accounts;
+mod attachments;
 mod connections;
 mod device_flow;
 mod devices;
@@ -30,6 +31,7 @@ mod refusal;
 mod sign_in;
 mod spaces;
 
+pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 use google::Google;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
