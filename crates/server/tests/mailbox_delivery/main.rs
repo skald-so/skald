@@ -14,6 +14,18 @@
 //!   come alone or in a non-empty `batch`.
 //! - The mailboxes: `mailbox_entries` holds every entry, a `status` as well as a `message`, by
 //!   `device_id` and `seq`.
+//!
+//! Expiry ("Mailbox"): a `message` expires at its storing time plus its envelope's `ttl`, capped by
+//! the server's mailbox retention, a `status` at its adding time plus the retention, and a
+//! `message` whose `v` is neither the connection's version nor adjacent to it when the server
+//! reaches it while sending. The server finds expired entries by itself, deletes them and never
+//! sends them, and adds `expired` for an envelope sent with `report` true. Besides the above:
+//! - The setting `--mailbox-retention <SECONDS>`, also `SKALD_MAILBOX_RETENTION`; unset, there is
+//!   no retention.
+//! - The server keeps the times of envelopes, sends and entries in `timestamptz` columns of the
+//!   tables `envelopes`, `sends` and `entries`, and reads them there: the tests move them back to
+//!   let time pass.
+//! - The server finds an expired entry within 30 seconds, with no connection of its device.
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -34,10 +46,14 @@ mod fixture;
 #[path = "../mailbox/wire.rs"]
 mod wire;
 
+mod expiring;
 mod link;
 mod scene;
 
 mod acks;
 mod catch_up;
 mod connections;
+mod expiry;
+mod no_retention;
 mod receipts;
+mod versions;

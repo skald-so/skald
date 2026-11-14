@@ -22,7 +22,12 @@ pub struct Fixture {
 impl Fixture {
     /// The fixture with revision 3 stored; GitHub user IDs from `github` on.
     pub fn new(github: u64) -> Self {
-        let team = Team::new(github);
+        Self::with(github, &[])
+    }
+
+    /// As [`Fixture::new`], on a server with the extra arguments `args`.
+    pub fn with(github: u64, args: &[&str]) -> Self {
+        let team = Team::with(github, args);
         let eve = Person::new(&team.flow, github + 4, "eve");
         let mut revisions = team.with_members().to_vec();
         let general = team.alice.session.channel(team.space);

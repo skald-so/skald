@@ -19,7 +19,12 @@ pub struct Scene {
 impl Scene {
     /// The scene; GitHub user IDs from `github` on.
     pub fn new(github: u64) -> Self {
-        let fixture = Fixture::new(github);
+        Self::with(github, &[])
+    }
+
+    /// As [`Scene::new`], on a server with the extra arguments `args`.
+    pub fn with(github: u64, args: &[&str]) -> Self {
+        let fixture = Fixture::with(github, args);
         let alice = Link::of(&fixture.team.flow, &fixture.team.alice);
         let bob = fixture.team.bob.laptop.id;
         Scene {

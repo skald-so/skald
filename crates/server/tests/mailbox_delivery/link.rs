@@ -2,15 +2,18 @@
 //! answers and ends of catch-up the server sends it, in the order they come.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use skald_proto::{Cbor, DeliveryStatus, DeviceId, Frame, Header, Push, ServerStatus, Stored};
+use skald_proto::{
+    Cbor, DeliveryStatus, DeviceId, Frame, Header, PROTOCOL_VERSION, Push, ServerStatus, Stored,
+};
 use tungstenite::Message;
 
 use crate::api::Person;
-use crate::common::TestDb;
 use crate::common::device_flow::DeviceFlow;
+use crate::common::{Server, TestDb};
 use crate::fixture::Fixture;
 use crate::wire::{
     Socket, array_of, assert_stored_at, byte_item, envelope, key_of, now, query, uint,
@@ -81,8 +84,19 @@ pub struct Link {
 impl Link {
     /// The connection of `person`'s certified laptop.
     pub fn of(flow: &DeviceFlow, person: &Person) -> Self {
+        Self::stating(&flow.stand.server, flow, person, PROTOCOL_VERSION)
+    }
+
+    /// The connection of `person`'s certified laptop to `server`, an instance of `flow`'s server,
+    /// of the protocol version `version`.
+    pub fn stating(
+        server: &Server,
+        flow: &DeviceFlow,
+        person: &Person,
+        version: NonZeroU64,
+    ) -> Self {
         Link {
-            socket: Socket::of(flow, person),
+            socket: Socket::stating(server, flow, person, &person.laptop, version),
             pending: VecDeque::new(),
         }
     }
@@ -192,10 +206,16 @@ impl Link {
     /// The next entry, which comes within `PUSH`.
     #[track_caller]
     pub fn entry(&mut self) -> Entry {
-        match self.read(Instant::now() + PUSH) {
+        self.entry_within(PUSH)
+    }
+
+    /// The next entry, which comes within `within`.
+    #[track_caller]
+    pub fn entry_within(&mut self, within: Duration) -> Entry {
+        match self.read(Instant::now() + within) {
             Some(Read::Entry(entry)) => entry,
             Some(other) => panic!("an entry, not {other:?}"),
-            None => panic!("no entry within {PUSH:?}"),
+            None => panic!("no entry within {within:?}"),
         }
     }
 
@@ -253,16 +273,29 @@ pub fn messages(first: u64, envelopes: &[Vec<u8>]) -> Vec<Entry> {
 /// added at `before` or later and not after now; gives its `seq`.
 #[track_caller]
 pub fn assert_delivered(entry: &Entry, header: &Header, recipient: DeviceId, before: u64) -> u64 {
+    assert_status(entry, ServerStatus::Delivered, header, recipient, before)
+}
+
+/// Checks that `entry` is a `status` of `server_status` for the message of `header` to
+/// `recipient`, which happened at `before` or later and not after now; gives its `seq`.
+#[track_caller]
+pub fn assert_status(
+    entry: &Entry,
+    server_status: ServerStatus,
+    header: &Header,
+    recipient: DeviceId,
+    before: u64,
+) -> u64 {
     let Entry::Status(seq, status) = entry else {
         panic!("a status, not {entry:?}");
     };
-    assert_eq!(status.status, ServerStatus::Delivered, "{status:?}");
+    assert_eq!(status.status, server_status, "{status:?}");
     assert_eq!(status.msg_id, header.msg_id, "the status's msg_id");
     assert_eq!(status.device, recipient, "the status's recipient device");
     let range = before.saturating_sub(2)..=now() + 2;
     assert!(
         range.contains(&status.timestamp),
-        "delivered at {}, not in {range:?}",
+        "{server_status:?} at {}, not in {range:?}",
         status.timestamp
     );
     *seq
@@ -285,7 +318,13 @@ pub fn seqs(db: &TestDb, device: DeviceId) -> Vec<i64> {
 /// answer.
 #[track_caller]
 pub fn await_seqs(db: &TestDb, device: DeviceId, expected: &[i64]) {
-    let deadline = Instant::now() + WAIT;
+    await_seqs_within(db, device, expected, WAIT);
+}
+
+/// As [`await_seqs`], waiting up to `within`.
+#[track_caller]
+pub fn await_seqs_within(db: &TestDb, device: DeviceId, expected: &[i64], within: Duration) {
+    let deadline = Instant::now() + within;
     loop {
         let found = seqs(db, device);
         if found == expected {
@@ -293,7 +332,7 @@ pub fn await_seqs(db: &TestDb, device: DeviceId, expected: &[i64]) {
         }
         assert!(
             Instant::now() < deadline,
-            "{device}'s mailbox holds {found:?}, not {expected:?}, after {WAIT:?}"
+            "{device}'s mailbox holds {found:?}, not {expected:?}, after {within:?}"
         );
         thread::sleep(Duration::from_millis(100));
     }
