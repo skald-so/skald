@@ -446,17 +446,30 @@ fn approval_holds_neither_below_its_folder_nor_through_a_symlink() {
 }
 
 /// A `.skald.toml` that is no regular file, such as a FIFO a cloned repository brings, or holds
-/// more than 64 KiB binds nothing, with a warning, and is not approved; no run waits on it.
+/// more than 64 KiB binds nothing, with a warning, and is not approved; no run waits on it. One of
+/// 64 KiB binds once approved.
 #[test]
 fn skald_toml_that_is_no_small_regular_file_binds_nothing() {
     let machine = Machine::new();
-    let big = dir_of(&machine, "work/big");
-    let padding = "#".repeat(64 * 1024);
-    fs::write(
-        big.join(CONFIG),
-        format!("space = \"{CLIENT_A}\"\n{padding}\n"),
-    )
-    .expect("write a big .skald.toml");
+    let limit = 64 * 1024;
+    // A `.skald.toml` naming `clienta`, `len` bytes long, in a new folder `rel`.
+    let sized = |rel: &str, len: usize| {
+        let dir = dir_of(&machine, rel);
+        let mut config = format!("space = \"{CLIENT_A}\"\n#");
+        config.push_str(&"#".repeat(len - config.len() - 1));
+        config.push('\n');
+        fs::write(dir.join(CONFIG), config).expect("write a .skald.toml");
+        dir
+    };
+    let at_limit = sized("work/limit", limit);
+    let approved = run(&machine, &[APPROVE, path(&at_limit)]);
+    assert!(approved.success, "{approved:?}");
+    let shown = folder(&machine, &at_limit);
+    let by = By::Config("work/limit");
+    assert_in_none(&shown, Some((CLIENT_A, by)), &[]);
+    assert_unwarned(&shown);
+
+    let big = sized("work/big", limit + 1);
     let mut folders = vec![("work/big", big)];
     #[cfg(unix)]
     {
@@ -526,9 +539,9 @@ fn rules_and_approvals_say_what_holds() {
 }
 
 /// A folder without a binding is in the personal space the device pinned, which sorts after the
-/// team spaces by name, also when the proxy marks `clienta` as personal in the account's spaces and gives `clienta`'s ID, or a made-up one,
-/// as the personal space. The account's next machine, not linked, pinned none: its folder is in no
-/// space.
+/// team spaces by name, also when the proxy marks `clienta` as personal in the account's spaces
+/// and gives `clienta`'s ID, or a made-up one, as the personal space. The account's next machine,
+/// not linked, pinned none: its folder is in no space.
 #[test]
 fn folder_without_a_binding_is_in_the_pinned_personal_space() {
     let desk = Desk::start(4_120_801_501, "zoe-personal-standin");
