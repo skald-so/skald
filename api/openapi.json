@@ -2765,7 +2765,7 @@
       "get": {
         "operationId": "openWebSocket",
         "summary": "WebSocket opening request",
-        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. Its first frame, `auth`, proves the connection's device on a challenge of `POST /session/challenge` (docs/protocol/delivery.md, \"Connecting\"); a connection without a valid proof is closed as \"Connecting\" there says. The server then answers each `send` with `stored` or `send-refused` (\"Send\" there).",
+        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. Its first frame, `auth`, proves the connection's device on a challenge of `POST /session/challenge` (docs/protocol/delivery.md, \"Connecting\"); a connection without a valid proof is closed as \"Connecting\" there says. The server then answers each `send` with `stored` or `send-refused` (\"Send\" there) and, from the connection's first `sync`, sends its device's mailbox (\"Mailbox\" there).",
         "parameters": [
           {
             "name": "Sec-WebSocket-Protocol",

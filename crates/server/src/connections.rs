@@ -1,7 +1,7 @@
 //! Connections authenticated as a device: `docs/protocol/delivery.md`, "Connecting". A device
 //! session gets a challenge; a WebSocket is taken, as its device's, once its first frame signs that
 //! challenge with the key of a certified `client` device of the session's account. A taken
-//! connection carries the device's sends and closes when its session ends.
+//! connection carries the device's sends and its mailbox, and closes when its session ends.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -22,6 +22,7 @@ use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
+use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in};
@@ -183,12 +184,12 @@ pub(crate) async fn open(
         .on_upgrade(move |socket| serve(state, socket, version))
 }
 
-/// A connection's device and session, once its `auth` proved them.
+/// A connection's device and account, once its `auth` proved them, and its hold: the receiver
+/// fires when the session ends.
 struct Proved {
     device: DeviceId,
     account: AccountId,
-    /// The SHA-256 of the session's token.
-    session: Vec<u8>,
+    held: (Registration, oneshot::Receiver<()>),
 }
 
 /// Takes `socket`, of the protocol version `version`, once it proves its device, and serves it
@@ -199,15 +200,7 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
         Ok(None) => return finish(socket).await,
         Err(closing) => return close(socket, closing).await,
     };
-    let (_registration, ended) = state
-        .connections
-        .hold(proved.device, proved.session.clone());
-    // The session may have ended between the proof and the hold.
-    match session_exists(&state, &proved.session).await {
-        Ok(true) => {}
-        Ok(false) => return close(socket, Closing::SessionEnded).await,
-        Err(closing) => return close(socket, closing).await,
-    }
+    let (_registration, ended) = proved.held;
     let sender = Sender {
         device: proved.device,
         account: proved.account,
@@ -216,59 +209,129 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
     hold(&state, socket, ended, &sender).await;
 }
 
-/// Answers each frame of `socket`, `sender`'s connection, in the order they arrive, until the
-/// client closes it, `ended` fires, or a frame does not decode.
+/// Why the server stops serving a connection.
+enum Stop {
+    /// It closes the connection.
+    Close(Closing),
+    /// The client is gone.
+    Gone,
+}
+
+/// Serves `socket`, `sender`'s connection, until the client closes it, `ended` fires, or a frame
+/// does not decode: answers its frames in the order they arrive and delivers its device's mailbox.
 async fn hold(
     state: &AppState,
     mut socket: WebSocket,
     mut ended: oneshot::Receiver<()>,
     sender: &Sender,
 ) {
+    let mut reader = Reader::new(&state.wakers, sender.device);
     loop {
-        let bytes = tokio::select! {
+        let served = tokio::select! {
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
+            () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
             message = socket.recv() => match message {
-                Some(Ok(Message::Binary(bytes))) => bytes,
-                Some(Ok(Message::Text(_))) => return close(socket, Closing::Malformed).await,
+                Some(Ok(Message::Binary(bytes))) => {
+                    serve_frame(state, &mut socket, sender, &mut reader, &bytes).await
+                }
+                Some(Ok(Message::Text(_))) => Err(Stop::Close(Closing::Malformed)),
                 Some(Ok(Message::Close(_))) => return finish(socket).await,
                 Some(Err(_)) | None => return,
-                Some(Ok(_)) => continue,
+                Some(Ok(_)) => Ok(()),
             },
         };
-        match answer(state, sender, &bytes).await {
-            Ok(Some(frame)) => {
-                if socket
-                    .send(Message::Binary(frame.to_cbor().into()))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            Ok(None) => {}
-            Err(closing) => return close(socket, closing).await,
+        match served {
+            Ok(()) => {}
+            Err(Stop::Close(closing)) => return close(socket, closing).await,
+            Err(Stop::Gone) => return,
         }
     }
 }
 
-/// The answer to the frame `bytes` from `sender`; `None` for a frame other than `send`, which the
-/// server ignores.
-async fn answer(state: &AppState, sender: &Sender, bytes: &[u8]) -> Result<Option<Frame>, Closing> {
+/// Serves the frame `bytes` from `sender`: answers a `send`, acks a `sync` or an `ack`, and ignores
+/// a frame of another type.
+async fn serve_frame(
+    state: &AppState,
+    socket: &mut WebSocket,
+    sender: &Sender,
+    reader: &mut Reader,
+    bytes: &[u8],
+) -> Result<(), Stop> {
     let answered = match Frame::from_cbor(bytes) {
-        Ok(Frame::Send { envelope, .. }) => mailboxes::send(&state.db, sender, &envelope).await,
+        Ok(Frame::Send { envelope, report }) => {
+            mailboxes::send(&state.db, &state.wakers, sender, &envelope, report).await
+        }
+        Ok(Frame::Sync { cursor }) => return sync(state, socket, reader, cursor).await,
+        Ok(Frame::Ack { seq }) => return ack(state, sender.device, seq.get()).await,
         // A frame of a type the server does not know, or one it does not serve yet.
-        Ok(_) => return Ok(None),
+        Ok(_) => return Ok(()),
         Err(_) => match Frame::misaddressed_send(bytes) {
             Some(header) => mailboxes::misaddressed(&state.db, sender, &header).await,
-            None => return Err(Closing::Malformed),
+            None => return Err(Stop::Close(Closing::Malformed)),
         },
     };
-    answered
-        .map(Some)
-        .map_err(|err| failed("store a send", err))
+    let answer = answered.map_err(|err| Stop::Close(failed("store a send", err)))?;
+    send_frame(socket, &answer).await
 }
 
-/// Reads `socket`'s `auth` and checks it; `None` if the client closed the connection first.
+/// Acks `reader`'s mailbox up to `cursor`; at the connection's first `sync`, sends the entries
+/// after `cursor` that the mailbox holds, then an empty `batch`.
+async fn sync(
+    state: &AppState,
+    socket: &mut WebSocket,
+    reader: &mut Reader,
+    cursor: u64,
+) -> Result<(), Stop> {
+    ack(state, reader.device(), cursor).await?;
+    let held = reader
+        .start(&state.db)
+        .await
+        .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
+    let Some(held) = held else {
+        return Ok(());
+    };
+    deliver(state, socket, reader, held).await?;
+    send_frame(socket, &Frame::Batch(Vec::new())).await
+}
+
+/// Acks `device`'s mailbox up to `cursor`.
+async fn ack(state: &AppState, device: DeviceId, cursor: u64) -> Result<(), Stop> {
+    delivery::ack(&state.db, &state.wakers, device, cursor)
+        .await
+        .map_err(|err| Stop::Close(failed("ack a mailbox", err)))
+}
+
+/// Sends the entries of `reader`'s mailbox after those sent, up to `seq` `upto`.
+async fn deliver(
+    state: &AppState,
+    socket: &mut WebSocket,
+    reader: &mut Reader,
+    upto: i64,
+) -> Result<(), Stop> {
+    loop {
+        let page = reader
+            .next(&state.db, upto)
+            .await
+            .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
+        if page.is_empty() {
+            return Ok(());
+        }
+        for push in page {
+            send_frame(socket, &Frame::Push(push)).await?;
+        }
+    }
+}
+
+/// Sends `frame` on `socket`.
+async fn send_frame(socket: &mut WebSocket, frame: &Frame) -> Result<(), Stop> {
+    socket
+        .send(Message::Binary(frame.to_cbor().into()))
+        .await
+        .map_err(|_| Stop::Gone)
+}
+
+/// Reads `socket`'s `auth`, checks it and holds the connection as its device's. `None` if the
+/// client closed the connection first.
 async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved>, Closing> {
     let Some(frame) = first_frame(socket).await? else {
         return Ok(None);
@@ -281,7 +344,13 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
     else {
         return Err(Closing::AuthRequired);
     };
-    let (session, account) = take_challenge(state, &challenge)
+    let session = challenge_session(state, &challenge)
+        .await?
+        .ok_or(Closing::ChallengeRefused)?;
+    // Held before the challenge is used, so that once the use finds the session, its end closes
+    // the connection; an end before the use deletes the challenge.
+    let held = state.connections.hold(device, session);
+    let account = take_challenge(state, &challenge)
         .await?
         .ok_or(Closing::ChallengeRefused)?;
     let signing = client_key(state, device, &account)
@@ -303,7 +372,7 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
     Ok(Some(Proved {
         device,
         account,
-        session,
+        held,
     }))
 }
 
@@ -324,24 +393,31 @@ async fn first_frame(socket: &mut WebSocket) -> Result<Option<Vec<u8>>, Closing>
     }
 }
 
-/// Uses up `challenge`: the SHA-256 of its session's token and the session's account, if it is
-/// one the server issued, unused, unexpired, to a session that has not ended.
-async fn take_challenge(
-    state: &AppState,
-    challenge: &[u8],
-) -> Result<Option<(Vec<u8>, String)>, Closing> {
-    let taken: Option<(Vec<u8>, String, bool)> = sqlx::query_as(
+/// The SHA-256 of the token of `challenge`'s session, if the server holds the challenge.
+async fn challenge_session(state: &AppState, challenge: &[u8]) -> Result<Option<Vec<u8>>, Closing> {
+    sqlx::query_as("SELECT session_hash FROM connection_challenges WHERE challenge_hash = $1")
+        .bind(Sha256::digest(challenge).to_vec())
+        .fetch_optional(&state.db)
+        .await
+        .map(|found| found.map(|(session,)| session))
+        .map_err(|err| failed("read a challenge", err))
+}
+
+/// Uses up `challenge`: its session's account, if it is one the server issued, unused, unexpired,
+/// to a session that has not ended.
+async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<String>, Closing> {
+    let taken: Option<(String, bool)> = sqlx::query_as(
         "DELETE FROM connection_challenges c USING sessions s
          WHERE c.challenge_hash = $1 AND s.token_hash = c.session_hash
-         RETURNING c.session_hash, s.account_id::text, c.expires_at > now()",
+         RETURNING s.account_id::text, c.expires_at > now()",
     )
     .bind(Sha256::digest(challenge).to_vec())
     .fetch_optional(&state.db)
     .await
     .map_err(|err| failed("take a challenge", err))?;
     Ok(taken
-        .filter(|(_, _, unexpired)| *unexpired)
-        .map(|(session, account, _)| (session, account)))
+        .filter(|(_, unexpired)| *unexpired)
+        .map(|(account, _)| account))
 }
 
 /// The signing key of `device` if it is a `client` device of `account` with a certificate on the
@@ -363,16 +439,6 @@ async fn client_key(
     Ok(found.and_then(|(signing,)| signing.try_into().ok()))
 }
 
-/// Whether the session whose token's SHA-256 is `session` has not ended.
-async fn session_exists(state: &AppState, session: &[u8]) -> Result<bool, Closing> {
-    sqlx::query("SELECT 1 FROM sessions WHERE token_hash = $1")
-        .bind(session)
-        .fetch_optional(&state.db)
-        .await
-        .map(|found| found.is_some())
-        .map_err(|err| failed("read a session", err))
-}
-
 /// The closing when the database fails at `doing`; the failure goes to the server's output.
 fn failed(doing: &str, err: sqlx::Error) -> Closing {
     eprintln!("skald-server: cannot {doing}: {err}");
@@ -388,4 +454,53 @@ async fn finish(mut socket: WebSocket) {
 async fn close(mut socket: WebSocket, closing: Closing) {
     // The client may be gone already.
     let _ = socket.send(Message::Close(Some(closing.frame()))).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(byte: u8) -> DeviceId {
+        DeviceId::from_signing_key(&[byte; 32])
+    }
+
+    /// The number of held connections of each device.
+    fn held(connections: &Connections) -> HashMap<DeviceId, usize> {
+        let by_device = connections.by_device.lock().unwrap();
+        by_device
+            .iter()
+            .map(|(device, held)| (*device, held.len()))
+            .collect()
+    }
+
+    #[test]
+    fn a_connection_is_let_go_when_its_registration_drops() {
+        let connections = Arc::new(Connections::default());
+        let (first, _) = connections.hold(device(1), vec![1]);
+        let (second, mut ended) = connections.hold(device(1), vec![2]);
+        assert_eq!(held(&connections), HashMap::from([(device(1), 2)]));
+
+        drop(first);
+        assert_eq!(held(&connections), HashMap::from([(device(1), 1)]));
+        // The other connection is still held.
+        connections.end_session(&[2]);
+        assert_eq!(ended.try_recv(), Ok(()));
+        drop(second);
+        assert_eq!(held(&connections), HashMap::new());
+    }
+
+    #[test]
+    fn ending_a_session_closes_its_connections_only() {
+        let connections = Arc::new(Connections::default());
+        let (_a, mut a) = connections.hold(device(1), vec![1]);
+        let (_b, mut b) = connections.hold(device(1), vec![2]);
+        let (_c, mut c) = connections.hold(device(2), vec![1]);
+
+        connections.end_session(&[1]);
+
+        assert_eq!(a.try_recv(), Ok(()));
+        assert_eq!(c.try_recv(), Ok(()));
+        assert_eq!(b.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+        assert_eq!(held(&connections), HashMap::from([(device(1), 1)]));
+    }
 }

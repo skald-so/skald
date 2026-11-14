@@ -82,7 +82,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
   - `auth` is the first frame and comes within a few seconds of the opening;
   - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection has used it before; a challenge works once, used or refused;
   - the device is a `client` device with a certificate on the server, of the challenge's session's account;
-  - `signature` verifies with the device's signing key over `origin` the server's public address.
+  - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
 - Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
 
 | Reason | The connection |
@@ -93,7 +93,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
 - A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends.
-- A server that fails to check a proof, such as when its database fails, closes the connection with code 1011 (internal error).
+- A server that fails to check a proof, such as when its database fails, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
@@ -123,6 +123,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
   - On WebSocket, the server sends no `message` or `status` on a connection before its first `sync`.
   - Every `sync` acks like `ack`. Only the first `sync` of a connection starts catch-up; a later one only acks.
 - **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
+  - On WebSocket, once catch-up has sent every entry the mailbox held at the first `sync`, the server sends an empty `batch`, so a client that runs once knows it has them all.
 - A device MAY hold several connections. The server sends each of them the entries in `seq` order.
 - **Expiry:** an entry expires when it is not acked in time:
   - a `message` at its storing time plus the envelope's `ttl`, capped by the server's retention (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)), unless it holds a handshake message;

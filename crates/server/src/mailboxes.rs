@@ -11,6 +11,8 @@ use skald_proto::{
 };
 use sqlx::PgPool;
 
+use crate::delivery::Wakers;
+
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
     pub(crate) device: DeviceId,
@@ -53,11 +55,14 @@ fn send_key(header: &Header) -> SendKey {
     }
 }
 
-/// The answer to `sender`'s send of `envelope`.
+/// The answer to `sender`'s send of `envelope` with `report`; a stored envelope wakes its
+/// recipient's connections in `wakers`.
 pub(crate) async fn send(
     db: &PgPool,
+    wakers: &Wakers,
     sender: &Sender,
     envelope: &RawEnvelope,
+    report: bool,
 ) -> Result<Frame, sqlx::Error> {
     let header = &envelope.envelope().header;
     let key = send_key(header);
@@ -76,7 +81,9 @@ pub(crate) async fn send(
         Err(problem) => return Ok(problem.refusal(key)),
     };
     loop {
-        if let Some(timestamp) = store(db, sender, &key, recipient, envelope.bytes()).await? {
+        let stored = store(db, sender, &key, recipient, envelope.bytes(), report).await?;
+        if let Some(timestamp) = stored {
+            wakers.wake(recipient);
             return Ok(answer(timestamp));
         }
         // A send of the same key stored it meanwhile.
@@ -182,14 +189,16 @@ async fn stored_at(
     Ok(found.map(|(timestamp,)| timestamp.try_into().expect("a time after 1970")))
 }
 
-/// Stores `envelope`, the send of `sender` with `key`, with its entry in `recipient`'s mailbox, and
-/// gives when, in seconds since the Unix epoch; `None` if a send with `key` is stored already.
+/// Stores `envelope`, the send of `sender` with `key` and `report`, with its entry in `recipient`'s
+/// mailbox, and gives when, in seconds since the Unix epoch; `None` if a send with `key` is stored
+/// already.
 async fn store(
     db: &PgPool,
     sender: &Sender,
     key: &SendKey,
     recipient: DeviceId,
     envelope: &[u8],
+    report: bool,
 ) -> Result<Option<u64>, sqlx::Error> {
     let mut tx = db.begin().await?;
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
@@ -209,7 +218,10 @@ async fn store(
     // The mailbox's row lock makes stores to it wait for each other, so its entries are numbered in
     // the order they are committed.
     sqlx::query(
-        "WITH envelope AS (INSERT INTO envelopes (envelope) VALUES ($1) RETURNING id),
+        "WITH envelope AS (
+             INSERT INTO envelopes (envelope, sender_id, msg_id, report)
+             VALUES ($1, $3::uuid, $4::uuid, $5) RETURNING id
+         ),
          mailbox AS (
              INSERT INTO mailboxes (device_id, last_seq) VALUES ($2::uuid, 1)
              ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
@@ -220,6 +232,9 @@ async fn store(
     )
     .bind(envelope)
     .bind(recipient.to_string())
+    .bind(sender.device.to_string())
+    .bind(key.msg_id.to_string())
+    .bind(report)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
