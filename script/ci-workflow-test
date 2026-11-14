@@ -1,13 +1,33 @@
 #!/usr/bin/env node
-// Tests the job of .github/workflows/ci.yml that runs the client's tests on Windows:
+// Tests .github/workflows/ci.yml:
+//   - it runs on a PR into dev, and on every push to dev, whatever the push changes; a push's run is
+//     in a concurrency group of its own commit, which no other push and no PR shares, and is not
+//     cancelled by a newer run; a PR's run is in the PR's group and cancels the PR's older run;
+//   - the checks the ruleset of dev requires, Changed parts, Rust, Tooling and Web, are each the name
+//     of one job;
+//   - each check script/test runs, run with stand-ins for its scripts and tools
+//     (script/lib/test-stand-ins.sh), runs in exactly one of the jobs that run script/test, by their
+//     SKALD_TEST_PARTS: none is left out and none runs twice; installing the packages of web/ is
+//     setup, not a check;
+//   - each part script/changed-parts prints is an output of its job and the part of one job; those
+//     jobs need only the job of script/changed-parts; on a PR one runs exactly when one of its parts
+//     changed, whatever the other parts, and on a push to dev it runs;
+//   - the job Rust needs the job of script/changed-parts and every job that runs script/test and is
+//     not a required check itself; it runs whatever their results, a cancelled run's too, and fails
+//     unless the job of script/changed-parts succeeded and each other one succeeded or was skipped;
+//   - the jobs Rust needs that run script/test set up the same tools: their steps differ only in the
+//     Cargo workspaces they cache and in SKALD_TEST_PARTS;
+//   - every action of the workflow, and of the local actions it runs, is pinned to a commit, a
+//     checkout keeps no credentials, and a job's token reads contents at most.
+// And the job that runs the client's tests on Windows:
 //   - one job of a PR into dev runs `cargo test -p skald-client --locked --no-fail-fast` on a
 //     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
 //     client, none left out;
 //   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
 //     last command's, so a command after it would hide a failing test;
-//   - it is gated like the job that runs script/test's Rust part: it needs the job of
-//     script/changed-parts and runs exactly when that job's rust output is true, whatever the other
-//     outputs are;
+//   - it is gated like the job that runs script/test's workspace part: it needs the job of
+//     script/changed-parts and runs exactly when that job's workspace output is true, whatever the
+//     other outputs are, and on a push to dev;
 //   - before the tests, it starts the runner image's PostgreSQL service and waits for it, and
 //     installs the packages of web/, whose playwright-core drives Chrome; the tests get the server
 //     through SKALD_TEST_DATABASE_URL;
@@ -15,12 +35,29 @@
 //     Manager; no other job of any workflow and no script sets it;
 //   - a step after the tests, when they fail, prints the failures in PostgreSQL's log;
 //   - a step after the tests, also when they fail, fails the job when they left a skald-update-* or
-//     skald-client-* directory in the temporary directory;
-//   - every action is pinned to a commit, a checkout keeps no credentials, and the job's token reads
-//     contents at most.
+//     skald-client-* directory in the temporary directory.
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { commands, condition, event, jobsFor, needsOf, permissions, readWorkflow, stepSkipped, truth, unknown, words } from './lib/workflows.mjs';
+import {
+  commands,
+  condition,
+  event,
+  isUnknown,
+  jobsFor,
+  needsOf,
+  open,
+  permissions,
+  readWorkflow,
+  runsFor,
+  stepSkipped,
+  template,
+  triggers,
+  truth,
+  unknown,
+  words,
+} from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const ciFile = '.github/workflows/ci.yml';
@@ -39,7 +76,274 @@ const done = () => {
 };
 
 const jobs = ci.jobs ?? {};
-const states = jobsFor(ci, event('pull_request', 'refs/pull/7/merge'));
+const nameOf = (key) => jobs[key]?.name ?? key;
+const pr = event('pull_request', 'refs/pull/7/merge');
+const push = event('push', 'refs/heads/dev');
+
+// The events and the concurrency groups.
+if (!runsFor(ci, pr)) fail('a PR into dev does not run CI');
+if (!runsFor(ci, push)) fail('a push to dev does not run CI');
+const onPush = triggers(ci).push ?? {};
+if (onPush.paths !== undefined || onPush['paths-ignore'] !== undefined) fail('a push to dev runs CI only for some paths');
+// concurrency <event> <commit> [<PR number>]: the run's group and whether it cancels the group's
+// older run.
+const concurrency = (ev, sha, number) => {
+  const payload = number === undefined ? ev.github.event : open({ ...ev.github.event, number, pull_request: open({ ...ev.github.event.pull_request, number }) });
+  const github = open({ ...ev.github, workflow: ci.name, sha, event: payload });
+  const scope = { contexts: { github, inputs: {} }, status: {} };
+  const config = typeof ci.concurrency === 'object' ? ci.concurrency : { group: ci.concurrency };
+  return { group: template(config?.group, scope), cancels: truth(template(config?.['cancel-in-progress'] ?? false, scope)) };
+};
+const [first, second] = [concurrency(push, 'a'.repeat(40)), concurrency(push, 'b'.repeat(40))];
+const [prRun, prRerun, otherPr] = [concurrency(pr, 'c'.repeat(40), 7), concurrency(pr, 'd'.repeat(40), 7), concurrency(pr, 'e'.repeat(40), 8)];
+if ([first, second, prRun, prRerun, otherPr].some((run) => run.group === undefined || isUnknown(run.group))) {
+  fail('the concurrency group of a run cannot be told from its event');
+} else {
+  if (first.group === second.group) fail(`two pushes to dev share the concurrency group ${first.group}`);
+  if ([prRun, otherPr].some((run) => run.group === first.group)) fail(`a PR shares the concurrency group of a push to dev: ${first.group}`);
+  if (prRun.group !== prRerun.group) fail('two pushes to a PR are in different concurrency groups');
+  if (prRun.group === otherPr.group) fail(`two PRs share the concurrency group ${prRun.group}`);
+}
+if (first.cancels !== false) fail("a push to dev's run cancels the older run of its group");
+if (prRun.cancels !== true) fail("a PR's run does not cancel the PR's older run");
+
+// The checks the ruleset of dev requires (docs/dev/infrastructure.md, "Branches").
+const required = ['Changed parts', 'Rust', 'Tooling', 'Web'];
+for (const name of required) {
+  const named = Object.keys(jobs).filter((key) => nameOf(key) === name);
+  if (named.length !== 1) fail(`not one job is named ${name}, a check dev requires: ${named.join(', ') || 'none'}`);
+}
+
+// The jobs that run script/test, each with its parts.
+const runsTest = (step) => commands(step.run).some((line) => /(^|[\s;&|(])(\.\/)?script\/test(\s|$)/.test(line));
+const testJobs = Object.entries(jobs)
+  .filter(([, job]) => (job.steps ?? []).some(runsTest))
+  .map(([key, job]) => {
+    const steps = job.steps.filter(runsTest);
+    if (steps.length !== 1) fail(`job ${key} runs script/test in ${steps.length} steps, not one`);
+    const parts = String(steps[0].env?.SKALD_TEST_PARTS ?? '');
+    if (parts.trim() === '') fail(`job ${key} runs script/test without SKALD_TEST_PARTS: every part, which other jobs run too`);
+    if (steps[0].if !== undefined || steps[0]['continue-on-error'] || job['continue-on-error']) {
+      fail(`job ${key} may skip script/test or pass when it fails`);
+    }
+    return { key, job, parts: parts.split(/\s+/).filter(Boolean) };
+  });
+
+// Each check of script/test in exactly one job: script/test with stand-ins, alone and with each
+// job's parts.
+const standIns = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ci-workflow-test.')));
+process.on('exit', () => fs.rmSync(standIns, { recursive: true, force: true }));
+execFileSync('bash', ['-c', 'source "$1" && test_stand_ins "$2"', 'bash', path.join(root, 'script/lib/test-stand-ins.sh'), standIns], {
+  stdio: ['ignore', 'ignore', 'inherit'],
+});
+const setup = new Set(['web\tnpm ci --no-audit --no-fund']);
+// checks <parts>: the checks script/test runs with SKALD_TEST_PARTS=<parts>, all without, or null
+// when it fails.
+const checks = (parts) => {
+  const log = path.join(standIns, 'checks');
+  fs.rmSync(log, { force: true });
+  const env = { PATH: `${path.join(standIns, 'bin')}:${process.env.PATH}`, TMPDIR: os.tmpdir() };
+  if (process.env.HOME) env.HOME = process.env.HOME;
+  if (parts !== undefined) env.SKALD_TEST_PARTS = parts;
+  const run = spawnSync(path.join(standIns, 'script/test'), [], { env, encoding: 'utf8' });
+  if (run.status !== 0) {
+    fail(`script/test${parts === undefined ? '' : ` with SKALD_TEST_PARTS=${parts}`} exits ${run.status}: ${run.stderr.trim()}`);
+    return null;
+  }
+  return (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((line) => line !== '' && !setup.has(line));
+};
+const shown = (check) => (check.startsWith('\t') ? check.slice(1) : check.replace('\t', ': '));
+const all = checks(undefined) ?? [];
+if (all.length === 0) fail('script/test alone runs no check');
+const runners = new Map();
+for (const { key, parts } of testJobs) {
+  for (const check of checks(parts.join(' ')) ?? []) runners.set(check, [...(runners.get(check) ?? []), key]);
+}
+const times = new Map();
+for (const check of all) times.set(check, (times.get(check) ?? 0) + 1);
+for (const [check, n] of times) {
+  const by = runners.get(check) ?? [];
+  if (by.length === 0) fail(`no job runs the check ${shown(check)}`);
+  else if (by.length > n) fail(`the check ${shown(check)} runs ${by.length} times, in jobs ${by.join(', ')}; script/test alone runs it ${n} times`);
+  else if (by.length < n) fail(`the jobs run the check ${shown(check)} ${by.length} times, script/test alone ${n} times`);
+}
+for (const [check, by] of runners) {
+  if (!times.has(check)) fail(`job ${by.join(', ')} runs ${shown(check)}, which script/test alone does not`);
+}
+
+// The parts of script/changed-parts: outputs of its job, each the part of one job, and the gates.
+const partsJob = Object.keys(jobs).find((k) => (jobs[k].steps ?? []).some((step) => commands(step.run).some((line) => /script\/changed-parts\b/.test(line))));
+if (!partsJob) fail('no job runs script/changed-parts');
+const printed = execFileSync(path.join(root, 'script/changed-parts'), ['HEAD'], { cwd: root, encoding: 'utf8' })
+  .split('\n')
+  .filter(Boolean)
+  .map((line) => line.split('=')[0]);
+if (partsJob) {
+  const partsStep = jobs[partsJob].steps.find((step) => commands(step.run).some((line) => /script\/changed-parts\b/.test(line)));
+  const outputs = jobs[partsJob].outputs ?? {};
+  for (const part of printed) {
+    if (String(outputs[part] ?? '').replace(/\s+/g, '') !== `\${{steps.${partsStep.id}.outputs.${part}}}`) {
+      fail(`job ${partsJob} does not output the part ${part} that script/changed-parts prints`);
+    }
+  }
+  if (!commands(partsStep.run).some((line) => /script\/changed-parts HEAD\^1 \| tee -a "\$GITHUB_OUTPUT"/.test(line)) || partsStep.shell !== 'bash') {
+    fail(`job ${partsJob} does not write what script/changed-parts HEAD^1 prints to $GITHUB_OUTPUT, in bash`);
+  }
+  if (stepSkipped(partsStep, jobsFor(ci, pr)[partsJob])) fail(`job ${partsJob} skips script/changed-parts on a PR`);
+}
+// The parts script/test knows: it names them when it rejects an unknown one.
+const rejected = spawnSync(path.join(standIns, 'script/test'), [], {
+  env: { PATH: `${path.join(standIns, 'bin')}:${process.env.PATH}`, SKALD_TEST_PARTS: 'no-such-part' },
+  encoding: 'utf8',
+});
+const known = (rejected.stderr.match(/parts: (.*)$/m)?.[1] ?? '').split(/\s+/).filter(Boolean);
+if (rejected.status !== 2) fail(`script/test with an unknown part exits ${rejected.status}, not 2`);
+if (JSON.stringify([...known].sort()) !== JSON.stringify([...printed].sort())) {
+  fail(`script/test knows the parts ${known.join(' ') || 'none'}, script/changed-parts prints ${printed.join(' ')}`);
+}
+// A condition on a part script/test does not know never holds: its checks would never run. A
+// variable in a condition is a list of parts, set once.
+const testScript = fs.readFileSync(path.join(root, 'script/test'), 'utf8');
+for (const line of testScript.split('\n')) {
+  if (line.trim().startsWith('#')) continue;
+  for (const m of line.matchAll(/(?:^|[\s;&|!(])checks(?:_any)?((?: +[$\w-]+)+)/g)) {
+    for (const word of m[1].trim().split(/ +/)) {
+      const list = word.startsWith('$') ? [...testScript.matchAll(new RegExp(`^${word.slice(1)}='([^']*)'$`, 'gm'))] : null;
+      if (list && list.length !== 1) fail(`script/test sets the parts $${word.slice(1)} ${list.length} times, not once`);
+      for (const part of list ? (list[0]?.[1] ?? '').split(/\s+/).filter(Boolean) : [word]) {
+        if (!known.includes(part)) fail(`script/test checks whether it runs the part ${part}, which it does not know`);
+      }
+    }
+  }
+}
+for (const part of printed) {
+  const owners = testJobs.filter((j) => j.parts.includes(part)).map((j) => j.key);
+  if (owners.length !== 1) fail(`not one job runs the part ${part}: ${owners.join(', ') || 'none'}`);
+}
+for (const { key, parts } of testJobs) {
+  for (const part of parts) if (!printed.includes(part)) fail(`job ${key} runs the part ${part}, which script/changed-parts never selects`);
+}
+// runs <job> <event> <outputs>: whether the job runs when the job of script/changed-parts succeeds
+// with those outputs: true, false, or undefined when that does not decide it.
+const runs = (job, ev, outputs) => {
+  const scope = {
+    contexts: { github: ev.github, inputs: {}, needs: { [partsJob]: { result: 'success', outputs } } },
+    status: { success: true, always: true, failure: false, cancelled: false },
+  };
+  return job.if === undefined ? true : truth(condition(job.if, scope));
+};
+// gated <key> <parts>: job <key> needs only the job of script/changed-parts, runs on a PR exactly
+// when one of <parts> changed, whatever the other parts, and on a push to dev.
+const gated = (key, parts) => {
+  if (!partsJob) return;
+  if (JSON.stringify(needsOf(jobs[key])) !== JSON.stringify([partsJob])) {
+    fail(`job ${key} needs ${needsOf(jobs[key]).join(', ') || 'nothing'}, not only job ${partsJob}, which runs script/changed-parts`);
+  }
+  const outputs = (set) => Object.fromEntries(printed.map((part) => [part, part in set ? set[part] : unknown()]));
+  for (const part of parts) {
+    if (runs(jobs[key], pr, outputs({ [part]: 'true' })) !== true) fail(`job ${key} may be skipped on a PR that changes the part ${part}`);
+  }
+  if (runs(jobs[key], pr, outputs(Object.fromEntries(parts.map((part) => [part, 'false'])))) !== false) {
+    fail(`job ${key} may run on a PR that changes none of its parts ${parts.join(', ')}`);
+  }
+  if (runs(jobs[key], push, outputs({})) !== true) fail(`job ${key} may be skipped on a push to dev`);
+};
+for (const { key, parts } of testJobs) gated(key, parts);
+
+// The job Rust: passes only when the jobs it needs passed or were skipped.
+const gateKey = Object.keys(jobs).find((key) => nameOf(key) === 'Rust');
+const behind = testJobs.filter((j) => !required.includes(nameOf(j.key)));
+if (gateKey && partsJob) {
+  const gate = jobs[gateKey];
+  const want = [partsJob, ...behind.map((j) => j.key)].sort();
+  if (JSON.stringify([...needsOf(gate)].sort()) !== JSON.stringify(want)) fail(`job ${gateKey} needs ${needsOf(gate).join(', ')}, not ${want.join(', ')}`);
+  for (const [status, result] of [
+    [{ success: true, failure: false, cancelled: false }, 'success'],
+    [{ success: false, failure: true, cancelled: false }, 'failure'],
+    [{ success: false, failure: false, cancelled: true }, 'cancelled'],
+  ]) {
+    const needs = Object.fromEntries(needsOf(gate).map((n) => [n, { result, outputs: {} }]));
+    const scope = { contexts: { github: pr.github, inputs: {}, needs }, status: { ...status, always: true } };
+    if (gate.if === undefined || truth(condition(gate.if, scope)) !== true) fail(`job ${gateKey} may be skipped when a job it needs ends ${result}: a skipped check passes`);
+  }
+  if (gate['continue-on-error'] || (gate.steps ?? []).some((step) => step['continue-on-error'] || step.if !== undefined)) {
+    fail(`job ${gateKey} may pass when a step of it fails or is skipped`);
+  }
+  const verdict = (gate.steps ?? []).find((step) => Object.values(step.env ?? {}).some((v) => String(v).replace(/\s+/g, '') === '${{toJSON(needs)}}'));
+  if (!verdict || verdict.shell !== 'bash') fail(`no step of job ${gateKey} reads the results of the jobs it needs, toJSON(needs), in bash`);
+  else {
+    const variable = Object.keys(verdict.env).find((name) => String(verdict.env[name]).replace(/\s+/g, '') === '${{toJSON(needs)}}');
+    // passes <results>: the step passes when the jobs it needs end with <results>, the rest skipped.
+    const passes = (results) => {
+      const needs = Object.fromEntries(needsOf(gate).map((n) => [n, { result: results[n] ?? 'skipped', outputs: {} }]));
+      const env = { PATH: process.env.PATH, [variable]: JSON.stringify(needs) };
+      return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', verdict.run], { env, stdio: 'ignore' }).status === 0;
+    };
+    const success = Object.fromEntries(needsOf(gate).map((n) => [n, 'success']));
+    if (!passes(success)) fail(`job ${gateKey} fails when every job it needs succeeds`);
+    if (!passes({ [partsJob]: 'success' })) fail(`job ${gateKey} fails when job ${partsJob} succeeds and the others are skipped`);
+    for (const { key } of behind) {
+      if (!passes({ [partsJob]: 'success', [key]: 'success' })) fail(`job ${gateKey} fails when only job ${key} runs and succeeds`);
+      for (const result of ['failure', 'cancelled']) {
+        if (passes({ ...success, [key]: result })) fail(`job ${gateKey} passes when job ${key} ends ${result}`);
+      }
+    }
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      if (passes({ [partsJob]: result })) fail(`job ${gateKey} passes when job ${partsJob} ends ${result}`);
+    }
+  }
+}
+
+// The jobs of the Rust code set up the same tools.
+const setUp = ({ job }) =>
+  JSON.stringify(
+    (job.steps ?? []).map((step) => {
+      const copy = structuredClone(step);
+      delete copy.with?.workspaces;
+      if (runsTest(copy)) delete copy.env?.SKALD_TEST_PARTS;
+      return copy;
+    }),
+  );
+for (const j of behind.slice(1)) {
+  if (setUp(j) !== setUp(behind[0]) || j.job['runs-on'] !== behind[0].job['runs-on']) {
+    fail(`job ${j.key} sets up other tools than job ${behind[0].key}: their steps differ in more than the cached workspaces and SKALD_TEST_PARTS`);
+  }
+}
+
+// The rules of every workflow, for every job: pinned actions, no kept credentials, a read-only token.
+// pinned <steps> <where> <seen>: each action of the steps, and of the local actions among them, is
+// pinned to a commit.
+const pinned = (steps, where, seen = new Set()) => {
+  for (const step of steps ?? []) {
+    const uses = String(step.uses ?? '');
+    if (uses.startsWith('./')) {
+      const dir = path.join(root, uses);
+      const file = ['action.yml', 'action.yaml'].map((name) => path.join(dir, name)).find((f) => fs.existsSync(f));
+      if (!file) fail(`${where} uses ${uses}, which has no action.yml`);
+      else if (!seen.has(file)) {
+        seen.add(file);
+        pinned(readWorkflow(file).runs?.steps, `${where}, through ${uses},`, seen);
+      }
+    } else if (uses && !/@[0-9a-f]{40}$/.test(uses)) fail(`${where} uses ${uses}, not pinned to a commit`);
+  }
+};
+for (const [key, job] of Object.entries(jobs)) {
+  pinned(job.steps, `job ${key}`);
+  for (const step of job.steps ?? []) {
+    const uses = String(step.uses ?? '');
+    if (uses.startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false && step.with?.['persist-credentials'] !== 'false') {
+      fail(`a checkout of job ${key} keeps the credentials: no persist-credentials: false`);
+    }
+  }
+  const granted = permissions(ci, job);
+  if (granted === null) fail(`job ${key} has no permissions set`);
+  else if (Object.entries(granted).some(([scope, level]) => level !== 'none' && !(scope === 'contents' && level === 'read'))) {
+    fail(`the token of job ${key} gets more than contents: read: ${JSON.stringify(granted)}`);
+  }
+}
+
+// The job of the client on Windows.
+const states = jobsFor(ci, pr);
 // The cargo test command of a line, as its words, or null.
 const cargoTest = (line) => {
   const w = words(line);
@@ -152,37 +456,9 @@ if (!checkStep) {
   }
 }
 
-// The gate: as the Rust part's job.
-const rustJob = Object.keys(jobs).find((k) =>
-  (jobs[k].steps ?? []).some((step) => step.env?.SKALD_TEST_PARTS === 'rust' && commands(step.run).some((line) => /script\/test\b/.test(line))),
-);
-if (!rustJob) fail('no job runs script/test with SKALD_TEST_PARTS=rust');
-const partsJob = Object.keys(jobs).find((k) => (jobs[k].steps ?? []).some((step) => commands(step.run).some((line) => /script\/changed-parts\b/.test(line))));
-if (!partsJob) fail('no job runs script/changed-parts');
-if (partsJob && JSON.stringify(needsOf(job)) !== JSON.stringify([partsJob])) {
-  fail(`job ${key} needs ${needsOf(job).join(', ') || 'nothing'}, not only job ${partsJob}, which runs script/changed-parts`);
-}
-// runs <job> <rust>: whether the job runs when the parts job succeeds with that rust output, the
-// other outputs unknown: true, false, or undefined when that does not decide it.
-const runs = (j, rust) => {
-  const outputs = Object.fromEntries(Object.keys(jobs[partsJob]?.outputs ?? {}).map((name) => [name, unknown()]));
-  outputs.rust = rust;
-  const scope = {
-    contexts: { github: states[key].scope.contexts.github, inputs: {}, needs: { [partsJob]: { result: 'success', outputs } } },
-    status: { success: true, always: true, failure: false, cancelled: false },
-  };
-  return j.if === undefined ? true : truth(condition(j.if, scope));
-};
-if (partsJob) {
-  for (const [rust, want] of [
-    ['true', true],
-    ['false', false],
-  ]) {
-    const got = runs(job, rust);
-    if (got !== want) fail(`job ${key} ${got ? 'runs' : got === false ? 'is skipped' : 'may run'} when the Rust part is ${rust === 'true' ? 'changed' : 'unchanged'}`);
-    if (rustJob && runs(jobs[rustJob], rust) !== want) fail(`job ${rustJob} is not gated by the Rust part: rust=${rust}`);
-  }
-}
+// The gate: as the workspace part's job.
+if (!testJobs.some((j) => j.parts.includes('workspace'))) fail('no job runs script/test with the workspace part');
+gated(key, ['workspace']);
 
 // The system's own key storage: only this job's tests use it.
 const realKeys = 'SKALD_TEST_REAL_KEY_STORAGE';
@@ -197,20 +473,6 @@ if (JSON.stringify(jobs[key]).replace(JSON.stringify(testStep), '').includes(rea
 for (const file of fs.readdirSync(path.join(root, 'script'), { recursive: true })) {
   const full = path.join(root, 'script', file);
   if (file !== 'ci-workflow-test' && fs.statSync(full).isFile() && fs.readFileSync(full, 'utf8').includes(realKeys)) fail(`script/${file} sets ${realKeys}`);
-}
-
-// The rules of every workflow, for this job: pinned actions, no kept credentials, a read-only token.
-for (const step of steps) {
-  const uses = String(step.uses ?? '');
-  if (uses && !uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(uses)) fail(`job ${key} uses ${uses}, not pinned to a commit`);
-  if (uses.startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false && step.with?.['persist-credentials'] !== 'false') {
-    fail(`a checkout of job ${key} keeps the credentials: no persist-credentials: false`);
-  }
-}
-const granted = permissions(ci, job);
-if (granted === null) fail(`job ${key} has no permissions set`);
-else if (Object.entries(granted).some(([scope, level]) => level !== 'none' && !(scope === 'contents' && level === 'read'))) {
-  fail(`the token of job ${key} gets more than contents: read: ${JSON.stringify(granted)}`);
 }
 
 done();

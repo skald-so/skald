@@ -276,7 +276,7 @@ pub fn linked_line(cert: &Cert, this: DeviceId) -> String {
 }
 
 /// The date of `seconds` since the Unix epoch, as `YYYY-MM-DD` in UTC.
-fn date(seconds: u64) -> String {
+pub fn date(seconds: u64) -> String {
     // The Gregorian calendar repeats every 400 years, of 146 097 days.
     const CYCLE: u64 = 146_097;
     let days = seconds / 86_400;
