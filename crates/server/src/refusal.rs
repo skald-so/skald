@@ -33,6 +33,8 @@ pub(crate) enum Refusal {
     /// A roster revision the server does not store, for the reason it holds.
     Roster(String),
     SpaceNameTaken,
+    /// The account owns as many spaces as it may: the number it holds.
+    OwnedSpacesLimit(u32),
     /// A roster revision out of order or with a taken number, for the reason it holds.
     RevisionConflict(String),
     /// The database failed at what it holds, such as `read a session`.
@@ -93,6 +95,12 @@ impl IntoResponse for Refusal {
                 "space-name-taken",
                 "Space name taken",
                 "Another space has this name, or the account's space with it has a revision.",
+            ),
+            Refusal::OwnedSpacesLimit(limit) => problem(
+                StatusCode::FORBIDDEN,
+                "owned-spaces-limit",
+                "Space limit reached",
+                &format!("The account owns as many spaces as it may: {limit}."),
             ),
             Refusal::RevisionConflict(detail) => problem(
                 conflict,

@@ -88,7 +88,7 @@ impl Server {
         };
         Self::start_with(|_| skald_server::Settings {
             versions,
-            sign_in: None,
+            ..Default::default()
         })
     }
 

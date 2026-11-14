@@ -818,6 +818,11 @@ export type createSpaceResponse401 = {
   status: 401;
 };
 
+export type createSpaceResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
 export type createSpaceResponse409 = {
   data: Problem;
   status: 409;
@@ -836,6 +841,7 @@ export type createSpaceResponseSuccess = (
 export type createSpaceResponseError = (
   | createSpaceResponse400
   | createSpaceResponse401
+  | createSpaceResponse403
   | createSpaceResponse409
   | createSpaceResponse500
 ) & {

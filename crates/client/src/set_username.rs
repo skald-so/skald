@@ -29,6 +29,7 @@ pub fn run(
         Err(connection::Error::Refused {
             status: 400 | 409,
             detail,
+            ..
         }) => {
             return Err(refused(username, &detail));
         }

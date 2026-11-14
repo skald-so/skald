@@ -155,7 +155,7 @@ The public cloud applies these limits; a self-hosted server does not.
 
 | Limit | Value |
 |---|---|
-| Spaces an account owns: the ones it created, its personal space included | 2 |
+| Spaces an account owns: the ones it created, its personal space included | 2: the server setting `--owned-spaces-limit` (`SKALD_OWNED_SPACES_LIMIT`); unset, no limit |
 | Members per space | No limit |
 | Devices per member | 50 |
 | Service agents per space | 10 |

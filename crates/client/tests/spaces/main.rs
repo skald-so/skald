@@ -32,6 +32,8 @@ mod machine;
 #[path = "../sign_in/relay.rs"]
 mod relay;
 
+mod owned;
+
 use std::thread;
 use std::time::{Duration, Instant};
 
