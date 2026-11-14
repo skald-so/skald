@@ -119,27 +119,16 @@ associate() {
 # tag <case>: starts a new stand-in, runs in $dir the tagging as the workflow does and sets $gate to
 # the exit code of script/release-pr-merged and $tags to the refs written, as JSON.
 tag() {
-  local port
   stop_stub
   rm -f "$tmp/port" "$tmp/refs.json"
   : >"$tmp/requests.log"
   echo '[]' >"$tmp/refs.json"
-  node "$root/script/lib/github-api-stub.mjs" "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" \
-    "$tmp/associated.json" "$tmp/refs.json" &
-  stub=$!
-  for _ in $(seq 100); do
-    [[ ! -s $tmp/port ]] || break
-    sleep 0.1
-  done
-  [[ -s $tmp/port ]] || {
-    echo "release-tag-test: the stand-in for the GitHub API did not start" >&2
-    exit 1
-  }
-  port=$(cat "$tmp/port")
+  start_api_stub "$tmp/requests.log" "$tmp/pulls.json" "$tmp/port" "$tmp/associated.json" \
+    "$tmp/refs.json"
   gate=0
   (
     cd "$dir"
-    export GITHUB_API_URL=http://127.0.0.1:$port/api/v3 GITHUB_SERVER_URL=http://127.0.0.1:$port
+    export GITHUB_API_URL=$api/api/v3 GITHUB_SERVER_URL=$api
     export GITHUB_REPOSITORY=skald-so/skald GITHUB_SHA=$head GITHUB_REF=refs/heads/dev
     export GH_TOKEN=fixture-token GITHUB_TOKEN=fixture-token
     # Its default number of calls on an empty list, a short pause between them.
@@ -147,7 +136,7 @@ tag() {
     unset RELEASE_PR_MERGED_ATTEMPTS
     script/release-pr-merged
   ) >"$tmp/gate.log" 2>&1 || gate=$?
-  if [[ $gate == 0 ]] && ! (cd "$dir" && GITHUB_API_URL=http://127.0.0.1:$port/api/v3 \
+  if [[ $gate == 0 ]] && ! (cd "$dir" && GITHUB_API_URL=$api/api/v3 \
     GITHUB_REPOSITORY=skald-so/skald GH_TOKEN=fixture-token script/release-tag) \
     >"$tmp/release-tag.log" 2>&1; then
     fail "$1: script/release-tag failed: $(tail -n 20 "$tmp/release-tag.log")"
@@ -161,7 +150,7 @@ tag() {
 }
 
 # expect_tag <case> <version>: the merge of a Release PR, $head: one ref written, the tag
-# v<version> created on $head, from a tag object of $head.
+# v<version> created on $head, from a tag object of $head; each POST sent as application/json.
 expect_tag() {
   if [[ $gate != 0 ]]; then
     fail "$1: script/release-pr-merged exited $gate, not 0, for the merge of a Release PR:" \
@@ -175,6 +164,10 @@ expect_tag() {
     | .body | fromjson] | length == 1 and .[0].tag == $tag and .[0].object == $head
     and .[0].type == "commit"' "$tmp/requests.log" >/dev/null ||
     fail "$1: not one tag object v$2 of $head"
+  jq -se '[.[] | select(.method == "POST")] | length == 2 and all(.contentType == "application/json")' \
+    "$tmp/requests.log" >/dev/null ||
+    fail "$1: not 2 POSTs sent as application/json:" \
+      "$(jq -c 'select(.method == "POST") | {url, contentType}' "$tmp/requests.log")"
 }
 
 # expect_no_tag <case> <gate>: no ref written; script/release-pr-merged exited <gate>, or anything

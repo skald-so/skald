@@ -30,7 +30,6 @@ if [[ $# -ne 0 && $# -ne 3 ]]; then
 fi
 
 tmp=$(mktemp -d)
-servers=()
 cleanup() {
   local server
   for server in ${servers[@]+"${servers[@]}"}; do
@@ -41,14 +40,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# sha256 <file>: the file's SHA-256 in hex.
-sha256() {
-  node -e 'process.stdout.write(require("crypto").createHash("sha256").update(require("fs").readFileSync(process.argv[1])).digest("hex"))' "$1"
-}
-# checksum <archive>: writes <archive>.sha256 as dist writes it: `<hex> *<name>` and a blank line.
-checksum() {
-  printf '%s *%s\n\n' "$(sha256 "$1")" "${1##*/}" >"$1.sha256"
-}
+source "$root/script/lib/release-files.sh"
 
 if [[ $# -eq 3 ]]; then
   release=$1 tag=$2 target=$3
@@ -68,81 +60,20 @@ else
       exit 1
       ;;
   esac
+  stand_in_release "$tmp" "$version"
   release=$tmp/release
-  mkdir -p "$release"
-  for t in aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
-    mkdir "$tmp/skald-client-$t"
-    printf '#!/bin/sh\necho "skald %s %s"\n' "$version" "$t" >"$tmp/skald-client-$t/skald"
-    chmod 755 "$tmp/skald-client-$t/skald"
-    tar -czf "$release/skald-client-$t.tar.gz" -C "$tmp" "skald-client-$t"
-    checksum "$release/skald-client-$t.tar.gz"
-  done
   "$root/script/release-installers" "$tag" "$release"
   expected="skald $version $target"
 fi
 
-# serve <dir> <log> <var>: serves the files of <dir> as GitHub serves release files, each request's
-# path a line of <log> after the port; sets the variable <var> to the server's address.
-source "$root/script/lib/start-server.sh"
-serve() {
-  local started=true
-  start_server "$2" node "$root/script/lib/serve.mjs" "$1" || started=false
-  servers+=("$server_pid")
-  $started || {
-    echo "installers-test: the server of the release files did not start: $server_failure" >&2
-    exit 1
-  }
-  printf -v "$3" '%s' "http://127.0.0.1:$server_port"
-}
 serve "$release" "$tmp/requests" url
 
 # The refused releases, each a copy of the release's installers and this machine's archive, served
 # on its own: one whose checksum of the archive does not match it, one with no checksum of it, one
 # with an empty checksum, and one whose archive was replaced under its checksum.
-case $(uname -s) in
-  MINGW* | MSYS* | CYGWIN*) archive=skald-client-$target.zip ;;
-  *) archive=skald-client-$target.tar.gz ;;
-esac
+if $windows; then archive=skald-client-$target.zip; else archive=skald-client-$target.tar.gz; fi
 [[ -f $release/$archive.sha256 ]] || fail "the release has no checksum of $archive: $archive.sha256"
-refused=(mismatched missing empty replaced)
-# refusal <case>: what the refused release <case> has.
-refusal() {
-  case $1 in
-    mismatched) echo 'a checksum that does not match the archive' ;;
-    missing) echo 'no checksum of the archive' ;;
-    empty) echo 'an empty checksum of the archive' ;;
-    replaced) echo 'an archive replaced under its checksum' ;;
-  esac
-}
-for case in "${refused[@]}"; do
-  mkdir "$tmp/$case"
-  for file in "$release"/*; do
-    case ${file##*/} in
-      "$archive" | "$archive.sha256" | install.sh | install.ps1) cp "$file" "$tmp/$case/" ;;
-    esac
-  done
-done
-# The SHA-256 of nothing: a well-formed checksum, of another file.
-printf '%s *%s\n\n' e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "$archive" \
-  >"$tmp/mismatched/$archive.sha256"
-rm -f "$tmp/missing/$archive.sha256"
-: >"$tmp/empty/$archive.sha256"
-# A skald of its own, laid out as the release's, under the release's checksum.
-case $(uname -s) in
-  MINGW* | MSYS* | CYGWIN*)
-    mkdir "$tmp/replacement"
-    echo 'skald replaced' >"$tmp/replacement/skald.exe"
-    powershell -NoProfile -Command "Compress-Archive -Force -Path '$(cygpath -w "$tmp/replacement/skald.exe")' -DestinationPath '$(cygpath -w "$tmp/replaced/$archive")'"
-    ;;
-  *)
-    mkdir -p "$tmp/replacement/skald-client-$target"
-    printf '#!/bin/sh\necho "skald replaced"\n' >"$tmp/replacement/skald-client-$target/skald"
-    chmod 755 "$tmp/replacement/skald-client-$target/skald"
-    tar -czf "$tmp/replaced/$archive" -C "$tmp/replacement" "skald-client-$target"
-    ;;
-esac
-[[ $(sha256 "$tmp/replaced/$archive") != "$(sha256 "$release/$archive")" ]] ||
-  fail "the replaced archive is the release's own"
+refused_releases "$release" "$archive" "$target" "$tmp" install.sh install.ps1
 # says_checksum <output>: the installer's output names the checksum.
 says_checksum() {
   [[ $(tr -d '\r\n' <<<"$1" | tr '[:upper:]' '[:lower:]') == *checksum* ]]

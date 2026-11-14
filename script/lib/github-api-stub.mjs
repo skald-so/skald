@@ -2,8 +2,9 @@
 // script/release-tag tags a release through, for script/release-pr-test and script/release-tag-test.
 // It keeps the PRs in memory and serves the calls of a Release PR: the open PRs, a PR's update,
 // branch refs, and commits made with the GraphQL mutation createCommitOnBranch; and of a tag: the PRs
-// associated with a commit, tag objects and refs. Every request goes to <log> as a JSON line; after
-// each request <pulls> holds the PRs it opened as JSON.
+// associated with a commit, tag objects and refs. Every request goes to <log> as a JSON line of its
+// method, url, contentType (its Content-Type header, or null) and body; after each request <pulls>
+// holds the PRs it opened as JSON.
 // <associated>, optional, is read on each request: a JSON object from a commit's SHA to the PRs
 // `GET /repos/{owner}/{repo}/commits/{sha}/pulls` lists for it, or to an HTTP status it fails with,
 // or to {"empty": <n>, "pulls": <PRs>}: an empty list for the first <n> calls, then the PRs;
@@ -121,7 +122,9 @@ const server = http.createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => (body += chunk));
   req.on('end', () => {
-    fs.appendFileSync(log, `${JSON.stringify({ method: req.method, url: req.url, body })}\n`);
+    const contentType = req.headers['content-type'] ?? null;
+    const entry = { method: req.method, url: req.url, contentType, body };
+    fs.appendFileSync(log, `${JSON.stringify(entry)}\n`);
     let status, json;
     try {
       [status, json] = reply(req, body);

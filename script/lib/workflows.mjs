@@ -17,6 +17,18 @@ export function readWorkflow(path) {
   return JSON.parse(json);
 }
 
+// readWorkflows <root>: every workflow of the repository at <root>, as an object from its path,
+// .github/workflows/<file>, to the workflow.
+export function readWorkflows(root) {
+  const dir = `${root}/.github/workflows`;
+  return Object.fromEntries(
+    fs
+      .readdirSync(dir)
+      .filter((f) => /\.ya?ml$/.test(f))
+      .map((f) => [`.github/workflows/${f}`, readWorkflow(`${dir}/${f}`)]),
+  );
+}
+
 // Unknown values: `truthy` is true or false when only the truthiness is known.
 const UNKNOWN = Symbol('unknown');
 // An object whose missing keys are unknown rather than null.
@@ -283,7 +295,8 @@ export function condition(value, scope) {
   return evaluate(parse(text), scope);
 }
 
-const usesStatus = (value) =>
+// usesStatus <if>: the condition calls success(), always(), failure() or cancelled().
+export const usesStatus = (value) =>
   typeof value === 'string' && /\b(success|always|failure|cancelled)\s*\(/i.test(value);
 
 // glob <pattern>: a regular expression for a GitHub filter pattern: * no slash, ** anything,
@@ -383,6 +396,36 @@ export function event(name, ref) {
 
 export const needsOf = (job) => [].concat(job?.needs ?? []);
 
+// allNeeds <jobs> <key>: the keys of the jobs the job needs, directly or through other jobs, as a Set.
+export function allNeeds(jobs, key, seen = new Set()) {
+  for (const n of needsOf(jobs[key])) {
+    if (!seen.has(n)) {
+      seen.add(n);
+      allNeeds(jobs, n, seen);
+    }
+  }
+  return seen;
+}
+
+// matrixTargets <jobs> <keys>: the targets the matrices of the jobs include, sorted, each once.
+export const matrixTargets = (jobs, keys) =>
+  [...new Set(keys.flatMap((k) => [].concat(jobs[k].strategy?.matrix?.include ?? []).map((i) => i?.target)))].filter(Boolean).sort();
+
+// The events of skald-so/skald that publish no release, for event(): pushes of no release tag, a
+// PR, and manual runs, on a release tag's ref too.
+export const unpublishedEvents = [
+  ['push', 'refs/heads/dev'],
+  ['push', 'refs/heads/main'],
+  ['push', 'refs/heads/v1.2.3'],
+  ['push', 'refs/tags/1.2.3'],
+  ['push', 'refs/tags/release-1.2.3'],
+  ['push', 'refs/tags/skald-v1.2.3'],
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3'],
+  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
+];
+
 // jobsFor <workflow> <event>: for each job key, {skipped}: true when the job is skipped for the event
 // whatever happens in the run, false when it may run.
 export function jobsFor(workflow, ev) {
@@ -442,6 +485,25 @@ export function stepSkipped(step, state) {
   return truth(condition(step.if, scope)) === false;
 }
 
+// The events of a release workflow's dry run, for event(): a PR and a manual run.
+export const dryRunEvents = [
+  ['pull_request', 'refs/pull/7/merge'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+];
+
+// jobsRunning <workflow> <event> <line>: the keys of the jobs that may run, for the event, a line of
+// a step that <line> is true for, in a step that may run, and whose failure fails the run: neither
+// the job nor the step continues on error.
+export function jobsRunning(workflow, ev, line) {
+  const states = jobsFor(workflow, ev);
+  return Object.entries(workflow.jobs ?? {})
+    .filter(([key, job]) => !states[key].skipped && !job['continue-on-error'])
+    .filter(([key, job]) =>
+      (job.steps ?? []).some((step) => !step['continue-on-error'] && !stepSkipped(step, states[key]) && commands(step.run).some(line)),
+    )
+    .map(([key]) => key);
+}
+
 // permissions <workflow> <job>: the job's token permissions as {scope: level}, or null when neither
 // the job nor the workflow sets them.
 export function permissions(workflow, job) {
@@ -452,6 +514,9 @@ export function permissions(workflow, job) {
   if (typeof p !== 'object') return { all: String(p) };
   return p;
 }
+
+// writes <permissions>: the scopes the permissions write.
+export const writes = (p) => (p ? Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope) : []);
 
 // commands <run>: the lines of a run script, with continued lines joined.
 export const commands = (run) => String(run ?? '').replace(/\\\r?\n/g, ' ').replace(/`\r?\n/g, ' ').split(/\r?\n/);

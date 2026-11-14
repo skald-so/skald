@@ -14,9 +14,8 @@ error() {
   exit 2
 }
 
-for name in GITHUB_API_URL GITHUB_REPOSITORY GH_TOKEN; do
-  [[ -n ${!name:-} ]] || error "$name is not set"
-done
+source "$root/script/lib/github-api.sh"
+require_vars GITHUB_API_URL GITHUB_REPOSITORY GH_TOKEN
 commit=$(git -C "$root" rev-parse --verify 'HEAD^{commit}') || error "no commit is checked out"
 version=$("$root/script/release-version") || exit 2
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] ||
@@ -29,10 +28,7 @@ fi
 
 # post <path> <JSON>: a POST to the repository's REST API; prints the response.
 post() {
-  curl --fail-with-body --silent --show-error --max-time 60 --request POST \
-    --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' \
-    --header 'X-GitHub-Api-Version: 2022-11-28' --data "$2" \
-    "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$1" || error "POST $1 failed"
+  github_api POST "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY$1" <(printf '%s' "$2") || error "POST $1 failed"
 }
 
 object=$(post /git/tags "$(jq -n --arg tag "$tag" --arg commit "$commit" \

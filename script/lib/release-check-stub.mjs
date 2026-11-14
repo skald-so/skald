@@ -1,11 +1,15 @@
-// Stand-ins for what the release check, script/release-check, reaches, for script/release-check-test:
+// Stand-ins for what the release check, script/release-check, reaches, for script/release-check-test
+// and script/release-check-steps-test:
 //   - serve(<world>): a stand-in GitHub, its releases' files, its REST API for releases, and a
 //     stand-in npm registry, on 127.0.0.1 over HTTP, in the test's own process;
 //   - as a command, `node release-check-stub.mjs <state> <tool> <args...>`: stand-ins of gh (its
 //     release and api commands through the stand-in GitHub, and attestation verify), cosign
 //     (verify), docker (buildx imagetools inspect) and crane (digest) against a stand-in GHCR, and
 //     curl, which reaches registry.npmjs.org at the stand-in npm registry and nothing but 127.0.0.1
-//     otherwise, and wget, which downloads nothing: the test has no network.
+//     otherwise, and wget, which downloads nothing: the test has no network; standInTools(<bin>,
+//     <state>) writes them into <bin>;
+//   - localTarget: the target of this machine's archive in a stand-in release, macOS and Linux
+//     only; undefined on any other.
 // A world, the test's object that serve() reads on each request:
 //   releases    the GitHub Releases, oldest first: {tag, prerelease, immutable, dir}; <dir> holds
 //               every file of the release
@@ -22,8 +26,9 @@ import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const repository = 'skald-so/skald';
 export const releaseWorkflow = 'skald-so/skald/.github/workflows/release.yml';
@@ -33,6 +38,20 @@ export const provenanceType = 'https://slsa.dev/provenance/v1';
 const publishType = 'https://github.com/npm/attestation/tree/main/specs/publish/v0.1';
 // certificateIdentity <workflow> <ref>: the identity Fulcio gives a workflow of GitHub Actions.
 export const certificateIdentity = (workflow, ref) => `https://github.com/${workflow}@${ref}`;
+
+export const localTarget = {
+  'Darwin/arm64': 'aarch64-apple-darwin',
+  'Darwin/x86_64': 'x86_64-apple-darwin',
+  'Linux/aarch64': 'aarch64-unknown-linux-gnu',
+  'Linux/x86_64': 'x86_64-unknown-linux-gnu',
+}[`${os.type()}/${os.machine()}`];
+
+export function standInTools(bin, state) {
+  const stub = fileURLToPath(import.meta.url);
+  for (const tool of ['gh', 'cosign', 'docker', 'crane', 'curl', 'wget']) {
+    fs.writeFileSync(path.join(bin, tool), `#!/bin/sh\nexec node '${stub}' '${state}' ${tool} "$@"\n`, { mode: 0o755 });
+  }
+}
 
 const digestOf = (algorithm, bytes) => crypto.createHash(algorithm).update(bytes).digest('hex');
 

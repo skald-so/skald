@@ -14,16 +14,12 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 source "$root/script/lib/release.sh"
+source "$root/script/lib/yaml.sh"
 failures=0
 
 fail() {
   echo "release-tag-workflow-test: $*" >&2
   failures=$((failures + 1))
-}
-
-# json <file>: a workflow as JSON. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
-json() {
-  npx --yes --package yaml@2.9.1 -- yaml --json --single <"$1"
 }
 
 # The jobs that run script/release-tag, as `<workflow> <job>` lines, in all workflows.
@@ -32,7 +28,7 @@ for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
   [[ -f $file ]] || continue
   while IFS= read -r job; do
     taggers+=("${file#"$root"/} $job")
-  done < <(json "$file" | jq -r '.jobs // {} | to_entries[]
+  done < <(to_json "$file" | jq -r '.jobs // {} | to_entries[]
     | select([.value.steps[]? | .run // "" | test("script/release-tag($|[^-A-Za-z0-9_])")] | any)
     | .key')
 done
@@ -41,7 +37,7 @@ if [[ ${#taggers[@]} != 1 || ${taggers[0]%% *} != "$release_workflow" ]]; then
   echo "release-tag-workflow-test: $failures case(s) failed" >&2
   exit 1
 fi
-workflow=$(json "$root/$release_workflow")
+workflow=$(to_json "$root/$release_workflow")
 tagger=${taggers[0]#* }
 
 # check <what> <jq filter>: the filter is true for the workflow. The filter gets $tagger, the tagging

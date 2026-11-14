@@ -12,16 +12,23 @@
 //     run.
 import fs from 'node:fs';
 import path from 'node:path';
-import { commands, event, jobsFor, needsOf, pathTriggers, readWorkflow, stepSkipped, triggers } from './lib/workflows.mjs';
+import { reporter } from './lib/report.mjs';
+import {
+  allNeeds,
+  commands,
+  dryRunEvents,
+  event,
+  jobsRunning,
+  matrixTargets,
+  pathTriggers,
+  readWorkflow,
+  triggers,
+} from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const releaseFile = '.github/workflows/release.yml';
 const release = readWorkflow(path.join(root, releaseFile));
-let failures = 0;
-const fail = (what) => {
-  console.error(`release-jobs-test: ${what}`);
-  failures++;
-};
+const { fail, done } = reporter('release-jobs-test');
 
 const jobs = release.jobs ?? {};
 const runs = (job) => (job.steps ?? []).flatMap((step) => commands(step.run));
@@ -43,9 +50,15 @@ for (const crate of fs.readdirSync(path.join(root, 'crates'))) {
   if (/^\[package\.metadata\.dist\]/m.test(text)) files.push(manifest);
 }
 if (!files.includes('crates/client/Cargo.toml')) fail('crates/client/Cargo.toml sets no [package.metadata.dist]');
-// The scripts the steps run, and those script/installers-test runs.
+// The scripts the steps run, and the files of script/lib they run or source, and those run or source.
 const scripts = new Set(Object.values(jobs).flatMap(runs).flatMap((line) => line.match(/\bscript\/[A-Za-z0-9_./-]+/g) ?? []));
-if (scripts.has('script/installers-test')) scripts.add('script/lib/serve.mjs');
+for (const script of scripts) {
+  const file = path.join(root, script);
+  if (!fs.existsSync(file)) continue;
+  const text = fs.readFileSync(file, 'utf8');
+  for (const m of text.matchAll(/"\$root\/(script\/lib\/[A-Za-z0-9_.-]+)"/g)) scripts.add(m[1]);
+  for (const m of text.matchAll(/\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)\/([A-Za-z0-9_.-]+)/g)) scripts.add(`${path.dirname(script)}/${m[1]}`);
+}
 files.push(...scripts);
 const pr = triggers(release).pull_request;
 if (!pr) fail('no PR starts the dry run');
@@ -57,17 +70,8 @@ for (const file of files) {
 const creator = Object.keys(jobs).find((key) => runs(jobs[key]).some((line) => /\bgh\s+release\s+create\b/.test(line)));
 const checkers = Object.keys(jobs).filter((key) => runs(jobs[key]).some((line) => /\bscript\/installers-test\b/.test(line)));
 const builders = Object.keys(jobs).filter((key) => runs(jobs[key]).some((line) => /\bdist\s+build\b/.test(line)));
-const needed = (key, seen = new Set()) => {
-  for (const n of needsOf(jobs[key])) {
-    if (!seen.has(n)) {
-      seen.add(n);
-      needed(n, seen);
-    }
-  }
-  return seen;
-};
-const targets = (keys) =>
-  [...new Set(keys.flatMap((key) => [].concat(jobs[key].strategy?.matrix?.include ?? []).map((i) => i?.target)))].sort();
+const needed = (key) => allNeeds(jobs, key);
+const targets = (keys) => matrixTargets(jobs, keys);
 if (!creator) fail('no job runs gh release create');
 if (checkers.length === 0) fail('no job runs script/installers-test');
 if (builders.length === 0) fail('no job runs dist build');
@@ -89,19 +93,8 @@ const runners = (job) => {
   return [job['runs-on'], ...[].concat(matrix.runner ?? []), ...[].concat(matrix.include ?? []).map((i) => i?.runner)]
     .filter((label) => typeof label === 'string' && !label.includes('${{'));
 };
-for (const [name, ref] of [
-  ['pull_request', 'refs/pull/7/merge'],
-  ['workflow_dispatch', 'refs/heads/dev'],
-]) {
-  const states = jobsFor(release, event(name, ref));
-  const labels = Object.entries(jobs)
-    .filter(([key, job]) => !states[key].skipped && !job['continue-on-error'])
-    .filter(([key, job]) =>
-      (job.steps ?? []).some(
-        (step) => !step['continue-on-error'] && !stepSkipped(step, states[key]) && commands(step.run).some(testsUpdate),
-      ),
-    )
-    .flatMap(([, job]) => runners(job));
+for (const [name, ref] of dryRunEvents) {
+  const labels = jobsRunning(release, event(name, ref), testsUpdate).flatMap((key) => runners(jobs[key]));
   for (const [os, label] of [
     ['macOS', /^macos-/],
     ['Windows', /^windows-/],
@@ -112,8 +105,4 @@ for (const [name, ref] of [
   }
 }
 
-if (failures > 0) {
-  console.error(`release-jobs-test: ${failures} case(s) failed`);
-  process.exit(1);
-}
-console.log('release-jobs-test: all cases passed');
+done();

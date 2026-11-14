@@ -13,17 +13,12 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 source "$root/script/lib/release.sh"
+source "$root/script/lib/yaml.sh"
 failures=0
 
 fail() {
   echo "release-pr-workflow-test: $*" >&2
   failures=$((failures + 1))
-}
-
-# to_json <file>: a workflow as JSON. A pinned version: the YAML 1.2 parser keeps the `on` key a
-# string.
-to_json() {
-  npx --yes --package yaml@2.9.1 -- yaml --json --single <"$1"
 }
 
 if [[ ! -f $root/$release_workflow ]]; then

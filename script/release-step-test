@@ -15,6 +15,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/yaml.sh"
 failures=0
 
 fail() {
@@ -26,8 +27,8 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 # The steps' scripts, step-<n>.sh, of the job that creates the release, up to the step that creates
-# it. A pinned version: the YAML 1.2 parser keeps the `on` key a string.
-npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/release.yml" |
+# it.
+to_json "$root/.github/workflows/release.yml" |
   jq 'def creates: .run // "" | test("gh\\s+release\\s+create");
     [.jobs[] | .steps // [] | select(any(.[]; creates))]
     | if length == 1 and (.[0] | map(select(creates)) | length) == 1 then .[0]
@@ -41,7 +42,7 @@ steps=$(jq length "$tmp/steps.json")
 for ((i = 0; i < steps; i++)); do jq -r ".[$i]" "$tmp/steps.json" >"$tmp/step-$i.sh"; done
 
 # The plan job's step that sets the release tag.
-npx --yes --package yaml@2.9.1 -- yaml --json --single <"$root/.github/workflows/release.yml" |
+to_json "$root/.github/workflows/release.yml" |
   jq -r '.jobs.plan.steps[]? | select(.id == "tag") | .run // error("no run")' >"$tmp/plan.sh" || {
   echo "release-step-test: the plan job of .github/workflows/release.yml has no step with the id tag" >&2
   exit 1

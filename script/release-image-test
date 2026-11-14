@@ -40,32 +40,30 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { infrastructureSection, pinsAttestation } from './lib/release-docs.mjs';
+import { reporter } from './lib/report.mjs';
+import { commitAll, runJobs } from './lib/run-jobs.mjs';
 import {
   commands,
-  condition,
   event,
   isUnknown,
   jobsFor,
   needsOf,
-  open,
   permissions,
   readWorkflow,
   stepSkipped,
   template,
   toText,
-  truth,
   unknown,
+  unpublishedEvents,
+  writes,
 } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const releaseFile = '.github/workflows/release.yml';
 const image = 'ghcr.io/skald-so/skald-server';
 const stub = path.join(root, 'script/lib/registry-stub.mjs');
-let failures = 0;
-const fail = (what) => {
-  console.error(`release-image-test: ${what}`);
-  failures++;
-};
+const { fail, done } = reporter('release-image-test');
 
 const release = readWorkflow(path.join(root, releaseFile));
 const jobs = release.jobs ?? {};
@@ -107,19 +105,7 @@ function writesImage(step, scope) {
 const stepName = (key, step, index) => `job ${key} step ${step.name ?? step.id ?? index + 1}`;
 
 // Only a push of a v* tag pushes, signs and attests.
-const quiet = [
-  ['push', 'refs/heads/dev'],
-  ['push', 'refs/heads/main'],
-  ['push', 'refs/heads/v1.2.3'],
-  ['push', 'refs/tags/1.2.3'],
-  ['push', 'refs/tags/release-1.2.3'],
-  ['push', 'refs/tags/skald-v1.2.3'],
-  ['pull_request', 'refs/pull/7/merge'],
-  ['workflow_dispatch', 'refs/heads/dev'],
-  ['workflow_dispatch', 'refs/tags/v1.2.3'],
-  ['workflow_dispatch', 'refs/tags/v1.2.3-beta.1'],
-];
-for (const [name, ref] of quiet) {
+for (const [name, ref] of unpublishedEvents) {
   const states = jobsFor(release, event(name, ref));
   for (const [key, job] of Object.entries(jobs)) {
     (job.steps ?? []).forEach((step, index) => {
@@ -138,7 +124,6 @@ const attesters = allSteps.filter(({ step }) => attestsImage(step));
 if (pushers.length === 0) fail(`no step of ${releaseFile} pushes the image`);
 if (!allSteps.some(({ step }) => lines(step).some((l) => /\bcosign\s+sign\b/.test(l)))) fail(`no step of ${releaseFile} signs the image with cosign sign`);
 if (attesters.length === 0) fail(`no step of ${releaseFile} attests the image with actions/attest or actions/attest-build-provenance`);
-const writes = (p) => (p ? Object.entries(p).filter(([, level]) => level === 'write').map(([scope]) => scope) : []);
 const createsRelease = (job) => (job.steps ?? []).some((s) => lines(s).some((l) => /\bgh\s+release\s+create\b/.test(l)));
 for (const [key, job] of Object.entries(jobs)) {
   const has = (list) => list.some((s) => s.key === key);
@@ -219,36 +204,6 @@ const visit = (key) => {
 };
 [...simulated].forEach(visit);
 
-const usesStatus = (v) => typeof v === 'string' && /\b(success|always|failure|cancelled)\s*\(/i.test(v);
-// combinations <matrix>: the matrix's combinations, [{}] without one.
-function combinations(matrix) {
-  if (!matrix || typeof matrix !== 'object') return [{}];
-  const keys = Object.keys(matrix).filter((k) => k !== 'include' && k !== 'exclude');
-  let combos = [{}];
-  for (const k of keys) combos = combos.flatMap((c) => [].concat(matrix[k] ?? []).map((v) => ({ ...c, [k]: v })));
-  const include = [].concat(matrix.include ?? []);
-  if (keys.length === 0 && include.length > 0) return include;
-  return [...combos, ...include];
-}
-const git = (cwd, ...args) => {
-  const r = spawnSync('git', ['-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
-    cwd,
-    encoding: 'utf8',
-    env: {
-      PATH: process.env.PATH,
-      HOME: process.env.HOME,
-      GIT_CONFIG_GLOBAL: '/dev/null',
-      GIT_CONFIG_NOSYSTEM: '1',
-      GIT_AUTHOR_NAME: 'test',
-      GIT_AUTHOR_EMAIL: 'test@example.com',
-      GIT_COMMITTER_NAME: 'test',
-      GIT_COMMITTER_EMAIL: 'test@example.com',
-    },
-  });
-  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
-  return r.stdout.trim();
-};
-
 // run <event name> <ref> <workspace version> <registry tags> [<lookup error>]: runs the jobs on a
 // stand-in GHCR that holds <registry tags>, each tag to its digest, and with <lookup error> fails
 // every lookup of the image with an error other than not found; {state, sha, work, problems}: the
@@ -256,7 +211,6 @@ const git = (cwd, ...args) => {
 // could not run.
 function run(eventName, ref, version, registryTags, lookupError = false) {
   const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-image-test-')));
-  const problems = [];
   try {
     const work = path.join(tmp, 'work');
     const bin = path.join(tmp, 'bin');
@@ -266,11 +220,7 @@ function run(eventName, ref, version, registryTags, lookupError = false) {
     fs.symlinkSync(path.join(root, 'script'), path.join(work, 'script'));
     fs.symlinkSync(path.join(root, 'crates'), path.join(work, 'crates'));
     fs.writeFileSync(path.join(work, 'Cargo.toml'), `[workspace.package]\nversion = "${version}"\n`);
-    git(work, 'init', '-q');
-    git(work, 'add', '-A');
-    git(work, 'commit', '-q', '-m', 'release');
-    const sha = git(work, 'rev-parse', 'HEAD');
-    if (ref.startsWith('refs/tags/')) git(work, 'tag', ref.slice('refs/tags/'.length));
+    const sha = commitAll(work, ref.startsWith('refs/tags/') ? ref.slice('refs/tags/'.length) : undefined);
     const stateFile = path.join(tmp, 'registry.json');
     fs.writeFileSync(
       stateFile,
@@ -294,202 +244,61 @@ function run(eventName, ref, version, registryTags, lookupError = false) {
     for (const tool of ['docker', 'crane', 'skopeo', 'regctl', 'oras', 'cosign', 'gh', 'curl', 'wget']) {
       fs.writeFileSync(path.join(bin, tool), `#!/usr/bin/env bash\nexec "${process.execPath}" "${stub}" "${stateFile}" ${tool} "$@"\n`, { mode: 0o755 });
     }
-
-    const ev = event(eventName, ref);
-    const github = open({
-      ...ev.github,
-      sha,
-      workspace: work,
-      token: 'stub-token',
-      actor: 'skald-release[bot]',
-      server_url: 'https://github.com',
-      run_id: '1',
-      run_number: '1',
-      run_attempt: '1',
-    });
-    const baseEnv = {
-      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-      HOME: process.env.HOME,
-      TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
-      CI: 'true',
-      GITHUB_ACTIONS: 'true',
-      GITHUB_WORKSPACE: work,
-      GITHUB_EVENT_NAME: eventName,
-      GITHUB_REF: ref,
-      GITHUB_REF_NAME: ev.refName,
-      GITHUB_REF_TYPE: ref.startsWith('refs/tags/') ? 'tag' : 'branch',
-      GITHUB_REPOSITORY: 'skald-so/skald',
-      GITHUB_REPOSITORY_OWNER: 'skald-so',
-      GITHUB_SHA: sha,
-      GITHUB_ACTOR: 'skald-release[bot]',
-      GITHUB_SERVER_URL: 'https://github.com',
-      GITHUB_RUN_ID: '1',
-      RUNNER_TEMP: runner,
-      RUNNER_OS: 'Linux',
-      RUNNER_ARCH: 'X64',
-    };
-    const value = (text, contexts, status) => {
-      const v = template(text, { contexts, status });
-      return isUnknown(v) ? '' : toText(v);
-    };
-    const results = {};
+    const refName = event(eventName, ref).refName;
     let counter = 0;
-    for (const key of order) {
-      const job = jobs[key];
-      const needs = {};
-      for (const n of needsOf(job)) {
-        if (results[n]) needs[n] = results[n];
-        else {
-          const outputs = {};
-          for (const name of Object.keys(jobs[n]?.outputs ?? {})) {
-            outputs[name] = /tag/i.test(name) ? ev.refName.startsWith('v') ? ev.refName : `v${version}` : /version/i.test(name) ? version : unknown();
-          }
-          needs[n] = { result: 'success', outputs: open(outputs) };
+    const action = ({ step, kind, input, env }) => {
+      if (kind === 'docker/build-push-action') {
+        const list = (name, separators) => input(name).split(separators).map((s) => s.trim()).filter(Boolean);
+        const meta = path.join(runner, `metadata-${counter++}.json`);
+        const context = input('context') || `https://github.com/skald-so/skald.git#${sha}`;
+        const args = ['buildx', 'build', '--metadata-file', meta];
+        if (input('file')) args.push('--file', input('file'));
+        for (const t of list('tags', /[\n,]/)) args.push('--tag', t);
+        for (const a of list('build-args', /\n/)) args.push('--build-arg', a);
+        for (const c of list('cache-from', /\n/)) args.push('--cache-from', c);
+        for (const o of list('outputs', /\n/)) args.push('--output', o);
+        if (input('target')) args.push('--target', input('target'));
+        if (input('platforms')) args.push('--platform', input('platforms'));
+        if (!off(input('push'))) args.push('--push');
+        if (!off(input('load'))) args.push('--load');
+        args.push(context);
+        const r = spawnSync(process.execPath, [stub, stateFile, 'docker', ...args], { cwd: work, env, encoding: 'utf8' });
+        if (r.status !== 0) return { passed: false, problem: `the build fails: ${r.stderr.trim()}` };
+        const metadata = JSON.parse(fs.readFileSync(meta, 'utf8'));
+        return { outputs: { digest: metadata['containerimage.digest'], imageid: metadata['containerimage.config.digest'], metadata: JSON.stringify(metadata) } };
+      }
+      if (/^actions\/(attest-build-provenance|attest)$/.test(kind)) {
+        if (attestsImage(step)) {
+          const s = state();
+          const digest = input('subject-digest');
+          s.attestations.push({ name: input('subject-name'), digest, pushed: s.manifests.includes(digest) });
+          fs.writeFileSync(stateFile, JSON.stringify(s));
         }
+        return {};
       }
-      const needResults = Object.values(needs).map((n) => n.result);
-      const jobStatus = {
-        success: needResults.every((r) => r === 'success'),
-        failure: needResults.includes('failure'),
-        always: true,
-        cancelled: false,
-      };
-      const jobContexts = { github, needs, inputs: eventName === 'workflow_dispatch' ? open({}) : {}, vars: open({}) };
-      let runs = usesStatus(job.if) ? true : jobStatus.success;
-      if (job.if !== undefined && truth(condition(job.if, { contexts: jobContexts, status: jobStatus })) === false) runs = false;
-      if (!runs) {
-        results[key] = { result: 'skipped', outputs: {} };
-        continue;
+      if (
+        ![
+          'actions/checkout',
+          'actions/upload-artifact',
+          'actions/download-artifact',
+          'docker/setup-buildx-action',
+          'docker/setup-qemu-action',
+          'docker/login-action',
+          'taiki-e/install-action',
+        ].includes(kind)
+      ) {
+        return { passed: false, problem: `the test has no stand-in for ${kind}` };
       }
-      let ok = true;
-      let jobOutputs = {};
-      for (const matrix of combinations(job.strategy?.matrix)) {
-        const steps = {};
-        const env = { ...baseEnv, GITHUB_JOB: key };
-        let failed = false;
-        for (const [index, step] of (job.steps ?? []).entries()) {
-          const status = { success: !failed, failure: failed, always: true, cancelled: false };
-          const contexts = {
-            ...jobContexts,
-            env: open({}),
-            steps: open(steps),
-            matrix: open(matrix),
-            runner: open({ temp: runner, os: 'Linux', arch: 'X64' }),
-            secrets: open({ GITHUB_TOKEN: 'stub-token' }),
-            job: open({}),
-            strategy: open({}),
-          };
-          let go = usesStatus(step.if) ? true : !failed;
-          if (step.if !== undefined && truth(condition(step.if, { contexts, status })) === false) go = false;
-          if (!go) {
-            if (step.id) steps[step.id] = { outputs: {}, outcome: 'skipped', conclusion: 'skipped' };
-            continue;
-          }
-          const stepEnv = { ...env };
-          for (const source of [release.env, job.env, step.env]) {
-            for (const [k, v] of Object.entries(source ?? {})) stepEnv[k] = value(v, { ...contexts, env: open({ ...stepEnv }) }, status);
-          }
-          const stepContexts = { ...contexts, env: open({ ...stepEnv }) };
-          const input = (name) => value(step.with?.[name], stepContexts, status);
-          const where = stepName(key, step, index);
-          let outputs = {};
-          let passed = true;
-          const kind = action(step);
-          if (step.run !== undefined) {
-            const shell = step.shell ?? job.defaults?.run?.shell ?? release.defaults?.run?.shell ?? 'bash';
-            if (!/^bash\b/.test(shell)) {
-              problems.push(`${where}: the test runs steps in bash only, not ${shell}`);
-              passed = false;
-            } else {
-              const n = counter++;
-              const files = Object.fromEntries(['output', 'env', 'path', 'summary'].map((f) => [f, path.join(runner, `${f}-${n}`)]));
-              Object.values(files).forEach((f) => fs.writeFileSync(f, ''));
-              const script = path.join(runner, `step-${n}.sh`);
-              fs.writeFileSync(script, value(step.run, stepContexts, status));
-              const cwd = path.resolve(work, value(step['working-directory'] ?? job.defaults?.run?.['working-directory'] ?? '.', stepContexts, status));
-              const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', script], {
-                cwd,
-                env: { ...stepEnv, GITHUB_OUTPUT: files.output, GITHUB_ENV: files.env, GITHUB_PATH: files.path, GITHUB_STEP_SUMMARY: files.summary },
-                encoding: 'utf8',
-              });
-              if (r.status !== 0) {
-                problems.push(`${where} exits ${r.status}: ${(r.stderr ?? '').trim().split('\n').slice(-3).join(' | ')}`);
-                passed = false;
-              }
-              const read = (file) => {
-                const pairs = {};
-                const text = fs.readFileSync(file, 'utf8').split('\n');
-                for (let i = 0; i < text.length; i++) {
-                  const heredoc = text[i].match(/^([A-Za-z_][A-Za-z0-9_-]*)<<(.+)$/);
-                  const pair = text[i].match(/^([A-Za-z_][A-Za-z0-9_-]*)=(.*)$/);
-                  if (heredoc) {
-                    const end = text.indexOf(heredoc[2], i + 1);
-                    pairs[heredoc[1]] = text.slice(i + 1, end < 0 ? text.length : end).join('\n');
-                    i = end < 0 ? text.length : end;
-                  } else if (pair) pairs[pair[1]] = pair[2];
-                }
-                return pairs;
-              };
-              outputs = read(files.output);
-              Object.assign(env, read(files.env));
-            }
-          } else if (kind === 'docker/build-push-action') {
-            const list = (name, separators) => input(name).split(separators).map((s) => s.trim()).filter(Boolean);
-            const meta = path.join(runner, `metadata-${counter++}.json`);
-            const context = input('context') || `https://github.com/skald-so/skald.git#${sha}`;
-            const args = ['buildx', 'build', '--metadata-file', meta];
-            if (input('file')) args.push('--file', input('file'));
-            for (const t of list('tags', /[\n,]/)) args.push('--tag', t);
-            for (const a of list('build-args', /\n/)) args.push('--build-arg', a);
-            for (const c of list('cache-from', /\n/)) args.push('--cache-from', c);
-            for (const o of list('outputs', /\n/)) args.push('--output', o);
-            if (input('target')) args.push('--target', input('target'));
-            if (input('platforms')) args.push('--platform', input('platforms'));
-            if (!off(input('push'))) args.push('--push');
-            if (!off(input('load'))) args.push('--load');
-            args.push(context);
-            const r = spawnSync(process.execPath, [stub, stateFile, 'docker', ...args], { cwd: work, env: stepEnv, encoding: 'utf8' });
-            if (r.status !== 0) {
-              problems.push(`${where}: the build fails: ${r.stderr.trim()}`);
-              passed = false;
-            } else {
-              const metadata = JSON.parse(fs.readFileSync(meta, 'utf8'));
-              outputs = { digest: metadata['containerimage.digest'], imageid: metadata['containerimage.config.digest'], metadata: JSON.stringify(metadata) };
-            }
-          } else if (/^actions\/(attest-build-provenance|attest)$/.test(kind)) {
-            if (attestsImage(step)) {
-              const s = state();
-              const digest = input('subject-digest');
-              s.attestations.push({ name: input('subject-name'), digest, pushed: s.manifests.includes(digest) });
-              fs.writeFileSync(stateFile, JSON.stringify(s));
-            }
-          } else if (
-            ![
-              'actions/checkout',
-              'actions/upload-artifact',
-              'actions/download-artifact',
-              'docker/setup-buildx-action',
-              'docker/setup-qemu-action',
-              'docker/login-action',
-              'taiki-e/install-action',
-            ].includes(kind)
-          ) {
-            problems.push(`${where}: the test has no stand-in for ${kind}`);
-            passed = false;
-          } else if (kind === 'actions/checkout') {
-            const at = input('ref');
-            if (input('repository') && input('repository') !== 'skald-so/skald') problems.push(`${where}: it checks out ${input('repository')}`);
-            if (at && ![sha, ref, ev.refName].includes(at)) problems.push(`${where}: it checks out ${at}, not the commit of the run`);
-          }
-          if (step.id) steps[step.id] = { outputs: open(outputs), outcome: passed ? 'success' : 'failure', conclusion: passed ? 'success' : 'failure' };
-          if (!passed && off(step['continue-on-error'])) failed = true;
-        }
-        if (failed) ok = false;
-        const contexts = { ...jobContexts, steps: open(steps), matrix: open(matrix), env: open({}) };
-        jobOutputs = Object.fromEntries(Object.entries(job.outputs ?? {}).map(([name, v]) => [name, value(v, contexts, { success: !failed, failure: failed, always: true, cancelled: false })]));
+      if (kind === 'actions/checkout') {
+        const at = input('ref');
+        const wrong = [];
+        if (input('repository') && input('repository') !== 'skald-so/skald') wrong.push(`it checks out ${input('repository')}`);
+        if (at && ![sha, ref, refName].includes(at)) wrong.push(`it checks out ${at}, not the commit of the run`);
+        if (wrong.length > 0) return { problem: wrong.join('; ') };
       }
-      results[key] = { result: ok ? 'success' : 'failure', outputs: open(jobOutputs) };
-    }
+      return {};
+    };
+    const { problems } = runJobs(release, order, { eventName, ref, version, sha, work, bin, runner, action });
     return { state: state(), sha, work, problems };
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -517,6 +326,19 @@ const report = (label, { problems, state }) => {
   for (const p of problems) fail(`${label}: ${p}`);
   for (const u of state.unsupported) fail(`${label}: the stand-ins cannot run: ${u}`);
 };
+// keepsTags <label> <state>: every tag GHCR had before the run names the same digest.
+const keepsTags = (label, state) => {
+  for (const [tag, digest] of Object.entries(previously)) {
+    if (state.tags[tag] !== digest) fail(`${label}: the tag ${tag} moves to ${state.tags[tag]}`);
+  }
+};
+// publishesNothing <label> <state>: the run pushed, signed and attested nothing.
+const publishesNothing = (label, state) => {
+  for (const w of state.writes) fail(`${label}: ${w.tool} pushes ${w.ref}`);
+  for (const e of state.elsewhere) fail(`${label}: ${e.tool} pushes ${e.ref}`);
+  for (const s of state.signatures) fail(`${label}: cosign ${s.command} ${s.ref}`);
+  for (const a of state.attestations) fail(`${label}: it attests ${a.name}@${a.digest}`);
+};
 
 // A push of a release tag: the image of its version.
 const forms = {};
@@ -532,9 +354,7 @@ for (const version of ['1.2.3', '1.2.4-beta.1']) {
     fail(`${label}: the image is pushed under one tag, ${version} or v${version}, not: ${tagged.join(', ') || 'none'}`);
   }
   for (const w of state.writes) if (w.before !== null) fail(`${label}: ${w.tool} moves the tag ${w.tag} from ${w.before} to ${w.digest}`);
-  for (const [tag, digest] of Object.entries(previously)) {
-    if (state.tags[tag] !== digest) fail(`${label}: the tag ${tag} moves to ${state.tags[tag]}`);
-  }
+  keepsTags(label, state);
   for (const e of state.elsewhere) fail(`${label}: ${e.tool} writes to another image: ${e.ref}`);
   const tag = tagged.length === 1 ? tagged[0] : null;
   const pushed = tag ? state.tags[tag] : null;
@@ -583,13 +403,8 @@ if (Object.keys(forms).length === 2 && new Set(Object.values(forms)).size !== 1)
   const label = 'a push of v1.2.3 when the lookup of the tag fails other than with not found';
   const { state, problems } = run('push', 'refs/tags/v1.2.3', '1.2.3', { ...previously }, true);
   if (problems.length === 0) fail(`${label}: the run passes`);
-  for (const w of state.writes) fail(`${label}: ${w.tool} pushes ${w.ref}`);
-  for (const e of state.elsewhere) fail(`${label}: ${e.tool} pushes ${e.ref}`);
-  for (const s of state.signatures) fail(`${label}: cosign ${s.command} ${s.ref}`);
-  for (const a of state.attestations) fail(`${label}: it attests ${a.name}@${a.digest}`);
-  for (const [tag, digest] of Object.entries(previously)) {
-    if (state.tags[tag] !== digest) fail(`${label}: the tag ${tag} moves to ${state.tags[tag]}`);
-  }
+  publishesNothing(label, state);
+  keepsTags(label, state);
   for (const u of state.unsupported) fail(`${label}: the stand-ins cannot run: ${u}`);
 }
 
@@ -604,15 +419,11 @@ for (const [name, ref] of [
   const { state } = result;
   report(label, result);
   checkBuilds(label, result);
-  for (const w of state.writes) fail(`${label}: ${w.tool} pushes ${w.ref}`);
-  for (const e of state.elsewhere) fail(`${label}: ${e.tool} pushes ${e.ref}`);
-  for (const s of state.signatures) fail(`${label}: cosign ${s.command} ${s.ref}`);
-  for (const a of state.attestations) fail(`${label}: it attests ${a.name}@${a.digest}`);
+  publishesNothing(label, state);
 }
 
 // docs/dev/infrastructure.md.
-const docs = fs.readFileSync(path.join(root, 'docs/dev/infrastructure.md'), 'utf8');
-const section = (title) => docs.match(new RegExp(`^## ${title}\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, 'm'))?.[1] ?? '';
+const section = (title) => infrastructureSection(root, title);
 const channels = section('Channels');
 const row = channels.split('\n').find((l) => l.startsWith('|') && /skald-server/.test(l));
 if (!row) fail('"Channels" has no row of the skald-server image');
@@ -640,22 +451,12 @@ if (!cosignVerify.some((l) => byDigest.test(l) && identity.test(l) && issuer.tes
       (cosignVerify.map((l) => l.trim()).join(' | ') || 'none'),
   );
 }
-const workflowIdentity = 'skald-so/skald/\\.github/workflows/release\\.yml';
-const pins = (line) =>
-  /(--repo|-R)[\s=]+['"]?skald-so\/skald(?![\w/.-])/.test(line) &&
-  ((new RegExp(`--signer-workflow[\\s=]+['"]?(https://)?(github\\.com/)?${workflowIdentity}`).test(line) &&
-    /--source-ref[\s=]+['"]?refs\/tags\/v/.test(line)) ||
-    new RegExp(`--cert-identity[\\s=]+['"]?https://github\\.com/${workflowIdentity}@refs/tags/v`).test(line));
 const attestationVerify = trustLines.filter((l) => /\bgh\s+attestation\s+verify\s+['"]?oci:\/\/ghcr\.io\/skald-so\/skald-server@sha256:/.test(l));
-if (!attestationVerify.some(pins)) {
+if (!attestationVerify.some(pinsAttestation)) {
   fail(
     '"Trust in builds" has no gh attestation verify command of oci://ghcr.io/skald-so/skald-server@sha256:… that pins the repository skald-so/skald, the release workflow and refs/tags/vX.Y.Z: ' +
       (attestationVerify.map((l) => l.trim()).join(' | ') || 'none'),
   );
 }
 
-if (failures > 0) {
-  console.error(`release-image-test: ${failures} case(s) failed`);
-  process.exit(1);
-}
-console.log('release-image-test: all cases passed');
+done();

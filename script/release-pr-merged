@@ -10,6 +10,7 @@
 # tests it.
 set -euo pipefail
 
+root=$(cd "$(dirname "$0")/.." && pwd)
 app='skald-release[bot]'
 attempts=${RELEASE_PR_MERGED_ATTEMPTS:-6}
 pause=${RELEASE_PR_MERGED_PAUSE:-10}
@@ -19,16 +20,12 @@ error() {
   exit 2
 }
 
-for name in GITHUB_API_URL GITHUB_REPOSITORY GH_TOKEN; do
-  [[ -n ${!name:-} ]] || error "$name is not set"
-done
+source "$root/script/lib/github-api.sh"
+require_vars GITHUB_API_URL GITHUB_REPOSITORY GH_TOKEN
 commit=$(git rev-parse --verify --quiet 'HEAD^{commit}') || error "no commit is checked out"
 
 for ((attempt = 1; ; attempt++)); do
-  prs=$(curl --fail --silent --show-error --max-time 60 --retry 3 \
-    --header "Authorization: Bearer $GH_TOKEN" --header 'Accept: application/vnd.github+json' \
-    --header 'X-GitHub-Api-Version: 2022-11-28' \
-    "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$commit/pulls?per_page=100") ||
+  prs=$(github_api GET "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$commit/pulls?per_page=100") ||
     error "the GitHub API did not list the PRs of $commit"
   count=$(jq 'if type == "array" then length else error("not a list of PRs") end' <<<"$prs") ||
     error "the GitHub API sent an unreadable list of the PRs of $commit"
