@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Tests script/changed-parts on a scratch repository: a PR checks only the parts of script/test it
 # changes; the OpenAPI spec, scripts, CI and unknown paths check everything; docs check nothing.
-# Also tests that script/test rejects an unknown part instead of skipping it.
+# With --since, the changes from where HEAD branched off the base to the working tree count.
+# Also tests that script/test rejects an unknown part instead of skipping it, and that with
+# SKALD_TEST_SINCE it checks the parts the changes since that base touch, on a copy that runs no
+# check (script/lib/test-stand-ins.sh): every part when none or when that cannot be told; a change
+# to each path of the Rust code alone runs the checks that read it.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -58,7 +62,9 @@ git init --quiet
 for file in api/openapi.json Cargo.toml Cargo.lock deny.toml crates/server/src/lib.rs \
   web/package.json web/package-lock.json web/src/App.tsx web/README.md docs/dev/roadmap.md task.md \
   crates/server/Dockerfile .dockerignore \
-  prototypes/mls/Cargo.toml prototypes/mls/openmls/src/lib.rs \
+  prototypes/mls/Cargo.toml prototypes/mls/Cargo.lock prototypes/mls/openmls/src/lib.rs \
+  prototypes/agents/Cargo.toml prototypes/agents/inbox/src/lib.rs \
+  prototypes/edits/Cargo.toml prototypes/edits/overlap/src/lib.rs \
   script/test .github/workflows/ci.yml renovate.json .gitattributes; do
   apply "$file"
 done
@@ -66,48 +72,72 @@ git add --all
 git commit --quiet --message base
 base=$(git rev-parse HEAD)
 
+# The parts of the Rust code, those the workspace's crates touch, and all of them.
+rust='workspace wasm image mls agents edits repository'
+crates='workspace wasm image repository'
+all="$rust tooling web"
+
 expect web web/src/App.tsx
 expect web web/README.md
-expect 'rust web' web/package.json
-expect 'rust web' web/package-lock.json
-expect 'rust web' -web/package.json
+# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/.
+expect 'workspace web' web/package.json
+expect 'workspace web' web/package-lock.json
+expect 'workspace web' -web/package.json
 expect web web/src/App.tsx docs/dev/roadmap.md task.md
 
-expect rust crates/server/src/lib.rs
-expect rust crates/server/README.md
-expect rust Cargo.toml
-expect rust Cargo.lock
-expect rust deny.toml
-expect rust crates/server/src/lib.rs docs/dev/roadmap.md
+expect "$crates" crates/server/src/lib.rs
+expect "$crates" crates/server/README.md
+expect "$crates" Cargo.toml
+expect "$crates" Cargo.lock
+expect "$crates" crates/server/src/lib.rs docs/dev/roadmap.md
 # The skald-server image: its definition and its build context.
-expect rust crates/server/Dockerfile
-expect rust crates/server/migrations/new.sql
-expect rust crates/proto/src/lib.rs
-expect rust prototypes/mls/openmls/src/lib.rs
-expect rust prototypes/mls/Cargo.toml
-expect rust prototypes/mls/mls-rs/src/lib.rs
-expect rust -prototypes/mls/openmls/src/lib.rs
-expect rust prototypes/agents/inbox/src/lib.rs
+expect "$crates" crates/server/Dockerfile
+expect "$crates" crates/server/migrations/new.sql
+expect "$crates" crates/proto/src/lib.rs
+# cargo-deny's policy: script/deny and script/deny-test.
+expect repository deny.toml
 
-expect 'rust web' crates/server/src/lib.rs web/src/App.tsx
+# Each prototype: its own part, and the copied code and release checks on the whole repository.
+expect 'mls repository' prototypes/mls/openmls/src/lib.rs
+expect 'mls repository' prototypes/mls/Cargo.toml
+expect 'mls repository' prototypes/mls/mls-rs/src/lib.rs
+expect 'mls repository' -prototypes/mls/openmls/src/lib.rs
+# The crates' WASM tests take the wasm-bindgen of the MLS prototypes' Cargo.lock.
+expect 'wasm mls repository' prototypes/mls/Cargo.lock
+expect 'agents repository' prototypes/agents/inbox/src/lib.rs
+expect 'agents repository' prototypes/agents/Cargo.toml
+expect 'agents repository' prototypes/agents/new/src/lib.rs
+expect 'edits repository' prototypes/edits/overlap/src/lib.rs
+expect 'edits repository' prototypes/edits/Cargo.toml
+expect 'edits repository' -prototypes/edits/overlap/src/lib.rs
+expect 'agents edits repository' prototypes/agents/inbox/src/lib.rs prototypes/edits/Cargo.toml
+expect 'agents edits repository' 'prototypes/edits/overlap/src/lib.rs->prototypes/agents/overlap.rs'
+# Any other path in prototypes/: every part of the Rust code.
+expect "$rust" prototypes/README.md
+expect "$rust" prototypes/new/src/lib.rs
+expect "$rust" prototypes/mlsx/src/lib.rs
 
-expect 'rust web tooling' api/openapi.json
-expect 'rust web tooling' script/test
-expect 'rust web tooling' script/new-check
-expect 'rust web tooling' .github/workflows/ci.yml
-expect 'rust web tooling' renovate.json
-expect 'rust web tooling' .gitattributes
-expect 'rust web tooling' .dockerignore
-expect 'rust web tooling' ee/LICENSE
-expect 'rust web tooling' api/README.md
-expect 'rust web tooling' web/src/App.tsx api/openapi.json
+expect 'workspace wasm image repository web' crates/server/src/lib.rs web/src/App.tsx
+expect 'workspace wasm image edits repository' crates/server/src/lib.rs prototypes/edits/Cargo.toml
+
+expect "$all" api/openapi.json
+expect "$all" script/test
+expect "$all" script/new-check
+expect "$all" .github/workflows/ci.yml
+expect "$all" renovate.json
+expect "$all" .gitattributes
+expect "$all" .dockerignore
+expect "$all" ee/LICENSE
+expect "$all" api/README.md
+expect "$all" web/src/App.tsx api/openapi.json
+expect "$all" prototypes/edits/Cargo.toml script/test
 
 expect none docs/dev/roadmap.md
 expect none docs/dev/new.md task.md README.md
 expect none
 
 # A moved file counts in both places.
-expect rust 'crates/server/src/lib.rs->docs/lib.rs'
+expect "$crates" 'crates/server/src/lib.rs->docs/lib.rs'
 expect web 'docs/dev/roadmap.md->web/roadmap.md'
 
 # CI checks out the PR merged into dev and compares it with its first parent, dev:
@@ -128,7 +158,7 @@ git checkout --quiet --detach "$base"
 apply crates/server/src/lib.rs
 git commit --quiet --all --message rust
 got=$("$root/script/changed-parts" "$base")
-want=$'rust=true\nweb=false\ntooling=false'
+want=$'workspace=true\nwasm=true\nimage=true\nmls=false\nagents=false\nedits=false\nrepository=true\ntooling=false\nweb=false'
 [[ $got == "$want" ]] || fail "output: got '$got', want '$want'"
 
 if "$root/script/changed-parts" >/dev/null 2>&1; then
@@ -138,10 +168,185 @@ if "$root/script/changed-parts" no-such-commit >/dev/null 2>&1; then
   fail "expected an error for an unknown base"
 fi
 
+# --since: the changes from where HEAD branched off the base to the working tree, untracked files
+# included; changes that reached the base after HEAD branched do not count.
+# since <want> <base>: changed-parts --since <base> reports the parts <want>.
+since() {
+  local got
+  got=$("$root/script/changed-parts" --since "$2" | sed -n 's/=true$//p' | paste -sd ' ' -)
+  [[ ${got:-none} == "$1" ]] || fail "--since $2: got '${got:-none}', want '$1'"
+}
+git checkout --quiet --detach "$base"
+since none "$base"
+apply prototypes/edits/overlap/src/lib.rs
+git commit --quiet --all --message edits
+since 'edits repository' "$base"
+apply prototypes/agents/inbox/src/lib.rs
+since 'agents edits repository' "$base"
+git add --all
+since 'agents edits repository' "$base"
+git reset --quiet --hard
+apply web/new.ts
+since 'edits repository web' "$base"
+# From a directory below the root too.
+mkdir -p crates
+got=$(cd crates && "$root/script/changed-parts" --since "$base" | sed -n 's/=true$//p' | paste -sd ' ' -)
+[[ $got == 'edits repository web' ]] || fail "--since in crates/: got '$got', want 'edits repository web'"
+rm web/new.ts
+branch=$(git rev-parse HEAD)
+git checkout --quiet --detach "$base"
+apply crates/server/src/lib.rs
+git commit --quiet --all --message dev
+moved=$(git rev-parse HEAD)
+git checkout --quiet --detach "$branch"
+since 'edits repository' "$moved"
+got=$(parts "$moved")
+[[ $got == 'edits repository' ]] || fail "a base that moved on after HEAD branched: got '$got', want 'edits repository'"
+for args in '--since' "--since $base $base" "--base $base" "$base $base"; do
+  # $args unquoted: its words are the arguments.
+  status=0
+  "$root/script/changed-parts" $args >/dev/null 2>&1 || status=$?
+  [[ $status -eq 2 ]] || fail "changed-parts $args: exit code $status, want a usage error, 2"
+done
+if "$root/script/changed-parts" --since no-such-commit >/dev/null 2>&1; then
+  fail "expected an error for an unknown base with --since"
+fi
+
 # A typo in SKALD_TEST_PARTS must not skip checks.
 status=0
-SKALD_TEST_PARTS='rust,web' "$root/script/test" >/dev/null 2>&1 || status=$?
+SKALD_TEST_PARTS='workspace,web' "$root/script/test" >/dev/null 2>&1 || status=$?
 [[ $status -eq 2 ]] || fail "script/test with an unknown part: exit code $status, want 2"
+
+# script/test with SKALD_TEST_SINCE, on a scratch repository with a copy of script/test that runs no
+# check.
+source "$root/script/lib/test-stand-ins.sh"
+copy=$tmp/copy
+test_stand_ins "$copy"
+printf '/bin/\n/sysroot/\n/checks\n' >"$copy/.gitignore"
+cd "$copy"
+git init --quiet
+for file in prototypes/edits/src/lib.rs prototypes/agents/src/lib.rs docs/dev/roadmap.md; do
+  apply "$file"
+done
+git add --all
+git commit --quiet --message base
+copy_base=$(git rev-parse HEAD)
+# checking <want> [<variable>=<value>...]: script/test of the copy, with only those of its variables
+# set, checks the parts <want>, or exits with the code <want>, `exit <code>`.
+checking() {
+  local want=$1 output got status=0
+  shift
+  output=$(env -u SKALD_TEST_PARTS -u SKALD_TEST_SINCE "$@" PATH="$copy/bin:$PATH" "$copy/script/test" 2>/dev/null) ||
+    status=$?
+  got="exit $status"
+  if ((status == 0)); then
+    got=$(sed -n 's/^script\/test: checking \(.*\) $/\1/p' <<<"$output")
+  fi
+  [[ $got == "$want" ]] || fail "script/test with $*: got '$got', want '$want'"
+}
+checking "$all"
+checking edits SKALD_TEST_PARTS=edits
+# No change since the base, or only docs: every part.
+checking "$all" SKALD_TEST_SINCE="$copy_base"
+apply docs/dev/roadmap.md
+git commit --quiet --all --message docs
+checking "$all" SKALD_TEST_SINCE="$copy_base"
+apply prototypes/edits/src/lib.rs
+git commit --quiet --all --message edits
+checking 'edits repository' SKALD_TEST_SINCE="$copy_base"
+# A base that moved on after HEAD branched off it: its new commits do not count.
+branch=$(git rev-parse HEAD)
+git checkout --quiet --detach "$copy_base"
+apply prototypes/agents/src/lib.rs
+git commit --quiet --all --message dev
+moved=$(git rev-parse HEAD)
+git checkout --quiet --detach "$branch"
+checking 'edits repository' SKALD_TEST_SINCE="$moved"
+# Uncommitted and untracked changes count; ignored files do not.
+apply prototypes/agents/src/lib.rs
+checking 'agents edits repository' SKALD_TEST_SINCE="$copy_base"
+git checkout --quiet -- prototypes/agents/src/lib.rs
+apply web/new.ts
+checking 'edits repository web' SKALD_TEST_SINCE="$copy_base"
+rm web/new.ts
+# A base the copy cannot compare with: every part.
+checking "$all" SKALD_TEST_SINCE=no-such-commit
+checking 'exit 2' SKALD_TEST_SINCE="$copy_base" SKALD_TEST_PARTS=edits
+
+# The checks that read a path run when only it changes: script/test of the copy with
+# SKALD_TEST_SINCE runs the parts script/changed-parts selects, as CI runs them, one job each.
+# reads <path> <check>...: a commit that changes only <path> runs each <check>, a command as the
+# stand-ins log it, `<directory>: <command>` when it runs below the root.
+reads() {
+  local path=$1 check line log
+  shift
+  git checkout --quiet --detach "$copy_base"
+  apply "$path"
+  git add --all
+  git commit --quiet --message change
+  rm -f "$copy/checks"
+  if ! env -u SKALD_TEST_PARTS -u SKALD_TEST_SINCE SKALD_TEST_SINCE="$copy_base" PATH="$copy/bin:$PATH" \
+    "$copy/script/test" >/dev/null 2>&1; then
+    fail "script/test after a change to $path fails"
+    return
+  fi
+  log=$(cat "$copy/checks")
+  for check in "$@"; do
+    if [[ $check == *': '* ]]; then line=${check%%: *}$'\t'${check#*: }; else line=$'\t'$check; fi
+    grep -qxF -- "$line" <<<"$log" || fail "a change to $path alone does not run: $check"
+  done
+}
+# The workspace's build, fmt, clippy and tests, of the crates in WASM, and the checks of the whole
+# tree: copied code, cargo-deny and the release tests on copies of the working tree.
+crate_checks=(
+  'cargo build --workspace --all-targets --locked'
+  'cargo fmt --all --check'
+  'cargo clippy --workspace --all-targets --locked -- -D warnings'
+  'cargo test --workspace --locked'
+  'cargo clippy --target wasm32-unknown-unknown -p skald-proto -p skald-crypto --all-targets --locked -- -D warnings'
+  script/wasm-test
+  script/image-test
+  'script/deny check advisories licenses'
+  script/deny-test
+)
+tree_checks=(
+  'script/duplicates crates prototypes'
+  script/release-plz-config-test
+  script/release-plz-test
+  script/release-tag-test
+)
+# prototype_checks <directory>: the build, fmt, clippy and tests of the prototypes' workspace there.
+prototype_checks=()
+prototype() {
+  local manifest="--manifest-path $1/Cargo.toml"
+  prototype_checks=(
+    "cargo build $manifest --workspace --all-targets --locked"
+    "cargo fmt $manifest --all --check"
+    "cargo clippy $manifest --workspace --all-targets --locked -- -D warnings"
+    "cargo test $manifest --workspace --locked"
+  )
+}
+for path in crates/server/src/lib.rs crates/server/Dockerfile Cargo.toml Cargo.lock; do
+  reads "$path" "${crate_checks[@]}" "${tree_checks[@]}"
+done
+reads deny.toml 'script/deny check advisories licenses' script/deny-test
+prototype prototypes/mls
+mls_checks=(
+  "${prototype_checks[@]}"
+  'prototypes/mls: cargo clippy --target wasm32-unknown-unknown --workspace --all-targets --locked -- -D warnings'
+  'prototypes/mls: cargo test --target wasm32-unknown-unknown -p mls-proto-openmls -p mls-proto-mls-rs --test scenarios --locked'
+  'prototypes/mls: cargo test --target wasm32-unknown-unknown -p mls-bench --test smoke --locked'
+)
+reads prototypes/mls/openmls/src/lib.rs "${mls_checks[@]}" "${tree_checks[@]}"
+# The crates' WASM tests check that the workspace takes its wasm-bindgen.
+reads prototypes/mls/Cargo.lock "${mls_checks[@]}" script/wasm-test "${tree_checks[@]}"
+prototype prototypes/agents
+reads prototypes/agents/inbox/src/lib.rs "${prototype_checks[@]}" "${tree_checks[@]}"
+prototype prototypes/edits
+reads prototypes/edits/overlap/src/lib.rs "${prototype_checks[@]}" "${tree_checks[@]}"
+# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/.
+reads web/package.json 'cargo test --workspace --locked' 'web: npm run lint' 'web: npm test' \
+  'web: npm run build'
 
 if [[ $failures -ne 0 ]]; then
   echo "changed-parts-test: $failures case(s) failed" >&2
