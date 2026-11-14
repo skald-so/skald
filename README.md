@@ -64,6 +64,11 @@ skald spaces               # the device's spaces, its personal space marked, and
 skald members <space>      # a space's members, their roles and their devices with a valid certificate
 skald create-channel <space>  # add a channel to a space, as its admin
 skald channels <space>     # a space's channels and their members
+skald add-rule <folder> <space>  # bind a folder and everything below it to a space
+skald rules                # the folders' rules
+skald remove-rule <folder>  # remove a folder's rule
+skald approve-binding <folder>  # let the folder's .skald.toml, space = "<name>", bind it as it is now
+skald folder [<folder>]    # a folder's space and what binds it; a session's folder is its working directory
 skald sign-out             # sign out; the device's keys and certificate stay on the machine
 skald update               # update to the latest stable release, never a beta; npm installs update through npm
 ```
