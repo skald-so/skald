@@ -190,3 +190,39 @@ fn revision_one_has_its_creator_as_the_only_admin_and_a_new_spaces_policy() {
         )))
     );
 }
+
+#[test]
+fn member_is_the_first_entry_of_an_account_and_none_for_another() {
+    let (alice, carol, bob) = (
+        AccountId::from_bytes([0xa1; 16]),
+        AccountId::from_bytes([0xca; 16]),
+        AccountId::from_bytes([0xb0; 16]),
+    );
+    let mut body = RosterBody::first(
+        SpaceId::from_bytes([0x5a; 16]),
+        "acme".parse().unwrap(),
+        alice,
+        "alice".parse().unwrap(),
+        [0x01; 32],
+        DeviceId::from_bytes([0x11; 16]),
+        0x6911_a780,
+    );
+    let mut member = body.members[0].clone();
+    member.account = carol;
+    member.handle = "carol".parse().unwrap();
+    member.role = Role::Member;
+    body.members.push(member.clone());
+    // A repeated account, as a revision that fails check 3 lists it.
+    member.account = alice;
+    member.handle = "alice-again".parse().unwrap();
+    body.members.push(member);
+
+    assert_eq!(
+        body.member(carol).map(|member| member.handle.as_str()),
+        Some("carol")
+    );
+    let found = body.member(alice).expect("alice is a member");
+    assert_eq!(found.handle.as_str(), "alice", "not the first entry");
+    assert_eq!(found.role, Role::Admin);
+    assert_eq!(body.member(bob), None);
+}

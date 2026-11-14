@@ -9,7 +9,7 @@ use skald_proto::{Cbor as _, Channel, ChannelId, ChannelMember, Roster, SpaceId,
 
 use crate::connection::Connection;
 use crate::devices::text;
-use crate::spaces::{CHANGED_MEANWHILE, Synced, admin_device, no_admin};
+use crate::spaces::{CHANGED_MEANWHILE, Synced, admin_device, heading, no_admin};
 
 /// `NewChannel` in the API spec.
 #[derive(Deserialize)]
@@ -82,12 +82,7 @@ pub fn list(synced: Synced) -> Result<(), String> {
 /// with its ID and its members' handles.
 fn listing(roster: &Roster) -> String {
     let body = roster.body();
-    let mut out = format!(
-        "The space {} ({}), revision {}:\n",
-        body.name.as_str(),
-        body.space,
-        body.revision
-    );
+    let mut out = heading(roster);
     if body.channels.is_empty() {
         out.push_str("  no channel yet\n");
     }
@@ -96,13 +91,10 @@ fn listing(roster: &Roster) -> String {
             .members
             .iter()
             .map(|entry| {
-                body.members
-                    .iter()
-                    .find(|member| member.account == entry.account)
-                    .map_or_else(
-                        || entry.account.to_string(),
-                        |member| member.handle.as_str().to_owned(),
-                    )
+                body.member(entry.account).map_or_else(
+                    || entry.account.to_string(),
+                    |member| member.handle.as_str().to_owned(),
+                )
             })
             .collect();
         out.push_str(&format!("  {}  {}\n", channel.id, handles.join(", ")));
@@ -113,8 +105,9 @@ fn listing(roster: &Roster) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spaces::tests::{first, member};
     use skald_crypto::SigningKey;
-    use skald_proto::{AccountId, DeviceId, Member, Role, RosterBody};
+    use skald_proto::{AccountId, RosterBody};
 
     #[test]
     fn listing_shows_each_channel_with_its_members_handles() {
@@ -124,15 +117,7 @@ mod tests {
             AccountId::generate(),
         );
         let key = SigningKey::generate();
-        let mut body = RosterBody::first(
-            SpaceId::generate(),
-            "acme".parse().unwrap(),
-            ada,
-            "ada".parse().unwrap(),
-            [3; 32],
-            DeviceId::from_signing_key(&key.public_key()),
-            1_800_000_000,
-        );
+        let mut body = first(ada).body().clone();
         let space = body.space;
         let sign = |body: &RosterBody| skald_crypto::sign_roster(body, &key).unwrap();
         assert_eq!(
@@ -141,15 +126,7 @@ mod tests {
         );
 
         body.revision = 3;
-        body.members.push(Member {
-            account: bob,
-            handle: "bob".parse().unwrap(),
-            role: Role::Member,
-            master: [4; 32],
-            invite: None,
-            excluded: None,
-            unknown: Unknown::default(),
-        });
+        body.members.push(member(bob, "bob", [4; 32]));
         let channel = |members: &[(AccountId, bool)]| Channel {
             id: ChannelId::generate(),
             members: members

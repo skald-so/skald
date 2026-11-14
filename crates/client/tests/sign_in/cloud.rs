@@ -320,6 +320,28 @@ impl Cloud {
             .collect()
     }
 
+    /// The spaces the account of the session `token` gets, straight from the server, in the order
+    /// it gives them: each one's ID and name.
+    pub fn spaces(&self, token: &str) -> Vec<(SpaceId, String)> {
+        let (status, body) = self.get_as("/spaces", token);
+        assert_eq!(status, 200, "GET /spaces: {body}");
+        body["spaces"]
+            .as_array()
+            .unwrap_or_else(|| panic!("GET /spaces: {body}"))
+            .iter()
+            .map(|space| {
+                let id = space["space"]
+                    .as_str()
+                    .and_then(|id| id.parse().ok())
+                    .unwrap_or_else(|| panic!("a space ID: {space}"));
+                let name = space["name"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("a space name: {space}"));
+                (id, name.to_owned())
+            })
+            .collect()
+    }
+
     /// How many requests whose line starts with `request` the machines sent from `since` on.
     pub fn count_sent(&self, since: Instant, request: &str) -> usize {
         let request = request.to_lowercase();

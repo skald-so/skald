@@ -57,17 +57,10 @@ use skald_proto::{
     Cbor as _, Channel, ChannelId, ChannelMember, Name, Role, Roster, SpaceId, Unknown,
 };
 use world::{
-    ADMIN, CREATE_SPACE, MEMBER, Person, SPACES, World, assert_role, create, members, next_by,
-    next_with, plain_lines, post_as, revisions_request, run, set_role, space_certs, store,
-    warnings, words,
+    ACME, ADMIN, CHANNELS, CREATE_CHANNEL, CREATE_SPACE, MEMBER, Person, SPACES, World,
+    assert_role, create, members, next_by, next_with, plain_lines, post_as, revisions_request, run,
+    set_role, space_certs, store, warnings, words,
 };
-
-/// The commands that create a channel in a space and list a space's channels.
-const CREATE_CHANNEL: &str = "create-channel";
-const CHANNELS: &str = "channels";
-
-/// The space every test creates.
-const ACME: &str = "acme";
 
 /// The request that issues a channel ID for `space`, as its line starts.
 fn channel_request(space: SpaceId) -> String {

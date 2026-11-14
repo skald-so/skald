@@ -44,88 +44,37 @@ mod common;
 mod keys;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use machine::{Finished, Machine};
 use serde_json::json;
 use skald_crypto::SigningKey;
-use skald_proto::{Address, Cbor, Name, Roster};
+use skald_proto::{Address, Cbor, Name};
 use world::{
-    Person, SPACES, World, create, next, next_by, revisions_request, run, store, warnings,
+    AGENT, APPROVE, CLIENT_A, CLIENT_B, Desk, HOST, SPACES, World, next, next_by, path,
+    revisions_request, store, warnings,
 };
 
-/// The option that names the agent, and the command that shows its address.
-const AGENT: &str = "--agent";
+/// The command that shows an agent's address.
 const ADDRESS: &str = "address";
 
-/// The commands that add a rule, approve a `.skald.toml` and set the account's username.
-const ADD_RULE: &str = "add-rule";
-const APPROVE: &str = "approve-binding";
+/// The command that sets the account's username.
 const SET_USERNAME: &str = "set-username";
-
-/// The server's name: the host of its public address.
-const SERVER: &str = "localhost";
-
-/// The team spaces the device is in.
-const CLIENT_A: &str = "clienta";
-const CLIENT_B: &str = "clientb";
 
 /// What the CLI says when an agent gets no address for want of a valid server name.
 const NO_ADDRESS: &str = "no address";
 
-/// A person's first machine, in its personal space, `clienta` and `clientb`.
-struct Desk {
-    world: World,
-    ada: Person,
-    /// The name of the account's personal space: its username.
-    personal: String,
-    /// Revision 1 of `clienta`.
-    client_a: Roster,
-}
-
 impl Desk {
     /// The desk on a server whose public address is under `host`.
     fn on(host: &str, id: u64, login: &str) -> Self {
-        let world = World::on_host(host);
-        let ada = world.sign_up(id, login, "ada-workstation");
-        let client_a = create(&world.cloud, &ada, CLIENT_A);
-        create(&world.cloud, &ada, CLIENT_B);
-        Desk {
-            personal: ada.handle.to_string(),
-            world,
-            ada,
-            client_a,
-        }
+        Self::sign_up(World::on_host(host), id, login)
     }
 
+    /// The desk on a server whose name is [`HOST`], the host of its public address.
     fn start(id: u64, login: &str) -> Self {
-        Self::on(SERVER, id, login)
-    }
-
-    /// The machine's folder `rel`, such as `work/clientA`, under its home; made if missing.
-    fn dir(&self, rel: &str) -> PathBuf {
-        let dir = self
-            .ada
-            .machine
-            .root()
-            .join("home")
-            .join(rel.split('/').collect::<PathBuf>());
-        fs::create_dir_all(&dir).expect("make a folder");
-        dir
-    }
-
-    /// Runs `skald <args>` on the machine; fails unless it succeeds.
-    fn ok(&self, args: &[&str]) -> Finished {
-        let finished = run(&self.ada.machine, args);
-        assert!(finished.success, "{args:?}: {finished:?}");
-        finished
-    }
-
-    /// Binds `dir` and everything below it to `space` by a rule.
-    fn add_rule(&self, dir: &Path, space: &str) {
-        self.ok(&[ADD_RULE, path(dir), space]);
+        Self::on(HOST, id, login)
     }
 
     /// Runs `skald --agent=<agent> address` on the machine in `dir`.
@@ -138,7 +87,7 @@ impl Desk {
     fn assert_address(&self, dir: &Path, agent: &str, space: &str, owner: &str) {
         let shown = self.address(dir, agent);
         assert!(shown.success, "{agent} in {}: {shown:?}", dir.display());
-        let expected = format!("{space}/{owner}/{agent}@{SERVER}");
+        let expected = format!("{space}/{owner}/{agent}@{HOST}");
         let shown_addresses: Vec<String> =
             addresses(&shown).iter().map(ToString::to_string).collect();
         assert_eq!(
@@ -153,10 +102,6 @@ impl Desk {
     fn assert_never_sent(&self, agents: &[&str]) {
         assert_never_sent(&self.world.cloud.relay.sent_bytes(), agents);
     }
-}
-
-fn path(dir: &Path) -> &str {
-    dir.to_str().expect("a UTF-8 path")
 }
 
 /// Runs `skald --agent=<agent> address` on `machine` in the working directory `dir`.

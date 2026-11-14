@@ -99,10 +99,7 @@ impl std::error::Error for RosterError {}
 pub fn check_roster(roster: &Roster, certs: &[Cert]) -> Result<(), RosterError> {
     let body = roster.body();
     check_content(body, certs, |account| {
-        body.members
-            .iter()
-            .find(|member| member.account == account)
-            .map(|member| member.master)
+        body.member(account).map(|member| member.master)
     })
 }
 
@@ -125,11 +122,7 @@ pub fn accept_next(
         if member == account {
             Some(*master)
         } else {
-            revision
-                .members
-                .iter()
-                .find(|entry| entry.account == member)
-                .map(|entry| entry.master)
+            revision.member(member).map(|entry| entry.master)
         }
     };
 
@@ -252,7 +245,7 @@ fn check_content(
     }
     for channel in &body.channels {
         for entry in &channel.members {
-            if !members.iter().any(|member| member.account == entry.account) {
+            if body.member(entry.account).is_none() {
                 return Err(RosterError::ChannelMember {
                     channel: channel.id,
                     account: entry.account,

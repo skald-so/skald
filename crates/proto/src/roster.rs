@@ -202,6 +202,11 @@ impl RosterBody {
             unknown: Unknown::default(),
         }
     }
+
+    /// The member of `account`, the first if the revision lists it more than once.
+    pub fn member(&self, account: AccountId) -> Option<&Member> {
+        self.members.iter().find(|member| member.account == account)
+    }
 }
 
 impl SignedBody for RosterBody {

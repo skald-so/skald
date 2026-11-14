@@ -62,16 +62,10 @@ use std::process::Command;
 use machine::{FIRST_DEVICE, Finished, Machine, NO};
 use skald_proto::SpaceId;
 use world::{
-    Person, SPACES, World, create, give_as_personal, holds_word, mark_as_personal, plain_lines,
-    run, warnings, words,
+    ADD_RULE, APPROVE, CLIENT_A, CLIENT_B, Desk, FOLDER, REMOVE_RULE, RULES, SPACES, World, create,
+    dir_of, give_as_personal, holds_word, mark_as_personal, path, plain_lines, run, warnings,
+    words,
 };
-
-/// The commands that add, list and remove rules, approve a `.skald.toml` and show a folder's space.
-const ADD_RULE: &str = "add-rule";
-const RULES: &str = "rules";
-const REMOVE_RULE: &str = "remove-rule";
-const APPROVE: &str = "approve-binding";
-const FOLDER: &str = "folder";
 
 /// The file that binds its folder, and what `skald folder` says of each binding and of none.
 const CONFIG: &str = ".skald.toml";
@@ -79,36 +73,9 @@ const RULE: &str = "rule";
 const PERSONAL: &str = "personal";
 const NO_SPACE: &str = "no space";
 
-/// The team spaces the device is in.
-const CLIENT_A: &str = "clienta";
-const CLIENT_B: &str = "clientb";
-
-/// A person's first machine, in its personal space, `clienta` and `clientb`.
-struct Desk {
-    world: World,
-    ada: Person,
-    /// The name of the account's personal space: its username.
-    personal: String,
-    client_a: SpaceId,
-}
-
 impl Desk {
     fn start(id: u64, login: &str) -> Self {
-        let world = World::start();
-        let ada = world.sign_up(id, login, "ada-workstation");
-        let client_a = create(&world.cloud, &ada, CLIENT_A).body().space;
-        create(&world.cloud, &ada, CLIENT_B);
-        Desk {
-            personal: ada.handle.to_string(),
-            world,
-            ada,
-            client_a,
-        }
-    }
-
-    /// The machine's folder `rel`, such as `work/clientA`, under its home; made if missing.
-    fn dir(&self, rel: &str) -> PathBuf {
-        dir_of(&self.ada.machine, rel)
+        Self::sign_up(World::start(), id, login)
     }
 
     /// The device's spaces.
@@ -137,17 +104,6 @@ impl Desk {
         assert_warned(&shown, rel);
     }
 
-    /// Runs `skald <args>` on the machine; fails unless it succeeds.
-    fn ok(&self, args: &[&str]) -> Finished {
-        let finished = run(&self.ada.machine, args);
-        assert!(finished.success, "{args:?}: {finished:?}");
-        finished
-    }
-
-    fn add_rule(&self, dir: &Path, space: &str) {
-        self.ok(&[ADD_RULE, path(dir), space]);
-    }
-
     fn approve(&self, dir: &Path) {
         self.ok(&[APPROVE, path(dir)]);
     }
@@ -162,20 +118,9 @@ enum By<'a> {
     Personal,
 }
 
-/// `machine`'s folder `rel` under its home; made if missing.
-fn dir_of(machine: &Machine, rel: &str) -> PathBuf {
-    let dir = machine.root().join("home").join(tail(rel));
-    fs::create_dir_all(&dir).expect("make a folder");
-    dir
-}
-
 /// `rel`, such as `work/clientA`, as the end of a path on this OS.
 fn tail(rel: &str) -> String {
     rel.split('/').collect::<PathBuf>().display().to_string()
-}
-
-fn path(dir: &Path) -> &str {
-    dir.to_str().expect("a UTF-8 path")
 }
 
 /// Runs `skald folder` on `machine` in the working directory `dir`.
@@ -549,8 +494,9 @@ fn folder_without_a_binding_is_in_the_pinned_personal_space() {
     let notes = desk.dir("notes");
     desk.assert_in(&notes, &desk.personal, By::Personal);
 
-    mark_as_personal(cloud, desk.client_a);
-    for (other, name) in [(desk.client_a, CLIENT_A), (SpaceId::generate(), "globex")] {
+    let client_a = desk.client_a.body().space;
+    mark_as_personal(cloud, client_a);
+    for (other, name) in [(client_a, CLIENT_A), (SpaceId::generate(), "globex")] {
         give_as_personal(cloud, other, name);
         // Its result does not matter: a run that asks the server for the account's spaces.
         run(&desk.ada.machine, &[SPACES]);

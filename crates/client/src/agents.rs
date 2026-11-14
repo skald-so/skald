@@ -99,7 +99,7 @@ pub fn address(
     .map_err(no_address)?;
     let body = synced.roster.body();
     let account = synced.follower.own.account;
-    let Some(member) = body.members.iter().find(|member| member.account == account) else {
+    let Some(member) = body.member(account) else {
         return Err(no_address(format!(
             "this account is no member of the space {} in its last accepted revision",
             body.name
