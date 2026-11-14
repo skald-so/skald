@@ -117,8 +117,8 @@ impl FromRequestParts<AppState> for Gotten {
     }
 }
 
-/// `POST /spaces`: creates a space the session's account owns. The same name again gives the
-/// account's space while it has no revision.
+/// `POST /spaces`: creates a space the session's account owns, unless it owns as many as it may.
+/// The same name again gives the account's space while it has no revision, also at the limit.
 pub(crate) async fn create(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -129,6 +129,35 @@ pub(crate) async fn create(
         .name
         .parse()
         .map_err(|err| Refusal::Invalid(format!("name: {err}")))?;
+    let failed = |err| Refusal::Database("create a space", err);
+    let space = |space| Space {
+        space,
+        name: name.to_string(),
+    };
+    let mut tx = state.db.begin().await.map_err(failed)?;
+    if let Some(limit) = state.owned_spaces_limit {
+        // The account's lock makes its creations wait for each other, so none passes the limit.
+        // It lets a request for the personal space insert it meanwhile, which changes no count.
+        sqlx::query("SELECT 1 FROM accounts WHERE id = $1::uuid FOR NO KEY UPDATE")
+            .bind(&account)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        if let Some(id) = unrevised(&mut tx, &name, &account).await? {
+            return taken(false, space(id));
+        }
+        // The personal space counts whether or not it is created yet.
+        let (team,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM spaces WHERE creator_id = $1::uuid AND NOT personal",
+        )
+        .bind(&account)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(failed)?;
+        if team + 1 >= i64::from(limit) {
+            return Err(Refusal::OwnedSpacesLimit(limit));
+        }
+    }
     // Of two creations with one name at once, the second waits for the first to commit.
     let created: Option<(String,)> = sqlx::query_as(
         "INSERT INTO spaces (id, name, creator_id) VALUES ($1::uuid, $2, $3::uuid)
@@ -137,27 +166,35 @@ pub(crate) async fn create(
     .bind(SpaceId::generate().to_string())
     .bind(name.as_str())
     .bind(&account)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await
-    .map_err(|err| Refusal::Database("create a space", err))?;
-    let space = |space| Space {
-        space,
-        name: name.to_string(),
-    };
+    .map_err(failed)?;
     if let Some((id,)) = created {
+        tx.commit().await.map_err(failed)?;
         return taken(true, space(id));
     }
-    let again: Option<(String,)> = sqlx::query_as(
+    let id = unrevised(&mut tx, &name, &account)
+        .await?
+        .ok_or(Refusal::SpaceNameTaken)?;
+    taken(false, space(id))
+}
+
+/// The ID of the space named `name` that `account` created and that has no revision yet, if any.
+async fn unrevised(
+    tx: &mut sqlx::PgConnection,
+    name: &Name,
+    account: &str,
+) -> Result<Option<String>, Refusal> {
+    let found: Option<(String,)> = sqlx::query_as(
         "SELECT id::text FROM spaces s WHERE name = $1 AND creator_id = $2::uuid AND NOT personal
            AND NOT EXISTS (SELECT 1 FROM roster_revisions r WHERE r.space_id = s.id)",
     )
     .bind(name.as_str())
-    .bind(&account)
-    .fetch_optional(&state.db)
+    .bind(account)
+    .fetch_optional(tx)
     .await
     .map_err(|err| Refusal::Database("read a space", err))?;
-    let (id,) = again.ok_or(Refusal::SpaceNameTaken)?;
-    taken(false, space(id))
+    Ok(found.map(|(id,)| id))
 }
 
 /// `POST /account/personal-space`: the personal space of the session's account, which the first

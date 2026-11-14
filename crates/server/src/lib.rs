@@ -68,6 +68,9 @@ pub struct Settings {
     pub versions: Versions,
     /// Sign-in; off without it.
     pub sign_in: Option<SignInSettings>,
+    /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
+    /// limit without it.
+    pub owned_spaces_limit: Option<u32>,
 }
 
 /// The state the handlers share.
@@ -77,6 +80,7 @@ struct AppState {
     versions: Versions,
     sign_in: Option<Arc<SignInSettings>>,
     google: Option<Arc<google::Google>>,
+    owned_spaces_limit: Option<u32>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
@@ -164,6 +168,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .with_state(AppState {
             db,
             versions,
+            owned_spaces_limit: settings.owned_spaces_limit,
             google: settings
                 .sign_in
                 .as_ref()

@@ -2051,7 +2051,7 @@
         },
         "responses": {
           "200": {
-            "description": "The space the session's account created with this name and that has no revision yet: a retry after a lost answer.",
+            "description": "The space the session's account created with this name and that has no revision yet: a retry after a lost answer, also at the limit of `403`.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -2104,6 +2104,21 @@
           },
           "401": {
             "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/owned-spaces-limit`: the account owns as many spaces as the server setting `--owned-spaces-limit` allows. It owns the spaces it created; its personal space counts also before it is created. Without the setting there is no limit.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"

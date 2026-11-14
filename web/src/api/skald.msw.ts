@@ -897,6 +897,16 @@ export const getCreateSpaceResponseMock401 = (
   ...overrideResponse,
 });
 
+export const getCreateSpaceResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getCreateSpaceResponseMock409 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
@@ -2949,6 +2959,35 @@ export const getCreateSpaceMockHandler401 = (
           : getCreateSpaceResponseMock401(),
         {
           status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateSpaceMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, SpaceRequest>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, SpaceRequest>(
+    "*/spaces",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, SpaceRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateSpaceResponseMock403(),
+        {
+          status: 403,
           headers: { "Content-Type": "application/problem+json" },
         },
       );

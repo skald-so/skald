@@ -53,8 +53,13 @@ pub enum Error {
         supported: Vec<u64>,
         speaks: VersionRange,
     },
-    /// The server refused the request for another reason, given in `detail`.
-    Refused { status: u16, detail: String },
+    /// The server refused the request for another reason: the problem's type `kind`, its
+    /// `detail`.
+    Refused {
+        status: u16,
+        kind: String,
+        detail: String,
+    },
     /// An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5), such as `authorization_pending`.
     OAuth { error: String, description: String },
     /// An answer the protocol does not define.
@@ -106,7 +111,7 @@ impl fmt::Display for Error {
                 "the server is older than this skald: it accepts {}; this skald speaks {speaks}",
                 describe_versions(supported)
             ),
-            Error::Refused { status, detail } => write!(
+            Error::Refused { status, detail, .. } => write!(
                 f,
                 "the server refused the request with {status}: {}",
                 printable(detail)
@@ -606,7 +611,11 @@ impl Connection {
                 return Err(Error::TooOld { supported, speaks });
             }
             if kind != VersionProblem::TooNew.type_uri() {
-                return Err(Error::Refused { status, detail });
+                return Err(Error::Refused {
+                    status,
+                    kind,
+                    detail,
+                });
             }
             // An older version each time: the loop ends.
             match best_of(speaks, &supported).filter(|&version| version < self.version) {

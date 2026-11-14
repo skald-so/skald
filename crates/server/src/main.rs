@@ -118,6 +118,16 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=60)
     )]
     device_poll_interval: u64,
+
+    /// The number of spaces an account may own: the ones it created, its personal space included,
+    /// which counts also before it is created [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_OWNED_SPACES_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    owned_spaces_limit: Option<u32>,
 }
 
 /// A provider's client ID, given by `flag`, and its secret, from the environment variable
@@ -188,6 +198,7 @@ impl Cli {
         Ok(Settings {
             versions: self.protocol_versions.unwrap_or_default(),
             sign_in,
+            owned_spaces_limit: self.owned_spaces_limit,
         })
     }
 }

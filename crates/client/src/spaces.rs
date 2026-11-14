@@ -49,6 +49,9 @@ const NOT_FOLLOWING: &str = "this device is not linked yet: it holds no certific
 /// The account's personal space, `POST`.
 const PERSONAL_PATH: &str = "/account/personal-space";
 
+/// The problem of a creation beyond the spaces an account may own.
+const OWNED_SPACES_LIMIT: &str = "https://skald.so/problems/owned-spaces-limit";
+
 /// When the personal space's revision 1 is sent again.
 const PERSONAL_AGAIN: &str = "a later skald command sends it again";
 
@@ -223,9 +226,16 @@ fn create_on_server(
     let request = serde_json::json!({ "name": name.as_str() }).to_string();
     let body = match connection.send_json_as(Method::Post, "/spaces", token, request.as_bytes()) {
         Ok(body) => body,
+        Err(connection::Error::Refused { kind, .. }) if kind == OWNED_SPACES_LIMIT => {
+            return Err(
+                "the account owns as many spaces as it may on this server; no space is created"
+                    .to_owned(),
+            );
+        }
         Err(connection::Error::Refused {
             status: 400 | 409,
             detail,
+            ..
         }) => {
             return Err(format!(
                 "the server refused the space name \"{}\": {}; no space is created",
@@ -279,10 +289,12 @@ fn post_revision(connection: &mut Connection, token: &str, id: SpaceId, revision
         Err(connection::Error::Refused {
             status: 409,
             detail,
+            ..
         }) => Sent::Conflict(detail),
         Err(connection::Error::Refused {
             status: 400 | 403 | 404,
             detail,
+            ..
         }) => Sent::Refused(detail),
         Err(err) => Sent::Failed(err.to_string()),
     }
