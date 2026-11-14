@@ -4,18 +4,27 @@
 //! before an Add as "KeyPackages" says; a channel's group formed from KeyPackages as "Creating a
 //! channel" says, joining from its Welcome, and messages only its members read; Commits that change
 //! the group, which members see before they keep them, and removing a device; forward secrecy; a
-//! channel seen from outside its group, from its GroupInfo and Commits. Every step loads the state
-//! the previous step sealed, as one-shot mode does.
+//! channel seen from outside its group, from its GroupInfo and Commits; the history key chain and
+//! signed message copies under the history keys. Every step loads the state the previous step
+//! sealed, as one-shot mode does.
 
+#[path = "../rosters/cbor.rs"]
+mod cbor;
 mod channel_view;
 mod channels;
 mod commit_checks;
 mod commits;
 mod fixtures;
+mod follow_links;
 mod foreign;
 mod foreign_member;
 mod framing;
 mod group_info;
+mod history;
+mod history_entries;
+mod history_errors;
+mod history_objects;
+mod key_chain;
 mod key_packages;
 mod messages;
 mod profile;
