@@ -4,10 +4,6 @@
 //! it; malformed and truncated frames are an error, never a panic; `docs/protocol/test-vectors.md`
 //! publishes the hex of each frame type.
 
-// The acceptance tests of the delivery frames, which fail until the code they test lands; the
-// implementation removes this gate and the `acceptance` feature.
-#![cfg(feature = "acceptance")]
-
 #[path = "../common/mod.rs"]
 mod common;
 mod fixtures;
