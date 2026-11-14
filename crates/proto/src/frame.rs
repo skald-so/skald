@@ -67,6 +67,27 @@ pub enum Push {
     },
     /// `space-notice`: the space has a new roster revision or invite acceptance.
     SpaceNotice { space: SpaceId },
+    /// A `batch` entry of a type this version does not know, which its reader ignores.
+    Unknown(UnknownPush),
+}
+
+/// A `batch` entry of a type this version does not know, with the bytes it came in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownPush {
+    frame_type: u64,
+    bytes: Vec<u8>,
+}
+
+impl UnknownPush {
+    /// Its frame type.
+    pub fn frame_type(&self) -> u64 {
+        self.frame_type
+    }
+
+    /// The bytes it came in.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 /// An envelope with the bytes it came in, which the server stores and forwards as they are.
@@ -227,6 +248,7 @@ impl Codec for Push {
                 cbor::array([cbor::uint(STATUS), cbor::uint(seq.get()), status.encode()])
             }
             Self::SpaceNotice { space } => cbor::array([cbor::uint(SPACE_NOTICE), cbor::id(space)]),
+            Self::Unknown(unknown) => unknown.bytes.clone(),
         }
     }
 
@@ -252,8 +274,14 @@ impl Codec for Push {
                     space: space.id("space-notice.space")?,
                 })
             }
-            // A `batch` holds only `message`, `status` and `space-notice`.
-            other => Err(field_error("batch.frame.type", FieldProblem::Value(other))),
+            // A `batch` holds no frame of another known type.
+            other @ (SEND | STORED | SEND_REFUSED | SYNC | ACK | BATCH | AUTH) => {
+                Err(field_error("batch.frame.type", FieldProblem::Value(other)))
+            }
+            other => Ok(Self::Unknown(UnknownPush {
+                frame_type: other,
+                bytes: item.raw().to_vec(),
+            })),
         }
     }
 }
