@@ -1,4 +1,5 @@
-//! The server's HTTP client for the sign-in providers: GitHub and OIDC providers.
+//! The server's HTTP client for the sign-in providers, GitHub and OIDC providers, and for the
+//! attachment bucket.
 
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

@@ -2,7 +2,8 @@
 # Build from the repository root, naming the commit:
 #   docker build --file crates/server/Dockerfile --build-arg REVISION=$(git rev-parse HEAD) .
 # Settings come from the environment, as for the binary: skald-server --help. SKALD_DATABASE_URL is
-# required; the server listens on all interfaces, port 8080.
+# required; the server listens on all interfaces, port 8080, and keeps attachments in
+# /var/lib/skald/attachments, which a volume mounted there keeps, unless a bucket replaces it.
 # script/image-test tests the image; .github/workflows/edge.yml publishes it.
 
 FROM rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS chef
@@ -33,7 +34,8 @@ COPY crates crates
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     find crates api -type f -exec touch {} + && \
     cargo build --release --locked --package skald-server && \
-    cp target/release/skald-server /usr/local/bin/skald-server
+    cp target/release/skald-server /usr/local/bin/skald-server && \
+    install -d -o 65532 -g 65532 -m 0700 /image/var/lib/skald/attachments
 # After the build, so that a new commit reuses it.
 ARG REVISION
 RUN test -n "$REVISION" || { echo "set the commit: --build-arg REVISION=<sha>" >&2; exit 1; }
@@ -46,8 +48,11 @@ LABEL org.opencontainers.image.title=skald-server \
       org.opencontainers.image.revision=$REVISION \
       org.opencontainers.image.licenses=AGPL-3.0-only
 COPY --from=build /usr/local/bin/skald-server /usr/local/bin/skald-server
+# The server's user alone owns it; a new volume mounted there takes its owner and mode.
+COPY --from=build /image/var/lib/skald /var/lib/skald
 # nonroot in the base image.
 USER 65532:65532
-ENV SKALD_LISTEN=0.0.0.0:8080
+ENV SKALD_LISTEN=0.0.0.0:8080 \
+    SKALD_ATTACHMENTS_DIR=/var/lib/skald/attachments
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/skald-server"]

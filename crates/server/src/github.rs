@@ -48,7 +48,8 @@ pub(crate) fn http_url(text: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-/// An OAuth client's secret: a GitHub OAuth App's or an OIDC client's; never printed.
+/// A secret: a GitHub OAuth App's or an OIDC client's, or the attachment bucket's secret key;
+/// never printed.
 #[derive(Clone)]
 pub struct ClientSecret(String);
 
@@ -58,7 +59,7 @@ impl ClientSecret {
         (!text.is_empty()).then_some(ClientSecret(text))
     }
 
-    /// The secret, to send to its provider only.
+    /// The secret, to send to its provider or use for its bucket only.
     pub(crate) fn expose(&self) -> &str {
         &self.0
     }

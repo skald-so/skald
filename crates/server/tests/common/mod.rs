@@ -342,7 +342,7 @@ pub fn assert_holds_none(rows: &[String], secrets: &[String]) {
 }
 
 /// Appends what `pipe` gives to `output` until it closes.
-fn collect(pipe: impl Read + Send + 'static, output: &Arc<Mutex<String>>) -> JoinHandle<()> {
+pub fn collect(pipe: impl Read + Send + 'static, output: &Arc<Mutex<String>>) -> JoinHandle<()> {
     let output = Arc::clone(output);
     thread::spawn(move || {
         let mut pipe = BufReader::new(pipe);
