@@ -29,6 +29,7 @@
 //   - it is gated like the job that runs script/test's workspace part: it needs the job of
 //     script/changed-parts and runs exactly when that job's workspace output is true, whatever the
 //     other outputs are, and on a push to dev;
+//   - before the tests, it builds skald-server, which the client's sign-up test runs;
 //   - before the tests, it starts the runner image's PostgreSQL service and waits for it, installs
 //     the packages of web/ and then, with their playwright-core, Chrome Headless Shell, which that
 //     playwright-core drives; the tests get the server through SKALD_TEST_DATABASE_URL;
@@ -439,6 +440,13 @@ if (!before.some((step, i) => i > packages && step['working-directory'] === 'web
   fail(`job ${key} does not install Chrome Headless Shell with the playwright-core of web/ after its packages and before its tests: the sign-in tests drive it`);
 }
 if (!before.some((step) => String(step.uses ?? '').startsWith('actions/checkout@'))) fail(`job ${key} does not check out the repository before its tests`);
+const buildsServer = (line) => {
+  const w = words(line);
+  return w.slice(0, 2).join(' ') === 'cargo build' && w.slice(2).join(' ') === '-p skald-server --locked';
+};
+if (!before.some((step) => commands(step.run).some(buildsServer))) {
+  fail(`job ${key} does not build skald-server with cargo build -p skald-server --locked before its tests: the client's sign-up test runs it`);
+}
 
 // Chrome Headless Shell from the Actions cache, in each job whose tests drive it.
 // expanded <steps>: the steps, each of a local action in its place by the steps of that action.

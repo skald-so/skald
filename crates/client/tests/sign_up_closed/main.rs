@@ -22,7 +22,7 @@ mod common;
 use std::env;
 use std::fs::{self, File};
 use std::net::TcpListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{self, Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
@@ -44,20 +44,21 @@ const LISTED: &str = "ada-cli-listed";
 /// How long the device codes work: far longer than any wait of these tests.
 const CODE_LIFETIME: &str = "600";
 
-/// The `skald-server` binary of this build.
+/// The `skald-server` binary of this build: in the profile's directory, above this test binary's,
+/// which is `deps/` in it or, in Cargo's newer build directory layout, deeper.
 fn server_binary() -> PathBuf {
     let exe = env::current_exe().expect("this test binary");
-    let dir = exe
-        .parent()
-        .and_then(Path::parent)
-        .expect("the build's directory");
-    let path = dir.join(format!("skald-server{}", env::consts::EXE_SUFFIX));
-    assert!(
-        path.is_file(),
-        "no {}: build it first, cargo build --workspace, as script/test does",
-        path.display()
-    );
-    path
+    let name = format!("skald-server{}", env::consts::EXE_SUFFIX);
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(&name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "no {name} above {}: build it first, cargo build --workspace, as script/test does",
+                exe.display()
+            )
+        })
 }
 
 /// A new database on the PostgreSQL server of the tests; dropped on drop.
