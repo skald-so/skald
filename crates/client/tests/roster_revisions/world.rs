@@ -1,7 +1,9 @@
 //! People whose machines sign in to a server behind the relay, the spaces their machines create,
-//! revisions the tests sign with their devices' keys and store through the API, and what the CLI
-//! shows of a space: for the tests of a space's roster revisions in the client.
+//! revisions the tests sign with their devices' keys and store through the API, their machines'
+//! folders, and what the CLI shows of a space: for the client's tests of spaces.
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -23,6 +25,30 @@ use super::machine::{Finished, Machine};
 pub const CREATE_SPACE: &str = "create-space";
 pub const SPACES: &str = "spaces";
 pub const MEMBERS: &str = "members";
+
+/// The commands that create a channel in a space and list a space's channels.
+pub const CREATE_CHANNEL: &str = "create-channel";
+pub const CHANNELS: &str = "channels";
+
+/// The commands that add, list and remove rules, approve a `.skald.toml` and show a folder's space.
+pub const ADD_RULE: &str = "add-rule";
+pub const RULES: &str = "rules";
+pub const REMOVE_RULE: &str = "remove-rule";
+pub const APPROVE: &str = "approve-binding";
+pub const FOLDER: &str = "folder";
+
+/// The option that names the agent.
+pub const AGENT: &str = "--agent";
+
+/// A host of the server's public address that is a valid server name, as `127.0.0.1` is not.
+pub const HOST: &str = "localhost";
+
+/// A team space the tests create.
+pub const ACME: &str = "acme";
+
+/// The team spaces a person's device is in beside its personal space, in the tests of folders.
+pub const CLIENT_A: &str = "clienta";
+pub const CLIENT_B: &str = "clientb";
 
 /// The requests for the account's personal space and for its spaces, as their lines start.
 pub const PERSONAL_REQUEST: &str = "POST /account/personal-space ";
@@ -145,18 +171,85 @@ pub fn run(machine: &Machine, args: &[&str]) -> Finished {
     machine.start(args).finish()
 }
 
+/// Runs `skald spaces` on `machine`; fails unless it succeeds.
+pub fn spaces(machine: &Machine) -> Finished {
+    let listed = run(machine, &[SPACES]);
+    assert!(listed.success, "{listed:?}");
+    listed
+}
+
+/// The ID of the space `name` of the account of the session `token`, as the server lists it.
+pub fn space_id(cloud: &Cloud, token: &str, name: &str) -> SpaceId {
+    let spaces = cloud.spaces(token);
+    spaces
+        .iter()
+        .find_map(|(id, listed)| (listed == name).then_some(*id))
+        .unwrap_or_else(|| panic!("the server has no space {name}: {spaces:?}"))
+}
+
+/// `machine`'s folder `rel`, such as `work/clientA`, under its home; made if missing.
+pub fn dir_of(machine: &Machine, rel: &str) -> PathBuf {
+    let dir = machine
+        .root()
+        .join("home")
+        .join(rel.split('/').collect::<PathBuf>());
+    fs::create_dir_all(&dir).expect("make a folder");
+    dir
+}
+
+/// `dir` as an argument.
+pub fn path(dir: &Path) -> &str {
+    dir.to_str().expect("a UTF-8 path")
+}
+
+/// A person's first machine, in its personal space, `clienta` and `clientb`.
+pub struct Desk {
+    pub world: World,
+    pub ada: Person,
+    /// The name of the account's personal space: its username.
+    pub personal: String,
+    /// Revision 1 of `clienta`.
+    pub client_a: Roster,
+}
+
+impl Desk {
+    /// In `world`, GitHub user `id` with `login` signs up, and its machine creates `clienta` and
+    /// `clientb`.
+    pub fn sign_up(world: World, id: u64, login: &str) -> Self {
+        let ada = world.sign_up(id, login, "ada-workstation");
+        let client_a = create(&world.cloud, &ada, CLIENT_A);
+        create(&world.cloud, &ada, CLIENT_B);
+        Desk {
+            personal: ada.handle.to_string(),
+            world,
+            ada,
+            client_a,
+        }
+    }
+
+    /// The machine's folder `rel`, such as `work/clientA`, under its home; made if missing.
+    pub fn dir(&self, rel: &str) -> PathBuf {
+        dir_of(&self.ada.machine, rel)
+    }
+
+    /// Runs `skald <args>` on the machine; fails unless it succeeds.
+    pub fn ok(&self, args: &[&str]) -> Finished {
+        let finished = run(&self.ada.machine, args);
+        assert!(finished.success, "{args:?}: {finished:?}");
+        finished
+    }
+
+    /// Binds `dir` and everything below it to `space` by a rule.
+    pub fn add_rule(&self, dir: &Path, space: &str) {
+        self.ok(&[ADD_RULE, path(dir), space]);
+    }
+}
+
 /// `person`'s machine creates the space `name`; gives its revision 1, as the server holds it.
 pub fn create(cloud: &Cloud, person: &Person, name: &str) -> Roster {
     let created = run(&person.machine, &[CREATE_SPACE, name]);
     assert!(created.success, "{name}: {created:?}");
-    let (status, body) = cloud.get_as("/spaces", &person.token);
-    assert_eq!(status, 200, "GET /spaces: {body}");
-    let space: SpaceId = body["spaces"]
-        .as_array()
-        .and_then(|spaces| spaces.iter().find(|space| space["name"] == json!(name)))
-        .and_then(|space| space["space"].as_str())
-        .and_then(|id| id.parse().ok())
-        .unwrap_or_else(|| panic!("the server has no space {name}: {body}"));
+    let space = space_id(cloud, &person.token, name);
     let revisions = cloud.revisions(&person.token, space);
     assert_eq!(revisions.len(), 1, "{name}: {revisions:?}");
     revisions[0].1.clone()

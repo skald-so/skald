@@ -53,9 +53,9 @@ use skald_proto::{
     Unknown,
 };
 use world::{
-    ADMIN, MEMBER, MEMBERS, Person, SPACES, World, assert_role, create, holds_word, members, next,
-    next_by, now, plain_lines, revisions_request, run, set_role, space_certs, store, warnings,
-    words,
+    ACME, ADMIN, MEMBER, MEMBERS, Person, SPACES, World, assert_role, create, holds_word, members,
+    next, next_by, now, plain_lines, revisions_request, run, set_role, space_certs, store,
+    warnings, words,
 };
 
 /// What the warnings of a forked roster and of a changed `master` also say.
@@ -66,8 +66,7 @@ const MASTER: &str = "master";
 const MALLORY: &str = "mallory";
 const TRUDY: &str = "trudy";
 
-/// The space every test creates, and a second one.
-const ACME: &str = "acme";
+/// A space beside [`ACME`].
 const GLOBEX: &str = "globex";
 
 /// A member a forged revision adds: a made-up account with a master key of its own.

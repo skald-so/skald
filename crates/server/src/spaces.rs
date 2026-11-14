@@ -366,11 +366,7 @@ pub(crate) async fn store(
     let id: AccountId = account.parse().expect("a stored account ID");
     let allowed = match &previous {
         None => found.creator == account,
-        Some(previous) => previous
-            .body()
-            .members
-            .iter()
-            .any(|member| member.account == id && member.role == Role::Admin),
+        Some(previous) => admin(previous, id),
     };
     if !allowed {
         return Err(hide(Refusal::NotAllowed(match previous {
@@ -449,11 +445,7 @@ async fn check(
     let certs = certs(db, &accounts).await?;
     let checked = match previous {
         None => {
-            let creator = body
-                .members
-                .iter()
-                .any(|member| member.account == account && member.role == Role::Admin);
-            if !creator {
+            if !admin(roster, account) {
                 return Err(refused("revision 1 does not list its creator as an admin"));
             }
             skald_crypto::check_roster(roster, &certs)
@@ -478,6 +470,15 @@ async fn check(
         ));
     }
     Ok(())
+}
+
+/// Whether `roster` lists `account` as an admin.
+fn admin(roster: &Roster, account: AccountId) -> bool {
+    roster
+        .body()
+        .members
+        .iter()
+        .any(|member| member.account == account && member.role == Role::Admin)
 }
 
 /// The certificates of the devices of `accounts`, as the devices sent them.

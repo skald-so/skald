@@ -56,6 +56,10 @@ const PERSONAL_PATH: &str = "/account/personal-space";
 /// The problem of a creation beyond the spaces an account may own.
 const OWNED_SPACES_LIMIT: &str = "https://skald.so/problems/owned-spaces-limit";
 
+/// What a run says of the server's answer to a creation or a request for the personal space that
+/// gives no space.
+const NO_SPACE_GIVEN: &str = "unexpected answer from the server: a space without its ID or name";
+
 /// When the personal space's revision 1 is sent again.
 const PERSONAL_AGAIN: &str = "a later skald command sends it again";
 
@@ -249,21 +253,19 @@ fn create_on_server(
         }
         Err(err) => return Err(err.to_string()),
     };
-    let unexpected = || "unexpected answer from the server: a space without its ID or name";
-    let created: Created = serde_json::from_slice(&body).map_err(|_| unexpected())?;
+    let created: Created = serde_json::from_slice(&body).map_err(|_| NO_SPACE_GIVEN)?;
     if created.name != name.as_str() {
-        return Err(unexpected().to_owned());
+        return Err(NO_SPACE_GIVEN.to_owned());
     }
-    created.space.parse().map_err(|_| unexpected().to_owned())
+    created.space.parse().map_err(|_| NO_SPACE_GIVEN.to_owned())
 }
 
 /// `POST /account/personal-space`: the account's personal space, as the server gives it to the
 /// session `token`.
 fn personal_on_server(connection: &mut Connection, token: &str) -> Result<(SpaceId, Name), String> {
     let body = connection.post_as(PERSONAL_PATH, token).map_err(text)?;
-    let unexpected = || "unexpected answer from the server: a space without its ID or name";
-    let given: Created = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let id = given.space.parse().map_err(|_| unexpected())?;
+    let given: Created = serde_json::from_slice(&body).map_err(|_| NO_SPACE_GIVEN)?;
+    let id = given.space.parse().map_err(|_| NO_SPACE_GIVEN)?;
     let name = given.name.parse().map_err(|err| {
         format!(
             "unexpected answer from the server: the space name \"{}\" {err}",
@@ -395,9 +397,7 @@ impl Follower {
             handle,
             self.own.master,
             self.this,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |since| since.as_secs()),
+            now(),
         );
         let fails = |err: String| format!("revision 1 of the space fails: {err}");
         let roster = skald_crypto::sign_roster(&body, keys.signing())
@@ -614,13 +614,18 @@ impl Follower {
             .ok_or_else(|| format!("the space {} has no revision after", body.name.as_str()))?;
         body.prev = Some(latest.hash());
         body.signer = self.this;
-        body.timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
+        body.timestamp = now();
         body.channels.extend_from_slice(channels);
         skald_crypto::sign_roster(&body, keys.signing())
             .map_err(|err| format!("revision {} of the space fails: {err}", body.revision))
     }
+}
+
+/// Seconds since the Unix epoch, a revision's `timestamp`; 0 with a clock before it.
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 /// A space a command uses, once the device accepted the revisions the server has of it: the
@@ -692,9 +697,8 @@ pub fn synced(
 /// Whether `device` is a device of an admin in `roster`: one of `account`, an admin in it, whose
 /// `excluded` does not list it. The device's certificate is checked on accepting.
 pub fn admin_device(roster: &Roster, account: AccountId, device: DeviceId) -> bool {
-    roster.body().members.iter().any(|member| {
-        member.account == account
-            && member.role == Role::Admin
+    roster.body().member(account).is_some_and(|member| {
+        member.role == Role::Admin
             && !member
                 .excluded
                 .iter()
@@ -810,12 +814,7 @@ fn members_listing(
 ) -> (String, Vec<String>) {
     let body = roster.body();
     let mut warnings: Vec<String> = Vec::new();
-    let mut out = format!(
-        "The space {} ({}), revision {}:\n",
-        body.name.as_str(),
-        body.space,
-        body.revision
-    );
+    let mut out = heading(roster);
     for member in body.members.iter() {
         out.push_str(&format!(
             "  {}  {}\n",
@@ -850,6 +849,18 @@ fn members_listing(
     (out, warnings)
 }
 
+/// The first line of what `skald members` and `skald channels` show of `roster`, a space's last
+/// accepted revision: the space's name and ID and the revision's number.
+pub fn heading(roster: &Roster) -> String {
+    let body = roster.body();
+    format!(
+        "The space {} ({}), revision {}:\n",
+        body.name.as_str(),
+        body.space,
+        body.revision
+    )
+}
+
 /// A role, as the CLI shows it.
 fn role(role: Role) -> &'static str {
     match role {
@@ -863,8 +874,7 @@ fn role(role: Role) -> &'static str {
 /// has not taken the revision yet.
 fn line(roster: &Roster, account: Option<AccountId>, pending: bool, personal: bool) -> String {
     let body = roster.body();
-    let member =
-        account.and_then(|account| body.members.iter().find(|member| member.account == account));
+    let member = account.and_then(|account| body.member(account));
     let (role, handle) = match member {
         Some(member) => (role(member.role), member.handle.as_str()),
         None => ("no member", "-"),
@@ -880,13 +890,13 @@ fn line(roster: &Roster, account: Option<AccountId>, pending: bool, personal: bo
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use skald_crypto::SigningKey;
     use skald_proto::DeviceId;
 
     /// Revision 1 of the space `acme`, created by `account` with the handle `ada`.
-    fn first(account: AccountId) -> Roster {
+    pub(crate) fn first(account: AccountId) -> Roster {
         let key = SigningKey::generate();
         let body = RosterBody::first(
             SpaceId::generate(),
@@ -898,6 +908,31 @@ mod tests {
             1_800_000_000,
         );
         skald_crypto::sign_roster(&body, &key).expect("a revision")
+    }
+
+    /// The entry of `account` as a member with `handle` and the master key `master`.
+    pub(crate) fn member(
+        account: AccountId,
+        handle: &str,
+        master: [u8; 32],
+    ) -> skald_proto::Member {
+        skald_proto::Member {
+            account,
+            handle: handle.parse().unwrap(),
+            role: Role::Member,
+            master,
+            invite: None,
+            excluded: None,
+            unknown: skald_proto::Unknown::default(),
+        }
+    }
+
+    #[test]
+    fn now_is_the_seconds_since_the_unix_epoch() {
+        let since = |time: SystemTime| time.duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let before = since(SystemTime::now());
+        let now = now();
+        assert!(before <= now && now <= since(SystemTime::now()), "{now}");
     }
 
     #[test]
@@ -967,15 +1002,8 @@ mod tests {
         fn roster(&self) -> Roster {
             let mut body = first(self.ada).body().clone();
             body.revision = 2;
-            body.members.push(skald_proto::Member {
-                account: self.bob,
-                handle: "bob".parse().unwrap(),
-                role: Role::Member,
-                master: self.bob_master.public_key(),
-                invite: None,
-                excluded: None,
-                unknown: skald_proto::Unknown::default(),
-            });
+            body.members
+                .push(member(self.bob, "bob", self.bob_master.public_key()));
             skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap()
         }
 
@@ -1088,15 +1116,7 @@ mod tests {
         let (ada, bob) = (AccountId::generate(), AccountId::generate());
         let device = |seed| DeviceId::from_signing_key(&[seed; 32]);
         let mut body = first(ada).body().clone();
-        body.members.push(skald_proto::Member {
-            account: bob,
-            handle: "bob".parse().unwrap(),
-            role: Role::Member,
-            master: [5; 32],
-            invite: None,
-            excluded: None,
-            unknown: skald_proto::Unknown::default(),
-        });
+        body.members.push(member(bob, "bob", [5; 32]));
         let roster = |body: &RosterBody| skald_crypto::sign_roster(body, &SigningKey::generate());
         let unexcluded = roster(&body).unwrap();
         let mut members = body.members.clone().into_vec();

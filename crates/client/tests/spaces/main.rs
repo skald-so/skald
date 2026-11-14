@@ -23,10 +23,14 @@
 mod cloud;
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../roster_revisions/world.rs"]
+mod world;
 
 #[path = "../../../server/tests/common/browser.rs"]
 mod browser;
 
+#[path = "../device_keys/keys.rs"]
+mod keys;
 #[path = "../sign_in/machine.rs"]
 mod machine;
 #[path = "../sign_in/relay.rs"]
@@ -45,21 +49,13 @@ use machine::{FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED};
 use relay::{Lose, strings_named};
 use serde_json::{Value, json};
 use skald_github_stand_in::User;
-use skald_proto::{
-    AccountId, Cbor, Cert, DeviceKind, Name, Policy, ROSTER_LABEL, Role, Roster, SpaceId,
-};
-
-/// The command that creates a space, and the one that lists the device's spaces.
-const CREATE_SPACE: &str = "create-space";
-const SPACES: &str = "spaces";
+use skald_proto::{AccountId, Cbor, Cert, DeviceKind, Name, Policy, ROSTER_LABEL, Role, SpaceId};
+use world::{ADMIN, CREATE_SPACE, spaces, words};
 
 /// The request that creates a space, and the one that stores a space's revision, as their lines
 /// start.
 const CREATE: &str = "POST /spaces ";
 const STORE: &str = "POST /spaces/";
-
-/// The role the creator has in its space, as the space list shows it.
-const ADMIN: &str = "admin";
 
 /// An OIDC provider's issuer, for a sign-in method of a provider other than GitHub.
 const GOOGLE: &str = "https://accounts.google.com";
@@ -86,7 +82,7 @@ fn account(cloud: &Cloud, browser: &Browser, id: u64, login: &str, host: &str) -
     let (machine, signed_in) = cloud.first_machine(&browser.page(), &user, host);
     assert!(signed_in.success, "{signed_in:?}");
     let token = cloud.last_token();
-    let found = server_spaces(cloud, &token);
+    let found = cloud.spaces(&token);
     assert_eq!(found.len(), 1, "no one personal space: {found:?}");
     Account {
         user,
@@ -98,7 +94,7 @@ fn account(cloud: &Cloud, browser: &Browser, id: u64, login: &str, host: &str) -
 
 /// The spaces the server gives `account`, its personal space left out.
 fn team_spaces(cloud: &Cloud, account: &Account) -> Vec<(SpaceId, String)> {
-    let mut found = server_spaces(cloud, &account.token);
+    let mut found = cloud.spaces(&account.token);
     assert!(
         found.contains(&account.personal),
         "no personal space: {found:?}"
@@ -112,23 +108,13 @@ fn create_space(machine: &Machine, name: &str) -> Finished {
     machine.start(&[CREATE_SPACE, name]).finish()
 }
 
-/// Runs `skald spaces` on `machine`; fails unless it succeeds.
-fn spaces(machine: &Machine) -> Finished {
-    let listed = machine.start(&[SPACES]).finish();
-    assert!(listed.success, "{listed:?}");
-    listed
-}
-
 /// The line of `listed` that names the space `name`, as a word of its own, if any.
 fn line_of<'a>(listed: &'a Finished, name: &str) -> Option<&'a str> {
     let word = |part: &str| part == name;
     let lines: Vec<&str> = listed
         .stdout
         .lines()
-        .filter(|line| {
-            line.split(|char: char| !(char.is_ascii_alphanumeric() || char == '-'))
-                .any(word)
-        })
+        .filter(|line| words(line).into_iter().any(word))
         .collect();
     assert!(lines.len() <= 1, "{name} is on several lines: {listed:?}");
     lines.first().copied()
@@ -138,41 +124,12 @@ fn line_of<'a>(listed: &'a Finished, name: &str) -> Option<&'a str> {
 fn assert_lists_as_admin(machine: &Machine, name: &str, handle: &str) {
     let listed = spaces(machine);
     let line = line_of(&listed, name).unwrap_or_else(|| panic!("{name} is not listed: {listed:?}"));
-    let words: Vec<&str> = line
-        .split(|char: char| !(char.is_ascii_alphanumeric() || char == '-'))
-        .collect();
+    let words = words(line);
     assert!(words.contains(&ADMIN), "not as admin: {line:?}");
     assert!(
         words.contains(&handle),
         "not with the handle {handle}: {line:?}"
     );
-}
-
-/// The spaces the account of the session `token` gets, from the server: each one's ID and name.
-fn server_spaces(cloud: &Cloud, token: &str) -> Vec<(SpaceId, String)> {
-    let (status, body) = cloud.get_as("/spaces", token);
-    assert_eq!(status, 200, "GET /spaces: {body}");
-    body["spaces"]
-        .as_array()
-        .unwrap_or_else(|| panic!("GET /spaces: {body}"))
-        .iter()
-        .map(|space| {
-            let id = space["space"]
-                .as_str()
-                .and_then(|id| id.parse().ok())
-                .unwrap_or_else(|| panic!("a space ID: {space}"));
-            let name = space["name"]
-                .as_str()
-                .unwrap_or_else(|| panic!("a space name: {space}"));
-            (id, name.to_owned())
-        })
-        .collect()
-}
-
-/// The revisions of `space` the server holds, for the session `token`: each one's bytes as stored,
-/// and the revision they decode to.
-fn server_revisions(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<(Vec<u8>, Roster)> {
-    cloud.revisions(token, space)
 }
 
 /// The handle of the account of the session `token`: its username, as the server gives it.
@@ -200,7 +157,7 @@ fn assert_one_first_revision(
     assert_eq!(found.len(), 1, "the account's spaces: {found:?}");
     let (space, found_name) = found[0].clone();
     assert_eq!(found_name, name);
-    let revisions = server_revisions(cloud, &account.token, space);
+    let revisions = cloud.revisions(&account.token, space);
     assert_eq!(revisions.len(), 1, "the space's revisions: {revisions:?}");
     let (bytes, roster) = revisions[0].clone();
     assert_eq!(roster.to_cbor(), bytes, "the revision re-encodes otherwise");
@@ -327,7 +284,7 @@ fn spaces_lists_each_space_the_device_created() {
     names.sort_unstable();
     assert_eq!(names, ["acme", "globex"]);
     for (space, name) in &found {
-        let revisions = server_revisions(&cloud, &ada.token, *space);
+        let revisions = cloud.revisions(&ada.token, *space);
         assert_eq!(revisions.len(), 1, "{name}: {revisions:?}");
         assert_eq!(revisions[0].1.body().revision, 1, "{name}");
         assert_lists_as_admin(&ada.machine, name, &handle);
@@ -357,7 +314,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
     assert_eq!(cloud.relay.lost(), 1, "the server never answered {request}");
     let created = team_spaces(&cloud, &ada);
     assert_eq!(created.len(), 1, "the server created no space: {created:?}");
-    let taken = server_revisions(&cloud, &ada.token, created[0].0);
+    let taken = cloud.revisions(&ada.token, created[0].0);
     if request == STORE {
         assert_eq!(taken.len(), 1, "the server took no revision 1");
     }
@@ -524,7 +481,7 @@ fn device_without_a_certificate_creates_nothing_and_says_it_is_not_linked() {
     );
     assert_eq!(cloud.count_sent(since, CREATE), 0, "a space was requested");
     assert_eq!(cloud.count_sent(since, STORE), 0, "a revision was sent");
-    assert_eq!(server_spaces(&cloud, &token), vec![ada.personal.clone()]);
+    assert_eq!(cloud.spaces(&token), vec![ada.personal.clone()]);
     assert_eq!(team_spaces(&cloud, &ada), Vec::new());
 }
 

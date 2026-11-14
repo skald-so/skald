@@ -53,28 +53,12 @@ use cloud::Cloud;
 use machine::Finished;
 use skald_proto::{ChannelId, Name, Role, SpaceId};
 use world::{
-    ADMIN, CREATE_SPACE, MEMBERS, PERSONAL_REQUEST, Person, SPACES, World, assert_role, create,
-    holds_word, next_by, plain_lines, run, store,
+    ADD_RULE, ADMIN, AGENT, APPROVE, CHANNELS, CLIENT_A, CLIENT_B, CREATE_CHANNEL, CREATE_SPACE,
+    FOLDER, HOST, MEMBERS, PERSONAL_REQUEST, Person, REMOVE_RULE, RULES, SPACES, World,
+    assert_role, create, dir_of, holds_word, next_by, path, plain_lines, run, space_id, store,
 };
 
-/// The option that names the agent.
-const AGENT: &str = "--agent";
-
-/// The commands of a space's channels and of a folder's binding.
-const CHANNELS: &str = "channels";
-const CREATE_CHANNEL: &str = "create-channel";
-const ADD_RULE: &str = "add-rule";
-const RULES: &str = "rules";
-const REMOVE_RULE: &str = "remove-rule";
-const APPROVE: &str = "approve-binding";
-const FOLDER: &str = "folder";
-
-/// The host of the server's public address, as in the tests of agent addresses.
-const HOST: &str = "localhost";
-
-/// The team spaces Ada's device is in, a space no device is in, and one an agent tries to create.
-const CLIENT_A: &str = "clienta";
-const CLIENT_B: &str = "clientb";
+/// A space no device is in, and one an agent tries to create.
 const INITECH: &str = "initech";
 const GLOBEX: &str = "globex";
 
@@ -137,10 +121,7 @@ impl Office {
 
     /// The machine's folder `rel`, such as `work/clientA`, under its home; made if missing.
     fn folder(&self, rel: &str) -> PathBuf {
-        let mut dir = self.ada.machine.root().join("home");
-        dir.extend(rel.split('/'));
-        fs::create_dir_all(&dir).expect("make a folder");
-        dir
+        dir_of(&self.ada.machine, rel)
     }
 
     /// Runs `skald <args>` as the person in `dir`; fails unless it succeeds.
@@ -272,21 +253,10 @@ impl Office {
     }
 }
 
-fn path(dir: &Path) -> &str {
-    dir.to_str().expect("a UTF-8 path")
-}
-
 /// The space `name` of `person`'s account, as the server lists it, with the channels of its last
 /// revision.
 fn space_of(cloud: &Cloud, person: &Person, name: &str) -> Space {
-    let (status, body) = cloud.get_as("/spaces", &person.token);
-    assert_eq!(status, 200, "GET /spaces: {body}");
-    let id: SpaceId = body["spaces"]
-        .as_array()
-        .and_then(|spaces| spaces.iter().find(|space| space["name"] == name))
-        .and_then(|space| space["space"].as_str())
-        .and_then(|id| id.parse().ok())
-        .unwrap_or_else(|| panic!("the account has no space {name}: {body}"));
+    let id = space_id(cloud, &person.token, name);
     let revisions = cloud.revisions(&person.token, id);
     let (_, last) = revisions.last().expect("a revision");
     Space {
@@ -303,19 +273,10 @@ fn space_of(cloud: &Cloud, person: &Person, name: &str) -> Space {
 
 /// The spaces of `person`'s account on the server, and the number of revisions of each.
 fn server_spaces(cloud: &Cloud, person: &Person) -> Vec<(String, usize)> {
-    let (status, body) = cloud.get_as("/spaces", &person.token);
-    assert_eq!(status, 200, "GET /spaces: {body}");
-    let mut spaces: Vec<(String, usize)> = body["spaces"]
-        .as_array()
-        .unwrap_or_else(|| panic!("GET /spaces: {body}"))
-        .iter()
-        .map(|space| {
-            let id: SpaceId = space["space"]
-                .as_str()
-                .and_then(|id| id.parse().ok())
-                .unwrap_or_else(|| panic!("a space ID: {space}"));
-            (id.to_string(), cloud.revisions(&person.token, id).len())
-        })
+    let mut spaces: Vec<(String, usize)> = cloud
+        .spaces(&person.token)
+        .into_iter()
+        .map(|(id, _)| (id.to_string(), cloud.revisions(&person.token, id).len()))
         .collect();
     spaces.sort();
     spaces

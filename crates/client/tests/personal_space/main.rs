@@ -46,13 +46,13 @@ use std::time::Duration;
 
 use browser::APPROVE;
 use cloud::{Cloud, GIVE_MASTER, shown_grant};
-use machine::{FIRST_DEVICE, Finished, Machine, NO, SERVER, SIGN_IN, YES};
+use machine::{FIRST_DEVICE, Machine, NO, SERVER, SIGN_IN, YES};
 use relay::Lose;
 use skald_crypto::{check_device, check_roster};
 use skald_proto::{Cbor as _, ROSTER_LABEL, RosterBody, SpaceId};
 use world::{
-    ADMIN, PERSONAL_REQUEST, Person, SPACES, World, assert_role, create, give_as_personal,
-    mark_as_personal, members, plain_lines, run, space_certs, words,
+    ACME, ADMIN, PERSONAL_REQUEST, Person, World, assert_role, create, give_as_personal,
+    mark_as_personal, members, plain_lines, run, space_certs, spaces, words,
 };
 
 /// The request that stores a space's revision, as its line starts.
@@ -61,24 +61,10 @@ const STORE: &str = "POST /spaces/";
 /// The word that marks the personal space in the space list.
 const PERSONAL: &str = "personal";
 
-/// A team space the tests create.
-const ACME: &str = "acme";
-
 /// The spaces the account of the session `token` gets, straight from the server: each one's name
 /// by its ID.
 fn server_spaces(cloud: &Cloud, token: &str) -> BTreeMap<SpaceId, String> {
-    let (status, body) = cloud.get_as("/spaces", token);
-    assert_eq!(status, 200, "GET /spaces: {body}");
-    let listed = body["spaces"].as_array().cloned().unwrap_or_default();
-    listed
-        .iter()
-        .map(|space| {
-            let id = space["space"].as_str().and_then(|id| id.parse().ok());
-            let name = space["name"].as_str().map(str::to_owned);
-            id.zip(name)
-                .unwrap_or_else(|| panic!("GET /spaces: {body}"))
-        })
-        .collect()
+    cloud.spaces(token).into_iter().collect()
 }
 
 /// Fails unless the server gives `person`'s account one space named `name`, holding one revision:
@@ -120,13 +106,6 @@ fn assert_personal(cloud: &Cloud, person: &Person, name: &str) -> (SpaceId, Vec<
     .expect("the machine's signature");
     check_roster(&roster, &certs).expect("revision 1 passes checks 3 and 4");
     (space, bytes)
-}
-
-/// Runs `skald spaces` on `machine`; fails unless it succeeds.
-fn spaces(machine: &Machine) -> Finished {
-    let listed = run(machine, &[SPACES]);
-    assert!(listed.success, "{listed:?}");
-    listed
 }
 
 /// Fails unless `machine`'s space list marks one line as its personal space: the line of `name`,
