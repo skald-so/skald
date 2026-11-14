@@ -311,8 +311,7 @@ crate_checks=(
 )
 tree_checks=(
   'script/duplicates crates prototypes'
-  script/release-plz-config-test
-  script/release-plz-test
+  script/release-pr-test
   script/release-tag-test
 )
 # prototype_checks <directory>: the build, fmt, clippy and tests of the prototypes' workspace there.
