@@ -7,8 +7,9 @@
 //! `https://skald.so/problems/owned-spaces-limit`, and creates nothing. The personal space is never
 //! refused, and asking again for an own space that has no revision yet gives that same space.
 
-use std::sync::Barrier;
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use skald_proto::{Role, SpaceId};
 
@@ -141,29 +142,40 @@ fn with_the_limit_at_3_an_account_with_its_personal_space_creates_two_team_space
     assert_eq!(alice.session.spaces().len(), 3);
 }
 
+/// How long requests at once may take to answer: past PostgreSQL's deadlock detection, 1 s.
+const AT_ONCE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Sends `requests` from `person`'s session at once and gives their answers in order: the request
-/// for the personal space if `None`, otherwise the creation of the space it names.
+/// for the personal space if `None`, otherwise the creation of the space it names. Fails unless all
+/// of them answer within `AT_ONCE_TIMEOUT`.
 fn at_once(person: &Person, requests: &[Option<String>]) -> Vec<Response> {
-    let ready = Barrier::new(requests.len());
-    thread::scope(|scope| {
-        let running: Vec<_> = requests
-            .iter()
-            .map(|request| {
-                let (session, ready) = (person.session.clone(), &ready);
-                scope.spawn(move || {
-                    ready.wait();
-                    match request {
-                        Some(name) => session.create(name),
-                        None => session.personal_response(),
-                    }
-                })
-            })
-            .collect();
-        running
-            .into_iter()
-            .map(|thread| thread.join().expect("a request at once"))
-            .collect()
-    })
+    let ready = Arc::new(Barrier::new(requests.len()));
+    let (sender, answered) = mpsc::channel();
+    for (index, request) in requests.iter().cloned().enumerate() {
+        let (session, ready, sender) = (person.session.clone(), ready.clone(), sender.clone());
+        thread::spawn(move || {
+            ready.wait();
+            let answer = match request {
+                Some(name) => session.create(&name),
+                None => session.personal_response(),
+            };
+            sender.send((index, answer)).expect("send an answer");
+        });
+    }
+    drop(sender);
+    let deadline = Instant::now() + AT_ONCE_TIMEOUT;
+    let mut answers: Vec<Option<Response>> = vec![None; requests.len()];
+    for _ in requests {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let (index, answer) = answered
+            .recv_timeout(left)
+            .unwrap_or_else(|err| panic!("requests at once {requests:?}: {err}"));
+        answers[index] = Some(answer);
+    }
+    answers
+        .into_iter()
+        .map(|answer| answer.expect("an answer"))
+        .collect()
 }
 
 /// The creations of `count` spaces named for `round`.
@@ -216,6 +228,36 @@ fn creations_at_once_with_the_personal_space_request_never_pass_the_limit() {
         assert_one_taken(&person, &answers, round);
         let spaces = person.session.spaces();
         assert!(spaces.contains_key(&space_of(&personal).to_string()));
+    }
+}
+
+/// The rounds of requests at once that a race needs to show.
+const ROUNDS: u64 = 20;
+
+/// A creation named as the account's personal space will be, sent at once with the request for
+/// it, at the limit of 2: neither waits for the other without end, the account gets its personal
+/// space, and the creation is taken or refused as the name taken.
+#[test]
+fn creation_named_as_the_personal_space_at_once_with_its_request_does_not_deadlock() {
+    let flow = limited("2");
+    for round in 0..ROUNDS {
+        let person = Person::new(&flow, 3_120_910_091 + round, &format!("eve{round}"));
+        let username = person.session.who().username;
+        let answers = at_once(&person, &[None, Some(username)]);
+        let (personal, created) = (&answers[0], &answers[1]);
+        assert_eq!(personal.status, 201, "round {round}: {}", text(personal));
+        assert!(
+            matches!(created.status, 201 | 409),
+            "round {round}: {}",
+            text(created)
+        );
+        let spaces = person.session.spaces();
+        assert!(spaces.contains_key(&space_of(personal).to_string()));
+        assert_eq!(
+            spaces.len(),
+            if taken(created) { 2 } else { 1 },
+            "round {round}: {spaces:?}"
+        );
     }
 }
 

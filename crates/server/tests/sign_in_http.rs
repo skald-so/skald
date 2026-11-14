@@ -209,6 +209,11 @@ fn github_settings_that_do_not_fit_together_stop_the_start() {
             None,
             "--device-poll-interval",
         ),
+        (
+            vec!["--owned-spaces-limit", "0"],
+            None,
+            "--owned-spaces-limit",
+        ),
     ] {
         let mut command = Command::new(SERVER);
         command
