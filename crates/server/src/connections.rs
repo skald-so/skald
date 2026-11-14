@@ -347,11 +347,14 @@ mod tests {
     fn a_connection_is_let_go_when_its_registration_drops() {
         let connections = Arc::new(Connections::default());
         let (first, _) = connections.hold(device(1), vec![1]);
-        let (second, _) = connections.hold(device(1), vec![1]);
+        let (second, mut ended) = connections.hold(device(1), vec![2]);
         assert_eq!(held(&connections), HashMap::from([(device(1), 2)]));
 
         drop(first);
         assert_eq!(held(&connections), HashMap::from([(device(1), 1)]));
+        // The other connection is still held.
+        connections.end_session(&[2]);
+        assert_eq!(ended.try_recv(), Ok(()));
         drop(second);
         assert_eq!(held(&connections), HashMap::new());
     }
