@@ -189,8 +189,7 @@ struct Proved {
 async fn serve(state: AppState, mut socket: WebSocket) {
     let proved = match prove(&state, &mut socket).await {
         Ok(Some(proved)) => proved,
-        // The client closed it.
-        Ok(None) => return,
+        Ok(None) => return finish(socket).await,
         Err(closing) => return close(socket, closing).await,
     };
     let (_registration, ended) = state
@@ -212,7 +211,8 @@ async fn hold(mut socket: WebSocket, mut ended: oneshot::Receiver<()>) {
         tokio::select! {
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
             message = socket.recv() => match message {
-                Some(Ok(Message::Close(_)) | Err(_)) | None => return,
+                Some(Ok(Message::Close(_))) => return finish(socket).await,
+                Some(Err(_)) | None => return,
                 Some(Ok(_)) => {}
             },
         }
@@ -323,6 +323,11 @@ async fn session_exists(state: &AppState, session: &[u8]) -> Result<bool, Closin
 fn failed(doing: &str, err: sqlx::Error) -> Closing {
     eprintln!("skald-server: cannot {doing}: {err}");
     Closing::ServerError
+}
+
+/// Answers the client's close of `socket`: the next read sends the closing handshake's answer.
+async fn finish(mut socket: WebSocket) {
+    while let Some(Ok(_)) = socket.recv().await {}
 }
 
 /// Closes `socket` for `closing`.

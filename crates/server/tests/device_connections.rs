@@ -658,3 +658,29 @@ fn refused_proof_uses_its_challenge_up() {
 
     assert_closed_with(&mut socket, CHALLENGE_REFUSED);
 }
+
+/// The server answers the close of a taken connection with the closing handshake.
+#[test]
+fn taken_connection_closes_with_the_closing_handshake() {
+    let flow = DeviceFlow::start();
+    let ada = linked(&flow, 3_121_220_021, "ada-closes-standin");
+    let mut socket = connect_as(&flow, &ada, &challenge(&flow, &ada.machine.token));
+    assert_connection_taken(&flow.stand.server, &mut socket);
+
+    socket.close(None).expect("send a close");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match socket.read() {
+            Ok(Message::Close(_) | Message::Ping(_) | Message::Pong(_)) => {}
+            Ok(message) => panic!("a frame after the close: {message:?}"),
+            Err(tungstenite::Error::ConnectionClosed) => break,
+            Err(tungstenite::Error::Io(err))
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && Instant::now() < deadline => {}
+            Err(err) => panic!("close: {err}"),
+        }
+    }
+}
