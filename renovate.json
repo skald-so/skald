@@ -1,9 +1,19 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": ["config:recommended", "group:allNonMajor"],
   "baseBranchPatterns": ["dev"],
   "semanticCommits": "enabled",
-  "lockFileMaintenance": { "enabled": true },
+  "timezone": "UTC",
+  "schedule": ["* 0-5 * * 1"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["* 0-5 * * 1"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
   "packageRules": [
     {
       "description": "Stays on 0.2: see prototypes/mls/openmls/Cargo.toml",
