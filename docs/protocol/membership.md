@@ -345,13 +345,16 @@ policy = {
 
 mode = &(read-only: 1, full: 2) / uint   ; other values: modes of later versions
 
-wake = &(now: 1, batch: 2, pull: 3) / uint   ; other values: wake modes of later versions
+wake = wake-now / wake-batch / wake-pull / uint / [uint, * any]   ; other values: wake modes of later versions
+wake-now = 1
+wake-batch = [2, window: uint .ge 1]   ; window: seconds, at least, between two wakes
+wake-pull = 3
 ```
 
 - `ceilings`: the most rights a task from a `peer` or `service` sender gets without the approval of the claiming device's user, who can only lower them ([Running a task](queues.md#running-a-task)). An `own` task has no ceiling.
 - `mode`: `read-only` reads only the agent's folder and changes nothing, with no network; `full` has no limits. This version defines only these two; a device takes a mode it does not know as `read-only`.
 - `history`: [History key](#history-key).
-- `wakes`: the most waking delivery mode a device uses for messages of each sender trust level, in every channel of the space; the device's user can only choose a less waking one ([Device to agent](delivery.md#device-to-agent)). Absent, there is no ceiling. A device takes a wake mode it does not know as `pull`.
+- `wakes`: the most waking delivery mode a device uses for messages of each sender trust level, in every channel of the space; the device's user can only choose a less waking one ([Device to agent](delivery.md#device-to-agent)). Under `batch`, that is `batch` with a `window` at least as long, or `pull`. Absent, there is no ceiling. A device takes a wake mode it does not know as `pull`.
 - A new space starts with `[read-only, read-only]`, 30 days and no `wakes`.
 
 ## Invite
