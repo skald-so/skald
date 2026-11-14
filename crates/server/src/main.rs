@@ -74,6 +74,17 @@ struct Cli {
     )]
     sign_in_state_lifetime: u64,
 
+    /// How recent a web session's sign-in has to be to link another sign-in method to its account;
+    /// with an older one, the person signs in again first.
+    #[arg(
+        long,
+        env = "SKALD_LINK_SIGN_IN_AGE",
+        value_name = "SECONDS",
+        default_value_t = 300,
+        value_parser = clap::value_parser!(u64).range(1..=86_400)
+    )]
+    link_sign_in_age: u64,
+
     /// The Google OAuth client's ID. Its client secret comes only from the environment variable
     /// SKALD_GOOGLE_CLIENT_SECRET. Without both, Google sign-in is off.
     #[arg(long, env = "SKALD_GOOGLE_CLIENT_ID", value_name = "ID")]
@@ -169,6 +180,7 @@ impl Cli {
                 github,
                 google,
                 state_lifetime: Duration::from_secs(self.sign_in_state_lifetime),
+                link_age: Duration::from_secs(self.link_sign_in_age),
                 device_code_lifetime: Duration::from_secs(self.device_code_lifetime),
                 device_poll_interval: Duration::from_secs(self.device_poll_interval),
             })

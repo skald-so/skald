@@ -14,7 +14,7 @@ use common::device_flow::{
     CLIENT_ID, DEVICE_AUTHORIZATION, DeviceFlow, GRANT_TYPE, Grant, INTERVAL, LIFETIME, Poll,
     TOKEN, answer, assert_ok, assert_refused_page, json, pause, text,
 };
-use common::sign_in::SignIn;
+use common::sign_in::{SignIn, as_link, follow_from_site, submit_from_site};
 use common::{get_url, post_form, stored_forms};
 
 /// The host of the server's public address in the browser tests.
@@ -421,47 +421,15 @@ fn approval_from_another_site_counts_for_nothing() {
     let grant = flow.authorize();
 
     // A link from another site to the address with the code.
-    page.goto(&other);
-    page.navigate_by(&format!(
-        r#"setTimeout(() => {{ location.href = {}; }}, 0)"#,
-        serde_json::to_string(&grant.verification_uri_complete).expect("JSON")
-    ));
+    follow_from_site(&page, &other, &grant.verification_uri_complete);
     flow.assert_pending(&grant);
 
     // The page's own approval, sent from another site: as a form, and as a link.
     flow.reach_decision(&page, &grant);
     let approval = page.submission(APPROVE);
-    let fields = serde_json::to_string(&approval.fields).expect("JSON");
-    page.goto(&other);
-    page.navigate_by(&format!(
-        r#"setTimeout(() => {{
-            const form = document.createElement("form");
-            form.method = {method};
-            form.action = {action};
-            for (const [name, value] of {fields}) {{
-                const field = document.createElement("input");
-                field.type = "hidden";
-                field.name = name;
-                field.value = value;
-                form.append(field);
-            }}
-            document.body.append(form);
-            form.submit();
-        }}, 0)"#,
-        method = serde_json::to_string(&approval.method).expect("JSON"),
-        action = serde_json::to_string(&approval.action).expect("JSON"),
-    ));
+    submit_from_site(&page, &other, &approval);
     flow.assert_pending(&grant);
-    let query = serde_urlencoded::to_string(&approval.fields).expect("a query");
-    let link = format!(
-        "{}?{query}",
-        approval.action.split('?').next().unwrap_or_default()
-    );
-    page.goto(&other);
-    page.navigate_by(&format!(
-        r#"setTimeout(() => {{ location.href = {}; }}, 0)"#,
-        serde_json::to_string(&link).expect("JSON")
-    ));
+    follow_from_site(&page, &other, &as_link(&approval));
     flow.assert_pending(&grant);
 
     // The person's own approval still works.
