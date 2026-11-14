@@ -27,6 +27,7 @@ jobs:
       workspace: ${{ steps.parts.outputs.workspace }}
       wasm: ${{ steps.parts.outputs.wasm }}
       image: ${{ steps.parts.outputs.image }}
+      self-host: ${{ steps.parts.outputs.self-host }}
       mls: ${{ steps.parts.outputs.mls }}
       agents: ${{ steps.parts.outputs.agents }}
       edits: ${{ steps.parts.outputs.edits }}
@@ -98,6 +99,23 @@ jobs:
       - run: ./script/test
         env:
           SKALD_TEST_PARTS: image
+
+  rust-self-host:
+    name: 'Rust: self-host stack'
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.self-host == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/rust-tools
+        with:
+          workspaces: . -> target
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: self-host
 
   rust-mls:
     name: 'Rust: MLS prototypes'
@@ -172,7 +190,7 @@ jobs:
   # a required check that is skipped counts as passed.
   rust:
     name: Rust
-    needs: [changes, rust-workspace, rust-wasm, rust-image, rust-mls, rust-agents, rust-edits, rust-repository]
+    needs: [changes, rust-workspace, rust-wasm, rust-image, rust-self-host, rust-mls, rust-agents, rust-edits, rust-repository]
     if: always()
     runs-on: ubuntu-latest
     steps:
