@@ -40,9 +40,8 @@ impl Google {
             return Ok(provider);
         }
         let settings = self.settings.clone();
-        let provider = tokio::task::spawn_blocking(move || OidcProvider::discover(settings))
-            .await
-            .map_err(|err| Failure::Provider(format!("the discovery failed: {err}")))?
+        let provider = blocking(Self::NAME, move || OidcProvider::discover(settings))
+            .await?
             .map_err(|err| Failure::Provider(err.to_string()))?;
         let provider = Arc::new(provider);
         // Of discoveries at once, the last one's stays; any of them serves.
