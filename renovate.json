@@ -1,20 +1,30 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "group:allNonMajor"],
+  "extends": ["config:recommended"],
   "baseBranchPatterns": ["dev"],
   "semanticCommits": "enabled",
   "timezone": "UTC",
   "schedule": ["* 0-5 * * 1"],
+  "updateNotScheduled": false,
   "lockFileMaintenance": {
     "enabled": true,
     "schedule": ["* 0-5 * * 1"]
   },
   "osvVulnerabilityAlerts": true,
-  "vulnerabilityAlerts": {
-    "enabled": true,
-    "schedule": ["at any time"]
-  },
   "packageRules": [
+    {
+      "description": "The weekly PR: patch and digest updates",
+      "matchUpdateTypes": ["patch", "digest", "pin", "pinDigest"],
+      "groupName": "non-breaking updates",
+      "groupSlug": "non-breaking"
+    },
+    {
+      "description": "The weekly PR: minor updates from 1.0 on; a minor update of a 0.x version breaks and gets a PR of its own",
+      "matchUpdateTypes": ["minor"],
+      "matchCurrentVersion": "!/^0\\./",
+      "groupName": "non-breaking updates",
+      "groupSlug": "non-breaking"
+    },
     {
       "description": "Stays on 0.2: see prototypes/mls/openmls/Cargo.toml",
       "matchDepNames": ["getrandom-02"],
