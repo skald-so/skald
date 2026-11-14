@@ -78,7 +78,7 @@ async fn stored(db: &PgPool, account: &str) -> Result<Vec<Stored>, sqlx::Error> 
 /// `GET /sign-in-methods`: the page of the web session's account's sign-in methods, with a form
 /// that links each provider the server has settings for.
 pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if state.sign_in.is_none() {
+    if sign_in::settings(&state).is_none() {
         return off();
     }
     let flows = flows(&state);
