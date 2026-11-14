@@ -9,11 +9,11 @@ use skald_proto::{
 };
 
 use crate::cbor::{Value, bytes, text};
-use crate::fields::{map, truncated_and_longer, with, without};
-use crate::history::{
-    LABEL, SENT, Sealed, body_cbor, content, content_fields, entry_cbor, link_cbor, plaintext_cbor,
-    unknown,
+use crate::fields::{
+    SENT, assert_signed_round_trip, body_cbor, map, signed_cbor, truncated_and_longer, unknown,
+    with, without,
 };
+use crate::history::{LABEL, Sealed, content, content_fields, entry_cbor, link_cbor};
 
 const CHANNEL: ChannelId = ChannelId::from_bytes([0xc1; 16]);
 const SENDER: DeviceId = DeviceId::from_bytes([0xd1; 16]);
@@ -102,13 +102,7 @@ fn a_plaintext_and_its_body_decode_into_their_fields_and_encode_back_with_their_
         assert_eq!(decoded.content.to_cbor(), content);
         assert_eq!(decoded.unknown.is_empty(), unknown.is_empty());
         assert_eq!(decoded.to_cbor(), body, "the body, byte for byte");
-
-        let encoded = plaintext_cbor(&body, &[0x5a; 64]);
-        let plaintext = HistoryPlaintext::from_cbor(&encoded).expect("a plaintext decodes");
-        assert_eq!(plaintext.body(), &decoded);
-        assert_eq!(plaintext.body_bytes(), body.as_slice());
-        assert_eq!(plaintext.signature(), &[0x5a; 64]);
-        assert_eq!(plaintext.to_cbor(), encoded, "the plaintext, byte for byte");
+        assert_signed_round_trip(&body, &decoded);
     }
 }
 
@@ -215,16 +209,13 @@ fn a_plaintext_or_body_that_breaks_its_cddl_is_refused_without_a_panic() {
         );
     }
 
-    let plaintext = plaintext_cbor(&valid, &[0x5a; 64]);
+    let plaintext = signed_cbor(&valid, &[0x5a; 64]);
     assert!(HistoryPlaintext::from_cbor(&plaintext).is_ok());
     for (what, encoded) in [
-        (
-            "a signature of 63 bytes",
-            plaintext_cbor(&valid, &[0x5a; 63]),
-        ),
+        ("a signature of 63 bytes", signed_cbor(&valid, &[0x5a; 63])),
         (
             "a body that is not a body",
-            plaintext_cbor(&content(), &[0x5a; 64]),
+            signed_cbor(&content(), &[0x5a; 64]),
         ),
         (
             "three items",

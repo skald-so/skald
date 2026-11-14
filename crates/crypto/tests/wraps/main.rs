@@ -8,6 +8,8 @@
 mod cbor;
 #[path = "../common/mod.rs"]
 mod common;
+#[path = "../common/devices.rs"]
+mod devices;
 mod errors;
 #[path = "../common/fields.rs"]
 mod fields;
@@ -15,4 +17,6 @@ mod fixtures;
 mod history;
 mod objects;
 mod recovery;
+#[path = "../common/rfc9180.rs"]
+mod rfc9180;
 mod wrapping;

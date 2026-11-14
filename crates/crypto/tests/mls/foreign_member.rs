@@ -2,27 +2,16 @@
 //! Welcome of the tests' devices and commits whatever mls-rs lets it, so it makes the Commits a
 //! member of another implementation, or a hostile one, could send.
 
-use std::time::Duration;
-
 use mls_rs::{
-    CipherSuite, ExtensionList, Group, MlsMessage,
-    client_builder::MlsConfig,
-    crypto::{SignaturePublicKey, SignatureSecretKey},
-    group::CommitBuilder,
-    identity::{SigningIdentity, basic::BasicCredential},
-    time::MlsTime,
+    Group, MlsMessage, client_builder::MlsConfig, crypto::SignatureSecretKey, group::CommitBuilder,
+    identity::SigningIdentity, time::MlsTime,
 };
 use skald_crypto::SealedState;
 use skald_proto::ChannelId;
 
 use crate::fixtures::{NOW, device_id, signing_key};
-use crate::foreign;
-use crate::steps::{add, creator, join, stored, with_key_packages};
-
-/// The profile's ciphersuite, `0x0001`.
-pub const SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
-/// The longest lifetime of a KeyPackage a device adds: 60 days.
-pub const LIFETIME: Duration = Duration::from_secs(60 * 24 * 3_600);
+use crate::foreign::{self, LIFETIME, SUITE};
+use crate::steps::channel_with;
 
 /// `channel`'s group of the tests' devices `ours`, the first its creator, and of a member on mls-rs
 /// with device `foreign`'s key and device ID, all in epoch 1: the creator adds the others from
@@ -35,30 +24,8 @@ pub fn with_foreign_member(
 ) -> (Vec<SealedState>, Group<impl MlsConfig + use<>>) {
     let identity = device_id(foreign);
     let client = foreign::client(foreign, identity.as_bytes(), SUITE, LIFETIME);
-    let package = client
-        .generate_key_package_message(
-            ExtensionList::new(),
-            ExtensionList::new(),
-            Some(MlsTime::from(NOW)),
-        )
-        .and_then(|message| message.to_bytes())
-        .expect("a KeyPackage of mls-rs");
-    let mut states = Vec::new();
-    let mut packages = Vec::new();
-    for &seed in &ours[1..] {
-        let (state, mut made) = with_key_packages(seed, 1);
-        states.push(state);
-        packages.push(made.remove(0));
-    }
-    packages.push(package);
-    let mut state = creator(ours[0], channel);
-    let added: Vec<&[u8]> = packages.iter().map(Vec::as_slice).collect();
-    add(ours[0], &mut state, channel, &added);
-    let welcome = stored(ours[0], &mut state, channel);
-    for (&seed, joiner) in ours[1..].iter().zip(&mut states) {
-        assert_eq!(join(seed, joiner, &welcome), channel, "the channel joined");
-    }
-    states.insert(0, state);
+    let package = foreign::key_package_of(&client);
+    let (states, welcome) = channel_with(channel, ours[0], &ours[1..], &[&package]);
     let welcome = MlsMessage::from_bytes(&welcome).expect("a Welcome message");
     let (group, _) = client
         .join_group(None, &welcome, Some(MlsTime::from(NOW)))
@@ -97,14 +64,5 @@ pub fn index_of<C: MlsConfig>(group: &Group<C>, seed: u8) -> u32 {
 /// A new signing identity of device `device` that signs with key `seed`, as an UpdatePath that
 /// changes the leaf's key would carry: the same `identity`, another `signature_key`.
 pub fn other_key(device: u8, seed: u8) -> (SignatureSecretKey, SigningIdentity) {
-    let key = signing_key(seed);
-    let public = key.public_key();
-    // mls-rs takes an Ed25519 secret key as its seed followed by its public key.
-    let mut secret = key.to_bytes().to_vec();
-    secret.extend_from_slice(&public);
-    let credential = BasicCredential::new(device_id(device).as_bytes().to_vec()).into_credential();
-    (
-        SignatureSecretKey::new(secret),
-        SigningIdentity::new(credential, SignaturePublicKey::new(public.to_vec())),
-    )
+    foreign::signing_identity(seed, device_id(device).as_bytes())
 }

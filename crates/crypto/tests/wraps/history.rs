@@ -8,12 +8,9 @@ use std::collections::BTreeMap;
 use skald_crypto::{HistoryKey, follow_links};
 use skald_proto::{Cbor, Content, HistoryBody, HistoryEntry, HistoryLink, HistoryWrap, MessageId};
 
-use crate::cbor::{Value, bytes};
-use crate::fields::a2a_fields;
+use crate::cbor::Value;
+use crate::fields::{a2a_fields, body_cbor};
 use crate::fixtures::{Channel, Reader, cert, device_id, read, readers, signing_key};
-
-/// The time a history body states, in seconds since the Unix epoch.
-const SENT: u64 = 1_800_000_123;
 
 /// Content with an A2A message, its text `said`.
 fn content(said: &str) -> Vec<u8> {
@@ -22,14 +19,13 @@ fn content(said: &str) -> Vec<u8> {
 
 /// The body of a message device `seed` sends in `channel` with the text `said`.
 fn body(seed: u8, channel: &Channel, said: &str) -> HistoryBody {
-    let encoded = Value::Map(vec![
-        (1, bytes(device_id(seed).as_bytes())),
-        (2, bytes(channel.id.as_bytes())),
-        (3, bytes(MessageId::generate().as_bytes())),
-        (4, Value::Uint(SENT)),
-        (5, bytes(&content(said))),
-    ])
-    .encode();
+    let encoded = body_cbor(
+        device_id(seed),
+        channel.id,
+        MessageId::generate(),
+        &content(said),
+        vec![],
+    );
     let body = HistoryBody::from_cbor(&encoded).expect("a history body");
     assert_eq!(body.content, Content::from_cbor(&content(said)).unwrap());
     body

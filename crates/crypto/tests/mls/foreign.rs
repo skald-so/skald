@@ -20,9 +20,24 @@ use skald_proto::ChannelId;
 use crate::fixtures::{NOW, signing_key};
 
 /// The profile's ciphersuite, `0x0001`.
-const SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
+pub const SUITE: CipherSuite = CipherSuite::CURVE25519_AES128;
 /// The longest lifetime of a KeyPackage a device adds: 60 days.
-const LIFETIME: Duration = Duration::from_secs(60 * 24 * 3_600);
+pub const LIFETIME: Duration = Duration::from_secs(60 * 24 * 3_600);
+
+/// The signing identity that signs with key `seed` and has a `basic` credential of `identity`,
+/// whatever it is, and its secret key.
+pub fn signing_identity(seed: u8, identity: &[u8]) -> (SignatureSecretKey, SigningIdentity) {
+    let key = signing_key(seed);
+    let public = key.public_key();
+    // mls-rs takes an Ed25519 secret key as its seed followed by its public key.
+    let mut secret = key.to_bytes().to_vec();
+    secret.extend_from_slice(&public);
+    let credential = BasicCredential::new(identity.to_vec()).into_credential();
+    (
+        SignatureSecretKey::new(secret),
+        SigningIdentity::new(credential, SignaturePublicKey::new(public.to_vec())),
+    )
+}
 
 /// A client that signs with key `seed` and has a `basic` credential of `identity`, whatever it is,
 /// in ciphersuite `suite`, one with Ed25519 signatures; its KeyPackages' lifetime runs `lifetime`
@@ -33,20 +48,11 @@ pub fn client(
     suite: CipherSuite,
     lifetime: Duration,
 ) -> Client<impl MlsConfig + use<>> {
-    let key = signing_key(seed);
-    let public = key.public_key();
-    // mls-rs takes an Ed25519 secret key as its seed followed by its public key.
-    let mut secret = key.to_bytes().to_vec();
-    secret.extend_from_slice(&public);
-    let credential = BasicCredential::new(identity.to_vec()).into_credential();
+    let (secret, signing_identity) = signing_identity(seed, identity);
     Client::builder()
         .identity_provider(BasicIdentityProvider::new())
         .crypto_provider(RustCryptoProvider::with_enabled_cipher_suites(vec![suite]))
-        .signing_identity(
-            SigningIdentity::new(credential, SignaturePublicKey::new(public.to_vec())),
-            SignatureSecretKey::new(secret),
-            suite,
-        )
+        .signing_identity(signing_identity, secret, suite)
         .key_package_lifetime(lifetime)
         .build()
 }
@@ -54,7 +60,12 @@ pub fn client(
 /// A KeyPackage, in an `MLSMessage`, of a client with key `seed` and credential `identity`, made
 /// at the tests' time.
 pub fn key_package(seed: u8, identity: &[u8]) -> Vec<u8> {
-    client(seed, identity, SUITE, LIFETIME)
+    key_package_of(&client(seed, identity, SUITE, LIFETIME))
+}
+
+/// A KeyPackage, in an `MLSMessage`, of `client`, made at the tests' time.
+pub fn key_package_of<C: MlsConfig>(client: &Client<C>) -> Vec<u8> {
+    client
         .generate_key_package_message(
             ExtensionList::new(),
             ExtensionList::new(),

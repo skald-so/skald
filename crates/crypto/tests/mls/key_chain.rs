@@ -8,10 +8,9 @@ use skald_crypto::{HistoryKey, SealedState, follow_links};
 use skald_proto::{Cbor, ChannelId, HistoryLink, MessageId};
 
 use crate::commits::{empty, process, processes_own_remove, remove, store};
+use crate::fields::unknown;
 use crate::fixtures::{load, signing_key};
-use crate::history::{
-    Sealed, body, forged_link, key, link_aad, link_cbor, next_epoch, open, unknown,
-};
+use crate::history::{Sealed, body, forged_link, key, link_aad, link_cbor, next_epoch, open};
 use crate::steps::{channel_of, creator, history_key};
 
 /// Device `seed`'s link of `channel` from `epoch` to `prev`, both keys from its sealed state.

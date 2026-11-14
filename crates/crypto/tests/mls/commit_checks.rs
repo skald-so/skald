@@ -17,8 +17,8 @@ use skald_proto::ChannelId;
 
 use crate::commits::{Seen, assert_in, devices, process, process_at, try_process, try_remove};
 use crate::fixtures::{NOW, admitted, device_id, load, new_state, signing_key};
-use crate::foreign;
-use crate::foreign_member::{SUITE, commit, index_of, other_key, with_foreign_member};
+use crate::foreign::{self, SUITE};
+use crate::foreign_member::{commit, index_of, other_key, with_foreign_member};
 use crate::steps::{
     add, bytes, channel_of, creator, history_key, join, receive, send, step, stored,
     with_key_packages,

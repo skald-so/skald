@@ -1,7 +1,15 @@
-//! Encoded maps of fixture fields, changed field by field, and the fields of content, for the
-//! tests of the history's objects. Uses the tests' CBOR writer, `crate::cbor`.
+//! Encoded maps of fixture fields, changed field by field, the fields of content, history bodies
+//! and signed objects, for the tests of the history's objects. Uses the tests' CBOR writer,
+//! `crate::cbor`.
 
-use crate::cbor::{Value, text};
+use std::fmt::Debug;
+
+use skald_proto::{Cbor, ChannelId, DeviceId, MessageId, Signed, SignedBody};
+
+use crate::cbor::{Value, bytes, text};
+
+/// The time a history body states, in seconds since the Unix epoch.
+pub const SENT: u64 = 1_800_000_123;
 
 /// The encoded map of `fields`.
 pub fn map(fields: &[(i64, Value)]) -> Vec<u8> {
@@ -43,4 +51,49 @@ pub fn a2a_fields(said: &str) -> Vec<(i64, Value)> {
         (4, Value::Uint(1)),
         (6, text(&message)),
     ]
+}
+
+/// Map fields of a later version, which decoding keeps and encoding gives back.
+pub fn unknown() -> Vec<(i64, Value)> {
+    vec![(-3, text("later")), (24, Value::Bool(true))]
+}
+
+/// An encoded signed object, such as a `history-plaintext` or a `history-wrap`: `body` and its
+/// `signature`.
+pub fn signed_cbor(body: &[u8], signature: &[u8]) -> Vec<u8> {
+    Value::Array(vec![bytes(body), bytes(signature)]).encode()
+}
+
+/// Checks that the signed object of the encoded `body`, decoded as `decoded`, and a signature
+/// decodes into them and encodes back byte for byte: a `history-plaintext` or a `history-wrap`.
+pub fn assert_signed_round_trip<B: SignedBody + PartialEq + Debug>(body: &[u8], decoded: &B) {
+    let encoded = signed_cbor(body, &[0x5a; 64]);
+    let signed = Signed::<B>::from_cbor(&encoded).expect("the signed object decodes");
+    assert_eq!(signed.body(), decoded);
+    assert_eq!(signed.body_bytes(), body);
+    assert_eq!(signed.signature(), &[0x5a; 64]);
+    assert_eq!(
+        signed.to_cbor(),
+        encoded,
+        "the signed object, byte for byte"
+    );
+}
+
+/// An encoded `history-body` of these fields, `content` already encoded, and `unknown` ones.
+pub fn body_cbor(
+    sender: DeviceId,
+    channel: ChannelId,
+    msg_id: MessageId,
+    content: &[u8],
+    unknown: Vec<(i64, Value)>,
+) -> Vec<u8> {
+    let mut fields = vec![
+        (1, bytes(sender.as_bytes())),
+        (2, bytes(channel.as_bytes())),
+        (3, bytes(msg_id.as_bytes())),
+        (4, Value::Uint(SENT)),
+        (5, bytes(content)),
+    ];
+    fields.extend(unknown);
+    Value::Map(fields).encode()
 }

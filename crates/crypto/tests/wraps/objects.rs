@@ -8,11 +8,11 @@ use skald_proto::{
 };
 
 use crate::cbor::{Value, bytes, text};
-use crate::fields::{map, truncated_and_longer, with, without};
-use crate::fixtures::{ACCOUNT, RECOVERY};
-use crate::fixtures::{
-    Channel, Fields, LABEL, browser_reader, recovery_reader, unknown, wrap_cbor,
+use crate::fields::{
+    assert_signed_round_trip, map, signed_cbor, truncated_and_longer, unknown, with, without,
 };
+use crate::fixtures::{ACCOUNT, RECOVERY};
+use crate::fixtures::{Channel, Fields, LABEL, browser_reader, recovery_reader};
 
 const CHANNEL: ChannelId = ChannelId::from_bytes([0xc1; 16]);
 const BROWSER: DeviceId = DeviceId::from_bytes([0xb1; 16]);
@@ -54,13 +54,7 @@ fn a_wrap_and_its_body_decode_into_their_fields_and_encode_back_with_their_unkno
             );
             assert_eq!(decoded.unknown.is_empty(), unknown.is_empty());
             assert_eq!(decoded.to_cbor(), body, "the body, byte for byte");
-
-            let encoded = wrap_cbor(&body, &[0x5a; 64]);
-            let wrap = HistoryWrap::from_cbor(&encoded).expect("a wrap decodes");
-            assert_eq!(wrap.body(), &decoded);
-            assert_eq!(wrap.body_bytes(), body.as_slice());
-            assert_eq!(wrap.signature(), &[0x5a; 64]);
-            assert_eq!(wrap.to_cbor(), encoded, "the wrap, byte for byte");
+            assert_signed_round_trip(&body, &decoded);
         }
     }
 }
@@ -146,7 +140,7 @@ fn a_wrap_body_that_breaks_its_cddl_is_refused_without_a_panic() {
     for (what, body) in bodies {
         assert!(HistoryWrapBody::from_cbor(&body).is_err(), "{what}");
         assert!(
-            HistoryWrap::from_cbor(&wrap_cbor(&body, &[0x5a; 64])).is_err(),
+            HistoryWrap::from_cbor(&signed_cbor(&body, &[0x5a; 64])).is_err(),
             "a wrap of a body with {what}"
         );
     }
@@ -161,8 +155,8 @@ fn a_wrap_body_that_breaks_its_cddl_is_refused_without_a_panic() {
 fn a_wrap_that_breaks_its_cddl_is_refused_without_a_panic() {
     let body = fields(WrapRecipient::Recovery(RECOVERED)).encode(vec![]);
     let malformed = [
-        ("a 63-byte signature", wrap_cbor(&body, &[0x5a; 63])),
-        ("a 65-byte signature", wrap_cbor(&body, &[0x5a; 65])),
+        ("a 63-byte signature", signed_cbor(&body, &[0x5a; 63])),
+        ("a 65-byte signature", signed_cbor(&body, &[0x5a; 65])),
         ("no signature", Value::Array(vec![bytes(&body)]).encode()),
         (
             "a third item",
@@ -178,7 +172,7 @@ fn a_wrap_that_breaks_its_cddl_is_refused_without_a_panic() {
     for (what, input) in malformed {
         assert!(HistoryWrap::from_cbor(&input).is_err(), "{what}");
     }
-    for input in truncated_and_longer(&wrap_cbor(&body, &[0x5a; 64])) {
+    for input in truncated_and_longer(&signed_cbor(&body, &[0x5a; 64])) {
         assert!(HistoryWrap::from_cbor(&input).is_err(), "{input:02x?}");
     }
 }

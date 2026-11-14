@@ -7,9 +7,9 @@ use skald_proto::{
     Cbor, Cert, ChannelId, DeviceId, HistoryWrap, HistoryWrapBody, SignedBody, WrapRecipient,
 };
 
-use crate::history::{HistoryError, HistoryKey};
+use crate::history::{HistoryError, HistoryKey, verify_signed};
 use crate::hpke::HpkeKey;
-use crate::sign::{SigningKey, verify};
+use crate::sign::SigningKey;
 
 /// `info` of a wrap's seal.
 const INFO: &[u8] = b"skald history wrap";
@@ -76,13 +76,9 @@ pub fn open_wrap(wrap: &HistoryWrap, key: &HpkeKey) -> Result<OpenedWrap, Histor
             &body.ct,
         )
         .map_err(|_| HistoryError::Open)?;
-    let opened: &[u8; 16] = opened
-        .as_slice()
-        .try_into()
-        .map_err(|_| HistoryError::Malformed)?;
     Ok(OpenedWrap {
         wrap: wrap.clone(),
-        key: HistoryKey::from_bytes(opened),
+        key: HistoryKey::from_opened(&opened)?,
     })
 }
 
@@ -106,16 +102,13 @@ impl OpenedWrap {
     /// [`HistoryError::NotSender`] if `cert` is not `signer`'s; [`HistoryError::Signature`] if the
     /// signature does not verify with its key.
     pub fn verify(self, cert: &Cert) -> Result<HistoryKey, HistoryError> {
-        if cert.body().device != self.signer() {
-            return Err(HistoryError::NotSender);
-        }
-        verify(
-            &cert.body().signing,
+        verify_signed(
+            cert,
+            self.signer(),
             LABEL,
-            &[self.wrap.body_bytes()],
+            self.wrap.body_bytes(),
             self.wrap.signature(),
-        )
-        .map_err(|_| HistoryError::Signature)?;
+        )?;
         Ok(self.key)
     }
 }

@@ -83,6 +83,18 @@ pub fn join(seed: u8, state: &mut SealedState, welcome: &[u8]) -> ChannelId {
 /// of `joiners` from a KeyPackage of its own and commits, the server stores the Commit, and each
 /// joiner joins from the Welcome. Gives each device's state, the creator's first.
 pub fn channel_of(channel: ChannelId, creator_seed: u8, joiners: &[u8]) -> Vec<SealedState> {
+    channel_with(channel, creator_seed, joiners, &[]).0
+}
+
+/// `channel`'s group as [`channel_of`] forms it, the devices of `others`, KeyPackages of clients
+/// outside the crate, added after `joiners`. Gives each device's state, the creator's first, and the
+/// Welcome.
+pub fn channel_with(
+    channel: ChannelId,
+    creator_seed: u8,
+    joiners: &[u8],
+    others: &[&[u8]],
+) -> (Vec<SealedState>, Vec<u8>) {
     let mut joined: Vec<(SealedState, Vec<u8>)> = joiners
         .iter()
         .map(|&seed| {
@@ -94,6 +106,7 @@ pub fn channel_of(channel: ChannelId, creator_seed: u8, joiners: &[u8]) -> Vec<S
     let packages: Vec<&[u8]> = joined
         .iter()
         .map(|(_, package)| package.as_slice())
+        .chain(others.iter().copied())
         .collect();
     add(creator_seed, &mut state, channel, &packages);
     let welcome = stored(creator_seed, &mut state, channel);
@@ -102,7 +115,7 @@ pub fn channel_of(channel: ChannelId, creator_seed: u8, joiners: &[u8]) -> Vec<S
         assert_eq!(join(seed, state, &welcome), channel, "the channel joined");
         states.push(state.clone());
     }
-    states
+    (states, welcome)
 }
 
 /// Device `seed` encrypts `plaintext` in `channel`; gives the message.

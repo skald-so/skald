@@ -15,8 +15,8 @@ use skald_proto::ChannelId;
 use crate::commit_checks::{DAY, foreign_key_package};
 use crate::commits::{empty, process, processes_own_remove, remove, store};
 use crate::fixtures::{NOW, device_id, load, signing_key};
-use crate::foreign;
-use crate::foreign_member::{LIFETIME, SUITE, commit, with_foreign_member};
+use crate::foreign::{self, LIFETIME, SUITE};
+use crate::foreign_member::{commit, with_foreign_member};
 use crate::group_info::{self, EXTERNAL_PUB, GroupInfo, RATCHET_TREE, replace_once, resigned};
 use crate::steps::{add, bytes, channel_of, join, send, step, stored, with_key_packages};
 
