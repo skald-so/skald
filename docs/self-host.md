@@ -223,7 +223,7 @@ skald.example.com {
 
 ## Backup and restore
 
-A backup is one file, readable only by you: the database and the files of the volume `skald_attachments`. With a bucket, it holds the database only; the bucket's versioning, at its provider, keeps earlier attachments. It holds no secret of `.env`: keep `.env` apart.
+A backup is one file, readable only by you: the database and the files of the volume `skald_attachments`. With a bucket, it holds the database only: turn on the bucket's versioning at its provider, which keeps earlier attachments. It holds no secret of `.env`: keep `.env` apart.
 
 In `~/skald`, into the backup's absolute path `<backup file>`:
 
@@ -244,7 +244,7 @@ In `~/skald`, into the backup's absolute path `<backup file>`:
 
 The server stops for the backup and starts again after it, also when it fails; clients reconnect after the short downtime ([Cloud](dev/infrastructure.md#cloud), "Deployment").
 
-A restore goes into a new stack: in its directory, after "Settings" with the backup's domain and sign-in providers, before "Start". The stack runs the backup's release or a newer one, whose server migrates the database at start. The restore refuses a stack whose database or attachments volume holds data.
+A restore goes into a new stack on a machine without a `skald` stack: the stack's name is always `skald`, so on a machine that runs one, a new stack is that one. In the new stack's directory, after "Settings" with the backup's domain, sign-in providers and bucket, if any, before "Start". The stack runs the backup's release or a newer one, whose server migrates the database at start. The restore refuses a stack whose database or attachments volume holds data.
 
 ```sh self-host=restore
 (
@@ -261,4 +261,4 @@ A restore goes into a new stack: in its directory, after "Settings" with the bac
 )
 ```
 
-A restore that fails leaves the new stack partly filled: `docker compose down --volumes` empties it for another try.
+A restore that fails after its check passed leaves the new stack partly filled: `docker compose down --volumes` empties it for another try. After a refusal, it would delete the data the check found.

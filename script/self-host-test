@@ -85,8 +85,9 @@
 #   backup: release, files, env, github, google, up. Machines sign in by device flow, one's person
 #     with GitHub and another's with Google, and create spaces; files go into the attachments volume.
 #     The guide's backup, the part's path for `<backup file>`, writes one file readable only by its
-#     owner, holding the files and none of the secret values of .env; after it, /health answers and
-#     the machines list the same devices and spaces. A backup to a full disk fails, and after it too.
+#     owner, holding the files and none of the secret values of .env; the server restarts for it;
+#     after it, /health answers and the machines list the same devices and spaces. A backup to a full
+#     disk fails, leaves no file there, and after it too.
 #     With the attachments volume emptied, the guide's restore into that stack, whose database holds
 #     data, fails and changes neither its database nor its volume.
 #   restore-files: release, files, env, github, google; the stack's containers created and removed,
@@ -1157,6 +1158,13 @@ no_secret_held() {
   done
 }
 
+# started <scenario>: when the stack's running server started.
+started() {
+  local id
+  id=$(container "$1" "$server_image") || return 1
+  m docker inspect --format '{{.State.StartedAt}}' "$id"
+}
+
 marker=self-host-test-attachment-$(openssl rand -hex 8)
 backup_file=$backups/skald-backup
 
@@ -1179,6 +1187,7 @@ if [[ -n $backup_ok ]]; then
   done
 
   # The guide's backup.
+  started_before=$(started backup || true)
   scenario backup-run ":resume backup" backup
   with_backup backup-run "$backup_file"
   if run_scenario backup-run </dev/null && backup_private backup-run "$backup_file"; then
@@ -1189,6 +1198,9 @@ if [[ -n $backup_ok ]]; then
     backup_ok=
   fi
   answers_health backup "the guide's backup"
+  started_after=$(started backup || true)
+  [[ -n $started_before && -n $started_after && $started_after != "$started_before" ]] ||
+    fail "backup: the guide's backup does not restart the server: started '$started_before', then '$started_after'"
   lists_as_before backup backup/ada-machine "the guide's backup" "$ada_before"
   lists_as_before backup backup/grace-machine "the guide's backup" "$grace_before"
 
@@ -1197,6 +1209,8 @@ if [[ -n $backup_ok ]]; then
   scenario backup-full ":resume backup" backup
   with_backup backup-full /self-host/full/skald-backup
   run_refused backup-full backup || true
+  left=$(m find /self-host/full -mindepth 1)
+  [[ -z $left ]] || fail "backup-full: the backup that fails leaves files:"$'\n'"$left"
   answers_health backup "a backup that fails"
   lists_as_before backup backup/ada-machine "a backup that fails" "$ada_before"
   lists_as_before backup backup/grace-machine "a backup that fails" "$grace_before"

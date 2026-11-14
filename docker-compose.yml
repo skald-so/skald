@@ -78,7 +78,9 @@ services:
   backup:
     image: postgres:19rc2@sha256:3c5f322ffe97481b51a1ebee693f58d0c081514d2bc3026500a9400b7428bea9
     profiles: [backup]
-    logging: *logging
+    # Not json-file: its log would hold a copy of the backup, which it writes to its output.
+    logging:
+      driver: none
     depends_on:
       postgres:
         condition: service_healthy
