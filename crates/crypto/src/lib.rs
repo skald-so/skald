@@ -10,7 +10,7 @@ mod sign;
 
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
-pub use hpke::HpkeKey;
+pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
 pub use mls::{
     ChannelView, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice, MlsDevice, MlsError,
     Processed,

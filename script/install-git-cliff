@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Installs the git-cliff of script/lib/release.sh into its directory there: downloads the official
+# release archive for this machine's OS and architecture, checks it against its SHA-256 there and
+# unpacks git-cliff from it. Does nothing when that git-cliff is there already.
+# Usage: script/install-git-cliff
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+bin=$git_cliff_root/bin
+
+if [[ $("$bin/git-cliff" --version 2>/dev/null) == "git-cliff $git_cliff_version" ]]; then
+  exit 0
+fi
+
+case "$(uname -s) $(uname -m)" in
+  'Linux x86_64' | 'Linux amd64') target=x86_64-unknown-linux-musl ;;
+  'Linux aarch64' | 'Linux arm64') target=aarch64-unknown-linux-musl ;;
+  'Darwin x86_64') target=x86_64-apple-darwin ;;
+  'Darwin arm64') target=aarch64-apple-darwin ;;
+  *)
+    echo "install-git-cliff: no git-cliff archive for $(uname -s) $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+checksum=
+for archive in "${git_cliff_archives[@]}"; do
+  read -r name sum <<<"$archive"
+  [[ $name != "$target" ]] || checksum=$sum
+done
+if [[ -z $checksum ]]; then
+  echo "install-git-cliff: script/lib/release.sh has no SHA-256 for $target" >&2
+  exit 1
+fi
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+file=git-cliff-$git_cliff_version-$target.tar.gz
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 \
+  --output "$tmp/$file" "$git_cliff_url/v$git_cliff_version/$file"
+if command -v sha256sum >/dev/null; then
+  sum=$(sha256sum "$tmp/$file")
+else
+  sum=$(shasum -a 256 "$tmp/$file")
+fi
+if [[ ${sum%% *} != "$checksum" ]]; then
+  echo "install-git-cliff: $file does not match its SHA-256" >&2
+  exit 1
+fi
+tar -xzf "$tmp/$file" -C "$tmp" "git-cliff-$git_cliff_version/git-cliff"
+mkdir -p "$bin"
+mv "$tmp/git-cliff-$git_cliff_version/git-cliff" "$bin/git-cliff"
