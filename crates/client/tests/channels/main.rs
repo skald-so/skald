@@ -566,12 +566,13 @@ struct Overtaken {
 
 /// Ada's device adds a channel by revision 3, then signs a revision 4 with another, which the server
 /// fails to store; `waiting` runs then. Bob's device then stores revision 4 with a channel of its
-/// own.
+/// own, and without `general` if `removes_general`.
 fn overtaken(
     world: &World,
     ids: [u64; 2],
     logins: [&str; 2],
     waiting: impl FnOnce(&Person),
+    removes_general: bool,
 ) -> Overtaken {
     let cloud = &world.cloud;
     let ada = world.sign_up(ids[0], logins[0], "ada-workstation");
@@ -591,6 +592,9 @@ fn overtaken(
     let bobs = issue_channel(cloud, &bob.token, space);
     let fourth = next_with(&third, (bob.device, &bob.key), |body| {
         body.channels.push(channel(bobs, &[(&bob, true)]));
+        if removes_general {
+            body.channels.retain(|kept| kept.id != general);
+        }
     });
     store(cloud, &bob.token, &fourth);
     Overtaken {
@@ -652,6 +656,7 @@ fn waiting_revision_keeps_the_space_until_it_goes_on_top_of_another_admins() {
                 "{again:?}"
             );
         },
+        false,
     );
     let (ada, space) = (&overtaken.ada, overtaken.space);
     cloud.relay.lose_answer(&store_request(space), Lose::Close);
@@ -687,6 +692,7 @@ fn waiting_revision_whose_state_accepted_the_one_that_came_first_goes_on_top_of_
         [4_120_691_801, 4_120_691_802],
         ["ada-killed-meanwhile", "bob-in-between"],
         |_| {},
+        false,
     );
     let state = rusqlite::Connection::open(overtaken.ada.machine.state_dir().join("state.sqlite3"))
         .expect("Ada's local state");
@@ -708,6 +714,39 @@ fn waiting_revision_whose_state_accepted_the_one_that_came_first_goes_on_top_of_
     let listed = channels(&overtaken.ada.machine, ACME);
 
     assert_on_top(cloud, &overtaken, &listed);
+}
+
+/// Bob's revision 4 removes Ada's channel `general`, and his revision 5 follows it. The next run on
+/// Ada's device signs its waiting channel on top of revision 5 as revision 6: `general` stays
+/// removed, since Ada's revision 4 kept it only because revision 3, the one it was signed on, had it.
+#[test]
+fn waiting_revision_goes_on_top_of_two_revisions_and_a_removed_channel_stays_removed() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let overtaken = overtaken(
+        &world,
+        [4_120_691_901, 4_120_691_902],
+        ["ada-two-behind", "bob-removes"],
+        |_| {},
+        true,
+    );
+    let Overtaken { ada, bob, .. } = &overtaken;
+    let fifth = next_with(&overtaken.fourth, (bob.device, &bob.key), |_| {});
+    store(cloud, &bob.token, &fifth);
+
+    let listed = channels(&ada.machine, ACME);
+
+    let rosters = server_rosters(cloud, &ada.token, overtaken.space);
+    assert_eq!(rosters.len(), 6, "the space's revisions: {rosters:?}");
+    let adas = assert_adds_a_channel(cloud, &fifth, &rosters[5], ada);
+    assert_eq!(
+        adas.to_string(),
+        overtaken.issued,
+        "another channel than the one issued"
+    );
+    assert_unlisted(&listed, &[overtaken.general.to_string()]);
+    assert_channel(&listed, overtaken.bobs, &[&bob.handle], &[&ada.handle]);
+    assert_channel(&listed, adas, &[&ada.handle], &[&bob.handle]);
 }
 
 /// Which answer of the server the relay loses.
