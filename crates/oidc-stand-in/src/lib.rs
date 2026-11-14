@@ -518,6 +518,36 @@ impl Provider {
             .expect("bind a local port");
         let address = listener.local_addr().expect("the stand-in's address");
         let issuer = format!("http://{address}{path}");
+        Provider::serving(runtime, listener, issuer, path, keys)
+    }
+
+    /// Serves at `listen` a provider whose issuer is `issuer`, such as `https://oidc.example.test`
+    /// in front of a TLS proxy to `listen`, for tests in other processes: the
+    /// `skald-oidc-stand-in` binary. Otherwise as [`Provider::start`].
+    pub fn serve(listen: SocketAddr, issuer: &str, keys: &[Key]) -> std::io::Result<Provider> {
+        let issuer = issuer.trim_end_matches('/');
+        let authority = issuer.split_once("://").map_or(issuer, |(_, rest)| rest);
+        let path = authority.find('/').map_or("", |slash| &authority[slash..]);
+        let runtime = runtime();
+        let listener = runtime.block_on(tokio::net::TcpListener::bind(listen))?;
+        Ok(Provider::serving(
+            runtime,
+            listener,
+            issuer.to_owned(),
+            path,
+            keys,
+        ))
+    }
+
+    /// A provider of `issuer`, its endpoints under `path`, serving on `listener`.
+    fn serving(
+        runtime: Runtime,
+        listener: tokio::net::TcpListener,
+        issuer: String,
+        path: &str,
+        keys: &[Key],
+    ) -> Provider {
+        let address = listener.local_addr().expect("the stand-in's address");
         let shared = Arc::new(Mutex::new(Served {
             issuer: issuer.clone(),
             path: path.to_owned(),

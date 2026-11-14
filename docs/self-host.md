@@ -69,6 +69,35 @@ read -rsp 'Secret key: ' key && echo "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY=$key" 
 
 At start, the server writes, reads back and deletes an object of its own there, and exits if a step fails.
 
+### Sign-in
+
+People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Anyone your providers sign in gets an account: any GitHub user, and any Google account your client's audience admits.
+
+A GitHub OAuth App, in GitHub's Settings, Developer settings, OAuth Apps, New OAuth App:
+
+- Homepage URL: `https://skald.example.com`.
+- Authorization callback URL: `https://skald.example.com/auth/github/callback`.
+
+Its client ID, and a new client secret, read without echo:
+
+```sh self-host=github
+echo 'SKALD_GITHUB_CLIENT_ID=<GitHub client ID>' >>.env
+read -rsp 'GitHub client secret: ' secret && echo "SKALD_GITHUB_CLIENT_SECRET=$secret" >>.env && unset secret
+```
+
+A Google OAuth client, in the Google Cloud console, Google Auth Platform, for a project of your own:
+
+- Data Access: the scopes `openid` and `email` (`.../auth/userinfo.email`) only.
+- Clients, Create client: the type Web application, the authorized redirect URI `https://skald.example.com/auth/google/callback`.
+- Audience: while its publishing status is Testing, only its test users sign in.
+
+Its client ID and secret, the secret read without echo:
+
+```sh self-host=google
+echo 'SKALD_GOOGLE_CLIENT_ID=<Google client ID>' >>.env
+read -rsp 'Google client secret: ' secret && echo "SKALD_GOOGLE_CLIENT_SECRET=$secret" >>.env && unset secret
+```
+
 ## Start
 
 ```sh self-host=up
@@ -87,6 +116,22 @@ With [skald](../README.md#1-install-the-client) on any machine:
 
 ```sh self-host=status
 skald status --server https://skald.example.com
+```
+
+Each provider's sign-in, on the machine in `~/skald`, without signing anyone in. The checks need `curl` and `jq` and print `pass` when every step passes.
+
+```sh self-host=github-check
+mkdir -p checks/lib
+curl -fsSL -o checks/check-github-sign-in "$SKALD_FILES/script/check-github-sign-in"
+curl -fsSL -o checks/lib/sign-in-check.sh "$SKALD_FILES/script/lib/sign-in-check.sh"
+bash checks/check-github-sign-in https://skald.example.com "$(sed -n 's/^SKALD_GITHUB_CLIENT_ID=//p' .env)"
+```
+
+```sh self-host=google-check
+mkdir -p checks/lib
+curl -fsSL -o checks/check-google-sign-in "$SKALD_FILES/script/check-google-sign-in"
+curl -fsSL -o checks/lib/sign-in-check.sh "$SKALD_FILES/script/lib/sign-in-check.sh"
+bash checks/check-google-sign-in https://skald.example.com "$(sed -n 's/^SKALD_GOOGLE_CLIENT_ID=//p' .env)"
 ```
 
 ## Behind your reverse proxy

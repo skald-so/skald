@@ -36,7 +36,8 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    # The bucket's settings pass only when .env sets them.
+    # The bucket's and the sign-in providers' settings pass only when .env sets them. No cloud limit
+    # is set: a self-hosted server applies none (docs/dev/architecture.md, "Cloud limits").
     environment:
       - SKALD_DATABASE_URL=postgres://skald:${SKALD_DATABASE_PASSWORD:?set SKALD_DATABASE_PASSWORD in .env}@postgres:5432/skald
       - SKALD_PUBLIC_URL=https://${SKALD_DOMAIN:?set SKALD_DOMAIN in .env}
@@ -45,13 +46,17 @@ services:
       - SKALD_ATTACHMENTS_BUCKET_REGION
       - SKALD_ATTACHMENTS_BUCKET_ACCESS_KEY_ID
       - SKALD_ATTACHMENTS_BUCKET_SECRET_KEY
+      - SKALD_GITHUB_CLIENT_ID
+      - SKALD_GITHUB_CLIENT_SECRET
+      - SKALD_GOOGLE_CLIENT_ID
+      - SKALD_GOOGLE_CLIENT_SECRET
     volumes:
       - attachments:/var/lib/skald/attachments
     networks: [edge, database]
 
   postgres:
     # Renovate keeps it on major version 19: renovate.json.
-    image: postgres:19rc1@sha256:4b3e4b2edcf554492dd1c5e008237208c1d6e6faf2f15c24bf5fc5c4bcf0a21d
+    image: postgres:19rc2@sha256:3c5f322ffe97481b51a1ebee693f58d0c081514d2bc3026500a9400b7428bea9
     restart: unless-stopped
     logging: *logging
     environment:
