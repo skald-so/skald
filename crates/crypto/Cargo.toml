@@ -10,6 +10,8 @@ license.workspace = true
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
+# Stateless HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM.
+hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }
 # 0.57.1 refuses too-short UpdatePaths and filters proposals correctly. `external_client` for the
 # Delivery Service and the browser, `last_resort_key_package_ext` for the last-resort KeyPackage.
 mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_package_ext"] }
@@ -19,11 +21,6 @@ mls-rs-crypto-rustcrypto = "0.23"
 skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
-
-# Builds the acceptance tests of stateless HPKE (tests/hpke/), which fail until the code they test
-# lands. Removed with the gates in tests/hpke/main.rs once it does.
-[features]
-acceptance = []
 
 # In WASM: the random generator of the browser or Node.js.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

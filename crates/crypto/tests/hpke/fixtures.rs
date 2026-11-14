@@ -8,6 +8,8 @@ use skald_proto::{
     HpkePlaintext, Unknown, signed_data,
 };
 
+pub use crate::common::{hex, hex32};
+
 /// `info` of an `hpke` payload, and the label of its signature.
 pub const INFO: &[u8] = b"skald hpke";
 pub const LABEL: &str = "skald hpke";
@@ -39,20 +41,6 @@ const PLAINTEXT: &str = "
 73223a5b7b2274657874223a22526576696577205052203132227d5d7d58405a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a";
-
-/// Bytes from hex digits; whitespace between them is skipped.
-pub fn hex(digits: &str) -> Vec<u8> {
-    let digits: String = digits.split_whitespace().collect();
-    assert_eq!(digits.len() % 2, 0, "{digits}");
-    (0..digits.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
-        .collect()
-}
-
-pub fn hex32(digits: &str) -> [u8; 32] {
-    hex(digits).try_into().unwrap()
-}
 
 /// The devices of the tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

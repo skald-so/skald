@@ -10,18 +10,9 @@ use std::collections::HashSet;
 use skald_crypto::{HpkeKey, SigningKey, check_device, issue, verify};
 use skald_proto::{AccountId, Cbor, Cert, CertBody, DeviceId, DeviceKind, Unknown};
 
-/// Bytes from hex digits.
-fn hex(digits: &str) -> Vec<u8> {
-    assert_eq!(digits.len() % 2, 0, "{digits}");
-    (0..digits.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&digits[at..at + 2], 16).unwrap())
-        .collect()
-}
+mod common;
 
-fn hex32(digits: &str) -> [u8; 32] {
-    hex(digits).try_into().unwrap()
-}
+use common::{hex, hex32};
 
 fn hex64(digits: &str) -> [u8; 64] {
     hex(digits).try_into().unwrap()
