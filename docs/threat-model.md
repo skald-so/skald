@@ -178,7 +178,7 @@ An admin of a space, with valid devices.
 - Sign revisions: add and remove members, admins included, change roles, exclude a member's devices, add channels and channel members, add service agents on members' accounts ([Roster](protocol/membership.md#roster)).
 - Add itself to any channel of the space with history access, and read its earlier history ([Roster](protocol/membership.md#roster), [Access](protocol/membership.md#access)).
 - Replace a member's `master` in the roster, so other members accept devices certified under the new key as that member's ([Roster](protocol/membership.md#roster), [Device checks](protocol/membership.md#device-checks)).
-- Change the policy: the ceilings of `peer` and `service` tasks, `full` included, and the history key's longest age, down to one day ([Policy](protocol/membership.md#policy)).
+- Change the policy: the ceilings of `peer` and `service` tasks, `full` included, the history key's longest age, down to one day, and the most waking delivery mode per trust level, so that messages wake no session until its agent calls `inbox` ([Policy](protocol/membership.md#policy)).
 - Sign team templates for the space ([Templates](protocol/queues.md#templates)).
 - Sign invites with any role and channels ([Invite](protocol/membership.md#invite)), and grants that let `service` devices send in channels ([Service grant](protocol/README.md#service-grant)).
 - Change any queue of the space, delete any but `default`, and restart or cancel any of its tasks ([Queues](protocol/queues.md#queues), [Task states](protocol/queues.md#task-states)).
@@ -243,14 +243,14 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 
 ## The server sees
 - accounts: sign-in methods and usernames;
-- the roster: members, roles, devices and service agents of each space, and the devices of each channel;
+- the roster: members, roles, devices and service agents of each space, the devices of each channel, and the space's policy, its wake ceilings included;
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
 - IP addresses and times of connections;
 - queue names and settings, task templates;
 - when presence changes, and its size in steps of 4 KB, not its value;
-- notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question;
+- notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question; for an invalid result, which task's result failed the check, as it follows that task's `done` and its result;
 - space, channel and device identifiers;
 - which device messages whom;
 - message size and time;
