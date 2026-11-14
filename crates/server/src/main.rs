@@ -114,7 +114,7 @@ struct Cli {
     )]
     device_code_lifetime: u64,
 
-    /// The least time between a device flow's polls; a poll sooner answers slow_down.
+    /// The least time between a device flow's polls; a poll more than 1 s sooner answers slow_down.
     #[arg(
         long,
         env = "SKALD_DEVICE_POLL_INTERVAL",

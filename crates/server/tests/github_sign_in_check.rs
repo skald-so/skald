@@ -427,6 +427,21 @@ fn check_fails_at_polling_when_it_answers_anything_but_pending() {
 }
 
 #[test]
+fn check_prints_its_lines_while_sigchld_interrupts_its_writes() {
+    let stage = Stage::start();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let nothing = format!("http://{}", listener.local_addr().expect("local address"));
+    drop(listener);
+    let run = |case: &str, address: &str| {
+        let github = [("GITHUB_URL", stage.stand.github.url())];
+        check::run_script_signalled(case, CHECK, &[address, CLIENT_ID], &github)
+    };
+
+    run("a server with GitHub sign-in", stage.address()).assert_passes();
+    run("nothing listens", &nothing).assert_fails_at(Step::DeviceAuthorization);
+}
+
+#[test]
 fn check_prints_no_user_or_device_code() {
     let stage = Stage::start();
 
