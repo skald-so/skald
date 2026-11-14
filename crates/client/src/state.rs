@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use skald_proto::{DeviceId, SpaceId};
+use skald_proto::{ChannelId, DeviceId, MessageId, SpaceId};
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
@@ -81,6 +81,23 @@ const MIGRATIONS: &[&str] = &[
         folder TEXT PRIMARY KEY,
         hash BLOB NOT NULL CHECK (length(hash) = 32)
     ) STRICT",
+    // The outbox: each envelope the device sealed that the server has not answered yet, in the
+    // order it goes out, by its message ID and recipient device, with its space and its bytes; and
+    // the last `counter` the device gave content to each recipient device in each channel.
+    "CREATE TABLE outbox (
+        position INTEGER PRIMARY KEY,
+        msg_id TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        space TEXT NOT NULL,
+        envelope BLOB NOT NULL,
+        UNIQUE (msg_id, recipient)
+    ) STRICT;
+    CREATE TABLE send_counter (
+        channel TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        last INTEGER NOT NULL CHECK (last >= 1),
+        PRIMARY KEY (channel, recipient)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -180,6 +197,16 @@ pub struct Accepted {
     pub last: Vec<u8>,
     /// The hash of each earlier accepted revision, by number.
     pub hashes: BTreeMap<u64, [u8; 32]>,
+}
+
+/// An envelope in the outbox.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outgoing {
+    pub msg_id: MessageId,
+    pub recipient: DeviceId,
+    pub space: SpaceId,
+    /// Its bytes, as they are sent every time.
+    pub envelope: Vec<u8>,
 }
 
 /// Why the state cannot be used.
@@ -586,6 +613,106 @@ impl State {
         self.db.execute(
             "INSERT OR REPLACE INTO approved_config (folder, hash) VALUES (?1, ?2)",
             params![folder, hash.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// The last `counter` the device gave content to each of `recipients` in `channel`; 0 for one
+    /// it gave none.
+    pub fn counters(&self, channel: ChannelId, recipients: &[DeviceId]) -> Result<Vec<u64>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT last FROM send_counter WHERE channel = ?1 AND recipient = ?2")?;
+        recipients
+            .iter()
+            .map(|recipient| {
+                let last: Option<i64> = query
+                    .query_row(params![channel.to_string(), recipient.to_string()], |row| {
+                        row.get(0)
+                    })
+                    .optional()?;
+                let last = last.unwrap_or(0);
+                u64::try_from(last).map_err(|_| Error::Malformed(format!("the counter {last}")))
+            })
+            .collect()
+    }
+
+    /// Adds `outgoing`, the envelopes of one message in `channel`, to the outbox, after those in
+    /// it, and records `counter`, the counter each one's content has, as its recipient's last in
+    /// `channel`, all at once. Adds nothing and gives `false` if a counter is not the one after
+    /// the recipient's last: another run took it meanwhile.
+    pub fn enqueue(&self, channel: ChannelId, outgoing: &[(Outgoing, u64)]) -> Result<bool, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let channel = channel.to_string();
+        for (envelope, counter) in outgoing {
+            let counter = i64::try_from(*counter)
+                .map_err(|_| Error::Malformed(format!("the counter {counter}")))?;
+            let recipient = envelope.recipient.to_string();
+            let changed = if counter == 1 {
+                tx.execute(
+                    "INSERT INTO send_counter (channel, recipient, last) VALUES (?1, ?2, 1)
+                     ON CONFLICT DO NOTHING",
+                    params![channel, recipient],
+                )?
+            } else {
+                tx.execute(
+                    "UPDATE send_counter SET last = ?3
+                     WHERE channel = ?1 AND recipient = ?2 AND last = ?3 - 1",
+                    params![channel, recipient, counter],
+                )?
+            };
+            if changed == 0 {
+                return Ok(false);
+            }
+            tx.execute(
+                "INSERT INTO outbox (msg_id, recipient, space, envelope) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    envelope.msg_id.to_string(),
+                    recipient,
+                    envelope.space.to_string(),
+                    envelope.envelope
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The envelopes in the outbox, in the order they go out.
+    pub fn outbox(&self) -> Result<Vec<Outgoing>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT msg_id, recipient, space, envelope FROM outbox ORDER BY position")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (msg_id, recipient, space, envelope) = row?;
+            let malformed = |what: &str, id: &str| Error::Malformed(format!("the {what} {id:?}"));
+            Ok(Outgoing {
+                msg_id: msg_id
+                    .parse()
+                    .map_err(|_| malformed("message ID", &msg_id))?,
+                recipient: recipient
+                    .parse()
+                    .map_err(|_| malformed("device ID", &recipient))?,
+                space: space.parse().map_err(|_| malformed("space ID", &space))?,
+                envelope,
+            })
+        })
+        .collect()
+    }
+
+    /// Takes the envelope of `msg_id` to `recipient` out of the outbox: the server answered it.
+    pub fn remove_outgoing(&self, msg_id: MessageId, recipient: DeviceId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM outbox WHERE msg_id = ?1 AND recipient = ?2",
+            params![msg_id.to_string(), recipient.to_string()],
         )?;
         Ok(())
     }
@@ -1062,6 +1189,55 @@ mod tests {
         assert!(
             matches!(error, Error::Newer(version) if version == newer),
             "{error:?}"
+        );
+    }
+
+    #[test]
+    fn outbox_keeps_its_envelopes_in_order_and_takes_each_counter_once() {
+        let dir = TestDir::new("state-outbox");
+        let state = State::open(&dir).unwrap();
+        let (channel, space) = (ChannelId::generate(), SpaceId::generate());
+        let (bob, carol) = (
+            DeviceId::from_signing_key(&[1; 32]),
+            DeviceId::from_signing_key(&[2; 32]),
+        );
+        let outgoing = |msg_id, recipient, envelope: &[u8]| Outgoing {
+            msg_id,
+            recipient,
+            space,
+            envelope: envelope.to_vec(),
+        };
+        let (first, second) = (MessageId::generate(), MessageId::generate());
+        assert_eq!(state.counters(channel, &[bob, carol]).unwrap(), [0, 0]);
+
+        let both = [
+            (outgoing(first, bob, b"1b"), 1),
+            (outgoing(first, carol, b"1c"), 1),
+        ];
+        assert!(state.enqueue(channel, &both).unwrap());
+        // A message with a counter another run took, or one that is not the next: nothing of it
+        // is added.
+        for wrong in [1, 3] {
+            let message = [
+                (outgoing(second, carol, b"2c"), 2),
+                (outgoing(second, bob, b"2b"), wrong),
+            ];
+            assert!(!state.enqueue(channel, &message).unwrap(), "{wrong}");
+        }
+        assert_eq!(state.counters(channel, &[bob, carol]).unwrap(), [1, 1]);
+        assert!(
+            state
+                .enqueue(channel, &[(outgoing(second, bob, b"2b"), 2)])
+                .unwrap()
+        );
+        assert_eq!(state.counters(channel, &[bob, carol]).unwrap(), [2, 1]);
+        assert_eq!(state.counters(ChannelId::generate(), &[bob]).unwrap(), [0]);
+
+        state.remove_outgoing(first, bob).unwrap();
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.outbox().unwrap(),
+            [outgoing(first, carol, b"1c"), outgoing(second, bob, b"2b")]
         );
     }
 

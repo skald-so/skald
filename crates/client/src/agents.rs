@@ -105,13 +105,8 @@ pub fn address(
             body.name
         )));
     };
-    let server = server_name(&mut synced.follower.connection)?.ok_or_else(|| {
-        no_address(
-            "the server of this machine's session has no valid name for addresses, such as when \
-             its public address has an IP address as its host"
-                .to_owned(),
-        )
-    })?;
+    let server = server_name(&mut synced.follower.connection)?
+        .ok_or_else(|| no_address(NO_SERVER_NAME.to_owned()))?;
     let address = Address::new(
         body.name.clone(),
         member.handle.clone(),
@@ -122,8 +117,13 @@ pub fn address(
     Ok(())
 }
 
+/// What a run says when the server of the machine's session has no valid name.
+pub const NO_SERVER_NAME: &str = "the server of this machine's session has no valid name for \
+                                  addresses, such as when its public address has an IP address \
+                                  as its host";
+
 /// The name of the server `connection` reaches, if it has a valid one.
-fn server_name(connection: &mut Connection) -> Result<Option<ServerName>, String> {
+pub fn server_name(connection: &mut Connection) -> Result<Option<ServerName>, String> {
     let body = connection.get(SERVER_PATH).map_err(text)?;
     let unexpected = |err: String| format!("unexpected answer from the server to its name: {err}");
     let server: Server =

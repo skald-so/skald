@@ -22,8 +22,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
-    AccountId, Cbor as _, Cert, Channel, DeviceId, Name, Role, Roster, RosterBody, SpaceId,
-    VersionRange,
+    AccountId, Cbor as _, Cert, Channel, ChannelId, DeviceId, Name, Role, Roster, RosterBody,
+    SpaceId, VersionRange,
 };
 
 use crate::connection::{self, Connection, Method, printable};
@@ -375,7 +375,7 @@ impl Follower {
     }
 
     /// The device's keys.
-    fn keys(&self) -> Result<device::Keys, String> {
+    pub fn keys(&self) -> Result<device::Keys, String> {
         device::known_keys(&self.stored, Some(&self.device))
             .map_err(text)?
             .ok_or_else(|| device::Error::MissingKeys.to_string())
@@ -691,6 +691,50 @@ pub fn synced(
         space,
         roster,
         devices,
+    })
+}
+
+/// The space of the channel `channel` that the device of the machine whose state is in `dir`, its
+/// secrets in `storage`, follows, synced ([`Follower::sync`]); within `scope`. The spaces whose
+/// last accepted revision has the channel are synced first, then, while none has it, the others.
+pub fn of_channel(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    channel: ChannelId,
+    scope: Scope,
+) -> Result<Synced, String> {
+    let mut follower =
+        follower(dir, storage, speaks, timeout, scope)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
+    let mut spaces: Vec<state::Space> = follower
+        .state
+        .spaces()
+        .map_err(text)?
+        .into_iter()
+        .filter(|space| !scope.excludes(space.id))
+        .collect();
+    let has = |roster: &Roster| roster.body().channels.iter().any(|it| it.id == channel);
+    spaces.sort_by_key(|space| {
+        !follow::decode(&space.accepted, &space.name).is_ok_and(|roster| has(&roster))
+    });
+    for space in spaces {
+        let (roster, devices) = follower.sync(&space)?;
+        if has(&roster) {
+            return Ok(Synced {
+                follower,
+                space,
+                roster,
+                devices,
+            });
+        }
+    }
+    Err(match scope {
+        Scope::All => format!("no space this device follows has the channel {channel}"),
+        Scope::Only(_) => format!(
+            "the space of the agent's folder has no channel {channel}: as an agent, skald sends \
+             only to its channels"
+        ),
     })
 }
 
