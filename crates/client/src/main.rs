@@ -13,6 +13,8 @@ mod spaces;
 mod state;
 #[cfg(test)]
 mod test_dir;
+#[cfg(test)]
+mod test_dir_tests;
 mod tls;
 mod update;
 

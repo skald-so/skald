@@ -8,7 +8,7 @@
 //! Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, behind
 //! the recording relay, which rewrites the revisions and devices the server gives, as a compromised
 //! server would; a test plays the person on the verification page in headless Chrome. Each machine
-//! keeps its state in a directory of its own and its secrets in the 0600 file there. The tests sign
+//! keeps its state in a directory of its own and its secrets in a file there. The tests sign
 //! fixture revisions with the keys of the machines' devices, read from their secrets files, and
 //! store the valid ones on the server through the API, as an admin's device would.
 //!
