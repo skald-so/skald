@@ -409,6 +409,7 @@ A channel is an MLS group [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)] w
 - Credential: `basic`, its `identity` the 16-byte device ID. A leaf's `signature_key` MUST equal the `signing` key of the device's certificate, so `identity` is the ID derived from `signature_key`.
 - Members: `client` devices and `service` devices that keep state. A `browser` and a stateless `service` device are never members.
 - Application messages are PrivateMessages. Proposals and Commits are PublicMessages, so the server knows each epoch's member devices.
+- Forward secrecy: a device deletes a message's key once it decrypts the message. It keeps the secrets of the 3 epochs before its current one, for messages stored after a Commit their sender had not processed yet ([Order](delivery.md#order)), and deletes older ones. Within an epoch it keeps the keys of skipped messages up to 1024 generations ahead, until it deletes that epoch's secrets.
 - Each Commit's sender uploads the GroupInfo of the new epoch, with the `ratchet_tree` and `external_pub` extensions, over HTTPS. Any member device of the current epoch uploads one if the server has none. The server keeps the latest.
 
 ### Admitted devices

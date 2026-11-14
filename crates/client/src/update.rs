@@ -13,6 +13,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::connection::printable;
+use crate::plain_path::plain;
 use crate::tls::Roots;
 
 /// The base URL of GitHub's REST API.
@@ -156,8 +157,10 @@ fn unpack_tar_gz(archive: &[u8], binary: &str) -> io::Result<Option<Vec<u8>>> {
 /// each fail after `timeout` without progress, and installs it when it is newer than this skald.
 pub fn run(api: &str, timeout: Duration) -> Result<(), String> {
     let running = env!("CARGO_PKG_VERSION");
+    // As people write the path: it shows in errors.
     let exe = std::env::current_exe()
         .and_then(fs::canonicalize)
+        .map(|exe| plain(&exe))
         .map_err(|err| format!("cannot find the running skald: {err}"))?;
     if exe.with_file_name(NPM_MARKER).exists() {
         return Err(format!(

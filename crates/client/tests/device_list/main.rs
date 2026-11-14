@@ -3,7 +3,7 @@
 //! "Device checks"). Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on
 //! PostgreSQL, behind the recording relay, which also rewrites what the server gives, as a
 //! compromised server would; a test plays the person on the verification page in headless Chrome.
-//! Each machine keeps its state in a directory of its own and its secrets in the 0600 file there.
+//! Each machine keeps its state in a directory of its own and its secrets in a file there.
 //!
 //! The CLI, as these tests use it:
 //! - `skald devices`: lists the devices of the account the machine signed in to, from the server of
