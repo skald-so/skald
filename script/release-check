@@ -8,8 +8,9 @@
 #   npx: `npx skald-so@<version>` runs skald, which prints the release's version;
 #   skald update: for a stable release with an earlier one, the release published before it, a beta
 #     included, the skald that release's installer installs updates itself with `skald update`, then
-#     prints the release's version. skald update asks GitHub's API without a token, so a runner's
-#     shared address can use up its rate limit: before it, and once more if it answers 403, the check
+#     prints the release's version. skald update runs without GITHUB_TOKEN and GH_TOKEN, as a user
+#     without a token runs it, so it asks GitHub's API without one, and a runner's shared address
+#     can use up its rate limit: before it, and once more if it answers 403, the check
 #     reads the limit, which costs none of it, and when none is left waits for its reset, if that is
 #     at most 20 minutes away, and runs it again; a later reset fails the step naming the limit;
 #   the verifications: the release is immutable; every file of the release matches its checksum, if
@@ -205,14 +206,15 @@ api_limit() {
   if ((left >= 0)); then sleep $((left + 1)); fi
   waited=true
 }
-# update <skald>: <skald> updates itself with skald update, run once more after a wait for the rate
-# limit if it answers 403; 1, with the step failed, if it does not.
+# update <skald>: <skald> updates itself with skald update, without a token, run once more after a
+# wait for the rate limit if it answers 403 or names GitHub's API limit; 1, with the step failed, if
+# it does not.
 update() {
   api_limit || return 1
-  run "$1" update && return 0
-  if grep -qw 403 "$tmp/output"; then
+  run env -u GITHUB_TOKEN -u GH_TOKEN "$1" update && return 0
+  if grep -qE "(^|[^0-9])403([^0-9]|\$)|GitHub's API limit" "$tmp/output"; then
     api_limit || return 1
-    if $waited; then run "$1" update && return 0; fi
+    if $waited; then run env -u GITHUB_TOKEN -u GH_TOKEN "$1" update && return 0; fi
   fi
   fail "skald update" "skald update of the skald of $earlier failed"
   return 1
