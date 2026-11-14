@@ -25,7 +25,8 @@ Versions as of 2026-11-09.
 | Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |
 | Web styles | CSS Modules; theme tokens are CSS custom properties with `light-dark()`, following the system setting |
 | Web fonts | Fontsource 5 variable packages: Inter, Space Grotesk, JetBrains Mono; bundled with the build |
-| Web accessibility check | axe-core 4 over the kit page in headless Chrome, driven by playwright-core 1 |
+| Browser tests | Chrome Headless Shell of playwright-core 1; in the crates' tests, one per test binary, a browser context per page |
+| Web accessibility check | axe-core 4 over the kit page in Chrome Headless Shell |
 | Web screenshot comparison | The kit page in the Chromium of the Playwright Docker image (linux/amd64, pinned by digest) on every machine; pixelmatch 8 compares with the references, anti-aliasing aside |
 | In-browser decryption | WASM build of the Rust core: `proto` and `crypto` for `wasm32-unknown-unknown`. There getrandom 0.4 with `wasm_js` takes the random generator of the browser or Node.js, and js-sys 0.3 JavaScript's clock for UUIDv7 IDs. wasm-bindgen-test 0.3 runs the tests there |
 | SDK | Rust |
