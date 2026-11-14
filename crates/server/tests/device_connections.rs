@@ -41,6 +41,7 @@ use common::{Response, Server, WebSocket, send};
 use skald_crypto::SigningKey;
 use skald_proto::{CertBody, DeviceId, DeviceKind, PROTOCOL_VERSION, VERSION_HEADER};
 use tungstenite::Message;
+use tungstenite::protocol::CloseFrame;
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 
@@ -667,20 +668,15 @@ fn taken_connection_closes_with_the_closing_handshake() {
     let mut socket = connect_as(&flow, &ada, &challenge(&flow, &ada.machine.token));
     assert_connection_taken(&flow.stand.server, &mut socket);
 
-    socket.close(None).expect("send a close");
+    let close = CloseFrame {
+        code: CloseCode::Normal,
+        reason: "done".into(),
+    };
+    socket.close(Some(close)).expect("send a close");
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match socket.read() {
-            Ok(Message::Close(_) | Message::Ping(_) | Message::Pong(_)) => {}
-            Ok(message) => panic!("a frame after the close: {message:?}"),
-            Err(tungstenite::Error::ConnectionClosed) => break,
-            Err(tungstenite::Error::Io(err))
-                if matches!(
-                    err.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) && Instant::now() < deadline => {}
-            Err(err) => panic!("close: {err}"),
-        }
-    }
+    let closed = closing(&mut socket, CLOSE_WITHIN);
+    assert!(
+        matches!(closed, Some(Closed::Frame(CloseCode::Normal, _))),
+        "{closed:?}"
+    );
 }
