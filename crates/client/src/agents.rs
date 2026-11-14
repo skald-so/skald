@@ -54,7 +54,7 @@ pub fn spaces(
     timeout: Duration,
 ) -> Result<(), String> {
     match folders::working_space(dir) {
-        Ok((_, space)) => spaces::list(dir, storage, speaks, timeout, Scope::Only(space.id)),
+        Ok(space) => spaces::list(dir, storage, speaks, timeout, Scope::Only(space.id)),
         Err(why) => {
             println!("This agent sees no space: {why}.");
             Ok(())
@@ -70,7 +70,7 @@ pub fn scope(dir: &Path, name: &str, agent: bool) -> Result<Scope, String> {
         return Ok(Scope::All);
     }
     match folders::working_space(dir) {
-        Ok((_, space)) if space.name == name => Ok(Scope::Only(space.id)),
+        Ok(space) if space.name == name => Ok(Scope::Only(space.id)),
         _ => Err(OUT_OF_SCOPE.to_owned()),
     }
 }
@@ -86,7 +86,7 @@ pub fn address(
     timeout: Duration,
 ) -> Result<(), String> {
     let no_address = |why: String| format!("the agent {agent} has no address: {why}");
-    let (_, space) = folders::working_space(dir).map_err(no_address)?;
+    let space = folders::working_space(dir).map_err(no_address)?;
     let mut synced = spaces::synced(
         dir,
         storage,
