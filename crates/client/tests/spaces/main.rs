@@ -13,6 +13,8 @@
 //!   same space;
 //! - `skald spaces`: lists the spaces the device accepted a revision of, one line per space, holding
 //!   the space's name, the account's role in it (`admin` or `member`) and its handle.
+//!
+//! Each account also has its personal space, which its first machine takes at sign-in.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -66,6 +68,9 @@ struct Account {
     machine: Machine,
     /// The machine's session token.
     token: String,
+    /// The account's personal space, the one space the server gives it after the sign-in: its ID
+    /// and name.
+    personal: (SpaceId, String),
 }
 
 /// A server whose codes live for 2 minutes and poll every second, and a browser for the person.
@@ -78,11 +83,26 @@ fn account(cloud: &Cloud, browser: &Browser, id: u64, login: &str, host: &str) -
     let user = cloud.user(id, login);
     let (machine, signed_in) = cloud.first_machine(&browser.page(), &user, host);
     assert!(signed_in.success, "{signed_in:?}");
+    let token = cloud.last_token();
+    let found = server_spaces(cloud, &token);
+    assert_eq!(found.len(), 1, "no one personal space: {found:?}");
     Account {
         user,
         machine,
-        token: cloud.last_token(),
+        personal: found[0].clone(),
+        token,
     }
+}
+
+/// The spaces the server gives `account`, its personal space left out.
+fn team_spaces(cloud: &Cloud, account: &Account) -> Vec<(SpaceId, String)> {
+    let mut found = server_spaces(cloud, &account.token);
+    assert!(
+        found.contains(&account.personal),
+        "no personal space: {found:?}"
+    );
+    found.retain(|space| *space != account.personal);
+    found
 }
 
 /// Runs `skald create-space <name>` on `machine`.
@@ -163,18 +183,18 @@ fn username_of(cloud: &Cloud, token: &str) -> String {
         .to_owned()
 }
 
-/// Fails unless the server gives `account` exactly one space, `name`, with exactly one revision: a
-/// revision 1 of the space, signed by the account's one device, which passes the checks of a new
-/// space's revision against the account's master key, with the account the only member and admin,
-/// with `handle` and that master key, no service agents or channels and a new space's policy. Gives
-/// the space and the revision's bytes.
+/// Fails unless the server gives `account` exactly one space beside its personal space, `name`,
+/// with exactly one revision: a revision 1 of the space, signed by the account's one device, which
+/// passes the checks of a new space's revision against the account's master key, with the account
+/// the only member and admin, with `handle` and that master key, no service agents or channels and
+/// a new space's policy. Gives the space and the revision's bytes.
 fn assert_one_first_revision(
     cloud: &Cloud,
     account: &Account,
     name: &str,
     handle: &str,
 ) -> (SpaceId, Vec<u8>) {
-    let found = server_spaces(cloud, &account.token);
+    let found = team_spaces(cloud, account);
     assert_eq!(found.len(), 1, "the account's spaces: {found:?}");
     let (space, found_name) = found[0].clone();
     assert_eq!(found_name, name);
@@ -300,7 +320,7 @@ fn spaces_lists_each_space_the_device_created() {
         assert!(created.success, "{name}: {created:?}");
     }
 
-    let found = server_spaces(&cloud, &ada.token);
+    let found = team_spaces(&cloud, &ada);
     let mut names: Vec<&str> = found.iter().map(|(_, name)| name.as_str()).collect();
     names.sort_unstable();
     assert_eq!(names, ["acme", "globex"]);
@@ -333,7 +353,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
         }
     };
     assert_eq!(cloud.relay.lost(), 1, "the server never answered {request}");
-    let created = server_spaces(&cloud, &ada.token);
+    let created = team_spaces(&cloud, &ada);
     assert_eq!(created.len(), 1, "the server created no space: {created:?}");
     let taken = server_revisions(&cloud, &ada.token, created[0].0);
     if request == STORE {
@@ -391,7 +411,7 @@ fn revision_1_answer_lost_with_the_cli_killed_is_recovered_by_the_next_run() {
 }
 
 /// A name another account's space has creates nothing: the run fails saying why, the account gets
-/// no space and lists none, and the other space keeps its one revision.
+/// no space beside its personal space and lists none, and the other space keeps its one revision.
 #[test]
 fn taken_name_creates_nothing_and_says_why() {
     let (cloud, browser) = setup();
@@ -421,14 +441,14 @@ fn taken_name_creates_nothing_and_says_why() {
         "it does not say why: {refused:?}"
     );
     assert_eq!(cloud.count_sent(since, STORE), 0, "a revision was sent");
-    assert_eq!(server_spaces(&cloud, &ada.token), Vec::new());
+    assert_eq!(team_spaces(&cloud, &ada), Vec::new());
     assert_eq!(line_of(&spaces(&ada.machine), "globex"), None);
     let (_, still) = assert_one_first_revision(&cloud, &bob, "globex", &bob_handle);
     assert_eq!(still, bob_revision, "the other space's revision changed");
 }
 
 /// A name that is no valid `name` of an agent address creates nothing: the run fails saying why,
-/// and the account gets no space and lists none.
+/// and the account gets no space beside its personal space and lists none.
 #[test]
 fn invalid_name_creates_nothing_and_says_why() {
     let (cloud, browser) = setup();
@@ -461,7 +481,7 @@ fn invalid_name_creates_nothing_and_says_why() {
             0,
             "{name:?}: a revision sent"
         );
-        assert_eq!(server_spaces(&cloud, &ada.token), Vec::new(), "{name:?}");
+        assert_eq!(team_spaces(&cloud, &ada), Vec::new(), "{name:?}");
     }
     let listed = spaces(&ada.machine);
     for name in invalid {
@@ -470,7 +490,8 @@ fn invalid_name_creates_nothing_and_says_why() {
 }
 
 /// A device of the account without a certificate creates nothing: the run fails saying the device
-/// is not linked yet and sends no request to create a space; the account gets no space.
+/// is not linked yet and sends no request to create a space; the account gets no space beside its
+/// personal space.
 #[test]
 fn device_without_a_certificate_creates_nothing_and_says_it_is_not_linked() {
     let (cloud, browser) = setup();
@@ -501,8 +522,8 @@ fn device_without_a_certificate_creates_nothing_and_says_it_is_not_linked() {
     );
     assert_eq!(cloud.count_sent(since, CREATE), 0, "a space was requested");
     assert_eq!(cloud.count_sent(since, STORE), 0, "a revision was sent");
-    assert_eq!(server_spaces(&cloud, &token), Vec::new());
-    assert_eq!(server_spaces(&cloud, &ada.token), Vec::new());
+    assert_eq!(server_spaces(&cloud, &token), vec![ada.personal.clone()]);
+    assert_eq!(team_spaces(&cloud, &ada), Vec::new());
 }
 
 /// A GitHub login that is no valid `name` gives a valid handle: the account's username, which the

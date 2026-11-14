@@ -74,6 +74,17 @@ fn another_spaces_name_is_refused() {
     assert_eq!(team.alice.session.revisions(team.space), vec![revision]);
 }
 
+/// Its own personal space's name, before the space has a revision, does not give the account its
+/// personal space as a team space.
+#[test]
+fn the_personal_spaces_name_is_refused_to_its_own_account() {
+    let flow = DeviceFlow::start();
+    let alice = Person::new(&flow, 3_120_800_031, "alice");
+    let (_, name) = alice.session.personal();
+
+    assert_refused(&alice.session.create(&name), "the personal space's name");
+}
+
 #[test]
 fn creating_a_space_needs_a_session() {
     let flow = DeviceFlow::start();

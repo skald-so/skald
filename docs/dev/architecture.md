@@ -34,6 +34,11 @@
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
 - **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
 - **Handle:** a space creator's handle is its account's username, as the server gives it when the space is created.
+- **Personal space:**
+  - each account has one, which it owns; the server creates it at the account's first request for it;
+  - its name is the account's username, numbered as a username is when another space has that name: [Data model](#data-model);
+  - the account's first device signs its revision 1 once the server has taken the device's certificate, and pins it as its personal space in its local state;
+  - a device never takes a personal space from the server's word; one that signed no personal space's revision 1 has none.
 - **Invite:**
   - an admin's device signs it: [protocol spec](../protocol/membership.md#invite);
   - its secret travels only in the link's fragment and never reaches the server;
