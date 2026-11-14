@@ -4,6 +4,11 @@
 //! and last accepted revision; it is written before it is sent and sent again on later runs until
 //! the server takes it. Listing spaces or their members first accepts the revisions the server has
 //! ([`crate::follow`]).
+//!
+//! A later revision the device signs is written before it is sent too. Any command that uses the
+//! space sends it again first, until the server takes it; only then does it count as accepted, and
+//! until then the space stays at its last accepted revision. When another revision came first, the
+//! device accepts the new revisions, applies its change to the latest and signs again.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -12,12 +17,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
-    AccountId, Cbor as _, Cert, DeviceId, Name, Role, Roster, RosterBody, SpaceId, VersionRange,
+    AccountId, Cbor as _, Cert, Channel, DeviceId, Name, Role, Roster, RosterBody, SpaceId,
+    VersionRange,
 };
 
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
-use crate::devices::{self, signed_in, signed_in_with_secrets, text, to_session};
+use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::follow::{self, Own, SpaceDevices};
 use crate::secrets;
 use crate::sign_in;
@@ -27,7 +33,11 @@ use crate::state::{self, Link, State};
 const NOT_LINKED: &str = "this device is not linked yet: it holds no certificate signed by the \
                           account's master key, so it creates no space";
 
-/// What `skald members` says on a machine without a certified device.
+/// What a run says when another run changed the space meanwhile.
+pub const CHANGED_MEANWHILE: &str =
+    "another skald run changed the space meanwhile; run the command again";
+
+/// What a command that uses a space says on a machine without a certified device.
 const NOT_FOLLOWING: &str = "this device is not linked yet: it holds no certificate signed by the \
                              account's master key, so it follows no space";
 
@@ -64,7 +74,8 @@ pub fn create(
 
     let mut existing = None;
     for space in state.spaces().map_err(text)? {
-        if let Some(pending) = &space.pending {
+        // A later revision waits for a command that uses its space.
+        if let Some(pending) = space.pending.as_ref().filter(|_| space.first_waits()) {
             send(
                 &mut connection,
                 &state,
@@ -79,7 +90,7 @@ pub fn create(
     }
     if let Some(space) = existing {
         let roster = follow::decode(&space.anchor, &space.name)?;
-        println!("{}", created(&roster, space.pending.is_none()));
+        println!("{}", created(&roster, !space.first_waits()));
         return Ok(());
     }
 
@@ -212,14 +223,9 @@ fn send(
     (id, name): (SpaceId, &str),
     pending: &[u8],
 ) -> Result<(), String> {
-    let request = serde_json::json!({ "revision": URL_SAFE_NO_PAD.encode(pending) }).to_string();
-    let path = format!("/spaces/{id}/revisions");
-    match connection.send_json_as(Method::Post, &path, token, request.as_bytes()) {
-        Ok(_) => state.set_taken(id).map_err(text),
-        Err(connection::Error::Refused {
-            status: 400 | 403 | 404 | 409,
-            detail,
-        }) => {
+    match post_revision(connection, token, id, pending) {
+        Sent::Taken => state.clear_pending(id, pending).map_err(text),
+        Sent::Conflict(detail) | Sent::Refused(detail) => {
             state.remove_space(id).map_err(text)?;
             Err(format!(
                 "the server refused revision 1 of the space {name}: {}; this device dropped the \
@@ -227,22 +233,60 @@ fn send(
                 printable(&detail)
             ))
         }
-        Err(err) => Err(format!(
+        Sent::Failed(err) => Err(format!(
             "{err}; the space {name} waits for the server to take its revision 1: run skald \
              create-space {name} again"
         )),
     }
 }
 
+/// What the server did with a revision the device sent.
+enum Sent {
+    Taken,
+    /// It holds another revision with its number, or none before it; with the server's detail.
+    Conflict(String),
+    /// It refuses the revision, saying why.
+    Refused(String),
+    /// It did not answer, or failed.
+    Failed(String),
+}
+
+/// `POST /spaces/<id>/revisions`: sends `revision`, in CBOR, as the session `token`.
+fn post_revision(connection: &mut Connection, token: &str, id: SpaceId, revision: &[u8]) -> Sent {
+    let request = serde_json::json!({ "revision": URL_SAFE_NO_PAD.encode(revision) }).to_string();
+    let path = format!("/spaces/{id}/revisions");
+    match connection.send_json_as(Method::Post, &path, token, request.as_bytes()) {
+        Ok(_) => Sent::Taken,
+        Err(connection::Error::Refused {
+            status: 409,
+            detail,
+        }) => Sent::Conflict(detail),
+        Err(connection::Error::Refused {
+            status: 400 | 403 | 404,
+            detail,
+        }) => Sent::Refused(detail),
+        Err(err) => Sent::Failed(err.to_string()),
+    }
+}
+
+/// Why a revision the device signed after revision 1 is not on the server.
+pub struct Unsent {
+    /// Whether it waits for a later command to send it again; otherwise the device dropped it.
+    pub waits: bool,
+    pub why: String,
+}
+
 /// What a signed-in machine with a certified device follows its spaces with: its local state, a
-/// connection to the server of its session, the session token, its account with the master key it
-/// pinned, and its device.
-struct Follower {
-    state: State,
-    connection: Connection,
-    token: String,
-    own: Own,
-    this: DeviceId,
+/// connection to the server of its session, the session token and its secrets, its account with
+/// the master key it pinned, and its device.
+pub struct Follower {
+    pub state: State,
+    pub connection: Connection,
+    pub token: String,
+    stored: secrets::Map,
+    pub own: Own,
+    device: state::Device,
+    pub this: DeviceId,
 }
 
 impl Follower {
@@ -254,7 +298,7 @@ impl Follower {
         speaks: VersionRange,
         timeout: Duration,
     ) -> Result<Option<Self>, String> {
-        let (state, server, token) = signed_in(dir, storage)?;
+        let (state, server, token, stored) = signed_in_with_secrets(dir, storage)?;
         let Some((device, master, cert)) = certified(&state)? else {
             return Ok(None);
         };
@@ -263,16 +307,56 @@ impl Follower {
             state,
             connection,
             token,
+            stored,
             own: Own {
                 account: cert.body().account,
                 master,
             },
             this: device.id,
+            device,
         }))
     }
 
-    /// Follows `space`: its last accepted revision and the devices of its accounts.
-    fn sync(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
+    /// The space named `name`, as the state holds it now.
+    pub fn space(&self, name: &str) -> Result<state::Space, String> {
+        self.state
+            .spaces()
+            .map_err(text)?
+            .into_iter()
+            .find(|space| space.name == name)
+            .ok_or_else(|| {
+                format!(
+                    "this device follows no space named \"{}\": it follows the spaces it created",
+                    printable(name)
+                )
+            })
+    }
+
+    /// Follows `space`: its last accepted revision and the devices of its accounts. A revision
+    /// after revision 1 that the device signed is sent first, warning if it is not stored; while it
+    /// waits, the space stays at its last accepted revision.
+    pub fn sync(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
+        let waiting = space.pending.as_ref().filter(|_| !space.first_waits());
+        if let Some(pending) = waiting
+            && let Err(unsent) = self.store(space, pending.clone())
+        {
+            eprintln!("skald: warning: {}", unsent.why);
+            if unsent.waits {
+                let held = follow::read(&self.state, space.id, &space.name)?;
+                let devices = follow::space_devices(&mut self.connection, &self.token, space.id)?;
+                return Ok((follow::decode(&held.last, &space.name)?, devices));
+            }
+        }
+        self.follow(space)
+            .map(|(roster, devices, _)| (roster, devices))
+    }
+
+    /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
+    /// its accounts and the revisions the server gives.
+    fn follow(
+        &mut self,
+        space: &state::Space,
+    ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
         follow::sync(
             &mut self.connection,
             &self.state,
@@ -281,6 +365,168 @@ impl Follower {
             &self.own,
         )
     }
+
+    /// Sends `pending`, in CBOR, the pending revision of `space` after revision 1, until the server
+    /// takes it; gives the revision it took. When another revision came first, it accepts the new
+    /// revisions and signs the channels `pending` adds into the latest, as the next pending one. It
+    /// drops the pending revision when the server refuses it, when it accepts no revision that came
+    /// first, or when the latest makes this device no admin's.
+    pub fn store(&mut self, space: &state::Space, mut pending: Vec<u8>) -> Result<Roster, Unsent> {
+        let (id, name) = (space.id, space.name.as_str());
+        for _ in 0..follow::ATTEMPTS {
+            let roster =
+                follow::decode(&pending, name).map_err(|why| Unsent { waits: true, why })?;
+            let number = roster.body().revision;
+            let waits = |err: String| Unsent {
+                waits: true,
+                why: format!(
+                    "{err}; revision {number} of the space {name}, which this device signed, waits \
+                     for the server to take it: a later skald command on the space sends it again"
+                ),
+            };
+            let why = match post_revision(&mut self.connection, &self.token, id, &pending) {
+                Sent::Taken => {
+                    self.state
+                        .clear_pending(id, &pending)
+                        .map_err(text)
+                        .map_err(waits)?;
+                    return Ok(roster);
+                }
+                Sent::Refused(detail) => {
+                    format!("the server refused it: {}", printable(&detail))
+                }
+                Sent::Failed(err) => return Err(waits(err)),
+                Sent::Conflict(_) => {
+                    // Another revision came first. The change is what `pending` adds to the
+                    // revision it was signed on, which the state may have accepted others after.
+                    let (latest, _, given) = self.follow(space).map_err(waits)?;
+                    let prev = roster.body().prev;
+                    let base = given
+                        .into_iter()
+                        .find(|given| Some(given.hash()) == prev)
+                        .unwrap_or_else(|| latest.clone());
+                    if latest.hash() == base.hash() {
+                        "the server gives no revision this device accepts in its place, or not \
+                         the one it was signed on"
+                            .to_owned()
+                    } else if !admin_device(&latest, self.own.account, self.this) {
+                        no_admin(&latest)
+                    } else {
+                        let added: Vec<Channel> = roster
+                            .body()
+                            .channels
+                            .iter()
+                            .filter(|new| !base.body().channels.iter().any(|old| old.id == new.id))
+                            .cloned()
+                            .collect();
+                        let next = self.next_with(&latest, &added).map_err(waits)?.to_cbor();
+                        let set = self
+                            .state
+                            .set_pending(id, &latest.to_cbor(), Some(&pending), &next)
+                            .map_err(text)
+                            .map_err(waits)?;
+                        if !set {
+                            return Err(waits(CHANGED_MEANWHILE.to_owned()));
+                        }
+                        pending = next;
+                        continue;
+                    }
+                }
+            };
+            self.state
+                .clear_pending(id, &pending)
+                .map_err(text)
+                .map_err(waits)?;
+            return Err(Unsent {
+                waits: false,
+                why: format!(
+                    "this device dropped its revision {number} of the space {name}: {why}"
+                ),
+            });
+        }
+        Err(Unsent {
+            waits: true,
+            why: format!(
+                "other admins kept changing the space {name} first; a later skald command on the \
+                 space sends this device's change again"
+            ),
+        })
+    }
+
+    /// The revision after `latest`, with `channels` added, signed by this device.
+    pub fn next_with(&self, latest: &Roster, channels: &[Channel]) -> Result<Roster, String> {
+        let keys = device::known_keys(&self.stored, Some(&self.device))
+            .map_err(text)?
+            .ok_or_else(|| device::Error::MissingKeys.to_string())?;
+        let mut body = latest.body().clone();
+        body.revision = body
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| format!("the space {} has no revision after", body.name.as_str()))?;
+        body.prev = Some(latest.hash());
+        body.signer = self.this;
+        body.timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        body.channels.extend_from_slice(channels);
+        skald_crypto::sign_roster(&body, keys.signing())
+            .map_err(|err| format!("revision {} of the space fails: {err}", body.revision))
+    }
+}
+
+/// A space a command uses, once the device accepted the revisions the server has of it: the
+/// follower, the space as the state held it, its last accepted revision and its accounts' devices.
+pub struct Synced {
+    pub follower: Follower,
+    pub space: state::Space,
+    pub roster: Roster,
+    pub devices: SpaceDevices,
+}
+
+/// The space named `name` that the device of the machine whose state is in `dir`, its secrets in
+/// `storage`, follows, synced ([`Follower::sync`]).
+pub fn synced(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    name: &str,
+) -> Result<Synced, String> {
+    let mut follower =
+        Follower::new(dir, storage, speaks, timeout)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
+    let space = follower.space(name)?;
+    let (roster, devices) = follower.sync(&space)?;
+    Ok(Synced {
+        follower,
+        space,
+        roster,
+        devices,
+    })
+}
+
+/// Whether `device` is a device of an admin in `roster`: one of `account`, an admin in it, whose
+/// `excluded` does not list it. The device's certificate is checked on accepting.
+pub fn admin_device(roster: &Roster, account: AccountId, device: DeviceId) -> bool {
+    roster.body().members.iter().any(|member| {
+        member.account == account
+            && member.role == Role::Admin
+            && !member
+                .excluded
+                .iter()
+                .flat_map(|ids| ids.iter())
+                .any(|id| *id == device)
+    })
+}
+
+/// Why this device, no device of an admin in `roster`, changes nothing in its space.
+pub fn no_admin(roster: &Roster) -> String {
+    let body = roster.body();
+    format!(
+        "this device is no device of an admin of the space {} in its revision {}, so it changes \
+         nothing in it",
+        body.name.as_str(),
+        body.revision
+    )
 }
 
 /// Lists the spaces the device of the machine whose state is in `dir`, its secrets in `storage`,
@@ -331,7 +577,7 @@ pub fn list(
                 }
                 None => follow::decode(&space.accepted, &space.name)?,
             };
-            lines.push(line(&roster, account, space.pending.is_some()));
+            lines.push(line(&roster, account, space.first_waits()));
         }
         lines
     } else {
@@ -346,31 +592,14 @@ pub fn list(
     Ok(())
 }
 
-/// Shows the members of the space `name` that the device of the machine whose state is in `dir`,
-/// its secrets in `storage`, follows, after accepting the revisions the server has of it.
-pub fn members(
-    dir: &Path,
-    storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
-    name: &str,
-) -> Result<(), String> {
-    let unknown = || {
-        format!(
-            "this device follows no space named \"{}\": it follows the spaces it created",
-            printable(name)
-        )
-    };
-    let mut follower =
-        Follower::new(dir, storage, speaks, timeout)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
-    let space = follower
-        .state
-        .spaces()
-        .map_err(text)?
-        .into_iter()
-        .find(|space| space.name == name)
-        .ok_or_else(unknown)?;
-    let (roster, devices) = follower.sync(&space)?;
+/// Shows the members of `synced`, a space the device follows.
+pub fn members(synced: Synced) -> Result<(), String> {
+    let Synced {
+        follower,
+        roster,
+        devices,
+        ..
+    } = synced;
     let (listing, warnings) = members_listing(&roster, &devices, &follower.own, follower.this);
     print!("{listing}");
     for warning in warnings {
@@ -655,6 +884,37 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn admin_device_is_one_of_an_admin_account_that_its_excluded_does_not_list() {
+        let (ada, bob) = (AccountId::generate(), AccountId::generate());
+        let device = |seed| DeviceId::from_signing_key(&[seed; 32]);
+        let mut body = first(ada).body().clone();
+        body.members.push(skald_proto::Member {
+            account: bob,
+            handle: "bob".parse().unwrap(),
+            role: Role::Member,
+            master: [5; 32],
+            invite: None,
+            excluded: None,
+            unknown: skald_proto::Unknown::default(),
+        });
+        let roster = |body: &RosterBody| skald_crypto::sign_roster(body, &SigningKey::generate());
+        let unexcluded = roster(&body).unwrap();
+        let mut members = body.members.clone().into_vec();
+        for member in &mut members {
+            member.excluded = skald_proto::NonEmpty::from_vec(vec![device(1)]);
+        }
+        body.members = skald_proto::NonEmpty::from_vec(members).unwrap();
+        let excluded = roster(&body).unwrap();
+
+        assert!(admin_device(&unexcluded, ada, device(1)));
+        assert!(!admin_device(&unexcluded, bob, device(1)), "a member");
+        assert!(!admin_device(&unexcluded, AccountId::generate(), device(1)));
+        assert!(!admin_device(&excluded, ada, device(1)), "excluded");
+        assert!(admin_device(&excluded, ada, device(2)));
+        assert!(!admin_device(&excluded, bob, device(2)), "a member");
     }
 
     #[test]

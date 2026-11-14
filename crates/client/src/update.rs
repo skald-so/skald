@@ -6,13 +6,16 @@
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use semver::Version;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use ureq::config::RedirectAuthHeaders;
+use ureq::http::HeaderMap;
 
 use crate::connection::printable;
+use crate::devices::date;
 use crate::plain_path::plain;
 use crate::tls::Roots;
 
@@ -21,6 +24,9 @@ pub const GITHUB_API_URL: &str = "https://api.github.com";
 
 /// The repository of the releases.
 const REPO: &str = "skald-so/skald";
+
+/// The variables that may hold a token of GitHub's API, in the order `skald update` reads them.
+const TOKEN_VARIABLES: [&str; 2] = ["GITHUB_TOKEN", "GH_TOKEN"];
 
 /// The file beside a `skald` installed from npm: the `skald-so` package's launcher writes it beside
 /// the `skald` it unpacks.
@@ -73,6 +79,23 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
+}
+
+/// A token of GitHub's API: the variable that holds it, and its value. It goes only to the request
+/// of the API, never to a release file or a redirect.
+struct Token {
+    variable: &'static str,
+    value: String,
+}
+
+impl Token {
+    /// The token in the first of [`TOKEN_VARIABLES`] whose value `var` gives is not blank.
+    fn find(var: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        TOKEN_VARIABLES.into_iter().find_map(|variable| {
+            let value = var(variable)?.trim().to_owned();
+            (!value.is_empty()).then_some(Token { variable, value })
+        })
+    }
 }
 
 impl Release {
@@ -175,7 +198,8 @@ pub fn run(api: &str, timeout: Duration) -> Result<(), String> {
     remove_set_aside(&exe);
 
     let agent = agent(timeout);
-    let release = latest(&agent, api)?;
+    let token = Token::find(|variable| std::env::var(variable).ok());
+    let release = latest(&agent, api, token.as_ref())?;
     let current = Version::parse(running).expect("the version of skald is a semantic version");
     let Some((release, version)) = release.and_then(|release| {
         let version = newer(&release, &current)?;
@@ -248,10 +272,11 @@ fn parse_checksum(file: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// The HTTPS client of the releases: the client's TLS, [`crate::tls`]; the proxy `HTTPS_PROXY`
-/// names, as `ureq` reads it; redirects followed, to HTTPS only.
+/// names, as `ureq` reads it; redirects followed, to HTTPS only and without `Authorization`.
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .https_only(true)
+        .redirect_auth_headers(RedirectAuthHeaders::Never)
         .http_status_as_error(false)
         .timeout_connect(Some(timeout))
         .timeout_per_read(Some(timeout))
@@ -262,46 +287,119 @@ fn agent(timeout: Duration) -> ureq::Agent {
         .new_agent()
 }
 
-/// The latest stable release, from `api`; `None` if there is none.
-fn latest(agent: &ureq::Agent, api: &str) -> Result<Option<Release>, String> {
+/// The latest stable release, from `api`, asked with `token` if any; `None` if there is none.
+fn latest(
+    agent: &ureq::Agent,
+    api: &str,
+    token: Option<&Token>,
+) -> Result<Option<Release>, String> {
     let url = format!("{}/repos/{REPO}/releases/latest", api.trim_end_matches('/'));
     let what = "the latest release";
-    match get(agent, &url, API_LIMIT, what)? {
-        (200, body) => serde_json::from_slice(&body)
+    let authorization = token.map(|token| format!("Bearer {}", token.value));
+    let (status, headers, body) = get(agent, &url, API_LIMIT, what, authorization.as_deref())?;
+    match status {
+        200 => serde_json::from_slice(&body)
             .map(Some)
             .map_err(|err| format!("unexpected answer about {what}: {err}")),
-        (404, _) => Ok(None),
-        (status, _) => Err(format!("cannot get {what}: the answer is {status}")),
+        404 => Ok(None),
+        _ => Err(refusal(what, status, &headers, token, now())),
     }
+}
+
+/// Seconds since the Unix epoch.
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// Why the API answered `status` with `headers` to a request for `what` with `token`, if any, at
+/// `now`, seconds since the Unix epoch. GitHub marks its rate limit with
+/// `x-ratelimit-remaining: 0` and the time it resets, `x-ratelimit-reset`, or with `retry-after`,
+/// in seconds: <https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api>.
+fn refusal(
+    what: &str,
+    status: u16,
+    headers: &HeaderMap,
+    token: Option<&Token>,
+    now: u64,
+) -> String {
+    let number =
+        |name: &str| -> Option<u64> { headers.get(name)?.to_str().ok()?.trim().parse().ok() };
+    let used_up = number("x-ratelimit-remaining") == Some(0);
+    let retry_after = number("retry-after");
+    if matches!(status, 403 | 429) && (used_up || retry_after.is_some()) {
+        let reset = number("x-ratelimit-reset").filter(|_| used_up);
+        let until = reset.max(retry_after.map(|seconds| now.saturating_add(seconds)));
+        let whose = token.map_or("this address".to_owned(), |token| {
+            format!("the token in {}", token.variable)
+        });
+        let when = until.map_or(": try again later".to_owned(), |until| {
+            format!(" until {}: try again then", utc(until))
+        });
+        let instead = if token.is_none() {
+            " or set GITHUB_TOKEN"
+        } else {
+            ""
+        };
+        return format!("GitHub's API limit for {whose} is used up{when}{instead}");
+    }
+    match token {
+        Some(token) if status == 401 => format!(
+            "cannot get {what}: GitHub refused the token in {}: the answer is 401",
+            token.variable
+        ),
+        _ => format!("cannot get {what}: the answer is {status}"),
+    }
+}
+
+/// `seconds` since the Unix epoch as `YYYY-MM-DD HH:MM:SS UTC`.
+fn utc(seconds: u64) -> String {
+    let (hours, minutes) = (seconds / 3600 % 24, seconds / 60 % 60);
+    format!(
+        "{} {hours:02}:{minutes:02}:{:02} UTC",
+        date(seconds),
+        seconds % 60
+    )
 }
 
 /// The release file at `url`, `what`, of at most `limit` bytes.
 fn download(agent: &ureq::Agent, url: &str, limit: u64, what: &str) -> Result<Vec<u8>, String> {
-    match get(agent, url, limit, what)? {
-        (200, body) => Ok(body),
-        (status, _) => Err(format!("cannot get {what}: the answer is {status}")),
+    match get(agent, url, limit, what, None)? {
+        (200, _, body) => Ok(body),
+        (status, _, _) => Err(format!("cannot get {what}: the answer is {status}")),
     }
 }
 
-/// The status and the body, of at most `limit` bytes, of the answer to `GET <url>`, `what`.
-fn get(agent: &ureq::Agent, url: &str, limit: u64, what: &str) -> Result<(u16, Vec<u8>), String> {
+/// The status, the headers and the body, of at most `limit` bytes, of the answer to `GET <url>`,
+/// `what`, with `authorization` as its `Authorization` if any.
+fn get(
+    agent: &ureq::Agent,
+    url: &str,
+    limit: u64,
+    what: &str,
+    authorization: Option<&str>,
+) -> Result<(u16, HeaderMap, Vec<u8>), String> {
     let failed = |err: ureq::Error| format!("cannot get {what}: {}", printable(&err.to_string()));
-    let mut response = agent
+    let mut request = agent
         .get(url)
         .header(
             "accept",
             "application/vnd.github+json, application/octet-stream",
         )
-        .header("x-github-api-version", "2022-11-28")
-        .call()
-        .map_err(failed)?;
+        .header("x-github-api-version", "2022-11-28");
+    if let Some(authorization) = authorization {
+        request = request.header("authorization", authorization);
+    }
+    let mut response = request.call().map_err(failed)?;
+    let headers = response.headers().clone();
     let body = response
         .body_mut()
         .with_config()
         .limit(limit)
         .read_to_vec()
         .map_err(failed)?;
-    Ok((response.status().as_u16(), body))
+    Ok((response.status().as_u16(), headers, body))
 }
 
 /// Puts `binary` in place of the running skald at `exe`, with its permissions. The new file is
@@ -407,6 +505,146 @@ mod tests {
         let beta = Version::parse("0.5.0-beta.2").unwrap();
         assert!(newer(&release("v0.5.0", false), &beta).is_some());
         assert!(newer(&release("v0.4.9", false), &beta).is_none());
+    }
+
+    #[test]
+    fn reads_github_token_then_gh_token() {
+        let find = |vars: &[(&str, &str)]| {
+            let var = |name: &str| {
+                let found = vars.iter().find(|(variable, _)| *variable == name);
+                found.map(|(_, value)| (*value).to_owned())
+            };
+            Token::find(var).map(|token| (token.variable, token.value))
+        };
+        let token = |variable, value: &str| Some((variable, value.to_owned()));
+        assert_eq!(
+            find(&[("GITHUB_TOKEN", "a"), ("GH_TOKEN", "b")]),
+            token("GITHUB_TOKEN", "a")
+        );
+        assert_eq!(find(&[("GH_TOKEN", " b\n")]), token("GH_TOKEN", "b"));
+        assert_eq!(
+            find(&[("GITHUB_TOKEN", " "), ("GH_TOKEN", "b")]),
+            token("GH_TOKEN", "b")
+        );
+        assert_eq!(find(&[("GITHUB_TOKEN", ""), ("GH_TOKEN", "\t")]), None);
+        assert_eq!(find(&[("TOKEN", "a")]), None);
+    }
+
+    /// The headers `pairs` of names and values.
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.parse().unwrap(), value.parse().unwrap()))
+            .collect()
+    }
+
+    /// What `latest` asks the API for.
+    const LATEST: &str = "the latest release";
+
+    /// 2026-11-14 18:30:05 UTC, and a time 1005 seconds before it.
+    const RESET: &str = "1794681005";
+    const BEFORE: u64 = 1_794_680_000;
+
+    #[test]
+    fn names_when_the_api_limit_ends() {
+        let limit =
+            |status, pairs: &[(&str, &str)]| refusal(LATEST, status, &headers(pairs), None, BEFORE);
+        let address = "GitHub's API limit for this address is used up until 2026-11-14 18:30:05 UTC: \
+                       try again then or set GITHUB_TOKEN";
+        let used_up = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", RESET)];
+        assert_eq!(limit(403, &used_up), address);
+        assert_eq!(limit(429, &used_up), address);
+        // `retry-after` alone, and the later of the two times.
+        assert_eq!(limit(429, &[("retry-after", "1005")]), address);
+        assert_eq!(
+            limit(403, &[used_up[0], used_up[1], ("retry-after", "60")]),
+            address
+        );
+        let soon = [
+            ("x-ratelimit-remaining", "0"),
+            ("x-ratelimit-reset", "1794680060"),
+        ];
+        assert_eq!(
+            limit(403, &[soon[0], soon[1], ("retry-after", "1005")]),
+            address
+        );
+        // `x-ratelimit-reset` counts only once the limit is used up.
+        let left = [
+            ("x-ratelimit-remaining", "3"),
+            ("x-ratelimit-reset", "1794689999"),
+        ];
+        assert_eq!(
+            limit(403, &[left[0], left[1], ("retry-after", "1005")]),
+            address
+        );
+        assert_eq!(
+            limit(403, &[("x-ratelimit-remaining", " 0 ")]),
+            "GitHub's API limit for this address is used up: try again later or set GITHUB_TOKEN"
+        );
+        let token = Token {
+            variable: "GH_TOKEN",
+            value: "ghp_secret".to_owned(),
+        };
+        assert_eq!(
+            refusal(LATEST, 403, &headers(&used_up), Some(&token), BEFORE),
+            "GitHub's API limit for the token in GH_TOKEN is used up until 2026-11-14 18:30:05 UTC: \
+             try again then"
+        );
+    }
+
+    #[test]
+    fn other_refusals_name_their_status() {
+        let token = Token {
+            variable: "GITHUB_TOKEN",
+            value: "ghp_secret".to_owned(),
+        };
+        let refused = |status, pairs: &[(&str, &str)], token| {
+            refusal(LATEST, status, &headers(pairs), token, BEFORE)
+        };
+        let used_up = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", RESET)];
+        for (status, pairs) in [
+            (
+                403,
+                &[("x-ratelimit-remaining", "1"), ("x-ratelimit-reset", RESET)][..],
+            ),
+            (403, &[("retry-after", "soon")]),
+            (429, &[]),
+            (503, &[("retry-after", "60")]),
+            (500, &used_up),
+        ] {
+            for token in [None, Some(&token)] {
+                assert_eq!(
+                    refused(status, pairs, token),
+                    format!("cannot get the latest release: the answer is {status}")
+                );
+            }
+        }
+        assert_eq!(
+            refused(401, &[], None),
+            "cannot get the latest release: the answer is 401"
+        );
+        assert_eq!(
+            refused(401, &used_up, Some(&token)),
+            "cannot get the latest release: GitHub refused the token in GITHUB_TOKEN: the answer \
+             is 401"
+        );
+    }
+
+    #[test]
+    fn utc_is_the_day_and_the_time() {
+        assert_eq!(utc(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(utc(1_794_681_005), "2026-11-14 18:30:05 UTC");
+        assert_eq!(utc(951_868_799), "2000-02-29 23:59:59 UTC");
+    }
+
+    #[test]
+    fn now_is_the_clock() {
+        let clock = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let now = now();
+        assert!((clock..clock + 60).contains(&now), "{now}, {clock}");
     }
 
     #[test]

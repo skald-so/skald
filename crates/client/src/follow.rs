@@ -22,8 +22,9 @@ use crate::connection::Connection;
 use crate::devices::{self, text};
 use crate::state::{self, State};
 
-/// How many times a run accepts a space's revisions again when another run accepted some first.
-const ATTEMPTS: usize = 5;
+/// How many times a run accepts a space's revisions again when another run accepted some first, or
+/// signs a revision again when another came first.
+pub const ATTEMPTS: usize = 5;
 
 /// `RosterRevisions` in the API spec.
 #[derive(Deserialize)]
@@ -47,14 +48,14 @@ pub struct SpaceDevices {
 
 /// Fetches the revisions of `space`, the space the state holds, and the devices of its accounts, as
 /// the session `token`, accepts the new revisions, records them in `state` and prints the warnings:
-/// gives the space's last accepted revision and its devices.
+/// gives the space's last accepted revision, its devices and the revisions the server gives.
 pub fn sync(
     connection: &mut Connection,
     state: &State,
     token: &str,
     space: &state::Space,
     own: &Own,
-) -> Result<(Roster, SpaceDevices), String> {
+) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
     let (id, name) = (space.id, &space.name);
     let body = connection
         .get_as(&format!("/spaces/{id}/revisions"), token)
@@ -77,19 +78,28 @@ pub fn sync(
             )),
         }
     }
-    let (ids, certs) = devices::fetch(connection, &format!("/spaces/{id}/devices"), token)?;
-    let devices = SpaceDevices { ids, certs };
+    let devices = space_devices(connection, token, id)?;
 
     let held = read(state, id, name)?;
     let (current, followed) = settle(state, (id, name), held, &given, &devices.certs, own)?;
     for warning in warnings.iter().chain(&followed) {
         eprintln!("skald: warning: {warning}");
     }
-    Ok((current, devices))
+    Ok((current, devices, given))
+}
+
+/// The devices of the accounts of the space `id`, as the server gives them to the session `token`.
+pub fn space_devices(
+    connection: &mut Connection,
+    token: &str,
+    id: SpaceId,
+) -> Result<SpaceDevices, String> {
+    let (ids, certs) = devices::fetch(connection, &format!("/spaces/{id}/devices"), token)?;
+    Ok(SpaceDevices { ids, certs })
 }
 
 /// What `state` holds of the space `id` named `name`.
-fn read(state: &State, id: SpaceId, name: &str) -> Result<state::Accepted, String> {
+pub fn read(state: &State, id: SpaceId, name: &str) -> Result<state::Accepted, String> {
     state
         .accepted(id)
         .map_err(text)?
