@@ -11,7 +11,7 @@
    - Required behavior is what the Definition of done or a spec asks for.
    - For a PR outside the plan, its description is its Definition of done.
    - Tests are never deleted, skipped or weakened to get a green run.
-3. **PR titles follow Conventional Commits:** `<type>(<scope>): <summary>`, e.g. `feat(server): deliver envelopes to offline devices`. A squash merge turns the title into the commit in `dev`; release-plz derives the version and the CHANGELOG from it.
+3. **PR titles follow Conventional Commits:** `<type>(<scope>): <summary>`, e.g. `feat(server): deliver envelopes to offline devices`. A squash merge turns the title into the commit in `dev`; git-cliff derives the Release PR's version and CHANGELOG from it ([infrastructure.md](docs/dev/infrastructure.md), "Release").
 4. **An API change starts with the OpenAPI spec** ([`api/openapi.json`](api/openapi.json)). It is the contract: the server implements it, the web uses the client and mocks generated from it.
 5. **Critical stories get acceptance tests before code.**
    - A story is critical if a defect in it can leak or lose data or bypass access: cryptography and keys, delivery and receipts, queue claims, sign-in, devices and access rights, data deletion.

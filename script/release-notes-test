@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Tests script/release-notes on a CHANGELOG.md as release-plz writes it: it prints the section of the
-# version asked for, a stable release's or a beta's, without its heading and the blank lines around
-# it, and nothing of the other sections; it fails for a version without a section, one of two
-# sections and an empty section, and without a CHANGELOG.md.
+# Tests script/release-notes on a CHANGELOG.md as script/release-update writes it: it prints the
+# section of the version asked for, a stable release's or a beta's, without its heading and the
+# blank lines around it, and nothing of the other sections; it fails for a version without a
+# section, one of two sections and an empty section, and without a CHANGELOG.md.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)

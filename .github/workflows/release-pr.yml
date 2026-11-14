@@ -1,10 +1,9 @@
 name: Release PR and tag
 
-# Every push to dev tags the merge of a Release PR, then opens the Release PR or updates the open
-# one, with the release-plz of script/install-release-plz and release-plz.toml: `release` tags the
-# commit vX.Y.Z or vX.Y.Z-beta.N and publishes nothing; `release-pr` sets the next version and adds
-# the PRs merged since the last release to CHANGELOG.md. script/release-plz-workflow-test and
-# script/release-tag-workflow-test test this file.
+# Every push to dev tags the merge of a Release PR with script/release-tag, then opens the Release
+# PR or updates the open one with script/release-pr: the next version and the PRs merged since the
+# last release in CHANGELOG.md, by the git-cliff of script/install-git-cliff and cliff.toml.
+# script/release-pr-workflow-test and script/release-tag-workflow-test test this file.
 on:
   push:
     branches: [dev]
@@ -26,15 +25,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      # release-plz runs cargo to read the workspace.
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      # Before the App token exists: the build scripts of its dependencies never see it, and the
-      # cache gets nothing it could have touched.
-      - name: Install release-plz
-        uses: ./.github/actions/install-release-plz
       # A token of the GitHub App skald-release: the workflows that run on tags start on a tag it
       # creates, unlike on one created with the job's own token. It reads the PRs of the public
       # repository without a permission for them. Revoked when the job ends.
@@ -44,17 +34,15 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
-      # Only the merge of a PR the App opened from a branch of this repository is tagged: release-plz
-      # alone takes any PR from a branch named release-plz-* for a Release PR. Not a Release PR's
-      # merge, exit code 1: nothing to tag; an error fails the step. release-plz tags through the
-      # GitHub API, so the checkout needs no credentials.
+      # Only the merge of a PR the App opened from a branch of this repository is tagged. Not a
+      # Release PR's merge, exit code 1: nothing to tag; an error fails the step. script/release-tag
+      # tags through the GitHub API, so the checkout needs no credentials.
       - name: Tag the merge of a Release PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          GIT_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           if script/release-pr-merged; then
-            release-plz release --forge github
+            script/release-tag
           else
             status=$?
             [[ $status == 1 ]] || exit "$status"
@@ -81,15 +69,9 @@ jobs:
           ref: dev
           persist-credentials: false
           fetch-depth: 0
-      # release-plz runs cargo to read the workspace and update Cargo.lock.
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      # Before the App token exists: the build scripts of its dependencies never see it, and the
-      # cache gets nothing it could have touched.
-      - name: Install release-plz
-        uses: ./.github/actions/install-release-plz
+      # Before the App token exists.
+      - name: Install git-cliff
+        run: script/install-git-cliff
       # A token of the GitHub App skald-release: PR checks run on a PR it opens, unlike on one opened
       # with the job's own token. Revoked when the job ends.
       - id: app-token
@@ -103,5 +85,5 @@ jobs:
       # credentials.
       - name: Open or update the Release PR
         env:
-          GIT_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: release-plz release-pr --forge github
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: script/release-pr
