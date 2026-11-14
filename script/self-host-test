@@ -3,7 +3,8 @@
 # container from script/lib/self-host/machine.Dockerfile, Debian with Docker and a dockerd of its own,
 # where the stack takes ports 80 and 443 and the test's domain is in /etc/hosts. The machine runs this
 # commit's skald, built for Linux by script/lib/self-host/client.Dockerfile, and this commit's
-# skald-server image.
+# skald-server image. The person signing in is a test in headless Chrome on the machine,
+# script/lib/self-host/person.mjs.
 #
 # The guide's commands are in marked code blocks, fenced with the info string `<language>
 # self-host=<step>`. The part extracts them and runs each scenario's steps in its order, in one bash
@@ -18,6 +19,14 @@
 #                        $SKALD_VERSION, with the commands of infrastructure.md, "Trust in builds"
 #   env                  writes .env, naming the image ghcr.io/skald-so/skald-server@$SKALD_DIGEST
 #   bucket               adds the bucket's settings to .env; its secret key read from standard input
+#   github               adds the GitHub OAuth App's client ID and secret to .env; the secret read
+#                        from standard input
+#   google               adds the Google OAuth client's ID and secret to .env; the secret read from
+#                        standard input
+#   github-check         checks the server's GitHub sign-in with script/check-github-sign-in, after
+#                        `up`
+#   google-check         checks the server's Google sign-in with script/check-google-sign-in, after
+#                        `up`
 #   up                   starts the stack
 #   status               checks the server with skald status
 #   proxy-host           the proxy variant's .env for a proxy on the machine
@@ -28,18 +37,25 @@
 #   proxy-network        the proxy variant's .env for a proxy in a container on a network .env names
 #   proxy-container-site the site block of a Caddy in a container (Caddyfile)
 # The part substitutes only these, in every block: SKALD_VERSION, SKALD_DIGEST and SKALD_FILES, to
-# the last release's version and image digest and this commit's files at the repository root; in
-# .env, this commit's image for ghcr.io/skald-so/skald-server@$SKALD_DIGEST; the test's domain for
-# skald.example.com; the stand-ins' values for `<bucket endpoint>`, `<bucket region>`, `<bucket
-# name>` and `<bucket access key ID>`, and its secret key on standard input; the proxy's container
-# for `<proxy container>`, its network for `<proxy network>`.
+# the last release's version and image digest and this commit's files at the repository root, with
+# the sign-in checks at their paths in script/; in .env, this commit's image for
+# ghcr.io/skald-so/skald-server@$SKALD_DIGEST; the test's domain for skald.example.com; the
+# stand-ins' values for `<bucket endpoint>`, `<bucket region>`, `<bucket name>` and `<bucket access
+# key ID>`, and its secret key on standard input; the stand-ins' client IDs for `<GitHub client ID>`
+# and `<Google client ID>`, and their secrets on standard input, a line each, GitHub's first; the
+# proxy's container for `<proxy container>`, its network for `<proxy network>`. Before the sign-in
+# checks, it exports GITHUB_URL and GOOGLE_ISSUER, the stand-ins' addresses, and SSL_CERT_FILE, the
+# roots of the local ACME server and the test CA, and puts jq, which the checks need, on PATH.
 #
 # The stand-ins for the internet: Pebble, the local ACME server, a process on the machine with one
 # root for the whole run, its random nonce refusals and validation delays off, behind a stand-in for
-# Let's Encrypt's addresses; an S3-compatible server for the bucket. They serve HTTPS with
-# certificates of a test CA. An override, added to COMPOSE_FILE before `up`, only gives the server's
-# and Caddy's services that CA in SSL_CERT_FILE and the stand-ins' network; the compose file runs
-# unchanged.
+# Let's Encrypt's addresses; an S3-compatible server for the bucket; the GitHub stand-in and the OIDC
+# stand-in, which plays Google, processes on the machine behind GitHub's and Google's stand-in
+# addresses, github.self-host.test and oidc.self-host.test, the latter the issuer, with the callbacks
+# on the domain. They serve HTTPS with certificates of a test CA. An override, added to COMPOSE_FILE
+# before `up`, only gives the server's and Caddy's services that CA in SSL_CERT_FILE and the
+# stand-ins' network, and the server the stand-ins' addresses in SKALD_GITHUB_URL,
+# SKALD_GITHUB_API_URL and SKALD_GOOGLE_ISSUER; the compose file runs unchanged.
 #
 # Scenarios and checks:
 #   main: release, files, image-check (the last release), env, up, status. .env has mode 0600 and the
@@ -64,7 +80,19 @@
 #     port is published only on loopback in the first form and not at all in the others, and does not
 #     answer on the machine's address; /health and skald status answer through the proxy.
 #   image: release and image-check with :edge's digest fail for its missing signature.
-# README's "Self-hosting" and infrastructure.md's "Self-host" link to the guide.
+#   sign-in: release, files, env, github, google, up, github-check, google-check. Machines sign in
+#     with this commit's skald by device flow, one's person with GitHub and another's with Google:
+#     each account's first machine says it created the master key and holds its certificate, and
+#     lists itself as this device, linked; each creates three team spaces, more than an account owns
+#     in the cloud (architecture.md, "Cloud limits"), and lists them. The stack's containers' logs
+#     show neither client secret.
+#   github, google: release, files, env, the one provider's step, up, its check. The verification
+#     page without a session offers sign-in with that provider only.
+#   proxy-host also runs github and google before `up`, and github-check and google-check after it,
+#     through the proxy; the stack's containers' logs show neither client secret.
+#   The .env of each of these has mode 0600, and the output shows no secret value of it.
+# README's "Self-hosting" and infrastructure.md's "Self-host" link to the guide. The guide names the
+# GitHub and Google callbacks on the domain.
 #
 # The image check reaches ghcr.io and Sigstore. Removes the containers, images and files it creates.
 set -euo pipefail
@@ -81,6 +109,18 @@ bucket_key_id=SELFHOSTTESTKEY
 bucket_secret=$(openssl rand -hex 20)
 proxy_container=skald-self-host-proxy
 proxy_network=skald-self-host-proxy-network
+# The stand-ins of GitHub and Google: their addresses, the clients registered with them, obviously
+# fake, and the person each signs in.
+github_host=github.self-host.test
+google_host=oidc.self-host.test
+github_client_id=Ov23li-self-host-stand-in
+github_secret=$(openssl rand -hex 20)
+google_client_id=self-host-stand-in.apps.googleusercontent.com
+google_secret=$(openssl rand -hex 24)
+github_user=4120711301
+github_login=ada-self-host
+google_subject=110248495921238990301
+google_email=grace.self-host@example.com
 work=$(mktemp -d)
 tag=self-host-test-$$
 machine=
@@ -91,7 +131,7 @@ cleanup() {
     docker rm --force --volumes "$machine" >/dev/null
   fi
   for image in "skald-server:$tag" "skald-self-host-machine:$tag" "skald-self-host-caddy:$tag" \
-    "skald-self-host-bucket:$tag"; do
+    "skald-self-host-bucket:$tag" "skald-self-host-browser:$tag"; do
     if docker image inspect "$image" >/dev/null 2>&1; then
       docker image rm "$image" >/dev/null
     fi
@@ -135,6 +175,10 @@ if [[ ! -f $guide ]]; then
   fail "no self-host guide: $guide"
   finish
 fi
+for provider in github google; do
+  grep -qF "https://skald.example.com/auth/$provider/callback" "$guide" ||
+    fail "$guide does not name the callback https://skald.example.com/auth/$provider/callback"
+done
 mkdir -p "$work/blocks"
 awk -v dir="$work/blocks" '
   !inside && /^ *(```|~~~)/ && /self-host/ {
@@ -166,8 +210,8 @@ awk -v dir="$work/blocks" '
 ' "$guide"
 touch "$work/blocks/list"
 before=$failures
-steps='release files image-check env bucket up status proxy-host proxy-host-site proxy-join
-  proxy-join-connect proxy-network proxy-container-site'
+steps='release files image-check env bucket github google up status github-check google-check
+  proxy-host proxy-host-site proxy-join proxy-join-connect proxy-network proxy-container-site'
 while read -r n step; do
   # $steps unquoted: one word per step.
   # shellcheck disable=SC2086
@@ -195,6 +239,8 @@ block_text() {
       text=${text//"<bucket region>"/$bucket_region}
       text=${text//"<bucket name>"/$bucket_name}
       text=${text//"<bucket access key ID>"/$bucket_key_id}
+      text=${text//"<GitHub client ID>"/$github_client_id}
+      text=${text//"<Google client ID>"/$google_client_id}
       text=${text//"<proxy container>"/$proxy_container}
       text=${text//"<proxy network>"/$proxy_network}
       printf '%s\n' "$text"
@@ -222,7 +268,7 @@ fi
 docker build --quiet --file crates/server/Dockerfile --build-arg "REVISION=$(git rev-parse HEAD)" \
   --tag "skald-server:$tag" . >/dev/null
 docker build --quiet --file script/lib/self-host/client.Dockerfile --output "$work/client" . >/dev/null
-for target in machine caddy bucket; do
+for target in machine caddy bucket browser; do
   docker build --quiet --file script/lib/self-host/machine.Dockerfile --target "$target" \
     --tag "skald-self-host-$target:$tag" script/lib/self-host >/dev/null
 done
@@ -248,15 +294,26 @@ certificate() {
 certificate pebble DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1
 certificate letsencrypt DNS:acme-v02.api.letsencrypt.org,DNS:acme-staging-v02.api.letsencrypt.org
 certificate bucket "DNS:${bucket_endpoint#https://}"
+certificate github "DNS:$github_host"
+certificate google "DNS:$google_host"
 chmod 0644 "$ca"/*.pem
 
 # What the machine gets in /self-host: the part's hooks and values, this commit's files at the
-# repository root, the stand-ins' settings.
-mkdir -p "$work/machine/files" "$work/machine/run" "$work/machine/pebble" "$work/machine/stand-ins"
+# repository root and its sign-in checks, the stand-ins' settings, the person with the playwright-core
+# of web/'s packages.
+mkdir -p "$work/machine/files/script/lib" "$work/machine/run" "$work/machine/pebble" \
+  "$work/machine/stand-ins" "$work/machine/person/node_modules"
 cp script/lib/self-host/hooks.sh "$work/machine/"
 git ls-files --cached --others --exclude-standard | grep -v / | while read -r file; do
   if [[ -f $file ]]; then cp "$file" "$work/machine/files/"; fi
 done
+cp script/check-github-sign-in script/check-google-sign-in "$work/machine/files/script/"
+cp script/lib/sign-in-check.sh "$work/machine/files/script/lib/"
+if [[ ! -f web/node_modules/playwright-core/package.json ]]; then
+  (cd web && npm ci --no-audit --no-fund >/dev/null)
+fi
+cp script/lib/self-host/person.mjs "$work/machine/person/"
+cp -R web/node_modules/playwright-core "$work/machine/person/node_modules/"
 cat >"$work/machine/params" <<EOF
 self_host_domain=$domain
 self_host_image=skald-server:self-host-test
@@ -269,6 +326,8 @@ self_host_internet=skald-self-host-internet
 self_host_caddy_image=skald-self-host-caddy:test
 self_host_proxy_container=$proxy_container
 self_host_proxy_network=$proxy_network
+self_host_github_url=https://$github_host
+self_host_google_issuer=https://$google_host
 EOF
 cat >"$work/machine/pebble/config.json" <<'EOF'
 {
@@ -299,6 +358,16 @@ https://acme-v02.api.letsencrypt.org, https://acme-staging-v02.api.letsencrypt.o
 			tls_trust_pool file /self-host/ca/ca.pem
 		}
 	}
+}
+
+https://github.self-host.test {
+	tls /self-host/ca/github.pem /self-host/ca/github-key.pem
+	reverse_proxy host.docker.internal:14100
+}
+
+https://oidc.self-host.test {
+	tls /self-host/ca/google.pem /self-host/ca/google-key.pem
+	reverse_proxy host.docker.internal:14200
 }
 EOF
 
@@ -336,13 +405,17 @@ address=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddre
 m sh -c "echo '$address $domain' >>/etc/hosts"
 docker cp "$work/machine/." "$machine:/self-host/"
 docker cp "$work/client/skald" "$machine:/usr/local/bin/skald"
+docker cp "$work/client/skald-github-stand-in" "$machine:/opt/self-host-test/bin/"
+docker cp "$work/client/skald-oidc-stand-in" "$machine:/opt/self-host-test/bin/"
 dockerd_start
-docker save "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" |
-  mi docker load >/dev/null
+docker save "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" \
+  "skald-self-host-browser:$tag" | mi docker load >/dev/null
 m docker tag "skald-server:$tag" skald-server:self-host-test
-m docker tag "skald-self-host-caddy:$tag" skald-self-host-caddy:test
-m docker tag "skald-self-host-bucket:$tag" skald-self-host-bucket:test
-m docker image rm "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" >/dev/null
+for target in caddy bucket browser; do
+  m docker tag "skald-self-host-$target:$tag" "skald-self-host-$target:test"
+done
+m docker image rm "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" \
+  "skald-self-host-browser:$tag" >/dev/null
 
 # Pebble, with its root for the whole run in /self-host/acme-root.pem.
 docker exec --detach --workdir /self-host/pebble --env PEBBLE_VA_NOSLEEP=1 \
@@ -361,12 +434,39 @@ if ! m test -s /self-host/acme-root.pem; then
   exit 1
 fi
 
-# The stand-ins, on a network of their own: Let's Encrypt's addresses, in front of Pebble, and the
-# bucket's S3-compatible server.
+# The GitHub and Google stand-ins, processes on the machine, their callbacks on the domain; GitHub's
+# with its user.
+docker exec --detach "$machine" sh -c "exec /opt/self-host-test/bin/skald-github-stand-in \
+  --listen 0.0.0.0:14100 --client-id '$github_client_id' --client-secret '$github_secret' \
+  --callback 'https://$domain/auth/github/callback' >>/self-host/stand-ins/github.log 2>&1"
+docker exec --detach "$machine" sh -c "exec /opt/self-host-test/bin/skald-oidc-stand-in \
+  --listen 0.0.0.0:14200 --issuer 'https://$google_host' --client-id '$google_client_id' \
+  --client-secret '$google_secret' --redirect-uri 'https://$domain/auth/google/callback' \
+  --person '$google_subject=$google_email' >>/self-host/stand-ins/google.log 2>&1"
+stand_ins=
+for _ in $(seq 60); do
+  if m curl --silent --fail --output /dev/null http://127.0.0.1:14200/.well-known/openid-configuration &&
+    m curl --silent --fail --request PUT --header 'Content-Type: application/json' --data \
+      "{\"id\":$github_user,\"login\":\"$github_login\",\"email\":null,\"name\":null}" \
+      http://127.0.0.1:14100/_stand-in/users; then
+    stand_ins=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ -z $stand_ins ]]; then
+  echo "self-host-test: the GitHub and Google stand-ins did not start; their logs:" >&2
+  m cat /self-host/stand-ins/github.log /self-host/stand-ins/google.log >&2
+  exit 1
+fi
+
+# The stand-ins, on a network of their own: Let's Encrypt's addresses, in front of Pebble, GitHub's
+# and Google's, in front of their stand-ins, and the bucket's S3-compatible server.
 m docker network create skald-self-host-internet >/dev/null
 m docker run --detach --name self-host-letsencrypt --restart unless-stopped \
   --network skald-self-host-internet --network-alias acme-v02.api.letsencrypt.org \
-  --network-alias acme-staging-v02.api.letsencrypt.org --add-host host.docker.internal:host-gateway \
+  --network-alias acme-staging-v02.api.letsencrypt.org --network-alias "$github_host" \
+  --network-alias "$google_host" --add-host host.docker.internal:host-gateway \
   --volume /self-host/stand-ins/Caddyfile:/etc/caddy/Caddyfile:ro --volume /self-host/ca:/self-host/ca:ro \
   skald-self-host-caddy:test >/dev/null
 m docker run --detach --name self-host-bucket --restart unless-stopped \
@@ -504,7 +604,7 @@ stack_down() {
 # --- main: the clean machine's path, from the first start.
 scenario main release files image-check env :before_up up :wait_https :trust_acme status :trust_system
 # check_env <scenario>: the .env the guide wrote has mode 0600, and its output shows none of its
-# secret values: all but this commit's image and those with the domain.
+# secret values: all but this commit's image, those with the domain and the client IDs.
 check_env() {
   local mode name value output
   output=$(cat "$work/run/$1/output")
@@ -515,7 +615,8 @@ check_env() {
   while IFS='=' read -r name value; do
     value=${value#[\"\']}
     value=${value%[\"\']}
-    if [[ ${#value} -ge 12 && $value != *"$domain"* && $value != skald-server:self-host-test ]] &&
+    if [[ ${#value} -ge 12 && $value != *"$domain"* && $value != skald-server:self-host-test &&
+      $name != *_CLIENT_ID ]] &&
       [[ $output == *"$value"* ]]; then
       fail "$1: the guide's commands print the value of $name in .env"
     fi
@@ -679,6 +780,169 @@ if [[ -n $bucket_ok ]]; then
 fi
 stack_down bucket
 
+# --- Sign-in with the admin's GitHub OAuth App and Google OAuth client.
+# internet_hosts: the machine resolves the stand-ins' addresses of GitHub and Google to their front,
+# as it is after the daemon's restarts.
+internet_hosts() {
+  local ip
+  ip=$(m docker inspect --format '{{(index .NetworkSettings.Networks "skald-self-host-internet").IPAddress}}' \
+    self-host-letsencrypt)
+  m sh -c "grep -v ' $github_host ' /etc/hosts >/tmp/hosts; cat /tmp/hosts >/etc/hosts &&
+    echo '$ip $github_host $google_host' >>/etc/hosts"
+}
+
+# person <argument>...: script/lib/self-host/person.mjs in the browser's container on the machine,
+# on the stand-ins' network, reaching the domain at the machine's address.
+person() {
+  m docker run --rm --network skald-self-host-internet --add-host "$domain:$address" \
+    --volume /self-host/person:/person:ro skald-self-host-browser:test node /person/person.mjs "$@"
+}
+
+# new_machine <scenario> <machine>: /self-host/run/<scenario>/<machine>/skald, this commit's skald as
+# the scenario's machine <machine>, in an environment of its own: a home, its state and secrets file
+# in that directory, its host name <machine>, and only the local ACME server's root to trust.
+new_machine() {
+  local dir=/self-host/run/$1/$2
+  m mkdir -p "$dir/home"
+  mi sh -c "cat >$dir/skald && chmod +x $dir/skald" <<EOF
+#!/bin/sh
+exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=$dir/home SKALD_STATE_DIR=$dir/state \
+  SKALD_KEY_STORAGE=file SKALD_HOST_NAME=$2 SSL_CERT_FILE=/self-host/acme-root.pem skald "\$@"
+EOF
+}
+
+# sign_in <scenario> <machine> <GitHub|Google>: signs a new machine in to the stack by device flow,
+# `skald sign-in --first-device yes`, its person signing in with the provider on the verification
+# page; fails unless the run succeeds and says it created the account's master key and holds its
+# certificate.
+sign_in() {
+  local scenario=$1 name=$2 provider=$3 dir=/self-host/run/$1/$2 provider_page out page code status
+  local said
+  case $provider in
+    GitHub) provider_page=https://$github_host/_stand-in/sign-in?user=$github_user ;;
+    Google) provider_page=https://$google_host/_stand-in/sign-in?sub=$google_subject ;;
+  esac
+  new_machine "$scenario" "$name"
+  docker exec --detach "$machine" sh -c "timeout 300 $dir/skald sign-in --server https://$domain \
+    --first-device yes </dev/null >$dir/sign-in.out 2>&1; echo \$? >$dir/sign-in.status"
+  for _ in $(seq 120); do
+    out=$(m cat "$dir/sign-in.out" 2>/dev/null || true)
+    if [[ $out =~ [A-Z]{4}-[A-Z]{4} ]]; then
+      code=${BASH_REMATCH[0]}
+      break
+    fi
+    if m test -e "$dir/sign-in.status"; then break; fi
+    sleep 0.5
+  done
+  page=$(grep -oE "https://$domain/[^ ?]*( |\$)" <<<"$out" | head -n 1 | tr -d ' ' || true)
+  if [[ -z ${code:-} || -z $page ]]; then
+    fail "$scenario: skald sign-in on $name shows no verification page and code:"$'\n'"$out"
+    return 1
+  fi
+  if ! said=$(person approve "$provider" "$provider_page" "$page" "$code" 2>&1); then
+    fail "$scenario: the person of $name cannot approve its code, signing in with $provider:"$'\n'"$said"
+    return 1
+  fi
+  for _ in $(seq 120); do
+    if status=$(m cat "$dir/sign-in.status" 2>/dev/null); then break; fi
+    sleep 0.5
+  done
+  out=$(m cat "$dir/sign-in.out")
+  if [[ ${status:-} != 0 ]]; then
+    fail "$scenario: skald sign-in on $name, its person signing in with $provider: exit code" \
+      "${status:-none yet}:"$'\n'"$out"
+    return 1
+  fi
+  said=$(tr '[:upper:]' '[:lower:]' <<<"$out")
+  [[ $said == *created* && $said == *"master key"* && $said == *certificate* ]] ||
+    fail "$scenario: skald sign-in on $name with $provider does not say it created the master key" \
+      "and holds its certificate:"$'\n'"$out"
+}
+
+# creates_spaces <scenario> <machine> <space>...: the signed-in machine lists itself as this device,
+# linked, creates each team space and lists them.
+creates_spaces() {
+  local scenario=$1 name=$2 dir=/self-host/run/$1/$2 space listed
+  shift 2
+  if ! listed=$(m "$dir/skald" devices 2>&1); then
+    fail "$scenario: skald devices on $name fails:"$'\n'"$listed"
+  elif [[ $listed != *"this device"* || $listed == *"not linked"* ]]; then
+    fail "$scenario: skald devices on $name does not list it as this device, linked:"$'\n'"$listed"
+  fi
+  for space in "$@"; do
+    listed=$(m "$dir/skald" create-space "$space" 2>&1) ||
+      fail "$scenario: skald create-space $space on $name fails:"$'\n'"$listed"
+  done
+  if ! listed=$(m "$dir/skald" spaces 2>&1); then
+    fail "$scenario: skald spaces on $name fails:"$'\n'"$listed"
+    return
+  fi
+  for space in "$@"; do
+    grep -qw -- "$space" <<<"$listed" || fail "$scenario: skald spaces on $name does not list $space:"$'\n'"$listed"
+  done
+}
+
+# offered <scenario>: sets offers to the providers the verification page of a new device
+# authorization offers sign-in with, without a session, one per line.
+offered() {
+  local answer page
+  offers=
+  answer=$(m curl --silent --show-error --fail --cacert /self-host/acme-root.pem \
+    --header 'Skald-Protocol-Version: 1' --data client_id=skald "https://$domain/auth/device" 2>&1) || {
+    fail "$1: POST https://$domain/auth/device: $answer"
+    return
+  }
+  page=$(jq -r '.verification_uri // empty' <<<"$answer" 2>/dev/null || true)
+  if [[ -z $page ]]; then
+    fail "$1: POST https://$domain/auth/device gives no verification page"
+  elif ! offers=$(person offers "$page"); then
+    fail "$1: the person cannot open the verification page $page"
+  fi
+}
+
+# no_secret_in_logs <scenario>: the logs of the stack's containers show neither client secret.
+no_secret_in_logs() {
+  local id logs
+  for id in $(containers "$1"); do
+    logs=$(m docker logs "$id" 2>&1)
+    if [[ $logs == *"$github_secret"* || $logs == *"$google_secret"* ]]; then
+      fail "$1: the logs of $(m docker inspect --format '{{.Name}}' "$id") show a client secret"
+    fi
+  done
+}
+
+internet_hosts
+providers=$github_secret$'\n'$google_secret
+
+# sign-in: both providers; a machine signs in with each and creates spaces.
+scenario sign-in release files env github google :before_up up :wait_https :trust_checks github-check \
+  google-check :trust_system
+if run_scenario sign-in <<<"$providers"; then
+  if sign_in sign-in ada-machine GitHub; then creates_spaces sign-in ada-machine apple birch cedar; fi
+  if sign_in sign-in grace-machine Google; then creates_spaces sign-in grace-machine delta ember fjord; fi
+  no_secret_in_logs sign-in
+fi
+check_env sign-in
+stack_down sign-in
+
+# github, google: one provider's values only.
+scenario github release files env github :before_up up :wait_https :trust_checks github-check :trust_system
+if run_scenario github <<<"$github_secret"; then
+  offered github
+  [[ $offers == GitHub ]] ||
+    fail "github: with GitHub's values only, the verification page offers sign-in with: ${offers:-none}"
+fi
+check_env github
+stack_down github
+scenario google release files env google :before_up up :wait_https :trust_checks google-check :trust_system
+if run_scenario google <<<"$google_secret"; then
+  offered google
+  [[ $offers == Google ]] ||
+    fail "google: with Google's values only, the verification page offers sign-in with: ${offers:-none}"
+fi
+check_env google
+stack_down google
+
 # --- The proxy variant, in its three forms.
 # check_proxied <scenario> <loopback|none>: no Caddy of the stack runs; the server's port is
 # published only on loopback, or not at all, and does not answer on the machine's address; /health
@@ -701,9 +965,14 @@ check_proxied() {
   check_https "$1"
 }
 
-scenario proxy-host release files env proxy-host :before_up up proxy-host-site :proxy_on_host \
-  :wait_https :trust_acme status :trust_system
-if run_scenario proxy-host </dev/null; then check_proxied proxy-host loopback; fi
+# The loopback form also signs in with both providers: their checks pass through the proxy.
+scenario proxy-host release files env github google proxy-host :before_up up proxy-host-site \
+  :proxy_on_host :wait_https :trust_acme status :trust_checks github-check google-check :trust_system
+if run_scenario proxy-host <<<"$providers"; then
+  check_proxied proxy-host loopback
+  no_secret_in_logs proxy-host
+fi
+check_env proxy-host
 stack_down proxy-host
 
 scenario proxy-join release files env proxy-join :before_up up proxy-container-site \
