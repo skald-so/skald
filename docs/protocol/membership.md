@@ -339,16 +339,23 @@ A space's policy travels in its roster, so an admin's device signs every change.
 policy = {
   1 => [peer: mode, service: mode],  ; ceilings: per trust level
   2 => uint .ge 86400,     ; history: the history key's longest age, in seconds
+  ? 3 => [own: wake, peer: wake, service: wake],  ; wakes: per trust level
   * int => any,            ; fields of later versions
 }
 
 mode = &(read-only: 1, full: 2) / uint   ; other values: modes of later versions
+
+wake = wake-now / wake-batch / wake-pull / uint / [uint, * any]   ; other values: wake modes of later versions
+wake-now = 1
+wake-batch = [2, window: uint .ge 1]   ; window: seconds, at least, between two wakes
+wake-pull = 3
 ```
 
 - `ceilings`: the most rights a task from a `peer` or `service` sender gets without the approval of the claiming device's user, who can only lower them ([Running a task](queues.md#running-a-task)). An `own` task has no ceiling.
 - `mode`: `read-only` reads only the agent's folder and changes nothing, with no network; `full` has no limits. This version defines only these two; a device takes a mode it does not know as `read-only`.
 - `history`: [History key](#history-key).
-- A new space starts with `[read-only, read-only]` and 30 days.
+- `wakes`: the most waking delivery mode for messages of each sender trust level, in every channel of the space ([Device to agent](delivery.md#device-to-agent)). Absent, there is no ceiling. A device takes a wake mode it does not know as `pull`.
+- A new space starts with `[read-only, read-only]`, 30 days and no `wakes`.
 
 ## Invite
 An admin invites a person by link. The link's secret proves the newcomer is the one invited and never reaches the server.

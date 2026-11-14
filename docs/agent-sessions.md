@@ -1,6 +1,6 @@
 # Delivery to agent sessions
 
-Skald delivers messages and tasks to an agent session you already have open, even when you type nothing.
+Skald delivers messages and tasks to an agent session you already have open, even when you type nothing. This is the default mode, `now`; the other modes: [Device to agent](protocol/delivery.md#device-to-agent).
 
 ## Claude Code
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
@@ -21,7 +21,7 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - Any agent with a shell: the `skald recv --wait` command.
 
 ## What arrives in the session
-- **A message from one of your devices** arrives in Claude Code as text, at once.
+- **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.
 - **A message from a member of the space or a service agent**, and any message in Codex: a signal arrives, and the agent takes the message itself with `inbox`. The text is marked as data from its sender.
 - **A task** always arrives as a signal, and the agent takes it from the queue itself.
 

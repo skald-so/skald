@@ -32,7 +32,7 @@
 
 ## Membership
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
-- **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, and the history key rotation period. An admin's device signs it; clients reject a policy without a valid signature.
+- **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, the history key rotation period, and the most waking delivery mode per sender trust level. An admin's device signs it; clients reject a policy without a valid signature.
 - **Handle:** a space creator's handle is its account's username, as the server gives it when the space is created.
 - **Personal space:**
   - each account has one, which it owns; the server creates it at the account's first request for it;
@@ -132,7 +132,7 @@ Adapters are separate modules with e2e tests against real CLIs.
 ## Notifications
 - To Telegram, Slack or a webhook.
 - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
-- The person's device triggers the events that come from content: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a key changed. The server only relays them, so they need a running device of the person.
+- The person's device triggers the events that come from content or its agents' sessions: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a session waiting on its agent CLI's own permission prompt, an invalid task result ([protocol spec](../protocol/queues.md#results)), a key changed. The server only relays them, so they need a running device of the person.
 - A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 
 ## Security

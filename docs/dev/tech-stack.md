@@ -10,7 +10,7 @@ Versions as of 2026-11-09.
 | Client HTTP, WebSocket | ureq 3 and tungstenite 0.30, blocking. HTTPS and WSS, to the server and in `skald update`, with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8; `SSL_CERT_FILE` replaces them); plain HTTP and WS only to a server on this machine ([Network](architecture.md#network)). `HTTPS_PROXY` in `skald update`; to the server, once the client's one-shot mode and helper add it |
 | Client updates | `skald update` compares versions with semver 1 and unpacks the release archives with flate2 1 and tar 0.4 (`.tar.gz`) and zip 9 (`.zip`) |
 | Database | PostgreSQL 19 (in production, from 19.1), sqlx 0.9: `SKIP LOCKED`, `LISTEN/NOTIFY` |
-| Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage) |
+| Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage): rusty-s3 0.11 signs the requests, path-style, and the server's HTTP client sends them. Its tests use versitygw in a container, pinned by digest |
 | MLS | mls-rs 0.57.1 with mls-rs-core 0.27 and mls-rs-crypto-rustcrypto 0.23: [choice](mls-prototypes.md#choice). chacha20poly1305 0.11 seals the MLS state with XChaCha20-Poly1305; aes-gcm 0.11 seals history links and entries with AES-128-GCM |
 | HPKE, signatures | hpke 0.15, ed25519-dalek 3, x25519-dalek 3 |
 | PAKE | CPace in `crypto` on curve25519-dalek 5 and sha2 0.11, checked against its draft's test vectors: [link code](../protocol/membership.md#link-code) |

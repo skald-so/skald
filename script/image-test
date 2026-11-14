@@ -4,18 +4,23 @@
 # it exposes port 8080 and has no shell; a change to the workspace's own sources reuses the
 # dependency build and compiles only the workspace crates; a container from it applies the
 # migrations, listens on all interfaces and answers the health check; it exits with an error when
-# PostgreSQL is unreachable; its process does not run as root.
-# Removes the images, containers and network it creates.
+# PostgreSQL is unreachable; its process does not run as root. Its attachment directory, on a
+# read-only root: a new volume there is the server's alone, and the server uses it and leaves it
+# empty; without a volume there, the server exits, naming the directory; with a bucket's settings,
+# on a local S3-compatible server, it uses the bucket and leaves the volume empty.
+# Removes the images, containers, volumes and network it creates.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 source script/lib/postgres.sh
+source script/lib/s3.sh
 
 image=skald-server:image-test-$$
 network=skald-image-test-$$
 context=$(mktemp -d)
 containers=()
+volumes=()
 failures=0
 
 cleanup() {
@@ -24,6 +29,10 @@ cleanup() {
     docker rm --force "$container" >/dev/null
   done
   postgres_stop
+  s3_stop
+  for volume in ${volumes[@]+"${volumes[@]}"}; do
+    docker volume rm "$volume" >/dev/null
+  done
   if docker network inspect "$network" >/dev/null 2>&1; then
     docker network rm "$network" >/dev/null
   fi
@@ -45,6 +54,31 @@ fail() {
 start() {
   container=$(docker run --detach "$@" "$image")
   containers+=("$container")
+}
+
+# wait_health <address> <container>: waits up to 60 s for the health check at <address>, such as
+# 127.0.0.1:41234, to answer 200 while <container> runs; prints the last status, empty if none.
+wait_health() {
+  local status=
+  for _ in $(seq 120); do
+    [[ $(docker inspect --format '{{.State.Running}}' "$2") == true ]] || break
+    status=$(curl --silent --output /dev/null --write-out '%{http_code}' "http://$1/health") || true
+    [[ $status == 200 ]] && break
+    sleep 0.5
+  done
+  echo "$status"
+}
+
+# new_volume: creates a volume and sets $volume to its name.
+new_volume() {
+  volume=$(docker volume create)
+  volumes+=("$volume")
+}
+
+# in_volume <volume> <command> <argument>...: runs <command> in a container of the S3-compatible
+# server's image, which has a shell's tools, with <volume> at /volume.
+in_volume() {
+  docker run --rm --network none --volume "$1:/volume" --entrypoint "$2" "$s3_image" "${@:3}"
 }
 
 # wait_exit <container>: waits up to 30 s for <container> to exit; prints its exit code.
@@ -120,13 +154,7 @@ start --network "$network" --publish 127.0.0.1::8080 \
 server=$container
 # The published port reaches the server only if it listens on the container's network interface.
 health=$(docker port "$server" 8080/tcp | head -n 1)/health
-status=
-for _ in $(seq 120); do
-  [[ $(docker inspect --format '{{.State.Running}}' "$server") == true ]] || break
-  status=$(curl --silent --output /dev/null --write-out '%{http_code}' "http://$health") || true
-  [[ $status == 200 ]] && break
-  sleep 0.5
-done
+status=$(wait_health "${health%/health}" "$server")
 if [[ $status != 200 ]]; then
   fail "GET /health: status '$status', want 200; container logs:"$'\n'"$(docker logs "$server" 2>&1)"
 else
@@ -157,6 +185,72 @@ logs=$(docker logs "$container" 2>&1)
 [[ $exit_code != 0 ]] || fail "unreachable PostgreSQL: exit code 0, logs:"$'\n'"$logs"
 [[ $logs == "skald-server: cannot connect to PostgreSQL: "* ]] ||
   fail "unreachable PostgreSQL: logs:"$'\n'"$logs"
+
+# The attachment directory the image sets, on a read-only root with a new volume there: the volume
+# is the server's user's alone, and the server names it, answers and leaves it empty.
+attachments=/var/lib/skald/attachments
+database=(--env "SKALD_DATABASE_URL=${SKALD_TEST_DATABASE_URL%@*}@postgres:5432/skald")
+new_volume
+start --network "$network" --publish 127.0.0.1::8080 --read-only --volume "$volume:$attachments" \
+  "${database[@]}"
+status=$(wait_health "$(docker port "$container" 8080/tcp | head -n 1)" "$container")
+logs=$(docker logs "$container" 2>&1)
+if [[ $status != 200 ]]; then
+  fail "a new volume at $attachments: GET /health: status '$status'; logs:"$'\n'"$logs"
+else
+  [[ $logs == *"$attachments"* ]] || fail "a new volume at $attachments: not named; logs:"$'\n'"$logs"
+  owner=$(in_volume "$volume" stat -c '%u %a' /volume)
+  [[ $owner == '65532 700' ]] || fail "a new volume at $attachments: owner and mode '$owner', want '65532 700'"
+  files=$(in_volume "$volume" find /volume -mindepth 1)
+  [[ -z $files ]] || fail "a new volume at $attachments: left behind:"$'\n'"$files"
+fi
+
+# The attachment directory not writable: on the read-only root, without a volume.
+start --network "$network" --read-only "${database[@]}"
+exit_code=$(wait_exit "$container") || exit_code='none: it still runs'
+logs=$(docker logs "$container" 2>&1)
+if [[ $exit_code == 0 || $logs != *"$attachments"* || $logs == *"listening on"* ]]; then
+  fail "$attachments not writable: exit code $exit_code, logs:"$'\n'"$logs"
+fi
+
+# A bucket on the S3-compatible server, which the server reaches on loopback: it shares the S3
+# server's network, where PostgreSQL is too, and the S3 server publishes its port. The bucket
+# replaces the image's directory: the volume there stays empty.
+s3_start --publish 127.0.0.1::8080
+s3_wait
+docker network connect "$network" "$s3"
+bucket=skald-image-test-$$
+s3_create_bucket "$bucket"
+new_volume
+start --network "container:$s3" --read-only --volume "$volume:$attachments" "${database[@]}" \
+  --env "SKALD_ATTACHMENTS_BUCKET=$bucket" \
+  --env "SKALD_ATTACHMENTS_BUCKET_ENDPOINT=http://127.0.0.1:$s3_port" \
+  --env "SKALD_ATTACHMENTS_BUCKET_REGION=$s3_region" \
+  --env "SKALD_ATTACHMENTS_BUCKET_ACCESS_KEY_ID=$s3_access_key_id" \
+  --env "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY=$s3_secret_key"
+status=$(wait_health "$(docker port "$s3" 8080/tcp | head -n 1)" "$container")
+logs=$(docker logs "$container" 2>&1)
+if [[ $status != 200 ]]; then
+  fail "a bucket: GET /health: status '$status'; logs:"$'\n'"$logs"
+else
+  [[ $logs == *"$bucket"* ]] || fail "a bucket: not named; logs:"$'\n'"$logs"
+  [[ $logs != *"$s3_secret_key"* ]] || fail "a bucket: the logs show the secret key"
+  # The S3 server's request log: `<time> | vgw | <status> | <duration> | <client> | <method> |
+  # <path> | ...`; each object the server wrote, read and deleted, by its path.
+  checked=$(docker logs "$s3" 2>&1 | awk -F ' [|] ' -v prefix="/$bucket/" '
+    $3 ~ /^2/ && index($7, prefix) == 1 && length($7) > length(prefix) {
+      sub(/[?].*/, "", $7)
+      if ($6 == "PUT") put[$7] = 1
+      else if ($6 == "GET" && put[$7]) got[$7] = 1
+      else if ($6 == "DELETE" && got[$7]) print $7
+    }')
+  [[ -n $checked ]] ||
+    fail "a bucket: no write, read and delete of an object; S3 server logs:"$'\n'"$(docker logs "$s3" 2>&1)"
+  keys=$(s3_keys "$bucket")
+  [[ -z $keys ]] || fail "a bucket: objects left behind:"$'\n'"$keys"
+  files=$(in_volume "$volume" find /volume -mindepth 1)
+  [[ -z $files ]] || fail "a bucket: the volume at $attachments holds:"$'\n'"$files"
+fi
 
 if [[ $failures -ne 0 ]]; then
   echo "image-test: $failures case(s) failed" >&2
