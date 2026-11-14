@@ -28,6 +28,7 @@ mod oidc;
 mod protocol;
 mod refusal;
 mod sign_in;
+mod sign_up;
 mod spaces;
 
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
@@ -37,6 +38,7 @@ pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
 use protocol::Statement;
 pub use protocol::Versions;
 pub use sign_in::{CALLBACK_PATH, PublicUrl, SignInSettings};
+pub use sign_up::{Listed, SignUp};
 
 /// The OpenAPI spec the server implements: `api/openapi.json`, served at `GET /openapi.json`.
 pub const OPENAPI_SPEC: &str = include_str!("../../../api/openapi.json");
@@ -72,6 +74,8 @@ pub struct Settings {
     pub versions: Versions,
     /// Sign-in; off without it.
     pub sign_in: Option<SignInSettings>,
+    /// Who may sign up.
+    pub sign_up: SignUp,
     /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
     /// limit without it.
     pub owned_spaces_limit: Option<u32>,
@@ -87,6 +91,7 @@ struct AppState {
     versions: Versions,
     sign_in: Option<Arc<SignInSettings>>,
     google: Option<Arc<Google>>,
+    sign_up: Arc<SignUp>,
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     connections: Arc<connections::Connections>,
@@ -200,6 +205,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .and_then(|sign_in| sign_in.google.clone())
                 .map(|google| Arc::new(Google::new(google))),
             sign_in: settings.sign_in.map(Arc::new),
+            sign_up: Arc::new(settings.sign_up),
         })
 }
 

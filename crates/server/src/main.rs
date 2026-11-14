@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use skald_proto::ServerName;
 use skald_server::{
-    AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret, GitHubApp, GitHubUrl,
-    OidcSettings, PublicUrl, Settings, SignInSettings,
+    AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret, GitHubApp, GitHubUrl, Listed,
+    OidcSettings, PublicUrl, Settings, SignInSettings, SignUp,
 };
 use tokio::net::TcpListener;
 
@@ -22,6 +22,13 @@ const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
 const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
 /// The least time between two reads of Google's keys.
 const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
+
+/// `--sign-up`.
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SignUpMode {
+    Open,
+    Closed,
+}
 
 /// Skald server.
 #[derive(Parser)]
@@ -124,6 +131,47 @@ struct Cli {
     )]
     device_poll_interval: u64,
 
+    /// Who may sign up: open, anyone the sign-in providers sign in; closed, only the identities on
+    /// the --sign-up-* lists. Existing accounts sign in and link methods either way.
+    #[arg(
+        long,
+        env = "SKALD_SIGN_UP",
+        value_name = "MODE",
+        value_enum,
+        default_value_t = SignUpMode::Open
+    )]
+    sign_up: SignUpMode,
+
+    /// While sign-up is closed, the GitHub logins that may sign up, comma-separated, without case.
+    #[arg(
+        long,
+        env = "SKALD_SIGN_UP_GITHUB_LOGINS",
+        value_name = "LOGINS",
+        value_delimiter = ','
+    )]
+    sign_up_github_logins: Vec<String>,
+
+    /// While sign-up is closed, the Google emails that may sign up, comma-separated, without case;
+    /// an email counts only once Google has verified it.
+    #[arg(
+        long,
+        env = "SKALD_SIGN_UP_GOOGLE_EMAILS",
+        value_name = "EMAILS",
+        value_delimiter = ','
+    )]
+    sign_up_google_emails: Vec<String>,
+
+    /// While sign-up is closed, the Google Workspace or Cloud organizations whose accounts may sign
+    /// up, by the domain of their ID tokens' hd claim, comma-separated, without case; an email's
+    /// domain does not count.
+    #[arg(
+        long,
+        env = "SKALD_SIGN_UP_GOOGLE_DOMAINS",
+        value_name = "DOMAINS",
+        value_delimiter = ','
+    )]
+    sign_up_google_domains: Vec<String>,
+
     /// The number of spaces an account may own: the ones it created, its personal space included,
     /// which counts also before it is created [default: no limit].
     #[arg(
@@ -193,6 +241,32 @@ fn client(
     }
 }
 
+/// The entries of a comma-separated list, trimmed, without empty ones.
+fn entries(list: Vec<String>) -> Vec<String> {
+    list.into_iter()
+        .map(|entry| entry.trim().to_owned())
+        .filter(|entry| !entry.is_empty())
+        .collect()
+}
+
+/// The start's warning of `settings` while sign-up is open and a provider signs people in.
+fn open_warning(settings: &Settings) -> Option<String> {
+    let sign_in = settings.sign_in.as_ref()?;
+    if settings.sign_up != SignUp::Open {
+        return None;
+    }
+    let providers = match (sign_in.github.is_some(), sign_in.google.is_some()) {
+        (true, true) => "GitHub or Google",
+        (true, false) => "GitHub",
+        (false, true) => "Google",
+        (false, false) => return None,
+    };
+    Some(format!(
+        "skald-server: warning: sign-up is open: any {providers} account can sign up; \
+         --sign-up closed (SKALD_SIGN_UP=closed) admits only the listed ones"
+    ))
+}
+
 impl Cli {
     /// The attachment storage: the bucket, given with all its settings and `secret_key`, or the
     /// directory, or none.
@@ -244,8 +318,26 @@ impl Cli {
         })))
     }
 
+    /// Who may sign up; the lists only while sign-up is closed.
+    fn sign_up(&mut self) -> Result<SignUp, String> {
+        let listed = Listed {
+            github_logins: entries(std::mem::take(&mut self.sign_up_github_logins)),
+            google_emails: entries(std::mem::take(&mut self.sign_up_google_emails)),
+            google_domains: entries(std::mem::take(&mut self.sign_up_google_domains)),
+        };
+        match self.sign_up {
+            SignUpMode::Closed => Ok(SignUp::Closed(listed)),
+            SignUpMode::Open if listed == Listed::default() => Ok(SignUp::Open),
+            SignUpMode::Open => Err(
+                "the lists of who may sign up need --sign-up closed (SKALD_SIGN_UP=closed)"
+                    .to_owned(),
+            ),
+        }
+    }
+
     /// The settings, or why they do not fit together.
-    fn settings(self) -> Result<Settings, String> {
+    fn settings(mut self) -> Result<Settings, String> {
+        let sign_up = self.sign_up()?;
         let server_name = self
             .server_name
             .or_else(|| self.public_url.as_ref().and_then(PublicUrl::server_name));
@@ -291,6 +383,7 @@ impl Cli {
         Ok(Settings {
             versions: self.protocol_versions.unwrap_or_default(),
             sign_in,
+            sign_up,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
         })
@@ -316,6 +409,7 @@ async fn run(mut cli: Cli) -> Result<(), String> {
     let database_url = cli.database_url.clone();
     let attachments = cli.attachment_storage(secret(BUCKET_SECRET_ENV)?)?;
     let settings = cli.settings()?;
+    let warning = open_warning(&settings);
     let db = skald_server::connect(&database_url)
         .await
         .map_err(|err| format!("cannot connect to PostgreSQL: {err}"))?;
@@ -337,6 +431,9 @@ async fn run(mut cli: Cli) -> Result<(), String> {
     // After the line above, which the tests and the image's users read first.
     if let Some(storage) = &attachments {
         eprintln!("skald-server: attachments in {storage}");
+    }
+    if let Some(warning) = warning {
+        eprintln!("{warning}");
     }
     axum::serve(listener, skald_server::app(db, settings))
         .await
@@ -410,6 +507,110 @@ mod tests {
             storage(&[], Some("secret")),
             Err(format!("{BUCKET_SECRET_ENV} needs --attachments-bucket"))
         );
+    }
+
+    /// The sign-up of the arguments `args`.
+    fn sign_up(args: &[&str]) -> Result<SignUp, String> {
+        let mut cli = Cli::try_parse_from(
+            [
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+            ]
+            .iter()
+            .chain(args),
+        )
+        .expect("valid arguments");
+        cli.sign_up()
+    }
+
+    #[test]
+    fn sign_up_is_open_unless_closed_with_its_lists() {
+        assert_eq!(sign_up(&[]), Ok(SignUp::Open));
+        assert_eq!(sign_up(&["--sign-up", "open"]), Ok(SignUp::Open));
+        assert_eq!(
+            sign_up(&["--sign-up", "closed"]),
+            Ok(SignUp::Closed(Listed::default()))
+        );
+        assert_eq!(
+            sign_up(&[
+                "--sign-up",
+                "closed",
+                "--sign-up-github-logins",
+                " ada, ,bob,",
+                "--sign-up-google-emails",
+                "grace@example.com",
+                "--sign-up-google-domains",
+                "acme.example,",
+            ]),
+            Ok(SignUp::Closed(Listed {
+                github_logins: vec!["ada".to_owned(), "bob".to_owned()],
+                google_emails: vec!["grace@example.com".to_owned()],
+                google_domains: vec!["acme.example".to_owned()],
+            }))
+        );
+        assert_eq!(
+            sign_up(&["--sign-up-github-logins", " , "]),
+            Ok(SignUp::Open)
+        );
+        let needs = Err(
+            "the lists of who may sign up need --sign-up closed (SKALD_SIGN_UP=closed)".to_owned(),
+        );
+        for list in [
+            "--sign-up-github-logins",
+            "--sign-up-google-emails",
+            "--sign-up-google-domains",
+        ] {
+            assert_eq!(sign_up(&["--sign-up", "open", list, "x"]), needs, "{list}");
+            assert_eq!(sign_up(&[list, "x"]), needs, "{list}");
+        }
+    }
+
+    /// Settings with the sign-up `sign_up` and the sign-in of GitHub if `github` and Google if
+    /// `google`, if either.
+    fn with_sign_up(sign_up: SignUp, github: bool, google: bool) -> Settings {
+        let secret = || ClientSecret::new("secret".to_owned()).expect("a secret");
+        let url = |url: &str| url.parse::<GitHubUrl>().expect("a GitHub address");
+        Settings {
+            sign_in: (github || google).then(|| SignInSettings {
+                public_url: "https://skald.example".parse().expect("a public address"),
+                github: github.then(|| GitHubApp {
+                    client_id: "Ov23li0fake".to_owned(),
+                    client_secret: secret(),
+                    url: url("https://github.com"),
+                    api_url: url("https://api.github.com"),
+                }),
+                google: google.then(|| OidcSettings {
+                    issuer: "https://accounts.google.com".to_owned(),
+                    client_id: "fake.apps.googleusercontent.com".to_owned(),
+                    client_secret: secret(),
+                    key_refresh: GOOGLE_KEY_REFRESH,
+                }),
+                state_lifetime: Duration::from_secs(600),
+                link_age: Duration::from_secs(300),
+                device_code_lifetime: Duration::from_secs(600),
+                device_poll_interval: Duration::from_secs(5),
+            }),
+            sign_up,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn open_sign_up_warns_of_the_providers_it_admits_from() {
+        let warning = |github, google| open_warning(&with_sign_up(SignUp::Open, github, google));
+        let any = |providers: &str| {
+            Some(format!(
+                "skald-server: warning: sign-up is open: any {providers} account can sign up; \
+                 --sign-up closed (SKALD_SIGN_UP=closed) admits only the listed ones"
+            ))
+        };
+        assert_eq!(warning(true, true), any("GitHub or Google"));
+        assert_eq!(warning(true, false), any("GitHub"));
+        assert_eq!(warning(false, true), any("Google"));
+        assert_eq!(warning(false, false), None);
+        let closed = SignUp::Closed(Listed::default());
+        assert_eq!(open_warning(&with_sign_up(closed, true, true)), None);
     }
 
     #[test]

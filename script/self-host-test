@@ -23,6 +23,9 @@
 #                        from standard input
 #   google               adds the Google OAuth client's ID and secret to .env; the secret read from
 #                        standard input
+#   sign-up              closes sign-up in .env: SKALD_SIGN_UP=closed and the lists of who may sign
+#                        up, SKALD_SIGN_UP_GITHUB_LOGINS, SKALD_SIGN_UP_GOOGLE_EMAILS and
+#                        SKALD_SIGN_UP_GOOGLE_DOMAINS, comma-separated
 #   github-check         checks the server's GitHub sign-in with script/check-github-sign-in, after
 #                        `up`
 #   google-check         checks the server's Google sign-in with script/check-google-sign-in, after
@@ -43,7 +46,9 @@
 # stand-ins' values for `<bucket endpoint>`, `<bucket region>`, `<bucket name>` and `<bucket access
 # key ID>`, and its secret key on standard input; the stand-ins' client IDs for `<GitHub client ID>`
 # and `<Google client ID>`, and their secrets on standard input, a line each, GitHub's first; the
-# proxy's container for `<proxy container>`, its network for `<proxy network>`. Before the sign-in
+# proxy's container for `<proxy container>`, its network for `<proxy network>`; the listed stand-in
+# GitHub login for `<GitHub logins>`, the Google stand-in's email for `<Google emails>` and a domain
+# no stand-in account has for `<Google domains>`. Before the sign-in
 # checks, it exports GITHUB_URL and GOOGLE_ISSUER, the stand-ins' addresses, and SSL_CERT_FILE, the
 # roots of the local ACME server and the test CA, and puts jq, which the checks need, on PATH.
 #
@@ -90,6 +95,12 @@
 #     page without a session offers sign-in with that provider only.
 #   proxy-host also runs github and google before `up`, and github-check and google-check after it,
 #     through the proxy; the stack's containers' logs show neither client secret.
+#   The sign-in scenario's .env leaves sign-up open, the default: the server's log warns of it.
+#   sign-up: release, files, env, github, sign-up, up, github-check. The listed GitHub login signs a
+#     machine in by device flow; another GitHub user's sign-up is refused on the verification page,
+#     whose callback answers 403 with a page naming https://skald.so/problems/sign-up-closed, and
+#     that machine's skald sign-in ends within 30 s, failing and saying sign-up is closed. The
+#     server's log has no warning of open sign-up, and the containers' logs show no client secret.
 #   The .env of each of these has mode 0600, and the output shows no secret value of it.
 # README's "Self-hosting" and infrastructure.md's "Self-host" link to the guide. The guide names the
 # GitHub and Google callbacks on the domain.
@@ -119,6 +130,9 @@ google_client_id=self-host-stand-in.apps.googleusercontent.com
 google_secret=$(openssl rand -hex 24)
 github_user=4120711301
 github_login=ada-self-host
+# A second GitHub user, whose login no list names.
+github_other_user=4120711302
+github_other_login=bob-self-host
 google_subject=110248495921238990301
 google_email=grace.self-host@example.com
 work=$(mktemp -d)
@@ -210,7 +224,7 @@ awk -v dir="$work/blocks" '
 ' "$guide"
 touch "$work/blocks/list"
 before=$failures
-steps='release files image-check env bucket github google up status github-check google-check
+steps='release files image-check env bucket github google sign-up up status github-check google-check
   proxy-host proxy-host-site proxy-join proxy-join-connect proxy-network proxy-container-site'
 while read -r n step; do
   # $steps unquoted: one word per step.
@@ -243,6 +257,9 @@ block_text() {
       text=${text//"<Google client ID>"/$google_client_id}
       text=${text//"<proxy container>"/$proxy_container}
       text=${text//"<proxy network>"/$proxy_network}
+      text=${text//"<GitHub logins>"/$github_login}
+      text=${text//"<Google emails>"/$google_email}
+      text=${text//"<Google domains>"/no-account.self-host.test}
       printf '%s\n' "$text"
     fi
   done <"$work/blocks/list"
@@ -604,7 +621,8 @@ stack_down() {
 # --- main: the clean machine's path, from the first start.
 scenario main release files image-check env :before_up up :wait_https :trust_acme status :trust_system
 # check_env <scenario>: the .env the guide wrote has mode 0600, and its output shows none of its
-# secret values: all but this commit's image, those with the domain and the client IDs.
+# secret values: all but this commit's image, those with the domain, the client IDs and the sign-up
+# settings.
 check_env() {
   local mode name value output
   output=$(cat "$work/run/$1/output")
@@ -616,7 +634,7 @@ check_env() {
     value=${value#[\"\']}
     value=${value%[\"\']}
     if [[ ${#value} -ge 12 && $value != *"$domain"* && $value != skald-server:self-host-test &&
-      $name != *_CLIENT_ID ]] &&
+      $name != *_CLIENT_ID && $name != SKALD_SIGN_UP* ]] &&
       [[ $output == *"$value"* ]]; then
       fail "$1: the guide's commands print the value of $name in .env"
     fi
@@ -811,6 +829,16 @@ exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=$dir/home SKALD_STATE_DIR=$di
 EOF
 }
 
+# start_sign_in <scenario> <machine>: starts `skald sign-in --first-device yes` on a new machine of
+# the scenario, in the background; its output goes to sign-in.out in the machine's directory, its exit
+# code then to sign-in.status.
+start_sign_in() {
+  local dir=/self-host/run/$1/$2
+  new_machine "$1" "$2"
+  docker exec --detach "$machine" sh -c "timeout 300 $dir/skald sign-in --server https://$domain \
+    --first-device yes </dev/null >$dir/sign-in.out 2>&1; echo \$? >$dir/sign-in.status"
+}
+
 # sign_in <scenario> <machine> <GitHub|Google>: signs a new machine in to the stack by device flow,
 # `skald sign-in --first-device yes`, its person signing in with the provider on the verification
 # page; fails unless the run succeeds and says it created the account's master key and holds its
@@ -822,9 +850,7 @@ sign_in() {
     GitHub) provider_page=https://$github_host/_stand-in/sign-in?user=$github_user ;;
     Google) provider_page=https://$google_host/_stand-in/sign-in?sub=$google_subject ;;
   esac
-  new_machine "$scenario" "$name"
-  docker exec --detach "$machine" sh -c "timeout 300 $dir/skald sign-in --server https://$domain \
-    --first-device yes </dev/null >$dir/sign-in.out 2>&1; echo \$? >$dir/sign-in.status"
+  start_sign_in "$scenario" "$name"
   for _ in $(seq 120); do
     out=$(m cat "$dir/sign-in.out" 2>/dev/null || true)
     if [[ $out =~ [A-Z]{4}-[A-Z]{4} ]]; then
@@ -911,6 +937,55 @@ no_secret_in_logs() {
   done
 }
 
+# refused_sign_in <scenario> <machine> <GitHub user ID>: a new machine's `skald sign-in --first-device
+# yes`, whose person signs in with GitHub as that user on the verification page with the code filled
+# in; fails unless the callback refuses the sign-up, a 403 page naming its problem type, and the run
+# then ends within 30 s, failing and saying sign-up is closed.
+refused_sign_in() {
+  local scenario=$1 name=$2 user=$3 dir=/self-host/run/$1/$2 out complete said status=
+  start_sign_in "$scenario" "$name"
+  complete=
+  for _ in $(seq 120); do
+    out=$(m cat "$dir/sign-in.out" 2>/dev/null || true)
+    complete=$(grep -oE "https://$domain/[^ ]*user_code=[^ ]*" <<<"$out" | head -n 1 | sed 's/[,.;]$//' || true)
+    if [[ -n $complete ]] || m test -e "$dir/sign-in.status"; then break; fi
+    sleep 0.5
+  done
+  if [[ -z $complete ]]; then
+    fail "$scenario: skald sign-in on $name shows no verification page with its code:"$'\n'"$out"
+    return 1
+  fi
+  if ! said=$(person refused GitHub "https://$github_host/_stand-in/sign-in?user=$user" "$complete" 2>&1); then
+    fail "$scenario: the person of $name cannot sign in on the verification page:"$'\n'"$said"
+    return 1
+  fi
+  [[ $(head -n 1 <<<"$said") == 403 ]] ||
+    fail "$scenario: the refused sign-up of $name's person answers $(head -n 1 <<<"$said"), not 403"
+  [[ $said == *https://skald.so/problems/sign-up-closed* ]] ||
+    fail "$scenario: the refused sign-up's page does not name https://skald.so/problems/sign-up-closed:"$'\n'"$said"
+  for _ in $(seq 60); do
+    if status=$(m cat "$dir/sign-in.status" 2>/dev/null); then break; fi
+    sleep 0.5
+  done
+  out=$(m cat "$dir/sign-in.out")
+  if [[ -z $status ]]; then
+    fail "$scenario: skald sign-in on $name still runs 30 s after its person's sign-up was refused:"$'\n'"$out"
+    return 1
+  fi
+  [[ $status != 0 ]] || fail "$scenario: skald sign-in on $name succeeds though its sign-up was refused:"$'\n'"$out"
+  said=$(tr '[:upper:]' '[:lower:]' <<<"$out")
+  [[ ($said == *sign-up* || $said == *"sign up"*) && $said == *closed* ]] ||
+    fail "$scenario: skald sign-in on $name does not say sign-up is closed:"$'\n'"$out"
+}
+
+# open_warnings <scenario>: the lines of the server's log that warn of open sign-up.
+open_warnings() {
+  local id
+  if id=$(container "$1" "$server_image"); then
+    m docker logs "$id" 2>&1 | grep -iE 'warning' | grep -iE 'sign[- ]up' || true
+  fi
+}
+
 internet_hosts
 providers=$github_secret$'\n'$google_secret
 
@@ -921,9 +996,27 @@ if run_scenario sign-in <<<"$providers"; then
   if sign_in sign-in ada-machine GitHub; then creates_spaces sign-in ada-machine apple birch cedar; fi
   if sign_in sign-in grace-machine Google; then creates_spaces sign-in grace-machine delta ember fjord; fi
   no_secret_in_logs sign-in
+  [[ -n $(open_warnings sign-in) ]] ||
+    fail "sign-in: with sign-up open, the default, the server's log does not warn of it"
 fi
 check_env sign-in
 stack_down sign-in
+
+# sign-up: closed, the stand-in's GitHub login listed; another GitHub user is refused.
+m curl --silent --fail --request PUT --header 'Content-Type: application/json' --data \
+  "{\"id\":$github_other_user,\"login\":\"$github_other_login\",\"email\":null,\"name\":null}" \
+  http://127.0.0.1:14100/_stand-in/users || fail "sign-up: cannot add $github_other_login to the GitHub stand-in"
+scenario sign-up release files env github sign-up :before_up up :wait_https :trust_checks github-check \
+  :trust_system
+if run_scenario sign-up <<<"$github_secret"; then
+  sign_in sign-up ada-machine GitHub || true
+  refused_sign_in sign-up bob-machine "$github_other_user" || true
+  warned=$(open_warnings sign-up)
+  [[ -z $warned ]] || fail "sign-up: with sign-up closed, the server's log warns of open sign-up: $warned"
+  no_secret_in_logs sign-up
+fi
+check_env sign-up
+stack_down sign-up
 
 # github, google: one provider's values only.
 scenario github release files env github :before_up up :wait_https :trust_checks github-check :trust_system

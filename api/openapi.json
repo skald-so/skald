@@ -658,7 +658,7 @@
       "get": {
         "operationId": "finishGitHubSignIn",
         "summary": "GitHub's callback",
-        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and the sign-in's PKCE verifier and reads the GitHub user. The first sign-in of a GitHub user creates an account with the user's GitHub ID as its GitHub sign-in method; later ones reach the account that holds that method and update the method's GitHub login. Keeps no GitHub token. For a link, started by `POST /auth/github/link`, it adds the GitHub sign-in method to the account of the web session that started the link instead of signing in.",
+        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and the sign-in's PKCE verifier and reads the GitHub user. The first sign-in of a GitHub user creates an account with the user's GitHub ID as its GitHub sign-in method; later ones reach the account that holds that method and update the method's GitHub login. While the server's sign-up is closed, a first sign-in creates an account only for a GitHub login on the server's list, compared without case; the GitHub user's email does not count. Keeps no GitHub token. For a link, started by `POST /auth/github/link`, it adds the GitHub sign-in method to the account of the web session that started the link instead of signing in.",
         "parameters": [
           {
             "name": "code",
@@ -727,7 +727,7 @@
             }
           },
           "403": {
-            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback.",
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback. Or a refused sign-up: the server's sign-up is closed and the person, who has no account, is on none of its lists; the page names the problem type `https://skald.so/problems/sign-up-closed`, and nothing is created. A sign-in from the verification page with a user code refuses that code too: its polls answer `sign_up_closed`.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -955,7 +955,7 @@
       "get": {
         "operationId": "finishGoogleSignIn",
         "summary": "Google's callback",
-        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. Keeps no email, ID token or Google token. For a link, started by `POST /auth/google/link`, it adds the Google sign-in method to the account of the web session that started the link instead of signing in.",
+        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. While the server's sign-up is closed, a first sign-in creates an account only for an email on the server's list whose `email_verified` is true, or for an ID token whose `hd`, the Google Workspace or Cloud organization, is on its domain list; the email's domain does not count. Lists compare without case. Keeps no email, ID token or Google token. For a link, started by `POST /auth/google/link`, it adds the Google sign-in method to the account of the web session that started the link instead of signing in.",
         "parameters": [
           {
             "name": "code",
@@ -1024,7 +1024,7 @@
             }
           },
           "403": {
-            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback.",
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback. Or a refused sign-up: the server's sign-up is closed and the person, who has no account, is on none of its lists; the page names the problem type `https://skald.so/problems/sign-up-closed`, and nothing is created. A sign-in from the verification page with a user code refuses that code too: its polls answer `sign_up_closed`.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -1188,7 +1188,7 @@
       "post": {
         "operationId": "requestDeviceToken",
         "summary": "Poll for a device flow's session token",
-        "description": "The token endpoint (RFC 8628, §3.4): the machine polls with its device code, at most once per `interval` seconds, until its person approves or denies the user code or the codes expire. An approved code gives a session token once; every later poll for it answers `invalid_grant`.",
+        "description": "The token endpoint (RFC 8628, §3.4): the machine polls with its device code, at most once per `interval` seconds, until its person approves or denies the user code, the server refuses its person's sign-up or the codes expire. An approved code gives a session token once; every later poll for it answers `invalid_grant`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -1224,7 +1224,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`application/problem+json`), or gives no token (`application/json`, RFC 8628, §3.5): `authorization_pending` until the person decides; `slow_down` to a poll less than `interval` seconds after the previous one; `access_denied` once the person denied the code; `expired_token` once the codes expired; `invalid_grant` for an unknown device code or one that already gave its token; `invalid_request`, `invalid_client` or `unsupported_grant_type` for a malformed request.",
+            "description": "The server refuses the stated version (`application/problem+json`), or gives no token (`application/json`, RFC 8628, §3.5): `authorization_pending` until the person decides; `slow_down` to a poll less than `interval` seconds after the previous one; `access_denied` once the person denied the code; `sign_up_closed`, this server's own, once a sign-in from the verification page with the user code was refused as a sign-up, as sign-up is closed on the server, with `error_description` saying so; `expired_token` once the codes expired; `invalid_grant` for an unknown device code or one that already gave its token; `invalid_request`, `invalid_client` or `unsupported_grant_type` for a malformed request.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3150,7 +3150,8 @@
               "authorization_pending",
               "slow_down",
               "access_denied",
-              "expired_token"
+              "expired_token",
+              "sign_up_closed"
             ]
           },
           "error_description": {

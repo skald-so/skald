@@ -312,6 +312,11 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
                 "access_denied",
                 "The person denied this code.",
             )),
+            "refused" => Err(OAuthError::new(
+                "sign_up_closed",
+                "Sign-up is closed on this server: the person who signed in to approve this code \
+                 has no account and is not on its list of who may sign up.",
+            )),
             _ => Err(OAuthError::new(
                 "authorization_pending",
                 "The person has not decided yet.",
@@ -320,6 +325,28 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
     };
     tx.commit().await?;
     Ok(answer)
+}
+
+/// Refuses the user code of `return_to`, if it is the verification page with a pending one: the
+/// sign-in that would have approved it was refused as a sign-up, and its polls say so.
+pub(crate) async fn refuse_sign_up(db: &PgPool, return_to: &str) -> Result<(), sqlx::Error> {
+    let Ok(url) = url::Url::parse(return_to) else {
+        return Ok(());
+    };
+    if url.path() != VERIFICATION_PATH {
+        return Ok(());
+    }
+    let Some(code) = param(url.query(), "user_code").and_then(|typed| typed_code(&typed)) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "UPDATE device_codes SET state = 'refused'
+         WHERE user_code_hash = $1 AND state = 'pending' AND expires_at > now()",
+    )
+    .bind(digest(&code))
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// A verification page of `status` with `title` and `body`, under [`PAGE_POLICY`].
