@@ -2850,6 +2850,7 @@ dependencies = [
  "sha2 0.11.1",
  "skald-crypto",
  "skald-github-stand-in",
+ "skald-oidc-stand-in",
  "skald-proto",
  "skald-server",
  "sqlx",

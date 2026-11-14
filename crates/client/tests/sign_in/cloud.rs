@@ -1,6 +1,7 @@
-//! A `skald-server` with GitHub sign-in through the GitHub stand-in, on a fresh PostgreSQL
-//! database, behind a recording relay; and the person who approves or denies a machine's code on
-//! its verification page in headless Chrome.
+//! A `skald-server` with GitHub sign-in through the GitHub stand-in, Google sign-in through the
+//! OIDC stand-in, which plays Google, or both, on a fresh PostgreSQL database, behind a recording
+//! relay; and the person who approves or denies a machine's code on its verification page in
+//! headless Chrome, signing in there with GitHub or Google.
 
 use std::path::PathBuf;
 use std::thread;
@@ -10,10 +11,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
+use skald_oidc_stand_in::{Client, Key, Person, Provider};
 use skald_proto::{AccountId, Cbor, Cert, DeviceId, Roster, SpaceId};
-use skald_server::{CALLBACK_PATH, ClientSecret, GitHubApp, Settings, SignInSettings};
+use skald_server::{
+    CALLBACK_PATH, ClientSecret, GitHubApp, OidcSettings, Settings, SignInSettings,
+};
 
-use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_LINK, SUBMIT, Visit};
+use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_GITHUB, SIGN_IN_GOOGLE, SUBMIT, Visit};
 use super::common::Server;
 use super::machine::{self, Finished, Machine, Run};
 use super::relay::{Relay, strings_named};
@@ -24,6 +28,18 @@ pub const WAIT: Duration = Duration::from_secs(60);
 /// The fake OAuth App's client ID and secret.
 const CLIENT_ID: &str = "Ov23li0standin0cli";
 const CLIENT_SECRET: &str = "standin-secret-cli-0b1c2d3e4f5a6b7c8d9e";
+/// The server's client at the OIDC stand-in, and Google's callback under the public address.
+const GOOGLE_CLIENT_ID: &str = "skald-stand-in-google-cli";
+const GOOGLE_CLIENT_SECRET: &str = "stand-in-google-secret-cli-4d2a9e7b1c3f";
+const GOOGLE_CALLBACK: &str = "/auth/google/callback";
+
+/// The providers the server has settings for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Providers {
+    GitHub,
+    Google,
+    Both,
+}
 
 /// The requests that register a device and give and ask for the account's master key, as their
 /// lines start.
@@ -69,14 +85,28 @@ pub struct Cloud {
     /// Where machines reach the server: the relay.
     pub url: String,
     pub relay: Relay,
+    /// The GitHub stand-in; it runs also when the server has no GitHub settings.
     pub github: GitHub,
+    /// The OIDC stand-in, when the server has Google's settings.
+    pub google: Option<Provider>,
+    /// The server's public address, e.g. `http://skald.test:41234`.
+    pub public: String,
     server: Server,
 }
 
 impl Cloud {
-    /// A server whose codes work for `lifetime` seconds and poll every `interval`.
+    /// A server with GitHub's settings only, whose codes work for `lifetime` seconds and poll every
+    /// `interval`.
     pub fn start(lifetime: u64, interval: u64) -> Self {
+        Self::with(Providers::GitHub, lifetime, interval)
+    }
+
+    /// A server with the settings of `providers`, whose codes work for `lifetime` seconds and poll
+    /// every `interval`.
+    pub fn with(providers: Providers, lifetime: u64, interval: u64) -> Self {
+        let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
+        let mut public_url = String::new();
         let server = Server::start_with(|addr| {
             // Chrome resolves every *.test host to the server.
             let public = format!("http://skald.test:{}", addr.port());
@@ -86,22 +116,37 @@ impl Cloud {
                 callback: Some(format!("{public}{CALLBACK_PATH}")),
             });
             let github_url = stand_in.url().parse().expect("the stand-in's address");
+            let oidc = google.as_ref().map(|provider| {
+                provider.register(Client {
+                    client_id: GOOGLE_CLIENT_ID.to_owned(),
+                    client_secret: GOOGLE_CLIENT_SECRET.to_owned(),
+                    redirect_uri: format!("{public}{GOOGLE_CALLBACK}"),
+                });
+                OidcSettings {
+                    issuer: provider.issuer().to_owned(),
+                    client_id: GOOGLE_CLIENT_ID.to_owned(),
+                    client_secret: ClientSecret::new(GOOGLE_CLIENT_SECRET.to_owned())
+                        .expect("a client secret"),
+                    key_refresh: Duration::from_secs(60),
+                }
+            });
             let sign_in = SignInSettings {
                 public_url: public.parse().expect("a public address"),
-                github: Some(GitHubApp {
+                github: (providers != Providers::Google).then(|| GitHubApp {
                     client_id: CLIENT_ID.to_owned(),
                     client_secret: ClientSecret::new(CLIENT_SECRET.to_owned())
                         .expect("a client secret"),
                     api_url: github_url,
                     url: stand_in.url().parse().expect("the stand-in's address"),
                 }),
-                google: None,
+                google: oidc,
                 state_lifetime: Duration::from_secs(600),
                 link_age: Duration::from_secs(300),
                 device_code_lifetime: Duration::from_secs(lifetime),
                 device_poll_interval: Duration::from_secs(interval),
             };
             github = Some(stand_in);
+            public_url = public;
             Settings {
                 sign_in: Some(sign_in),
                 ..Settings::default()
@@ -112,8 +157,24 @@ impl Cloud {
             url: relay.url.clone(),
             relay,
             github: github.expect("the stand-in started with the server"),
+            google,
+            public: public_url,
             server,
         }
+    }
+
+    /// The OIDC stand-in; fails unless the server has Google's settings.
+    pub fn provider(&self) -> &Provider {
+        self.google
+            .as_ref()
+            .expect("the server has Google's settings")
+    }
+
+    /// Adds a person to the OIDC stand-in and gives them.
+    pub fn person(&self, subject: &str, email: &str) -> Person {
+        let person = Person::new(subject, email);
+        self.provider().put_person(person.clone());
+        person
     }
 
     /// Adds a GitHub user to the stand-in and gives it.
@@ -267,12 +328,38 @@ impl Cloud {
         user: &User,
         extra: &[&str],
     ) -> Finished {
+        self.approved(machine, extra, |grant| {
+            self.decide(page, user, grant, APPROVE);
+        })
+    }
+
+    /// As [`Cloud::signed_in`], the person approving as `person`, signed in with Google.
+    pub fn signed_in_with_google(
+        &self,
+        page: &Page,
+        machine: &Machine,
+        person: &Person,
+        extra: &[&str],
+    ) -> Finished {
+        self.approved(machine, extra, |grant| {
+            self.decide_with_google(page, person, grant, APPROVE);
+        })
+    }
+
+    /// Starts `skald sign-in --server <this server> <extra>` on `machine`, runs `approve` on the
+    /// grant it shows, and waits for the run to finish.
+    fn approved(
+        &self,
+        machine: &Machine,
+        extra: &[&str],
+        approve: impl FnOnce(&Grant),
+    ) -> Finished {
         let before = self.grants().len();
         let mut args = vec![machine::SIGN_IN, machine::SERVER, &self.url];
         args.extend_from_slice(extra);
         let mut run = machine.start(&args);
         let grant = shown_grant(self, &mut run, before);
-        self.decide(page, user, &grant, APPROVE);
+        approve(&grant);
         run.finish()
     }
 
@@ -327,14 +414,41 @@ impl Cloud {
     }
 
     /// The person at `page`, signed in to GitHub as `user`, opens `grant`'s verification page,
-    /// signing in to the server on the way, types its code and clicks `button`, [`APPROVE`] or
-    /// [`DENY`](super::browser::DENY); gives the last visit.
+    /// signing in to the server with GitHub on the way, types its code and clicks `button`,
+    /// [`APPROVE`] or [`DENY`](super::browser::DENY); gives the last visit.
     pub fn decide(&self, page: &Page, user: &User, grant: &Grant, button: &str) -> Visit {
         let visit = page.goto(&self.github.sign_in_url(user.id));
         assert_eq!(visit.status, Some(200), "stand-in sign-in: {visit:?}");
+        self.decide_signing_in(page, SIGN_IN_GITHUB, grant, button)
+    }
+
+    /// As [`Cloud::decide`], the person signed in to Google as `person` and signing in to the
+    /// server with Google on the verification page.
+    pub fn decide_with_google(
+        &self,
+        page: &Page,
+        person: &Person,
+        grant: &Grant,
+        button: &str,
+    ) -> Visit {
+        let visit = page.goto(&self.provider().sign_in_url(&person.subject));
+        assert_eq!(visit.status, Some(200), "OIDC stand-in sign-in: {visit:?}");
+        self.decide_signing_in(page, SIGN_IN_GOOGLE, grant, button)
+    }
+
+    /// The person at `page` opens `grant`'s verification page, signing in to the server on the way
+    /// by the sign-in that `link` finds there, types its code and clicks `button`; gives the last
+    /// visit.
+    fn decide_signing_in(&self, page: &Page, link: &str, grant: &Grant, button: &str) -> Visit {
         page.goto_settled(&grant.verification_uri);
-        if page.count(SIGN_IN_LINK) > 0 {
-            page.click(&format!("{SIGN_IN_LINK} >> nth=0"));
+        if page.count(CODE_FIELD) == 0 {
+            assert_eq!(
+                page.count(link),
+                1,
+                "the page offers {link}: {}",
+                page.text()
+            );
+            page.click_settled(&format!("{link} >> nth=0"));
             page.goto_settled(&grant.verification_uri);
         }
         assert_eq!(

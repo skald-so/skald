@@ -15,12 +15,15 @@ use serde_json::{Value, json};
 
 /// The device flow's verification page as the person finds their way on it: its field for the
 /// code, the buttons that approve and deny the code, the button of a page that asks for the code
-/// first, and a link or button that signs a browser without a session in.
+/// first, and a link or button that signs a browser without a session in: any, or the one of each
+/// provider, whose text names it.
 pub const CODE_FIELD: &str = "role=textbox";
 pub const APPROVE: &str = "role=button[name=/approve/i]";
 pub const DENY: &str = "role=button[name=/deny/i]";
 pub const SUBMIT: &str = "role=button >> nth=0";
 pub const SIGN_IN_LINK: &str = "a:has-text('sign in'), button:has-text('sign in')";
+pub const SIGN_IN_GITHUB: &str = "a:has-text('GitHub'), button:has-text('GitHub')";
+pub const SIGN_IN_GOOGLE: &str = "a:has-text('Google'), button:has-text('Google')";
 
 /// The driver process; closed on drop, which closes Chrome.
 pub struct Browser {
