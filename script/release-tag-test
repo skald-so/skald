@@ -150,7 +150,7 @@ tag() {
 }
 
 # expect_tag <case> <version>: the merge of a Release PR, $head: one ref written, the tag
-# v<version> created on $head, from a tag object of $head.
+# v<version> created on $head, from a tag object of $head; each POST sent as application/json.
 expect_tag() {
   if [[ $gate != 0 ]]; then
     fail "$1: script/release-pr-merged exited $gate, not 0, for the merge of a Release PR:" \
@@ -164,6 +164,10 @@ expect_tag() {
     | .body | fromjson] | length == 1 and .[0].tag == $tag and .[0].object == $head
     and .[0].type == "commit"' "$tmp/requests.log" >/dev/null ||
     fail "$1: not one tag object v$2 of $head"
+  jq -se '[.[] | select(.method == "POST")] | length == 2 and all(.contentType == "application/json")' \
+    "$tmp/requests.log" >/dev/null ||
+    fail "$1: not 2 POSTs sent as application/json:" \
+      "$(jq -c 'select(.method == "POST") | {url, contentType}' "$tmp/requests.log")"
 }
 
 # expect_no_tag <case> <gate>: no ref written; script/release-pr-merged exited <gate>, or anything
