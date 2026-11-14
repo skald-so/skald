@@ -101,7 +101,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
 - **Last release:** the last `vX.Y.Z` tag; beta tags do not count.
 - **Next version,** by `script/release-update`:
   - A version in `Cargo.toml` newer than the last release, set by a PR, stays; so does the version in `Cargo.toml` with no release tag yet. One older than the last release is an error.
-  - Otherwise git-cliff bumps the last release by the PRs since it. In `0.x`: a breaking change (`!`, or a `BREAKING CHANGE:` footer) bumps the minor version, any other PR the patch version. From `1.0`: a breaking change the major, a `feat` the minor, any other the patch.
+  - Otherwise git-cliff bumps the last release by the PRs since it. In `0.x`: a breaking change (`!`, or a `BREAKING CHANGE:` footer) bumps the minor version, any other PR the patch version; in `0.0.x` every PR the patch. From `1.0`: a breaking change the major, a `feat` the minor, any other the patch.
   - Nothing to release, so no Release PR: no PR merged since the last release, or the version is tagged already.
 - **CHANGELOG:** `CHANGELOG.md` in the root gets a section per release under `## [Unreleased]`, in the groups of Keep a Changelog: the titles of every PR merged since the last release, whatever it changes, newest first; not the Release PRs' commits, `chore: release v…`.
 - **The protocol** has its own version number: [protocol spec](../protocol/README.md#protocol-version).
