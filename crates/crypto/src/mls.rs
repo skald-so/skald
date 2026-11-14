@@ -26,7 +26,7 @@ use mls_rs::{
 use skald_proto::{Cert, ChannelId, DeviceId};
 use zeroize::Zeroizing;
 
-use crate::{SealedState, SigningKey, StateKey};
+use crate::{HistoryKey, SealedState, SigningKey, StateKey};
 pub use key_package::KeyPackage;
 use store::{Kept, Store};
 pub use view::ChannelView;
@@ -113,8 +113,8 @@ impl MlsDevice {
         } else {
             let channel = ChannelId::from_bytes(name.strip_prefix(HISTORY_ITEM)?.try_into().ok()?);
             let keys = plaintext
-                .chunks(HistoryKey::ENCODED_LEN)
-                .map(HistoryKey::decode)
+                .chunks(HISTORY_KEY_LEN)
+                .map(decode_history_key)
                 .collect::<Option<_>>()?;
             self.history.insert(channel, keys);
             Some(())
@@ -140,11 +140,10 @@ impl MlsDevice {
             seal([prefix, &id].concat(), &plaintext);
         }
         for (channel, keys) in &self.history {
-            let mut plaintext =
-                Zeroizing::new(Vec::with_capacity(keys.len() * HistoryKey::ENCODED_LEN));
+            let mut plaintext = Zeroizing::new(Vec::with_capacity(keys.len() * HISTORY_KEY_LEN));
             for (epoch, key) in keys {
                 plaintext.extend_from_slice(&epoch.to_be_bytes());
-                plaintext.extend_from_slice(key.0.as_ref());
+                plaintext.extend_from_slice(&*key.to_bytes());
             }
             seal([HISTORY_ITEM, channel.as_bytes()].concat(), &plaintext);
         }
@@ -595,7 +594,7 @@ impl MlsDevice {
         channel: ChannelId,
         group: &mut Group<impl MlsConfig>,
     ) -> Result<(), MlsError> {
-        let key = HistoryKey::of(group)?;
+        let key = history_key_of(group)?;
         group.write_to_storage()?;
         self.history
             .entry(channel)
@@ -686,38 +685,23 @@ pub struct MemberDevice {
     pub signing: [u8; 32],
 }
 
-/// The history key of an epoch of a channel's group: `docs/protocol/membership.md`, "History
-/// key". Its bytes are zeroed on drop and never shown.
-pub struct HistoryKey(Zeroizing<[u8; 16]>);
+/// The epoch's 8 bytes and the key's 16, as a channel's history item holds them.
+const HISTORY_KEY_LEN: usize = 24;
 
-impl HistoryKey {
-    /// The epoch's 8 bytes and the key's 16, as a channel's history item holds them.
-    const ENCODED_LEN: usize = 24;
-
-    /// `MLS-Exporter("skald history", "", 16)` in `group`'s current epoch.
-    fn of(group: &Group<impl MlsConfig>) -> Result<Self, MlsError> {
-        let secret = group.export_secret(HISTORY_LABEL, b"", 16)?;
-        let mut key = Zeroizing::new([0; 16]);
-        key.copy_from_slice(secret.as_bytes());
-        Ok(Self(key))
-    }
-
-    fn decode(encoded: &[u8]) -> Option<(u64, Self)> {
-        let (epoch, key) = encoded.split_first_chunk::<8>()?;
-        let key: &[u8; 16] = key.try_into().ok()?;
-        Some((u64::from_be_bytes(*epoch), Self(Zeroizing::new(*key))))
-    }
-
-    /// The key's 16 bytes.
-    pub fn to_bytes(&self) -> Zeroizing<[u8; 16]> {
-        self.0.clone()
-    }
+/// `MLS-Exporter("skald history", "", 16)` in `group`'s current epoch.
+fn history_key_of(group: &Group<impl MlsConfig>) -> Result<HistoryKey, MlsError> {
+    let secret = group.export_secret(HISTORY_LABEL, b"", 16)?;
+    let key: &[u8; 16] = secret
+        .as_bytes()
+        .try_into()
+        .expect("an exported secret of the length asked for");
+    Ok(HistoryKey::from_bytes(key))
 }
 
-impl fmt::Debug for HistoryKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("HistoryKey(..)")
-    }
+fn decode_history_key(encoded: &[u8]) -> Option<(u64, HistoryKey)> {
+    let (epoch, key) = encoded.split_first_chunk::<8>()?;
+    let key: &[u8; 16] = key.try_into().ok()?;
+    Some((u64::from_be_bytes(*epoch), HistoryKey::from_bytes(key)))
 }
 
 /// Why an MLS step of a device fails.

@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Seals history links and entries.
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
 # Seals the MLS state.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "3"
