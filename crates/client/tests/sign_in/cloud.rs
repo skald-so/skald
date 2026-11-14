@@ -82,7 +82,7 @@ fn unb64(text: &str) -> Vec<u8> {
 }
 
 pub struct Cloud {
-    /// Where machines reach the server: the relay.
+    /// Where machines reach the server: the relay, or the front before it.
     pub url: String,
     pub relay: Relay,
     /// The GitHub stand-in; it runs also when the server has no GitHub settings.
@@ -114,13 +114,33 @@ impl Cloud {
         Self::serving(Providers::GitHub, host, lifetime, interval)
     }
 
+    /// As [`Cloud::on_host`], the server's public address `http://<host>:<front>`: that of a front
+    /// before the relay that the test runs on the port `front` and points at the relay once the
+    /// cloud has started. Machines and the person's browser reach the server through the front, at
+    /// [`Cloud::url`], so the origin a machine signs on connecting is the server's public address.
+    pub fn fronted(host: &str, front: u16, lifetime: u64, interval: u64) -> Self {
+        Self::serving_at(Providers::GitHub, host, Some(front), lifetime, interval)
+    }
+
     /// As [`Cloud::with`], the server's public address `http://<host>:<port>`.
     fn serving(providers: Providers, host: &str, lifetime: u64, interval: u64) -> Self {
+        Self::serving_at(providers, host, None, lifetime, interval)
+    }
+
+    /// As [`Cloud::serving`], the public address's port `front` if given, machines reaching the
+    /// server there; otherwise the server's own, machines reaching the server at the relay.
+    fn serving_at(
+        providers: Providers,
+        host: &str,
+        front: Option<u16>,
+        lifetime: u64,
+        interval: u64,
+    ) -> Self {
         let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
         let mut public_url = String::new();
         let server = Server::start_with(|addr| {
-            let public = format!("http://{host}:{}", addr.port());
+            let public = format!("http://{host}:{}", front.unwrap_or(addr.port()));
             let stand_in = GitHub::start(App {
                 client_id: CLIENT_ID.to_owned(),
                 client_secret: CLIENT_SECRET.to_owned(),
@@ -165,7 +185,10 @@ impl Cloud {
         });
         let relay = Relay::start(server.url.trim_start_matches("http://"));
         Cloud {
-            url: relay.url.clone(),
+            url: match front {
+                Some(_) => public_url.clone(),
+                None => relay.url.clone(),
+            },
             relay,
             github: github.expect("the stand-in started with the server"),
             google,
