@@ -6,7 +6,8 @@
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use semver::Version;
 use serde::Deserialize;
@@ -36,6 +37,10 @@ const NPM_MARKER: &str = "installed-by-npm";
 const ARCHIVE_LIMIT: u64 = 64 << 20;
 const CHECKSUM_LIMIT: u64 = 4 << 10;
 const API_LIMIT: u64 = 4 << 20;
+
+/// How long a move of the binary waits while another program has it open, as an antivirus has a
+/// new or just started program on Windows: until then Windows refuses to move it.
+const BUSY_LIMIT: Duration = Duration::from_secs(10);
 
 /// The target of this machine's archive in a release, as dist names it.
 const TARGET: Option<&str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -427,15 +432,45 @@ fn replace(exe: &Path, binary: &[u8]) -> io::Result<()> {
 /// failure. An `aside` it cannot remove, such as a running program on Windows, stays.
 fn swap(exe: &Path, staged: &Path, aside: Option<&Path>) -> io::Result<()> {
     let Some(aside) = aside else {
-        return fs::rename(staged, exe);
+        return rename(staged, exe);
     };
-    fs::rename(exe, aside)?;
-    if let Err(err) = fs::rename(staged, exe) {
-        let _ = fs::rename(aside, exe);
+    rename(exe, aside)?;
+    if let Err(err) = rename(staged, exe) {
+        let _ = rename(aside, exe);
         return Err(err);
     }
     let _ = fs::remove_file(aside);
     Ok(())
+}
+
+/// Moves `from` to `to`, waiting up to [`BUSY_LIMIT`] while another program has either open.
+fn rename(from: &Path, to: &Path) -> io::Result<()> {
+    rename_within(from, to, BUSY_LIMIT)
+}
+
+/// Moves `from` to `to`, tried again while another program has either open, for up to `limit`.
+fn rename_within(from: &Path, to: &Path, limit: Duration) -> io::Result<()> {
+    // PROBE: no retry, to see the tests fail without it.
+    if std::hint::black_box(true) {
+        return fs::rename(from, to);
+    }
+    let started = Instant::now();
+    let mut wait = Duration::from_millis(10);
+    loop {
+        match fs::rename(from, to) {
+            Err(err) if busy(&err) && started.elapsed() + wait <= limit => {
+                thread::sleep(wait);
+                wait = (wait * 2).min(Duration::from_millis(500));
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Whether `err` is Windows refusing a file another program has open: a sharing or a lock
+/// violation.
+fn busy(err: &io::Error) -> bool {
+    cfg!(windows) && matches!(err.raw_os_error(), Some(32 | 33))
 }
 
 /// A file beside `exe` for an update of it, by this process: `.<exe's name>.<pid>.<kind>`.
@@ -790,6 +825,73 @@ mod tests {
         assert_eq!(fs::read(&exe).unwrap(), b"new");
         // Nothing runs the old one here, so it is removed.
         assert_eq!(files(&dir), ["skald"]);
+    }
+
+    /// Keeps others from moving `path` for `hold`, as an antivirus scanning it does on Windows.
+    #[cfg(windows)]
+    fn held(path: &Path, hold: Duration) -> thread::JoinHandle<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_SHARE_READ alone: no FILE_SHARE_DELETE, which a move needs.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(path)
+            .unwrap();
+        thread::spawn(move || {
+            thread::sleep(hold);
+            drop(file);
+        })
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn replace_waits_while_another_program_has_the_binary_open() {
+        let dir = TestDir::new("update-replace-busy");
+        let exe = dir.join("skald.exe");
+        fs::write(&exe, "old").unwrap();
+        let scan = held(&exe, Duration::from_millis(500));
+
+        replace(&exe, b"new").unwrap();
+
+        scan.join().unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), b"new");
+        assert_eq!(files(&dir), ["skald.exe"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_move_of_a_file_kept_open_gives_up_after_its_limit() {
+        let dir = TestDir::new("update-rename-busy");
+        let exe = dir.join("skald.exe");
+        fs::write(&exe, "old").unwrap();
+        let scan = held(&exe, Duration::from_secs(2));
+
+        let started = Instant::now();
+        let err = rename_within(&exe, &dir.join("moved"), Duration::from_millis(300)).unwrap_err();
+        let took = started.elapsed();
+
+        scan.join().unwrap();
+        assert_eq!(err.raw_os_error(), Some(32), "{err}");
+        // Refused while the handle was open, after tries for most of the limit.
+        assert!(took >= Duration::from_millis(100), "gave up after {took:?}");
+        assert_eq!(fs::read(&exe).unwrap(), b"old");
+        assert_eq!(files(&dir), ["skald.exe"]);
+    }
+
+    #[test]
+    fn other_failed_moves_are_not_tried_again() {
+        let dir = TestDir::new("update-rename-missing");
+
+        let started = Instant::now();
+        let err = rename_within(
+            &dir.join("missing"),
+            &dir.join("moved"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

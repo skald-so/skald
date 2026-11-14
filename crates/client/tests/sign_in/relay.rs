@@ -178,9 +178,19 @@ impl Relay {
         let target = target.to_owned();
         thread::spawn(move || {
             for (connection, machine) in listener.incoming().enumerate() {
-                let Ok(machine) = machine else { continue };
-                let Ok(server) = TcpStream::connect(&target) else {
-                    continue;
+                let machine = match machine {
+                    Ok(machine) => machine,
+                    Err(err) => {
+                        eprintln!("relay: connection {connection}: cannot accept: {err}");
+                        continue;
+                    }
+                };
+                let server = match TcpStream::connect(&target) {
+                    Ok(server) => server,
+                    Err(err) => {
+                        eprintln!("relay: connection {connection}: cannot reach {target}: {err}");
+                        continue;
+                    }
                 };
                 pipe(&machine, &server, connection, true, &kept, &rules);
                 pipe(&server, &machine, connection, false, &kept, &rules);
@@ -330,7 +340,12 @@ fn pipe(
         let mut buffer = [0; 16 * 1024];
         loop {
             let count = match from.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
+                Err(err) => {
+                    let side = if to_server { "machine" } else { "server" };
+                    eprintln!("relay: connection {connection}: cannot read the {side}: {err}");
+                    break;
+                }
                 Ok(count) => count,
             };
             reads.lock().expect("the relay's reads").push(Chunk {
