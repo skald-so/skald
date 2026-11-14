@@ -284,7 +284,7 @@ async fn sync(
 ) -> Result<(), Stop> {
     ack(state, reader.device(), cursor).await?;
     let held = reader
-        .start(&state.db, cursor)
+        .start(&state.db)
         .await
         .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
     let Some(held) = held else {

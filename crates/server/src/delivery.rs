@@ -83,7 +83,8 @@ pub(crate) struct Reader {
     subscription: Subscription,
     /// Whether the connection's first `sync` came.
     synced: bool,
-    /// The highest `seq` sent on the connection, or the cursor of its first `sync` if higher.
+    /// The highest `seq` sent on the connection. Catch-up starts after the first `sync`'s cursor,
+    /// as its ack deletes the entries up to it.
     sent: i64,
 }
 
@@ -102,13 +103,9 @@ impl Reader {
         self.device
     }
 
-    /// Starts catch-up after `cursor` at the connection's first `sync`: gives the highest `seq` the
-    /// mailbox has held so far; `None` at a later `sync`.
-    pub(crate) async fn start(
-        &mut self,
-        db: &PgPool,
-        cursor: u64,
-    ) -> Result<Option<i64>, sqlx::Error> {
+    /// Starts catch-up at the connection's first `sync`, once the `sync` acked: gives the highest
+    /// `seq` the mailbox has held so far; `None` at a later `sync`.
+    pub(crate) async fn start(&mut self, db: &PgPool) -> Result<Option<i64>, sqlx::Error> {
         if self.synced {
             return Ok(None);
         }
@@ -118,7 +115,6 @@ impl Reader {
                 .fetch_optional(db)
                 .await?;
         self.synced = true;
-        self.sent = i64::try_from(cursor).unwrap_or(i64::MAX);
         Ok(Some(held.map_or(0, |(seq,)| seq)))
     }
 
