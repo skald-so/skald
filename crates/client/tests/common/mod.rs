@@ -2,7 +2,8 @@
 //! database, or against a stub that gives canned answers.
 
 use std::env;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::future::Future;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,10 +69,12 @@ fn output(output: process::Output) -> Output {
 }
 
 /// A `skald-server` on a new PostgreSQL database, serving on a free local port in this process.
-/// The server and the database are removed on drop.
+/// The server and the database are removed on drop, the database also when the server fails to
+/// start.
 pub struct Server {
     pub url: String,
     runtime: Option<Runtime>,
+    /// Dropped once the server has stopped.
     db: TestDb,
 }
 
@@ -94,18 +97,19 @@ impl Server {
         let runtime = Runtime::new().expect("start a tokio runtime");
         let db = TestDb::create(&runtime);
         let url = db.url();
-        let (listener, pool) = runtime.block_on(async {
-            let pool = skald_server::connect(&url)
-                .await
-                .expect("connect to the test database");
+        let pool = runtime
+            .block_on(retried_on_reset("connect to the test database", || {
+                skald_server::connect(&url)
+            }))
+            .expect("connect to the test database");
+        let listener = runtime.block_on(async {
             skald_server::MIGRATOR
                 .run(&pool)
                 .await
                 .expect("apply migrations");
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
-                .expect("bind a local port");
-            (listener, pool)
+                .expect("bind a local port")
         });
         let addr = listener.local_addr().expect("the server's address");
         let settings = settings(addr);
@@ -129,7 +133,7 @@ impl Server {
         let runtime = Runtime::new().expect("start a tokio runtime");
         runtime
             .block_on(async {
-                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                let mut conn = connect(&self.db.url()).await?;
                 sqlx::raw_sql("SET xmlbinary = hex")
                     .execute(&mut conn)
                     .await?;
@@ -154,7 +158,7 @@ impl Server {
         let runtime = Runtime::new().expect("start a tokio runtime");
         runtime
             .block_on(async {
-                let mut conn = PgConnection::connect(&self.db.url()).await?;
+                let mut conn = connect(&self.db.url()).await?;
                 sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut conn).await?;
                 conn.close().await
             })
@@ -164,40 +168,97 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        // Stops the server and closes its connections, so the database can be dropped.
+        // Stops the server and closes its connections; then the database goes, as `db` drops.
         let runtime = self.runtime.take().expect("the runtime runs until drop");
         runtime.shutdown_background();
-        let runtime = Runtime::new().expect("start a tokio runtime");
-        let _ = self.db.admin(
-            &runtime,
-            &[format!(
-                "DROP DATABASE IF EXISTS {} WITH (FORCE)",
-                self.db.name
-            )],
-        );
     }
 }
 
-/// A new empty database on the PostgreSQL server at `SKALD_TEST_DATABASE_URL`.
-///
-/// `SKALD_TEST_DATABASE_URL` is a connection URL without a database name, e.g.
-/// `postgres://postgres:password@127.0.0.1:5432`; `script/test` sets it.
+/// How many times a connection is tried while PostgreSQL resets it, and the wait before the first
+/// retry, doubled before each next one: 1.5 s in all.
+pub const SETUP_ATTEMPTS: u32 = 5;
+const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
+
+/// The result of `step`, `what`, tried again while PostgreSQL resets its connection, up to
+/// [`SETUP_ATTEMPTS`] times; any other error is returned at once. Under the load of the client's
+/// tests PostgreSQL on Windows now and then resets a new connection and goes on serving the others.
+pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
+    what: &str,
+    mut step: impl FnMut() -> F,
+) -> Result<T, sqlx::Error> {
+    let mut wait = SETUP_RETRY_WAIT;
+    let mut attempt = 1;
+    loop {
+        match step().await {
+            Err(sqlx::Error::Io(err))
+                if err.kind() == io::ErrorKind::ConnectionReset && attempt < SETUP_ATTEMPTS =>
+            {
+                eprintln!("{what}: PostgreSQL reset the connection: {err}; again in {wait:?}");
+                tokio::time::sleep(wait).await;
+                wait *= 2;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// A new connection to the database at `url`, tried again while PostgreSQL resets it. Only
+/// opening it is: a statement may have run when its connection resets.
+async fn connect(url: &str) -> Result<PgConnection, sqlx::Error> {
+    retried_on_reset("connect to PostgreSQL", || PgConnection::connect(url)).await
+}
+
+/// The names of the test databases this process has on the PostgreSQL server.
+pub fn test_databases() -> Vec<String> {
+    let runtime = Runtime::new().expect("start a tokio runtime");
+    let prefix = format!("{}{}_", TestDb::PREFIX, process::id());
+    runtime
+        .block_on(async {
+            let mut conn = connect(&format!("{}/postgres", server())).await?;
+            let names: Vec<(String,)> = sqlx::query_as("SELECT datname FROM pg_database")
+                .fetch_all(&mut conn)
+                .await?;
+            conn.close().await?;
+            Ok::<_, sqlx::Error>(names)
+        })
+        .expect("list the databases")
+        .into_iter()
+        .map(|(name,)| name)
+        .filter(|name| name.starts_with(&prefix))
+        .collect()
+}
+
+/// The PostgreSQL server at `SKALD_TEST_DATABASE_URL`: a connection URL without a database name,
+/// e.g. `postgres://postgres:password@127.0.0.1:5432`; `script/test` sets it.
+fn server() -> String {
+    env::var("SKALD_TEST_DATABASE_URL")
+        .expect("SKALD_TEST_DATABASE_URL is not set: run the tests with script/test")
+}
+
+/// A new empty database on the PostgreSQL server at `SKALD_TEST_DATABASE_URL`, dropped on drop.
 struct TestDb {
     server: String,
     name: String,
 }
 
 impl TestDb {
+    /// The start of the names of the test databases: `<PREFIX><pid>_<n>`.
+    const PREFIX: &str = "skald_client_test_";
+
     fn create(runtime: &Runtime) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let server = env::var("SKALD_TEST_DATABASE_URL")
-            .expect("SKALD_TEST_DATABASE_URL is not set: run the tests with script/test");
         let name = format!(
-            "skald_client_test_{}_{}",
+            "{}{}_{}",
+            Self::PREFIX,
             process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let db = TestDb { server, name };
+        // Dropped on drop from here on: also when making it fails.
+        let db = TestDb {
+            server: server(),
+            name,
+        };
         db.admin(
             runtime,
             &[
@@ -217,7 +278,7 @@ impl TestDb {
     /// like `CREATE DATABASE`, cannot share a transaction.
     fn admin(&self, runtime: &Runtime, statements: &[String]) -> Result<(), sqlx::Error> {
         runtime.block_on(async {
-            let mut conn = PgConnection::connect(&format!("{}/postgres", self.server)).await?;
+            let mut conn = connect(&format!("{}/postgres", self.server)).await?;
             for sql in statements {
                 sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
                     .execute(&mut conn)
@@ -225,6 +286,16 @@ impl TestDb {
             }
             conn.close().await
         })
+    }
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let runtime = Runtime::new().expect("start a tokio runtime");
+        let statement = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
+        if let Err(err) = self.admin(&runtime, &[statement]) {
+            eprintln!("cannot drop the test database {}: {err}", self.name);
+        }
     }
 }
 
