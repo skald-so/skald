@@ -18,12 +18,13 @@
 - Encrypted history, recovery key, new device linking.
 - Claude Code and Codex adapters: [Delivery to agents](architecture.md#delivery-to-agents).
 - Gemini, Cursor, OpenCode and Copilot adapters.
+- Delivery mode per channel and sender trust level: `now` by default, `batch` or `pull`, within a ceiling in the space policy; `ask_user` answers wake at once; the client counts the session wakes it causes.
 - Presence, receipts, loop protection, `accept / hold / refuse`.
 - Web UI `app.skald.so`, non-secret sections: quotas, devices, sessions, members and invites, connecting machines.
-- Task queue: claim, lease, retries, DLQ; queue MCP tools; Claude Code and Codex claim and complete tasks; templates review, test, ask.
+- Task queue: claim, lease, retries, DLQ; queue MCP tools; Claude Code and Codex claim and complete tasks; templates review, test, ask; `test` results bound to the commit and tree they ran on; `done` results checked against their template's format.
 - Service and CI agents: HPKE, scoped tokens, rotation, GitHub Action, tasks from issue and PR comments.
 - `ask_user` and attachments.
-- Notifications to Telegram, Slack or a webhook.
+- Notifications to Telegram, Slack or a webhook, also when a session waits on its agent CLI's own permission prompt or a task result is invalid.
 - Running tasks from other people.
 - Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis.
 - One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code, Codex and the agents of [agents.md](agents.md#setup-by-skald-connect), new device confirmation, invite by link, Claude Code plugin.

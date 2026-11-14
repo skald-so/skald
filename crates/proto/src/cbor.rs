@@ -25,7 +25,10 @@ pub trait Cbor: Sized {
 
     /// Decodes exactly one CBOR data item. Input that breaks the spec's encoding rules, or does
     /// not match the type's CDDL, is an error. Unknown map keys are kept, so
-    /// `T::from_cbor(bytes)?.to_cbor() == bytes`.
+    /// `T::from_cbor(bytes)?.to_cbor() == bytes`. The exceptions: a frame of a type this version
+    /// does not know decodes as [`Frame::Unknown`](crate::Frame::Unknown), which keeps only its
+    /// type, and a `batch` entry of such a type as [`Push::Unknown`](crate::Push::Unknown), which
+    /// keeps its bytes.
     ///
     /// # Errors
     /// Why the bytes are not a `Self`.
@@ -399,6 +402,11 @@ fn take<'b>(bytes: &'b [u8], at: &mut usize, len: usize) -> Result<&'b [u8], Dec
 }
 
 impl<'b> Item<'b> {
+    /// The bytes it was decoded from.
+    pub(crate) fn raw(&self) -> &'b [u8] {
+        self.raw
+    }
+
     pub(crate) fn uint(&self, field: &'static str) -> Result<u64, DecodeError> {
         match self.node {
             Node::Uint(value) => Ok(value),
