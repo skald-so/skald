@@ -6,7 +6,9 @@
 //!   default; `skald update` looks up the latest release of `skald-so/skald` there and downloads
 //!   its files from their `browser_download_url`;
 //! - `SSL_CERT_FILE`: the root certificates `skald` trusts, instead of the platform's;
-//! - `HTTPS_PROXY`: the proxy of its HTTPS requests.
+//! - `HTTPS_PROXY`: the proxy of its HTTPS requests;
+//! - `GITHUB_TOKEN`, or else `GH_TOKEN`: a token of GitHub's API, which `skald update` sends to the
+//!   API alone, as `Authorization: Bearer <token>`.
 //!
 //! A `skald` installed from npm has a file `installed-by-npm` in its directory; the `skald-so`
 //! package's launcher writes it beside the `skald` it unpacks.
@@ -107,13 +109,13 @@ impl Machine {
         StandIn::start(&self.certificates, "127.0.0.1", releases)
     }
 
-    /// Runs `skald update` against `releases`, trusting the stand-in's CA.
+    /// Runs `skald update` against `releases`, trusting the stand-in's CA; no token of GitHub's API.
     fn update(&self, releases: &StandIn) -> Run {
         self.run_update(releases, true, &[])
     }
 
     /// Runs `skald update` against `releases` with `env` set, trusting the stand-in's CA if
-    /// `trusted`; no other proxy or root certificates than `env` gives.
+    /// `trusted`; no other proxy, root certificates or token of GitHub's API than `env` gives.
     fn run_update(&self, releases: &StandIn, trusted: bool, env: &[(&str, &str)]) -> Run {
         let mut command = Command::new(&self.skald);
         command.arg("update");
@@ -129,6 +131,8 @@ impl Machine {
             "SSL_CERT_FILE",
             "SSL_CERT_DIR",
             "SKALD_TIMEOUT",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
         ] {
             command.env_remove(name);
         }
@@ -600,4 +604,231 @@ fn files_set_aside_by_earlier_updates_are_removed() {
     assert_current(&machine, &releases, &run);
     assert!(!aside.exists(), "the file set aside is still there");
     assert!(other.exists(), "another program's file is removed");
+}
+
+/// A token of GitHub's API the tests give `skald`, and another one.
+const TOKEN: &str = "ghp_StandInToken0123456789abcdefghijklmn";
+const OTHER_TOKEN: &str = "gho_OtherStandInToken0123456789abcdefgh";
+
+/// The path of the API's latest release.
+const LATEST: &str = "/repos/skald-so/skald/releases/latest";
+
+/// When the API limit of the stand-ins resets: 2026-11-14 18:30:05 UTC.
+const RESET: &str = "1794681005";
+
+/// The `Authorization` of each request `releases` got, by its path.
+fn authorizations(releases: &StandIn) -> Vec<(String, Option<String>)> {
+    releases
+        .requests()
+        .into_iter()
+        .map(|request| (request.path, request.authorization))
+        .collect()
+}
+
+/// The run did not print `TOKEN`.
+fn assert_token_unprinted(run: &Run) {
+    assert!(!run.says(TOKEN), "skald update printed the token: {run}");
+}
+
+#[test]
+fn token_goes_to_the_api_and_not_to_the_release_files() {
+    let machine = Machine::new("token");
+    let tag = format!("v{}", newer(1));
+    let releases = machine.serve(vec![machine.release(&tag)]);
+
+    let run = machine.run_update(&releases, true, &[("GITHUB_TOKEN", TOKEN)]);
+
+    assert_installed(&machine, &releases, &run, &tag);
+    assert_token_unprinted(&run);
+    let bearer = format!("Bearer {TOKEN}");
+    let requests = authorizations(&releases);
+    assert!(
+        requests.iter().any(|(path, _)| path == LATEST),
+        "no request of the latest release: {requests:?}"
+    );
+    for (path, authorization) in &requests {
+        let expected = path.starts_with("/repos/").then(|| bearer.clone());
+        assert_eq!(*authorization, expected, "the Authorization of {path}");
+    }
+}
+
+/// `skald update` with `env` set, against an older release: it changed nothing and looked the
+/// latest release up with `token` as its bearer token, or with none.
+fn assert_looked_up_with(machine: &Machine, env: &[(&str, &str)], token: Option<&str>) {
+    let releases = machine.serve(vec![machine.release(&format!("v{}", older()))]);
+
+    let run = machine.run_update(&releases, true, env);
+
+    assert_current(machine, &releases, &run);
+    let authorization = token.map(|token| format!("Bearer {token}"));
+    assert_eq!(
+        authorizations(&releases),
+        [(LATEST.to_owned(), authorization)],
+        "{env:?}"
+    );
+}
+
+#[test]
+fn github_token_comes_before_gh_token() {
+    let machine = Machine::new("token-order");
+    let both = [("GITHUB_TOKEN", TOKEN), ("GH_TOKEN", OTHER_TOKEN)];
+    assert_looked_up_with(&machine, &both, Some(TOKEN));
+    assert_looked_up_with(&machine, &[("GH_TOKEN", OTHER_TOKEN)], Some(OTHER_TOKEN));
+    let blank = [("GITHUB_TOKEN", " "), ("GH_TOKEN", OTHER_TOKEN)];
+    assert_looked_up_with(&machine, &blank, Some(OTHER_TOKEN));
+}
+
+#[test]
+fn no_token_without_the_variables() {
+    let machine = Machine::new("no-token");
+    assert_looked_up_with(&machine, &[], None);
+    let blank = [("GITHUB_TOKEN", ""), ("GH_TOKEN", " \t")];
+    assert_looked_up_with(&machine, &blank, None);
+}
+
+#[test]
+fn token_does_not_follow_a_redirect_of_the_api() {
+    let machine = Machine::new("token-redirect");
+    let tag = format!("v{}", newer(1));
+    let releases = machine.serve(vec![machine.release(&tag)]);
+    // GitHub redirects the API of a renamed repository; this one, to another port.
+    let location = format!("{}{LATEST}", releases.url);
+    let moved = StandIn::answering(
+        &machine.certificates,
+        "301 Moved Permanently",
+        &[("location", &location)],
+    );
+
+    let run = machine.run_update(&moved, true, &[("GITHUB_TOKEN", TOKEN)]);
+
+    assert_installed(&machine, &releases, &run, &tag);
+    assert_eq!(
+        authorizations(&moved),
+        [(LATEST.to_owned(), Some(format!("Bearer {TOKEN}")))]
+    );
+    let requests = authorizations(&releases);
+    assert!(
+        requests
+            .iter()
+            .all(|(_, authorization)| authorization.is_none()),
+        "the token followed the redirect: {requests:?}"
+    );
+}
+
+/// `skald update` against an API that answers `status` with `headers`, with `env` set: refused
+/// with one line, the old `skald` left.
+fn refused_by_the_api(
+    name: &str,
+    status: &str,
+    headers: &[(&str, &str)],
+    env: &[(&str, &str)],
+) -> Run {
+    let machine = Machine::new(name);
+    let api = StandIn::answering(&machine.certificates, status, headers);
+
+    let run = machine.run_update(&api, true, env);
+
+    assert_refused(&machine, &run);
+    assert_eq!(run.stderr.trim().lines().count(), 1, "not one line: {run}");
+    assert_token_unprinted(&run);
+    assert!(
+        api.looked_up(),
+        "skald update did not look up the latest release"
+    );
+    run
+}
+
+#[test]
+fn api_limit_names_when_it_resets() {
+    let headers = [
+        ("x-ratelimit-limit", "60"),
+        ("x-ratelimit-remaining", "0"),
+        ("x-ratelimit-reset", RESET),
+        ("x-ratelimit-used", "60"),
+        ("x-ratelimit-resource", "core"),
+    ];
+    for status in ["403 Forbidden", "429 Too Many Requests"] {
+        let run = refused_by_the_api("api-limit-reset", status, &headers, &[]);
+
+        assert_eq!(
+            run.stderr.trim(),
+            "skald: GitHub's API limit for this address is used up until 2026-11-14 18:30:05 UTC: \
+             try again then or set GITHUB_TOKEN",
+            "{run}"
+        );
+    }
+}
+
+#[test]
+fn api_limit_of_retry_after_names_a_time() {
+    let run = refused_by_the_api(
+        "api-limit-retry",
+        "429 Too Many Requests",
+        &[("retry-after", "60")],
+        &[],
+    );
+
+    assert!(
+        run.says("GitHub's API limit for this address is used up until ")
+            && run.says(" UTC: try again then or set GITHUB_TOKEN"),
+        "{run}"
+    );
+}
+
+#[test]
+fn api_limit_of_a_token_names_its_variable() {
+    let headers = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", RESET)];
+    let run = refused_by_the_api(
+        "api-limit-token",
+        "403 Forbidden",
+        &headers,
+        &[("GH_TOKEN", TOKEN)],
+    );
+
+    assert_eq!(
+        run.stderr.trim(),
+        "skald: GitHub's API limit for the token in GH_TOKEN is used up until \
+         2026-11-14 18:30:05 UTC: try again then",
+        "{run}"
+    );
+}
+
+#[test]
+fn other_403_is_reported_as_before() {
+    let headers = [
+        ("x-ratelimit-remaining", "59"),
+        ("x-ratelimit-reset", RESET),
+    ];
+    for env in [vec![], vec![("GITHUB_TOKEN", TOKEN)]] {
+        let run = refused_by_the_api("plain-403", "403 Forbidden", &headers, &env);
+
+        assert_eq!(
+            run.stderr.trim(),
+            "skald: cannot get the latest release: the answer is 403",
+            "{run}"
+        );
+    }
+}
+
+#[test]
+fn refused_token_is_named() {
+    let run = refused_by_the_api(
+        "refused-token",
+        "401 Unauthorized",
+        &[],
+        &[("GITHUB_TOKEN", TOKEN)],
+    );
+    assert_eq!(
+        run.stderr.trim(),
+        "skald: cannot get the latest release: GitHub refused the token in GITHUB_TOKEN: the answer \
+         is 401",
+        "{run}"
+    );
+
+    let run = refused_by_the_api("unauthorized", "401 Unauthorized", &[], &[]);
+    assert_eq!(
+        run.stderr.trim(),
+        "skald: cannot get the latest release: the answer is 401",
+        "{run}"
+    );
 }

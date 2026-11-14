@@ -107,6 +107,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs and the release d
 - **Updates for users:** `skald update` and plugin auto-update from the marketplace.
   - `skald update` looks up the latest stable release through GitHub's API. If it is newer than the running `skald`, it downloads the release's archive for the machine's OS and architecture, checks it against its `.sha256` and replaces the running binary in place. It trusts the checksum because releases are immutable ("Trust in builds").
   - It never installs a beta or an older version. On a failed download or a mismatched or missing checksum it exits with an error, and the old binary stays.
+  - `GITHUB_TOKEN`, or else `GH_TOKEN`, goes to GitHub's API as a bearer token, never to the release's files or a redirect: without one, the API allows 60 requests an hour per IP address. Over the limit, `skald update` says when it resets.
   - A `skald` with a file `installed-by-npm` beside it is from npm: `skald update` leaves it to npm.
 
 ## Channels
