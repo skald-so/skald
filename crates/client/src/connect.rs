@@ -145,12 +145,14 @@ mod tests {
     }
 
     /// A certified device asks for a challenge with its session's token, then sends `auth` first:
-    /// its device, signed with its key over the challenge and the server's origin.
+    /// its device, signed with its key over the challenge and the server's origin, without the
+    /// path of its URL.
     #[test]
     fn certified_device_proves_its_key_on_a_challenge() {
         let dir = TestDir::new("connect-certified");
         let challenge = [0x3c; 32];
-        let (server, served) = stand_in(&challenge);
+        let (origin, served) = stand_in(&challenge);
+        let server = format!("{origin}/skald");
         let keys = machine(&dir, &server, &certified());
 
         let socket = connect(
@@ -163,7 +165,7 @@ mod tests {
 
         let seen = served.join().unwrap();
         drop(socket);
-        assert_eq!(seen.request[0], "post /session/challenge http/1.1");
+        assert_eq!(seen.request[0], "post /skald/session/challenge http/1.1");
         assert!(
             seen.request
                 .contains(&format!("authorization: bearer {TOKEN}")),
@@ -185,7 +187,7 @@ mod tests {
         skald_crypto::verify(
             &keys.signing().public_key(),
             AUTH_LABEL,
-            &[&challenge, server.as_bytes()],
+            &[&challenge, origin.as_bytes()],
             &signature,
         )
         .expect("signed over the challenge and the origin");
