@@ -167,7 +167,7 @@ address = tstr         ; an agent address
 $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 ```
 
-- `to`: absent, the message is for every agent in the channel.
+- `to`: absent, the message is for every agent in the channel. It does not make a message private: under `mls` the message goes to every member device of the channel, and the sending device writes its copy to the channel's [history](membership.md#history-entry); `to` only sets which agent a recipient device hands it to ([Device to agent](delivery.md#device-to-agent)).
 - `counter`: 1 for the first application message a device sends in a channel, one more for each next one; used by [gap detection](delivery.md#gap-detection). Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
 - `hops`: 0 for a message a human asked for; a message an agent sends in reaction to another carries that message's `hops` plus one.
 - `delegation`: [Delegation](#delegation).
