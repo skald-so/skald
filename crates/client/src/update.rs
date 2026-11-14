@@ -302,7 +302,7 @@ fn latest(
             .map(Some)
             .map_err(|err| format!("unexpected answer about {what}: {err}")),
         404 => Ok(None),
-        _ => Err(refusal(status, &headers, token, now())),
+        _ => Err(refusal(what, status, &headers, token, now())),
     }
 }
 
@@ -313,11 +313,17 @@ fn now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
-/// Why the API answered `status` with `headers` to a request for the latest release with `token`,
-/// if any, at `now`, seconds since the Unix epoch. GitHub marks its rate limit with
+/// Why the API answered `status` with `headers` to a request for `what` with `token`, if any, at
+/// `now`, seconds since the Unix epoch. GitHub marks its rate limit with
 /// `x-ratelimit-remaining: 0` and the time it resets, `x-ratelimit-reset`, or with `retry-after`,
 /// in seconds: <https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api>.
-fn refusal(status: u16, headers: &HeaderMap, token: Option<&Token>, now: u64) -> String {
+fn refusal(
+    what: &str,
+    status: u16,
+    headers: &HeaderMap,
+    token: Option<&Token>,
+    now: u64,
+) -> String {
     let number =
         |name: &str| -> Option<u64> { headers.get(name)?.to_str().ok()?.trim().parse().ok() };
     let used_up = number("x-ratelimit-remaining") == Some(0);
@@ -340,10 +346,10 @@ fn refusal(status: u16, headers: &HeaderMap, token: Option<&Token>, now: u64) ->
     }
     match token {
         Some(token) if status == 401 => format!(
-            "cannot get the latest release: GitHub refused the token in {}: the answer is 401",
+            "cannot get {what}: GitHub refused the token in {}: the answer is 401",
             token.variable
         ),
-        _ => format!("cannot get the latest release: the answer is {status}"),
+        _ => format!("cannot get {what}: the answer is {status}"),
     }
 }
 
@@ -532,13 +538,17 @@ mod tests {
             .collect()
     }
 
+    /// What `latest` asks the API for.
+    const LATEST: &str = "the latest release";
+
     /// 2026-11-14 18:30:05 UTC, and a time 1005 seconds before it.
     const RESET: &str = "1794681005";
     const BEFORE: u64 = 1_794_680_000;
 
     #[test]
     fn names_when_the_api_limit_ends() {
-        let limit = |status, pairs: &[(&str, &str)]| refusal(status, &headers(pairs), None, BEFORE);
+        let limit =
+            |status, pairs: &[(&str, &str)]| refusal(LATEST, status, &headers(pairs), None, BEFORE);
         let address = "GitHub's API limit for this address is used up until 2026-11-14 18:30:05 UTC: \
                        try again then or set GITHUB_TOKEN";
         let used_up = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", RESET)];
@@ -576,7 +586,7 @@ mod tests {
             value: "ghp_secret".to_owned(),
         };
         assert_eq!(
-            refusal(403, &headers(&used_up), Some(&token), BEFORE),
+            refusal(LATEST, 403, &headers(&used_up), Some(&token), BEFORE),
             "GitHub's API limit for the token in GH_TOKEN is used up until 2026-11-14 18:30:05 UTC: \
              try again then"
         );
@@ -588,8 +598,9 @@ mod tests {
             variable: "GITHUB_TOKEN",
             value: "ghp_secret".to_owned(),
         };
-        let refused =
-            |status, pairs: &[(&str, &str)], token| refusal(status, &headers(pairs), token, BEFORE);
+        let refused = |status, pairs: &[(&str, &str)], token| {
+            refusal(LATEST, status, &headers(pairs), token, BEFORE)
+        };
         let used_up = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", RESET)];
         for (status, pairs) in [
             (
