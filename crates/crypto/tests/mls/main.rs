@@ -15,6 +15,7 @@ mod channels;
 mod commit_checks;
 mod commits;
 mod fixtures;
+mod follow_links;
 mod foreign;
 mod foreign_member;
 mod framing;
