@@ -4,7 +4,8 @@
 # With --since, the changes from where HEAD branched off the base to the working tree count.
 # Also tests that script/test rejects an unknown part instead of skipping it, and that with
 # SKALD_TEST_SINCE it checks the parts the changes since that base touch, on a copy that runs no
-# check (script/lib/test-stand-ins.sh): every part when none or when that cannot be told.
+# check (script/lib/test-stand-ins.sh): every part when none or when that cannot be told; a change
+# to each path of the Rust code alone runs the checks that read it.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -271,6 +272,81 @@ rm web/new.ts
 # A base the copy cannot compare with: every part.
 checking "$all" SKALD_TEST_SINCE=no-such-commit
 checking 'exit 2' SKALD_TEST_SINCE="$copy_base" SKALD_TEST_PARTS=edits
+
+# The checks that read a path run when only it changes: script/test of the copy with
+# SKALD_TEST_SINCE runs the parts script/changed-parts selects, as CI runs them, one job each.
+# reads <path> <check>...: a commit that changes only <path> runs each <check>, a command as the
+# stand-ins log it, `<directory>: <command>` when it runs below the root.
+reads() {
+  local path=$1 check line log
+  shift
+  git checkout --quiet --detach "$copy_base"
+  apply "$path"
+  git add --all
+  git commit --quiet --message change
+  rm -f "$copy/checks"
+  if ! env -u SKALD_TEST_PARTS -u SKALD_TEST_SINCE SKALD_TEST_SINCE="$copy_base" PATH="$copy/bin:$PATH" \
+    "$copy/script/test" >/dev/null 2>&1; then
+    fail "script/test after a change to $path fails"
+    return
+  fi
+  log=$(cat "$copy/checks")
+  for check in "$@"; do
+    if [[ $check == *': '* ]]; then line=${check%%: *}$'\t'${check#*: }; else line=$'\t'$check; fi
+    grep -qxF -- "$line" <<<"$log" || fail "a change to $path alone does not run: $check"
+  done
+}
+# The workspace's build, fmt, clippy and tests, of the crates in WASM, and the checks of the whole
+# tree: copied code, cargo-deny and the release tests on copies of the working tree.
+crate_checks=(
+  'cargo build --workspace --all-targets --locked'
+  'cargo fmt --all --check'
+  'cargo clippy --workspace --all-targets --locked -- -D warnings'
+  'cargo test --workspace --locked'
+  'cargo clippy --target wasm32-unknown-unknown -p skald-proto -p skald-crypto --all-targets --locked -- -D warnings'
+  script/wasm-test
+  script/image-test
+  'script/deny check advisories licenses'
+  script/deny-test
+)
+tree_checks=(
+  'script/duplicates crates prototypes'
+  script/release-plz-config-test
+  script/release-plz-test
+  script/release-tag-test
+)
+# prototype_checks <directory>: the build, fmt, clippy and tests of the prototypes' workspace there.
+prototype_checks=()
+prototype() {
+  local manifest="--manifest-path $1/Cargo.toml"
+  prototype_checks=(
+    "cargo build $manifest --workspace --all-targets --locked"
+    "cargo fmt $manifest --all --check"
+    "cargo clippy $manifest --workspace --all-targets --locked -- -D warnings"
+    "cargo test $manifest --workspace --locked"
+  )
+}
+for path in crates/server/src/lib.rs crates/server/Dockerfile Cargo.toml Cargo.lock; do
+  reads "$path" "${crate_checks[@]}" "${tree_checks[@]}"
+done
+reads deny.toml 'script/deny check advisories licenses' script/deny-test
+prototype prototypes/mls
+mls_checks=(
+  "${prototype_checks[@]}"
+  'prototypes/mls: cargo clippy --target wasm32-unknown-unknown --workspace --all-targets --locked -- -D warnings'
+  'prototypes/mls: cargo test --target wasm32-unknown-unknown -p mls-proto-openmls -p mls-proto-mls-rs --test scenarios --locked'
+  'prototypes/mls: cargo test --target wasm32-unknown-unknown -p mls-bench --test smoke --locked'
+)
+reads prototypes/mls/openmls/src/lib.rs "${mls_checks[@]}" "${tree_checks[@]}"
+# The crates' WASM tests check that the workspace takes its wasm-bindgen.
+reads prototypes/mls/Cargo.lock "${mls_checks[@]}" script/wasm-test "${tree_checks[@]}"
+prototype prototypes/agents
+reads prototypes/agents/inbox/src/lib.rs "${prototype_checks[@]}" "${tree_checks[@]}"
+prototype prototypes/edits
+reads prototypes/edits/overlap/src/lib.rs "${prototype_checks[@]}" "${tree_checks[@]}"
+# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/.
+reads web/package.json 'cargo test --workspace --locked' 'web: npm run lint' 'web: npm test' \
+  'web: npm run build'
 
 if [[ $failures -ne 0 ]]; then
   echo "changed-parts-test: $failures case(s) failed" >&2
