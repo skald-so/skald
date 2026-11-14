@@ -1,10 +1,17 @@
 // @vitest-environment node
 // The kit page in headless Chrome, the screenshot command and the production build.
-import { execFile } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import type { Page } from "playwright-core";
 import { build, type Rolldown } from "vite";
@@ -81,6 +88,23 @@ beforeAll(async () => {
 }, 60_000);
 // Under load Chrome can take over 10 s to quit.
 afterAll(() => kit?.close(), 60_000);
+
+test("the kit tests run Chrome Headless Shell, or the binary in SKALD_CHROME", async () => {
+  const cdp = await kit.browser.newBrowserCDPSession();
+  const { processInfo } = await cdp.send("SystemInfo.getProcessInfo");
+  await cdp.detach();
+  const pid = processInfo.find(({ type }) => type === "browser")!.id;
+  const program = realpathSync(
+    process.platform === "linux"
+      ? readlinkSync(`/proc/${pid}/exe`)
+      : execFileSync("ps", ["-o", "comm=", "-p", String(pid)], {
+          encoding: "utf8",
+        }).trim(),
+  );
+  const chrome = process.env.SKALD_CHROME;
+  if (chrome) expect(program).toBe(realpathSync(chrome));
+  else expect(basename(program)).toBe("chrome-headless-shell");
+});
 
 async function pageColors(page: Page) {
   return page.evaluate(() => {

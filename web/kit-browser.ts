@@ -73,7 +73,7 @@ server.listen(3000, "0.0.0.0").then((endpoint) => console.log("Listening on " + 
 
 /**
  * Starts the dev server and headless Chrome. `pinned` takes the Chrome of `pinnedChrome` in Docker;
- * otherwise the local Google Chrome, or the binary in `SKALD_CHROME`.
+ * otherwise Chrome Headless Shell of playwright-core, or the binary in `SKALD_CHROME`.
  */
 export async function startKit({ pinned = false } = {}): Promise<Kit> {
   const server: ViteDevServer = await createServer({
@@ -146,12 +146,10 @@ export function screenshot(
 async function launchChrome(): Promise<Browser> {
   const executablePath = process.env.SKALD_CHROME;
   try {
-    return await chromium.launch(
-      executablePath ? { executablePath } : { channel: "chrome" },
-    );
+    return await chromium.launch(executablePath ? { executablePath } : {});
   } catch (error) {
     throw new Error(
-      "Headless Chrome did not start: install Google Chrome or set SKALD_CHROME to a Chrome or Chromium binary.",
+      "Chrome Headless Shell did not start: install it with `npx playwright-core install chromium-headless-shell` in web/, or set SKALD_CHROME to a Chrome or Chromium binary.",
       { cause: error },
     );
   }

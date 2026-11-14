@@ -1,13 +1,17 @@
-// The person's browser for the integration tests: headless Chrome driven by playwright-core, loaded
-// from the web UI's node_modules, the directory given as the only argument.
-// Reads one JSON command per line on stdin, `{"id": <n>, "op": <op>, ...arguments}`, and answers
-// each on stdout with `{"id": <n>, "ok": <result>}` or `{"id": <n>, "error": <message>}`; the
-// first line is `{"ready": true}` once Chrome runs. Exits when stdin closes.
-// Chrome resolves every *.test host to 127.0.0.1, so a test reaches a local server under a name of
-// its choice: another name is another site, and a name other than localhost is not a secure context
-// over plain HTTP. It is the local Google Chrome, or the binary in SKALD_CHROME, as for the kit tests.
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+// The browser of a test binary's integration tests: Chrome Headless Shell of the playwright-core in
+// the web UI's node_modules, the directory given as the only argument, or the binary in
+// SKALD_CHROME, as for the kit tests. One driver and one browser serve all tests of a binary.
+// Reads one JSON command per line on stdin, `{"id": <n>, "session": <n>, "op": <op>, ...arguments}`,
+// and answers each on stdout with `{"id": <n>, "ok": <result>}` or `{"id": <n>, "error": <message>}`;
+// the first line is `{"ready": true}` once the browser runs. A session is one test's: `close` closes
+// its pages and servers.
+// Exits once stdin closes or its parent, the test binary, is gone, however that ends; its exit kills
+// the browser. A browser whose driver is killed dies too: a watchdog kills it.
+// The browser resolves every *.test host to 127.0.0.1, so a test reaches a local server under a name
+// of its choice: another name is another site, and a name other than localhost is not a secure
+// context over plain HTTP.
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { createRequire } from "node:module";
@@ -16,6 +20,15 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
+
+// Before the browser starts, so that it never outlives the test binary. playwright-core's exit
+// handler kills the browser and removes its profile.
+const lines = createInterface({ input: process.stdin });
+lines.on("close", () => process.exit(0));
+const parent = process.ppid;
+setInterval(() => {
+  if (process.ppid !== parent) process.exit(0);
+}, 500).unref();
 
 let chromium;
 try {
@@ -31,9 +44,10 @@ try {
 
 let browser;
 try {
+  // Without SKALD_CHROME, playwright-core's own Chrome Headless Shell.
   const executablePath = process.env.SKALD_CHROME;
   browser = await chromium.launch({
-    ...(executablePath ? { executablePath } : { channel: "chrome" }),
+    ...(executablePath && { executablePath }),
     // Below the 200 s browser.rs waits for the ready line: a slow start under load still succeeds,
     // or fails with playwright-core's own error.
     timeout: 180_000,
@@ -45,17 +59,63 @@ try {
   });
 } catch (error) {
   console.error(
-    `Headless Chrome did not start: install Google Chrome or set SKALD_CHROME to a Chrome or Chromium binary. ${error}`,
+    `Chrome Headless Shell did not start: install it with \`npx playwright-core install chromium-headless-shell\` in web/, or set SKALD_CHROME to a Chrome or Chromium binary.\n${error}`,
   );
   process.exit(1);
+}
+
+/** The processes of the browser, its own first. */
+async function browserProcesses() {
+  const cdp = await browser.newBrowserCDPSession();
+  try {
+    const { processInfo } = await cdp.send("SystemInfo.getProcessInfo");
+    const own = processInfo.find(({ type }) => type === "browser").id;
+    return [own, ...processInfo.map(({ id }) => id).filter((id) => id !== own)];
+  } finally {
+    await cdp.detach();
+  }
+}
+
+// A browser whose pipe to the driver closes exits by itself, but under load only seconds later, and
+// a stuck one never. Once the driver is gone, however it ends, and its pipe to this watchdog closes,
+// the watchdog kills the process group that playwright-core starts the browser in. Not on Windows,
+// where the browser has no process group: there it only exits by itself.
+const [browserPid] = await browserProcesses();
+if (process.platform !== "win32") {
+  const watchdog = spawn(
+    "/bin/sh",
+    // No `--`: dash, /bin/sh on Debian and Ubuntu, takes it for a process ID.
+    ["-c", 'read -r _; kill -KILL "-$0" 2>/dev/null', String(browserPid)],
+    { detached: true, stdio: ["pipe", "ignore", "ignore"] },
+  );
+  watchdog.unref();
+  // Once the browser is gone, its group ID may go to another process.
+  browser.on("disconnected", () => watchdog.kill());
 }
 
 /** Pages by ID, each in a browser context of its own: one person's browser. */
 const pages = new Map();
 /** The requests each echo server got, by its port. */
 const echoes = new Map();
+/** What each session opened, by its ID: browser contexts and servers, closed with it. */
+const sessions = new Map();
 let nextPage = 1;
 let certificate;
+
+/** What the session `id` opened. */
+function opened(id) {
+  if (!sessions.has(id)) sessions.set(id, { contexts: [], servers: [] });
+  return sessions.get(id);
+}
+
+/** The program a process of this machine runs. */
+function program(pid) {
+  return process.platform === "linux"
+    ? readlinkSync(`/proc/${pid}/exe`)
+    : execFileSync("ps", ["-o", "comm=", "-p", String(pid)], {
+        encoding: "utf8",
+      }).trim();
+}
 
 /** A self-signed certificate for skald.test from openssl; Chrome takes it with ignoreHTTPSErrors. */
 function tlsOptions() {
@@ -92,8 +152,9 @@ function tlsOptions() {
   return certificate;
 }
 
-/** Listens on a free local port; resolves to the port. */
-function listen(server) {
+/** Listens on a free local port until the session `session` closes; resolves to the port. */
+function listen(session, server) {
+  opened(session).servers.push(server);
   return new Promise((resolve, reject) => {
     server.on("error", reject);
     server.listen(0, "127.0.0.1", () => resolve(server.address().port));
@@ -208,12 +269,40 @@ function click(tab, selector, settle = false) {
 }
 
 const ops = {
-  /** Opens a page in a new browser context: a browser with no cookies. */
-  async newPage() {
+  /** Opens a page in a new browser context: a browser with no cookies and no storage. */
+  async newPage({ session }) {
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
+    opened(session).contexts.push(context);
     const id = nextPage++;
-    pages.set(id, { context, page: await context.newPage() });
+    pages.set(id, { session, context, page: await context.newPage() });
     return id;
+  },
+
+  /** Closes the pages and the servers of the session. */
+  async close({ session }) {
+    const { contexts, servers } = opened(session);
+    sessions.delete(session);
+    for (const [id, found] of pages)
+      if (found.session === session) pages.delete(id);
+    for (const server of servers) {
+      echoes.delete(server.address()?.port);
+      server.close();
+      server.closeAllConnections();
+    }
+    await Promise.all(contexts.map((context) => context.close()));
+    return null;
+  },
+
+  /**
+   * The processes of this driver and of its browser, the browser's own first, and the program the
+   * browser runs.
+   */
+  async processes() {
+    return {
+      driver: process.pid,
+      browser: await browserProcesses(),
+      program: program(browserPid),
+    };
   },
 
   /**
@@ -339,7 +428,7 @@ const ops = {
    * Starts a server, over HTTPS with `tls`, that records each request's method, host, URL and
    * Cookie header and answers with an empty page.
    */
-  async echo({ tls = false }) {
+  async echo({ session, tls = false }) {
     const hits = [];
     const handle = (request, response) => {
       request.resume();
@@ -355,7 +444,7 @@ const ops = {
     const server = tls
       ? https.createServer(tlsOptions(), handle)
       : http.createServer(handle);
-    const port = await listen(server);
+    const port = await listen(session, server);
     echoes.set(port, hits);
     return port;
   },
@@ -365,7 +454,7 @@ const ops = {
   },
 
   /** Starts an HTTPS server that forwards every request to the plain HTTP `target` as it is. */
-  async tlsProxy({ target }) {
+  async tlsProxy({ session, target }) {
     const server = https.createServer(tlsOptions(), (request, response) => {
       const upstream = http.request(
         new URL(request.url, target),
@@ -381,11 +470,10 @@ const ops = {
       });
       request.pipe(upstream);
     });
-    return listen(server);
+    return listen(session, server);
   },
 };
 
-const lines = createInterface({ input: process.stdin });
 lines.on("line", async (line) => {
   const { id, op, ...args } = JSON.parse(line);
   try {
@@ -394,9 +482,5 @@ lines.on("line", async (line) => {
   } catch (error) {
     send({ id, error: String(error?.stack ?? error) });
   }
-});
-lines.on("close", async () => {
-  await browser.close();
-  process.exit(0);
 });
 send({ ready: true });
