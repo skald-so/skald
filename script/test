@@ -11,6 +11,8 @@
 #              skald-proto's of ID generation there (script/wasm-test)
 #   image      the skald-server image, built and tested with PostgreSQL in containers
 #              (script/image-test)
+#   self-host  the self-host stack by its guide on a clean machine, a privileged Docker-in-Docker
+#              container, with stand-ins for the internet (script/self-host-test)
 #   mls        the MLS prototypes in prototypes/mls and their benchmarks' smoke run, natively and in
 #              WASM
 #   agents     the delivery prototypes in prototypes/agents
@@ -33,8 +35,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source script/lib/postgres.sh
 
-all='workspace wasm image mls agents edits repository tooling web'
-rust='workspace wasm image mls agents edits repository'
+all='workspace wasm image self-host mls agents edits repository tooling web'
+rust='workspace wasm image self-host mls agents edits repository'
 selected=${SKALD_TEST_PARTS:-}
 if [[ -n ${SKALD_TEST_SINCE:-} ]]; then
   if [[ -n $selected ]]; then
@@ -202,6 +204,10 @@ fi
 
 if checks image; then
   script/image-test
+fi
+
+if checks self-host; then
+  script/self-host-test
 fi
 
 if checks mls; then

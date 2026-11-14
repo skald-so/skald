@@ -1,0 +1,732 @@
+#!/usr/bin/env bash
+# Tests self-hosting by the guide, docs/self-host.md, on a clean machine: a disposable privileged
+# container from script/lib/self-host/machine.Dockerfile, Debian with Docker and a dockerd of its own,
+# where the stack takes ports 80 and 443 and the test's domain is in /etc/hosts. The machine runs this
+# commit's skald, built for Linux by script/lib/self-host/client.Dockerfile, and this commit's
+# skald-server image.
+#
+# The guide's commands are in marked code blocks, fenced with the info string `<language>
+# self-host=<step>`. The part extracts them and runs each scenario's steps in its order, in one bash
+# with errexit and pipefail, in root's home directory; a step's blocks run in the guide's order. A
+# marked block of a step no scenario runs, or a step without a block, fails it. The steps:
+#   release              the release values, in one place: SKALD_VERSION (X.Y.Z), SKALD_DIGEST
+#                        (sha256:<hex>, the image's) and SKALD_FILES (the address of the directory
+#                        with the release's compose file and Caddy config); the part sets them after it
+#   files                gets the compose file and Caddy config from $SKALD_FILES into the stack's
+#                        directory, with curl
+#   image-check          checks the image ghcr.io/skald-so/skald-server@$SKALD_DIGEST of the release
+#                        $SKALD_VERSION, with the commands of infrastructure.md, "Trust in builds"
+#   env                  writes .env, naming the image ghcr.io/skald-so/skald-server@$SKALD_DIGEST
+#   bucket               adds the bucket's settings to .env; its secret key read from standard input
+#   up                   starts the stack
+#   status               checks the server with skald status
+#   proxy-host           the proxy variant's .env for a proxy on the machine
+#   proxy-host-site      the site block of a Caddy on the machine (Caddyfile)
+#   proxy-join           the proxy variant's .env for a proxy in a container that joins the stack's
+#                        network
+#   proxy-join-connect   connects the proxy's container to the stack's network, after `up`
+#   proxy-network        the proxy variant's .env for a proxy in a container on a network .env names
+#   proxy-container-site the site block of a Caddy in a container (Caddyfile)
+# The part substitutes only these, in every block: SKALD_VERSION, SKALD_DIGEST and SKALD_FILES, to
+# the last release's version and image digest and this commit's files at the repository root; in
+# .env, this commit's image for ghcr.io/skald-so/skald-server@$SKALD_DIGEST; the test's domain for
+# skald.example.com; the stand-ins' values for `<bucket endpoint>`, `<bucket region>`, `<bucket
+# name>` and `<bucket access key ID>`, and its secret key on standard input; the proxy's container
+# for `<proxy container>`, its network for `<proxy network>`.
+#
+# The stand-ins for the internet: Pebble, the local ACME server, a process on the machine with one
+# root for the whole run, its random nonce refusals and validation delays off, behind a stand-in for
+# Let's Encrypt's addresses; an S3-compatible server for the bucket. They serve HTTPS with
+# certificates of a test CA. An override, added to COMPOSE_FILE before `up`, only gives the server's
+# and Caddy's services that CA in SSL_CERT_FILE and the stand-ins' network; the compose file runs
+# unchanged.
+#
+# Scenarios and checks:
+#   main: release, files, image-check (the last release), env, up, status. .env has mode 0600 and the
+#     output shows none of its secret values; `docker compose up` without any one of its values fails,
+#     naming it, and starts no container. /health answers ok over HTTPS with the ACME server's
+#     certificate for the domain, HTTP redirects to HTTPS, and skald status passes trusting only that
+#     ACME server's root and fails trusting another CA. Only the Caddy container publishes ports, 80
+#     and 443; the ports of PostgreSQL and the server do not answer on the machine's address, and Caddy
+#     does not reach PostgreSQL. The server's container has a read-only root, no capabilities, no new
+#     privileges and a non-root user; a volume at /var/lib/skald/attachments. PostgreSQL is 19; the
+#     images other than the server's are pinned by digest; every container restarts unless stopped
+#     and rotates its logs with a size cap. After `docker compose down` and `up`, and after the daemon
+#     restarts, the stack runs with the same certificate and keeps its database and attachments.
+#   bucket: release, files, env, bucket, up, status. The bucket's stand-in sees the server's check:
+#     a write, a read and a delete in the bucket; the attachments volume stays empty; the output does
+#     not show the secret key.
+#   proxy-host, proxy-join, proxy-network: the proxy variant behind a stand-in for the admin's proxy,
+#     Caddy with the guide's site block and a certificate from the ACME server: on the machine for the
+#     loopback form; in a container that the guide's command joins to the stack's network; in a
+#     container on a network that exists before the stack. The stack starts no Caddy; the server's
+#     port is published only on loopback in the first form and not at all in the others, and does not
+#     answer on the machine's address; /health and skald status answer through the proxy.
+#   image: release and image-check with :edge's digest fail for its missing signature.
+# README's "Self-hosting" and infrastructure.md's "Self-host" link to the guide.
+#
+# The image check reaches ghcr.io and Sigstore. Removes the containers, images and files it creates.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+
+guide=docs/self-host.md
+domain=skald.self-host.test
+bucket_endpoint=https://s3.self-host.test
+bucket_region=us-east-1
+bucket_name=skald-attachments
+bucket_key_id=SELFHOSTTESTKEY
+bucket_secret=$(openssl rand -hex 20)
+proxy_container=skald-self-host-proxy
+proxy_network=skald-self-host-proxy-network
+work=$(mktemp -d)
+tag=self-host-test-$$
+machine=
+failures=0
+
+cleanup() {
+  if [[ -n $machine ]]; then
+    docker rm --force --volumes "$machine" >/dev/null
+  fi
+  for image in "skald-server:$tag" "skald-self-host-machine:$tag" "skald-self-host-caddy:$tag" \
+    "skald-self-host-bucket:$tag"; do
+    if docker image inspect "$image" >/dev/null 2>&1; then
+      docker image rm "$image" >/dev/null
+    fi
+  done
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+fail() {
+  echo "self-host-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+finish() {
+  if [[ $failures -ne 0 ]]; then
+    echo "self-host-test: $failures case(s) failed" >&2
+    exit 1
+  fi
+  echo "self-host-test: all cases passed"
+  exit 0
+}
+
+# section <file> <heading>: the lines of <file> from the level-2 heading <heading> to the next one.
+section() {
+  awk -v heading="## $2" '
+    $0 == heading { inside = 1; next }
+    inside && /^## / { exit }
+    inside { print }
+  ' "$1"
+}
+
+# The links to the guide.
+section README.md Self-hosting | grep -qF '](docs/self-host.md' ||
+  fail "README's \"Self-hosting\" does not link to $guide"
+section docs/dev/infrastructure.md Self-host | grep -qF '](../self-host.md' ||
+  fail "infrastructure.md's \"Self-host\" does not link to $guide"
+
+# The guide's marked blocks: $work/blocks/<n>, in the guide's order, and their steps, `<n> <step>`
+# lines in $work/blocks/list. A block in a list item drops its fence's indentation.
+if [[ ! -f $guide ]]; then
+  fail "no self-host guide: $guide"
+  finish
+fi
+mkdir -p "$work/blocks"
+awk -v dir="$work/blocks" '
+  !inside && /^ *(```|~~~)/ && /self-host/ {
+    match($0, /^ */)
+    indent = RLENGTH
+    fence = substr($0, indent + 1, 3)
+    step = ""
+    words = split(substr($0, indent + 4), word, /[ \t]+/)
+    for (i = 1; i <= words; i++) {
+      if (word[i] ~ /^self-host=/) { step = substr(word[i], 11) }
+    }
+    n++
+    file = sprintf("%s/%03d", dir, n)
+    printf "" >file
+    printf "%03d %s\n", n, (step == "" ? "?" : step) >(dir "/list")
+    inside = 1
+    next
+  }
+  inside && index($0, fence) && $0 ~ ("^ *" (fence == "```" ? "```" : "~~~") "[`~]* *$") {
+    inside = 0
+    close(file)
+    next
+  }
+  inside {
+    line = $0
+    for (k = 0; k < indent && substr(line, 1, 1) == " "; k++) { line = substr(line, 2) }
+    print line >>file
+  }
+' "$guide"
+touch "$work/blocks/list"
+before=$failures
+steps='release files image-check env bucket up status proxy-host proxy-host-site proxy-join
+  proxy-join-connect proxy-network proxy-container-site'
+while read -r n step; do
+  # $steps unquoted: one word per step.
+  # shellcheck disable=SC2086
+  if [[ " $(echo $steps) " != *" $step "* ]]; then
+    fail "$guide: a marked block of the step '$step', which the part does not run:"$'\n'"$(cat "$work/blocks/$n")"
+  fi
+done <"$work/blocks/list"
+for step in $steps; do
+  if ! grep -q " $step\$" "$work/blocks/list"; then
+    fail "$guide: no block of the step $step"
+  fi
+done
+if [[ $failures -ne $before ]]; then
+  finish
+fi
+
+# block_text <step>: the guide's blocks of <step>, with the part's substitutions.
+block_text() {
+  local n step text
+  while read -r n step; do
+    if [[ $step == "$1" ]]; then
+      text=$(cat "$work/blocks/$n")
+      text=${text//skald.example.com/$domain}
+      text=${text//"<bucket endpoint>"/$bucket_endpoint}
+      text=${text//"<bucket region>"/$bucket_region}
+      text=${text//"<bucket name>"/$bucket_name}
+      text=${text//"<bucket access key ID>"/$bucket_key_id}
+      text=${text//"<proxy container>"/$proxy_container}
+      text=${text//"<proxy network>"/$proxy_network}
+      printf '%s\n' "$text"
+    fi
+  done <"$work/blocks/list"
+}
+
+# The last release, the image check's: the newest vX.Y.Z tag, its image's digest; and :edge's.
+version=$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
+version=${version#v}
+digest() {
+  docker buildx imagetools inspect --format '{{json .Manifest}}' "ghcr.io/skald-so/skald-server:$1" |
+    jq --raw-output --exit-status .digest
+}
+if [[ -z $version ]]; then
+  fail "no release tag vX.Y.Z: fetch the tags"
+  finish
+fi
+if ! release_digest=$(digest "$version") || ! edge_digest=$(digest edge); then
+  fail "cannot read the digests of ghcr.io/skald-so/skald-server:$version and :edge"
+  finish
+fi
+
+# This commit's server image and skald for Linux, the machine and the stand-ins.
+docker build --quiet --file crates/server/Dockerfile --build-arg "REVISION=$(git rev-parse HEAD)" \
+  --tag "skald-server:$tag" . >/dev/null
+docker build --quiet --file script/lib/self-host/client.Dockerfile --output "$work/client" . >/dev/null
+for target in machine caddy bucket; do
+  docker build --quiet --file script/lib/self-host/machine.Dockerfile --target "$target" \
+    --tag "skald-self-host-$target:$tag" script/lib/self-host >/dev/null
+done
+
+# The test CA and the stand-ins' certificates: <name>.pem, <name>-key.pem in $work/machine/ca.
+ca=$work/machine/ca
+mkdir -p "$ca"
+openssl req -new -newkey rsa:2048 -nodes -subj '/CN=skald self-host test CA' \
+  -keyout "$ca/ca-key.pem" -out "$work/ca.csr" 2>/dev/null
+printf 'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n' \
+  >"$work/ca.ext"
+openssl x509 -req -in "$work/ca.csr" -signkey "$ca/ca-key.pem" -days 2 -extfile "$work/ca.ext" \
+  -out "$ca/ca.pem" 2>/dev/null
+# certificate <name> <subjectAltName>: a server certificate of the test CA.
+certificate() {
+  openssl req -new -newkey rsa:2048 -nodes -subj "/CN=$1" -keyout "$ca/$1-key.pem" \
+    -out "$work/$1.csr" 2>/dev/null
+  printf 'subjectAltName=%s\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' \
+    "$2" >"$work/$1.ext"
+  openssl x509 -req -in "$work/$1.csr" -CA "$ca/ca.pem" -CAkey "$ca/ca-key.pem" \
+    -set_serial "0x$(openssl rand -hex 8)" -days 2 -extfile "$work/$1.ext" -out "$ca/$1.pem" 2>/dev/null
+}
+certificate pebble DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1
+certificate letsencrypt DNS:acme-v02.api.letsencrypt.org,DNS:acme-staging-v02.api.letsencrypt.org
+certificate bucket "DNS:${bucket_endpoint#https://}"
+chmod 0644 "$ca"/*.pem
+
+# What the machine gets in /self-host: the part's hooks and values, this commit's files at the
+# repository root, the stand-ins' settings.
+mkdir -p "$work/machine/files" "$work/machine/run" "$work/machine/pebble" "$work/machine/stand-ins"
+cp script/lib/self-host/hooks.sh "$work/machine/"
+git ls-files --cached --others --exclude-standard | grep -v / | while read -r file; do
+  if [[ -f $file ]]; then cp "$file" "$work/machine/files/"; fi
+done
+cat >"$work/machine/params" <<EOF
+self_host_domain=$domain
+self_host_image=skald-server:self-host-test
+self_host_version=$version
+self_host_digest=$release_digest
+self_host_files=file:///self-host/files
+self_host_acme_root=/self-host/acme-root.pem
+self_host_ca=/self-host/ca/ca.pem
+self_host_internet=skald-self-host-internet
+self_host_caddy_image=skald-self-host-caddy:test
+self_host_proxy_container=$proxy_container
+self_host_proxy_network=$proxy_network
+EOF
+cat >"$work/machine/pebble/config.json" <<'EOF'
+{
+  "pebble": {
+    "listenAddress": "0.0.0.0:14000",
+    "managementListenAddress": "0.0.0.0:15000",
+    "certificate": "/self-host/ca/pebble.pem",
+    "privateKey": "/self-host/ca/pebble-key.pem",
+    "httpPort": 80,
+    "tlsPort": 443,
+    "ocspResponderURL": "",
+    "externalAccountBindingRequired": false
+  }
+}
+EOF
+cat >"$work/machine/stand-ins/Caddyfile" <<'EOF'
+{
+	admin off
+	auto_https off
+}
+
+https://acme-v02.api.letsencrypt.org, https://acme-staging-v02.api.letsencrypt.org {
+	tls /self-host/ca/letsencrypt.pem /self-host/ca/letsencrypt-key.pem
+	rewrite /directory /dir
+	reverse_proxy https://host.docker.internal:14000 {
+		header_up Host {host}
+		transport http {
+			tls_trust_pool file /self-host/ca/ca.pem
+		}
+	}
+}
+EOF
+
+# m <command>...: runs <command> on the machine.
+m() { docker exec "$machine" "$@"; }
+# mi <command>...: runs <command> on the machine with this standard input.
+mi() { docker exec --interactive "$machine" "$@"; }
+
+# dockerd_start: starts the machine's dockerd and waits up to 60 s for it.
+dockerd_start() {
+  docker exec --detach "$machine" /opt/self-host-test/bin/dockerd-start
+  for _ in $(seq 120); do
+    if m docker info >/dev/null 2>&1; then return 0; fi
+    sleep 0.5
+  done
+  echo "self-host-test: the machine's dockerd did not start; its log:" >&2
+  m tail -n 50 /var/log/dockerd.log >&2
+  exit 1
+}
+
+# dockerd_stop: stops the machine's dockerd as its service manager would, and waits for it.
+dockerd_stop() {
+  m sh -c 'kill -TERM "$(cat /var/run/docker.pid)"'
+  for _ in $(seq 120); do
+    if ! m test -e /var/run/docker.pid; then return 0; fi
+    sleep 0.5
+  done
+  echo "self-host-test: the machine's dockerd did not stop" >&2
+  exit 1
+}
+
+machine=$(docker run --detach --privileged --init --hostname self-host-machine \
+  "skald-self-host-machine:$tag")
+address=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$machine")
+m sh -c "echo '$address $domain' >>/etc/hosts"
+docker cp "$work/machine/." "$machine:/self-host/"
+docker cp "$work/client/skald" "$machine:/usr/local/bin/skald"
+dockerd_start
+docker save "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" |
+  mi docker load >/dev/null
+m docker tag "skald-server:$tag" skald-server:self-host-test
+m docker tag "skald-self-host-caddy:$tag" skald-self-host-caddy:test
+m docker tag "skald-self-host-bucket:$tag" skald-self-host-bucket:test
+m docker image rm "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" >/dev/null
+
+# Pebble, with its root for the whole run in /self-host/acme-root.pem.
+docker exec --detach --workdir /self-host/pebble --env PEBBLE_VA_NOSLEEP=1 \
+  --env PEBBLE_WFE_NONCEREJECT=0 "$machine" \
+  sh -c 'exec /opt/self-host-test/bin/pebble -config config.json >>log 2>&1'
+for _ in $(seq 60); do
+  if m curl --silent --fail --cacert /self-host/ca/ca.pem --output /self-host/acme-root.pem \
+    https://127.0.0.1:15000/roots/0; then
+    break
+  fi
+  sleep 0.5
+done
+if ! m test -s /self-host/acme-root.pem; then
+  echo "self-host-test: Pebble did not start; its log:" >&2
+  m cat /self-host/pebble/log >&2
+  exit 1
+fi
+
+# The stand-ins, on a network of their own: Let's Encrypt's addresses, in front of Pebble, and the
+# bucket's S3-compatible server.
+m docker network create skald-self-host-internet >/dev/null
+m docker run --detach --name self-host-letsencrypt --restart unless-stopped \
+  --network skald-self-host-internet --network-alias acme-v02.api.letsencrypt.org \
+  --network-alias acme-staging-v02.api.letsencrypt.org --add-host host.docker.internal:host-gateway \
+  --volume /self-host/stand-ins/Caddyfile:/etc/caddy/Caddyfile:ro --volume /self-host/ca:/self-host/ca:ro \
+  skald-self-host-caddy:test >/dev/null
+m docker run --detach --name self-host-bucket --restart unless-stopped \
+  --network skald-self-host-internet --network-alias "${bucket_endpoint#https://}" \
+  --volume /self-host/ca:/self-host/ca:ro --entrypoint sh skald-self-host-bucket:test -c \
+  "mkdir -p /data/$bucket_name && exec versitygw --access $bucket_key_id --secret $bucket_secret \
+    --port :443 --cert /self-host/ca/bucket.pem --key /self-host/ca/bucket-key.pem posix /data" >/dev/null
+
+# scenario <name> <item>...: writes the scenario's script, its items the guide's steps and, as
+# `:<hook>`, the part's own; a step `<step>-site` goes to the hooks as the proxy's site block.
+scenario() {
+  local name=$1 item script
+  shift
+  mkdir -p "$work/run/$name"
+  script=$work/run/$name/script.sh
+  printf 'set -eo pipefail\nself_host_scenario=%s\nsource /self-host/hooks.sh\nmkdir -p "$run"\n' \
+    "$name" >"$script"
+  for item in "$@"; do
+    case $item in
+      :*) echo "self_host_${item#:}" >>"$script" ;;
+      *-site) block_text "$item" >"$work/run/$name/site.caddy" ;;
+      *)
+        echo "self_host_step $item" >>"$script"
+        block_text "$item" >>"$script"
+        ;;
+    esac
+    if [[ $item == release ]]; then echo self_host_release >>"$script"; fi
+  done
+  m mkdir -p "/self-host/run/$name"
+  docker cp "$work/run/$name/." "$machine:/self-host/run/$name/"
+}
+
+# run_scenario <name>: runs the scenario's script on the machine, its standard input this one, its
+# output in $work/run/<name>/output; fails, showing the output's end, unless it exits 0.
+run_scenario() {
+  local status=0
+  mi env HOME=/root sh -c "cd /root && timeout 1500 bash /self-host/run/$1/script.sh" \
+    >"$work/run/$1/output" 2>&1 || status=$?
+  if [[ $status -ne 0 ]]; then
+    fail "scenario $1: exit code $status; its output's end:"$'\n'"$(tail -n 40 "$work/run/$1/output")"
+    return 1
+  fi
+}
+
+# in_stack <scenario> <command>...: runs <command> on the machine in the scenario's stack directory,
+# with its compose files.
+in_stack() {
+  local name=$1
+  shift
+  m sh -c 'cd "$(cat "$1/dir")" && COMPOSE_FILE=$(cat "$1/compose-file") && export COMPOSE_FILE &&
+    shift && exec "$@"' sh "/self-host/run/$name" "$@"
+}
+
+# containers <scenario>: the IDs of the stack's containers.
+containers() {
+  m docker ps --all --quiet --filter \
+    "label=com.docker.compose.project.working_dir=$(m cat "/self-host/run/$1/dir")"
+}
+
+# container <scenario> <image pattern>: the running container of the stack whose image matches the
+# extended regular expression.
+container() {
+  local id
+  for id in $(containers "$1"); do
+    if m docker inspect --format '{{.Config.Image}} {{.State.Running}}' "$id" |
+      grep -qE "^($2) true\$"; then
+      echo "$id"
+      return 0
+    fi
+  done
+  return 1
+}
+server_image='skald-server:self-host-test'
+caddy_image='([^ ]*/)?caddy[:@][^ ]*'
+postgres_image='([^ ]*/)?postgres[:@][^ ]*'
+
+# published <scenario>: the stack's published ports, `<container> <port>/<protocol> <host IP> <host
+# port>`, the host IP `*` for all addresses.
+published() {
+  local id
+  for id in $(containers "$1"); do
+    m docker inspect --format \
+      '{{range $p, $b := .NetworkSettings.Ports}}{{range $b}}{{$.Id}} {{$p}} {{if or (eq .HostIp "") (eq .HostIp "0.0.0.0") (eq .HostIp "::")}}*{{else}}{{.HostIp}}{{end}} {{.HostPort}}{{"\n"}}{{end}}{{end}}' \
+      "$id" | sed '/^$/d'
+  done
+}
+
+# answers <address> <port>: whether a TCP connection from the machine to it succeeds.
+answers() { m timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
+
+# reaches <container> <address> <port>: whether a TCP connection from the network of <container>
+# succeeds.
+reaches() {
+  m docker run --rm --network "container:$1" --entrypoint nc skald-self-host-caddy:test -z -w 3 "$2" "$3" \
+    >/dev/null 2>&1
+}
+
+# leaf_certificate: the certificate the domain serves over HTTPS, verified against the ACME root.
+leaf_certificate() {
+  m curl --silent --show-error --fail --cacert /self-host/acme-root.pem --output /dev/null \
+    --write-out '%{certs}' "https://$domain/health" |
+    awk '/BEGIN CERTIFICATE/ { n++ } n == 1 { print } /END CERTIFICATE/ && n == 1 { exit }'
+}
+
+# check_https <scenario>: /health answers ok over HTTPS with the ACME server's certificate for the
+# domain, and skald status passes trusting only that server's root.
+check_https() {
+  local body output
+  if ! body=$(m curl --silent --show-error --fail --cacert /self-host/acme-root.pem "https://$domain/health" 2>&1); then
+    fail "$1: GET https://$domain/health with the ACME server's root: $body"
+  elif [[ $body != '{"status":"ok"}' ]]; then
+    fail "$1: GET https://$domain/health: body '$body'"
+  fi
+  if ! output=$(m env SSL_CERT_FILE=/self-host/acme-root.pem skald status --server "https://$domain" 2>&1); then
+    fail "$1: skald status trusting only the ACME server's root fails:"$'\n'"$output"
+  elif [[ $output != *"Server https://$domain: reachable"* || $output != *compatible* ]]; then
+    fail "$1: skald status:"$'\n'"$output"
+  fi
+}
+
+# stack_down <scenario>: removes the scenario's stack, its volumes included, and the proxy.
+stack_down() {
+  if m test -f "/self-host/run/$1/compose-file"; then
+    in_stack "$1" docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
+  if m test -f "/self-host/run/$1/proxy/pid"; then
+    m sh -c "kill \$(cat /self-host/run/$1/proxy/pid)" || true
+  fi
+  m sh -c "docker rm --force --volumes $proxy_container >/dev/null 2>&1; docker network rm $proxy_network >/dev/null 2>&1" || true
+  if m test -f "/self-host/run/$1/dir"; then
+    m sh -c "rm -rf \"\$(cat /self-host/run/$1/dir)\""
+  fi
+}
+
+# --- main: the clean machine's path, from the first start.
+scenario main release files image-check env :before_up up :wait_https :trust_acme status :trust_system
+# check_env <scenario>: the .env the guide wrote has mode 0600, and its output shows none of its
+# secret values: all but this commit's image and those with the domain.
+check_env() {
+  local mode name value output
+  output=$(cat "$work/run/$1/output")
+  if ! mode=$(m cat "/self-host/run/$1/env-mode" 2>/dev/null); then
+    return
+  fi
+  [[ $mode == 600 ]] || fail "$1: the .env the guide writes has mode $mode, not 0600"
+  while IFS='=' read -r name value; do
+    value=${value#[\"\']}
+    value=${value%[\"\']}
+    if [[ ${#value} -ge 12 && $value != *"$domain"* && $value != skald-server:self-host-test ]] &&
+      [[ $output == *"$value"* ]]; then
+      fail "$1: the guide's commands print the value of $name in .env"
+    fi
+  done < <(m sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*=.*\)/\1/p' "/self-host/run/$1/env")
+}
+
+main_ok=
+if run_scenario main </dev/null; then main_ok=1; fi
+check_env main
+if missing=$(m cat /self-host/run/main/missing 2>/dev/null); then
+  [[ -n $missing ]] || fail "main: .env holds no value"
+  while IFS=$'\t' read -r name status left; do
+    [[ -n $name ]] || continue
+    said=$(m cat "/self-host/run/main/missing-$name")
+    [[ $status != 0 ]] || fail "main: docker compose up without $name in .env succeeds"
+    [[ $said == *"$name"* ]] || fail "main: docker compose up without $name in .env does not name it:"$'\n'"$said"
+    [[ $left == 0 ]] || fail "main: docker compose up without $name in .env leaves $left container(s)"
+  done <<<"$missing"
+fi
+if [[ -n $main_ok ]]; then
+  check_https main
+  if ! output=$(m env SSL_CERT_FILE=/self-host/ca/ca.pem skald status --server "https://$domain" 2>&1); then
+    :
+  else
+    fail "main: skald status passes trusting only a CA other than the ACME server's:"$'\n'"$output"
+  fi
+  redirect=$(m curl --silent --output /dev/null --write-out '%{http_code} %{redirect_url}' "http://$domain/health" || true)
+  [[ $redirect =~ ^30[1278]\ https://$domain/health$ ]] ||
+    fail "main: GET http://$domain/health: '$redirect', want a redirect to https://$domain/health"
+
+  server=$(container main "$server_image" || true)
+  caddy=$(container main "$caddy_image" || true)
+  postgres=$(container main "$postgres_image" || true)
+  [[ -n $server ]] || fail "main: no running container of the image $server_image"
+  [[ -n $caddy ]] || fail "main: no running Caddy container"
+  [[ -n $postgres ]] || fail "main: no running PostgreSQL container"
+
+  # Only Caddy publishes ports, 80 and 443, on all addresses.
+  ports=$(published main)
+  while read -r id port _; do
+    [[ -n $id ]] || continue
+    if [[ $id != "$caddy"* ]]; then
+      fail "main: a container other than Caddy's publishes $port"
+    elif [[ $port != 80/tcp && $port != 443/tcp && $port != 443/udp ]]; then
+      fail "main: Caddy publishes $port"
+    fi
+  done <<<"$ports"
+  for port in 80/tcp 443/tcp; do
+    grep -qE "^[^ ]+ $port \* [0-9]+\$" <<<"$ports" || fail "main: Caddy does not publish $port on all addresses"
+  done
+  for port in 5432 8080; do
+    if answers "$address" "$port"; then fail "main: port $port answers on the machine's address"; fi
+  done
+
+  if [[ -n $postgres ]]; then
+    major=$(m docker exec "$postgres" postgres --version || true)
+    [[ $major =~ \(PostgreSQL\)\ 19([^0-9]|$) ]] || fail "main: PostgreSQL is '$major', not 19"
+    ips=$(m docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$postgres")
+    for ip in $ips; do
+      if [[ -n $caddy ]] && reaches "$caddy" "$ip" 5432; then
+        fail "main: Caddy reaches PostgreSQL at $ip"
+      fi
+    done
+    reached=
+    for ip in $ips; do
+      if [[ -n $server ]] && reaches "$server" "$ip" 5432; then reached=1; fi
+    done
+    [[ -n $reached || -z $server ]] || fail "main: the server does not reach PostgreSQL"
+  fi
+
+  if [[ -n $server ]]; then
+    [[ $(m docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$server") == true ]] ||
+      fail "main: the server's container has a writable root"
+    status=$(m cat "/proc/$(m docker inspect --format '{{.State.Pid}}' "$server")/status")
+    for field in CapEff CapPrm CapBnd; do
+      grep -qE "^$field:\s+0+\$" <<<"$status" || fail "main: the server has capabilities: $(grep "^$field:" <<<"$status")"
+    done
+    grep -qE '^NoNewPrivs:\s+1$' <<<"$status" || fail "main: the server may gain new privileges"
+    if grep -qE '^Uid:\s+0\s' <<<"$status"; then fail "main: the server runs as root"; fi
+    m docker inspect --format '{{range .Mounts}}{{.Destination}}{{"\n"}}{{end}}' "$server" |
+      grep -qx /var/lib/skald/attachments || fail "main: no volume at the server's /var/lib/skald/attachments"
+  fi
+
+  for image in $(in_stack main docker compose config --images); do
+    if [[ $image != "$server_image" && $image != *@sha256:* ]]; then
+      fail "main: the image $image is not pinned by digest"
+    fi
+  done
+  for id in $(containers main); do
+    settings=$(m docker inspect --format '{{.Name}} {{.HostConfig.RestartPolicy.Name}} {{.HostConfig.LogConfig.Type}} {{index .HostConfig.LogConfig.Config "max-size"}}' "$id")
+    read -r name restart logs size <<<"$settings"
+    [[ $restart == unless-stopped ]] || fail "main: $name restarts '$restart', not unless stopped"
+    [[ $logs == local || ($logs == json-file && -n $size) ]] ||
+      fail "main: $name's logs ($logs) do not rotate with a size cap"
+  done
+
+  # Down and up, then the daemon's restart: the same certificate, database and attachments.
+  certificate=$(leaf_certificate || true)
+  [[ -n $certificate ]] || fail "main: no certificate over HTTPS"
+  if [[ -n $postgres ]]; then
+    m docker exec "$postgres" sh -c 'psql --quiet -v ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgres}" \
+      --dbname "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}" --command "CREATE TABLE self_host_test_marker ()"' ||
+      fail "main: cannot write to PostgreSQL"
+  fi
+  if [[ -n $server ]]; then
+    m docker run --rm --volumes-from "$server" --entrypoint touch skald-self-host-caddy:test \
+      /var/lib/skald/attachments/self-host-test-marker || fail "main: cannot write to the attachments volume"
+  fi
+  # kept <when>: the stack runs with the same certificate, database and attachments.
+  kept() {
+    local id
+    if ! m bash -c 'self_host_scenario=main && source /self-host/hooks.sh && self_host_wait_https'; then
+      fail "main: after $1, https://$domain/health does not answer"
+      return
+    fi
+    [[ $(leaf_certificate || true) == "$certificate" ]] || fail "main: after $1, the certificate changed"
+    if id=$(container main "$postgres_image"); then
+      table=$(m docker exec "$id" sh -c 'psql --tuples-only --no-align --username "${POSTGRES_USER:-postgres}" \
+        --dbname "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}" --command "SELECT to_regclass('\''self_host_test_marker'\'')"' || true)
+      [[ $table == self_host_test_marker ]] || fail "main: after $1, the database lost its data"
+    else
+      fail "main: after $1, PostgreSQL does not run"
+    fi
+    if id=$(container main "$server_image"); then
+      m docker run --rm --volumes-from "$id" --entrypoint test skald-self-host-caddy:test \
+        -e /var/lib/skald/attachments/self-host-test-marker || fail "main: after $1, the attachments volume lost its files"
+    else
+      fail "main: after $1, the server does not run"
+    fi
+  }
+  in_stack main docker compose down >/dev/null 2>&1 || fail "main: docker compose down fails"
+  in_stack main docker compose up --detach >/dev/null 2>&1 || fail "main: docker compose up after down fails"
+  kept "docker compose down and up"
+  dockerd_stop
+  dockerd_start
+  kept "the daemon's restart"
+fi
+stack_down main
+
+# --- bucket: attachments in the bucket.
+scenario bucket release files env bucket :before_up up :wait_https :trust_acme status :trust_system
+bucket_ok=
+if run_scenario bucket <<<"$bucket_secret"; then bucket_ok=1; fi
+[[ $(cat "$work/run/bucket/output") != *"$bucket_secret"* ]] || fail "bucket: the guide's commands print the bucket's secret key"
+check_env bucket
+if [[ -n $bucket_ok ]]; then
+  check_https bucket
+  requests=$(m docker logs self-host-bucket 2>&1)
+  for method in PUT GET DELETE; do
+    grep -qE "\| *$method *\| */$bucket_name/" <<<"$requests" ||
+      fail "bucket: the bucket's server sees no $method in the bucket; its log:"$'\n'"$requests"
+  done
+  if server=$(container bucket "$server_image"); then
+    files=$(m docker run --rm --volumes-from "$server" --entrypoint ls skald-self-host-caddy:test \
+      -A /var/lib/skald/attachments 2>&1) || fail "bucket: no attachments volume: $files"
+    [[ -z $files ]] || fail "bucket: the attachments volume is not empty: $files"
+  else
+    fail "bucket: the server does not run"
+  fi
+fi
+stack_down bucket
+
+# --- The proxy variant, in its three forms.
+# check_proxied <scenario> <loopback|none>: no Caddy of the stack runs; the server's port is
+# published only on loopback, or not at all, and does not answer on the machine's address; /health
+# and skald status answer through the proxy.
+check_proxied() {
+  local ports id port ip host_port
+  if container "$1" "$caddy_image" >/dev/null; then fail "$1: the stack runs Caddy"; fi
+  ports=$(published "$1")
+  if [[ $2 == loopback ]]; then
+    [[ -n $ports ]] || fail "$1: the stack publishes no port for the proxy on the machine"
+    while read -r id port ip host_port; do
+      [[ -n $id ]] || continue
+      [[ $ip == 127.0.0.1 || $ip == ::1 ]] || fail "$1: $port is published on '$ip', not on loopback"
+      if answers "$address" "$host_port"; then fail "$1: port $host_port answers on the machine's address"; fi
+    done <<<"$ports"
+  else
+    [[ -z $ports ]] || fail "$1: the stack publishes ports:"$'\n'"$ports"
+  fi
+  if answers "$address" 8080; then fail "$1: port 8080 answers on the machine's address"; fi
+  check_https "$1"
+}
+
+scenario proxy-host release files env proxy-host :before_up up proxy-host-site :proxy_on_host \
+  :wait_https :trust_acme status :trust_system
+if run_scenario proxy-host </dev/null; then check_proxied proxy-host loopback; fi
+stack_down proxy-host
+
+scenario proxy-join release files env proxy-join :before_up up proxy-container-site \
+  :proxy_in_container proxy-join-connect :wait_https :trust_acme status :trust_system
+if run_scenario proxy-join </dev/null; then check_proxied proxy-join none; fi
+stack_down proxy-join
+
+scenario proxy-network release files env proxy-network :before_up proxy-container-site \
+  ":proxy_in_container network" up :wait_https :trust_acme status :trust_system
+if run_scenario proxy-network </dev/null; then check_proxied proxy-network none; fi
+stack_down proxy-network
+
+# --- image: the guide's image check refuses :edge, which has no signature.
+scenario image release image-check
+sed -i.bak "s|^self_host_release\$|self_host_release; SKALD_VERSION=edge; SKALD_DIGEST=$edge_digest|" \
+  "$work/run/image/script.sh"
+rm "$work/run/image/script.sh.bak"
+docker cp "$work/run/image/script.sh" "$machine:/self-host/run/image/script.sh"
+status=0
+mi env HOME=/root sh -c 'cd /root && timeout 600 bash /self-host/run/image/script.sh' \
+  >"$work/run/image/output" 2>&1 </dev/null || status=$?
+if [[ $status -eq 0 ]]; then
+  fail "image: the guide's image check passes :edge, $edge_digest"
+elif ! grep -qiE 'no (matching )?signatures' "$work/run/image/output"; then
+  fail "image: the guide's image check refuses :edge for another reason than its missing signature:"$'\n'"$(tail -n 20 "$work/run/image/output")"
+fi
+
+finish
