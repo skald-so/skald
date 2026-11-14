@@ -3,9 +3,10 @@
 
 use std::num::NonZeroU64;
 
-use skald_crypto::{HpkeKey, open_message, seal_message};
+use skald_crypto::{HpkeError, HpkeKey, open_message, seal_message};
 use skald_proto::{
-    Cbor, ChannelId, Content, Envelope, Header, HpkePayload, MessageId, NonEmpty, SpaceId,
+    Cbor, ChannelId, Content, DecodeError, Envelope, Header, HpkePayload, MessageId, NonEmpty,
+    Scheme, SpaceId,
 };
 
 use crate::fixtures::{
@@ -135,6 +136,80 @@ fn recipients_must_name_the_opening_device_alone() {
             "{:?}",
             header.recipients
         );
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_header_under_mls_is_refused() {
+    let header = Header {
+        scheme: Scheme::Mls,
+        ..header()
+    };
+    let sealed = seal_message(
+        &header,
+        &content(),
+        &Device::Alice.signing(),
+        &Device::Bob.hpke_public(),
+    );
+    assert_eq!(sealed, Err(HpkeError::Scheme));
+    // Sealed to Bob's key under that header, so only the scheme refuses it.
+    let payload = made(Device::Bob, &header);
+    let opened = open_message(&header, &payload, Device::Bob.id(), &Device::Bob.hpke());
+    assert_eq!(opened.err(), Some(HpkeError::Scheme));
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn sealing_needs_one_device_in_recipients() {
+    let none = Header {
+        recipients: None,
+        ..header()
+    };
+    for header in [none, with_recipients(&[Device::Bob, Device::Carol])] {
+        let sealed = seal_message(
+            &header,
+            &content(),
+            &Device::Alice.signing(),
+            &Device::Bob.hpke_public(),
+        );
+        assert_eq!(
+            sealed,
+            Err(HpkeError::Recipients),
+            "{:?}",
+            header.recipients
+        );
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn each_error_says_what_failed() {
+    for (error, text) in [
+        (
+            HpkeError::RecipientKey,
+            "the recipient's key is of small order",
+        ),
+        (HpkeError::Scheme, "the header is not under hpke"),
+        (
+            HpkeError::Recipients,
+            "recipients is not the one opening device",
+        ),
+        (
+            HpkeError::Malformed(DecodeError::Truncated),
+            "a malformed hpke payload: the CBOR item is truncated",
+        ),
+        (HpkeError::Open, "the payload does not open with the key"),
+        (
+            HpkeError::Certificate,
+            "the certificate is not the sender's",
+        ),
+        (
+            HpkeError::Signature,
+            "the signature does not verify with the sender's key",
+        ),
+    ] {
+        assert_eq!(error.to_string(), text);
     }
 }
 
