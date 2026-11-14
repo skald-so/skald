@@ -3,6 +3,7 @@
 
 use crate::common::{hex, hex32};
 use crate::fixtures::{RECOVERY, recovery_key};
+use crate::rfc9180::{AAD, CT, ENC, INFO, PT};
 
 /// RFC 9180, Appendix A: every `DeriveKeyPair` of DHKEM(X25519, HKDF-SHA256) in the vectors of
 /// A.1, A.2 and A.7, as `ikm`, `sk` and `pk`.
@@ -171,15 +172,8 @@ const VECTORS: [[&str; 3]; 30] = [
     ],
 ];
 
-/// RFC 9180, Appendix A.1.1: base mode, and its encryption at sequence number 0, to the key pair of
-/// its `ikmR`.
+/// `ikmR` of [`crate::rfc9180`], whose key pair its encryption is to.
 const IKM_R: &str = "6db9df30aa07dd42ee5e8181afdb977e538f5e1fec8a06223f33f7013e525037";
-const ENC: &str = "37fda3567bdbd628e88668c3c8d7e97d1d1253b6d4ea6d44c150f741f1bf4431";
-const INFO: &str = "4f6465206f6e2061204772656369616e2055726e";
-const PT: &str = "4265617574792069732074727574682c20747275746820626561757479";
-const AAD: &str = "436f756e742d30";
-const CT: &str = "f938558b5d72f1a23810b4be2ab4f84331acc02fc97babc53a52ae8218a355a9
-6d8770ac83d07bea87e13c512a";
 
 /// An X25519 private key clamped as RFC 7748, §5, decodes a scalar.
 fn clamped(mut secret: [u8; 32]) -> [u8; 32] {

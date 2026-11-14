@@ -17,8 +17,8 @@ use skald_proto::ChannelId;
 
 use crate::commits::{Seen, assert_in, devices, process, process_at, try_process, try_remove};
 use crate::fixtures::{NOW, admitted, device_id, load, new_state, signing_key};
-use crate::foreign;
-use crate::foreign_member::{SUITE, commit, index_of, other_key, with_foreign_member};
+use crate::foreign::{self, SUITE};
+use crate::foreign_member::{commit, index_of, other_key, with_foreign_member};
 use crate::steps::{
     add, bytes, channel_of, creator, history_key, join, receive, send, step, stored,
     with_key_packages,
@@ -31,13 +31,8 @@ pub const DAY: u64 = 24 * HOUR;
 /// `from` plus `span`.
 pub fn foreign_key_package(seed: u8, from: u64, span: u64) -> MlsMessage {
     let identity = device_id(seed);
-    foreign::client(seed, identity.as_bytes(), SUITE, Duration::from_secs(span))
-        .generate_key_package_message(
-            ExtensionList::new(),
-            ExtensionList::new(),
-            Some(MlsTime::from(from)),
-        )
-        .expect("a KeyPackage of mls-rs")
+    let client = foreign::client(seed, identity.as_bytes(), SUITE, Duration::from_secs(span));
+    message(&foreign::key_package_of(&client, from))
 }
 
 /// Each of the tests' devices `ours`, with its state in `states`, refuses `commit` and stays in

@@ -2,16 +2,18 @@
 //! sealed with the single-shot HPKE seal, encoded with the tests' CBOR writer and signed over
 //! `[label, body]` with the tests' keys.
 
-use skald_crypto::{HistoryKey, HpkeKey, MlsDevice, SigningKey, StateKey, issue, open_wrap};
+use skald_crypto::{HistoryKey, HpkeKey, MlsDevice, issue, open_wrap};
 use skald_proto::{
     AccountId, Cbor, Cert, CertBody, ChannelId, DeviceId, DeviceKind, HistoryWrap, Unknown,
     WrapRecipient,
 };
 
-use crate::cbor::{Value, bytes, text};
+use crate::cbor::{Value, bytes};
+use crate::fields::signed_cbor;
 
-/// The caller's time, in seconds since the Unix epoch, far from the machine's clock.
-pub const NOW: u64 = 1_800_000_000;
+use crate::devices::state_key;
+pub use crate::devices::{NOW, device_id, signing_key};
+
 /// The label of a wrap's signature.
 pub const LABEL: &str = "skald wrap";
 /// `info` of a wrap's HPKE seal.
@@ -22,16 +24,6 @@ pub const ACCOUNT: AccountId = AccountId::from_bytes([0xac; 16]);
 pub const OTHER_ACCOUNT: AccountId = AccountId::from_bytes([0xad; 16]);
 /// The account's recovery key, 32 bytes as the user enters it.
 pub const RECOVERY: [u8; 32] = [0x7e; 32];
-/// The signing key of device `seed`, as it comes from key storage.
-pub fn signing_key(seed: u8) -> SigningKey {
-    SigningKey::from_bytes(&[seed; 32])
-}
-
-/// The ID of device `seed`, derived from its signing key.
-pub fn device_id(seed: u8) -> DeviceId {
-    let signing = signing_key(seed).public_key();
-    DeviceId::from_signing_key(&signing)
-}
 
 /// The seed of the master key that issues the certificates of client devices.
 const MASTER: u8 = 255;
@@ -163,8 +155,7 @@ impl Channel {
     /// server stores the Commit and the others join from its Welcome: epoch 1.
     pub fn new(seeds: &[u8]) -> Self {
         let id = ChannelId::generate();
-        let device =
-            |seed: u8| MlsDevice::new(&signing_key(seed), &StateKey::from_bytes(&[seed; 32]));
+        let device = |seed: u8| MlsDevice::new(&signing_key(seed), &state_key(seed));
         let mut creator = device(seeds[0]);
         creator.create_group(id, NOW).expect("a new group");
         let mut joiners: Vec<MlsDevice> = seeds[1..].iter().map(|&seed| device(seed)).collect();
@@ -314,19 +305,9 @@ impl Fields {
     }
 }
 
-/// Map fields of a later version, which decoding keeps and encoding gives back.
-pub fn unknown() -> Vec<(i64, Value)> {
-    vec![(-3, text("later")), (24, Value::Bool(true))]
-}
-
-/// An encoded `history-wrap`: `body` and its `signature`.
-pub fn wrap_cbor(body: &[u8], signature: &[u8]) -> Vec<u8> {
-    Value::Array(vec![bytes(body), bytes(signature)]).encode()
-}
-
 /// The wrap of the encoded `body`, signed by device `seed` over `[label, body]`.
 pub fn signed(seed: u8, label: &str, body: &[u8]) -> HistoryWrap {
-    HistoryWrap::from_cbor(&wrap_cbor(body, &signing_key(seed).sign(label, &[body])))
+    HistoryWrap::from_cbor(&signed_cbor(body, &signing_key(seed).sign(label, &[body])))
         .expect("a wrap")
 }
 

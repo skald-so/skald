@@ -2,22 +2,13 @@
 
 use std::sync::LazyLock;
 
-use skald_crypto::{MlsDevice, SealedState, SigningKey, StateKey, issue};
-use skald_proto::{AccountId, Cert, CertBody, ChannelId, DeviceId, DeviceKind, Unknown};
+use skald_crypto::{MlsDevice, SealedState, issue};
+use skald_proto::{AccountId, Cert, CertBody, ChannelId, DeviceKind, Unknown};
 
-/// The caller's time of the steps, in seconds since the Unix epoch, far from the machine's clock.
-pub const NOW: u64 = 1_800_000_000;
+pub use crate::devices::{NOW, device_id, signing_key, state_key};
+
 /// The seed of the key that issues the certificates of [`admitted`].
 const MASTER: u8 = 255;
-
-/// The signing key of device `seed`, as it comes from key storage.
-pub fn signing_key(seed: u8) -> SigningKey {
-    SigningKey::from_bytes(&[seed; 32])
-}
-
-pub fn device_id(seed: u8) -> DeviceId {
-    DeviceId::from_signing_key(&signing_key(seed).public_key())
-}
 
 /// The valid certificates of the tests' devices, seeds 0 to 99, as the caller gives the devices
 /// it admits.
@@ -43,11 +34,6 @@ pub fn admitted() -> &'static [Cert] {
             .collect()
     });
     &CERTS
-}
-
-/// The state key of `seed`, as it comes from key storage.
-pub fn state_key(seed: u8) -> StateKey {
-    StateKey::from_bytes(&[seed; 32])
 }
 
 /// Device `seed` with its state key `seed`, loaded from `state`.

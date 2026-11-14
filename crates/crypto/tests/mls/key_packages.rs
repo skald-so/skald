@@ -10,11 +10,10 @@
 use std::time::Duration;
 
 use mls_rs::{
-    CipherSuite, ExtensionList, MlsMessage, ProtocolVersion,
+    CipherSuite, MlsMessage, ProtocolVersion,
     crypto::HpkePublicKey,
     group::{LeafNode, LeafNodeSource},
     mls_rs_codec::{MlsDecode, MlsEncode},
-    time::MlsTime,
 };
 use skald_crypto::{KeyPackage, MlsDevice, MlsError, SealedState, issue};
 use skald_proto::{AccountId, Cert, CertBody, ChannelId, DeviceKind, Unknown};
@@ -183,19 +182,13 @@ fn lifetime_of(message: &[u8]) -> (u64, u64) {
 /// `seed`'s key and device ID, ciphersuite `suite`, with mls-rs's lifetime from `now` to `now`
 /// plus `ahead`.
 fn foreign_key_package(seed: u8, suite: CipherSuite, ahead: u64, now: u64) -> Vec<u8> {
-    foreign::client(
+    let client = foreign::client(
         seed,
         device_id(seed).as_bytes(),
         suite,
         Duration::from_secs(ahead),
-    )
-    .generate_key_package_message(
-        ExtensionList::new(),
-        ExtensionList::new(),
-        Some(MlsTime::from(now)),
-    )
-    .and_then(|message| message.to_bytes())
-    .expect("a KeyPackage of mls-rs")
+    );
+    foreign::key_package_of(&client, now)
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]

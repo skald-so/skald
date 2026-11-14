@@ -26,6 +26,15 @@ impl HistoryKey {
         Self(Zeroizing::new(*bytes))
     }
 
+    /// The key that opened `bytes` hold.
+    ///
+    /// # Errors
+    /// [`HistoryError::Malformed`] unless they are 16 bytes.
+    pub(crate) fn from_opened(bytes: &[u8]) -> Result<Self, HistoryError> {
+        let bytes: &[u8; 16] = bytes.try_into().map_err(|_| HistoryError::Malformed)?;
+        Ok(Self::from_bytes(bytes))
+    }
+
     /// The key's 16 bytes.
     pub fn to_bytes(&self) -> Zeroizing<[u8; 16]> {
         self.0.clone()
@@ -73,11 +82,7 @@ impl HistoryKey {
             &link.nonce,
             &link.ciphertext,
         )?;
-        let key: &[u8; 16] = key
-            .as_slice()
-            .try_into()
-            .map_err(|_| HistoryError::Malformed)?;
-        Ok(Self::from_bytes(key))
+        Self::from_opened(&key)
     }
 
     /// The entry of `body` in its channel's epoch `epoch`, under this key, which is `epoch`'s:
@@ -242,18 +247,34 @@ impl HistoryMessage {
     /// [`HistoryError::NotSender`] if `cert` is not of the body's `sender`;
     /// [`HistoryError::Signature`] if the signature does not verify with its key.
     pub fn verify(self, cert: &Cert) -> Result<HistoryBody, HistoryError> {
-        if cert.body().device != self.sender() {
-            return Err(HistoryError::NotSender);
-        }
-        verify(
-            &cert.body().signing,
+        verify_signed(
+            cert,
+            self.sender(),
             HISTORY_LABEL,
-            &[self.0.body_bytes()],
+            self.0.body_bytes(),
             self.0.signature(),
-        )
-        .map_err(|_| HistoryError::Signature)?;
+        )?;
         Ok(self.0.body().clone())
     }
+}
+
+/// Checks `signature` over `[label, body]` with the signing key of `cert`, the certificate of
+/// `signer` the caller has checked.
+///
+/// # Errors
+/// [`HistoryError::NotSender`] if `cert` is not `signer`'s; [`HistoryError::Signature`] if
+/// `signature` does not verify with its key.
+pub(crate) fn verify_signed(
+    cert: &Cert,
+    signer: DeviceId,
+    label: &str,
+    body: &[u8],
+    signature: &[u8; 64],
+) -> Result<(), HistoryError> {
+    if cert.body().device != signer {
+        return Err(HistoryError::NotSender);
+    }
+    verify(&cert.body().signing, label, &[body], signature).map_err(|_| HistoryError::Signature)
 }
 
 /// Why a history link, entry or wrap is not made or read.

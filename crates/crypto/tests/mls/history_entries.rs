@@ -9,10 +9,11 @@ use skald_proto::{
     Cbor, ChannelId, Content, HistoryBody, HistoryEntry, HistoryPlaintext, MessageId,
 };
 
+use crate::fields::{SENT, body_cbor, signed_cbor, unknown};
 use crate::fixtures::{admitted, device_id, signing_key};
 use crate::history::{
-    LABEL, SENT, Sealed, body, body_cbor, content, entry_aad, entry_cbor, forged_entry, key,
-    next_epoch, open, plaintext_cbor, read, signed, unknown,
+    LABEL, Sealed, body, content, entry_aad, entry_cbor, forged_entry, key, next_epoch, open, read,
+    signed,
 };
 use crate::steps::{channel_of, creator, history_key};
 
@@ -257,9 +258,9 @@ fn an_entry_signed_by_another_device_or_over_another_label_is_refused() {
         ("signed over another label", signed(82, "skald wrap", &body)),
         (
             "signed over no label",
-            plaintext_cbor(&body, &signing_key(82).sign("", &[body.as_slice()])),
+            signed_cbor(&body, &signing_key(82).sign("", &[body.as_slice()])),
         ),
-        ("with a signature of zeros", plaintext_cbor(&body, &[0; 64])),
+        ("with a signature of zeros", signed_cbor(&body, &[0; 64])),
     ] {
         let forged = forged_entry(&key_bytes, channel, 1, &plaintext);
         let message = reader
@@ -319,7 +320,7 @@ fn an_entry_whose_plaintext_is_not_a_signed_body_is_refused_without_a_panic() {
         ("not CBOR", vec![0xff; 40]),
         ("a body unsigned", body.clone()),
         ("content in place of a body", signed(85, LABEL, &content())),
-        ("a signature of 63 bytes", plaintext_cbor(&body, &[0; 63])),
+        ("a signature of 63 bytes", signed_cbor(&body, &[0; 63])),
         ("trailing bytes", [plaintext.clone(), vec![0]].concat()),
     ];
     for length in [1, plaintext.len() / 2, plaintext.len() - 1] {

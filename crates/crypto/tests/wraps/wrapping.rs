@@ -7,10 +7,11 @@
 use skald_crypto::{HpkeKey, open_wrap, verify};
 use skald_proto::{AccountId, Cbor, ChannelId, DeviceId, HistoryWrap, WrapRecipient};
 
+use crate::fields::{signed_cbor, unknown};
 use crate::fixtures::{
     ACCOUNT, Channel, Fields, INFO, LABEL, OTHER_ACCOUNT, RECOVERY, aad, browser, browser_reader,
     cert, cert_with_key_of, device_id, made_apart, read, readers, recovery_reader, resigned,
-    signed, signing_key, unknown, wrap_cbor,
+    signed, signing_key,
 };
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
@@ -200,7 +201,7 @@ type Change = Box<dyn Fn(&mut Fields)>;
 
 /// `fields` with `signature`, whoever made it.
 fn signed_with(fields: &Fields, signature: [u8; 64]) -> HistoryWrap {
-    HistoryWrap::from_cbor(&wrap_cbor(&fields.encode(vec![]), &signature)).expect("a wrap")
+    HistoryWrap::from_cbor(&signed_cbor(&fields.encode(vec![]), &signature)).expect("a wrap")
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
