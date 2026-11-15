@@ -15,8 +15,12 @@ import type {
   DeviceRegistration,
   Devices,
   GetOpenApiSpec200,
+  HandedOutKeyPackages,
   Health,
   HealthUnavailable,
+  KeyPackageCount,
+  KeyPackageRequest,
+  KeyPackageUpload,
   MasterKey,
   MasterKeyRequest,
   NewChannel,
@@ -623,6 +627,165 @@ export const getRegisterDeviceResponseMock500 = (
   ...overrideResponse,
 });
 
+export const getGetKeyPackageCountResponseMock = (
+  overrideResponse: Partial<Extract<KeyPackageCount, object>> = {},
+): KeyPackageCount => ({
+  unused: faker.number.int({ min: 0 }),
+  replace_last_resort: faker.datatype.boolean(),
+  ...overrideResponse,
+});
+
+export const getGetKeyPackageCountResponseMock200 = (
+  overrideResponse: Partial<Extract<KeyPackageCount, object>> = {},
+): KeyPackageCount => ({
+  unused: faker.number.int({ min: 0 }),
+  replace_last_resort: faker.datatype.boolean(),
+  ...overrideResponse,
+});
+
+export const getGetKeyPackageCountResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetKeyPackageCountResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetKeyPackageCountResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetKeyPackageCountResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseMock = (
+  overrideResponse: Partial<Extract<KeyPackageCount, object>> = {},
+): KeyPackageCount => ({
+  unused: faker.number.int({ min: 0 }),
+  replace_last_resort: faker.datatype.boolean(),
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseMock200 = (
+  overrideResponse: Partial<Extract<KeyPackageCount, object>> = {},
+): KeyPackageCount => ({
+  unused: faker.number.int({ min: 0 }),
+  replace_last_resort: faker.datatype.boolean(),
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseMock400 = ():
+  ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getUploadKeyPackagesResponseProtocolProblemMock() },
+    { ...getUploadKeyPackagesResponseProblemMock() },
+  ]);
+
+export const getUploadKeyPackagesResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadKeyPackagesResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getGetHealthResponseMock = (
   overrideResponse: Partial<Extract<Health, object>> = {},
 ): Health => ({
@@ -641,6 +804,95 @@ export const getGetHealthResponseMock503 = (
   overrideResponse: Partial<Extract<HealthUnavailable, object>> = {},
 ): HealthUnavailable => ({
   status: faker.helpers.arrayElement(["unavailable"] as const),
+  ...overrideResponse,
+});
+
+export const getHandOutKeyPackagesResponseMock = (
+  overrideResponse: Partial<Extract<HandedOutKeyPackages, object>> = {},
+): HandedOutKeyPackages => ({
+  key_packages: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    key_package: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  })),
+  ...overrideResponse,
+});
+
+export const getHandOutKeyPackagesResponseMock200 = (
+  overrideResponse: Partial<Extract<HandedOutKeyPackages, object>> = {},
+): HandedOutKeyPackages => ({
+  key_packages: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    key_package: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  })),
+  ...overrideResponse,
+});
+
+export const getHandOutKeyPackagesResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getHandOutKeyPackagesResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getHandOutKeyPackagesResponseMock400 = ():
+  ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getHandOutKeyPackagesResponseProtocolProblemMock() },
+    { ...getHandOutKeyPackagesResponseProblemMock() },
+  ]);
+
+export const getHandOutKeyPackagesResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getHandOutKeyPackagesResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
 
@@ -2469,6 +2721,388 @@ export const getRegisterDeviceMockHandler500 = (
   );
 };
 
+export const getGetKeyPackageCountMockHandler = (
+  overrideResponse?:
+    | KeyPackageCount
+    | ((
+        info: Parameters<HttpResponseResolver<{ device: string }>>[0],
+      ) => Promise<KeyPackageCount> | KeyPackageCount),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ device: string }>(
+    "*/devices/:device/key-packages",
+    async (info: Parameters<HttpResponseResolver<{ device: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetKeyPackageCountResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetKeyPackageCountMockHandler200 = (
+  overrideResponse?:
+    | KeyPackageCount
+    | ((
+        info: Parameters<HttpResponseResolver<{ device: string }>>[0],
+      ) => Promise<KeyPackageCount> | KeyPackageCount),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ device: string }>(
+    "*/devices/:device/key-packages",
+    async (info: Parameters<HttpResponseResolver<{ device: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetKeyPackageCountResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetKeyPackageCountMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ device: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ device: string }>(
+    "*/devices/:device/key-packages",
+    async (info: Parameters<HttpResponseResolver<{ device: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetKeyPackageCountResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetKeyPackageCountMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ device: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ device: string }>(
+    "*/devices/:device/key-packages",
+    async (info: Parameters<HttpResponseResolver<{ device: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetKeyPackageCountResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetKeyPackageCountMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ device: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ device: string }>(
+    "*/devices/:device/key-packages",
+    async (info: Parameters<HttpResponseResolver<{ device: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetKeyPackageCountResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetKeyPackageCountMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ device: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ device: string }>(
+    "*/devices/:device/key-packages",
+    async (info: Parameters<HttpResponseResolver<{ device: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetKeyPackageCountResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadKeyPackagesMockHandler = (
+  overrideResponse?:
+    | KeyPackageCount
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, KeyPackageUpload>
+        >[0],
+      ) => Promise<KeyPackageCount> | KeyPackageCount),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ device: string }, KeyPackageUpload>(
+    "*/devices/:device/key-packages",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ device: string }, KeyPackageUpload>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadKeyPackagesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadKeyPackagesMockHandler200 = (
+  overrideResponse?:
+    | KeyPackageCount
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, KeyPackageUpload>
+        >[0],
+      ) => Promise<KeyPackageCount> | KeyPackageCount),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ device: string }, KeyPackageUpload>(
+    "*/devices/:device/key-packages",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ device: string }, KeyPackageUpload>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadKeyPackagesResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadKeyPackagesMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, KeyPackageUpload>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ device: string }, KeyPackageUpload>(
+    "*/devices/:device/key-packages",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ device: string }, KeyPackageUpload>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadKeyPackagesResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadKeyPackagesMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, KeyPackageUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ device: string }, KeyPackageUpload>(
+    "*/devices/:device/key-packages",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ device: string }, KeyPackageUpload>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadKeyPackagesResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadKeyPackagesMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, KeyPackageUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ device: string }, KeyPackageUpload>(
+    "*/devices/:device/key-packages",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ device: string }, KeyPackageUpload>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadKeyPackagesResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadKeyPackagesMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, KeyPackageUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ device: string }, KeyPackageUpload>(
+    "*/devices/:device/key-packages",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ device: string }, KeyPackageUpload>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadKeyPackagesResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadKeyPackagesMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, KeyPackageUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ device: string }, KeyPackageUpload>(
+    "*/devices/:device/key-packages",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ device: string }, KeyPackageUpload>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadKeyPackagesResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetHealthMockHandler = (
   overrideResponse?:
     | Health
@@ -2531,6 +3165,156 @@ export const getGetHealthMockHandler503 = (
             : overrideResponse
           : getGetHealthResponseMock503(),
         { status: 503 },
+      );
+    },
+    options,
+  );
+};
+
+export const getHandOutKeyPackagesMockHandler = (
+  overrideResponse?:
+    | HandedOutKeyPackages
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, KeyPackageRequest>
+        >[0],
+      ) => Promise<HandedOutKeyPackages> | HandedOutKeyPackages),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, KeyPackageRequest>(
+    "*/key-packages",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, KeyPackageRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getHandOutKeyPackagesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getHandOutKeyPackagesMockHandler200 = (
+  overrideResponse?:
+    | HandedOutKeyPackages
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, KeyPackageRequest>
+        >[0],
+      ) => Promise<HandedOutKeyPackages> | HandedOutKeyPackages),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, KeyPackageRequest>(
+    "*/key-packages",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, KeyPackageRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getHandOutKeyPackagesResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getHandOutKeyPackagesMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, KeyPackageRequest>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, KeyPackageRequest>(
+    "*/key-packages",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, KeyPackageRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getHandOutKeyPackagesResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getHandOutKeyPackagesMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, KeyPackageRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, KeyPackageRequest>(
+    "*/key-packages",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, KeyPackageRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getHandOutKeyPackagesResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getHandOutKeyPackagesMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, KeyPackageRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, KeyPackageRequest>(
+    "*/key-packages",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, KeyPackageRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getHandOutKeyPackagesResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
       );
     },
     options,
@@ -4000,7 +4784,10 @@ export const getSkaldAPIMock = () => [
   getPutUsernameMockHandler(),
   getGetDevicesMockHandler(),
   getRegisterDeviceMockHandler(),
+  getGetKeyPackageCountMockHandler(),
+  getUploadKeyPackagesMockHandler(),
   getGetHealthMockHandler(),
+  getHandOutKeyPackagesMockHandler(),
   getGetOpenApiSpecMockHandler(),
   getGetProtocolMockHandler(),
   getGetServerMockHandler(),
