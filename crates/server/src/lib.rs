@@ -27,6 +27,7 @@ mod google;
 mod groups;
 mod http_client;
 mod instances;
+mod key_packages;
 mod links;
 mod mailboxes;
 mod notices;
@@ -206,7 +207,17 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .post(devices::register)
                 .layer(checked(Statement::Header)),
         )
+        .route(
+            "/devices/{device}/key-packages",
+            get(key_packages::status)
+                .post(key_packages::upload)
+                .layer(checked(Statement::Header)),
+        )
         .route("/health", get(health))
+        .route(
+            "/key-packages",
+            post(key_packages::hand_out).layer(checked(Statement::Header)),
+        )
         .route("/openapi.json", get(openapi_spec))
         .route(
             "/protocol",

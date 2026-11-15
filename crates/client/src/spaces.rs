@@ -31,6 +31,7 @@ use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
+use crate::key_packages;
 use crate::secrets;
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -322,6 +323,7 @@ pub struct Follower {
     pub connection: Connection,
     pub token: String,
     stored: secrets::Map,
+    secrets: secrets::Secrets,
     pub own: Own,
     device: state::Device,
     pub this: DeviceId,
@@ -365,6 +367,7 @@ impl Follower {
             connection,
             token,
             stored,
+            secrets: secrets::Secrets::new(dir, storage),
             own: Own {
                 account: cert.body().account,
                 master,
@@ -375,8 +378,19 @@ impl Follower {
         }))
     }
 
-    /// A WebSocket at `/ws` to the server as the device, proving its `keys`.
+    /// A WebSocket at `/ws` to the server as the device, proving its `keys`, once the device kept
+    /// its KeyPackages on the server, warning if it cannot.
     pub fn connect(&mut self, keys: &device::Keys) -> Result<WebSocket, String> {
+        let kept = key_packages::keep(
+            &mut self.connection,
+            &self.token,
+            &self.state,
+            keys,
+            &self.secrets,
+        );
+        if let Err(err) = kept {
+            key_packages::warn(&err);
+        }
         self.connection
             .open_websocket_as("/ws", &self.token, keys.id(), keys.signing())
             .map_err(text)

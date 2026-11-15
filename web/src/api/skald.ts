@@ -8,8 +8,12 @@ import type {
   Devices,
   GetOpenApiSpec200,
   GroupInfoRequest,
+  HandedOutKeyPackages,
   Health,
   HealthUnavailable,
+  KeyPackageCount,
+  KeyPackageRequest,
+  KeyPackageUpload,
   MasterKey,
   MasterKeyRequest,
   NewChannel,
@@ -663,6 +667,174 @@ export const registerDevice = async (
   } as registerDeviceResponse;
 };
 
+export type getKeyPackageCountResponse200 = {
+  data: KeyPackageCount;
+  status: 200;
+};
+
+export type getKeyPackageCountResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getKeyPackageCountResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getKeyPackageCountResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type getKeyPackageCountResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getKeyPackageCountResponseSuccess =
+  getKeyPackageCountResponse200 & {
+    headers: Headers;
+  };
+export type getKeyPackageCountResponseError = (
+  | getKeyPackageCountResponse400
+  | getKeyPackageCountResponse401
+  | getKeyPackageCountResponse404
+  | getKeyPackageCountResponse500
+) & {
+  headers: Headers;
+};
+
+export type getKeyPackageCountResponse =
+  getKeyPackageCountResponseSuccess | getKeyPackageCountResponseError;
+
+export const getGetKeyPackageCountUrl = (device: string) => {
+  return `/devices/${device}/key-packages`;
+};
+
+/**
+ * How many unused KeyPackages a device of the session's account has, and whether its last-resort one is to be replaced (docs/protocol/membership.md, "KeyPackages"). The server deletes expired ones first.
+ * @summary A device's KeyPackages
+ */
+export const getKeyPackageCount = async (
+  device: string,
+  options?: RequestInit,
+): Promise<getKeyPackageCountResponse> => {
+  const res = await fetch(getGetKeyPackageCountUrl(device), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getKeyPackageCountResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getKeyPackageCountResponse;
+};
+
+export type uploadKeyPackagesResponse200 = {
+  data: KeyPackageCount;
+  status: 200;
+};
+
+export type uploadKeyPackagesResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type uploadKeyPackagesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type uploadKeyPackagesResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type uploadKeyPackagesResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type uploadKeyPackagesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type uploadKeyPackagesResponseSuccess = uploadKeyPackagesResponse200 & {
+  headers: Headers;
+};
+export type uploadKeyPackagesResponseError = (
+  | uploadKeyPackagesResponse400
+  | uploadKeyPackagesResponse401
+  | uploadKeyPackagesResponse403
+  | uploadKeyPackagesResponse404
+  | uploadKeyPackagesResponse500
+) & {
+  headers: Headers;
+};
+
+export type uploadKeyPackagesResponse =
+  uploadKeyPackagesResponseSuccess | uploadKeyPackagesResponseError;
+
+export const getUploadKeyPackagesUrl = (device: string) => {
+  return `/devices/${device}/key-packages`;
+};
+
+/**
+ * Takes KeyPackages of a `client` device of the session's account with a certificate, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, "KeyPackages"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's. One that fails refuses them all. The same KeyPackage again is stored once.
+ * @summary Upload a device's KeyPackages
+ */
+export const uploadKeyPackages = async (
+  device: string,
+  keyPackageUpload: KeyPackageUpload,
+  options?: RequestInit,
+): Promise<uploadKeyPackagesResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getUploadKeyPackagesUrl(device), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(keyPackageUpload),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: uploadKeyPackagesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as uploadKeyPackagesResponse;
+};
+
 export type getHealthResponse200 = {
   data: Health;
   status: 200;
@@ -706,6 +878,94 @@ export const getHealth = async (
     status: res.status,
     headers: res.headers,
   } as getHealthResponse;
+};
+
+export type handOutKeyPackagesResponse200 = {
+  data: HandedOutKeyPackages;
+  status: 200;
+};
+
+export type handOutKeyPackagesResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type handOutKeyPackagesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type handOutKeyPackagesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type handOutKeyPackagesResponseSuccess =
+  handOutKeyPackagesResponse200 & {
+    headers: Headers;
+  };
+export type handOutKeyPackagesResponseError = (
+  | handOutKeyPackagesResponse400
+  | handOutKeyPackagesResponse401
+  | handOutKeyPackagesResponse500
+) & {
+  headers: Headers;
+};
+
+export type handOutKeyPackagesResponse =
+  handOutKeyPackagesResponseSuccess | handOutKeyPackagesResponseError;
+
+export const getHandOutKeyPackagesUrl = () => {
+  return `/key-packages`;
+};
+
+/**
+ * Hands out one KeyPackage of each device asked for that is a `client` device with a certificate of an account that shares a space with the session's (docs/protocol/membership.md, "KeyPackages"): another one, which the server then deletes, or, once none is left, the device's last-resort one, which it keeps. No expired one, and no KeyPackage to two requests.
+ * @summary KeyPackages to add devices
+ */
+export const handOutKeyPackages = async (
+  keyPackageRequest: KeyPackageRequest,
+  options?: RequestInit,
+): Promise<handOutKeyPackagesResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getHandOutKeyPackagesUrl(), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(keyPackageRequest),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: handOutKeyPackagesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as handOutKeyPackagesResponse;
 };
 
 export type getOpenApiSpecResponse200 = {

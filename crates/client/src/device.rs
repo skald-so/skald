@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use skald_crypto::{HpkeKey, SigningKey};
+use skald_crypto::{HpkeKey, SigningKey, StateKey};
 use skald_proto::{AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, DeviceKind, Unknown};
 use zeroize::Zeroizing;
 
@@ -21,6 +21,8 @@ use crate::state::{self, Link, State};
 /// key, each as its 32 bytes in base64url without padding.
 const SIGNING_KEY: &str = "device_signing_key";
 const HPKE_KEY: &str = "device_hpke_key";
+/// The secret that holds the key that seals the device's MLS state, its 32 bytes the same way.
+const STATE_KEY: &str = "mls_state_key";
 /// The `name` of a device whose host name is empty.
 const UNNAMED: &str = "skald device";
 
@@ -36,6 +38,8 @@ pub enum Error {
     UnreadableKeys,
     /// The secrets hold the keys of another device than the one the state knows.
     OtherKeys(DeviceId),
+    /// The secrets lack the key of the device's MLS state, which the local state holds.
+    MissingStateKey,
     /// A `name` the user gave is not 1 to 64 bytes.
     Name(String),
     /// The device is named already, and the user gave another `name`.
@@ -67,6 +71,10 @@ impl std::fmt::Display for Error {
                 f,
                 "the private keys in the secrets are not those of this device, {device}; skald \
                  never replaces them: restore the secrets that held them"
+            ),
+            Error::MissingStateKey => f.write_str(
+                "the secrets lack the key of this device's MLS state; skald never replaces it: \
+                 restore the secrets that held it",
             ),
             Error::Name(name) => write!(
                 f,
@@ -106,6 +114,48 @@ pub struct Keys {
     hpke: HpkeKey,
 }
 
+/// The 32 bytes of the secret `name` in `stored`, if it holds one.
+///
+/// # Errors
+/// If it is not a key of 32 bytes in base64url without padding.
+fn stored_key(stored: &secrets::Map, name: &str) -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
+    let Some(value) = stored.get(name) else {
+        return Ok(None);
+    };
+    let bytes = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(value)
+            .map_err(|_| Error::UnreadableKeys)?,
+    );
+    let mut key = Zeroizing::new([0; 32]);
+    if bytes.len() != key.len() {
+        return Err(Error::UnreadableKeys);
+    }
+    key.copy_from_slice(&bytes);
+    Ok(Some(key))
+}
+
+/// The key that seals the device's MLS state, as `stored`, the secrets, holds it. Without one, a
+/// new key put into `stored` and given as new, unless `held`, whether the local state holds an MLS
+/// state sealed under the missing key.
+///
+/// # Errors
+/// If the key is unreadable, or missing while `held`.
+pub fn state_key(stored: &mut secrets::Map, held: bool) -> Result<(StateKey, bool), Error> {
+    if let Some(key) = stored_key(stored, STATE_KEY)? {
+        return Ok((StateKey::from_bytes(&key), false));
+    }
+    if held {
+        return Err(Error::MissingStateKey);
+    }
+    let key = StateKey::generate();
+    stored.insert(
+        STATE_KEY.to_owned(),
+        URL_SAFE_NO_PAD.encode(*key.to_bytes()),
+    );
+    Ok((key, true))
+}
+
 impl Keys {
     /// New keys from the operating system's cryptographically secure generator.
     pub fn generate() -> Self {
@@ -120,23 +170,10 @@ impl Keys {
     /// # Errors
     /// If it holds one only, or one that is not a key of 32 bytes.
     pub fn load(stored: &secrets::Map) -> Result<Option<Self>, Error> {
-        let read = |name| -> Result<Option<Zeroizing<[u8; 32]>>, Error> {
-            let Some(value) = stored.get(name) else {
-                return Ok(None);
-            };
-            let bytes = Zeroizing::new(
-                URL_SAFE_NO_PAD
-                    .decode(value)
-                    .map_err(|_| Error::UnreadableKeys)?,
-            );
-            let mut key = Zeroizing::new([0; 32]);
-            if bytes.len() != key.len() {
-                return Err(Error::UnreadableKeys);
-            }
-            key.copy_from_slice(&bytes);
-            Ok(Some(key))
-        };
-        match (read(SIGNING_KEY)?, read(HPKE_KEY)?) {
+        match (
+            stored_key(stored, SIGNING_KEY)?,
+            stored_key(stored, HPKE_KEY)?,
+        ) {
             (None, None) => Ok(None),
             (Some(signing), Some(hpke)) => Ok(Some(Keys {
                 signing: SigningKey::from_bytes(&signing),
@@ -555,6 +592,34 @@ mod tests {
             Err(Error::OtherKeys(id)) if id == keys.id()
         ));
         assert!(known_keys(&secrets::Map::new(), None).unwrap().is_none());
+    }
+
+    /// The state key is made once, beside the device keys, and read back after; it is never
+    /// replaced while an MLS state is sealed under it.
+    #[test]
+    fn state_key_is_made_once_and_never_replaced() {
+        let mut stored = secrets::Map::new();
+        Keys::generate().store(&mut stored);
+        let (made, new) = state_key(&mut stored, false).unwrap();
+        assert!(new, "a new key");
+        assert_eq!(stored.len(), 3);
+        assert_eq!(stored[STATE_KEY].len(), 43);
+        let (read, new) = state_key(&mut stored, true).unwrap();
+        assert!(!new, "the stored key");
+        assert_eq!(read.to_bytes(), made.to_bytes());
+
+        let mut lost = secrets::Map::new();
+        assert!(matches!(
+            state_key(&mut lost, true),
+            Err(Error::MissingStateKey)
+        ));
+        assert!(lost.is_empty(), "no key made");
+        let mut broken = secrets::Map::from([(STATE_KEY.to_owned(), "AAAA".to_owned())]);
+        assert!(matches!(
+            state_key(&mut broken, false),
+            Err(Error::UnreadableKeys)
+        ));
+        assert!(Error::MissingStateKey.to_string().contains("MLS state"));
     }
 
     #[test]

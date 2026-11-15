@@ -29,7 +29,7 @@ use zeroize::Zeroizing;
 
 use crate::{HistoryKey, SealedState, SigningKey, StateKey};
 pub use framing::{MlsContent, MlsFraming};
-pub use key_package::KeyPackage;
+pub use key_package::{CheckedKeyPackage, KeyPackage, check_key_package};
 use store::{Kept, Store};
 pub use view::ChannelView;
 

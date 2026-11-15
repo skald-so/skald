@@ -12,6 +12,7 @@ use skald_proto::AccountId;
 
 use crate::connection::{self, Connection, printable};
 use crate::device::{self, First, Keys, Setup};
+use crate::key_packages;
 use crate::secrets::{self, Secrets};
 use crate::state::{self, State};
 
@@ -217,7 +218,15 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
         keys: &keys,
         first: options.first,
     }
-    .run()
+    .run()?;
+    // A device that holds its certificate keeps its KeyPackages on the server.
+    let certified = state.device()?.map(|device| device.link);
+    if matches!(certified, Some(state::Link::Certified { .. }))
+        && let Err(err) = key_packages::keep(connection, &token, &state, &keys, &secrets)
+    {
+        key_packages::warn(&err);
+    }
+    Ok(())
 }
 
 /// The machine's session on the server of `connection`, with `stored`, the secrets: the one it

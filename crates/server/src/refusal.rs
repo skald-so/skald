@@ -34,6 +34,10 @@ pub(crate) enum Refusal {
     GroupInfo(String),
     /// A GroupInfo not of the group the server follows, for the reason it holds.
     GroupInfoConflict(String),
+    /// No such device of the session's account.
+    NoDevice,
+    /// A KeyPackage that fails the checks, for the reason it holds.
+    KeyPackage(String),
     /// The session's account may not do this in the space, for the reason it holds.
     NotAllowed(String),
     /// A roster revision the server does not store, for the reason it holds.
@@ -109,6 +113,15 @@ impl IntoResponse for Refusal {
                 "Not the channel's group",
                 &detail,
             ),
+            Refusal::NoDevice => problem(
+                StatusCode::NOT_FOUND,
+                "no-device",
+                "No such device",
+                "The session's account has no such device.",
+            ),
+            Refusal::KeyPackage(detail) => {
+                problem(bad, "invalid-key-package", "Invalid KeyPackage", &detail)
+            }
             Refusal::NotAllowed(detail) => {
                 problem(StatusCode::FORBIDDEN, "not-allowed", "Not allowed", &detail)
             }
