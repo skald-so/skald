@@ -1,9 +1,9 @@
 //! Acceptance tests of `skald sign-in` against a server whose sign-up is closed: when the person's
 //! sign-up is refused on the verification page, `skald sign-in` ends at once, saying sign-up is
 //! closed on the server, instead of waiting for its code to expire; a listed person's machine signs
-//! in. The server is the `skald-server` binary of this build, which `cargo build --workspace` puts
-//! next to this test binary's directory, with GitHub sign-in through the GitHub stand-in, on
-//! PostgreSQL; the person is a test in headless Chrome.
+//! in. The server is the `skald-server` binary of these sources, which the test builds with Cargo,
+//! with GitHub sign-in through the GitHub stand-in, on PostgreSQL; the person is a test in headless
+//! Chrome.
 //!
 //! The server's settings these tests use: `--sign-up closed` and `--sign-up-github-logins`, a
 //! comma-separated list of the GitHub logins that may sign up.
@@ -44,21 +44,29 @@ const LISTED: &str = "ada-cli-listed";
 /// How long the device codes work: far longer than any wait of these tests.
 const CODE_LIFETIME: &str = "600";
 
-/// The `skald-server` binary of this build: in the profile's directory, above this test binary's,
-/// which is `deps/` in it or, in Cargo's newer build directory layout, deeper.
+/// The `skald-server` binary of these sources, built by the Cargo that runs this test, which
+/// rebuilds it only when they changed: a build of the client alone, such as cargo-mutants', has
+/// none, and one an earlier build left may be of other sources, such as a server mutant's.
 fn server_binary() -> PathBuf {
-    let exe = env::current_exe().expect("this test binary");
-    let name = format!("skald-server{}", env::consts::EXE_SUFFIX);
-    exe.ancestors()
-        .skip(1)
-        .map(|dir| dir.join(&name))
-        .find(|path| path.is_file())
-        .unwrap_or_else(|| {
-            panic!(
-                "no {name} above {}: build it first, cargo build --workspace, as script/test does",
-                exe.display()
-            )
-        })
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let built = Command::new(cargo)
+        .args(["build", "--locked", "-p", "skald-server"])
+        .arg("--message-format=json-render-diagnostics")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run cargo build");
+    let messages = String::from_utf8_lossy(&built.stdout);
+    assert!(
+        built.status.success(),
+        "cargo build of skald-server failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    messages
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| message["target"]["name"] == "skald-server")
+        .find_map(|message| message["executable"].as_str().map(PathBuf::from))
+        .unwrap_or_else(|| panic!("cargo build gave no skald-server binary: {messages}"))
 }
 
 /// A `skald-server` process with GitHub sign-in through the stand-in and sign-up closed but for
@@ -82,6 +90,8 @@ impl Closed {
             process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
+        // Before the deadline: a build of the binary may take longer.
+        let binary = server_binary();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let port = TcpListener::bind("127.0.0.1:0")
@@ -97,7 +107,7 @@ impl Closed {
             });
             let listen = format!("127.0.0.1:{port}");
             let output = File::create(&log).expect("create the server's log");
-            let mut child = Command::new(server_binary())
+            let mut child = Command::new(&binary)
                 .env("SKALD_GITHUB_CLIENT_SECRET", CLIENT_SECRET)
                 .stdin(Stdio::null())
                 .stderr(output.try_clone().expect("open the server's log twice"))
