@@ -16,6 +16,8 @@
 //!   number is a forked roster, warned of on a line that says `fork`, and the device keeps its own.
 //!   The tests tell that a run accepted a revision this way.
 
+use std::io::{Read as _, Write as _};
+use std::net::TcpStream;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,14 +28,14 @@ use serde_json::json;
 use skald_proto::{Cbor as _, Role, Roster, SpaceId};
 
 use crate::cloud::{Cloud, WAIT};
-use crate::fixtures::fronted;
+use crate::fixtures::{await_running, fronted};
 use crate::front::Front;
 use crate::machine::{Finished, Machine, Run};
 use crate::world::{
     ACME, ADMIN, AGENT, CLIENT_A, CLIENT_B, Desk, MEMBER, Person, SPACES, assert_role, create,
     members, next_by, revisions_request, run, set_role, store, warnings,
 };
-use crate::{CLAUDE, RECV, received};
+use crate::{CLAUDE, Joining, RECV, assert_shows_once, received};
 
 /// What the warning of a forked roster also says.
 const FORK: &str = "fork";
@@ -307,4 +309,83 @@ fn agent_output_names_nothing_of_another_spaces_revisions() {
         !warnings(&person).is_empty(),
         "no warning of the broken revision: {person:?}"
     );
+}
+
+/// While the front holds back the `auth` of Ada's `skald recv`, so the server has not taken its
+/// connection yet, Ada's device stores a revision that adds Carol's account to the channel, and
+/// Carol's device sends Ada's a message there: the run accepts the revision once catch-up has ended
+/// and shows the message.
+#[test]
+fn revision_and_message_stored_while_the_run_connects_reach_it() {
+    let (world, front) = fronted();
+    let joining = Joining::new(
+        &world,
+        [4_122_081_401, 4_122_081_402, 4_122_081_403],
+        [
+            "ada-connecting-standin",
+            "bob-present-standin",
+            "carol-joining-standin",
+        ],
+    );
+    let ada = &joining.ada;
+
+    front.hold_auth_of(Some(ada.device));
+    let mut run = ada.machine.start(&[RECV]);
+    await_running(&mut run, "auth held back", || front.held_auths() > 0);
+    joining.store(&world.cloud);
+    front.hold_auth_of(None);
+    let finished = run.finish();
+
+    assert!(finished.success, "{finished:?}");
+    assert_shows_once(&finished.shown(), &joining.shown());
+}
+
+/// Sends `request`, such as `GET /spaces/<id>/devices`, through the relay without a session, so
+/// that a request the relay holds until a second one comes goes on.
+fn through_relay(cloud: &Cloud, request: &str) {
+    let address = cloud.relay.url.trim_start_matches("http://");
+    let mut stream = TcpStream::connect(address).expect("reach the relay");
+    write!(
+        stream,
+        "{request} HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\n\r\n"
+    )
+    .expect("send a request to the relay");
+    let mut answer = Vec::new();
+    let _ = stream.read_to_end(&mut answer);
+}
+
+/// Once catch-up has ended, Ada's `skald recv` fetches the revisions of `acme`, then the devices of
+/// its accounts, which the relay holds back; meanwhile Bob's device stores a revision, whose
+/// `space-notice` reaches the connection. The run fetched the revisions before that one was
+/// stored, so it accepts that revision only by its notice.
+#[test]
+fn revision_stored_after_the_fetch_at_the_end_of_catch_up_is_accepted_by_its_notice() {
+    let (world, front) = fronted();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_122_081_501, "ada-late-notice-standin", "ada-workstation");
+    let bob = world.sign_up(
+        4_122_081_502,
+        "bob-late-revision-standin",
+        "bob-workstation",
+    );
+    let acme = shared_space(cloud, &ada, &bob, ACME);
+    let third = ada_demoted(&acme, &ada, &bob);
+    let devices = devices_request(acme.id());
+    cloud.relay.hold(&devices, 2, WAIT);
+
+    let mut run = ada.machine.start(&[RECV]);
+    await_running(&mut run, "devices request held back", || {
+        cloud.relay.held() > 0
+    });
+    store(cloud, &bob.token, &third);
+    await_running(&mut run, "notice", || {
+        front.notices_to(ada.device).contains(&acme.id())
+    });
+    // The notice reaches the machine's socket while its request waits.
+    thread::sleep(Duration::from_millis(100));
+    through_relay(cloud, &devices);
+    let finished = run.finish();
+
+    assert!(finished.success, "{finished:?}");
+    assert_accepted(cloud, &acme, &ada, &bob, &third);
 }

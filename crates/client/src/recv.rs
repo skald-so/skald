@@ -1,13 +1,13 @@
 //! `skald recv`: the device gets its mailbox (`docs/protocol/delivery.md`, "Mailbox"). It first
 //! sends what is left in the outbox, then states its cursor, writes each entry it gets after the
 //! cursor to the local state with the new cursor at once, acks, and stops once catch-up has sent
-//! every entry. On connecting it accepts the revisions of each space it follows, then those of the
-//! space of each `space-notice` ("Frames"). It then shows the entries it wrote: a `message` only if
-//! it passes the checks of `docs/protocol/README.md`, "Envelope" and "Scheme `hpke`", with the
-//! space's latest revisions accepted first, and the sending device admitted to the channel
-//! ("Admitted devices"), once per sending device and `msg_id`; a warning for any other; and each
-//! `delivered` and `expired` of the device's messages. As an agent, only those of its folder's
-//! space: the rest wait in the local state.
+//! every entry. It then accepts the revisions of each space it follows, and those of the space of
+//! each `space-notice` that came meanwhile ("Frames"). It then shows the entries it wrote: a
+//! `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope" and "Scheme
+//! `hpke`", with the space's latest revisions accepted first, and the sending device admitted to
+//! the channel ("Admitted devices"), once per sending device and `msg_id`; a warning for any other;
+//! and each `delivered` and `expired` of the device's messages. As an agent, only those of its
+//! folder's space: the rest wait in the local state.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -70,8 +70,8 @@ type Synced = BTreeMap<SpaceId, (Roster, SpaceDevices)>;
 
 /// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
 /// for each frame for `timeout`: writes each entry after the cursor with the new cursor and acks
-/// it. It syncs into `synced` each space within `scope` the device follows on connecting, then the
-/// space of each `space-notice`.
+/// it. Then it syncs into `synced` each space within `scope` the device follows, and the space of
+/// each `space-notice` that came meanwhile.
 fn receive(
     follower: &mut Follower,
     socket: Option<WebSocket>,
@@ -88,15 +88,6 @@ fn receive(
                 .map_err(text)?
         }
     };
-    let mut due: BTreeSet<SpaceId> = follower
-        .state
-        .spaces()
-        .map_err(text)?
-        .iter()
-        .map(|space| space.id)
-        .collect();
-    // On connecting: a revision stored later comes as a notice.
-    sync_due(follower, scope, &mut due, synced)?;
     let mut cursor = follower.state.cursor().map_err(text)?;
     write(&mut socket, &Frame::Sync { cursor })?;
     loop {
@@ -111,15 +102,28 @@ fn receive(
             Ok(_) => continue,
             Err(err) => return Err(failed(err, timeout)),
         };
-        due.extend(noticed(&entries));
         let written = after(entries, cursor);
-        if !written.is_empty() {
-            cursor = follower.state.write_entries(&written).map_err(text)?;
-            if let Some(seq) = NonZeroU64::new(cursor) {
-                write(&mut socket, &Frame::Ack { seq })?;
-            }
+        if written.is_empty() {
+            continue;
         }
+        cursor = follower.state.write_entries(&written).map_err(text)?;
+        if let Some(seq) = NonZeroU64::new(cursor) {
+            write(&mut socket, &Frame::Ack { seq })?;
+        }
+    }
+    // By the end of catch-up the server sends the connection its notices: a revision stored before
+    // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
+    // space fetched here.
+    let mut due: BTreeSet<SpaceId> = follower
+        .state
+        .spaces()
+        .map_err(text)?
+        .iter()
+        .map(|space| space.id)
+        .collect();
+    while !due.is_empty() {
         sync_due(follower, scope, &mut due, synced)?;
+        due.extend(waiting_notices(&mut socket));
     }
     let _ = socket.close(None);
     let _ = socket.flush();
@@ -154,6 +158,23 @@ fn sync_due(
     }
     due.clear();
     Ok(())
+}
+
+/// The spaces of the `space-notice` frames that came on `socket` and wait to be read; the other
+/// frames are dropped, and the next run gets their entries.
+fn waiting_notices(socket: &mut WebSocket) -> Vec<SpaceId> {
+    let mut spaces = Vec::new();
+    if set_read_timeout(socket, Duration::from_millis(1)).is_err() {
+        return spaces;
+    }
+    while let Ok(message) = socket.read() {
+        if let Message::Binary(bytes) = message
+            && let Got::Entries(entries) = got(Frame::from_cbor(&bytes).ok())
+        {
+            spaces.extend(noticed(&entries));
+        }
+    }
+    spaces
 }
 
 /// The spaces of the `space-notice` entries of `entries`.
