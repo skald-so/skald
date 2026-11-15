@@ -100,6 +100,8 @@ impl Drop for Listening {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn account(byte: u8) -> AccountId {
@@ -166,7 +168,8 @@ mod tests {
             }
         });
 
-        assert_eq!(listening.next().await, vec![space(1)]);
+        let next = tokio::time::timeout(Duration::from_secs(5), listening.next()).await;
+        assert_eq!(next.expect("a notice within 5 s"), vec![space(1)]);
         waiting.await.unwrap();
     }
 }
