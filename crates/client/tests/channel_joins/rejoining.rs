@@ -147,6 +147,11 @@ fn device_that_missed_a_commit_rejoins_and_drops_a_commit_of_an_epoch_it_passed(
         (4, ada),
         "the group's epoch and its GroupInfo's signer"
     );
+    // The front's push took the `seq` the server gives Ada's device next, which her cursor now
+    // covers: the server moves past it, so that Bob's next message reaches her.
+    talk.world.cloud.execute(&format!(
+        "UPDATE mailboxes SET last_seq = last_seq + 1 WHERE device_id = '{ada}'::uuid"
+    ));
     let (from_bob, ..) = bob_in(&talk);
     let after = "the replayed commit changed nothing";
     bob_sends(&mut talk, 2, after);

@@ -44,38 +44,46 @@ mod joins;
 mod offline;
 mod rejoining;
 
-// The shared modules of the tests of signing in, roster revisions, sending, receiving, channel
-// groups, channel messages and gap detection, the server's tests' readers of the KeyPackages API's
-// answers, the person's browser, and the mailbox retention and the times the server keeps.
-#[path = "../../../server/tests/key_packages/answers.rs"]
-mod answers;
-#[path = "../../../server/tests/common/browser.rs"]
-mod browser;
-#[path = "../sign_in/cloud.rs"]
-mod cloud;
-#[path = "../common/mod.rs"]
-mod common;
+// The front and fixtures of the tests of sending, and the device the tests of receiving play over
+// the delivery protocol.
 #[path = "../sending/fixtures.rs"]
 mod fixtures;
 #[path = "../sending/front.rs"]
 mod front;
-#[path = "../gap_detection/gaps.rs"]
-mod gaps;
-#[path = "../device_keys/keys.rs"]
-mod keys;
-#[path = "../channel_groups/kit.rs"]
-mod kit;
-#[path = "../sign_in/machine.rs"]
-mod machine;
 #[path = "../receiving/peer.rs"]
 mod peer;
+
+// The server's tests' readers of the KeyPackages API's answers, finding keys in bytes, and the
+// helpers of every client test.
+#[path = "../../../server/tests/key_packages/answers.rs"]
+mod answers;
+#[path = "../common/mod.rs"]
+mod common;
+#[path = "../device_keys/keys.rs"]
+mod keys;
+
+// What the tests of channel groups, channel messages and gap detection share, and the mailbox
+// retention and the times the server keeps.
+#[path = "../gap_detection/gaps.rs"]
+mod gaps;
+#[path = "../channel_groups/kit.rs"]
+mod kit;
 #[path = "../channel_groups/played.rs"]
 mod played;
-#[path = "../sign_in/relay.rs"]
-mod relay;
 #[path = "../channel_messages/talk.rs"]
 mod talk;
 #[path = "../../../server/tests/common/times.rs"]
 mod times;
+
+// The server, the relay and the machines of the tests of signing in, people in spaces, and the
+// person's browser.
+#[path = "../../../server/tests/common/browser.rs"]
+mod browser;
+#[path = "../sign_in/cloud.rs"]
+mod cloud;
+#[path = "../sign_in/machine.rs"]
+mod machine;
+#[path = "../sign_in/relay.rs"]
+mod relay;
 #[path = "../roster_revisions/world.rs"]
 mod world;

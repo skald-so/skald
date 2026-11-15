@@ -174,6 +174,12 @@ const MIGRATIONS: &[&str] = &[
         channel TEXT PRIMARY KEY,
         seq INTEGER NOT NULL CHECK (seq >= 1)
     ) STRICT;",
+    // The channels whose group the device joins by itself even though the latest GroupInfo lists
+    // it: one whose Welcome it refused or whose Commit it could not process, until it is in the
+    // group of the channel's current epoch.
+    "CREATE TABLE rejoin (
+        channel TEXT PRIMARY KEY
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -330,8 +336,13 @@ pub struct MlsChanges {
     /// The `seq` of each mailbox entry whose `mls` application message it decrypted, and what that
     /// gave, sealed.
     pub opened: Vec<(u64, Vec<u8>)>,
-    /// Each channel whose group it joined, with the `seq` of the Welcome's entry.
+    /// Each channel whose group it joined, with the `seq` of the Welcome's entry, or, joining by
+    /// itself, the `seq` after the cursor.
     pub joined: Vec<(ChannelId, u64)>,
+    /// Channels whose group the device joins by itself even though the latest GroupInfo lists it.
+    pub rejoin: Vec<ChannelId>,
+    /// Channels of [`MlsChanges::rejoin`] the device is back in.
+    pub rejoined: Vec<ChannelId>,
 }
 
 impl MlsChanges {
@@ -342,6 +353,8 @@ impl MlsChanges {
             && self.messages.is_empty()
             && self.opened.is_empty()
             && self.joined.is_empty()
+            && self.rejoin.is_empty()
+            && self.rejoined.is_empty()
     }
 }
 
@@ -618,6 +631,18 @@ impl State {
                     params![channel.to_string(), sql_seq(*seq)?],
                 )?;
             }
+            for channel in &changes.rejoin {
+                tx.execute(
+                    "INSERT OR IGNORE INTO rejoin (channel) VALUES (?1)",
+                    params![channel.to_string()],
+                )?;
+            }
+            for channel in &changes.rejoined {
+                tx.execute(
+                    "DELETE FROM rejoin WHERE channel = ?1",
+                    params![channel.to_string()],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -626,6 +651,16 @@ impl State {
             self.truncate_wal().map_err(failed)?;
         }
         Ok(done)
+    }
+
+    /// The channels whose group the device joins by itself even though the latest GroupInfo lists
+    /// it ([`MlsChanges::rejoin`]).
+    pub fn rejoining(&self) -> Result<Vec<ChannelId>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT channel FROM rejoin ORDER BY channel")?;
+        let rows = query.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|channel| id("channel ID", &channel?)).collect()
     }
 
     /// The device's own Commits and Welcomes in the outbox, in the order they go out.
@@ -1015,8 +1050,8 @@ impl State {
     }
 
     /// The counters the device accepted from `source` that hold for the entry `seq`: none before
-    /// the first, nor, under `mls`, if the device joined the channel's group by a Welcome after
-    /// the entry it last accepted from `source` and before `seq`.
+    /// the first, nor, under `mls`, if the device joined the channel's group after the entry it last
+    /// accepted from `source` and by `seq`: by a Welcome before it, or by itself after its cursor.
     pub fn counters(&self, source: &Source, seq: u64) -> Result<Option<Counters>, Error> {
         let channel = source.channel.to_string();
         let row: Option<(Vec<u8>, i64)> = self
@@ -1041,7 +1076,8 @@ impl State {
                 )
                 .optional()?;
             let seq = sql_seq(seq)?;
-            if joined.is_some_and(|joined| accepted < joined && joined < seq) {
+            // A Welcome's entry is not `seq`'s; a join by itself takes the `seq` after the cursor.
+            if joined.is_some_and(|joined| accepted < joined && joined <= seq) {
                 return Ok(None);
             }
         }
@@ -1865,10 +1901,40 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(state.counters(&mls, 4).unwrap(), Some(kept.clone()));
+        // A join by itself takes the `seq` after the cursor: the first entry after it.
+        assert_eq!(state.counters(&mls, 5).unwrap(), None);
         assert_eq!(state.counters(&mls, 6).unwrap(), None);
         assert_eq!(state.counters(&hpke, 6).unwrap(), Some(Counters::default()));
         state.shown_counted(6, &mls, &kept).unwrap();
         assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept));
+    }
+
+    /// The channels to rejoin are written with the MLS state and kept across opens until the
+    /// device is back in; a change that fails writes none.
+    #[test]
+    fn channels_to_rejoin_are_kept_until_the_device_is_back_in() {
+        let dir = TestDir::new("state-rejoin");
+        let state = State::open(&dir).unwrap();
+        let (first, second) = (ChannelId::generate(), ChannelId::generate());
+        let change = |changes: MlsChanges| state.mls_change(|_| Ok((None, changes, ())));
+        assert_eq!(state.rejoining().unwrap(), []);
+        change(MlsChanges {
+            rejoin: vec![first, second, first],
+            ..MlsChanges::default()
+        })
+        .unwrap();
+        let failed = state.mls_change::<()>(|_| Err("refused".to_owned()));
+        assert!(failed.is_err());
+        let mut both = vec![first, second];
+        both.sort();
+        assert_eq!(State::open(&dir).unwrap().rejoining().unwrap(), both);
+
+        change(MlsChanges {
+            rejoined: vec![first],
+            ..MlsChanges::default()
+        })
+        .unwrap();
+        assert_eq!(State::open(&dir).unwrap().rejoining().unwrap(), [second]);
     }
 
     #[test]

@@ -182,4 +182,13 @@ impl ChannelView {
     pub fn members(&self) -> &[MemberDevice] {
         &self.members
     }
+
+    /// The leaf index of the member with the public signing key `signing`.
+    pub(super) fn member_index(&self, signing: &[u8; 32]) -> Option<u32> {
+        let roster = self.group.roster();
+        roster
+            .members_iter()
+            .find(|member| member.signing_identity.signature_key.as_bytes() == signing)
+            .map(|member| member.index)
+    }
 }

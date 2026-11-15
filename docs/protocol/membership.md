@@ -465,10 +465,14 @@ A member device:
 
 - A Commit with the Remove of a revoked device, or the empty Commit after a browser's revocation ([History key](#history-key)), carries in its `authenticated_data` the encoded `[+ revocation]`: the revocations by which its sender holds each such device revoked. Every member device that processes the Commit MUST check them as [Revocation](#revocation) says and apply those that count before it judges the new epoch ([Clean epochs](#clean-epochs)).
 - **Joining by itself:** an admitted device that is not in the group fetches the latest GroupInfo, checks that its signer is a member and the members it lists, and joins with an external Commit [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §12.4.3.2]. Members check the joiner as an Add.
+- A device joins by itself only while no device has added it: once its mailbox catch-up is done, with no Welcome for the channel in it, and when the latest GroupInfo does not list it. Without a GroupInfo of the current epoch it waits. This is the table's "Otherwise": a device that should add it but has not yet, or got no KeyPackage for it, does not block it.
+- A device's Adds skip devices already in the group, such as one that joined by itself meanwhile.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
+- A device that refuses a Welcome or a GroupInfo, as its signer or a member it lists is not admitted, stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it.
+- The joiner uploads the GroupInfo of the new epoch.
 
 ### Rejoining
-- **After missing Commits:** a device that cannot process a channel's next handshake message, or that a Commit removed while it is admitted, rejoins with an external Commit that also removes its old leaf. It MUST warn its user if a Commit removed it while it was admitted.
+- **After missing Commits:** a device that cannot process a channel's next handshake message, or that a Commit removed while it is admitted, rejoins with an external Commit that also removes its old leaf. It MUST warn its user if a Commit removed it while it was admitted. A Commit of an epoch the device has passed is a replay: it is dropped.
 - **After a wipe:** the device lost its keys and counters, so it is a new device: it is linked again ([Linking a device](#linking-a-device)) and joins as a member's new device. The user revokes the old one.
 - **Offline past the mailbox retention:** handshake messages do not expire by time, so the device processes the Commits it missed in order. The application messages that expired are reported by [gap detection](delivery.md#gap-detection); the device reads them from the [history](#history).
 
