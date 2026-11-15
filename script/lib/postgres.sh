@@ -3,10 +3,12 @@
 
 # postgres_start: starts the container and sets $postgres to its ID.
 # 19rc1 until PostgreSQL 19.0 is released. The data lives in a tmpfs, so the container leaves no
-# volume behind; it fails if the container still gets one.
+# volume behind; it fails if the container still gets one. The tests of several server instances on
+# one database, each with its pool and listening connection, and script/mutants' parallel runs take
+# more connections than the default 100.
 postgres_start() {
   postgres=$(docker run --detach --rm --tmpfs /var/lib/postgresql --env POSTGRES_PASSWORD=skald \
-    --publish 127.0.0.1::5432 postgres:19rc1 -c fsync=off)
+    --publish 127.0.0.1::5432 postgres:19rc1 -c fsync=off -c max_connections=500)
   if [[ -n $(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$postgres") ]]; then
     echo "script/${0##*/}: the PostgreSQL container has a volume" >&2
     exit 1
