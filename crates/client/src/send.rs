@@ -90,12 +90,17 @@ pub fn run(
         roster,
         devices,
         ..
-    } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)?;
+    } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
+        .map_err(|err| with_waiting(dir, scope, err))?;
     let recipients = admitted(&follower.own, follower.this, &roster, &devices, channel);
     if recipients.is_empty() {
-        return Err(format!(
-            "no device can receive the message: the channel {channel} has no admitted device with \
-             a valid certificate but this one; nothing is sent"
+        return Err(with_waiting(
+            dir,
+            scope,
+            format!(
+                "no device can receive the message: the channel {channel} has no admitted device \
+                 with a valid certificate but this one; nothing is sent"
+            ),
         ));
     }
     let from = sender(&mut follower, &roster, agent)?;
@@ -103,6 +108,28 @@ pub fn run(
     let queued = queued(&follower.state, scope)?;
     let delivered = deliver(&mut follower, &queued, timeout);
     report(&queued, &delivered, timeout)
+}
+
+/// `err`, the reason a run sends nothing, saying how many envelopes earlier runs left in the
+/// outbox of the state in `dir` within `scope` still wait, if any: only a run that sends a message
+/// sends them.
+fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
+    let outbox = dir
+        .is_dir()
+        .then(|| State::open(dir).and_then(|state| state.outbox()).ok())
+        .flatten()
+        .unwrap_or_default();
+    let waiting = outbox
+        .iter()
+        .filter(|outgoing| !scope.excludes(outgoing.space))
+        .count();
+    if waiting == 0 {
+        return err;
+    }
+    format!(
+        "{err}; {waiting} envelopes of earlier messages still wait in the outbox: the next skald \
+         send of a message sends them first"
+    )
 }
 
 /// The admitted `client` devices of `channel` in `roster`, the space's latest revision, but `this`
@@ -581,6 +608,42 @@ mod tests {
             ChannelId::generate(),
         );
         assert!(elsewhere.is_empty(), "{elsewhere:?}");
+    }
+
+    /// A run that sends nothing says how many envelopes of its scope wait in the outbox, if any.
+    #[test]
+    fn run_that_sends_nothing_says_what_waits_in_the_outbox() {
+        let dir = TestDir::new("send-waiting");
+        let (own, other) = (SpaceId::generate(), SpaceId::generate());
+        let err = || "nothing is sent".to_owned();
+        assert_eq!(with_waiting(&dir, Scope::All, err()), err());
+        let state = State::open(&dir).unwrap();
+        for (number, space) in [own, other, own].into_iter().enumerate() {
+            let outgoing = Outgoing {
+                msg_id: MessageId::generate(),
+                recipient: DeviceId::from_signing_key(&[1; 32]),
+                space,
+                envelope: vec![u8::try_from(number).unwrap()],
+            };
+            assert!(
+                state
+                    .enqueue(ChannelId::generate(), &[(outgoing, 1)])
+                    .unwrap()
+            );
+        }
+        let waits = |count| {
+            format!(
+                "nothing is sent; {count} envelopes of earlier messages still wait in the outbox: \
+                 the next skald send of a message sends them first"
+            )
+        };
+
+        assert_eq!(with_waiting(&dir, Scope::All, err()), waits(3));
+        assert_eq!(with_waiting(&dir, Scope::Only(own), err()), waits(2));
+        assert_eq!(
+            with_waiting(&dir, Scope::Only(SpaceId::generate()), err()),
+            err()
+        );
     }
 
     /// An agent's run sends only the envelopes of its space, in the order they went into the
