@@ -165,6 +165,15 @@ impl Link {
     pub fn store(&mut self, header: &Header, envelope: &[u8], report: bool) -> Stored {
         let before = now();
         self.send(envelope, report);
+        let stored = self.stored();
+        assert_eq!(stored.send_key, key_of(header));
+        assert_stored_at(&stored, before);
+        stored
+    }
+
+    /// The next answer, which is a `stored`. Entries that come meanwhile wait for the next read.
+    #[track_caller]
+    pub fn stored(&mut self) -> Stored {
         let deadline = Instant::now() + WAIT;
         let mut others = VecDeque::new();
         let stored = loop {
@@ -183,8 +192,6 @@ impl Link {
             }
         };
         self.pending.extend(others);
-        assert_eq!(stored.send_key, key_of(header));
-        assert_stored_at(&stored, before);
         stored
     }
 
