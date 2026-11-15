@@ -24,6 +24,7 @@ mod devices;
 mod expiry;
 mod github;
 mod google;
+mod groups;
 mod http_client;
 mod instances;
 mod key_packages;
@@ -243,6 +244,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/spaces/{space}/channels",
             post(spaces::channel).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/group-info",
+            get(groups::latest)
+                .put(groups::upload)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/devices",

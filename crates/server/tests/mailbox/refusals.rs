@@ -3,7 +3,7 @@
 //! - `version-mismatch`: a `v` other than the connection's;
 //! - `not-a-member`: a `channel` that the latest revision of `space` does not list, or a sending
 //!   device whose account that revision does not list as a member of `channel`, or lists with the
-//!   device in `excluded`; and any `mls` envelope, while no channel has an MLS group;
+//!   device in `excluded`; and an `mls` envelope that holds no MLS message;
 //! - `unknown-recipient`: under `hpke`, `recipients` that is not one device with a certificate on
 //!   the server of an account that revision lists as a member of `channel`, not `excluded`.
 
@@ -248,7 +248,7 @@ fn membership_follows_the_latest_revision() {
 }
 
 #[test]
-fn an_mls_envelope_is_refused_as_not_a_member() {
+fn an_mls_envelope_without_an_mls_message_is_refused_as_not_a_member() {
     let fixture = Fixture::new(3_121_230_261);
     let t = &fixture.team;
     let mut alice = Socket::of(&t.flow, &t.alice);

@@ -101,7 +101,12 @@ scheme = &(mls: 1, hpke: 2)
 - `space`: the space the sending device sends from.
 - `msg_id`: unique per sending device; a retried send keeps it, and the per-device envelopes of one `hpke` message share it.
 - `scheme`: how the payload is encrypted: [`mls`](#scheme-mls) or [`hpke`](#scheme-hpke).
-- `recipients`: absent, the envelope goes to every member device of the channel except the sending one. Under `mls`, application messages always go to the whole channel, and `recipients` reaches devices outside the group, such as a joining device receiving an MLS Welcome. Under `hpke`, it holds exactly one device.
+- `recipients`: under `hpke`, it holds exactly one device. Under `mls`, only a Welcome has it, and the server routes by the channel's MLS group as it follows it from the Commits it accepts ([Commit ordering](membership.md#commit-ordering)):
+  - an application message goes to each member device of the current epoch except the sending one, which must be one;
+  - a Commit goes to each member device of the epoch it commits from except the sending one, so a removed device learns of its removal;
+  - a Welcome goes to `recipients`, each a member device of the current epoch, such as the devices its Commit adds.
+
+  No envelope goes to a revoked device.
 - `ttl`: how long an undelivered message is kept; absent or above the server's retention, the server's retention applies.
 - The message size is the payload length; there is no size field.
 - The server stores and forwards an envelope as the bytes it received. What the server adds, such as the mailbox `seq`, travels beside the envelope: [Frames](delivery.md#frames).

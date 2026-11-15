@@ -67,17 +67,17 @@ struct NewChannel {
 
 /// A space as a session's account finds it.
 pub(crate) struct Found {
-    id: SpaceId,
+    pub(crate) id: SpaceId,
     name: Name,
     creator: String,
     /// Whether the account gets the space.
-    gets: bool,
+    pub(crate) gets: bool,
     /// Whether the account is an admin in the latest revision.
     admin: bool,
 }
 
 /// The space `space`, a path parameter, as the account `account` finds it.
-async fn find(db: &PgPool, space: &str, account: &str) -> Result<Found, Refusal> {
+pub(crate) async fn find(db: &PgPool, space: &str, account: &str) -> Result<Found, Refusal> {
     let id: SpaceId = space.parse().map_err(|_| Refusal::NoSpace)?;
     let found: Option<(String, String, bool, bool)> = sqlx::query_as(
         "SELECT s.name, s.creator_id::text, a.account_id IS NOT NULL, COALESCE(a.admin, false)

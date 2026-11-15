@@ -26,7 +26,9 @@ url = "2.5"
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }
-# KeyPackages of an MLS client of the tests' own, which breaks the checks the server runs.
+# An MLS client of the tests' own, apart from skald-crypto: external Commits, proposals and
+# GroupInfo without extensions, as another implementation could send them, and KeyPackages that
+# break the checks the server runs.
 mls-rs = "0.57.1"
 mls-rs-crypto-rustcrypto = "0.23"
 serde_urlencoded = "0.7"

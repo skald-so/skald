@@ -15,7 +15,7 @@ pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
 pub use mls::{
     ChannelView, CheckedKeyPackage, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice,
-    MlsDevice, MlsError, Processed, check_key_package,
+    MlsContent, MlsDevice, MlsError, MlsFraming, Processed, check_key_package,
 };
 pub use revocation::{check_valid_device, counts, revoked_devices, sign_revocation};
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};

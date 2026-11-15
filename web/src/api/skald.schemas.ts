@@ -295,6 +295,23 @@ export interface NewChannel {
 }
 
 /**
+ * A channel's GroupInfo in an `MLSMessage` (RFC 9420, §6), with the `ratchet_tree` and `external_pub` extensions (docs/protocol/membership.md, "MLS profile"), in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type GroupInfo = string;
+
+export interface ChannelGroup {
+  /** Whether the channel has an MLS group: the server kept its first Commit. */
+  group: boolean;
+  /** The GroupInfo of the current epoch; `null` while the server has none. */
+  group_info: GroupInfo | null;
+}
+
+export interface GroupInfoRequest {
+  group_info: GroupInfo;
+}
+
+/**
  * A roster revision's CBOR bytes (docs/protocol/membership.md, "Roster") in base64url without padding (RFC 4648, §5).
  * @pattern ^[A-Za-z0-9_-]+$
  */
