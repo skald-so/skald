@@ -113,18 +113,16 @@ fn username_of(cloud: &Cloud, token: &str) -> String {
 /// the status and the body.
 fn put_username(cloud: &Cloud, token: &str, username: &str) -> (u16, Value) {
     let body = json!({ "username": username }).to_string();
-    let mut response = cloud::call(|| {
-        cloud::agent()
-            .put(format!("{}/account/username", cloud.url))
-            .header(
-                skald_proto::VERSION_HEADER,
-                skald_proto::PROTOCOL_VERSION.to_string(),
-            )
-            .header("authorization", format!("Bearer {token}"))
-            .header("content-type", "application/json")
-            .send(body.as_str())
-    })
-    .unwrap_or_else(|err| panic!("PUT /account/username: {err}"));
+    let mut response = cloud::agent()
+        .put(format!("{}/account/username", cloud.url))
+        .header(
+            skald_proto::VERSION_HEADER,
+            skald_proto::PROTOCOL_VERSION.to_string(),
+        )
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .send(body.as_str())
+        .unwrap_or_else(|err| panic!("PUT /account/username: {err}"));
     let status = response.status().as_u16();
     let text = response
         .body_mut()

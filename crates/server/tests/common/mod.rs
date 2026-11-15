@@ -31,7 +31,7 @@ use tungstenite::protocol::CloseFrame;
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 
-use agent::{agent, call};
+use agent::{agent, get};
 use connections::Database;
 
 pub const SERVER: &str = env!("CARGO_BIN_EXE_skald-server");
@@ -273,7 +273,7 @@ impl Server {
 
 /// `GET <url>` with the request headers `headers`; a redirect is returned, not followed.
 pub fn get_url(url: &str, headers: &[(&str, &str)]) -> Response {
-    let response = call(|| {
+    let response = get(|| {
         let mut request = agent().get(url);
         for (name, value) in headers {
             request = request.header(*name, *value);
@@ -285,43 +285,37 @@ pub fn get_url(url: &str, headers: &[(&str, &str)]) -> Response {
 
 /// `DELETE <url>` with the request headers `headers`; a redirect is returned, not followed.
 pub fn delete_url(url: &str, headers: &[(&str, &str)]) -> Response {
-    let response = call(|| {
-        let mut request = agent().delete(url);
-        for (name, value) in headers {
-            request = request.header(*name, *value);
-        }
-        request.call()
-    });
+    let mut request = agent().delete(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.call();
     read(response.unwrap_or_else(|err| panic!("DELETE {url}: {err}")))
 }
 
 /// `POST <url>` of the form `fields`, `application/x-www-form-urlencoded`, with the request headers
 /// `headers`; a redirect is returned, not followed.
 pub fn post_form(url: &str, headers: &[(&str, &str)], fields: &[(&str, &str)]) -> Response {
-    let response = call(|| {
-        let mut request = agent().post(url);
-        for (name, value) in headers {
-            request = request.header(*name, *value);
-        }
-        request.send_form(fields.iter().copied())
-    });
+    let mut request = agent().post(url);
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send_form(fields.iter().copied());
     read(response.unwrap_or_else(|err| panic!("POST {url}: {err}")))
 }
 
 /// `<method> <url>`, `method` `post` or `put`, of `body` with the request headers `headers`; a
 /// redirect is returned, not followed.
 pub fn send(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Response {
-    let response = call(|| {
-        let mut request = match method {
-            "post" => agent().post(url),
-            "put" => agent().put(url),
-            _ => panic!("a method with a body: {method}"),
-        };
-        for (name, value) in headers {
-            request = request.header(*name, *value);
-        }
-        request.send(body)
-    });
+    let mut request = match method {
+        "post" => agent().post(url),
+        "put" => agent().put(url),
+        _ => panic!("a method with a body: {method}"),
+    };
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send(body);
     read(response.unwrap_or_else(|err| panic!("{method} {url}: {err}")))
 }
 

@@ -334,21 +334,19 @@ pub fn set_role(members: &mut [Member], account: AccountId, role: Role) {
 /// Sends `POST <path>` with the JSON `request`, or without a body if `None`, as the session
 /// `token`, through the API: the status and the body.
 pub fn post_as(cloud: &Cloud, token: &str, path: &str, request: Option<&Value>) -> (u16, Value) {
-    let sent = super::cloud::call(|| {
-        let post = super::cloud::agent()
-            .post(format!("{}{path}", cloud.url))
-            .header(
-                skald_proto::VERSION_HEADER,
-                skald_proto::PROTOCOL_VERSION.to_string(),
-            )
-            .header("authorization", format!("Bearer {token}"));
-        match request {
-            Some(request) => post
-                .header("content-type", "application/json")
-                .send(request.to_string().as_bytes()),
-            None => post.send_empty(),
-        }
-    });
+    let post = super::cloud::agent()
+        .post(format!("{}{path}", cloud.url))
+        .header(
+            skald_proto::VERSION_HEADER,
+            skald_proto::PROTOCOL_VERSION.to_string(),
+        )
+        .header("authorization", format!("Bearer {token}"));
+    let sent = match request {
+        Some(request) => post
+            .header("content-type", "application/json")
+            .send(request.to_string().as_bytes()),
+        None => post.send_empty(),
+    };
     let mut response = sent.unwrap_or_else(|err| panic!("POST {path}: {err}"));
     let status = response.status().as_u16();
     let body = response.body_mut().read_to_string().unwrap_or_default();

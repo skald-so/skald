@@ -193,7 +193,7 @@ fn spec_violations_reports_responses_outside_spec() {
 }
 
 /// The tests' HTTP client keeps its connection for the next request. A request on a kept
-/// connection that its server closes as the request comes goes again on a new one.
+/// connection that its server closes as the request comes, a GET, goes again on a new one.
 #[test]
 fn the_tests_http_client_keeps_its_connection_and_sends_again_when_the_server_closes_it() {
     use std::io::{BufRead, BufReader, Write};
@@ -237,7 +237,7 @@ fn the_tests_http_client_keeps_its_connection_and_sends_again_when_the_server_cl
         }
     });
     let get = || {
-        common::agent::call(|| common::agent::agent().get(&url).call())
+        common::agent::get(|| common::agent::agent().get(&url).call())
             .expect("GET")
             .body_mut()
             .read_to_string()

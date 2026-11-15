@@ -27,10 +27,10 @@ pub fn agent() -> ureq::Agent {
         .clone()
 }
 
-/// What `request` gives, sending it again once if its connection ended before an answer came: a
-/// kept connection that its server closed just as the request went out, before this process saw
-/// the close.
-pub fn call<T>(mut request: impl FnMut() -> Result<T, ureq::Error>) -> Result<T, ureq::Error> {
+/// What `request`, a GET, gives, sent again once if its connection ended before an answer came,
+/// as a kept connection does that its server closed just as the request went out. Only a GET:
+/// the server may have acted on another request whose answer it never sent.
+pub fn get<T>(mut request: impl FnMut() -> Result<T, ureq::Error>) -> Result<T, ureq::Error> {
     use std::io::ErrorKind;
     match request() {
         Err(ureq::Error::Io(err))
