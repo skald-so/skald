@@ -9,6 +9,7 @@ mod devices;
 mod folders;
 mod follow;
 mod plain_path;
+mod recv;
 mod secrets;
 mod send;
 mod set_username;
@@ -195,6 +196,12 @@ enum Command {
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: String,
     },
+    /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
+    /// of the device's mailbox and exits. Shows each message that passes the protocol's checks,
+    /// once, and each delivered and expired of this device's messages; warns of each message it
+    /// drops. As an agent, only those of the space of the agent's folder: the rest wait for a later
+    /// run.
+    Recv,
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
     /// the folder is in no space. At the same folder the rule wins over a .skald.toml.
@@ -398,6 +405,10 @@ fn main() -> ExitCode {
                 agent.as_ref(),
             )
         })),
+        Command::Recv => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| recv::run(&dir, cli.key_storage, speaks, timeout, agent.is_some())),
+        ),
         Command::AddRule { folder, space } => {
             exit(state::dir(cli.state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space)))
         }

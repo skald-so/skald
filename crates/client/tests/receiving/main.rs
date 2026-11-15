@@ -109,10 +109,10 @@ const CONTROL_SHOWN: &str = r"\u{1b}]0;pwned\u{7}\u{1b}[2Kfake line";
 /// The agent the tests receive as.
 const CLAUDE: &str = "claude-r7m2xd";
 
-/// Gives the server a mailbox retention of [`RETENTION_DAYS`]. The server has no setting of it
-/// yet (`docs/protocol/delivery.md`, "Mailbox", expiry), so a test that needs one fails here.
-fn retained(_settings: &mut Settings) {
-    panic!("the server has no setting of its mailbox retention yet");
+/// Gives the server a mailbox retention of [`RETENTION_DAYS`] (`docs/protocol/delivery.md`,
+/// "Mailbox", expiry).
+fn retained(settings: &mut Settings) {
+    settings.mailbox_retention = Some(Duration::from_secs(RETENTION_DAYS * 24 * 60 * 60));
 }
 
 /// Moves the storing and adding times of every envelope, send and mailbox entry the server holds

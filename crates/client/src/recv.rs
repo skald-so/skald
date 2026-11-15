@@ -1,0 +1,834 @@
+//! `skald recv`: the device gets its mailbox (`docs/protocol/delivery.md`, "Mailbox"). It first
+//! sends what is left in the outbox, then states its cursor, writes each entry it gets after the
+//! cursor to the local state with the new cursor at once, acks, and stops once catch-up has sent
+//! every entry. It then shows the entries it wrote: a `message` only if it passes the checks of
+//! `docs/protocol/README.md`, "Envelope" and "Scheme `hpke`", with the space's latest revisions
+//! accepted first, and the sending device admitted to the channel ("Admitted devices"), once per
+//! sending device and `msg_id`; a warning for any other; and each `delivered` and `expired` of the
+//! device's messages. As an agent, only those of its folder's space: the rest wait in the local
+//! state.
+
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+use std::io;
+use std::num::NonZeroU64;
+use std::path::Path;
+use std::time::Duration;
+
+use skald_crypto::{HpkeError, HpkeMessage, open_message};
+use skald_proto::{
+    Address, Body, Cbor as _, ChannelId, DeliveryStatus, DeviceId, Envelope, Frame, Header, Push,
+    Roster, ServerName, ServerStatus, SpaceId, VersionRange,
+};
+use tungstenite::Message;
+
+use crate::agents::server_name;
+use crate::connection::{WebSocket, printable};
+use crate::devices::text;
+use crate::folders;
+use crate::follow::{Own, SpaceDevices};
+use crate::secrets;
+use crate::send::{self, admitted, broke, closed, set_read_timeout};
+use crate::spaces::{self, Follower, Scope};
+use crate::state;
+
+/// Receives the mailbox of the device of the state in `dir`, its secrets in `storage`, as an agent
+/// if `agent`; waits for each frame for `timeout`.
+pub fn run(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    agent: bool,
+) -> Result<(), String> {
+    let scope = if agent {
+        Scope::Only(folders::working_space(dir)?.id)
+    } else {
+        Scope::All
+    };
+    let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
+    let queued = send::queued(&follower.state, scope)?;
+    let mut delivered = send::deliver(&mut follower, &queued, timeout);
+    if let Err(err) = send::report(&queued, &delivered, timeout) {
+        eprintln!("skald: warning: {err}");
+    }
+    let received = receive(&mut follower, delivered.socket.take(), timeout);
+    let shown = show(&mut follower, scope);
+    received?;
+    shown
+}
+
+/// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends: writes
+/// each entry after the cursor with the new cursor and acks it.
+fn receive(
+    follower: &mut Follower,
+    socket: Option<WebSocket>,
+    timeout: Duration,
+) -> Result<(), String> {
+    let mut socket = match socket {
+        Some(socket) => socket,
+        None => {
+            let keys = follower.keys()?;
+            follower
+                .connection
+                .open_websocket_as("/ws", &follower.token, keys.id(), keys.signing())
+                .map_err(text)?
+        }
+    };
+    let mut cursor = follower.state.cursor().map_err(text)?;
+    write(&mut socket, &Frame::Sync { cursor })?;
+    loop {
+        set_read_timeout(&mut socket, timeout).map_err(|err| broke(err.into()))?;
+        let entries = match socket.read() {
+            Ok(Message::Binary(bytes)) => match got(Frame::from_cbor(&bytes).ok()) {
+                Got::Entries(entries) => entries,
+                Got::End => break,
+                Got::Nothing => continue,
+            },
+            Ok(Message::Close(frame)) => return Err(closed(frame.as_ref())),
+            Ok(_) => continue,
+            Err(err) => return Err(failed(err, timeout)),
+        };
+        let written = after(entries, cursor);
+        if written.is_empty() {
+            continue;
+        }
+        cursor = follower.state.write_entries(&written).map_err(text)?;
+        if let Some(seq) = NonZeroU64::new(cursor) {
+            write(&mut socket, &Frame::Ack { seq })?;
+        }
+    }
+    let _ = socket.close(None);
+    let _ = socket.flush();
+    Ok(())
+}
+
+/// What a frame from the server gives a run that waits for the end of catch-up.
+#[derive(Debug, PartialEq)]
+enum Got {
+    /// Entries of the mailbox.
+    Entries(Vec<Push>),
+    /// The end of catch-up: an empty `batch`.
+    End,
+    /// Nothing: a frame it does not know, does not await or that does not decode.
+    Nothing,
+}
+
+/// What `frame`, a frame from the server if it decodes, gives.
+fn got(frame: Option<Frame>) -> Got {
+    match frame {
+        Some(Frame::Push(push)) => Got::Entries(vec![push]),
+        Some(Frame::Batch(entries)) if entries.is_empty() => Got::End,
+        Some(Frame::Batch(entries)) => Got::Entries(entries),
+        _ => Got::Nothing,
+    }
+}
+
+/// Why a run that waited for each frame for `timeout` failed to read one, by `err`.
+fn failed(err: tungstenite::Error, timeout: Duration) -> String {
+    match err {
+        tungstenite::Error::Io(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ) =>
+        {
+            format!(
+                "the server sent nothing within {} s before the end of the mailbox; the next skald \
+                 recv gets the rest",
+                timeout.as_secs()
+            )
+        }
+        err => broke(err),
+    }
+}
+
+/// The `message` and `status` entries of `entries` after `cursor`, by `seq`, each as its frame:
+/// one up to it is a redelivery after a lost ack.
+fn after(entries: Vec<Push>, cursor: u64) -> Vec<(u64, Vec<u8>)> {
+    entries
+        .into_iter()
+        .filter_map(|push| {
+            let seq = match &push {
+                Push::Message { seq, .. } | Push::Status { seq, .. } => seq.get(),
+                Push::SpaceNotice { .. } | Push::Unknown(_) => return None,
+            };
+            (seq > cursor).then(|| (seq, Frame::Push(push).to_cbor()))
+        })
+        .collect()
+}
+
+fn write(socket: &mut WebSocket, frame: &Frame) -> Result<(), String> {
+    socket
+        .send(Message::Binary(frame.to_cbor().into()))
+        .map_err(broke)
+}
+
+/// What a run checks messages with, besides the state: the spaces it synced, each one's last
+/// accepted revision and its accounts' devices, and the server's name, once it asked for it.
+struct Checks {
+    keys: crate::device::Keys,
+    followed: Vec<state::Space>,
+    synced: BTreeMap<SpaceId, (Roster, SpaceDevices)>,
+    server: Option<Option<ServerName>>,
+}
+
+/// Shows each entry the state holds within `scope`, in `seq` order, and takes it out.
+fn show(follower: &mut Follower, scope: Scope) -> Result<(), String> {
+    let mut checks = Checks {
+        keys: follower.keys()?,
+        followed: follower.state.spaces().map_err(text)?,
+        synced: BTreeMap::new(),
+        server: None,
+    };
+    for (seq, bytes) in follower.state.inbox().map_err(text)? {
+        match Frame::from_cbor(&bytes) {
+            Ok(Frame::Push(Push::Message { envelope, .. })) => {
+                let envelope = envelope.envelope();
+                if scope.excludes(envelope.header.space) {
+                    continue;
+                }
+                let header = &envelope.header;
+                match verdict(follower, &mut checks, envelope)? {
+                    Verdict::Show(sender, message) => {
+                        println!(
+                            "The message {} in the channel {} from {}, by the device {} \
+                             ({sender}):\n  {}",
+                            header.msg_id,
+                            header.channel,
+                            message.from,
+                            printable(&message.device),
+                            printable(&message.text)
+                        );
+                        follower
+                            .state
+                            .shown(seq, sender, header.msg_id)
+                            .map_err(text)?;
+                    }
+                    Verdict::Repeat => follower.state.remove_entry(seq).map_err(text)?,
+                    Verdict::Drop(sender, why) => {
+                        let from = sender.map_or_else(String::new, |sender| {
+                            format!(" from the device {sender}")
+                        });
+                        eprintln!(
+                            "skald: warning: dropped the message {} in the channel {}{from}: \
+                             {why}; it is not shown",
+                            header.msg_id, header.channel
+                        );
+                        follower.state.remove_entry(seq).map_err(text)?;
+                    }
+                }
+            }
+            Ok(Frame::Push(Push::Status { status, .. })) => {
+                let sent = follower.state.sent(status.msg_id).map_err(text)?;
+                if let Scope::Only(only) = scope
+                    && sent.map(|(space, _)| space) != Some(only)
+                {
+                    continue;
+                }
+                println!("{}", status_line(&status, sent.map(|(_, channel)| channel)));
+                follower.state.remove_entry(seq).map_err(text)?;
+            }
+            // This client wrote only entries it reads.
+            _ => follower.state.remove_entry(seq).map_err(text)?,
+        }
+    }
+    Ok(())
+}
+
+/// What a run does with a `message` entry.
+enum Verdict {
+    /// Shows the message from the sending device: it passed every check.
+    Show(DeviceId, Received),
+    /// Drops it without a word: the device showed it already.
+    Repeat,
+    /// Drops it with a warning that names the sending device, if the payload names one, and why.
+    Drop(Option<DeviceId>, String),
+}
+
+/// What `envelope`, a `message` entry of a space within the run's scope, gives, by the checks of
+/// the run: the space is synced at the first message of it.
+fn verdict(
+    follower: &mut Follower,
+    checks: &mut Checks,
+    envelope: &Envelope,
+) -> Result<Verdict, String> {
+    let header = &envelope.header;
+    let opened = match open_message(header, &envelope.payload, follower.this, checks.keys.hpke()) {
+        Ok(opened) => opened,
+        Err(HpkeError::Content { sender, error }) => {
+            return Ok(Verdict::Drop(
+                Some(sender),
+                format!("its content breaks the protocol: {error}"),
+            ));
+        }
+        Err(_) => {
+            return Ok(Verdict::Drop(
+                None,
+                "it does not open as sealed to this device".to_owned(),
+            ));
+        }
+    };
+    let sender = opened.sender();
+    let Some(space) = checks
+        .followed
+        .iter()
+        .find(|space| space.id == header.space)
+    else {
+        return Ok(Verdict::Drop(
+            Some(sender),
+            format!("its space {} is none this device follows", header.space),
+        ));
+    };
+    if let Entry::Vacant(vacant) = checks.synced.entry(space.id) {
+        vacant.insert(follower.sync(space)?);
+    }
+    if checks.server.is_none() {
+        checks.server = Some(server_name(&mut follower.connection)?);
+    }
+    let (roster, devices) = &checks.synced[&space.id];
+    let context = Context {
+        own: &follower.own,
+        this: follower.this,
+        roster,
+        devices,
+        server: checks.server.as_ref().and_then(Option::as_ref),
+    };
+    Ok(match check(opened, header, &context) {
+        Err(why) => Verdict::Drop(Some(sender), why),
+        Ok(_)
+            if follower
+                .state
+                .received(sender, header.msg_id)
+                .map_err(text)? =>
+        {
+            Verdict::Repeat
+        }
+        Ok(message) => Verdict::Show(sender, message),
+    })
+}
+
+/// What a message is checked against: the device's account and the master key it pinned, the
+/// device, the space's last accepted revision and its accounts' devices, and the server's name.
+struct Context<'c> {
+    own: &'c Own,
+    this: DeviceId,
+    roster: &'c Roster,
+    devices: &'c SpaceDevices,
+    server: Option<&'c ServerName>,
+}
+
+/// A message that passed the checks.
+#[derive(Debug, PartialEq)]
+struct Received {
+    from: Address,
+    /// The sending device's certificate `name`.
+    device: String,
+    text: String,
+}
+
+/// The message of `opened`, the payload of an envelope with `header` that opened for this device,
+/// once it passes the checks against `context`; why it fails otherwise.
+fn check(opened: HpkeMessage, header: &Header, context: &Context) -> Result<Received, String> {
+    let body = context.roster.body();
+    let (name, revision) = (body.name.as_str(), body.revision);
+    let admitted = admitted(
+        context.own,
+        context.this,
+        context.roster,
+        context.devices,
+        header.channel,
+    );
+    let cert = *admitted.get(&opened.sender()).ok_or_else(|| {
+        format!(
+            "revision {revision} of the space {name} admits no such device with a valid \
+             certificate to the channel"
+        )
+    })?;
+    let content = opened.verify(cert).map_err(|_| {
+        "its signature does not verify with the sending device's certificate".to_owned()
+    })?;
+    let from = &content.from;
+    let handle = body
+        .member(cert.body().account)
+        .map(|member| &member.handle);
+    if from.space() != &body.name
+        || Some(from.owner()) != handle
+        || Some(from.server()) != context.server
+    {
+        return Err(format!(
+            "its from is no address of the sending device's account in the space {name}"
+        ));
+    }
+    if content.counter.is_none() {
+        return Err("its content has no counter".to_owned());
+    }
+    let Some(Body::A2a(json)) = &content.body else {
+        return Err("it holds no A2A message".to_owned());
+    };
+    let message: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| "its A2A message is no JSON".to_owned())?;
+    if message["messageId"].as_str() != Some(header.msg_id.to_string().as_str()) {
+        return Err("its A2A messageId is not its msg_id".to_owned());
+    }
+    let text = message["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(Received {
+        from: content.from,
+        device: cert.body().name.clone(),
+        text,
+    })
+}
+
+/// The line of `status`, of a message of this device in `channel`, if the state recorded it.
+fn status_line(status: &DeliveryStatus, channel: Option<ChannelId>) -> String {
+    let device = status.device;
+    let what = match status.status {
+        ServerStatus::Delivered => format!("delivered to the device {device}"),
+        ServerStatus::Expired => format!("expired before the device {device} got it"),
+    };
+    match channel {
+        Some(channel) => format!(
+            "The message {} in the channel {channel}: {what}",
+            status.msg_id
+        ),
+        None => format!("The message {}: {what}", status.msg_id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skald_crypto::{HpkeKey, SigningKey, seal_message};
+    use skald_proto::{
+        Content, HpkePayload, HpkePlaintext, MessageId, NonEmpty, RawEnvelope, Receipt,
+        ReceiptStatus, Scheme, Unknown,
+    };
+
+    use super::*;
+    use crate::send::tests::{Account, channel_of};
+    use crate::spaces::tests::{first, member};
+
+    /// Ada's device, this one, in `acme` with Bob, whose device sends in the channel they are both
+    /// in.
+    struct World {
+        own: Own,
+        this: DeviceId,
+        hpke: HpkeKey,
+        roster: Roster,
+        devices: SpaceDevices,
+        channel: ChannelId,
+        bob: DeviceId,
+        bob_key: SigningKey,
+        server: ServerName,
+    }
+
+    impl World {
+        fn new() -> Self {
+            let (ada, bob) = (Account::new(), Account::new());
+            let (this_cert, _, this_key) = ada.client();
+            let (bob_cert, _, bob_key) = bob.client();
+            let mut body = first(ada.id).body().clone();
+            body.members
+                .push(member(bob.id, "bob", bob.master.public_key()));
+            let channel = ChannelId::generate();
+            body.channels = vec![channel_of(channel, &[ada.id, bob.id])];
+            let certs = vec![this_cert, bob_cert];
+            World {
+                own: Own {
+                    account: ada.id,
+                    master: ada.master.public_key(),
+                },
+                this: DeviceId::from_signing_key(&this_key.public_key()),
+                hpke: HpkeKey::generate(),
+                roster: skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap(),
+                devices: SpaceDevices {
+                    ids: certs.iter().map(|cert| cert.body().device).collect(),
+                    certs,
+                },
+                channel,
+                bob: DeviceId::from_signing_key(&bob_key.public_key()),
+                bob_key,
+                server: "skald.example".parse().unwrap(),
+            }
+        }
+
+        /// The header of a message of the channel to this device.
+        fn header(&self) -> Header {
+            Header {
+                v: NonZeroU64::MIN,
+                space: self.roster.body().space,
+                channel: self.channel,
+                msg_id: MessageId::generate(),
+                scheme: Scheme::Hpke,
+                recipients: Some(NonEmpty::new(self.this)),
+                ttl: None,
+                unknown: Unknown::default(),
+            }
+        }
+
+        /// Content from Bob's person address with `counter` 1 and the A2A message `json`.
+        fn content(&self, json: String) -> Content {
+            Content {
+                from: format!("acme/bob/user@{}", self.server).parse().unwrap(),
+                to: None,
+                counter: NonZeroU64::new(1),
+                hops: 0,
+                reply_to: None,
+                body: Some(Body::A2a(json)),
+                delegation: None,
+                grant: None,
+                attachments: None,
+                unknown: Unknown::default(),
+            }
+        }
+
+        /// The A2A message of `header` with the text parts `texts`.
+        fn a2a(header: &Header, texts: &[&str]) -> String {
+            let parts: Vec<serde_json::Value> = texts
+                .iter()
+                .map(|text| serde_json::json!({ "text": text }))
+                .collect();
+            serde_json::json!({
+                "messageId": header.msg_id.to_string(),
+                "role": "ROLE_USER",
+                "parts": parts,
+            })
+            .to_string()
+        }
+
+        /// What checking `content` under `header`, signed with `key` and sealed to this device,
+        /// gives, with `roster` as the space's revision.
+        fn checked_in(
+            &self,
+            roster: &Roster,
+            header: &Header,
+            content: &Content,
+            key: &SigningKey,
+        ) -> Result<Received, String> {
+            let payload =
+                seal_message(header, content, key, &self.hpke.public_key()).expect("sealed");
+            let opened = open_message(header, &payload, self.this, &self.hpke).expect("opens");
+            let context = Context {
+                own: &self.own,
+                this: self.this,
+                roster,
+                devices: &self.devices,
+                server: Some(&self.server),
+            };
+            check(opened, header, &context)
+        }
+
+        fn checked(&self, header: &Header, content: &Content) -> Result<Received, String> {
+            self.checked_in(&self.roster, header, content, &self.bob_key)
+        }
+    }
+
+    /// A message from an admitted device of a member of the channel, from its account's person
+    /// address in the space on this server, with a counter and an A2A message whose `messageId` is
+    /// `msg_id`, gives its text parts, each on a line, `from` and the device's name.
+    #[test]
+    fn message_that_passes_the_checks_gives_its_text() {
+        let world = World::new();
+        let header = world.header();
+        let content = world.content(World::a2a(&header, &["first", "second"]));
+
+        assert_eq!(
+            world.checked(&header, &content),
+            Ok(Received {
+                from: content.from.clone(),
+                device: "laptop".to_owned(),
+                text: "first\nsecond".to_owned(),
+            })
+        );
+    }
+
+    /// A device not admitted to the channel fails: one of an account outside it, one its member
+    /// excludes, and any device in a channel the revision does not have.
+    #[test]
+    fn device_not_admitted_to_the_channel_fails() {
+        let world = World::new();
+        let mut outside = world.roster.body().clone();
+        outside.channels[0].members.truncate(1);
+        let mut excluded = world.roster.body().clone();
+        let mut members = excluded.members.clone().into_vec();
+        members[1].excluded = Some(NonEmpty::new(world.bob));
+        excluded.members = NonEmpty::from_vec(members).unwrap();
+        let mut elsewhere = world.roster.body().clone();
+        elsewhere.channels[0].id = ChannelId::generate();
+        for body in [outside, excluded, elsewhere] {
+            let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
+            let header = world.header();
+            let content = world.content(World::a2a(&header, &["hi"]));
+
+            let checked = world.checked_in(&roster, &header, &content, &world.bob_key);
+
+            assert_eq!(
+                checked,
+                Err(
+                    "revision 1 of the space acme admits no such device with a valid certificate \
+                     to the channel"
+                        .to_owned()
+                )
+            );
+        }
+    }
+
+    /// Content signed by a key other than that of the certificate of the device it names fails.
+    #[test]
+    fn signature_of_another_key_fails() {
+        let world = World::new();
+        let header = world.header();
+        let content = world.content(World::a2a(&header, &["hi"]));
+        let aad = header.to_cbor();
+        let plaintext = HpkePlaintext {
+            sender: world.bob,
+            content: content.clone(),
+            signature: SigningKey::generate().sign("skald hpke", &[&aad, &content.to_cbor()]),
+        };
+        let (enc, ct) = HpkeKey::seal(
+            &world.hpke.public_key(),
+            b"skald hpke",
+            &aad,
+            &plaintext.to_cbor(),
+        )
+        .unwrap();
+        let payload = HpkePayload { enc, ct }.to_cbor();
+        let opened = open_message(&header, &payload, world.this, &world.hpke).expect("opens");
+        let context = Context {
+            own: &world.own,
+            this: world.this,
+            roster: &world.roster,
+            devices: &world.devices,
+            server: Some(&world.server),
+        };
+
+        assert_eq!(
+            check(opened, &header, &context),
+            Err("its signature does not verify with the sending device's certificate".to_owned())
+        );
+    }
+
+    /// `from` fails unless it is the person or an agent of the sending device's account in the
+    /// space, on this server; without the server's name, every one fails.
+    #[test]
+    fn from_of_another_account_space_or_server_fails() {
+        let world = World::new();
+        let failed = Err(
+            "its from is no address of the sending device's account in the space acme".to_owned(),
+        );
+        for from in [
+            "acme/ada/user@skald.example",
+            "other/bob/user@skald.example",
+            "acme/bob/user@other.example",
+        ] {
+            let header = world.header();
+            let mut content = world.content(World::a2a(&header, &["hi"]));
+            content.from = from.parse().unwrap();
+            assert_eq!(world.checked(&header, &content), failed, "{from}");
+        }
+        let header = world.header();
+        let mut content = world.content(World::a2a(&header, &["hi"]));
+        content.from = "acme/bob/claude@skald.example".parse().unwrap();
+        assert!(world.checked(&header, &content).is_ok(), "an agent of bob");
+
+        let payload = seal_message(&header, &content, &world.bob_key, &world.hpke.public_key())
+            .expect("sealed");
+        let opened = open_message(&header, &payload, world.this, &world.hpke).unwrap();
+        let unnamed = Context {
+            own: &world.own,
+            this: world.this,
+            roster: &world.roster,
+            devices: &world.devices,
+            server: None,
+        };
+        assert_eq!(check(opened, &header, &unnamed), failed);
+    }
+
+    /// Content without `counter`, without an A2A message, or whose A2A message is no JSON or has
+    /// another `messageId` than `msg_id`, fails.
+    #[test]
+    fn content_without_counter_or_a_matching_a2a_message_fails() {
+        let world = World::new();
+        let header = world.header();
+        // Content with a body of a later version, the field 20, in place of the A2A message.
+        let later = |counter| {
+            let mut bytes = Content {
+                counter,
+                body: None,
+                ..world.content(String::new())
+            }
+            .to_cbor();
+            // One more field in the map's head, 0xa0 and its count.
+            bytes[0] += 1;
+            bytes.extend_from_slice(&[0x14, 0x01]);
+            Content::from_cbor(&bytes).expect("content of a later version")
+        };
+        let uncounted = later(None);
+        let later = later(NonZeroU64::new(1));
+        // A receipt comes from an agent, never from a person, to the sender of its messages.
+        let mut receipt = world.content(String::new());
+        receipt.from = "acme/bob/claude@skald.example".parse().unwrap();
+        receipt.to = Some("acme/ada/user@skald.example".parse().unwrap());
+        receipt.body = Some(Body::Receipt(Receipt {
+            status: ReceiptStatus::Read,
+            messages: NonEmpty::new(MessageId::generate()),
+            reason: None,
+            unknown: Unknown::default(),
+        }));
+        let other = Header {
+            msg_id: MessageId::generate(),
+            ..header.clone()
+        };
+        for (content, why) in [
+            (uncounted, "its content has no counter"),
+            (later, "it holds no A2A message"),
+            (receipt, "it holds no A2A message"),
+            (
+                world.content("not json".to_owned()),
+                "its A2A message is no JSON",
+            ),
+            (
+                world.content(World::a2a(&other, &["hi"])),
+                "its A2A messageId is not its msg_id",
+            ),
+        ] {
+            assert_eq!(
+                world.checked(&header, &content),
+                Err(why.to_owned()),
+                "{why}"
+            );
+        }
+    }
+
+    /// Of a catch-up, only the `message` and `status` entries after the cursor are written, each
+    /// as its frame.
+    #[test]
+    fn entries_after_the_cursor_are_written_as_their_frames() {
+        let seq = |seq| NonZeroU64::new(seq).unwrap();
+        let header = Header {
+            v: NonZeroU64::MIN,
+            space: SpaceId::generate(),
+            channel: ChannelId::generate(),
+            msg_id: MessageId::generate(),
+            scheme: Scheme::Mls,
+            recipients: None,
+            ttl: None,
+            unknown: Unknown::default(),
+        };
+        let envelope = RawEnvelope::from_bytes(
+            Envelope {
+                header,
+                payload: vec![1],
+            }
+            .to_cbor(),
+        )
+        .unwrap();
+        let status = DeliveryStatus {
+            msg_id: MessageId::generate(),
+            device: DeviceId::from_signing_key(&[2; 32]),
+            status: ServerStatus::Delivered,
+            timestamp: 1_800_000_000,
+            unknown: Unknown::default(),
+        };
+        let message = |at| Push::Message {
+            seq: seq(at),
+            envelope: envelope.clone(),
+        };
+        let entries = vec![
+            message(2),
+            message(3),
+            Push::SpaceNotice {
+                space: SpaceId::generate(),
+            },
+            Push::Status {
+                seq: seq(4),
+                status: status.clone(),
+            },
+        ];
+
+        let written = after(entries, 2);
+
+        let frame = |push| Frame::Push(push).to_cbor();
+        assert_eq!(
+            written,
+            [
+                (3, frame(message(3))),
+                (
+                    4,
+                    frame(Push::Status {
+                        seq: seq(4),
+                        status,
+                    })
+                )
+            ]
+        );
+    }
+
+    /// A `message` or `status` gives one entry, a `batch` its entries, an empty one the end of
+    /// catch-up; any other frame, or one that does not decode, nothing.
+    #[test]
+    fn frames_give_entries_until_an_empty_batch() {
+        let notice = || Push::SpaceNotice {
+            space: SpaceId::generate(),
+        };
+        let push = notice();
+        let batch = vec![notice(), notice()];
+
+        assert_eq!(
+            got(Some(Frame::Push(push.clone()))),
+            Got::Entries(vec![push])
+        );
+        assert_eq!(got(Some(Frame::Batch(batch.clone()))), Got::Entries(batch));
+        assert_eq!(got(Some(Frame::Batch(Vec::new()))), Got::End);
+        assert_eq!(got(Some(Frame::Sync { cursor: 1 })), Got::Nothing);
+        assert_eq!(got(None), Got::Nothing);
+    }
+
+    /// A read that times out says the server sent nothing in time; any other failure, that the
+    /// connection broke.
+    #[test]
+    fn failed_read_says_whether_it_timed_out() {
+        let io = |kind| tungstenite::Error::Io(io::Error::from(kind));
+        let timeout = Duration::from_secs(4);
+        let silent = "the server sent nothing within 4 s before the end of the mailbox; the next \
+                      skald recv gets the rest";
+
+        assert_eq!(failed(io(io::ErrorKind::WouldBlock), timeout), silent);
+        assert_eq!(failed(io(io::ErrorKind::TimedOut), timeout), silent);
+        assert!(
+            failed(io(io::ErrorKind::ConnectionReset), timeout)
+                .starts_with("the connection to the server broke: "),
+        );
+    }
+
+    /// A status line names the status, the message, its channel if known, and the recipient
+    /// device.
+    #[test]
+    fn status_line_names_the_message_and_the_recipient_device() {
+        let status = |status| DeliveryStatus {
+            msg_id: "01a1dcab-eecf-768d-821b-95f7a4a8bd19".parse().unwrap(),
+            device: "a90f5ea9-75e5-899a-90ec-3a09f33aebdf".parse().unwrap(),
+            status,
+            timestamp: 1_800_000_000,
+            unknown: Unknown::default(),
+        };
+        let channel: ChannelId = "01a1dcab-ee8a-7872-9adc-6efd0851e3ee".parse().unwrap();
+
+        assert_eq!(
+            status_line(&status(ServerStatus::Delivered), Some(channel)),
+            "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19 in the channel \
+             01a1dcab-ee8a-7872-9adc-6efd0851e3ee: delivered to the device \
+             a90f5ea9-75e5-899a-90ec-3a09f33aebdf"
+        );
+        assert_eq!(
+            status_line(&status(ServerStatus::Expired), None),
+            "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19: expired before the device \
+             a90f5ea9-75e5-899a-90ec-3a09f33aebdf got it"
+        );
+    }
+}
