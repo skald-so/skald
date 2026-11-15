@@ -3,7 +3,7 @@
 //! at its adding time plus the retention; a `message` of a version not deliverable on a connection
 //! expires when the connection reaches it. The server looks for expired entries by itself, deletes
 //! them and adds `expired` for each message sent with `report` true; it forgets an idempotency key
-//! once the retention has passed since its send.
+//! once the retention has passed since its send, and so a counted message since its count.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -48,7 +48,7 @@ pub(crate) async fn run(db: PgPool, wakers: Arc<Wakers>, retention: Option<Durat
 }
 
 /// Removes every entry expired by time, with the retention of `retention` seconds, then the
-/// idempotency keys stored longer ago than that.
+/// idempotency keys stored longer ago than that, and the messages counted longer ago.
 async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(), sqlx::Error> {
     // Entries that an ack or another sweep holds are left to it.
     let sql = removing!(
@@ -73,6 +73,12 @@ async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(
         .bind(retention)
         .execute(db)
         .await?;
+    sqlx::query(
+        "DELETE FROM counted_messages WHERE counted_at <= now() - make_interval(secs => $1)",
+    )
+    .bind(retention)
+    .execute(db)
+    .await?;
     Ok(())
 }
 

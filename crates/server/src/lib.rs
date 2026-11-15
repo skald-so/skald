@@ -94,6 +94,15 @@ pub struct Settings {
     /// it, entries wait for their device's ack, unless an envelope's `ttl` ends first, and keys are
     /// kept for good.
     pub mailbox_retention: Option<Duration>,
+    /// The longest payload of an envelope, in bytes (`docs/dev/architecture.md`, "Cloud limits"); no
+    /// limit without it.
+    pub message_size_limit: Option<u64>,
+    /// The number of messages a space stores per calendar month in UTC (`docs/dev/architecture.md`,
+    /// "Cloud limits"); no limit without it.
+    pub monthly_messages_limit: Option<u64>,
+    /// The number of devices with a certificate an account may have, `service` devices aside
+    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    pub devices_limit: Option<u32>,
 }
 
 /// The state the handlers share.
@@ -107,6 +116,8 @@ struct AppState {
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
+    limits: mailboxes::Limits,
+    devices_limit: Option<u32>,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
 }
@@ -220,6 +231,11 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             mailbox_retention: settings.mailbox_retention,
+            limits: mailboxes::Limits {
+                message_size: settings.message_size_limit,
+                monthly_messages: settings.monthly_messages_limit,
+            },
+            devices_limit: settings.devices_limit,
             connections: Arc::default(),
             wakers,
             google: settings

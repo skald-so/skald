@@ -192,6 +192,36 @@ struct Cli {
     )]
     mailbox_retention: Option<u64>,
 
+    /// The longest payload of an envelope a device sends, in bytes; a longer one is refused with
+    /// too-large [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_MESSAGE_SIZE_LIMIT",
+        value_name = "BYTES",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    message_size_limit: Option<u64>,
+
+    /// The number of messages a space stores per calendar month in UTC, each counted once whatever
+    /// its envelopes; the next one is refused with quota-exceeded [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_MONTHLY_MESSAGES_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    monthly_messages_limit: Option<u64>,
+
+    /// The number of devices with a certificate an account may have, service devices aside; a
+    /// new device of an account that has as many does not register [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_DEVICES_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    devices_limit: Option<u32>,
+
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
     #[arg(long, env = "SKALD_SERVER_NAME", value_name = "NAME")]
@@ -397,6 +427,9 @@ impl Cli {
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
+            message_size_limit: self.message_size_limit,
+            monthly_messages_limit: self.monthly_messages_limit,
+            devices_limit: self.devices_limit,
         })
     }
 }
@@ -506,6 +539,39 @@ mod tests {
         assert_eq!(retention(longest), Some(Some(longest)));
         assert_eq!(retention(0), None);
         assert_eq!(retention(longest + 1), None);
+    }
+
+    #[test]
+    fn the_cloud_limits_are_from_1() {
+        let parsed = |setting: &str, value: &str| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                setting,
+                value,
+            ])
+            .map(|cli| {
+                [
+                    cli.message_size_limit,
+                    cli.monthly_messages_limit,
+                    cli.devices_limit.map(u64::from),
+                ]
+            })
+            .ok()
+        };
+        let settings = [
+            "--message-size-limit",
+            "--monthly-messages-limit",
+            "--devices-limit",
+        ];
+        for (at, setting) in settings.into_iter().enumerate() {
+            let mut one = [None; 3];
+            one[at] = Some(1);
+            assert_eq!(parsed(setting, "1"), Some(one), "{setting}");
+            assert_eq!(parsed(setting, "0"), None, "{setting}");
+        }
+        assert_eq!(parsed("--devices-limit", "4294967296"), None);
     }
 
     #[test]

@@ -44,6 +44,7 @@ mod fixtures;
 mod front;
 #[path = "../device_keys/keys.rs"]
 mod keys;
+mod limits;
 #[path = "../sign_in/machine.rs"]
 mod machine;
 #[path = "../sign_in/relay.rs"]

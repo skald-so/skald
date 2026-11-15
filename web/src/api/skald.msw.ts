@@ -593,6 +593,16 @@ export const getRegisterDeviceResponseMock401 = (
   ...overrideResponse,
 });
 
+export const getRegisterDeviceResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getRegisterDeviceResponseMock409 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
@@ -2358,6 +2368,37 @@ export const getRegisterDeviceMockHandler401 = (
           : getRegisterDeviceResponseMock401(),
         {
           status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRegisterDeviceMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, DeviceRegistration>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, DeviceRegistration>(
+    "*/devices",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRegisterDeviceResponseMock403(),
+        {
+          status: 403,
           headers: { "Content-Type": "application/problem+json" },
         },
       );

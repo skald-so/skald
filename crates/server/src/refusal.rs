@@ -35,6 +35,8 @@ pub(crate) enum Refusal {
     SpaceNameTaken,
     /// The account owns as many spaces as it may: the number it holds.
     OwnedSpacesLimit(u32),
+    /// The account has as many devices with a certificate as it may: the number it holds.
+    DevicesLimit(u32),
     /// A roster revision out of order or with a taken number, for the reason it holds.
     RevisionConflict(String),
     /// The database failed at what it holds, such as `read a session`.
@@ -101,6 +103,12 @@ impl IntoResponse for Refusal {
                 "owned-spaces-limit",
                 "Space limit reached",
                 &format!("The account owns as many spaces as it may: {limit}."),
+            ),
+            Refusal::DevicesLimit(limit) => problem(
+                StatusCode::FORBIDDEN,
+                "devices-limit",
+                "Device limit reached",
+                &format!("The account has as many devices with a certificate as it may: {limit}."),
             ),
             Refusal::RevisionConflict(detail) => problem(
                 conflict,

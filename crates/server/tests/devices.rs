@@ -288,6 +288,26 @@ fn first_device_gives_the_master_key_and_its_certificate() {
     holds();
 }
 
+/// With `--devices-limit`, only a new device counts against it: at 1, once the first device holds
+/// its certificate, its registration's retry is taken and another device's is refused.
+#[test]
+fn at_the_devices_limit_a_registered_device_registers_again() {
+    let flow = DeviceFlow::start_with(&["--devices-limit", "1"]);
+    let ada = flow.stand.user(3_120_665_030, "ada-limit-retry-standin");
+    let first = machine(&flow, &ada);
+    let (laptop, phone) = (Device::new("Laptop"), Device::new("Phone"));
+    let registration = laptop.registration();
+    assert_taken(&first.register(&registration));
+    let key = Key::generate();
+    let laptop_cert = laptop.cert(&first.account, &key);
+    assert_taken(&first.give_master(&key, &laptop_cert));
+
+    // A retry after a lost answer.
+    assert_taken(&first.register(&registration));
+    assert_refused(&first.register(&phone.registration()), 403);
+    assert_eq!(first.devices(), listed(&[], &[(&laptop, &laptop_cert)]));
+}
+
 #[test]
 fn device_list_gives_each_certificate_as_sent() {
     let flow = DeviceFlow::start();
