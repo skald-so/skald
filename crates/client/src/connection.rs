@@ -729,7 +729,11 @@ fn content(headers: &HeaderMap) -> Content {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{BufRead, BufReader, Write};
     use std::net::{SocketAddr, TcpListener};
+    use std::thread;
+
+    use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 
     use super::*;
 
@@ -998,5 +1002,102 @@ mod tests {
         };
         assert_eq!(accepted(&server), 2);
         assert_eq!(accepted(&elsewhere), 0);
+    }
+
+    /// What the stand-in server saw: the challenge request's line and headers, in lowercase, and
+    /// the WebSocket's first frame.
+    struct Seen {
+        request: Vec<String>,
+        first: Vec<u8>,
+    }
+
+    /// A stand-in server that answers one challenge request with `challenge`, then takes one
+    /// WebSocket, selecting the subprotocol it offers, and reads its first frame.
+    fn challenging(challenge: &[u8]) -> (String, thread::JoinHandle<Seen>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let url = format!("http://{}", listener.local_addr().expect("the address"));
+        let body = format!(r#"{{"challenge":"{}"}}"#, URL_SAFE_NO_PAD.encode(challenge));
+        let served = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the challenge request");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
+            let mut request = Vec::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("a request line");
+                if line == "\r\n" {
+                    break;
+                }
+                request.push(line.trim_end().to_ascii_lowercase());
+            }
+            write!(
+                &stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                 connection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("answer");
+            drop(stream);
+            let (stream, _) = listener.accept().expect("the WebSocket");
+            let mut socket = tungstenite::accept_hdr(stream, select).expect("a WebSocket");
+            let first = match socket.read().expect("a frame") {
+                Message::Binary(bytes) => bytes.to_vec(),
+                other => panic!("not a binary frame: {other:?}"),
+            };
+            Seen { request, first }
+        });
+        (url, served)
+    }
+
+    /// Selects the subprotocol `request` offers.
+    #[expect(clippy::result_large_err, reason = "tungstenite's callback")]
+    fn select(request: &Request, mut response: Response) -> Result<Response, ErrorResponse> {
+        let offered = request.headers()["sec-websocket-protocol"].clone();
+        response
+            .headers_mut()
+            .insert("sec-websocket-protocol", offered);
+        Ok(response)
+    }
+
+    /// A device asks for a challenge under the server's path with its session's token, then sends
+    /// `auth` first: the device, signed with its key over the challenge and the server's origin,
+    /// without the path of its URL.
+    #[test]
+    fn websocket_as_a_device_proves_its_key_on_a_challenge() {
+        const TOKEN: &str = "token-1";
+        let challenge = [0x3c; 32];
+        let (origin, served) = challenging(&challenge);
+        let key = SigningKey::generate();
+        let id = DeviceId::from_signing_key(&key.public_key());
+        let server = format!("{origin}/skald");
+        let mut connection =
+            Connection::new(&server, VersionRange::default(), 10 * SECOND).expect("a connection");
+
+        let socket = connection
+            .open_websocket_as("/ws", TOKEN, id, &key)
+            .expect("a WebSocket");
+
+        let Seen { request, first } = served.join().unwrap();
+        drop(socket);
+        assert_eq!(request[0], "post /skald/session/challenge http/1.1");
+        assert!(
+            request.contains(&format!("authorization: bearer {TOKEN}")),
+            "{request:?}"
+        );
+        let Frame::Auth {
+            challenge: signed,
+            device,
+            signature,
+        } = Frame::from_cbor(&first).expect("a frame")
+        else {
+            panic!("not auth: {first:?}");
+        };
+        assert_eq!((signed.as_slice(), device), (challenge.as_slice(), id));
+        skald_crypto::verify(
+            &key.public_key(),
+            AUTH_LABEL,
+            &[&challenge, origin.as_bytes()],
+            &signature,
+        )
+        .expect("signed over the challenge and the origin");
     }
 }
