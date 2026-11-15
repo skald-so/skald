@@ -162,6 +162,12 @@ impl Secrets {
         }
     }
 
+    /// The secrets file.
+    #[cfg(test)]
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
     /// The stored secrets: the key storage's if it has them, otherwise the file's, if any.
     pub fn load(&self) -> Result<Map, Error> {
         if let Some(keyring) = &self.keyring {

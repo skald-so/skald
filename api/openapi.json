@@ -1877,7 +1877,7 @@
       "post": {
         "operationId": "uploadKeyPackages",
         "summary": "Upload a device's KeyPackages",
-        "description": "Takes KeyPackages of a `client` device of the session's account with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, \"KeyPackages\"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's. One that fails refuses them all. The same KeyPackage again is stored once.",
+        "description": "Takes KeyPackages of a `client` device of the session's account with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, \"KeyPackages\"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's; the last-resort one also carries the `last_resort` extension. One that fails refuses them all. The same KeyPackage again is stored once.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"

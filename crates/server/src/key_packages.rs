@@ -127,15 +127,31 @@ pub(crate) async fn status(
     count(&state.db, &device).await
 }
 
-/// The KeyPackages of `texts`, each checked against `cert` at `now`: its bytes and the end of its
+/// The KeyPackages of `texts`, each checked against `cert` at `now`, and as a last-resort one,
+/// which carries the `last_resort` extension, if `last_resort`: its bytes and the end of its
 /// lifetime, in seconds since the Unix epoch.
-fn checked(texts: &[String], cert: &Cert, now: u64) -> Result<Vec<(Vec<u8>, i64)>, Refusal> {
+fn checked(
+    texts: &[String],
+    cert: &Cert,
+    now: u64,
+    last_resort: bool,
+) -> Result<Vec<(Vec<u8>, i64)>, Refusal> {
+    let field = if last_resort {
+        "last_resort"
+    } else {
+        "key_packages"
+    };
     texts
         .iter()
         .map(|text| {
-            let sent = bytes(text, "key_packages")?;
+            let sent = bytes(text, field)?;
             let checked = skald_crypto::check_key_package(&sent, cert, now)
                 .map_err(|err| Refusal::KeyPackage(err.to_string()))?;
+            if last_resort && !checked.last_resort {
+                return Err(Refusal::KeyPackage(
+                    "the last-resort one lacks the `last_resort` extension".to_owned(),
+                ));
+            }
             let expires = i64::try_from(checked.expires)
                 .map_err(|_| Refusal::KeyPackage("its lifetime ends too late".to_owned()))?;
             Ok((sent, expires))
@@ -144,8 +160,8 @@ fn checked(texts: &[String], cert: &Cert, now: u64) -> Result<Vec<(Vec<u8>, i64)
 }
 
 /// `POST /devices/<device>/key-packages`: takes KeyPackages of a `client` device of the session's
-/// account with a certificate, not revoked, and its last-resort one, which replaces the one it had; one that
-/// fails the checks refuses them all. Gives the device's count.
+/// account with a certificate, not revoked, and its last-resort one, which replaces the one it
+/// had; one that fails the checks refuses them all. Gives the device's count.
 pub(crate) async fn upload(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -164,8 +180,8 @@ pub(crate) async fn upload(
         Refusal::NotAllowed(format!("the device's certificate is unreadable: {err}"))
     })?;
     let now = now();
-    let others = checked(&upload.key_packages, &cert, now)?;
-    let last = checked(upload.last_resort.as_slice(), &cert, now)?;
+    let others = checked(&upload.key_packages, &cert, now, false)?;
+    let last = checked(upload.last_resort.as_slice(), &cert, now, true)?;
     let failed = |err| Refusal::Database("store KeyPackages", err);
     let mut tx = db.begin().await.map_err(failed)?;
     // The device's row lock makes its revocation, which deletes its KeyPackages, wait for this
