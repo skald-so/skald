@@ -81,7 +81,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 - The server takes the connection, as the device's, only if:
   - `auth` is the first frame and comes within a few seconds of the opening;
   - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection has used it before; a challenge works once, used or refused;
-  - the device is a `client` device with a certificate on the server, of the challenge's session's account;
+  - the device is a `client` device with a certificate on the server, of the challenge's session's account, and not revoked ([Revocation](membership.md#revocation));
   - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
 - Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
 
@@ -89,10 +89,10 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 |---|---|
 | `auth-required` | Sends another frame first, or none in time |
 | `challenge-refused` | Names a challenge that is unknown, used, expired or of an ended session |
-| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account |
+| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account, or a revoked one |
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
-- A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends.
+- A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends, and with the reason `device-refused` when its device is revoked.
 - A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
 ## Send
@@ -105,9 +105,9 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 | Problem | The envelope |
 |---|---|
 | `version-mismatch` | Has a `v` other than the version of its connection or request |
-| `not-a-member` | Comes from a device that may not send in `channel`, or holds a Commit from a device that may not commit it ([Commit ordering](membership.md#commit-ordering)) |
+| `not-a-member` | Comes from a device that may not send in `channel`; under `mls`, holds no MLS message of `channel`, an application message from a device that is no member of the current epoch ([Envelope](README.md#envelope)), or a Commit from a device that may not commit it, a Commit the server cannot process, a proposal, or anything but the first Commit before the server has the channel's first GroupInfo ([Commit ordering](membership.md#commit-ordering)) |
 | `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
-| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel` |
+| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
 | `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 | `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 

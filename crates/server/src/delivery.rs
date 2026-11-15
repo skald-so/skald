@@ -319,49 +319,93 @@ pub(crate) async fn remove<'q>(
     status: ServerStatus,
 ) -> Result<usize, sqlx::Error> {
     let mut tx = db.begin().await?;
-    let gone = query.fetch_all(&mut *tx).await?;
+    let removed = remove_on(&mut tx, wakers, query, status).await?;
+    tx.commit().await?;
+    Ok(removed.woken(wakers))
+}
+
+/// What [`remove_on`] removed: the number of entries, and the sending devices whose mailboxes got
+/// a status.
+pub(crate) struct Statuses {
+    removed: usize,
+    senders: Vec<DeviceId>,
+}
+
+impl Statuses {
+    /// Wakes the sending devices' connections in `wakers`, once the transaction has committed;
+    /// gives the number of entries removed.
+    pub(crate) fn woken(self, wakers: &Wakers) -> usize {
+        for sender in self.senders {
+            wakers.wake(sender);
+        }
+        self.removed
+    }
+}
+
+/// [`remove`] on `conn`, in its transaction: tells the other instances once it commits, after which
+/// the caller wakes this instance's connections with [`Statuses::woken`]. A revoked sending device
+/// gets no status.
+pub(crate) async fn remove_on<'q>(
+    conn: &mut PgConnection,
+    wakers: &Wakers,
+    query: QueryAs<'q, Postgres, Removed, PgArguments>,
+    status: ServerStatus,
+) -> Result<Statuses, sqlx::Error> {
+    let gone = query.fetch_all(&mut *conn).await?;
     let mut senders = Vec::new();
     for (device, _, sender, msg_id, at) in &gone {
         // A message sent with `report` false, or by a device that is gone, gets no status.
         let (Some(sender), Some(msg_id)) = (sender, msg_id) else {
             continue;
         };
-        sqlx::query(
-            "WITH mailbox AS (
-                 INSERT INTO mailboxes (device_id, last_seq) VALUES ($1::uuid, 1)
+        // The sending device's row lock makes its revocation wait for this status, which the
+        // revocation then expires, or this insert see the revocation.
+        let added: Option<(String,)> = sqlx::query_as(
+            "WITH sender AS (
+                 SELECT id FROM devices WHERE id = $1::uuid AND NOT revoked FOR SHARE
+             ),
+             mailbox AS (
+                 INSERT INTO mailboxes (device_id, last_seq) SELECT id, 1 FROM sender
                  ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
                  RETURNING last_seq
              )
              INSERT INTO entries (device_id, seq, status, msg_id, recipient_id, happened_at)
              SELECT $1::uuid, mailbox.last_seq, $2, $3::uuid, $4::uuid, to_timestamp($5)
-             FROM mailbox",
+             FROM mailbox RETURNING device_id::text",
         )
         .bind(sender)
         .bind(status as i16)
         .bind(msg_id)
         .bind(device)
         .bind(at)
-        .execute(&mut *tx)
+        .fetch_optional(&mut *conn)
         .await?;
-        senders.push(sender.parse().expect("a stored device ID"));
+        if let Some((sender,)) = added {
+            senders.push(sender.parse().expect("a stored device ID"));
+        }
     }
     let envelopes: Vec<i64> = gone
         .iter()
         .filter_map(|(_, envelope, ..)| *envelope)
         .collect();
+    // An envelope's row lock makes removals of its entries at once check for the others one after
+    // another, so the last one sees none left, as its check runs once the others committed.
+    sqlx::query("SELECT 1 FROM envelopes WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&envelopes)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query(
         "DELETE FROM envelopes v WHERE v.id = ANY($1)
          AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.envelope_id = v.id)",
     )
     .bind(envelopes)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    wakers.tell(&mut tx, senders.iter().copied()).await?;
-    tx.commit().await?;
-    for sender in senders {
-        wakers.wake(sender);
-    }
-    Ok(gone.len())
+    wakers.tell(conn, senders.iter().copied()).await?;
+    Ok(Statuses {
+        removed: gone.len(),
+        senders,
+    })
 }
 
 #[cfg(test)]

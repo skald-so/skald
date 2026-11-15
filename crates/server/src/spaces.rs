@@ -14,10 +14,10 @@ use skald_proto::{
 };
 use sqlx::PgPool;
 
-use crate::AppState;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
+use crate::{AppState, revocations};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -67,17 +67,17 @@ struct NewChannel {
 
 /// A space as a session's account finds it.
 pub(crate) struct Found {
-    id: SpaceId,
+    pub(crate) id: SpaceId,
     name: Name,
     creator: String,
     /// Whether the account gets the space.
-    gets: bool,
+    pub(crate) gets: bool,
     /// Whether the account is an admin in the latest revision.
     admin: bool,
 }
 
 /// The space `space`, a path parameter, as the account `account` finds it.
-async fn find(db: &PgPool, space: &str, account: &str) -> Result<Found, Refusal> {
+pub(crate) async fn find(db: &PgPool, space: &str, account: &str) -> Result<Found, Refusal> {
     let id: SpaceId = space.parse().map_err(|_| Refusal::NoSpace)?;
     let found: Option<(String, String, bool, bool)> = sqlx::query_as(
         "SELECT s.name, s.creator_id::text, a.account_id IS NOT NULL, COALESCE(a.admin, false)
@@ -263,7 +263,8 @@ pub(crate) async fn revisions(State(state): State<AppState>, Gotten(found): Gott
     Ok(Json(Revisions { revisions }).into_response())
 }
 
-/// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list.
+/// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list, and those
+/// accounts' revocations.
 pub(crate) async fn devices(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     let listed = sqlx::query_as(
         "SELECT id::text, cert FROM devices
@@ -274,7 +275,8 @@ pub(crate) async fn devices(State(state): State<AppState>, Gotten(found): Gotten
     .fetch_all(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's devices", err))?;
-    Ok(Json(Devices::of(listed)).into_response())
+    let revocations = revocations::of_space(&state.db, found.id).await?;
+    Ok(Json(Devices::of(listed, &revocations)).into_response())
 }
 
 /// `POST /spaces/<space>/channels`: a new channel ID for the space, for an admin's session.
@@ -387,8 +389,8 @@ pub(crate) async fn store(
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after
 /// `previous`, or revision 1 if `None`: its space and name, its signer and signature, checks 2 to 4
-/// of "Roster" with the certificates the server holds (revision 1: checks 3 and 4, and its creator
-/// an admin), and its channels.
+/// of "Roster" with the certificates the server holds, a revoked service agent having none
+/// (revision 1: checks 3 and 4, and its creator an admin), and its channels.
 async fn check(
     db: &PgPool,
     found: &Found,
@@ -405,10 +407,12 @@ async fn check(
         return Err(refused("the revision has another name than the space's"));
     }
 
-    // The signer: a device of the session's account with a certificate, and its key's signature.
+    // The signer: a device of the session's account with a certificate, not revoked, and its key's
+    // signature.
     let signer: Option<(Vec<u8>, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT d.signing, a.master FROM devices d JOIN accounts a ON a.id = d.account_id
-         WHERE d.id = $1::uuid AND d.account_id = $2::uuid AND d.cert IS NOT NULL",
+         WHERE d.id = $1::uuid AND d.account_id = $2::uuid AND d.cert IS NOT NULL
+           AND NOT d.revoked",
     )
     .bind(body.signer.to_string())
     .bind(account.to_string())
@@ -421,7 +425,7 @@ async fn check(
         Some((signing, master))
     });
     let (signing, master) = keys.ok_or_else(|| {
-        refused("the signer is no device of the session's account with a certificate")
+        refused("the signer is no device of the session's account with a certificate, or revoked")
     })?;
     skald_crypto::verify(
         &signing,
@@ -454,6 +458,25 @@ async fn check(
         Some(previous) => skald_crypto::accept_next(previous, roster, &certs, account, &master),
     };
     checked.map_err(|err| Refusal::Roster(err.to_string()))?;
+    // Check 4 took revoked devices' certificates, which the chains of the devices they keep need;
+    // a revoked service agent has none.
+    let agents: Vec<String> = body
+        .service_agents
+        .iter()
+        .map(|agent| agent.device.to_string())
+        .collect();
+    let revoked: Option<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM devices WHERE id = ANY($1::text[]::uuid[]) AND revoked LIMIT 1",
+    )
+    .bind(&agents)
+    .fetch_optional(db)
+    .await
+    .map_err(|err| Refusal::Database("read the service agents", err))?;
+    if let Some((device,)) = revoked {
+        return Err(Refusal::Roster(format!(
+            "the service agent {device} is revoked"
+        )));
+    }
 
     let channels: Vec<String> = body.channels.iter().map(|c| c.id.to_string()).collect();
     let (issued,): (i64,) = sqlx::query_as(
@@ -482,8 +505,11 @@ fn admin(roster: &Roster, account: AccountId) -> bool {
         .any(|member| member.account == account && member.role == Role::Admin)
 }
 
-/// The certificates of the devices of `accounts`, as the devices sent them.
-async fn certs(db: &PgPool, accounts: &[String]) -> Result<Vec<Cert>, Refusal> {
+/// The certificates of the devices of `accounts`, as the devices sent them, revoked or not.
+pub(crate) async fn certs(
+    db: impl sqlx::PgExecutor<'_>,
+    accounts: &[String],
+) -> Result<Vec<Cert>, Refusal> {
     let found: Vec<(Vec<u8>,)> = sqlx::query_as(
         "SELECT cert FROM devices
          WHERE account_id = ANY($1::text[]::uuid[]) AND cert IS NOT NULL",

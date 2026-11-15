@@ -1,14 +1,18 @@
 //! A channel seen from outside its group, as a linked browser or the server sees it: from its
 //! GroupInfo (`docs/protocol/README.md`, "Envelope"; `docs/protocol/membership.md`, "Wraps"), then
-//! from its Commits, on mls-rs's `ExternalGroup`, without group secrets.
+//! from its Commits, on mls-rs's `ExternalGroup`, without group secrets. The server saves the view
+//! in its database and loads it again, so that every instance and a restart go on from it
+//! ("Commit ordering").
 
 use mls_rs::{
     WireFormat,
+    extension::{MlsCodecExtension as _, built_in::ExternalPubExt},
     external_client::{
-        ExternalClient, ExternalGroup, ExternalReceivedMessage,
+        ExternalClient, ExternalGroup, ExternalReceivedMessage, ExternalSnapshot,
         builder::{ExternalBaseConfig, WithCryptoProvider, WithIdentityProvider},
     },
     group::CommitEffect,
+    mls_rs_codec::MlsDecode as _,
 };
 use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use skald_proto::ChannelId;
@@ -23,10 +27,20 @@ use super::{
 type Config =
     WithIdentityProvider<Profile, WithCryptoProvider<RustCryptoProvider, ExternalBaseConfig>>;
 
+/// mls-rs's party outside a group, with the profile's identity provider and ciphersuite.
+fn client() -> ExternalClient<Config> {
+    ExternalClient::builder()
+        .crypto_provider(RustCryptoProvider::with_enabled_cipher_suites(vec![SUITE]))
+        .identity_provider(Profile)
+        .build()
+}
+
 /// A channel's epoch and members, as a party outside its group sees them.
 #[derive(Clone)]
 pub struct ChannelView {
     group: ExternalGroup<Config>,
+    /// The leaf index of [`ChannelView::signer`].
+    signer_index: u32,
     /// The GroupInfo's signer, or the followed Commit's sender.
     signer: MemberDevice,
     members: Vec<MemberDevice>,
@@ -50,12 +64,65 @@ impl ChannelView {
             return Err(MlsError::OtherChannel);
         }
         let signer = info.sender();
-        let group = ExternalClient::builder()
-            .crypto_provider(RustCryptoProvider::with_enabled_cipher_suites(vec![SUITE]))
-            .identity_provider(Profile)
-            .build()
-            .observe_group(group_info, None, None)?;
+        let group = client().observe_group(group_info, None, None)?;
         Self::of(group, signer)
+    }
+
+    /// As [`ChannelView::observe`], for a GroupInfo a member device uploads for others to join
+    /// from ("MLS profile"): refused also without the `external_pub` extension.
+    ///
+    /// # Errors
+    /// As [`ChannelView::observe`]; [`MlsError::NotJoinable`] without `external_pub`.
+    pub fn observe_joinable(channel: ChannelId, group_info: &[u8]) -> Result<Self, MlsError> {
+        let message = message(group_info, WireFormat::GroupInfo)?;
+        let info = message.as_group_info().ok_or(MlsError::Malformed)?;
+        if !info
+            .extensions()
+            .has_extension(ExternalPubExt::extension_type())
+        {
+            return Err(MlsError::NotJoinable);
+        }
+        Self::observe(channel, group_info)
+    }
+
+    /// The view's bytes, for [`ChannelView::load`]: the signer's leaf index as 4 bytes,
+    /// big-endian, then mls-rs's snapshot of the group with its tree.
+    ///
+    /// # Errors
+    /// [`MlsError::Mls`] if mls-rs fails to encode the snapshot.
+    pub fn save(&self) -> Result<Vec<u8>, MlsError> {
+        let snapshot = self.group.snapshot().to_bytes()?;
+        Ok([self.signer_index.to_be_bytes().as_slice(), &snapshot].concat())
+    }
+
+    /// The view of `channel` that `saved`, bytes [`ChannelView::save`] gave, holds.
+    ///
+    /// # Errors
+    /// [`MlsError::Malformed`] if `saved` is not a saved view; [`MlsError::OtherChannel`] if it is
+    /// one of another channel; [`MlsError::Lifetime`] or [`MlsError::Mls`] as
+    /// [`ChannelView::observe`] gives them for its tree.
+    pub fn load(channel: ChannelId, saved: &[u8]) -> Result<Self, MlsError> {
+        let (signer, mut snapshot) = saved.split_first_chunk::<4>().ok_or(MlsError::Malformed)?;
+        let decoded =
+            ExternalSnapshot::mls_decode(&mut snapshot).map_err(|_| MlsError::Malformed)?;
+        if !snapshot.is_empty() {
+            return Err(MlsError::Malformed);
+        }
+        if decoded.context().group_id != channel.as_bytes() {
+            return Err(MlsError::OtherChannel);
+        }
+        let group = client().load_group(decoded)?;
+        Self::of(group, u32::from_be_bytes(*signer))
+    }
+
+    /// Whether `group_info`, a GroupInfo in an `MLSMessage`, has the GroupContext of the view's
+    /// epoch: of its group and epoch, with its tree and transcript. `false` for anything else; the
+    /// GroupInfo's signature is not checked.
+    pub fn has_context(&self, group_info: &[u8]) -> bool {
+        message(group_info, WireFormat::GroupInfo)
+            .ok()
+            .and_then(|message| message.into_group_info())
+            .is_some_and(|info| info.group_context() == self.group.group_context())
     }
 
     /// The view of the next epoch from `commit`, a Commit of the view's epoch in a PublicMessage;
@@ -86,12 +153,16 @@ impl ChannelView {
         Self::of(group, description.committer)
     }
 
-    fn of(group: ExternalGroup<Config>, signer: u32) -> Result<Self, MlsError> {
+    fn of(group: ExternalGroup<Config>, signer_index: u32) -> Result<Self, MlsError> {
         key_package::check_spans(&group.exported_tree())?;
-        let signer = member_device(&group.roster().member_with_index(signer)?.signing_identity)?;
-        let members = members_of(&group.roster())?;
+        let (signer, members) = {
+            let roster = group.roster();
+            let signer = roster.member_with_index(signer_index)?.signing_identity;
+            (member_device(&signer)?, members_of(&roster)?)
+        };
         Ok(Self {
             group,
+            signer_index,
             signer,
             members,
         })
