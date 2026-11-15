@@ -38,9 +38,9 @@ impl Pair {
         let ada = world.sign_up(ids[0], logins[0], "ada-workstation");
         let bob = world.sign_up(ids[1], logins[1], "bob-workstation");
         let cloud = &world.cloud;
-        let first = create(cloud, &ada, ACME);
-        let second = next_by(&first, &ada, |list| list.push(bob.member(Role::Member)));
-        store(cloud, &ada.token, &second);
+        let created = create(cloud, &ada, ACME);
+        let with_bob = next_by(&created, &ada, |list| list.push(bob.member(Role::Member)));
+        store(cloud, &ada.token, &with_bob);
         Pair {
             ada_cert: cert_of(cloud, &ada),
             world,

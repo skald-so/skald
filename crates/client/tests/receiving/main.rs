@@ -1,14 +1,15 @@
 //! Receiving messages in the CLI: `skald recv` connects as its device, first sends what is left in
 //! its outbox, states its cursor, writes each mailbox entry it gets to its local state with the new
 //! cursor, acks, and exits once catch-up has sent every entry the mailbox held
-//! (`docs/protocol/delivery.md`, "Mailbox"). It opens each `message` and shows it only if it passes
-//! the checks of `docs/protocol/README.md`, "Envelope" and "Scheme `hpke`", the sending device's
-//! certificate checked as `docs/protocol/membership.md`, "Device checks", says and the device
-//! admitted to the channel by the last accepted revision ("Admitted devices"); before it drops a
-//! message for its sender, it accepts the space's latest revisions. It drops content without
-//! `counter`, and content whose `msg_id` it already has from the same sending device. It shows each
-//! message once, and each `delivered` and `expired` of the device's own messages; as an agent, only
-//! those of its folder's space.
+//! (`docs/protocol/delivery.md`, "Mailbox"). It decrypts each `mls` message in its channel's group
+//! and opens each `hpke` one, and shows it only if it passes the checks of
+//! `docs/protocol/README.md`, "Envelope", "Scheme `mls`" and "Scheme `hpke`", the sending device's
+//! certificate checked as `docs/protocol/membership.md`, "Device checks", says, not barred by its
+//! member's `excluded`, and a `client` device of its account in the channel's group; before it
+//! drops a message for its sender, it accepts the space's latest revisions. It drops content
+//! without `counter`, and content whose `msg_id` it already has from the same sending device. It
+//! shows each message once, and each `delivered` and `expired` of the device's own messages; as an
+//! agent, only those of its folder's space.
 //!
 //! Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, behind
 //! the recording relay and, before it, the front of the tests of sending (`sending/front.rs`), at
@@ -19,8 +20,9 @@
 //!
 //! A device follows only the spaces it created until invites and linking give it others, so the
 //! CLI under test runs on the machine that created the space. The other members' devices are
-//! played by the tests over the delivery protocol with their machines' keys: they send the
-//! envelopes the tests seal and read and ack their mailboxes as their own clients would.
+//! played by the tests over the delivery protocol with their machines' keys and, in the channel's
+//! group, an MLS state of the tests' own (`channel_groups/played.rs`): they send the envelopes the
+//! tests encrypt or seal and read and ack their mailboxes as their own clients would.
 //!
 //! The CLI, as these tests use it, beside `skald send` and the commands of the tests of roster
 //! revisions, of creating channels and of agent isolation:
@@ -40,6 +42,8 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
+#[path = "../../../server/tests/key_packages/answers.rs"]
+mod answers;
 #[path = "../../../server/tests/common/browser.rs"]
 mod browser;
 #[path = "../sign_in/cloud.rs"]
@@ -52,19 +56,25 @@ mod fixtures;
 mod front;
 #[path = "../device_keys/keys.rs"]
 mod keys;
+#[path = "../channel_groups/kit.rs"]
+mod kit;
 #[path = "../sign_in/machine.rs"]
 mod machine;
 // The tests of new roster revisions, which share this binary's helpers.
 mod notices;
 mod peer;
+#[path = "../channel_groups/played.rs"]
+mod played;
 #[path = "../sign_in/relay.rs"]
 mod relay;
+#[path = "../channel_messages/talk.rs"]
+mod talk;
 #[path = "../../../server/tests/common/times.rs"]
 mod times;
 #[path = "../roster_revisions/world.rs"]
 mod world;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::thread;
@@ -72,20 +82,23 @@ use std::time::{Duration, Instant};
 
 use cloud::{Cloud, WAIT};
 use fixtures::{
-    Channel, Issuer, Keyed, acme, ada_and_bob, add_device, cert_of, channel_in, database, fronted,
-    fronted_with, hex, keyed, kill_once, killed_once, msg_id, person_address, recipient, send,
+    Channel, Issuer, Keyed, acme, add_device, cert_of, channel_in, database, fronted, fronted_with,
+    hex, keyed, kill_once, killed_once, msg_id, person_address, retrying_for_the_timeout, send,
     send_args, sent_after, strs,
 };
 use front::{Acks, Answers, Front, Sent};
+use kit::assert_members;
 use machine::{Finished, Machine, Run};
-use peer::{Peer, last_seq, messages};
+use peer::Peer;
+use played::{Played, Took};
 use serde_json::Value;
-use skald_crypto::{SigningKey, open_message, seal_message};
+use skald_crypto::{SigningKey, seal_message};
 use skald_proto::{
-    Address, Body, Cbor as _, Cert, ChannelId, ChannelMember, Content, DeviceId, Envelope, Header,
+    Address, Body, Cbor as _, ChannelId, ChannelMember, Content, DeviceId, Envelope, Header,
     MessageId, NonEmpty, PROTOCOL_VERSION, RawEnvelope, Scheme, SpaceId, Unknown,
 };
 use skald_server::Settings;
+use talk::{Line, encrypted, messages_sent, stored};
 use times::{DAY, MAILBOX, WEEK, moved_back};
 use world::{
     ACME, AGENT, CLIENT_A, CLIENT_B, Desk, Person, WARNING, World, members, next_with, run, store,
@@ -217,15 +230,6 @@ fn warnings_naming(shown: &str, device: DeviceId) -> usize {
         .count()
 }
 
-/// The last envelope to `device` that the front saw sent.
-fn envelope_to(front: &Front, device: DeviceId) -> Sent {
-    front
-        .sent()
-        .into_iter()
-        .rfind(|sent| recipient(sent) == device)
-        .unwrap_or_else(|| panic!("no envelope to {device}"))
-}
-
 /// Waits for up to [`WAIT`] until the server's database no longer holds `envelope`.
 fn assert_deleted(cloud: &Cloud, envelope: &RawEnvelope) {
     let deadline = Instant::now() + WAIT;
@@ -305,32 +309,34 @@ impl<'a> Draft<'a> {
 }
 
 /// Ada, whose machine runs the CLI and created `acme`, Bob, whose device the test plays, and the
-/// channel of `acme` they are both in; Ada's machine retries for the tests' timeout.
+/// channel of `acme` they are both in, whose group holds both devices; Ada's machine retries for
+/// the tests' timeout.
 struct Pair {
     world: World,
     front: Front,
     ada: Person,
-    bob: Person,
-    bob_keyed: Keyed,
-    /// The HPKE key of the certificate of Ada's machine's device.
-    ada_key: [u8; 32],
+    bob: RefCell<Played>,
     channel: Channel,
-    /// The counter of Bob's last message to Ada's device.
+    /// The counter of Bob's last message in the channel.
     counter: Cell<u64>,
 }
 
 impl Pair {
-    /// The pair on a server with the settings `change` gives.
+    /// The pair on a server with the settings `change` gives: Ada's machine adds Bob's device to the
+    /// channel's group, which Bob's device joins.
     fn start(ids: [u64; 2], logins: [&str; 2], change: impl FnOnce(&mut Settings)) -> Self {
         let (world, front) = fronted_with(change);
-        let (ada, bob, channel) = ada_and_bob(&world, ids, logins);
         let cloud = &world.cloud;
+        let ada = retrying_for_the_timeout(world.sign_up(ids[0], logins[0], "ada-workstation"));
+        let mut bob = Played::new(cloud, world.sign_up(ids[1], logins[1], "bob-workstation"));
+        let channel = acme(cloud, &ada, &[&bob.person], &[&bob.person], &[]);
+        received(&ada.machine);
+        bob.take_in(cloud);
+        assert_members(&bob.members(channel.id), &[ada.device, bob.device()]);
         Pair {
-            bob_keyed: keyed(cloud, &bob),
-            ada_key: cert_of(cloud, &ada).body().hpke,
             front,
             ada,
-            bob,
+            bob: RefCell::new(bob),
             channel,
             counter: Cell::new(0),
             world,
@@ -341,28 +347,46 @@ impl Pair {
         &self.world.cloud
     }
 
-    /// Bob's device's next message of `text` to Ada's device in the channel, sealed.
-    fn bobs_next(&self, text: &str) -> RawEnvelope {
-        self.counter.set(self.counter.get() + 1);
-        let mut draft = Draft::new(&self.channel, person_address(ACME, &self.bob), text);
-        draft.counter = Some(self.counter.get());
-        draft.seal(&self.bob_keyed.signing, self.ada.device, &self.ada_key)
+    fn bob_device(&self) -> DeviceId {
+        self.bob.borrow().device()
     }
 
-    /// Bob's device connects, has the server store its message of `text` to Ada's device, and
-    /// goes offline; gives the envelope.
+    /// The channel's space and ID.
+    fn at(&self) -> (SpaceId, ChannelId) {
+        (self.channel.space, self.channel.id)
+    }
+
+    /// Bob's device's next message of `text` in the channel, encrypted in its group.
+    fn bobs_next(&self, text: &str) -> RawEnvelope {
+        self.counter.set(self.counter.get() + 1);
+        let mut bob = self.bob.borrow_mut();
+        let line = Line::new(&person_address(ACME, &bob.person), self.counter.get(), text);
+        encrypted(&mut bob, self.at(), self.channel.id, &line)
+    }
+
+    /// Bob's device connects, has the server store its message of `text`, and goes offline; gives
+    /// the envelope.
     fn bob_sends(&self, text: &str) -> RawEnvelope {
         let envelope = self.bobs_next(text);
-        Peer::connect(self.cloud(), &self.bob, &self.bob_keyed.signing).stored(&envelope);
+        stored(self.cloud(), &self.bob.borrow(), &envelope);
         envelope
     }
 
     /// Runs `skald send` of `text` on Ada's machine; fails unless it succeeds. Gives the envelope
-    /// to Bob's device.
+    /// of the message.
     fn ada_sends(&self, text: &str) -> Sent {
+        let from = self.front.sent().len();
         let finished = send(&self.ada.machine, self.channel.id, text);
         assert!(finished.success, "{finished:?}");
-        envelope_to(&self.front, self.bob.device)
+        self.message_sent(from)
+    }
+
+    /// The one envelope of a message in the channel the front saw sent after its first `from`.
+    fn message_sent(&self, from: usize) -> Sent {
+        match messages_sent(&self.front, self.channel.id, from).as_slice() {
+            [one] => one.clone(),
+            other => panic!("not one message: {other:?}"),
+        }
     }
 
     /// Starts `skald send` of `text` on Ada's machine.
@@ -372,43 +396,40 @@ impl Pair {
             .start(&strs(&send_args(self.channel.id, text)))
     }
 
-    /// Bob's device connects, gets its mailbox and acks it; gives the envelopes to it, once the
-    /// server has deleted them.
-    fn bob_catches_up(&self) -> Vec<RawEnvelope> {
-        let mut peer = Peer::connect(self.cloud(), &self.bob, &self.bob_keyed.signing);
-        let entries = peer.catch_up(0);
-        if let Some(seq) = last_seq(&entries) {
-            peer.ack(seq);
-        }
-        let envelopes = messages(&entries, self.bob.device);
-        for envelope in &envelopes {
-            assert_deleted(self.cloud(), envelope);
-        }
-        envelopes
+    /// Bob's device connects, goes through its mailbox and acks it; gives the `msg_id` and the
+    /// text of each message of the channel it read this time.
+    fn bob_catches_up(&self) -> Vec<(MessageId, String)> {
+        let channel = self.channel.id;
+        let took = self.bob.borrow_mut().take_in(self.cloud());
+        took.into_iter()
+            .filter_map(|took| match took {
+                Took::Read(of, msg_id, read) if of == channel => {
+                    let content = Content::from_cbor(&read.plaintext).expect("content");
+                    Some((msg_id, text_of(&content)))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Bob's message `text` as Ada's CLI shows it.
-    fn message_of_bob<'a>(&self, text: &'a str) -> Shown<'a> {
+    fn message_of_bob<'a>(&'a self, text: &'a str) -> Shown<'a> {
+        let bob = self.bob.borrow();
         Shown {
             text,
             channel: self.channel.id,
-            from: person_address(ACME, &self.bob),
-            device: self.bob.host,
+            from: person_address(ACME, &bob.person),
+            device: bob.person.host,
         }
     }
 }
 
-/// The text of the A2A message in `envelope`, which opens for `to` and verifies with `sender`.
-fn text_of(envelope: &RawEnvelope, to: &Keyed, sender: &Cert) -> String {
-    let opened = envelope.envelope();
-    let content = open_message(&opened.header, &opened.payload, to.id, &to.hpke)
-        .expect("opens for the recipient")
-        .verify(sender)
-        .expect("signed by the sending device");
-    let Some(Body::A2a(json)) = content.body else {
+/// The text of the A2A message in `content`.
+fn text_of(content: &Content) -> String {
+    let Some(Body::A2a(json)) = &content.body else {
         panic!("not an a2a body: {content:?}");
     };
-    let message: Value = serde_json::from_str(&json).expect("an A2A message in JSON");
+    let message: Value = serde_json::from_str(json).expect("an A2A message in JSON");
     message["parts"][0]["text"]
         .as_str()
         .expect("a text part")
@@ -451,10 +472,11 @@ fn sender_sees_delivered_once_the_recipient_acks_hours_later() {
     move_back(pair.cloud(), "10 hours");
     let got = pair.bob_catches_up();
     assert_eq!(got.len(), 1, "Bob's device got {got:?}");
+    assert_deleted(pair.cloud(), &sent.envelope);
 
     let shown = received(&pair.ada.machine).shown();
 
-    let (id, bob) = (msg_id(&sent), pair.bob.device);
+    let (id, bob) = (msg_id(&sent), pair.bob_device());
     assert_eq!(
         status_lines(&shown, DELIVERED, id, bob),
         1,
@@ -476,8 +498,11 @@ fn send_retried_after_a_lost_stored_reaches_the_recipient_once() {
     pair.front.answer(Answers::Lose);
     let lost = send(&pair.ada.machine, pair.channel.id, FIRST);
     assert!(!lost.success, "{lost:?}");
-    assert!(pair.front.lost() > 0, "no stored was lost: {lost:?}");
-    let left = envelope_to(&pair.front, pair.bob.device);
+    assert!(
+        pair.front.lost() > 0,
+        "the message's stored was not lost: {lost:?}"
+    );
+    let left = pair.message_sent(0);
     pair.front.answer(Answers::Forward);
     let before = pair.front.sent().len();
 
@@ -491,9 +516,7 @@ fn send_retried_after_a_lost_stored_reaches_the_recipient_once() {
         "the next recv did not send the left envelope again"
     );
     let got = pair.bob_catches_up();
-    assert_eq!(got.len(), 1, "Bob's device got {got:?}");
-    let ada_cert = cert_of(pair.cloud(), &pair.ada);
-    assert_eq!(text_of(&got[0], &pair.bob_keyed, &ada_cert), FIRST);
+    assert_eq!(got, [(msg_id(&left), FIRST.to_owned())], "Bob's device got");
 }
 
 /// A `skald send` killed after it sent its envelope, which the front swallowed, leaves it in the
@@ -506,10 +529,12 @@ fn message_a_killed_send_left_in_the_outbox_is_sent_by_the_next_recv() {
         |_| {},
     );
     pair.front.swallow(true);
-    kill_once(pair.start_send(FIRST), "swallowed send", || {
-        pair.front.swallowed() > 0
-    });
-    let left = envelope_to(&pair.front, pair.bob.device);
+    kill_once(
+        pair.start_send(FIRST),
+        "swallowed send of the message",
+        || !messages_sent(&pair.front, pair.channel.id, 0).is_empty(),
+    );
+    let left = pair.message_sent(0);
     assert!(
         !database(pair.cloud()).contains(&hex(left.envelope.bytes())),
         "the server got the swallowed envelope"
@@ -520,10 +545,11 @@ fn message_a_killed_send_left_in_the_outbox_is_sent_by_the_next_recv() {
 
     let got = pair.bob_catches_up();
     assert_eq!(
-        got.iter().map(RawEnvelope::bytes).collect::<Vec<_>>(),
-        [left.envelope.bytes()],
+        got,
+        [(msg_id(&left), FIRST.to_owned())],
         "Bob's device does not get the left envelope once: {flushed:?}"
     );
+    assert_deleted(pair.cloud(), &left.envelope);
 }
 
 /// A message the front puts into Ada's next catch-up under the `seq` of Ada's cursor, as a
@@ -630,7 +656,7 @@ fn message_expired_before_the_recipient_connects_shows_expired_to_its_sender() {
     );
     let sent = pair.ada_sends(FIRST);
     move_back(pair.cloud(), &format!("{} seconds", WEEK + DAY));
-    let (id, bob) = (msg_id(&sent), pair.bob.device);
+    let (id, bob) = (msg_id(&sent), pair.bob_device());
 
     let shown = received_until(&pair.ada.machine, EXPIRED, |shown| {
         status_lines(shown, EXPIRED, id, bob) > 0
@@ -859,8 +885,8 @@ const FORGED_IN_A: &str = "forged in clienta's channel";
 const FORGED_IN_B: &str = "forged in the other client's channel";
 
 /// As an agent in `~/work/clientA`, `skald recv` shows only clienta's message from Bob, the
-/// `delivered` of Ada's message there and the warning of a message dropped there; its output names
-/// nothing of clientb. The person's next run shows clientb's message, status and warning, and
+/// `delivered` of Ada's message there and the warning of a message dropped there, each under
+/// `mls`; its output names nothing of clientb. The person's next run shows clientb's message, status and warning, and
 /// nothing of clienta's again.
 #[test]
 fn agent_receives_only_in_the_space_of_its_folder() {
@@ -870,48 +896,53 @@ fn agent_receives_only_in_the_space_of_its_folder() {
     let bob = desk
         .world
         .sign_up(4_122_071_902, "bob-client-standin", "bob-workstation");
+    let mut bob = Played::new(cloud, bob);
     let mut channels = Vec::new();
-    for first in [&desk.client_a, &desk.client_b] {
-        channels.push(channel_in(cloud, ada, first, &[&bob], &[&bob], &[]));
+    for created in [&desk.client_a, &desk.client_b] {
+        let person = &bob.person;
+        channels.push(channel_in(cloud, ada, created, &[person], &[person], &[]));
     }
     let folder = desk.dir("work/clientA");
     desk.add_rule(&folder, CLIENT_A);
     let mut ada_ids = Vec::new();
+    let mut ada_sent = Vec::new();
     for (channel, text) in channels.iter().zip(["ada asks in a", "ada asks in b"]) {
+        let from = front.sent().len();
         let finished = send(&ada.machine, channel.id, text);
         assert!(finished.success, "{finished:?}");
-        ada_ids.push(msg_id(&envelope_to(&front, bob.device)));
+        let sent = messages_sent(&front, channel.id, from);
+        ada_ids.push(msg_id(&sent[0]));
+        ada_sent.extend(sent);
     }
-    let bob_keyed = keyed(cloud, &bob);
-    let mut peer = Peer::connect(cloud, &bob, &bob_keyed.signing);
-    let entries = peer.catch_up(0);
-    let got = messages(&entries, bob.device);
-    assert_eq!(got.len(), 2, "Bob's device got {got:?}");
-    peer.ack(last_seq(&entries).expect("a seq"));
-    for envelope in &got {
-        assert_deleted(cloud, envelope);
+    bob.take_in(cloud);
+    let read: Vec<_> = (channels.iter())
+        .flat_map(|channel| bob.read_in(channel.id))
+        .collect();
+    assert_eq!(read.len(), 2, "Bob's device read {read:?}");
+    for sent in &ada_sent {
+        assert_deleted(cloud, &sent.envelope);
     }
-    let ada_key = cert_of(cloud, ada).body().hpke;
     let spaces = [CLIENT_A, CLIENT_B];
     for ((channel, space), text) in channels.iter().zip(spaces).zip([BOB_IN_A, BOB_IN_B]) {
-        let draft = Draft::new(channel, person_address(space, &bob), text);
-        peer.stored(&draft.seal(&bob_keyed.signing, ada.device, &ada_key));
+        let line = Line::new(&person_address(space, &bob.person), 1, text);
+        let envelope = encrypted(&mut bob, (channel.space, channel.id), channel.id, &line);
+        stored(cloud, &bob, &envelope);
     }
-    drop(peer);
     let forged: Vec<RawEnvelope> = channels
         .iter()
         .zip(spaces.into_iter().zip([FORGED_IN_A, FORGED_IN_B]))
         .map(|(channel, (space, text))| {
-            let mut draft = Draft::new(channel, person_address(space, &bob), text);
-            draft.message_id = Some(MessageId::generate());
-            draft.seal(&bob_keyed.signing, ada.device, &ada_key)
+            let mut line = Line::new(&person_address(space, &bob.person), 2, text);
+            line.message_id = Some(MessageId::generate());
+            encrypted(&mut bob, (channel.space, channel.id), channel.id, &line)
         })
         .collect();
     front.inject(ada.device, forged);
+    let bob = &bob.person;
     let bob_in = |at: usize, text| Shown {
         text,
         channel: channels[at].id,
-        from: person_address(spaces[at], &bob),
+        from: person_address(spaces[at], bob),
         device: bob.host,
     };
 

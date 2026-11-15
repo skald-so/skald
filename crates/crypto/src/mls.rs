@@ -511,14 +511,19 @@ impl MlsDevice {
     ///
     /// # Errors
     /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Malformed`]
-    /// if `message` is not a PrivateMessage or holds no application message; [`MlsError::Mls`] if
-    /// mls-rs refuses it, such as a replay or a message of another group, or fails.
+    /// if `message` is not a PrivateMessage or holds no application message; [`MlsError::Replay`]
+    /// if the device has used its key already; [`MlsError::Mls`] if mls-rs refuses it otherwise,
+    /// such as a message of another group, or fails.
     pub fn decrypt(&mut self, channel: ChannelId, message: &[u8]) -> Result<Decrypted, MlsError> {
         let message = self::message(message, WireFormat::PrivateMessage)?;
         let mut group = self.group(channel)?;
-        let ReceivedMessage::ApplicationMessage(received) =
-            group.process_incoming_message(message)?
-        else {
+        let received = group
+            .process_incoming_message(message)
+            .map_err(|err| match err {
+                mls_rs::error::MlsError::KeyMissing(_) => MlsError::Replay,
+                err => MlsError::Mls(err),
+            })?;
+        let ReceivedMessage::ApplicationMessage(received) = received else {
             return Err(MlsError::Malformed);
         };
         let sender = group
@@ -737,6 +742,8 @@ pub enum MlsError {
     OtherChannel,
     /// The GroupInfo has no `external_pub` extension, so no device joins by itself from it.
     NotJoinable,
+    /// The device has used the key of the application message already: a replay.
+    Replay,
     /// mls-rs refuses the step or fails.
     Mls(mls_rs::error::MlsError),
 }
@@ -761,6 +768,7 @@ impl fmt::Display for MlsError {
             Self::Malformed => f.write_str("not an MLS message of the kind the step takes"),
             Self::OtherChannel => f.write_str("the GroupInfo is of another channel"),
             Self::NotJoinable => f.write_str("the GroupInfo has no external_pub"),
+            Self::Replay => f.write_str("the message's key was used already: a replay"),
             Self::Mls(error) => write!(f, "mls-rs: {error}"),
         }
     }

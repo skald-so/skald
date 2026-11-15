@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
-use skald_proto::{ChannelId, DeviceId, MessageId, SpaceId};
+use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId};
+
+use crate::gaps::{Counters, Source};
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
@@ -126,6 +128,52 @@ const MIGRATIONS: &[&str] = &[
         name BLOB PRIMARY KEY,
         sealed BLOB NOT NULL
     ) STRICT",
+    // The device's own Commits and Welcomes the server has not answered yet, in the order they go
+    // out, by message ID, with their space and channel and the envelope's bytes.
+    "CREATE TABLE mls_outbox (
+        position INTEGER PRIMARY KEY,
+        msg_id TEXT NOT NULL UNIQUE,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        envelope BLOB NOT NULL
+    ) STRICT",
+    // Channel messages under `mls`: the outbox holds them without a recipient device; the last
+    // `counter` the device gave its content in each channel; and what decrypting each `mls`
+    // application message of the inbox in its channel's group gave, sealed under the state key,
+    // until a run shows it.
+    "CREATE TABLE outbox_next (
+        position INTEGER PRIMARY KEY,
+        msg_id TEXT NOT NULL,
+        recipient TEXT,
+        space TEXT NOT NULL,
+        envelope BLOB NOT NULL,
+        UNIQUE (msg_id, recipient)
+    ) STRICT;
+    INSERT INTO outbox_next (position, msg_id, recipient, space, envelope)
+        SELECT position, msg_id, recipient, space, envelope FROM outbox;
+    DROP TABLE outbox;
+    ALTER TABLE outbox_next RENAME TO outbox;
+    CREATE TABLE channel_counter (
+        channel TEXT PRIMARY KEY,
+        last INTEGER NOT NULL CHECK (last >= 1)
+    ) STRICT;
+    ALTER TABLE inbox ADD COLUMN opened BLOB;",
+    // Gap detection: per channel, sending device and scheme (1 `mls`, 2 `hpke`), the counters the
+    // device accepted, as `gaps::Counters` encodes them, with the `seq` of the entry it last
+    // accepted; and the `seq` of the Welcome by which the device last joined each channel's group.
+    // From now on `received` holds only messages without `counter`.
+    "CREATE TABLE received_counter (
+        channel TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        scheme INTEGER NOT NULL CHECK (scheme IN (1, 2)),
+        counters BLOB NOT NULL,
+        seq INTEGER NOT NULL CHECK (seq >= 1),
+        PRIMARY KEY (channel, sender, scheme)
+    ) STRICT;
+    CREATE TABLE channel_joined (
+        channel TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL CHECK (seq >= 1)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -231,10 +279,70 @@ pub struct Accepted {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outgoing {
     pub msg_id: MessageId,
-    pub recipient: DeviceId,
+    /// Under `hpke`, its recipient device; none under `mls`.
+    pub recipient: Option<DeviceId>,
     pub space: SpaceId,
     /// Its bytes, as they are sent every time.
     pub envelope: Vec<u8>,
+}
+
+/// A channel message of the device's own under `mls`, as a step puts it in the outbox: its
+/// envelope, its channel and its content's `counter` there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Counted {
+    pub outgoing: Outgoing,
+    pub channel: ChannelId,
+    pub counter: u64,
+}
+
+/// A mailbox entry the device wrote that no run has shown yet.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub seq: u64,
+    /// Its `message` or `status` frame.
+    pub frame: Vec<u8>,
+    /// What decrypting its `mls` application message gave, sealed, once the device did.
+    pub opened: Option<Vec<u8>>,
+}
+
+/// A Commit or Welcome of the device's own in the outbox.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MlsOutgoing {
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    /// Its bytes, as they are sent every time.
+    pub envelope: Vec<u8>,
+}
+
+/// What a step on the MLS state writes with the state it saves, in the same transaction.
+#[derive(Debug, Default)]
+pub struct MlsChanges {
+    /// Envelopes it puts in the outbox, in order.
+    pub queued: Vec<MlsOutgoing>,
+    /// The message IDs of the envelopes it takes out of the outbox: the server answered them.
+    pub answered: Vec<MessageId>,
+    /// The `seq` of the mailbox entries it took in.
+    pub taken: Vec<u64>,
+    /// Channel messages it puts in the outbox, in order, after those in it; each one's counter
+    /// becomes its channel's last.
+    pub messages: Vec<Counted>,
+    /// The `seq` of each mailbox entry whose `mls` application message it decrypted, and what that
+    /// gave, sealed.
+    pub opened: Vec<(u64, Vec<u8>)>,
+    /// Each channel whose group it joined, with the `seq` of the Welcome's entry.
+    pub joined: Vec<(ChannelId, u64)>,
+}
+
+impl MlsChanges {
+    fn is_empty(&self) -> bool {
+        self.queued.is_empty()
+            && self.answered.is_empty()
+            && self.taken.is_empty()
+            && self.messages.is_empty()
+            && self.opened.is_empty()
+            && self.joined.is_empty()
+    }
 }
 
 /// Why the state cannot be used.
@@ -437,6 +545,18 @@ impl State {
         &self,
         step: impl FnOnce(&SealedState) -> Result<(Option<SealedState>, T), String>,
     ) -> Result<T, String> {
+        self.mls_change(|sealed| {
+            let (saved, done) = step(sealed)?;
+            Ok((saved, MlsChanges::default(), done))
+        })
+    }
+
+    /// As [`State::mls_step`], `step` also giving the changes to the outbox and the inbox that go
+    /// with the state it saves: all of them are written at once, or none.
+    pub fn mls_change<T>(
+        &self,
+        step: impl FnOnce(&SealedState) -> Result<(Option<SealedState>, MlsChanges, T), String>,
+    ) -> Result<T, String> {
         let failed = |err: Error| err.to_string();
         let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)
             .map_err(|err| failed(err.into()))?;
@@ -448,22 +568,91 @@ impl State {
                     .and_then(Iterator::collect::<Result<Vec<(Vec<u8>, Vec<u8>)>, _>>)
             })
             .map_err(|err| failed(err.into()))?;
-        let (saved, done) = step(&SealedState::from_items(items))?;
-        let Some(saved) = saved else {
+        let (saved, changes, done) = step(&SealedState::from_items(items))?;
+        if saved.is_none() && changes.is_empty() {
             return Ok(done);
-        };
-        let save = || -> Result<(), rusqlite::Error> {
-            tx.execute("DELETE FROM mls_state", [])?;
-            let mut insert = tx.prepare("INSERT INTO mls_state (name, sealed) VALUES (?1, ?2)")?;
-            for (name, sealed) in saved.items() {
-                insert.execute(params![name, sealed])?;
+        }
+        let save = || -> Result<(), Error> {
+            if let Some(saved) = &saved {
+                tx.execute("DELETE FROM mls_state", [])?;
+                let mut insert =
+                    tx.prepare("INSERT INTO mls_state (name, sealed) VALUES (?1, ?2)")?;
+                for (name, sealed) in saved.items() {
+                    insert.execute(params![name, sealed])?;
+                }
             }
-            drop(insert);
-            tx.commit()
+            for queued in &changes.queued {
+                tx.execute(
+                    "INSERT INTO mls_outbox (msg_id, space, channel, envelope)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        queued.msg_id.to_string(),
+                        queued.space.to_string(),
+                        queued.channel.to_string(),
+                        queued.envelope
+                    ],
+                )?;
+            }
+            for msg_id in &changes.answered {
+                tx.execute(
+                    "DELETE FROM mls_outbox WHERE msg_id = ?1",
+                    params![msg_id.to_string()],
+                )?;
+            }
+            for &seq in &changes.taken {
+                tx.execute("DELETE FROM inbox WHERE seq = ?1", params![sql_seq(seq)?])?;
+            }
+            for message in &changes.messages {
+                add_message(&tx, message)?;
+            }
+            for (seq, opened) in &changes.opened {
+                tx.execute(
+                    "UPDATE inbox SET opened = ?2 WHERE seq = ?1",
+                    params![sql_seq(*seq)?, opened],
+                )?;
+            }
+            for (channel, seq) in &changes.joined {
+                tx.execute(
+                    "INSERT INTO channel_joined (channel, seq) VALUES (?1, ?2)
+                     ON CONFLICT DO UPDATE SET seq = excluded.seq",
+                    params![channel.to_string(), sql_seq(*seq)?],
+                )?;
+            }
+            Ok(())
         };
-        save().map_err(|err| failed(err.into()))?;
-        self.truncate_wal().map_err(failed)?;
+        save().map_err(failed)?;
+        tx.commit().map_err(|err| failed(err.into()))?;
+        if saved.is_some() {
+            self.truncate_wal().map_err(failed)?;
+        }
         Ok(done)
+    }
+
+    /// The device's own Commits and Welcomes in the outbox, in the order they go out.
+    pub fn mls_outbox(&self) -> Result<Vec<MlsOutgoing>, Error> {
+        let rows = self.envelopes(
+            "SELECT msg_id, space, channel, envelope FROM mls_outbox ORDER BY position",
+        )?;
+        rows.into_iter()
+            .map(|([msg_id, space, channel], envelope)| {
+                Ok(MlsOutgoing {
+                    msg_id: id("message ID", &msg_id)?,
+                    space: id("space ID", &space)?,
+                    channel: id("channel ID", &channel)?,
+                    envelope,
+                })
+            })
+            .collect()
+    }
+
+    /// The rows `sql` selects, each as its first three columns, as text, and its fourth, an
+    /// envelope's bytes.
+    fn envelopes(&self, sql: &str) -> Result<Vec<EnvelopeRow>, Error> {
+        let mut query = self.db.prepare(sql)?;
+        let rows = query.query_map([], |row| {
+            Ok(([row.get(0)?, row.get(1)?, row.get(2)?], row.get(3)?))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Copies the WAL into the database file and truncates it; fails if another run keeps it from
@@ -709,74 +898,18 @@ impl State {
         Ok(())
     }
 
-    /// The last `counter` the device gave content to each of `recipients` in `channel`; 0 for one
-    /// it gave none.
-    pub fn counters(&self, channel: ChannelId, recipients: &[DeviceId]) -> Result<Vec<u64>, Error> {
-        let mut query = self
+    /// The last `counter` the device gave content in `channel` under `mls`; 0 before the first.
+    pub fn channel_counter(&self, channel: ChannelId) -> Result<u64, Error> {
+        let last: Option<i64> = self
             .db
-            .prepare("SELECT last FROM send_counter WHERE channel = ?1 AND recipient = ?2")?;
-        recipients
-            .iter()
-            .map(|recipient| {
-                let last: Option<i64> = query
-                    .query_row(params![channel.to_string(), recipient.to_string()], |row| {
-                        row.get(0)
-                    })
-                    .optional()?;
-                let last = last.unwrap_or(0);
-                u64::try_from(last).map_err(|_| Error::Malformed(format!("the counter {last}")))
-            })
-            .collect()
-    }
-
-    /// Adds `outgoing`, the envelopes of one message in `channel`, to the outbox, after those in
-    /// it, and records `counter`, the counter each one's content has, as its recipient's last in
-    /// `channel`, all at once. Adds nothing and gives `false` if a counter is not the one after
-    /// the recipient's last: another run took it meanwhile.
-    pub fn enqueue(&self, channel: ChannelId, outgoing: &[(Outgoing, u64)]) -> Result<bool, Error> {
-        let tx = self.db.unchecked_transaction()?;
-        let channel = channel.to_string();
-        for (envelope, counter) in outgoing {
-            let counter = i64::try_from(*counter)
-                .map_err(|_| Error::Malformed(format!("the counter {counter}")))?;
-            let recipient = envelope.recipient.to_string();
-            let changed = if counter == 1 {
-                tx.execute(
-                    "INSERT INTO send_counter (channel, recipient, last) VALUES (?1, ?2, 1)
-                     ON CONFLICT DO NOTHING",
-                    params![channel, recipient],
-                )?
-            } else {
-                tx.execute(
-                    "UPDATE send_counter SET last = ?3
-                     WHERE channel = ?1 AND recipient = ?2 AND last = ?3 - 1",
-                    params![channel, recipient, counter],
-                )?
-            };
-            if changed == 0 {
-                return Ok(false);
-            }
-            tx.execute(
-                "INSERT INTO outbox (msg_id, recipient, space, envelope) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    envelope.msg_id.to_string(),
-                    recipient,
-                    envelope.space.to_string(),
-                    envelope.envelope
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO sent (msg_id, space, channel) VALUES (?1, ?2, ?3)
-                 ON CONFLICT DO NOTHING",
-                params![
-                    envelope.msg_id.to_string(),
-                    envelope.space.to_string(),
-                    channel
-                ],
-            )?;
-        }
-        tx.commit()?;
-        Ok(true)
+            .query_row(
+                "SELECT last FROM channel_counter WHERE channel = ?1",
+                params![channel.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let last = last.unwrap_or(0);
+        u64::try_from(last).map_err(|_| Error::Malformed(format!("the counter {last}")))
     }
 
     /// The space and channel of the message `msg_id` the device sent, if the state recorded it.
@@ -832,26 +965,26 @@ impl State {
         u64::try_from(cursor).map_err(|_| Error::Malformed(format!("the cursor {cursor}")))
     }
 
-    /// The mailbox entries the device wrote that no run has shown yet, in `seq` order, each as
-    /// its frame.
-    pub fn inbox(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+    /// The mailbox entries the device wrote that no run has shown yet, in `seq` order.
+    pub fn inbox(&self) -> Result<Vec<Entry>, Error> {
         let mut query = self
             .db
-            .prepare("SELECT seq, entry FROM inbox ORDER BY seq")?;
-        let rows = query.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?;
+            .prepare("SELECT seq, entry, opened FROM inbox ORDER BY seq")?;
+        let rows = query.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?))
+        })?;
         rows.map(|row| {
-            let (seq, entry) = row?;
+            let (seq, frame, opened) = row?;
             let seq = u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
-            Ok((seq, entry))
+            Ok(Entry { seq, frame, opened })
         })
         .collect()
     }
 
     /// Takes the entry `seq` out of the inbox: a run has shown or dropped it.
     pub fn remove_entry(&self, seq: u64) -> Result<(), Error> {
-        let seq = i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
         self.db
-            .execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
+            .execute("DELETE FROM inbox WHERE seq = ?1", params![sql_seq(seq)?])?;
         Ok(())
     }
 
@@ -876,7 +1009,69 @@ impl State {
             "INSERT INTO received (sender, msg_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
             params![sender.to_string(), msg_id.to_string()],
         )?;
-        let seq = i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+        tx.execute("DELETE FROM inbox WHERE seq = ?1", params![sql_seq(seq)?])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The counters the device accepted from `source` that hold for the entry `seq`: none before
+    /// the first, nor, under `mls`, if the device joined the channel's group by a Welcome after
+    /// the entry it last accepted from `source` and before `seq`.
+    pub fn counters(&self, source: &Source, seq: u64) -> Result<Option<Counters>, Error> {
+        let channel = source.channel.to_string();
+        let row: Option<(Vec<u8>, i64)> = self
+            .db
+            .query_row(
+                "SELECT counters, seq FROM received_counter
+                 WHERE channel = ?1 AND sender = ?2 AND scheme = ?3",
+                params![channel, source.device.to_string(), source.scheme as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((counters, accepted)) = row else {
+            return Ok(None);
+        };
+        if source.scheme == Scheme::Mls {
+            let joined: Option<i64> = self
+                .db
+                .query_row(
+                    "SELECT seq FROM channel_joined WHERE channel = ?1",
+                    params![channel],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let seq = sql_seq(seq)?;
+            if joined.is_some_and(|joined| accepted < joined && joined < seq) {
+                return Ok(None);
+            }
+        }
+        Counters::from_bytes(&counters).map(Some).ok_or_else(|| {
+            Error::Malformed(format!("the counters of the device {}", source.device))
+        })
+    }
+
+    /// Records `counters` as those the device accepted from `source` with the entry `seq`, and
+    /// takes the entry out of the inbox, at once.
+    pub fn shown_counted(
+        &self,
+        seq: u64,
+        source: &Source,
+        counters: &Counters,
+    ) -> Result<(), Error> {
+        let seq = sql_seq(seq)?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO received_counter (channel, sender, scheme, counters, seq)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT DO UPDATE SET counters = excluded.counters, seq = excluded.seq",
+            params![
+                source.channel.to_string(),
+                source.device.to_string(),
+                source.scheme as i64,
+                counters.to_bytes(),
+                seq
+            ],
+        )?;
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
         Ok(())
@@ -890,36 +1085,100 @@ impl State {
         let rows = query.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(1)?,
                 row.get::<_, String>(2)?,
                 row.get(3)?,
             ))
         })?;
         rows.map(|row| {
             let (msg_id, recipient, space, envelope) = row?;
-            let malformed = |what: &str, id: &str| Error::Malformed(format!("the {what} {id:?}"));
             Ok(Outgoing {
-                msg_id: msg_id
-                    .parse()
-                    .map_err(|_| malformed("message ID", &msg_id))?,
+                msg_id: id("message ID", &msg_id)?,
                 recipient: recipient
-                    .parse()
-                    .map_err(|_| malformed("device ID", &recipient))?,
-                space: space.parse().map_err(|_| malformed("space ID", &space))?,
+                    .map(|recipient| id("device ID", &recipient))
+                    .transpose()?,
+                space: id("space ID", &space)?,
                 envelope,
             })
         })
         .collect()
     }
 
-    /// Takes the envelope of `msg_id` to `recipient` out of the outbox: the server answered it.
-    pub fn remove_outgoing(&self, msg_id: MessageId, recipient: DeviceId) -> Result<(), Error> {
+    /// Takes the envelope of `msg_id` to `recipient`, none under `mls`, out of the outbox: the
+    /// server answered it.
+    pub fn remove_outgoing(
+        &self,
+        msg_id: MessageId,
+        recipient: Option<DeviceId>,
+    ) -> Result<(), Error> {
         self.db.execute(
-            "DELETE FROM outbox WHERE msg_id = ?1 AND recipient = ?2",
-            params![msg_id.to_string(), recipient.to_string()],
+            "DELETE FROM outbox WHERE msg_id = ?1 AND recipient IS ?2",
+            params![
+                msg_id.to_string(),
+                recipient.map(|device| device.to_string())
+            ],
         )?;
         Ok(())
     }
+}
+
+/// `seq` as SQLite holds it.
+fn sql_seq(seq: u64) -> Result<i64, Error> {
+    i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))
+}
+
+/// Adds `message` to the outbox, after those in it, records its counter as its channel's last and
+/// its space and channel as those of its message ID, in `tx`; fails unless the counter is the one
+/// after the channel's last.
+fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
+    let Counted {
+        outgoing,
+        channel,
+        counter,
+    } = message;
+    let channel = channel.to_string();
+    let last =
+        i64::try_from(*counter).map_err(|_| Error::Malformed(format!("the counter {counter}")))?;
+    let changed = if last == 1 {
+        tx.execute(
+            "INSERT INTO channel_counter (channel, last) VALUES (?1, 1) ON CONFLICT DO NOTHING",
+            params![channel],
+        )?
+    } else {
+        tx.execute(
+            "UPDATE channel_counter SET last = ?2 WHERE channel = ?1 AND last = ?2 - 1",
+            params![channel, last],
+        )?
+    };
+    if changed == 0 {
+        return Err(Error::Malformed(format!(
+            "the counter {counter} is not the next in the channel {channel}"
+        )));
+    }
+    let (msg_id, space) = (outgoing.msg_id.to_string(), outgoing.space.to_string());
+    tx.execute(
+        "INSERT INTO outbox (msg_id, recipient, space, envelope) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            msg_id,
+            outgoing.recipient.map(|device| device.to_string()),
+            space,
+            outgoing.envelope
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO sent (msg_id, space, channel) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+        params![msg_id, space, channel],
+    )?;
+    Ok(())
+}
+
+/// A row of an outbox: three IDs, as text, and an envelope's bytes.
+type EnvelopeRow = ([String; 3], Vec<u8>);
+
+/// `text`, the `what` the state holds, parsed.
+fn id<T: std::str::FromStr>(what: &str, text: &str) -> Result<T, Error> {
+    text.parse()
+        .map_err(|_| Error::Malformed(format!("the {what} {text:?}")))
 }
 
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
@@ -941,9 +1200,21 @@ fn migrate(db: &mut Connection) -> Result<(), Error> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::test_dir::TestDir;
+
+    /// Puts `messages` in the outbox of `state`, as a step on the MLS state that leaves it as it
+    /// is.
+    pub(crate) fn put(state: &State, messages: &[&Counted]) -> Result<(), String> {
+        state.mls_change(|_| {
+            let changes = MlsChanges {
+                messages: messages.iter().map(|&message| message.clone()).collect(),
+                ..MlsChanges::default()
+            };
+            Ok((None, changes, ()))
+        })
+    }
 
     #[test]
     fn new_state_has_the_latest_schema_and_no_session() {
@@ -1396,53 +1667,92 @@ mod tests {
         );
     }
 
+    /// The messages a step puts in the outbox, each with its channel's next counter, go out in
+    /// order; a counter that is not the next fails the step, which writes nothing.
     #[test]
     fn outbox_keeps_its_envelopes_in_order_and_takes_each_counter_once() {
         let dir = TestDir::new("state-outbox");
         let state = State::open(&dir).unwrap();
-        let (channel, space) = (ChannelId::generate(), SpaceId::generate());
-        let (bob, carol) = (
-            DeviceId::from_signing_key(&[1; 32]),
-            DeviceId::from_signing_key(&[2; 32]),
+        let (channel, other, space) = (
+            ChannelId::generate(),
+            ChannelId::generate(),
+            SpaceId::generate(),
         );
-        let outgoing = |msg_id, recipient, envelope: &[u8]| Outgoing {
-            msg_id,
-            recipient,
-            space,
-            envelope: envelope.to_vec(),
+        let message = |channel, counter, envelope: &[u8]| Counted {
+            outgoing: Outgoing {
+                msg_id: MessageId::generate(),
+                recipient: None,
+                space,
+                envelope: envelope.to_vec(),
+            },
+            channel,
+            counter,
         };
-        let (first, second) = (MessageId::generate(), MessageId::generate());
-        assert_eq!(state.counters(channel, &[bob, carol]).unwrap(), [0, 0]);
+        assert_eq!(state.channel_counter(channel).unwrap(), 0);
+        let (first, elsewhere) = (message(channel, 1, b"1"), message(other, 1, b"o1"));
 
-        let both = [
-            (outgoing(first, bob, b"1b"), 1),
-            (outgoing(first, carol, b"1c"), 1),
-        ];
-        assert!(state.enqueue(channel, &both).unwrap());
-        // A message with a counter another run took, or one that is not the next: nothing of it
-        // is added.
+        put(&state, &[&first, &elsewhere]).unwrap();
+        // A counter another run took, or one that is not the next: nothing of the step is added.
         for wrong in [1, 3] {
-            let message = [
-                (outgoing(second, carol, b"2c"), 2),
-                (outgoing(second, bob, b"2b"), wrong),
-            ];
-            assert!(!state.enqueue(channel, &message).unwrap(), "{wrong}");
+            let next = message(other, 2, b"o2");
+            let failed = put(&state, &[&next, &message(channel, wrong, b"2")]);
+            assert!(failed.is_err(), "{wrong}: {failed:?}");
         }
-        assert_eq!(state.counters(channel, &[bob, carol]).unwrap(), [1, 1]);
-        assert!(
-            state
-                .enqueue(channel, &[(outgoing(second, bob, b"2b"), 2)])
-                .unwrap()
-        );
-        assert_eq!(state.counters(channel, &[bob, carol]).unwrap(), [2, 1]);
-        assert_eq!(state.counters(ChannelId::generate(), &[bob]).unwrap(), [0]);
+        assert_eq!(state.channel_counter(channel).unwrap(), 1);
+        assert_eq!(state.channel_counter(other).unwrap(), 1);
+        let second = message(channel, 2, b"2");
+        put(&state, &[&second]).unwrap();
+        assert_eq!(state.channel_counter(channel).unwrap(), 2);
+        assert_eq!(state.channel_counter(ChannelId::generate()).unwrap(), 0);
 
-        state.remove_outgoing(first, bob).unwrap();
+        state.remove_outgoing(first.outgoing.msg_id, None).unwrap();
         let state = State::open(&dir).unwrap();
         assert_eq!(
             state.outbox().unwrap(),
-            [outgoing(first, carol, b"1c"), outgoing(second, bob, b"2b")]
+            [elsewhere.outgoing, second.outgoing]
         );
+    }
+
+    /// An `hpke` envelope an older client left in the outbox keeps its place and its recipient
+    /// device, and leaves once the server answered it.
+    #[test]
+    fn hpke_envelopes_of_an_older_client_keep_their_recipient() {
+        let dir = TestDir::new("state-outbox-hpke");
+        let older = MIGRATIONS.len() - 1;
+        let db = Connection::open(dir.join(FILE)).unwrap();
+        for migration in &MIGRATIONS[..older] {
+            db.execute_batch(migration).unwrap();
+        }
+        let (msg_id, space) = (MessageId::generate(), SpaceId::generate());
+        let bob = DeviceId::from_signing_key(&[1; 32]);
+        db.execute_batch(&format!("PRAGMA user_version = {older};"))
+            .unwrap();
+        db.execute(
+            "INSERT INTO outbox (position, msg_id, recipient, space, envelope)
+             VALUES (7, ?1, ?2, ?3, ?4)",
+            params![
+                msg_id.to_string(),
+                bob.to_string(),
+                space.to_string(),
+                vec![1_u8]
+            ],
+        )
+        .unwrap();
+        drop(db);
+        let left = Outgoing {
+            msg_id,
+            recipient: Some(bob),
+            space,
+            envelope: vec![1],
+        };
+
+        let state = State::open(&dir).unwrap();
+
+        assert_eq!(state.outbox().unwrap(), [left]);
+        state.remove_outgoing(msg_id, None).unwrap();
+        assert_eq!(state.outbox().unwrap().len(), 1, "taken out as an mls one");
+        state.remove_outgoing(msg_id, Some(bob)).unwrap();
+        assert_eq!(state.outbox().unwrap(), []);
     }
 
     #[test]
@@ -1454,22 +1764,20 @@ mod tests {
             SpaceId::generate(),
             MessageId::generate(),
         );
-        let outgoing = |recipient| Outgoing {
-            msg_id,
-            recipient,
-            space,
-            envelope: vec![1],
+        let message = Counted {
+            outgoing: Outgoing {
+                msg_id,
+                recipient: None,
+                space,
+                envelope: vec![1],
+            },
+            channel,
+            counter: 1,
         };
-        let (bob, carol) = (
-            DeviceId::from_signing_key(&[1; 32]),
-            DeviceId::from_signing_key(&[2; 32]),
-        );
         assert_eq!(state.sent(msg_id).unwrap(), None);
 
-        let both = [(outgoing(bob), 1), (outgoing(carol), 1)];
-        assert!(state.enqueue(channel, &both).unwrap());
-        state.remove_outgoing(msg_id, bob).unwrap();
-        state.remove_outgoing(msg_id, carol).unwrap();
+        put(&state, &[&message]).unwrap();
+        state.remove_outgoing(msg_id, None).unwrap();
 
         let state = State::open(&dir).unwrap();
         assert_eq!(state.sent(msg_id).unwrap(), Some((space, channel)));
@@ -1485,6 +1793,11 @@ mod tests {
             .unwrap();
         assert_eq!(state.cursor().unwrap(), 0);
         let entry = |seq: u64| (seq, vec![u8::try_from(seq).unwrap()]);
+        let waiting = |seq: u64| Entry {
+            seq,
+            frame: entry(seq).1,
+            opened: None,
+        };
 
         assert_eq!(state.write_entries(&[entry(2), entry(1)]).unwrap(), 2);
         // Those up to the cursor are not written again; the cursor never goes back.
@@ -1492,7 +1805,7 @@ mod tests {
         assert_eq!(state.write_entries(&[entry(3)]).unwrap(), 4);
         let state = State::open(&dir).unwrap();
         assert_eq!(state.cursor().unwrap(), 4);
-        assert_eq!(state.inbox().unwrap(), [entry(1), entry(2), entry(4)]);
+        assert_eq!(state.inbox().unwrap(), [waiting(1), waiting(2), waiting(4)]);
 
         let (sender, msg_id) = (DeviceId::from_signing_key(&[2; 32]), MessageId::generate());
         assert!(!state.received(sender, msg_id).unwrap());
@@ -1500,11 +1813,62 @@ mod tests {
         state.remove_entry(4).unwrap();
 
         let state = State::open(&dir).unwrap();
-        assert_eq!(state.inbox().unwrap(), [entry(2)]);
+        assert_eq!(state.inbox().unwrap(), [waiting(2)]);
         assert!(state.received(sender, msg_id).unwrap());
         assert!(!state.received(sender, MessageId::generate()).unwrap());
         let other = DeviceId::from_signing_key(&[3; 32]);
         assert!(!state.received(other, msg_id).unwrap());
+    }
+
+    /// The counters accepted from a sending device are kept per channel and scheme with the entry
+    /// that took them out of the inbox. Under `mls`, a Welcome to the channel's group after that
+    /// entry drops them for the entries after the Welcome; under `hpke`, it does not.
+    #[test]
+    fn counters_are_kept_per_source_until_the_device_joins_the_channel_again() {
+        let dir = TestDir::new("state-counters");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        state.write_entries(&[(3, vec![3]), (4, vec![4])]).unwrap();
+        let (channel, other) = (ChannelId::generate(), ChannelId::generate());
+        let source = |channel, scheme| Source {
+            channel,
+            device: DeviceId::from_signing_key(&[2; 32]),
+            scheme,
+        };
+        let (mls, hpke) = (source(channel, Scheme::Mls), source(channel, Scheme::Hpke));
+        let kept = Counters {
+            highest: 7,
+            missing: vec![(2, 3)],
+        };
+        assert_eq!(state.counters(&mls, 5).unwrap(), None);
+
+        state.shown_counted(3, &mls, &kept).unwrap();
+        state.shown_counted(4, &hpke, &Counters::default()).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert!(state.inbox().unwrap().is_empty());
+        assert_eq!(state.counters(&mls, 5).unwrap(), Some(kept.clone()));
+        assert_eq!(state.counters(&hpke, 5).unwrap(), Some(Counters::default()));
+        assert_eq!(
+            state.counters(&source(other, Scheme::Mls), 5).unwrap(),
+            None
+        );
+        state
+            .mls_change(|_| {
+                let joined = MlsChanges {
+                    joined: vec![(channel, 5)],
+                    ..MlsChanges::default()
+                };
+                Ok((None, joined, ()))
+            })
+            .unwrap();
+        assert_eq!(state.counters(&mls, 4).unwrap(), Some(kept.clone()));
+        assert_eq!(state.counters(&mls, 6).unwrap(), None);
+        assert_eq!(state.counters(&hpke, 6).unwrap(), Some(Counters::default()));
+        state.shown_counted(6, &mls, &kept).unwrap();
+        assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept));
     }
 
     #[test]
@@ -1617,6 +1981,83 @@ mod tests {
         let second = sealed(&[(b"c", &[3; 40])]);
         state.mls_step(|_| Ok((Some(second.clone()), ()))).unwrap();
         assert_eq!(read(&State::open(&dir).unwrap()), second);
+    }
+
+    /// A step's changes to the outbox and the inbox are written with the state it saves: the
+    /// envelopes it queues go out after those queued before, those answered and the entries taken
+    /// in leave, and an entry keeps what decrypting it gave; a change that fails writes none of
+    /// them, nor the state.
+    #[test]
+    fn mls_changes_are_written_with_the_state_or_not_at_all() {
+        let dir = TestDir::new("state-mls-changes");
+        let state = State::open(&dir).unwrap();
+        let read = |state: &State| state.mls_step(|old| Ok((None, old.clone()))).unwrap();
+        let seqs = |state: &State| -> Vec<(u64, Option<Vec<u8>>)> {
+            state
+                .inbox()
+                .unwrap()
+                .into_iter()
+                .map(|entry| (entry.seq, entry.opened))
+                .collect()
+        };
+        let device = DeviceId::from_signing_key(&[7; 32]);
+        state.add_device(device, "ada-laptop", "0190").unwrap();
+        state
+            .write_entries(&[(1, vec![1]), (2, vec![2]), (3, vec![3])])
+            .unwrap();
+        let outgoing = |byte| MlsOutgoing {
+            msg_id: MessageId::generate(),
+            space: SpaceId::generate(),
+            channel: ChannelId::generate(),
+            envelope: vec![byte],
+        };
+        let (first, second, third) = (outgoing(1), outgoing(2), outgoing(3));
+        let changes =
+            |queued: &[&MlsOutgoing], answered: &[&MlsOutgoing], taken: &[u64]| MlsChanges {
+                queued: queued.iter().map(|&queued| queued.clone()).collect(),
+                answered: answered.iter().map(|answered| answered.msg_id).collect(),
+                taken: taken.to_vec(),
+                ..MlsChanges::default()
+            };
+        let saved = sealed(&[(b"a", &[1; 40])]);
+
+        state
+            .mls_change(|_| {
+                Ok((
+                    Some(saved.clone()),
+                    changes(&[&first, &second], &[], &[2]),
+                    (),
+                ))
+            })
+            .unwrap();
+        state
+            .mls_change(|_| {
+                let opened = MlsChanges {
+                    opened: vec![(3, vec![9])],
+                    ..changes(&[&third], &[&first], &[1])
+                };
+                Ok((None, opened, ()))
+            })
+            .unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.mls_outbox().unwrap(), [second.clone(), third.clone()]);
+        assert_eq!(seqs(&state), [(3, Some(vec![9]))]);
+        assert_eq!(read(&state), saved);
+
+        // The same message ID again fails the change: nothing of it is written.
+        let other = sealed(&[(b"b", &[2; 40])]);
+        let failed = state.mls_change(|_| {
+            let opened = MlsChanges {
+                opened: vec![(3, vec![8])],
+                ..changes(&[&second], &[&third], &[])
+            };
+            Ok((Some(other.clone()), opened, ()))
+        });
+        assert!(failed.is_err(), "{failed:?}");
+        assert_eq!(state.mls_outbox().unwrap(), [second, third]);
+        assert_eq!(seqs(&state), [(3, Some(vec![9]))]);
+        assert_eq!(read(&state), saved);
     }
 
     /// Once a save returns, the state it replaced is in neither the database file nor its journal

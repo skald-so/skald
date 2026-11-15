@@ -262,6 +262,20 @@ impl Played {
             .expect("the stored Commit merges")
     }
 
+    /// The device adds `person`'s device to `channel`'s group with one of its KeyPackages on the
+    /// server, commits, uploads the new epoch's GroupInfo and sends the device the Welcome; fails
+    /// unless the server stores each.
+    #[track_caller]
+    pub fn welcomes(&mut self, cloud: &Cloud, at: (SpaceId, ChannelId), person: &Person) {
+        let package = take_key_package(cloud, &self.person.token, person.device);
+        let commit = (self.mls)
+            .add_devices(at.1, &[package], &[cert_of(cloud, person)], now())
+            .expect("a Commit adding the device");
+        let welcome = self.commits(cloud, at, &commit).expect("a Welcome");
+        self.uploads_group_info(cloud, at);
+        self.stores(cloud, at, &welcome, &[person.device]);
+    }
+
     /// The device uploads its GroupInfo of `channel`'s current epoch; fails unless the server takes
     /// it.
     #[track_caller]

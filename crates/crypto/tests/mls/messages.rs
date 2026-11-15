@@ -2,6 +2,7 @@
 //! messages are PrivateMessages that only the group's members read, each giving its sender's
 //! device ID from its credential; Commits are PublicMessages.
 
+use skald_crypto::MlsError;
 use skald_proto::ChannelId;
 
 use crate::fixtures::{NOW, device_id, load};
@@ -85,6 +86,13 @@ fn a_replayed_message_is_refused() {
         "the refused replay changed nothing"
     );
     assert_eq!(receive(79, &mut states[1], channel, &message), None);
+    let replayed = step(79, &mut states[1], |device| {
+        device.decrypt(channel, &message)
+    });
+    assert!(
+        matches!(replayed, Err(MlsError::Replay)),
+        "a replay not told apart: {replayed:?}"
+    );
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]

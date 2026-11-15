@@ -164,9 +164,10 @@ pub struct Channel {
     pub id: ChannelId,
 }
 
-/// Ada's machine creates `acme`, whose revision 2 adds `members`, and a channel in it; revision 4,
-/// which Ada's device signs and the server stores while the machine has not accepted it yet, adds
-/// `joining` to the channel and has each member's account of `excluded` bar its device.
+/// Ada's machine creates `acme`, with its default channel in revision 2, whose revision 3 adds
+/// `members`, and a channel in it; revision 5, which Ada's device signs and the server stores while
+/// the machine has not accepted it yet, adds `joining` to the channel and has each member's account
+/// of `excluded` bar its device.
 pub fn acme(
     cloud: &Cloud,
     ada: &Person,
@@ -174,31 +175,31 @@ pub fn acme(
     joining: &[&Person],
     excluded: &[(AccountId, DeviceId)],
 ) -> Channel {
-    let first = create(cloud, ada, ACME);
-    channel_in(cloud, ada, &first, members, joining, excluded)
+    let created = create(cloud, ada, ACME);
+    channel_in(cloud, ada, &created, members, joining, excluded)
 }
 
-/// As [`acme`], in the space named `first.body().name` that Ada's machine created, whose revision 1
-/// is `first`.
+/// As [`acme`], in the space named `created.body().name` that Ada's machine created, whose
+/// revision with its default channel is `created`.
 pub fn channel_in(
     cloud: &Cloud,
     ada: &Person,
-    first: &Roster,
+    created: &Roster,
     members: &[&Person],
     joining: &[&Person],
     excluded: &[(AccountId, DeviceId)],
 ) -> Channel {
-    let space = first.body().space;
-    let second = next_by(first, ada, |list| {
+    let space = created.body().space;
+    let with_members = next_by(created, ada, |list| {
         list.extend(members.iter().map(|person| person.member(Role::Member)));
     });
-    store(cloud, &ada.token, &second);
-    let name = first.body().name.to_string();
-    let created = run(&ada.machine, &[CREATE_CHANNEL, &name]);
-    assert!(created.success, "a channel: {created:?}");
-    let (third, id) = last_channel(cloud, ada, space);
+    store(cloud, &ada.token, &with_members);
+    let name = created.body().name.to_string();
+    let made = run(&ada.machine, &[CREATE_CHANNEL, &name]);
+    assert!(made.success, "a channel: {made:?}");
+    let (with_channel, id) = last_channel(cloud, ada, space);
     if !joining.is_empty() || !excluded.is_empty() {
-        let fourth = next_with(&third, (ada.device, &ada.key), |body| {
+        let joined = next_with(&with_channel, (ada.device, &ada.key), |body| {
             let channel = body
                 .channels
                 .iter_mut()
@@ -220,7 +221,7 @@ pub fn channel_in(
             }
             body.members = NonEmpty::from_vec(members).expect("a member");
         });
-        store(cloud, &ada.token, &fourth);
+        store(cloud, &ada.token, &joined);
     }
     Channel { space, id }
 }
@@ -233,15 +234,6 @@ pub fn last_channel(cloud: &Cloud, person: &Person, space: SpaceId) -> (Roster, 
         .expect("a revision");
     let id = last.body().channels.last().expect("a channel").id;
     (last, id)
-}
-
-/// The recipient device of `sent`, an envelope under `hpke` to one device.
-pub fn recipient(sent: &Sent) -> DeviceId {
-    let header = &sent.envelope.envelope().header;
-    match header.recipients.as_deref() {
-        Some([device]) => *device,
-        other => panic!("not one recipient device: {other:?}"),
-    }
 }
 
 pub fn msg_id(sent: &Sent) -> MessageId {
@@ -282,14 +274,4 @@ pub fn await_running(run: &mut Run, what: &str, done: impl Fn() -> bool) {
         assert!(Instant::now() < deadline, "no {what}: {}", run.shown());
         thread::sleep(Duration::from_millis(20));
     }
-}
-
-/// In `world`, Ada, GitHub user `ids[0]` with `logins[0]`, whose machine retries for [`TIMEOUT`],
-/// and Bob, `ids[1]` with `logins[1]`, sign up, and Ada's machine creates `acme` with a channel
-/// they are both in, Bob added by a revision the machine has not accepted yet.
-pub fn ada_and_bob(world: &World, ids: [u64; 2], logins: [&str; 2]) -> (Person, Person, Channel) {
-    let ada = retrying_for_the_timeout(world.sign_up(ids[0], logins[0], "ada-workstation"));
-    let bob = world.sign_up(ids[1], logins[1], "bob-workstation");
-    let channel = acme(&world.cloud, &ada, &[&bob], &[&bob], &[]);
-    (ada, bob, channel)
 }
