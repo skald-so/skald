@@ -5,6 +5,7 @@
 //! its view from outside the group ([`ChannelView`]). The device's state reaches the caller only
 //! sealed ([`SealedState`]).
 
+mod framing;
 mod key_package;
 mod profile;
 mod store;
@@ -27,6 +28,7 @@ use skald_proto::{Cert, ChannelId, DeviceId};
 use zeroize::Zeroizing;
 
 use crate::{HistoryKey, SealedState, SigningKey, StateKey};
+pub use framing::{MlsContent, MlsFraming};
 pub use key_package::KeyPackage;
 use store::{Kept, Store};
 pub use view::ChannelView;
@@ -733,6 +735,8 @@ pub enum MlsError {
     Malformed,
     /// The GroupInfo is of another channel's group.
     OtherChannel,
+    /// The GroupInfo has no `external_pub` extension, so no device joins by itself from it.
+    NotJoinable,
     /// mls-rs refuses the step or fails.
     Mls(mls_rs::error::MlsError),
 }
@@ -756,6 +760,7 @@ impl fmt::Display for MlsError {
             Self::Refused => f.write_str("the caller refused the Welcome or the epoch"),
             Self::Malformed => f.write_str("not an MLS message of the kind the step takes"),
             Self::OtherChannel => f.write_str("the GroupInfo is of another channel"),
+            Self::NotJoinable => f.write_str("the GroupInfo has no external_pub"),
             Self::Mls(error) => write!(f, "mls-rs: {error}"),
         }
     }
@@ -1156,6 +1161,7 @@ mod tests {
             MlsError::Refused,
             MlsError::Malformed,
             MlsError::OtherChannel,
+            MlsError::NotJoinable,
             MlsError::Mls(mls_rs::error::MlsError::GroupNotFound),
         ]
         .iter()
@@ -1170,7 +1176,7 @@ mod tests {
             message
         })
         .collect();
-        assert_eq!(messages.len(), 13, "{messages:?}");
+        assert_eq!(messages.len(), 14, "{messages:?}");
         assert!(messages.contains(&format!("no group for the channel {channel}")));
         assert!(messages.contains(&format!("the device {device} is not admitted")));
         assert!(messages.contains(&format!("the device {device} is not a member")));

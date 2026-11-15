@@ -105,9 +105,9 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 | Problem | The envelope |
 |---|---|
 | `version-mismatch` | Has a `v` other than the version of its connection or request |
-| `not-a-member` | Comes from a device that may not send in `channel`, or holds a Commit from a device that may not commit it ([Commit ordering](membership.md#commit-ordering)) |
+| `not-a-member` | Comes from a device that may not send in `channel`; under `mls`, holds no MLS message of `channel`, an application message from a device that is no member of the current epoch ([Envelope](README.md#envelope)), or a Commit from a device that may not commit it, a Commit the server cannot process, a proposal, or anything but the first Commit before the server has the channel's first GroupInfo ([Commit ordering](membership.md#commit-ordering)) |
 | `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
-| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel` |
+| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
 | `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 | `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 

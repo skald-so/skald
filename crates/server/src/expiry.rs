@@ -1,9 +1,10 @@
 //! Expiry of mailbox entries: `docs/protocol/delivery.md`, "Mailbox". A `message` expires at its
-//! storing time plus its envelope's `ttl`, capped by the server's mailbox retention, and a `status`
-//! at its adding time plus the retention; a `message` of a version not deliverable on a connection
-//! expires when the connection reaches it. The server looks for expired entries by itself, deletes
-//! them and adds `expired` for each message sent with `report` true; it forgets an idempotency key
-//! once the retention has passed since its send, and so a counted message since its count.
+//! storing time plus its envelope's `ttl`, capped by the server's mailbox retention, unless it
+//! holds a handshake message, and a `status` at its adding time plus the retention; a `message` of
+//! a version not deliverable on a connection expires when the connection reaches it. The server
+//! looks for expired entries by itself, deletes them and adds `expired` for each message sent with
+//! `report` true; it forgets an idempotency key once the retention has passed since its send, and
+//! so a counted message since its count.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -55,7 +56,8 @@ async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(
         "DELETE FROM entries e
          WHERE (e.device_id, e.seq) IN (
              SELECT device_id, seq FROM entries
-             WHERE ttl_ends_at <= now() OR added_at <= now() - make_interval(secs => $1)
+             WHERE ttl_ends_at <= now()
+                 OR (NOT lasting AND added_at <= now() - make_interval(secs => $1))
              LIMIT $2 FOR UPDATE SKIP LOCKED
          )
          RETURNING e.device_id, e.seq, e.envelope_id,
@@ -95,7 +97,8 @@ pub(crate) async fn expire_due(
     let query = sqlx::query_as(removing!(
         "DELETE FROM entries
          WHERE device_id = $1::uuid AND seq > $2 AND seq <= $3
-           AND (ttl_ends_at <= now() OR added_at <= now() - make_interval(secs => $4))
+           AND (ttl_ends_at <= now()
+               OR (NOT lasting AND added_at <= now() - make_interval(secs => $4)))
          RETURNING device_id, seq, envelope_id,
              least(ttl_ends_at, added_at + make_interval(secs => $4)) AS at"
     ))

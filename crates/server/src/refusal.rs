@@ -28,6 +28,12 @@ pub(crate) enum Refusal {
     UsernameTaken,
     /// No such space, or the session's account does not get it.
     NoSpace,
+    /// No such channel in the space's latest revision.
+    NoChannel,
+    /// A GroupInfo the server does not keep, for the reason it holds.
+    GroupInfo(String),
+    /// A GroupInfo not of the group the server follows, for the reason it holds.
+    GroupInfoConflict(String),
     /// The session's account may not do this in the space, for the reason it holds.
     NotAllowed(String),
     /// A roster revision the server does not store, for the reason it holds.
@@ -87,6 +93,21 @@ impl IntoResponse for Refusal {
                 "no-space",
                 "No such space",
                 "No such space, or the session's account does not get it.",
+            ),
+            Refusal::NoChannel => problem(
+                StatusCode::NOT_FOUND,
+                "no-channel",
+                "No such channel",
+                "The space's latest revision lists no such channel.",
+            ),
+            Refusal::GroupInfo(detail) => {
+                problem(bad, "invalid-group-info", "Invalid GroupInfo", &detail)
+            }
+            Refusal::GroupInfoConflict(detail) => problem(
+                conflict,
+                "group-info-conflict",
+                "Not the channel's group",
+                &detail,
             ),
             Refusal::NotAllowed(detail) => {
                 problem(StatusCode::FORBIDDEN, "not-allowed", "Not allowed", &detail)
