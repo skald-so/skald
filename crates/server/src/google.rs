@@ -122,6 +122,8 @@ impl Provider for Google {
             source: identity.email.as_deref().map_or("", local_part).to_owned(),
             subject: identity.subject,
             login: None,
+            verified_email: identity.email.filter(|_| identity.email_verified),
+            hosted_domain: identity.hosted_domain,
         })
     }
 }
