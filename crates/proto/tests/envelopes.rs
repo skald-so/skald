@@ -9,9 +9,9 @@ use std::fmt::Debug;
 use common::*;
 use skald_proto::{
     AddressError, Attachment, Body, Cbor, Content, DecodeError, Delegation, DelegationBody,
-    DeliveryStatus, EncodingProblem, Envelope, FieldProblem, Grant, GrantBody, Header, HpkePayload,
-    HpkePlaintext, NameError, NonEmpty, Receipt, ReceiptStatus, Scheme, Segment, SendKey,
-    ServerStatus, Stored, Unknown,
+    DeliveryStatus, DeviceId, EncodingProblem, Envelope, FieldProblem, Grant, GrantBody, Header,
+    HpkePayload, HpkePlaintext, NameError, NonEmpty, Receipt, ReceiptStatus, Scheme, Segment,
+    SendKey, ServerStatus, Stored, Unknown,
 };
 
 /// The encoding of a 16-byte ID: `h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6'`.
@@ -466,6 +466,32 @@ fn hpke_plaintexts_name_their_sender_in_the_grant_or_the_delegation() {
         check(&plaintext(alice_device(), content(alice(), json()))),
         Ok(())
     );
+}
+
+#[test]
+fn hpke_plaintexts_name_their_sender_even_when_their_content_breaks_the_cddl() {
+    let signature = format!("5840{}", "00".repeat(64));
+    // Content of one byte, `h'00'`, which is no content.
+    let broken = hex(&format!("83 {ID} 4100 {signature}"));
+    assert!(HpkePlaintext::from_cbor(&broken).is_err());
+    assert_eq!(
+        HpkePlaintext::sender_in(&broken),
+        Some(
+            "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5e6"
+                .parse::<DeviceId>()
+                .unwrap()
+        )
+    );
+    for (what, bytes) in [
+        ("empty", String::new()),
+        ("two items", format!("82 {ID} 4100")),
+        (
+            "a sender that is no ID",
+            format!("83 4100 4100 {signature}"),
+        ),
+    ] {
+        assert_eq!(HpkePlaintext::sender_in(&hex(&bytes)), None, "{what}");
+    }
 }
 
 #[test]

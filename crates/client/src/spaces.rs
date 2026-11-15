@@ -669,6 +669,17 @@ fn follower(
     }
 }
 
+/// As [`follower`]; fails if the machine has no certified device.
+pub fn following(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    scope: Scope,
+) -> Result<Follower, String> {
+    follower(dir, storage, speaks, timeout, scope)?.ok_or_else(|| NOT_FOLLOWING.to_owned())
+}
+
 /// The space named `name` that the device of the machine whose state is in `dir`, its secrets in
 /// `storage`, follows, synced ([`Follower::sync`]); within `scope`.
 pub fn synced(
@@ -679,8 +690,7 @@ pub fn synced(
     name: &str,
     scope: Scope,
 ) -> Result<Synced, String> {
-    let mut follower =
-        follower(dir, storage, speaks, timeout, scope)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
+    let mut follower = following(dir, storage, speaks, timeout, scope)?;
     let space = follower.space(name)?;
     if scope.excludes(space.id) {
         return Err(OUT_OF_SCOPE.to_owned());
@@ -705,8 +715,7 @@ pub fn of_channel(
     channel: ChannelId,
     scope: Scope,
 ) -> Result<Synced, String> {
-    let mut follower =
-        follower(dir, storage, speaks, timeout, scope)?.ok_or_else(|| NOT_FOLLOWING.to_owned())?;
+    let mut follower = following(dir, storage, speaks, timeout, scope)?;
     let mut spaces: Vec<state::Space> = follower
         .state
         .spaces()

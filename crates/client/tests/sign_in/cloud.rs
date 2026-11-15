@@ -119,22 +119,40 @@ impl Cloud {
     /// cloud has started. Machines and the person's browser reach the server through the front, at
     /// [`Cloud::url`], so the origin a machine signs on connecting is the server's public address.
     pub fn fronted(host: &str, front: u16, lifetime: u64, interval: u64) -> Self {
-        Self::serving_at(Providers::GitHub, host, Some(front), lifetime, interval)
+        Self::fronted_with(host, front, lifetime, interval, |_| {})
+    }
+
+    /// As [`Cloud::fronted`], the server's settings changed by `change`.
+    pub fn fronted_with(
+        host: &str,
+        front: u16,
+        lifetime: u64,
+        interval: u64,
+        change: impl FnOnce(&mut Settings),
+    ) -> Self {
+        Self::serving_at(
+            Providers::GitHub,
+            host,
+            Some(front),
+            (lifetime, interval),
+            change,
+        )
     }
 
     /// As [`Cloud::with`], the server's public address `http://<host>:<port>`.
     fn serving(providers: Providers, host: &str, lifetime: u64, interval: u64) -> Self {
-        Self::serving_at(providers, host, None, lifetime, interval)
+        Self::serving_at(providers, host, None, (lifetime, interval), |_| {})
     }
 
     /// As [`Cloud::serving`], the public address's port `front` if given, machines reaching the
-    /// server there; otherwise the server's own, machines reaching the server at the relay.
+    /// server there, otherwise the server's own, machines reaching the server at the relay; codes
+    /// living and polling as `(lifetime, interval)` says, and the settings changed by `change`.
     fn serving_at(
         providers: Providers,
         host: &str,
         front: Option<u16>,
-        lifetime: u64,
-        interval: u64,
+        (lifetime, interval): (u64, u64),
+        change: impl FnOnce(&mut Settings),
     ) -> Self {
         let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
@@ -178,10 +196,12 @@ impl Cloud {
             };
             github = Some(stand_in);
             public_url = public;
-            Settings {
+            let mut settings = Settings {
                 sign_in: Some(sign_in),
                 ..Settings::default()
-            }
+            };
+            change(&mut settings);
+            settings
         });
         let relay = Relay::start(server.url.trim_start_matches("http://"));
         Cloud {
