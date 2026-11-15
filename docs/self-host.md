@@ -288,34 +288,45 @@ A restore that fails after its check passed leaves the new stack partly filled: 
 
 To a new release, in `~/skald`:
 
-1. [The release](#the-release) with the new release's values.
-2. Its compose file and Caddy's config, and its image in `.env`:
+1. [The release](#the-release) with the new release's values, and its image's signature.
+2. A [backup](#backup-and-restore) into a new file, for a [rollback](#rollback).
+3. The release's compose file and Caddy's config, its image in `.env`, and Caddy restarted for its config when the stack runs it:
 
    ```sh self-host=upgrade
-   curl -fsSLO "$SKALD_FILES/docker-compose.yml"
-   curl -fsSLO "$SKALD_FILES/Caddyfile"
-   sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+   (
+     set -eo pipefail
+     curl -fsSLO "$SKALD_FILES/docker-compose.yml"
+     curl -fsSLO "$SKALD_FILES/Caddyfile"
+     sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+     if docker compose ps --services --status running | grep -x caddy >/dev/null; then
+       docker compose restart caddy
+     fi
+   )
    ```
 
-3. The image's signature, as in [The release](#the-release).
-4. A [backup](#backup-and-restore) into a new file, for a [rollback](#rollback).
-5. [Start](#start). The server applies the release's new migrations at start.
+4. [Start](#start). The server applies the release's new migrations at start.
 
 ## Rollback
 
-Back to the release before an upgrade, with the backup from that upgrade. A server refuses a database that a newer server migrated ([Cloud](dev/infrastructure.md#cloud), "Deployment"), so the rollback replaces the stack's database and attachments with the backup's: what changed after the upgrade is lost.
+Back to the release before an upgrade, with the backup from that upgrade, `<backup file>`. The rollback replaces the stack's database and attachments with the backup's ([Cloud](dev/infrastructure.md#cloud), "Deployment"): what changed after the upgrade is lost.
 
 In `~/skald`:
 
 1. [The release](#the-release) with the earlier release's values.
-2. The stack stopped, its database and attachments volumes removed, the release's files and image in place:
+2. The backup checked; the stack stopped, its database and attachments volumes removed; the release's files and image in place:
 
    ```sh self-host=rollback
-   docker compose down
-   docker volume rm skald_database skald_attachments
-   curl -fsSLO "$SKALD_FILES/docker-compose.yml"
-   curl -fsSLO "$SKALD_FILES/Caddyfile"
-   sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+   (
+     set -eo pipefail
+     file='<backup file>'
+     gzip -t "$file"
+     tar -tzf "$file" database.sql >/dev/null
+     docker compose down
+     docker volume rm skald_database skald_attachments
+     curl -fsSLO "$SKALD_FILES/docker-compose.yml"
+     curl -fsSLO "$SKALD_FILES/Caddyfile"
+     sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+   )
    ```
 
 3. The [restore](#backup-and-restore) of the backup, then [Start](#start).

@@ -37,13 +37,15 @@
 #                        `up`
 #   upgrade              upgrades the stack, in its directory, to the release of the values of
 #                        `release`, which runs before it: gets its compose file and Caddy config from
-#                        $SKALD_FILES and names its image ghcr.io/skald-so/skald-server@$SKALD_DIGEST in
-#                        .env; then image-check, backup and up
+#                        $SKALD_FILES, names its image ghcr.io/skald-so/skald-server@$SKALD_DIGEST in
+#                        .env and restarts the stack's Caddy, if it runs; after image-check and
+#                        backup, then up
 #   rollback             rolls the upgraded stack back, in its directory, to the release of the values
 #                        of `release`, which runs before it: puts its compose file and Caddy config from
 #                        $SKALD_FILES and its image ghcr.io/skald-so/skald-server@$SKALD_DIGEST in place
-#                        and leaves the stack ready for `restore` of the backup from the upgrade; then
-#                        restore and up
+#                        and leaves the stack ready for `restore` of the backup from the upgrade, or
+#                        stops, changing nothing, unless that backup is a gzip tar archive holding
+#                        database.sql; then restore and up
 #   proxy-host           the proxy variant's .env for a proxy on the machine
 #   proxy-host-site      the site block of a Caddy on the machine (Caddyfile)
 #   proxy-join           the proxy variant's .env for a proxy in a container that joins the stack's
@@ -55,10 +57,10 @@
 # the last release's version and image digest and this commit's files at the repository root, with
 # the sign-in checks at their paths in script/; in .env, this commit's image for
 # ghcr.io/skald-so/skald-server@$SKALD_DIGEST; for the last release's stack and its rollback,
-# SKALD_FILES, the last release's compose file and Caddy config from its tag, or this commit's when
-# the tag has none, and in .env that release's image, pulled by its digest for linux/amd64, under a
+# SKALD_FILES, the last release's compose file and Caddy config from its tag, or this commit's with a
+# comment line added when the tag has none, and in .env that release's image, pulled by its digest for linux/amd64, under a
 # local name; for the stack on PostgreSQL's release candidate, SKALD_FILES, this commit's compose file
-# with that PostgreSQL; the test's domain for skald.example.com; the
+# with that PostgreSQL and its Caddy config, each with a comment line added; the test's domain for skald.example.com; the
 # stand-ins' values for `<bucket endpoint>`, `<bucket region>`, `<bucket name>` and `<bucket access
 # key ID>`, and its secret key on standard input; the stand-ins' client IDs for `<GitHub client ID>`
 # and `<Google client ID>`, and their secrets on standard input, a line each, GitHub's first; the
@@ -142,16 +144,22 @@
 #     image has no attachments directory, the attachments volume made as this commit's image makes
 #     it, owned by 65532 with mode 0700. Two machines sign in with the last release's skald, its
 #     persons with two GitHub users, and create spaces; files go into the attachments volume.
-#   upgrade: in that stack, release, upgrade, image-check, backup, up. This commit's server runs, the
-#     backup is a file readable only by its owner, the volume holds the same files, the last release's
-#     skald lists the same devices and spaces and creates a space.
+#   upgrade: in that stack, release, image-check, backup, upgrade, up. This commit's server runs, the
+#     stack has this commit's compose file and Caddy config, its Caddy started after the upgrade wrote
+#     them, the backup is a file readable only by its owner, the volume holds the same files, the last
+#     release's skald lists the same devices and spaces and creates a space. The guide's section of
+#     the step upgrade names the backup before the step's block, and that before Start.
 #   upgrade-client: this commit's skald, on a copy of the state of the last release's, lists that
 #     machine as this device, linked, and its spaces, and creates a space.
 #   rollback-refused, when this commit has a migration the last release lacks: the last release's
 #     server, run on the upgraded database, exits with an error about migrations and changes neither
 #     the database nor the volume.
+#   rollback-missing, rollback-broken, rollback-no-database: in that stack, release (the last
+#     release's files), rollback with a backup that is missing, truncated, or a gzip tar archive
+#     without database.sql: the rollback fails and changes neither the database nor the volume.
 #   rollback: in that stack, release (the last release's files), rollback, restore of the backup from
-#     the upgrade, up. The database and the volume are as before the upgrade; the last release's
+#     the upgrade, up. The stack has the last release's compose file and Caddy config; the database
+#     and the volume are as before the upgrade; the last release's
 #     server runs; the last release's skald, on its state that this commit's skald never opened,
 #     lists the same devices and spaces and creates a space.
 #   upgrade-restored: the backup from the upgrade restored into a new stack of this commit: the
@@ -166,8 +174,9 @@
 #     condition does not hold, they run.
 #   postgres-rc: release (this commit's compose file with the PostgreSQL release candidate it first
 #     pinned), files, env, github, up; a machine signs in with this commit's skald and creates spaces,
-#     files in the volume. postgres-rc-upgrade: release, upgrade, image-check, backup, up: PostgreSQL
-#     runs the compose file's image, the machine lists the same devices and spaces, the volume holds
+#     files in the volume. postgres-rc-upgrade: release, image-check, backup, upgrade, up: the stack
+#     has this commit's compose file and Caddy config, PostgreSQL runs the compose file's image, the
+#     machine lists the same devices and spaces, the volume holds
 #     the same files.
 #   The .env of each has mode 0600, and the output shows no secret value of it.
 # infrastructure.md's "Deployment" no longer says migrations are backward compatible only and says
@@ -1475,7 +1484,8 @@ upgrade_backup=$backups/skald-upgrade-backup
 # The second GitHub user, for the second account of the last release's stack.
 second_user=4120711302
 second_login=kai-self-host
-upgrade_tests='last-release upgrade upgrade-client rollback-refused rollback upgrade-restored'
+upgrade_tests='last-release upgrade upgrade-client rollback-refused rollback-missing rollback-broken'
+upgrade_tests+=' rollback-no-database rollback upgrade-restored'
 ran=
 
 # guide_section <step>: the lines of the guide's level-2 section that holds the block of <step>.
@@ -1508,6 +1518,15 @@ section_anchors() {
 
 guide_section rollback | grep -qF '](dev/infrastructure.md#' ||
   fail "$guide: the section of the step rollback does not link to infrastructure.md"
+# The guide's upgrade: the backup first, then the step's block, then Start.
+order=$(guide_section upgrade | awk '
+  /\]\(#backup-and-restore\)/ && !backup { backup = NR }
+  /self-host=upgrade/ && !block { block = NR }
+  /\]\(#start\)/ && !start { start = NR }
+  END { print (backup && block && start && backup < block && block < start) ? "ok" : "not" }
+')
+[[ $order == ok ]] ||
+  fail "$guide: the section of the step upgrade does not name the backup, then its block, then Start"
 
 # The last release's compose file and Caddy config, from its tag, or this commit's when it has none;
 # this commit's compose file on the PostgreSQL release candidate that it first pinned.
@@ -1518,11 +1537,18 @@ if git cat-file -e "$release_tag:docker-compose.yml" 2>/dev/null; then
   done
 else
   cp docker-compose.yml Caddyfile "$work/release-files/"
+  # Copies that differ from this commit's files, so that the tests tell which ones a stack has.
+  for file in docker-compose.yml Caddyfile; do
+    echo "# self-host-test: the last release's copy" >>"$work/release-files/$file"
+  done
 fi
 postgres_rc=postgres:19rc2@sha256:3c5f322ffe97481b51a1ebee693f58d0c081514d2bc3026500a9400b7428bea9
 postgres_pinned=$(sed -nE 's/^ *image: (postgres:[^ ]+)$/\1/p' docker-compose.yml | head -n 1)
 sed -E "s|^( *image: )postgres:[^ ]+\$|\\1$postgres_rc|" docker-compose.yml >"$work/rc-files/docker-compose.yml"
 cp Caddyfile "$work/rc-files/"
+for file in docker-compose.yml Caddyfile; do
+  echo "# self-host-test: the copy with PostgreSQL's release candidate" >>"$work/rc-files/$file"
+done
 docker cp "$work/release-files" "$machine:/self-host/release-files"
 docker cp "$work/rc-files" "$machine:/self-host/rc-files"
 release_dockerfile=$(git show "$release_tag:crates/server/Dockerfile" 2>/dev/null || true)
@@ -1598,6 +1624,29 @@ runs_server() {
   container "$1" "$2" >/dev/null || fail "$1: after $3, the stack's server does not run from $2"
 }
 
+# has_files <scenario> <directory> <when>: after <when>, the stack's compose file and Caddy config
+# are those in <directory> on the machine.
+has_files() {
+  local file
+  for file in docker-compose.yml Caddyfile; do
+    m sh -c "cmp -s \"\$(cat /self-host/run/$1/dir)/$file\" $2/$file" ||
+      fail "$1: after $3, the stack's $file is not the one in $2"
+  done
+}
+
+# caddy_restarted <scenario> <when>: after <when>, the stack's Caddy runs and started after its
+# Caddyfile was last written.
+caddy_restarted() {
+  local id started written
+  if ! id=$(container "$1" "$caddy_image"); then
+    fail "$1: after $2, the stack's Caddy does not run"
+    return
+  fi
+  started=$(m date -d "$(m docker inspect --format '{{.State.StartedAt}}' "$id")" +%s%N)
+  written=$(m sh -c "date -r \"\$(cat /self-host/run/$1/dir)/Caddyfile\" +%s%N")
+  ((started > written)) || fail "$1: after $2, Caddy runs since before its Caddyfile was written"
+}
+
 # boundaries_crossed <list>: the links of the entries of the list of upgrade boundaries <list> whose
 # condition holds, one per line.
 boundaries_crossed() {
@@ -1625,7 +1674,7 @@ upgrade_down() {
 
 # upgrade_from_last_release: the upgrade tests.
 upgrade_from_last_release() {
-  local ok=1 ada kai listed files database database_upgraded files_upgraded status said
+  local ok=1 ada kai listed files database database_upgraded files_upgraded status said bad
   scenario last-release release :last_release files env github :before_up_release :prepare_attachments \
     up :wait_https
   ran+=' last-release'
@@ -1633,6 +1682,7 @@ upgrade_from_last_release() {
   check_env last-release
   [[ -n $ok ]] || return 0
   runs_server last-release "$release_image" "its first up"
+  has_files last-release /self-host/release-files "its first up"
   if client_bin=$release_skald sign_in last-release ada-machine GitHub; then
     creates_spaces last-release ada-machine oak pine
   else
@@ -1656,7 +1706,7 @@ upgrade_from_last_release() {
   database=$(database_print last-release) || fail "last-release: cannot read the database"
 
   # The guide's upgrade to this commit.
-  scenario upgrade ":resume last-release" release upgrade image-check backup :before_up up :wait_https
+  scenario upgrade ":resume last-release" release image-check backup upgrade :before_up up :wait_https
   with_backup upgrade "$upgrade_backup"
   ran+=' upgrade'
   ok=1
@@ -1664,6 +1714,8 @@ upgrade_from_last_release() {
   check_env upgrade
   [[ -n $ok ]] || return 0
   runs_server upgrade "$server_image" "the guide's upgrade"
+  has_files upgrade /self-host/files "the guide's upgrade"
+  caddy_restarted upgrade "the guide's upgrade"
   backup_private upgrade "$upgrade_backup" || true
   [[ $(attachment_files upgrade) == "$files" ]] ||
     fail "upgrade: after the guide's upgrade, the attachments volume holds other files:"$'\n'"$(attachment_files upgrade)"
@@ -1702,6 +1754,24 @@ upgrade_from_last_release() {
     echo "self-host-test: skipped rollback-refused: this commit has no migration that $release_tag lacks"
   fi
 
+  # rollback-<bad>: the guide's rollback with a backup it cannot restore changes nothing.
+  database_upgraded=$(database_print upgrade) || fail "rollback: cannot read the upgraded database"
+  files_upgraded=$(attachment_files upgrade)
+  m sh -ec "head -c 65536 $upgrade_backup >$backups/skald-broken-backup
+    mkdir -p /tmp/no-database && echo note >/tmp/no-database/note
+    tar -czf $backups/skald-no-database-backup -C /tmp/no-database note" ||
+    fail "rollback: cannot make the backups it cannot restore"
+  for bad in missing broken no-database; do
+    scenario "rollback-$bad" ":resume upgrade" release :last_release rollback
+    with_backup "rollback-$bad" "$backups/skald-$bad-backup"
+    ran+=" rollback-$bad"
+    run_refused "rollback-$bad" rollback || true
+    [[ $(database_print upgrade || true) == "$database_upgraded" ]] ||
+      fail "rollback-$bad: the guide's rollback with the $bad backup changes the database"
+    [[ $(attachment_files upgrade) == "$files_upgraded" ]] ||
+      fail "rollback-$bad: the guide's rollback with the $bad backup changes the attachments volume"
+  done
+
   # The guide's rollback to the last release, with the backup from the upgrade.
   scenario rollback ":resume upgrade" release :last_release rollback :before_up_release restore
   with_backup rollback "$upgrade_backup"
@@ -1710,6 +1780,7 @@ upgrade_from_last_release() {
   run_scenario rollback </dev/null || ok=
   check_env rollback
   [[ -n $ok ]] || return 0
+  has_files rollback /self-host/release-files "the guide's rollback"
   [[ $(database_print rollback || true) == "$database" ]] ||
     fail "rollback: after the guide's rollback, the database is not the one from before the upgrade"
   [[ $(attachment_files rollback) == "$files" ]] ||
@@ -1825,11 +1896,13 @@ if [[ -n $rc_ok ]]; then
   put_attachments postgres-rc notes "self-host-test-rc-$(openssl rand -hex 8)"
   rc_files=$(attachment_files postgres-rc)
   rc_listing=$(listing postgres-rc/ada-machine)
-  scenario postgres-rc-upgrade ":resume postgres-rc" release upgrade image-check backup :before_up up \
+  scenario postgres-rc-upgrade ":resume postgres-rc" release image-check backup upgrade :before_up up \
     :wait_https
   with_backup postgres-rc-upgrade "$backups/skald-rc-backup"
   if run_scenario postgres-rc-upgrade </dev/null; then
     postgres_runs postgres-rc-upgrade "$postgres_pinned" "the guide's upgrade"
+    has_files postgres-rc-upgrade /self-host/files "the guide's upgrade"
+    caddy_restarted postgres-rc-upgrade "the guide's upgrade"
     lists_as_before postgres-rc-upgrade postgres-rc/ada-machine "the move to $postgres_pinned" "$rc_listing"
     [[ $(attachment_files postgres-rc-upgrade) == "$rc_files" ]] ||
       fail "postgres-rc-upgrade: after the move to $postgres_pinned, the attachments volume holds other files"
