@@ -8,7 +8,9 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use skald_crypto::SigningKey;
-use skald_proto::{AUTH_LABEL, Cbor as _, DeviceId, Frame, PROTOCOL_VERSION, Push, RawEnvelope};
+use skald_proto::{
+    AUTH_LABEL, Cbor as _, DeviceId, Frame, PROTOCOL_VERSION, Push, RawEnvelope, Scheme,
+};
 use tungstenite::client::IntoClientRequest as _;
 use tungstenite::http::HeaderValue;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
@@ -130,13 +132,15 @@ impl Drop for Peer {
     }
 }
 
-/// The envelopes of the `message` entries of `entries` to `device`, in order.
+/// The envelopes of the `message` entries of `entries` under `hpke` to `device`, in order: the
+/// channels' Welcomes and Commits left out.
 pub fn messages(entries: &[Push], device: DeviceId) -> Vec<RawEnvelope> {
     entries
         .iter()
         .filter_map(|push| match push {
             Push::Message { envelope, .. }
-                if envelope.envelope().header.recipients.as_deref() == Some(&[device][..]) =>
+                if envelope.envelope().header.scheme == Scheme::Hpke
+                    && envelope.envelope().header.recipients.as_deref() == Some(&[device][..]) =>
             {
                 Some(envelope.clone())
             }

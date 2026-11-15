@@ -260,9 +260,8 @@ async fn members(
 
 /// Sends `local`'s connections what the other instances may have told while `instance` did not
 /// listen: wakes each device's connections, closes each connection whose session has ended or whose
-/// device is revoked, and
-/// sends each connected account the notices of the revisions in `latest`, the latest of each space,
-/// that the instance does not know, all of them before it first listens.
+/// device is revoked, and sends each connected account the notices of the revisions in `latest`,
+/// the latest of each space, that the instance does not know, all of them before it first listens.
 async fn catch_up(
     instance: &Instance,
     local: &Local,
