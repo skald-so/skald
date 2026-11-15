@@ -11,10 +11,6 @@
 //! - `ChannelView::has_context(&self, group_info: &[u8]) -> bool`: whether `group_info`, a GroupInfo
 //!   in an `MLSMessage`, has the GroupContext of the view's epoch; `false` for anything else.
 
-// The acceptance tests of saved views, which fail until the code they test lands; the
-// implementation removes this gate and the `acceptance` feature.
-#![cfg(feature = "acceptance")]
-
 #[path = "../common/devices.rs"]
 mod devices;
 #[path = "../mls/fixtures.rs"]
