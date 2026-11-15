@@ -93,7 +93,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
 - A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends.
-- A server that fails to check a proof, such as when its database fails, closes the connection with code 1011 (internal error) and the reason `server-error`.
+- A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.

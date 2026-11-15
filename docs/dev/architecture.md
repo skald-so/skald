@@ -63,7 +63,7 @@
   - a notification names a mailbox with new entries, a stored roster revision or an ended session, never an envelope;
   - an instance takes no device connection before it first listens;
   - an instance whose listening connection drops or goes silent listens again, then sends its connections what they missed;
-  - each instance takes up to 11 PostgreSQL connections: 10 in its pool and 1 that listens.
+  - each instance takes up to 11 PostgreSQL connections: 10 in its pool and 1 that listens; a replaced listening connection can stay open for a while after its replacement.
 - Agent address: [protocol spec](../protocol/README.md#agent-address). Its `server` is the server setting `--server-name` (`SKALD_SERVER_NAME`): `getServer` in the [OpenAPI spec](../../api/openapi.json).
 
 ## Data model
