@@ -382,7 +382,7 @@ impl Served {
             "id_token_signing_alg_values_supported": self.algs,
             "scopes_supported": ["openid", "email"],
             "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"],
-            "claims_supported": ["aud", "azp", "email", "email_verified", "exp", "iat", "iss", "nonce", "sub"],
+            "claims_supported": ["aud", "azp", "email", "email_verified", "exp", "hd", "iat", "iss", "nonce", "sub"],
             "code_challenge_methods_supported": ["S256"],
         })
     }
@@ -412,13 +412,21 @@ pub struct Person {
     pub subject: String,
     /// `email`, which the person may change.
     pub email: String,
+    /// `email_verified`: whether the provider has verified the email.
+    pub email_verified: bool,
+    /// `hd`: the Google Workspace or Cloud organization of the account, if it has one; its ID
+    /// tokens then carry it.
+    pub hosted_domain: Option<String>,
 }
 
 impl Person {
+    /// A person with a verified email and no organization.
     pub fn new(subject: &str, email: &str) -> Person {
         Person {
             subject: subject.to_owned(),
             email: email.to_owned(),
+            email_verified: true,
+            hosted_domain: None,
         }
     }
 }
@@ -1107,12 +1115,15 @@ async fn token(State(shared): State<Shared>, headers: HeaderMap, body: Bytes) ->
         "aud": client.client_id,
         "sub": person.subject,
         "email": person.email,
-        "email_verified": true,
+        "email_verified": person.email_verified,
         "iat": now,
         "exp": now + ID_TOKEN_LIFETIME,
     });
     if let Some(nonce) = nonce {
         claims["nonce"] = json!(nonce);
+    }
+    if let Some(domain) = &person.hosted_domain {
+        claims["hd"] = json!(domain);
     }
     let id_token = signed(&key, json!({}), &claims);
     let access_token = format!("ya29.{}", random(48));

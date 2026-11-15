@@ -33,6 +33,35 @@ fn a_token_without_azp_or_email_gives_its_subject() {
     ));
     let identity = passes(&oidc, &token);
     assert_eq!(identity.email, None);
+    assert!(!identity.email_verified);
+    assert_eq!(identity.hosted_domain, None);
+}
+
+#[test]
+fn the_email_is_verified_only_by_email_verified_true() {
+    let (provider, _key, oidc) = started();
+    let identity = passes(&oidc, &provider.sign(&claims(provider.issuer())));
+    assert!(identity.email_verified);
+    for verified in [json!(false), json!("true"), json!(1), json!(null)] {
+        let token = provider.sign(&with(
+            &claims(provider.issuer()),
+            json!({ "email_verified": verified }),
+        ));
+        let identity = passes(&oidc, &token);
+        assert!(!identity.email_verified, "email_verified {verified}");
+        assert_eq!(identity.email.as_deref(), Some(EMAIL), "{verified}");
+    }
+}
+
+#[test]
+fn a_token_gives_its_hosted_domain() {
+    let (provider, _key, oidc) = started();
+    let token = provider.sign(&with(
+        &claims(provider.issuer()),
+        json!({ "hd": "acme.example" }),
+    ));
+    let identity = passes(&oidc, &token);
+    assert_eq!(identity.hosted_domain.as_deref(), Some("acme.example"));
 }
 
 #[test]
