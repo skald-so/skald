@@ -1,12 +1,15 @@
-//! The client's local state: an SQLite database in the state directory. It holds no secret: those go
-//! to [`crate::secrets`].
+//! The client's local state: an SQLite database in the state directory. It holds no secret in the
+//! clear: those go to [`crate::secrets`], and the device's MLS state is kept only sealed. Deleted
+//! content is overwritten with zeros (`secure_delete`), and a save of the MLS state checkpoints
+//! the WAL with `TRUNCATE`, so no older sealed state stays in the database file or its WAL.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use skald_crypto::SealedState;
 use skald_proto::{ChannelId, DeviceId, MessageId, SpaceId};
 
 /// The database's file in the state directory.
@@ -118,6 +121,11 @@ const MIGRATIONS: &[&str] = &[
         space TEXT NOT NULL,
         channel TEXT NOT NULL
     ) STRICT;",
+    // The device's MLS state: each item by its name, sealed under the state key in key storage.
+    "CREATE TABLE mls_state (
+        name BLOB PRIMARY KEY,
+        sealed BLOB NOT NULL
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -237,6 +245,8 @@ pub enum Error {
     Newer(u32),
     /// The state holds what this client does not read, for the reason it holds.
     Malformed(String),
+    /// Another run kept the WAL from being truncated after a save of the MLS state.
+    WalBusy,
 }
 
 impl std::fmt::Display for Error {
@@ -248,6 +258,10 @@ impl std::fmt::Display for Error {
                 "a newer skald wrote the local state (schema version {version}); update skald"
             ),
             Error::Malformed(what) => write!(f, "the local state is malformed: {what}"),
+            Error::WalBusy => f.write_str(
+                "another run kept the local state's WAL from being truncated: the older sealed \
+                 MLS state stays in it until the next save",
+            ),
         }
     }
 }
@@ -268,6 +282,14 @@ impl State {
     pub fn open(dir: &Path) -> Result<Self, Error> {
         let mut db = Connection::open(dir.join(FILE))?;
         db.busy_timeout(std::time::Duration::from_secs(10))?;
+        db.pragma_update(None, "secure_delete", true)?;
+        let mode: String =
+            db.pragma_update_and_check(None, "journal_mode", "wal", |row| row.get(0))?;
+        if !mode.eq_ignore_ascii_case("wal") {
+            return Err(Error::Malformed(format!(
+                "the journal mode stays {mode:?}, not WAL"
+            )));
+        }
         migrate(&mut db)?;
         Ok(State { db })
     }
@@ -405,6 +427,56 @@ impl State {
             params![name, master.map(|master| master.as_slice()), cert],
         )?;
         Ok(())
+    }
+
+    /// Runs `step` on the device's sealed MLS state while no other run writes the state, and saves
+    /// the state it gives, if any, in place of the old one, which it overwrites and deletes
+    /// securely: once saved, the WAL is checkpointed into the database file and truncated. Fails
+    /// with what `step` fails with, or what the state fails with, as text.
+    pub fn mls_step<T>(
+        &self,
+        step: impl FnOnce(&SealedState) -> Result<(Option<SealedState>, T), String>,
+    ) -> Result<T, String> {
+        let failed = |err: Error| err.to_string();
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)
+            .map_err(|err| failed(err.into()))?;
+        let items = tx
+            .prepare("SELECT name, sealed FROM mls_state ORDER BY name")
+            .and_then(|mut query| {
+                query
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .and_then(Iterator::collect::<Result<Vec<(Vec<u8>, Vec<u8>)>, _>>)
+            })
+            .map_err(|err| failed(err.into()))?;
+        let (saved, done) = step(&SealedState::from_items(items))?;
+        let Some(saved) = saved else {
+            return Ok(done);
+        };
+        let save = || -> Result<(), rusqlite::Error> {
+            tx.execute("DELETE FROM mls_state", [])?;
+            let mut insert = tx.prepare("INSERT INTO mls_state (name, sealed) VALUES (?1, ?2)")?;
+            for (name, sealed) in saved.items() {
+                insert.execute(params![name, sealed])?;
+            }
+            drop(insert);
+            tx.commit()
+        };
+        save().map_err(|err| failed(err.into()))?;
+        self.truncate_wal().map_err(failed)?;
+        Ok(done)
+    }
+
+    /// Copies the WAL into the database file and truncates it; fails if another run keeps it from
+    /// finishing.
+    fn truncate_wal(&self) -> Result<(), Error> {
+        let busy: i64 = self
+            .db
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+        if busy == 0 {
+            Ok(())
+        } else {
+            Err(Error::WalBusy)
+        }
     }
 
     /// The spaces the device accepted a revision of, by name.
@@ -1505,6 +1577,106 @@ mod tests {
             error.to_string().starts_with("the local state failed: "),
             "{error}"
         );
+    }
+
+    /// The bytes of the state's files in `dir`: its database, its journal and its WAL.
+    fn files(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        ["", "-journal", "-wal"]
+            .iter()
+            .filter_map(|suffix| {
+                let name = format!("{FILE}{suffix}");
+                fs::read(dir.join(&name)).ok().map(|bytes| (name, bytes))
+            })
+            .collect()
+    }
+
+    fn sealed(items: &[(&[u8], &[u8])]) -> SealedState {
+        SealedState::from_items(
+            items
+                .iter()
+                .map(|(name, sealed)| (name.to_vec(), sealed.to_vec())),
+        )
+    }
+
+    /// A step gets the saved MLS state and saves the one it gives; a step that gives none, or
+    /// fails, leaves it as it was.
+    #[test]
+    fn mls_step_gets_the_saved_state_and_saves_the_one_it_gives() {
+        let dir = TestDir::new("state-mls-step");
+        let state = State::open(&dir).unwrap();
+        let first = sealed(&[(b"a", &[1; 40]), (b"b", &[2; 40])]);
+        let got = state
+            .mls_step(|old| Ok((Some(first.clone()), old.clone())))
+            .unwrap();
+        assert_eq!(got, SealedState::default(), "a new device has none");
+
+        let read = |state: &State| state.mls_step(|old| Ok((None, old.clone()))).unwrap();
+        assert_eq!(read(&state), first);
+        let failed = state.mls_step::<()>(|_| Err("refused".to_owned()));
+        assert_eq!(failed, Err("refused".to_owned()));
+        let second = sealed(&[(b"c", &[3; 40])]);
+        state.mls_step(|_| Ok((Some(second.clone()), ()))).unwrap();
+        assert_eq!(read(&State::open(&dir).unwrap()), second);
+    }
+
+    /// Once a save returns, the state it replaced is in neither the database file nor its journal
+    /// or WAL, while another run holds the state open, and the WAL is empty.
+    #[test]
+    fn mls_save_leaves_no_older_state_in_the_files() {
+        let dir = TestDir::new("state-mls-save");
+        let state = State::open(&dir).unwrap();
+        // Old items over several pages, each its own bytes; the new state is smaller.
+        let old: Vec<Vec<u8>> = (1..=40u8)
+            .map(|item| (0..200u8).map(|byte| byte.wrapping_mul(item) | 1).collect())
+            .collect();
+        let new = vec![0x5a; 60];
+        let names: Vec<Vec<u8>> = (0..old.len()).map(|n| format!("item:{n}").into()).collect();
+        let items = names
+            .iter()
+            .zip(&old)
+            .map(|(name, bytes)| (name.clone(), bytes.clone()));
+        let old_state = SealedState::from_items(items);
+        state
+            .mls_step(|_| Ok((Some(old_state.clone()), ())))
+            .unwrap();
+        let other = State::open(&dir).unwrap();
+        let held = |files: &[(String, Vec<u8>)], bytes: &[u8]| {
+            files
+                .iter()
+                .filter(|(_, held)| held.windows(bytes.len()).any(|window| window == bytes))
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(held(&files(&dir), &old[0]), [FILE], "the saved state");
+
+        state
+            .mls_step(|_| Ok((Some(sealed(&[(b"group:2", &new)])), ())))
+            .unwrap();
+
+        let after = files(&dir);
+        for bytes in &old {
+            assert_eq!(held(&after, bytes), Vec::<String>::new(), "the older state");
+        }
+        assert_eq!(held(&after, &new), [FILE], "the new state");
+        let wal = after.iter().find(|(name, _)| name.ends_with("-wal"));
+        assert_eq!(wal.map(|(_, bytes)| bytes.len()), Some(0), "the WAL");
+        drop(other);
+    }
+
+    /// A save while another run reads the state, so the WAL cannot be truncated, says so.
+    #[test]
+    fn mls_save_that_cannot_truncate_the_wal_fails() {
+        let dir = TestDir::new("state-mls-busy");
+        let state = State::open(&dir).unwrap();
+        state.db.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let reader = State::open(&dir).unwrap();
+        reader.db.execute_batch("BEGIN").unwrap();
+        reader.session().unwrap();
+
+        let saved = state.mls_step(|_| Ok((Some(sealed(&[(b"group:1", &[1; 40])])), ())));
+
+        assert_eq!(saved, Err(Error::WalBusy.to_string()));
+        reader.db.execute_batch("COMMIT").unwrap();
     }
 
     #[test]
