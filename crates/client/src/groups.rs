@@ -693,48 +693,73 @@ pub fn take_in(
                 }
             }
         }
+        let taking = Taking {
+            seq,
+            space,
+            envelope: &envelope,
+        };
         match kind {
-            Handshake::Welcome => welcomed(follower, link, (seq, space), &envelope, rosters)?,
-            Handshake::Commit => processed(follower, link, (seq, space), &envelope, rosters)?,
+            Handshake::Welcome => welcomed(follower, link, &taking, rosters)?,
+            Handshake::Commit => processed(follower, link, &taking, rosters)?,
         }
     }
     Ok(())
 }
 
-/// Joins a channel's group from the Welcome in `envelope`, the entry `seq` of `space`, if its
-/// signer is admitted to the channel, warning of each member it lists that is not; warns of a
-/// Welcome it refuses.
+/// A Welcome or Commit the device takes in: its entry's `seq`, its space and its envelope.
+#[derive(Clone, Copy)]
+struct Taking<'t> {
+    seq: u64,
+    space: &'t state::Space,
+    envelope: &'t Envelope,
+}
+
+/// Joins a channel's group from the Welcome `taking` holds, if its signer is admitted to the
+/// channel, and warns of each member it lists that is not; warns of a Welcome it refuses. Before it
+/// holds the signer or a member not admitted, the device accepts the space's latest revisions, and
+/// joins with them.
 fn welcomed(
     follower: &mut Follower,
     link: &mut Link,
-    (seq, space): (u64, &state::Space),
-    envelope: &Envelope,
-    rosters: &Rosters,
+    taking: &Taking,
+    rosters: &mut Rosters,
 ) -> Result<(), String> {
+    let Taking {
+        seq,
+        space,
+        envelope,
+    } = *taking;
     let channel = envelope.header.channel;
-    let (roster, devices) = &rosters[&space.id];
-    let admitted = admitted(follower, roster, devices, channel);
-    let mut seen: Option<Joining> = None;
-    let joined = step(follower, &link.keys, |device, changes| {
-        changes.taken.push(seq);
-        Ok(device.join(&envelope.payload, now(), |joining| {
-            seen = Some(joining.clone());
-            joining.channel == channel && admits(&admitted, &joining.signer)
-        }))
-    })?;
+    let mut admitted = admitted_in(follower, rosters, (space.id, channel));
+    let mut synced = false;
+    let (joined, seen) = match join(follower, link, (seq, envelope), &admitted, false)? {
+        Some(done) => done,
+        None => {
+            synced = true;
+            sync_again(follower, space, rosters);
+            admitted = admitted_in(follower, rosters, (space.id, channel));
+            join(follower, link, (seq, envelope), &admitted, true)?
+                .expect("a last attempt is written")
+        }
+    };
+    let strangers = |admitted: &BTreeMap<DeviceId, Cert>| -> Vec<DeviceId> {
+        let members = seen.iter().flat_map(|joining| &joining.members);
+        (members.filter(|member| !admits(admitted, member)))
+            .map(|member| member.device)
+            .collect()
+    };
+    if joined.is_ok() && !synced && !strangers(&admitted).is_empty() {
+        sync_again(follower, space, rosters);
+        admitted = admitted_in(follower, rosters, (space.id, channel));
+    }
     let name = &space.name;
-    match (joined, seen) {
-        (Ok(_), Some(joining)) => {
-            for member in joining
-                .members
-                .iter()
-                .filter(|member| !admits(&admitted, member))
-            {
+    match (joined, &seen) {
+        (Ok(_), _) => {
+            for device in strangers(&admitted) {
                 eprintln!(
                     "skald: warning: the group of the channel {channel} in the space {name} that \
-                     this device joined holds the device {}, which is not admitted to the \
-                     channel; this device removes it",
-                    member.device
+                     this device joined holds the device {device}, which is not admitted to the \
+                     channel; this device removes it"
                 );
             }
         }
@@ -743,7 +768,7 @@ fn welcomed(
              {name}: its signer, the device {}, is not admitted to the channel",
             joining.signer.device
         ),
-        (Err(MlsError::GroupExists(_)), _) | (Ok(_), None) => {}
+        (Err(MlsError::GroupExists(_)), _) => {}
         (Err(err), _) => eprintln!(
             "skald: warning: this device cannot join the channel {channel} in the space {name} \
              from a Welcome: {err}"
@@ -752,16 +777,69 @@ fn welcomed(
     Ok(())
 }
 
-/// Processes another device's Commit in `envelope`, the entry `seq` of `space`. Of each device it
-/// adds that is not admitted, the device warns once it accepted the space's latest revisions; it
-/// then uploads the GroupInfo if the server has none of the new epoch.
+/// The devices admitted to `channel` of `space` as `rosters` holds it.
+fn admitted_in(
+    follower: &Follower,
+    rosters: &Rosters,
+    (space, channel): (SpaceId, ChannelId),
+) -> BTreeMap<DeviceId, Cert> {
+    let (roster, devices) = &rosters[&space];
+    admitted(follower, roster, devices, channel)
+}
+
+/// What joining from a Welcome gave, and the group the Welcome shows, if it reached the check.
+type Joined = (Result<ChannelId, MlsError>, Option<Joining>);
+
+/// Joins from the Welcome in `envelope`, the entry `seq`, if its signer is one of `admitted`, and
+/// takes the entry out; gives what joining gave and the group the Welcome shows. Unless `last`, a
+/// Welcome refused for its signer writes nothing and gives `None`, so it can be joined again.
+fn join(
+    follower: &Follower,
+    link: &Link,
+    (seq, envelope): (u64, &Envelope),
+    admitted: &BTreeMap<DeviceId, Cert>,
+    last: bool,
+) -> Result<Option<Joined>, String> {
+    let channel = envelope.header.channel;
+    let mut seen: Option<Joining> = None;
+    let joined = follower.state.mls_change(|sealed| {
+        let mut device = load(follower, &link.keys, sealed)?;
+        let joined = device.join(&envelope.payload, now(), |joining| {
+            seen = Some(joining.clone());
+            joining.channel == channel && admits(admitted, &joining.signer)
+        });
+        if !last && matches!(joined, Err(MlsError::Refused)) {
+            return Ok((None, MlsChanges::default(), None));
+        }
+        let taken = MlsChanges {
+            taken: vec![seq],
+            ..MlsChanges::default()
+        };
+        Ok((Some(device.seal()), taken, Some(joined)))
+    })?;
+    Ok(joined.map(|joined| (joined, seen)))
+}
+
+/// Accepts the latest revisions of `space` into `rosters`; warns if it cannot.
+fn sync_again(follower: &mut Follower, space: &state::Space, rosters: &mut Rosters) {
+    match follower.sync(space) {
+        Ok(done) => {
+            rosters.insert(space.id, done);
+        }
+        Err(err) => eprintln!("skald: warning: {err}"),
+    }
+}
+
+/// Processes another device's Commit that `taking` holds. Of each device it adds that is not
+/// admitted, the device warns once it accepted the space's latest revisions; it then uploads the
+/// GroupInfo if the server has none of the new epoch.
 fn processed(
     follower: &mut Follower,
     link: &mut Link,
-    (seq, space): (u64, &state::Space),
-    envelope: &Envelope,
+    taking: &Taking,
     rosters: &mut Rosters,
 ) -> Result<(), String> {
+    let (seq, space, envelope) = (taking.seq, taking.space, taking.envelope);
     let channel = envelope.header.channel;
     let mut seen = None;
     let result = step(follower, &link.keys, |device, changes| {
@@ -795,13 +873,8 @@ fn processed(
     let mut added = strangers(follower, &rosters[&space.id], channel, &change.added);
     if !added.is_empty() {
         // Before it holds them not admitted, the device accepts the space's latest revisions.
-        match follower.sync(space) {
-            Ok(done) => {
-                added = strangers(follower, &done, channel, &change.added);
-                rosters.insert(space.id, done);
-            }
-            Err(err) => eprintln!("skald: warning: {err}"),
-        }
+        sync_again(follower, space, rosters);
+        added = strangers(follower, &rosters[&space.id], channel, &change.added);
     }
     for device in added {
         eprintln!(
