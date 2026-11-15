@@ -49,6 +49,10 @@ pub const OPENAPI_SPEC: &str = include_str!("../../../api/openapi.json");
 /// The schema migrations in `migrations/`, applied at start.
 pub static MIGRATOR: Migrator = sqlx::migrate!();
 
+/// The longest time the server keeps a mailbox entry, in seconds: 100 years. It bounds the mailbox
+/// retention and an envelope's `ttl`.
+pub const MAILBOX_LONGEST: u64 = 100 * 365 * 24 * 3_600;
+
 /// How long to wait for a PostgreSQL connection, and for PostgreSQL to answer the health check.
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(5);
 

@@ -11,10 +11,8 @@ use skald_proto::{
 };
 use sqlx::{PgConnection, PgPool};
 
+use crate::MAILBOX_LONGEST;
 use crate::delivery::Wakers;
-
-/// The longest `ttl` the server keeps an entry for, in seconds: 100 years.
-const TTL_LONGEST: u64 = 100 * 365 * 24 * 3_600;
 
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
@@ -298,8 +296,8 @@ async fn store(
     .bind(sender.device.to_string())
     .bind(key.msg_id.to_string())
     .bind(envelope.report)
-    // Past `TTL_LONGEST`, a `ttl` changes nothing.
-    .bind(envelope.ttl.map(|ttl| ttl.min(TTL_LONGEST) as f64))
+    // Past `MAILBOX_LONGEST`, a `ttl` changes nothing.
+    .bind(envelope.ttl.map(|ttl| ttl.min(MAILBOX_LONGEST) as f64))
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

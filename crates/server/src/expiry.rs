@@ -76,6 +76,31 @@ async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(
     Ok(())
 }
 
+/// Removes the entries of `device`'s mailbox with a `seq` in `(after, upto]` that expired by time,
+/// with the retention of `retention` seconds, adding `expired` for each message sent with `report`
+/// true; wakes the sending devices' connections in `wakers`.
+pub(crate) async fn expire_due(
+    db: &PgPool,
+    wakers: &Wakers,
+    device: DeviceId,
+    (after, upto): (i64, i64),
+    retention: Option<f64>,
+) -> Result<(), sqlx::Error> {
+    let query = sqlx::query_as(removing!(
+        "DELETE FROM entries
+         WHERE device_id = $1::uuid AND seq > $2 AND seq <= $3
+           AND (ttl_ends_at <= now() OR added_at <= now() - make_interval(secs => $4))
+         RETURNING device_id, seq, envelope_id,
+             least(ttl_ends_at, added_at + make_interval(secs => $4)) AS at"
+    ))
+    .bind(device.to_string())
+    .bind(after)
+    .bind(upto)
+    .bind(retention);
+    remove(db, wakers, query, ServerStatus::Expired).await?;
+    Ok(())
+}
+
 /// Expires the entry `seq` of `device`'s mailbox now, unless it is gone already; wakes the sending
 /// device's connections in `wakers`.
 pub(crate) async fn expire(

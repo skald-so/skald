@@ -1,6 +1,7 @@
 //! What expiry does besides "Mailbox"'s rules: the time `expired` gives is when the entry expired;
 //! an idempotency key is forgotten once the retention has passed since its send; the longest `ttl`
-//! is stored; and a page of entries that all expire as catch-up reaches them does not end it.
+//! is stored; a page of entries that all expire as catch-up reaches them does not end it; and an
+//! entry that catch-up skips as expired is not acked as delivered.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,9 +9,11 @@ use std::time::{Duration, Instant};
 use skald_proto::{Header, ServerStatus};
 
 use crate::expiring::{EXPIRY, HOUR, VERSIONS, WEEK, move_back, restart, retained, send_bob_with};
-use crate::link::{Entry, Link, assert_status, await_seqs_within, bytes, messages, store_to};
+use crate::link::{
+    Entry, Link, assert_delivered, assert_status, await_seqs_within, bytes, messages, store_to,
+};
 use crate::scene::Scene;
-use crate::wire::{envelope, query, version};
+use crate::wire::{envelope, now, query, version};
 
 /// Checks that `entry` is the `expired` of the message of `header` to bob, dated `at`, within the
 /// second its time is rounded to.
@@ -95,4 +98,23 @@ fn catch_up_goes_on_past_a_page_of_entries_that_expire_as_it_reaches_them() {
     bob.sync(0);
     assert_eq!(bob.catch_up(), [Entry::Message(102, new)]);
     await_seqs_within(s.db(), s.bob, &[102], EXPIRY);
+}
+
+#[test]
+fn an_ack_right_after_catch_up_past_an_unswept_expired_message_gives_its_sender_expired() {
+    let mut s = retained(3_121_250_341);
+    s.alice.sync(0);
+    assert_eq!(s.alice.catch_up(), []);
+    let (short, stored) = send_bob_with(&mut s, Some(HOUR), true);
+    let (kept, _) = send_bob_with(&mut s, None, true);
+    move_back(s.db(), 2 * HOUR);
+
+    // Before the server's next look for expired entries.
+    let mut link = s.bob_from(0, &[Entry::Message(2, kept.1.clone())]);
+    let before = now();
+    link.ack(2);
+    let expired = s.alice.entry_within(EXPIRY);
+    assert_expired_at(&s, &expired, &short.0, stored.timestamp - HOUR);
+    assert_delivered(&s.alice.entry(), &kept.0, s.bob, before);
+    s.alice.assert_quiet();
 }

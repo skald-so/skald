@@ -20,8 +20,6 @@ const GITHUB_SECRET_ENV: &str = "SKALD_GITHUB_CLIENT_SECRET";
 const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
 /// The environment variable that holds the attachment bucket's secret key.
 const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
-/// The longest mailbox retention, in seconds: 100 years.
-const MAILBOX_RETENTION_LONGEST: u64 = 100 * 365 * 24 * 3_600;
 /// The least time between two reads of Google's keys.
 const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
 
@@ -190,7 +188,7 @@ struct Cli {
         long,
         env = "SKALD_MAILBOX_RETENTION",
         value_name = "SECONDS",
-        value_parser = clap::value_parser!(u64).range(1..=MAILBOX_RETENTION_LONGEST)
+        value_parser = clap::value_parser!(u64).range(1..=skald_server::MAILBOX_LONGEST)
     )]
     mailbox_retention: Option<u64>,
 
@@ -499,7 +497,7 @@ mod tests {
             .ok()
         };
         assert_eq!(retention(1), Some(Some(1)));
-        let longest = MAILBOX_RETENTION_LONGEST;
+        let longest = skald_server::MAILBOX_LONGEST;
         assert_eq!(retention(longest), Some(Some(longest)));
         assert_eq!(retention(0), None);
         assert_eq!(retention(longest + 1), None);
