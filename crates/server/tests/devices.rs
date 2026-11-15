@@ -294,16 +294,18 @@ fn first_device_gives_the_master_key_and_its_certificate() {
 fn at_the_devices_limit_a_registered_device_registers_again() {
     let flow = DeviceFlow::start_with(&["--devices-limit", "1"]);
     let ada = flow.stand.user(3_120_665_030, "ada-limit-retry-standin");
-    let machine = machine(&flow, &ada);
-    let device = Device::new("Laptop");
-    machine.register_device(&device);
-    let master = Key::generate();
-    let cert = device.cert(&machine.account, &master);
-    assert_taken(&machine.give_master(&master, &cert));
+    let first = machine(&flow, &ada);
+    let (laptop, phone) = (Device::new("Laptop"), Device::new("Phone"));
+    let registration = laptop.registration();
+    assert_taken(&first.register(&registration));
+    let key = Key::generate();
+    let laptop_cert = laptop.cert(&first.account, &key);
+    assert_taken(&first.give_master(&key, &laptop_cert));
 
-    assert_taken(&machine.register(&device.registration()));
-    assert_refused(&machine.register(&Device::new("Phone").registration()), 403);
-    assert_eq!(machine.devices(), listed(&[], &[(&device, &cert)]));
+    // A retry after a lost answer.
+    assert_taken(&first.register(&registration));
+    assert_refused(&first.register(&phone.registration()), 403);
+    assert_eq!(first.devices(), listed(&[], &[(&laptop, &laptop_cert)]));
 }
 
 #[test]
