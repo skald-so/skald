@@ -158,6 +158,11 @@ impl Keys {
     pub fn signing(&self) -> &SigningKey {
         &self.signing
     }
+
+    /// The device's HPKE key.
+    pub fn hpke(&self) -> &HpkeKey {
+        &self.hpke
+    }
 }
 
 /// The keys of the device the state knows, `known`, as `stored` holds them; or, if the state knows
