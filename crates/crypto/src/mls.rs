@@ -1435,6 +1435,92 @@ mod tests {
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_refused_rejoin_leaves_the_device_in_its_old_group() {
+        let channel = ChannelId::from_bytes([18; 16]);
+        let [mut first, mut second] = <[_; 2]>::try_from(group_of(channel, &[21, 22]))
+            .ok()
+            .unwrap();
+        // The second device misses the first device's Commit.
+        first.commit_empty(channel, b"", NOW).unwrap();
+        first.commit_stored(channel).unwrap();
+        let latest = first.group_info(channel).unwrap();
+        let members = second.members(channel).unwrap();
+        let key = second.history_key(channel, 1).unwrap().to_bytes();
+
+        // The last fails in mls-rs, once the old group is out of the store: the members' leaves
+        // have expired by then.
+        let later = NOW + key_package::LIFETIME + 1;
+        for refused in [
+            second.join_by_itself(channel, &latest, NOW, |_| false),
+            second.join_by_itself(channel, b"not a GroupInfo", NOW, |_| true),
+            second.join_by_itself(channel, &latest, later, |_| true),
+        ] {
+            assert!(refused.is_err(), "{refused:?}");
+            second = reloaded(&second);
+            assert_eq!(second.epoch(channel).unwrap(), 1);
+            assert_eq!(second.members(channel).unwrap(), members);
+            assert_eq!(second.history_key(channel, 1).unwrap().to_bytes(), key);
+        }
+        second
+            .join_by_itself(channel, &latest, NOW, |_| true)
+            .unwrap();
+        assert_eq!(second.epoch(channel).unwrap(), 3);
+        assert_eq!(second.members(channel).unwrap().len(), 2);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_refused_external_commit_drops_the_group_and_its_epochs_history_key() {
+        let channel = ChannelId::from_bytes([19; 16]);
+        let [mut first, mut second] = <[_; 2]>::try_from(group_of(channel, &[23, 24]))
+            .ok()
+            .unwrap();
+        let latest = first.group_info(channel).unwrap();
+        let commit = second
+            .join_by_itself(channel, &latest, NOW, |_| true)
+            .unwrap();
+        assert!(MlsFraming::is_external_commit(&commit));
+        assert!(second.history_key(channel, 2).is_some());
+
+        second = reloaded(&second);
+        second.external_commit_refused(channel).unwrap();
+        second = reloaded(&second);
+        assert!(matches!(second.epoch(channel), Err(MlsError::NoGroup(_))));
+        assert!(
+            second.history_key(channel, 2).is_none(),
+            "the refused epoch's key"
+        );
+        assert!(
+            second.history_key(channel, 1).is_some(),
+            "an earlier epoch's key"
+        );
+        assert!(matches!(
+            second.external_commit_refused(channel),
+            Err(MlsError::NoGroup(_))
+        ));
+
+        // It joins again from the latest GroupInfo, which still lists its old leaf.
+        let commit = first.commit_empty(channel, b"", NOW).unwrap();
+        assert!(
+            !MlsFraming::is_external_commit(&commit),
+            "a member's Commit"
+        );
+        first.commit_stored(channel).unwrap();
+        let latest = first.group_info(channel).unwrap();
+        let commit = second
+            .join_by_itself(channel, &latest, NOW, |_| true)
+            .unwrap();
+        let change = first.process_commit(channel, &commit, NOW, |_| true);
+        assert_eq!(change.unwrap(), Processed::Entered { epoch: 3 });
+        assert_eq!(first.members(channel).unwrap().len(), 2);
+        assert!(!MlsFraming::is_external_commit(&latest), "a GroupInfo");
+        assert!(!MlsFraming::is_external_commit(
+            &[commit.as_slice(), &[0]].concat()
+        ));
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn a_key_packages_lifetime_holds_from_its_first_to_its_last_second() {
         let package = seeded(28).key_package(NOW).unwrap();
         let message = MlsMessage::from_bytes(&package.message).unwrap();

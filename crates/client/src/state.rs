@@ -1901,10 +1901,40 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(state.counters(&mls, 4).unwrap(), Some(kept.clone()));
+        // A join by itself takes the `seq` after the cursor: the first entry after it.
+        assert_eq!(state.counters(&mls, 5).unwrap(), None);
         assert_eq!(state.counters(&mls, 6).unwrap(), None);
         assert_eq!(state.counters(&hpke, 6).unwrap(), Some(Counters::default()));
         state.shown_counted(6, &mls, &kept).unwrap();
         assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept));
+    }
+
+    /// The channels to rejoin are written with the MLS state and kept across opens until the
+    /// device is back in; a change that fails writes none.
+    #[test]
+    fn channels_to_rejoin_are_kept_until_the_device_is_back_in() {
+        let dir = TestDir::new("state-rejoin");
+        let state = State::open(&dir).unwrap();
+        let (first, second) = (ChannelId::generate(), ChannelId::generate());
+        let change = |changes: MlsChanges| state.mls_change(|_| Ok((None, changes, ())));
+        assert_eq!(state.rejoining().unwrap(), []);
+        change(MlsChanges {
+            rejoin: vec![first, second, first],
+            ..MlsChanges::default()
+        })
+        .unwrap();
+        let failed = state.mls_change::<()>(|_| Err("refused".to_owned()));
+        assert!(failed.is_err());
+        let mut both = vec![first, second];
+        both.sort();
+        assert_eq!(State::open(&dir).unwrap().rejoining().unwrap(), both);
+
+        change(MlsChanges {
+            rejoined: vec![first],
+            ..MlsChanges::default()
+        })
+        .unwrap();
+        assert_eq!(State::open(&dir).unwrap().rejoining().unwrap(), [second]);
     }
 
     #[test]
