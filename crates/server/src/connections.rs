@@ -18,7 +18,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame};
+use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame, Push, SpaceId};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
@@ -220,7 +220,8 @@ enum Stop {
 }
 
 /// Serves `socket`, `sender`'s connection, until the client closes it, `ended` fires, or a frame
-/// does not decode: answers its frames in the order they arrive and delivers its device's mailbox.
+/// does not decode: answers its frames in the order they arrive, delivers its device's mailbox and
+/// sends the notices of its account's spaces.
 async fn hold(
     state: &AppState,
     mut socket: WebSocket,
@@ -233,12 +234,14 @@ async fn hold(
         sender.version,
         state.mailbox_retention,
     );
+    let notices = state.notices.listen(sender.account);
     loop {
         let served = tokio::select! {
             // Once the session ends, nothing more is served.
             biased;
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
             () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
+            spaces = notices.next() => notify(&mut socket, spaces).await,
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => {
                     serve_frame(state, &mut socket, sender, &mut reader, &bytes).await
@@ -333,6 +336,14 @@ async fn deliver(
         for push in page {
             send_frame(socket, &Frame::Push(push)).await?;
         }
+    }
+    Ok(())
+}
+
+/// Sends a `space-notice` of each of `spaces` on `socket`.
+async fn notify(socket: &mut WebSocket, spaces: Vec<SpaceId>) -> Result<(), Stop> {
+    for space in spaces {
+        send_frame(socket, &Frame::Push(Push::SpaceNotice { space })).await?;
     }
     Ok(())
 }

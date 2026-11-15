@@ -27,6 +27,7 @@ mod google;
 mod http_client;
 mod links;
 mod mailboxes;
+mod notices;
 mod oidc;
 mod protocol;
 mod refusal;
@@ -120,6 +121,7 @@ struct AppState {
     devices_limit: Option<u32>,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
+    notices: Arc<notices::Notices>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
@@ -238,6 +240,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             devices_limit: settings.devices_limit,
             connections: Arc::default(),
             wakers,
+            notices: Arc::default(),
             google: settings
                 .sign_in
                 .as_ref()
