@@ -9,6 +9,10 @@
 //   node person.mjs offers <verification page>
 //     prints the providers, GitHub and Google, that the page without a session offers sign-in with,
 //     one per line
+//   node person.mjs refused <provider> <provider's sign-in page> <verification page>
+//     signs in to the provider's stand-in at its sign-in page; opens the verification page, which
+//     has the code filled in, and signs in to the server there with that provider; prints the
+//     status of the callback's answer on the first line, then the HTML of the page it ended on
 // Exits 1, saying why and with the page's text, when a step finds nothing to do.
 import { chromium } from "playwright-core";
 
@@ -78,6 +82,24 @@ if (op === "approve" && args.length === 4) {
   if ((await page.locator(APPROVE).count()) === 0)
     await refuse("no approve button");
   await submit(APPROVE);
+} else if (op === "refused" && args.length === 3) {
+  const [provider, signIn, verification] = args;
+  const status = await open(signIn);
+  if (status !== 200)
+    await refuse(`the ${provider} stand-in's sign-in answers ${status}`);
+  await open(verification);
+  const link = page.locator(providerLink(provider));
+  if ((await link.count()) === 0) await refuse(`no sign-in with ${provider}`);
+  const callback = `/auth/${provider.toLowerCase()}/callback`;
+  const [answer] = await Promise.all([
+    page.waitForResponse(
+      (response) => new URL(response.url()).pathname === callback,
+    ),
+    link.first().click(),
+  ]);
+  await page.waitForLoadState("networkidle");
+  console.log(answer.status());
+  console.log(await page.content());
 } else if (op === "offers" && args.length === 1) {
   await open(args[0]);
   for (const provider of ["GitHub", "Google"]) {
@@ -89,6 +111,9 @@ if (op === "approve" && args.length === 4) {
     "usage: node person.mjs approve <provider> <sign-in page> <verification page> <code>",
   );
   console.error("       node person.mjs offers <verification page>");
+  console.error(
+    "       node person.mjs refused <provider> <sign-in page> <verification page>",
+  );
   process.exit(2);
 }
 await browser.close();

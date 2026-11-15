@@ -71,7 +71,7 @@ At start, the server writes, reads back and deletes an object of its own there, 
 
 ### Sign-in
 
-People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Anyone your providers sign in gets an account: any GitHub user, and any Google account your client's audience admits.
+People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Who gets an account: [Sign-up](#sign-up).
 
 A GitHub OAuth App, in GitHub's Settings, Developer settings, OAuth Apps, New OAuth App:
 
@@ -98,6 +98,27 @@ echo 'SKALD_GOOGLE_CLIENT_ID=<Google client ID>' >>.env
 read -rsp 'Google client secret: ' secret && echo "SKALD_GOOGLE_CLIENT_SECRET=$secret" >>.env && unset secret
 ```
 
+### Sign-up
+
+Sign-up is open by default: anyone your providers sign in gets an account, any GitHub user and any Google account your client's audience admits. The server's log then warns of it at every start.
+
+Closed, only the listed people create accounts; existing accounts sign in as before. Each list is comma-separated, compared without case, and may stay empty:
+
+- GitHub logins. GitHub gives no verified email, so a login counts, never an email: whoever holds a listed login when signing up gets the account, also after a rename frees it.
+- Google emails, once Google has verified them.
+- Google domains: the Workspace or Cloud organization of the account, never an email's domain.
+
+```sh self-host=sign-up
+cat >>.env <<'EOF'
+SKALD_SIGN_UP=closed
+SKALD_SIGN_UP_GITHUB_LOGINS=<GitHub logins>
+SKALD_SIGN_UP_GOOGLE_EMAILS=<Google emails>
+SKALD_SIGN_UP_GOOGLE_DOMAINS=<Google domains>
+EOF
+```
+
+A refused person sees that sign-up is closed in the browser, and `skald sign-in` on their machine says so and stops.
+
 ## Start
 
 ```sh self-host=up
@@ -105,7 +126,7 @@ docker compose up --detach
 ```
 
 - Caddy gets the domain's certificate at the first start, redirects HTTP to HTTPS and passes HTTPS and WebSocket to the server.
-- Only Caddy publishes ports, 80 and 443; only the server reaches PostgreSQL. The server's container is read-only, without capabilities or new privileges.
+- Only Caddy publishes ports, 80 and 443; only the server and, while they run, the backup and restore reach PostgreSQL. The server's container is read-only, without capabilities or new privileges.
 - The volumes `skald_database`, `skald_attachments` and `skald_caddy-data` keep the database, the attachments and the certificates.
 - Containers restart unless stopped; each keeps at most 30 MB of logs.
 - PostgreSQL is 19's release candidate until 19.0 is out, then the latest 19.x.
@@ -220,3 +241,45 @@ skald.example.com {
 	reverse_proxy skald-server:8080
 }
 ```
+
+## Backup and restore
+
+A backup is one file, readable only by you: the database and the files of the volume `skald_attachments`. With a bucket, it holds the database only: turn on the bucket's versioning at its provider, which keeps earlier attachments. It holds no secret of `.env`: keep `.env` apart.
+
+In `~/skald`, into the backup's absolute path `<backup file>`:
+
+```sh self-host=backup
+(
+  set -eo pipefail
+  umask 077
+  file='<backup file>'
+  trap 'rm -f "$file.partial"; docker compose start skald-server' EXIT
+  docker compose stop skald-server
+  docker compose run --rm -T backup sh -ec 'pg_dump --file database.sql
+    if [ -n "$SKALD_ATTACHMENTS_BUCKET" ]; then tar -czf - database.sql
+    else tar -czf - --numeric-owner database.sql attachments; fi' >"$file.partial"
+  gzip -t "$file.partial"
+  mv "$file.partial" "$file"
+)
+```
+
+The server stops for the backup and starts again after it, also when it fails; clients reconnect after the short downtime ([Cloud](dev/infrastructure.md#cloud), "Deployment").
+
+A restore goes into a new stack on a machine without a `skald` stack: the stack's name is always `skald`, so on a machine that runs one, a new stack is that one. In the new stack's directory, after "Settings" with the backup's domain, sign-in providers and bucket, if any, before "Start". The stack runs the backup's release or a newer one, whose server migrates the database at start. The restore refuses a stack whose database or attachments volume holds data.
+
+```sh self-host=restore
+(
+  set -eo pipefail
+  tables=$(docker compose run --rm -T backup psql --tuples-only --no-align --command \
+    "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')")
+  files=$(docker compose run --rm -T backup ls -A attachments)
+  if [ "$tables" != 0 ] || [ -n "$files" ]; then
+    echo 'The stack holds data: a restore goes into a new stack only.' >&2
+    exit 1
+  fi
+  docker compose run --rm -T backup sh -ec 'tar -xzf - --numeric-owner
+    psql --quiet --single-transaction --set ON_ERROR_STOP=1 --file database.sql' <'<backup file>'
+)
+```
+
+A restore that fails after its check passed leaves the new stack partly filled: `docker compose down --volumes` empties it for another try. After a refusal, it would delete the data the check found.

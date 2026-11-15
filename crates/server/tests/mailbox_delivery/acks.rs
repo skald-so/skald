@@ -74,7 +74,9 @@ fn an_acked_envelope_is_deleted_and_a_retry_of_it_gets_its_first_stored_and_adds
     // Past a second, so that a `stored` made anew would have a later timestamp.
     thread::sleep(Duration::from_millis(1_100));
     let mut again = s.link(&s.team().alice);
-    assert_eq!(again.store(&header, &sent, true), first);
+    // A retry gets the first `stored`, its time included.
+    again.send(&sent, true);
+    assert_eq!(again.stored(), first);
     link.assert_quiet();
     assert_eq!(seqs(s.db(), s.bob), Vec::<i64>::new());
     assert_nowhere(s.db(), &sent);

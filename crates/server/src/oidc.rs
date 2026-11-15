@@ -70,6 +70,10 @@ pub struct OidcIdentity {
     pub subject: String,
     /// `email`, if the token has one.
     pub email: Option<String>,
+    /// Whether `email_verified` is `true`: the provider has verified the email.
+    pub email_verified: bool,
+    /// `hd`, Google's claim of the account's Workspace or Cloud organization, if the token has one.
+    pub hosted_domain: Option<String>,
 }
 
 /// A JWS algorithm the server verifies ID tokens with.
@@ -358,6 +362,9 @@ impl OidcProvider {
         Ok(OidcIdentity {
             subject: claims.sub,
             email: claims.email,
+            // Only the JSON `true`: a claim of another type verifies nothing, and fails no token.
+            email_verified: claims.email_verified == Some(serde_json::Value::Bool(true)),
+            hosted_domain: claims.hd,
         })
     }
 
@@ -477,6 +484,8 @@ struct Claims {
     iat: f64,
     nonce: Option<String>,
     email: Option<String>,
+    email_verified: Option<serde_json::Value>,
+    hd: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -565,6 +574,8 @@ mod tests {
             iat: NOW,
             nonce: Some(NONCE.to_owned()),
             email: None,
+            email_verified: None,
+            hd: None,
         }
     }
 

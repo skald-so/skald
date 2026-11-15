@@ -20,10 +20,7 @@ pub const NOT_LINKED: &str = "this device is not linked yet: it holds no certifi
 /// A WebSocket at `/ws` to the server of the session of the machine whose state is in `dir`, its
 /// secrets in `storage`, as the machine's device; [`NOT_LINKED`] if the device holds no
 /// certificate.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "skald send and skald recv connect with it")
-)]
+#[cfg_attr(not(test), expect(dead_code, reason = "skald recv connects with it"))]
 pub fn connect(
     dir: &Path,
     storage: secrets::Storage,

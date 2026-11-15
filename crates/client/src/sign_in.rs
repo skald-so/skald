@@ -58,6 +58,8 @@ pub enum Error {
     Io(String),
     /// The person denied the code.
     Denied,
+    /// The server refused its person's sign-up: sign-up is closed there.
+    SignUpClosed,
     /// The code expired before the person approved it.
     Expired,
     /// An answer the device flow does not define.
@@ -82,6 +84,11 @@ impl std::fmt::Display for Error {
             Error::Denied => {
                 f.write_str("the code was denied on the verification page; nothing is signed in")
             }
+            Error::SignUpClosed => f.write_str(
+                "sign-up is closed on the server: the account you signed in with on the \
+                 verification page has no Skald account and may not create one; ask the server's \
+                 operator to add it, then run skald sign-in again",
+            ),
             Error::Expired => f.write_str(
                 "the code expired before it was approved; run skald sign-in again for a new one",
             ),
@@ -403,6 +410,7 @@ fn poll(answer: Result<Vec<u8>, connection::Error>, interval: Duration) -> Resul
                 .map(Poll::Wait)
                 .ok_or_else(|| Error::Unexpected("a polling interval too long".to_owned())),
             "access_denied" => Err(Error::Denied),
+            "sign_up_closed" => Err(Error::SignUpClosed),
             "expired_token" => Err(Error::Expired),
             _ => Err(connection::Error::OAuth { error, description }.into()),
         },
@@ -473,6 +481,10 @@ mod tests {
         assert!(matches!(
             poll(oauth("expired_token"), SECOND),
             Err(Error::Expired)
+        ));
+        assert!(matches!(
+            poll(oauth("sign_up_closed"), SECOND),
+            Err(Error::SignUpClosed)
         ));
         let error = poll(oauth("invalid_grant"), SECOND).expect_err("stops");
         assert!(

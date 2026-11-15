@@ -10,6 +10,7 @@ mod folders;
 mod follow;
 mod plain_path;
 mod secrets;
+mod send;
 mod set_username;
 mod sign_in;
 mod sign_out;
@@ -179,6 +180,20 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
+    },
+    /// Sends a text to a channel of a space this device follows; as an agent, only in the space of
+    /// the agent's folder. It first accepts the space's latest roster revisions, then seals the
+    /// message for each device admitted to the channel but this one and has the server store it.
+    /// Says the message's ID and, per recipient device, whether the server stored it. What the
+    /// server has not stored within the request timeout waits in the local state, and the next
+    /// skald send sends it first.
+    Send {
+        /// The channel's ID, as skald channels shows it.
+        #[arg(value_name = "CHANNEL")]
+        channel: String,
+        /// The text.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: String,
     },
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
@@ -372,6 +387,17 @@ fn main() -> ExitCode {
             )
             .and_then(channels::list),
         ),
+        Command::Send { channel, text } => exit(state::dir(cli.state_dir).and_then(|dir| {
+            send::run(
+                &dir,
+                cli.key_storage,
+                speaks,
+                timeout,
+                &channel,
+                &text,
+                agent.as_ref(),
+            )
+        })),
         Command::AddRule { folder, space } => {
             exit(state::dir(cli.state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space)))
         }

@@ -34,6 +34,9 @@ const WRONG_CODE_LIMIT: i64 = 10;
 const WRONG_CODE_WINDOW: Duration = Duration::from_secs(900);
 /// How long expired codes are kept, so that polls for them answer `expired_token`.
 const EXPIRED_KEPT: Duration = Duration::from_secs(3_600);
+/// How much sooner than the interval a poll may come without `slow_down`: the database's clock can
+/// step against the machine's.
+const CLOCK_ERROR: Duration = Duration::from_secs(1);
 /// The verification page's content security policy: no scripts, its forms only to this server,
 /// never in a frame.
 const PAGE_POLICY: &str = "default-src 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -257,10 +260,11 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
     // The row's lock makes polls for one code wait for each other: only one gives its token.
     let found: Option<(String, bool, bool)> = sqlx::query_as(
         "SELECT state, expires_at > now(),
-                coalesce(polled_at > now() - make_interval(secs => poll_interval), false)
+                coalesce(polled_at > now() - make_interval(secs => poll_interval - $2), false)
          FROM device_codes WHERE device_code_hash = $1 FOR UPDATE",
     )
     .bind(&hash)
+    .bind(CLOCK_ERROR.as_secs_f64())
     .fetch_optional(&mut *tx)
     .await?;
     let Some((code_state, live, too_soon)) = found else {
@@ -312,6 +316,11 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
                 "access_denied",
                 "The person denied this code.",
             )),
+            "refused" => Err(OAuthError::new(
+                "sign_up_closed",
+                "Sign-up is closed on this server: the person who signed in to approve this code \
+                 has no account and is not on its list of who may sign up.",
+            )),
             _ => Err(OAuthError::new(
                 "authorization_pending",
                 "The person has not decided yet.",
@@ -320,6 +329,28 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
     };
     tx.commit().await?;
     Ok(answer)
+}
+
+/// Refuses the user code of `return_to`, if it is the verification page with a pending one: the
+/// sign-in that would have approved it was refused as a sign-up, and its polls say so.
+pub(crate) async fn refuse_sign_up(db: &PgPool, return_to: &str) -> Result<(), sqlx::Error> {
+    let Ok(url) = url::Url::parse(return_to) else {
+        return Ok(());
+    };
+    if url.path() != VERIFICATION_PATH {
+        return Ok(());
+    }
+    let Some(code) = param(url.query(), "user_code").and_then(|typed| typed_code(&typed)) else {
+        return Ok(());
+    };
+    sqlx::query(
+        "UPDATE device_codes SET state = 'refused'
+         WHERE user_code_hash = $1 AND state = 'pending' AND expires_at > now()",
+    )
+    .bind(digest(&code))
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// A verification page of `status` with `title` and `body`, under [`PAGE_POLICY`].
