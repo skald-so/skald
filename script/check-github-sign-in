@@ -22,7 +22,7 @@ check_start check-github-sign-in "$@"
 
 github=${GITHUB_URL:-https://github.com}
 if [[ ! $github =~ $url_parts ]]; then
-  echo "check-github-sign-in: GITHUB_URL is not a URL" >&2
+  say "check-github-sign-in: GITHUB_URL is not a URL" >&2
   exit 2
 fi
 authorize=$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")${BASH_REMATCH[3]%/}/login/oauth/authorize
@@ -39,7 +39,7 @@ polling() {
     "$tmp/device" >"$tmp/poll-form"
   status=$(request poll --header "$version" --data-binary @"$tmp/poll-form" \
     "$server/auth/token" </dev/null) || {
-    echo "no answer from $server/auth/token"
+    say "no answer from $server/auth/token"
     return 1
   }
   local error
@@ -47,7 +47,7 @@ polling() {
   error=$(jq -r 'objects | .error | strings | select(test("^[a-z_]{1,40}$"))' "$tmp/poll" \
     2>/dev/null) || true
   [[ $status == 400 && $error == authorization_pending ]] || {
-    echo "HTTP $status${error:+ with $error} from $server/auth/token, not authorization_pending"
+    say "HTTP $status${error:+ with $error} from $server/auth/token, not authorization_pending"
     return 1
   }
 }

@@ -64,6 +64,8 @@ skald spaces               # the device's spaces, its personal space marked, and
 skald members <space>      # a space's members, their roles and their devices with a valid certificate
 skald create-channel <space>  # add a channel to a space, as its admin
 skald channels <space>     # a space's channels and their members
+skald send <channel> <text>  # send a text to a channel, sealed for each of its devices but this one
+skald --agent <name> address  # the agent's address in the space of the working directory
 skald add-rule <folder> <space>  # bind a folder and everything below it to a space
 skald rules                # the folders' rules
 skald remove-rule <folder>  # remove a folder's rule

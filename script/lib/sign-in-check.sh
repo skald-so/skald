@@ -9,6 +9,15 @@ url_parts='^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]*)(.*)$'
 machine=skald
 version='Skald-Protocol-Version: 1'
 
+# put <format> <argument>...: printf in a subshell, which has started no child and so gets no
+# SIGCHLD. Bash before 4.2, macOS's /bin/bash among them, lets SIGCHLD interrupt a write: a child
+# the shell has already waited for can still signal it, and a write that waits for a pipe or a
+# terminal then fails with EINTR. The checks print to anything but a file through put or say.
+put() { (printf "$@"); }
+
+# say <text>: prints <text> and a newline, as put does.
+say() { put '%s\n' "$1"; }
+
 # origin <scheme> <authority>: the origin, in lowercase, without the scheme's default port.
 origin() {
   local scheme authority
@@ -18,13 +27,13 @@ origin() {
     https) authority=${authority%:443} ;;
     http) authority=${authority%:80} ;;
   esac
-  printf '%s://%s' "$scheme" "$authority"
+  put '%s://%s' "$scheme" "$authority"
 }
 
 # normal_url <url>: <url> with its origin as origin prints it; fails if <url> is not a URL.
 normal_url() {
   [[ $1 =~ $url_parts ]] || return 1
-  printf '%s%s' "$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")" "${BASH_REMATCH[3]}"
+  put '%s%s' "$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")" "${BASH_REMATCH[3]}"
 }
 
 # check_start <name> <server address> <client ID>: checks the usage and the tools; sets check,
@@ -34,13 +43,13 @@ check_start() {
   check=$1
   shift
   if [[ $# -ne 2 || -z $2 ]]; then
-    echo "usage: $0 <server address> <client ID>" >&2
+    say "usage: $0 <server address> <client ID>" >&2
     exit 2
   fi
   local tool
   for tool in curl jq; do
     if ! command -v "$tool" >/dev/null; then
-      echo "$check: $tool is missing" >&2
+      say "$check: $tool is missing" >&2
       exit 2
     fi
   done
@@ -51,7 +60,7 @@ check_start() {
   fi
   server=${server_origin:-}${server_path:-}
   if [[ ${server_origin:-} != http://?* && ${server_origin:-} != https://?* ]]; then
-    echo "$check: the server address is not an http or https URL" >&2
+    say "$check: the server address is not an http or https URL" >&2
     exit 2
   fi
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/$check.XXXXXX")
@@ -66,7 +75,7 @@ on_server() {
   rest=${BASH_REMATCH[3]}
   [[ $(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}") == "$server_origin" ]] || return 1
   [[ $rest == "$server_path"/* ]] || return 1
-  printf '%s' "${rest#"$server_path"}"
+  put '%s' "${rest#"$server_path"}"
 }
 
 # request <name> <curl option>...: requests with curl, the URL among the options, the answer's body
@@ -100,7 +109,7 @@ param() {
     value=${pair#*=}
     value=${value//+/ }
     value=${value//\\/\\\\}
-    printf '%b\n' "${value//%/\\x}"
+    put '%b\n' "${value//%/\\x}"
   done
 }
 
@@ -110,34 +119,34 @@ device_authorization() {
   local status
   status=$(request device --header "$version" --data client_id="$machine" \
     "$server/auth/device" </dev/null) || {
-    echo "no answer from $server/auth/device"
+    say "no answer from $server/auth/device"
     return 1
   }
   [[ $status == 200 ]] || {
-    echo "HTTP $status from $server/auth/device"
+    say "HTTP $status from $server/auth/device"
     return 1
   }
   jq -e 'type == "object"' "$tmp/device" >/dev/null 2>&1 || {
-    echo "the answer is not a JSON object"
+    say "the answer is not a JSON object"
     return 1
   }
   jq -e '.user_code | strings | length > 0' "$tmp/device" >/dev/null || {
-    echo "no user code"
+    say "no user code"
     return 1
   }
   jq -e '.device_code | strings | length > 0' "$tmp/device" >/dev/null || {
-    echo "no device code"
+    say "no device code"
     return 1
   }
   local uri complete
   uri=$(jq -r '.verification_uri | strings' "$tmp/device")
   complete=$(jq -r '.verification_uri_complete | strings' "$tmp/device")
   [[ -n $uri ]] || {
-    echo "no verification page"
+    say "no verification page"
     return 1
   }
   on_server "$uri" >/dev/null && { [[ -z $complete ]] || on_server "$complete" >/dev/null; } || {
-    echo "the verification page is not on $server"
+    say "the verification page is not on $server"
     return 1
   }
   printf '%s' "${complete:-$uri}" >"$tmp/page-url"
@@ -153,11 +162,11 @@ sign_in_start() {
   local page status link start query values
   page=$(cat "$tmp/page-url")
   status=$(get page "$page") || {
-    echo "no answer from the verification page"
+    say "no answer from the verification page"
     return 1
   }
   [[ $status == 200 ]] || {
-    echo "HTTP $status from the verification page"
+    say "HTTP $status from the verification page"
     return 1
   }
   link=$(tr '\n\r\t' '   ' <"$tmp/page" |
@@ -166,7 +175,7 @@ sign_in_start() {
     sed -e 's/^[^"]*"//' -e 's/"$//' -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' \
       -e "s/&#39;/'/g" -e 's/&amp;/\&/g') || true
   [[ -n $link ]] || {
-    echo "the page has no $described"
+    say "the page has no $described"
     return 1
   }
   # The link's address, resolved against the page's.
@@ -183,15 +192,15 @@ sign_in_start() {
     start=${start%/*}/$link
   fi
   on_server "$start" >/dev/null || {
-    echo "the $described leads off $server"
+    say "the $described leads off $server"
     return 1
   }
   status=$(get start "$start") || {
-    echo "no answer from the sign-in start"
+    say "no answer from the sign-in start"
     return 1
   }
   [[ $status == 30[12378] ]] || {
-    echo "HTTP $status from the sign-in start, not a redirect"
+    say "HTTP $status from the sign-in start, not a redirect"
     return 1
   }
   local location
@@ -199,7 +208,7 @@ sign_in_start() {
     sed -e 's/^[^:]*:[[:space:]]*//' -e 's/[[:space:]]*$//')
   local base=${location%%[?#]*}
   if [[ -z $location || $(normal_url "$base") != "$authorize" ]]; then
-    echo "the sign-in start does not send the browser to $authorize"
+    say "the sign-in start does not send the browser to $authorize"
     return 1
   fi
   query=${location#"$base"}
@@ -209,12 +218,12 @@ sign_in_start() {
   printf '%s' "$query" >"$tmp/query"
   values=$(param "$query" client_id)
   [[ $values == "$client_id" ]] || {
-    echo "the sign-in start does not send the client ID $client_id"
+    say "the sign-in start does not send the client ID $client_id"
     return 1
   }
   values=$(param "$query" redirect_uri)
   [[ -n $values && $(on_server "$values") == "$callback" ]] || {
-    echo "the sign-in start does not send the callback $server$callback"
+    say "the sign-in start does not send the callback $server$callback"
     return 1
   }
 }
@@ -226,12 +235,12 @@ run_steps() {
   local step reason
   for step in "$@"; do
     if reason=$("$step"); then
-      echo "$(tr _ ' ' <<<"$step"): pass"
+      say "$(tr _ ' ' <<<"$step"): pass"
     else
-      echo "$(tr _ ' ' <<<"$step"): fail: ${reason:-it failed}"
-      echo fail
+      say "$(tr _ ' ' <<<"$step"): fail: ${reason:-it failed}"
+      say fail
       exit 1
     fi
   done
-  echo pass
+  say pass
 }
