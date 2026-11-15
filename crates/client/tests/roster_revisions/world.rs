@@ -43,8 +43,9 @@ pub const AGENT: &str = "--agent";
 /// A host of the server's public address that is a valid server name, as `127.0.0.1` is not.
 pub const HOST: &str = "localhost";
 
-/// A team space the tests create.
+/// A team space the tests create, and one beside it.
 pub const ACME: &str = "acme";
+pub const GLOBEX: &str = "globex";
 
 /// The team spaces a person's device is in beside its personal space, in the tests of folders.
 pub const CLIENT_A: &str = "clienta";
@@ -60,8 +61,9 @@ pub const STORE: &str = "POST /spaces/";
 pub const ADMIN: &str = "admin";
 pub const MEMBER: &str = "member";
 
-/// What a warning says.
+/// What a warning says, and what the warning of a forked roster also says.
 pub const WARNING: &str = "warning";
+pub const FORK: &str = "fork";
 
 /// A person's account and its first machine, signed in, which holds a valid certificate.
 pub struct Person {
@@ -374,6 +376,30 @@ pub fn store(cloud: &Cloud, token: &str, roster: &Roster) {
 /// The request for `space`'s revisions, as its line starts.
 pub fn revisions_request(space: SpaceId) -> String {
     format!("GET /spaces/{space}/revisions")
+}
+
+/// The request for the devices of `space`'s accounts, as its line starts.
+pub fn devices_request(space: SpaceId) -> String {
+    format!("GET /spaces/{space}/devices")
+}
+
+/// From now on, the relay gives the machines `revisions` as `space`'s revisions, whatever the
+/// server holds, as a compromised server would.
+pub fn serve_revisions(cloud: &Cloud, space: SpaceId, revisions: &[&Roster]) {
+    let list: Vec<String> = revisions
+        .iter()
+        .map(|roster| URL_SAFE_NO_PAD.encode(roster.to_cbor()))
+        .collect();
+    cloud.relay.rewrite(&revisions_request(space), move |_| {
+        json!({ "revisions": list }).to_string()
+    });
+}
+
+/// `roster` with its signature broken.
+pub fn broken_signature(roster: &Roster) -> Roster {
+    let mut signature = *roster.signature();
+    signature[0] ^= 1;
+    Roster::from_parts(roster.body_bytes().to_vec(), signature).expect("a revision")
 }
 
 /// The certificates of the devices of `space`'s accounts, as the server gives them to the session

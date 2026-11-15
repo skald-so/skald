@@ -26,9 +26,10 @@ use skald_proto::{
     SpaceId, VersionRange,
 };
 
-use crate::connection::{self, Connection, Method, printable};
+use crate::connection::{self, Connection, Method, WebSocket, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
+use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
 use crate::secrets;
 use crate::sign_in;
@@ -374,6 +375,13 @@ impl Follower {
         }))
     }
 
+    /// A WebSocket at `/ws` to the server as the device, proving its `keys`.
+    pub fn connect(&mut self, keys: &device::Keys) -> Result<WebSocket, String> {
+        self.connection
+            .open_websocket_as("/ws", &self.token, keys.id(), keys.signing())
+            .map_err(text)
+    }
+
     /// The device's keys.
     pub fn keys(&self) -> Result<device::Keys, String> {
         device::known_keys(&self.stored, Some(&self.device))
@@ -648,6 +656,15 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// The scope of a run in `dir`: the space of its folder for an `agent`, otherwise every space.
+    pub fn of_run(dir: &Path, agent: bool) -> Result<Self, String> {
+        Ok(if agent {
+            Scope::Only(folders::working_space(dir)?.id)
+        } else {
+            Scope::All
+        })
+    }
+
     /// Whether the space `id` is outside the scope.
     pub fn excludes(self, id: SpaceId) -> bool {
         matches!(self, Scope::Only(only) if only != id)
@@ -1205,5 +1222,58 @@ pub(crate) mod tests {
                  handle ada."
             )
         );
+    }
+
+    /// A machine signed in to `server` whose device is linked as `link`.
+    fn machine(dir: &Path, server: &str, link: &Link) {
+        let keys = device::Keys::generate();
+        let state = State::open(dir).unwrap();
+        state.start_session(server).unwrap();
+        state.add_device(keys.id(), "Laptop", "account-1").unwrap();
+        state.set_link(link).unwrap();
+        let mut stored = secrets::Map::from([
+            (sign_in::SESSION_TOKEN.to_owned(), "token-1".to_owned()),
+            (sign_in::SESSION_SERVER.to_owned(), server.to_owned()),
+        ]);
+        keys.store(&mut stored);
+        secrets::Secrets::new(dir, secrets::Storage::File)
+            .save(&stored)
+            .unwrap();
+    }
+
+    /// A device without a certificate follows no space and says it is not linked yet, reaching no
+    /// server, for a person's run and an agent's.
+    #[test]
+    fn device_without_a_certificate_follows_none() {
+        for (name, link) in [
+            ("new", Link::New),
+            ("waiting", Link::Waiting),
+            (
+                "sent",
+                Link::Sent {
+                    master: [7; 32],
+                    cert: vec![0x80],
+                },
+            ),
+        ] {
+            for scope in [Scope::All, Scope::Only(SpaceId::generate())] {
+                let dir = crate::test_dir::TestDir::new(&format!("follow-{name}"));
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local port");
+                listener.set_nonblocking(true).unwrap();
+                let server = format!("http://{}", listener.local_addr().unwrap());
+                machine(&dir, &server, &link);
+
+                let refused = following(
+                    &dir,
+                    secrets::Storage::File,
+                    VersionRange::default(),
+                    Duration::from_secs(10),
+                    scope,
+                );
+
+                assert_eq!(refused.err().as_deref(), Some(NOT_FOLLOWING), "{name}");
+                assert!(listener.accept().is_err(), "{name}: the server was reached");
+            }
+        }
     }
 }

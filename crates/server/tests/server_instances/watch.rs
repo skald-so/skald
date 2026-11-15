@@ -6,13 +6,12 @@ use std::time::{Duration, Instant};
 
 use skald_proto::{Cbor, Frame, Push, SpaceId};
 use tungstenite::Message;
-use tungstenite::protocol::frame::coding::CloseCode;
 
 use crate::api::Person;
-use crate::common::Server;
 use crate::common::device_flow::DeviceFlow;
+use crate::common::{Closed, Server};
 use crate::link::{Entry, QUIET, WAIT};
-use crate::wire::{Socket, array_of, uint};
+use crate::wire::Socket;
 
 /// What came from the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,15 +21,6 @@ pub enum Came {
     Notice(SpaceId),
     /// An empty `batch`: the end of catch-up.
     End,
-}
-
-/// How the server ended a connection.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Closed {
-    /// With a close frame of this code and reason.
-    Frame(CloseCode, String),
-    /// Without a close frame.
-    Dropped,
 }
 
 /// A connection of a person's certified laptop to one instance, with what came but was not taken
@@ -69,14 +59,12 @@ impl Watch {
 
     /// States `cursor` in `sync`.
     pub fn sync(&mut self, cursor: u64) {
-        let cursor = usize::try_from(cursor).expect("a cursor");
-        self.socket.frame(array_of(&[uint(4), uint(cursor)]));
+        self.socket.sync(cursor);
     }
 
     /// Acks up to `seq` in `ack`.
     pub fn ack(&mut self, seq: u64) {
-        let seq = usize::try_from(seq).expect("a seq");
-        self.socket.frame(array_of(&[uint(7), uint(seq)]));
+        self.socket.ack(seq);
     }
 
     /// Reads frames until something comes, the server closes the connection or `deadline` passes.
@@ -85,9 +73,7 @@ impl Watch {
             let bytes = match self.socket.next(deadline) {
                 Ok(Some(Message::Binary(bytes))) => bytes,
                 Ok(Some(Message::Close(frame))) => {
-                    self.closed = Some(frame.map_or(Closed::Dropped, |frame| {
-                        Closed::Frame(frame.code, frame.reason.as_str().to_owned())
-                    }));
+                    self.closed = Some(Closed::of(frame));
                     return;
                 }
                 Ok(Some(_)) => continue,
@@ -196,12 +182,7 @@ impl Watch {
 /// What `push` says to a reader; nothing for a `batch` entry of a type this version does not know.
 fn came_of(push: Push) -> Option<Came> {
     match push {
-        Push::Message { seq, envelope } => Some(Came::Entry(Entry::Message(
-            seq.get(),
-            envelope.bytes().to_vec(),
-        ))),
-        Push::Status { seq, status } => Some(Came::Entry(Entry::Status(seq.get(), status))),
         Push::SpaceNotice { space } => Some(Came::Notice(space)),
-        Push::Unknown(_) => None,
+        push => Entry::of(push).map(Came::Entry),
     }
 }

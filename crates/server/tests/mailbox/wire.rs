@@ -1,5 +1,5 @@
 //! What the tests send and read: a device's connection and its frames, envelopes, and the
-//! mailboxes and rows of the server's database.
+//! mailboxes, rows and times of the server's database.
 
 use std::net::TcpStream;
 use std::num::NonZeroU64;
@@ -14,14 +14,12 @@ use tungstenite::Message;
 use tungstenite::stream::MaybeTlsStream;
 
 use crate::api::Person;
+use crate::common::cbor::{array_of, byte_item, uint};
 use crate::common::device_flow::{DeviceFlow, json, text};
-use crate::common::devices::{Device, random, unb64};
-use crate::common::{Server, TestDb, WebSocket};
+use crate::common::devices::{CHALLENGE, Device, auth_frame, auth_signature, random, unb64};
+use crate::common::times::{MAILBOX, moved_back};
+use crate::common::{Server, TestDb, WebSocket, hex};
 
-/// A device session's challenge: `POST`.
-pub const CHALLENGE: &str = "/session/challenge";
-/// The label of the signature in `auth`.
-const AUTH_LABEL: &str = "skald auth";
 /// How long a test waits for an answer, or for the server to close a connection.
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -36,47 +34,10 @@ pub enum Answer {
     Refused(SendKey, String),
 }
 
-/// The head of a CBOR item of major type `major` whose argument is `arg`, below 2^16, in the
-/// shortest form.
-fn head(major: u8, arg: usize) -> Vec<u8> {
-    let top = major << 5;
-    if let Ok(small) = u8::try_from(arg) {
-        return if small < 24 {
-            vec![top | small]
-        } else {
-            vec![top | 24, small]
-        };
-    }
-    let wide = u16::try_from(arg).expect("an argument below 2^16");
-    let mut out = vec![top | 25];
-    out.extend(wide.to_be_bytes());
-    out
-}
-
-/// `bytes` as a CBOR byte string.
-pub fn byte_item(bytes: &[u8]) -> Vec<u8> {
-    let mut item = head(2, bytes.len());
-    item.extend_from_slice(bytes);
-    item
-}
-
-/// The CBOR array of the encoded `items`.
-pub fn array_of(items: &[Vec<u8>]) -> Vec<u8> {
-    let mut array = head(4, items.len());
-    for item in items {
-        array.extend_from_slice(item);
-    }
-    array
-}
-
-/// The CBOR unsigned integer `n`.
-pub fn uint(n: usize) -> Vec<u8> {
-    head(0, n)
-}
-
-/// The `send` frame of `envelope`'s bytes, with `report` true.
-pub fn send_frame(envelope: &[u8]) -> Vec<u8> {
-    array_of(&[uint(1), byte_item(envelope), vec![0xf5]])
+/// The `send` frame of `envelope`'s bytes, of any length, with `report`.
+pub fn send_frame(envelope: &[u8], report: bool) -> Vec<u8> {
+    let report = vec![if report { 0xf5 } else { 0xf4 }];
+    array_of(&[uint(1), byte_item(envelope), report])
 }
 
 /// The protocol version `v`.
@@ -176,14 +137,8 @@ impl Socket {
             TcpStream::set_read_timeout(stream, Some(Duration::from_millis(200)))
                 .expect("a read timeout");
         }
-        let origin = flow.stand.public.as_bytes();
-        let signature = device.signing.key.sign(AUTH_LABEL, &[&challenge, origin]);
-        let auth = array_of(&[
-            uint(10),
-            byte_item(&challenge),
-            byte_item(device.id.as_bytes()),
-            byte_item(&signature),
-        ]);
+        let signature = auth_signature(&device.signing.key, &challenge, &flow.stand.public);
+        let auth = auth_frame(&challenge, device.id, &signature);
         socket
             .send(Message::Binary(auth.into()))
             .expect("send auth");
@@ -197,9 +152,19 @@ impl Socket {
             .expect("send a frame");
     }
 
-    /// Sends `envelope` in a `send`.
+    /// Sends `envelope` in a `send`, with `report` true.
     pub fn send(&mut self, envelope: &[u8]) {
-        self.frame(send_frame(envelope));
+        self.frame(send_frame(envelope, true));
+    }
+
+    /// States the cursor in `sync`.
+    pub fn sync(&mut self, cursor: u64) {
+        self.frame(array_of(&[uint(4), uint(cursor)]));
+    }
+
+    /// Acks up to `seq` in `ack`.
+    pub fn ack(&mut self, seq: u64) {
+        self.frame(array_of(&[uint(7), uint(seq)]));
     }
 
     /// The next frame the server sends by `deadline`: `Ok(None)` if none comes by then.
@@ -365,10 +330,16 @@ pub fn envelopes_of(db: &TestDb, device: DeviceId) -> Vec<Vec<u8>> {
     entries.into_iter().map(|(_, envelope)| envelope).collect()
 }
 
+/// Moves every time the server keeps of envelopes, sends and mailbox entries `seconds` back, as if
+/// that much time had passed.
+pub fn move_back(db: &TestDb, seconds: u64) {
+    db.execute(&moved_back(&MAILBOX, &format!("{seconds} seconds")));
+}
+
 /// Checks that no row of `db` holds `envelope`'s bytes: the server stored nothing of it.
 #[track_caller]
 pub fn assert_nowhere(db: &TestDb, envelope: &[u8]) {
-    let hex: String = envelope.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = hex(envelope);
     let rows = db.rows();
     let holding: Vec<&String> = rows.iter().filter(|row| row.contains(&hex)).collect();
     assert!(holding.is_empty(), "the envelope is stored: {holding:?}");

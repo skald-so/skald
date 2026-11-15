@@ -1,9 +1,7 @@
 //! Server instances waking each other: `docs/dev/architecture.md`, "Network". An instance that adds
 //! mailbox entries, stores a roster revision or ends a session tells the others through PostgreSQL
 //! `NOTIFY`, in the transaction that does it. Each instance listens, and wakes the device's
-//! connections, sends the `space-notice` or closes that session's connections. A notification names
-//! what changed and carries no envelope. An instance whose listening connection drops listens
-//! again, then sends its connections what they missed.
+//! connections, sends the `space-notice` or closes that session's connections.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

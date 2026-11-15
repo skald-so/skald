@@ -33,24 +33,16 @@ use std::time::{Duration, Instant};
 
 use common::device_flow::{DeviceFlow, json, text};
 use common::devices::{
-    Device, Key, Machine, account_id, assert_refused, assert_taken, b64, cert_of, machine, random,
-    unb64,
+    CHALLENGE, Device, Key, Machine, account_id, assert_refused, assert_taken, auth_frame,
+    auth_signature, b64, machine, random, unb64, write_devices,
 };
-use common::sign_in::{CLIENT_SECRET, SECRET_ENV, github_settings};
-use common::{Response, Server, WebSocket, send};
+use common::{Closed, Response, Server, WebSocket, send};
 use skald_crypto::SigningKey;
-use skald_proto::{CertBody, DeviceId, DeviceKind, PROTOCOL_VERSION, VERSION_HEADER};
+use skald_proto::{DeviceId, DeviceKind, PROTOCOL_VERSION, VERSION_HEADER};
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
-
-/// A device session's challenge: `POST`.
-const CHALLENGE: &str = "/session/challenge";
-/// The label of the signature in `auth`.
-const AUTH_LABEL: &str = "skald auth";
-/// The type of the `auth` frame.
-const AUTH: u8 = 10;
 
 const AUTH_REQUIRED: &str = "auth-required";
 const CHALLENGE_REFUSED: &str = "challenge-refused";
@@ -115,37 +107,6 @@ fn challenge(flow: &DeviceFlow, token: &str) -> Vec<u8> {
     challenge
 }
 
-/// The head of a CBOR byte string of `len` bytes, then the bytes.
-fn bstr(bytes: &[u8]) -> Vec<u8> {
-    let len = bytes.len();
-    let mut out = match len {
-        0..24 => vec![0x40 | u8::try_from(len).unwrap()],
-        24..256 => vec![0x58, u8::try_from(len).unwrap()],
-        256..65_536 => {
-            let mut head = vec![0x59];
-            head.extend_from_slice(&u16::try_from(len).unwrap().to_be_bytes());
-            head
-        }
-        _ => panic!("a challenge of {len} bytes"),
-    };
-    out.extend_from_slice(bytes);
-    out
-}
-
-/// The `auth` frame of `challenge`, `device` and `signature`.
-fn auth_frame(challenge: &[u8], device: DeviceId, signature: &[u8; 64]) -> Vec<u8> {
-    let mut frame = vec![0x84, AUTH];
-    frame.extend(bstr(challenge));
-    frame.extend(bstr(device.as_bytes()));
-    frame.extend(bstr(signature));
-    frame
-}
-
-/// The signature of `auth` by `key` over `challenge` and `origin`.
-fn sign(key: &SigningKey, challenge: &[u8], origin: &str) -> [u8; 64] {
-    key.sign(AUTH_LABEL, &[challenge, origin.as_bytes()])
-}
-
 /// Opens a WebSocket at `/ws` on `server`, stating the protocol version, with a read timeout.
 fn open(server: &Server) -> WebSocket {
     let offer = skald_proto::subprotocol(PROTOCOL_VERSION);
@@ -170,7 +131,7 @@ fn connect(
     origin: &str,
 ) -> WebSocket {
     let mut socket = open(server);
-    let frame = auth_frame(challenge, device, &sign(key, challenge, origin));
+    let frame = auth_frame(challenge, device, &auth_signature(key, challenge, origin));
     socket
         .send(Message::Binary(frame.into()))
         .expect("send auth");
@@ -189,25 +150,12 @@ fn connect_as(flow: &DeviceFlow, linked: &Linked, challenge: &[u8]) -> WebSocket
     )
 }
 
-/// How the server closed a connection.
-#[derive(Debug, PartialEq, Eq)]
-enum Closed {
-    /// With a close frame of this code and reason.
-    Frame(CloseCode, String),
-    /// Without a close frame.
-    Dropped,
-}
-
 /// Waits up to `within` for the server to close `socket`; `None` if it is still open by then.
 fn closing(socket: &mut WebSocket, within: Duration) -> Option<Closed> {
     let deadline = Instant::now() + within;
     loop {
         match socket.read() {
-            Ok(Message::Close(frame)) => {
-                return Some(frame.map_or(Closed::Dropped, |frame| {
-                    Closed::Frame(frame.code, frame.reason.as_str().to_owned())
-                }));
-            }
+            Ok(Message::Close(frame)) => return Some(Closed::of(frame)),
             Ok(Message::Ping(_) | Message::Pong(_)) => {}
             Ok(message) => panic!("a frame before the connection is taken: {message:?}"),
             Err(tungstenite::Error::Io(err))
@@ -289,40 +237,10 @@ fn assert_devices_refused(flow: &DeviceFlow, linked: &Linked, devices: &[&Device
 /// by the account's master key: a device the server's API does not register yet.
 fn device_of_kind(flow: &DeviceFlow, linked: &Linked, kind: DeviceKind, name: &str) -> Device {
     let device = Device::new(name);
-    let body = CertBody {
-        kind,
-        ..device.body(&linked.machine.account)
-    };
-    let cert = cert_of(&body, &linked.master.key, &device.signing.key);
-    let kind = match kind {
-        DeviceKind::Client => "client",
-        DeviceKind::Browser => "browser",
-        DeviceKind::Service => "service",
-    };
-    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    flow.stand.db.execute(&format!(
-        "INSERT INTO devices (id, account_id, kind, signing, hpke, name, cert)
-         VALUES ('{}', '{}', '{kind}', decode('{}', 'hex'), decode('{}', 'hex'),
-                 decode('{}', 'hex'), decode('{}', 'hex'))",
-        device.id,
-        account_id(&linked.machine.account),
-        hex(&device.signing.public()),
-        hex(&device.hpke),
-        hex(device.name.as_bytes()),
-        hex(&cert),
-    ));
+    let account = account_id(&linked.machine.account);
+    let cert = device.cert_as(account, kind, &linked.master);
+    write_devices(&flow.stand.db, account, kind, &[(&device, Some(&cert))]);
     device
-}
-
-/// A second instance of `flow`'s server, on its database, with its public address and sign-in.
-fn second_instance(flow: &DeviceFlow) -> Server {
-    let settings = github_settings(&flow.stand.public, &flow.stand.github);
-    Server::launch(
-        &flow.stand.db,
-        "127.0.0.1:0",
-        &settings,
-        &[(SECRET_ENV, CLIENT_SECRET)],
-    )
 }
 
 /// A certified `client` device that proves its key on a challenge of its account's session gets a
@@ -467,7 +385,7 @@ fn challenge_used_twice_is_refused() {
 fn challenge_works_once_on_any_instance() {
     let flow = DeviceFlow::start();
     let ada = linked(&flow, 3_121_220_011, "ada-instances-standin");
-    let other = second_instance(&flow);
+    let other = flow.stand.instance(&[], &[]);
     let challenge = challenge(&flow, &ada.machine.token);
     let key = &ada.device.signing.key;
 
@@ -530,7 +448,7 @@ fn connection_whose_first_frame_is_another_is_closed() {
         let challenge = challenge(&flow, &ada.machine.token);
         let mut socket = open(&flow.stand.server);
         socket.send(first).expect("send the first frame");
-        let signature = sign(&ada.device.signing.key, &challenge, &flow.stand.public);
+        let signature = auth_signature(&ada.device.signing.key, &challenge, &flow.stand.public);
         let auth = auth_frame(&challenge, ada.device.id, &signature);
         // The server may have closed the connection already.
         let _ = socket.send(Message::Binary(auth.into()));

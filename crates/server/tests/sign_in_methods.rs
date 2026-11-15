@@ -21,7 +21,7 @@ use common::devices::{
     DEVICES, Device, Key, MASTER, assert_taken, b64, devices_of, master_of, random,
 };
 use common::sign_in::{Account, SESSION, SignIn, cookie_set};
-use common::{Response, TestDb, get_url};
+use common::{Response, TestDb, get_url, hex};
 use skald_github_stand_in::User;
 use skald_proto::AccountId;
 use sqlx::{Connection, PgConnection};
@@ -144,8 +144,7 @@ fn database_before_methods() -> TestDb {
 
 /// `bytes` as a `bytea` literal.
 fn bytea(bytes: &[u8]) -> String {
-    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("'\\x{hex}'")
+    format!("'\\x{}'", hex(bytes))
 }
 
 /// An account as a server before sign-in methods made it: a web session and a device session, and,

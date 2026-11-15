@@ -46,15 +46,12 @@ mod keys;
 use std::fs;
 use std::path::Path;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use machine::{Finished, Machine};
-use serde_json::json;
 use skald_crypto::SigningKey;
-use skald_proto::{Address, Cbor, Name};
+use skald_proto::{Address, Name};
 use world::{
     AGENT, APPROVE, CLIENT_A, CLIENT_B, Desk, HOST, SPACES, World, next, next_by, path,
-    revisions_request, store, warnings,
+    serve_revisions, store, warnings,
 };
 
 /// The command that shows an agent's address.
@@ -235,14 +232,8 @@ fn owner_is_the_handle_in_the_last_accepted_revision() {
             members[0].handle = "mallory".parse().expect("a valid handle");
         },
     );
-    let list: Vec<String> = [&desk.client_a, &second, &forged]
-        .iter()
-        .map(|roster| URL_SAFE_NO_PAD.encode(roster.to_cbor()))
-        .collect();
     let space = desk.client_a.body().space;
-    cloud.relay.rewrite(&revisions_request(space), move |_| {
-        json!({ "revisions": list }).to_string()
-    });
+    serve_revisions(cloud, space, &[&desk.client_a, &second, &forged]);
     let listed = desk.ok(&[SPACES]);
     assert!(!warnings(&listed).is_empty(), "no warning: {listed:?}");
     desk.assert_address(&a, agent, CLIENT_A, renamed.as_str());

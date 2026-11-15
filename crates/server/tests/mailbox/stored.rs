@@ -3,8 +3,6 @@
 
 use std::slice;
 
-use crate::common::Server;
-use crate::common::sign_in::{CLIENT_SECRET, SECRET_ENV, github_settings};
 use crate::fixture::Fixture;
 use crate::wire::{Answer, Socket, envelope, envelopes_of};
 
@@ -62,13 +60,7 @@ fn a_server_killed_right_after_stored_still_holds_the_envelope() {
     let t = &fixture.team;
     let stand = &t.flow.stand;
     // Another instance on the database, whose connections the test kills with it.
-    let settings = github_settings(&stand.public, &stand.github);
-    let mut killed = Server::launch(
-        &stand.db,
-        "127.0.0.1:0",
-        &settings,
-        &[(SECRET_ENV, CLIENT_SECRET)],
-    );
+    let mut killed = stand.instance(&[], &[]);
     let header = fixture.to(t.bob.laptop.id);
     let sent = envelope(&header);
 

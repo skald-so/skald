@@ -3,15 +3,15 @@
 
 use std::time::Instant;
 
-use skald_proto::{Cbor as _, CertBody, DeviceKind, Frame, Push, SpaceId, Unknown};
+use skald_proto::{Cbor as _, DeviceKind, Frame, Push, SpaceId};
 use tungstenite::Message;
 
 use crate::api::Person;
 use crate::common::TestDb;
 use crate::common::device_flow::DeviceFlow;
-use crate::common::devices::{Device, cert_of};
+use crate::common::devices::{Device, write_devices};
 use crate::link::{QUIET, WAIT};
-use crate::wire::{Socket, array_of, uint};
+use crate::wire::Socket;
 
 /// What a frame from the server says to a reader of notices.
 enum Read {
@@ -60,7 +60,7 @@ impl Listener {
             socket,
             who: format!("{}'s {}", person.handle, device.name),
         };
-        listener.socket.frame(array_of(&[uint(4), uint(0)]));
+        listener.socket.sync(0);
         let deadline = Instant::now() + WAIT;
         loop {
             match listener.read(deadline) {
@@ -134,32 +134,12 @@ impl Listener {
 /// account's master key, written to the server's database.
 pub fn second_device(db: &TestDb, person: &Person, name: &str) -> Device {
     let device = Device::new(name);
-    let body = CertBody {
-        account: person.account,
-        device: device.id,
-        kind: DeviceKind::Client,
-        signing: device.signing.public(),
-        hpke: device.hpke,
-        issuer: None,
-        issued: 1_794_000_000,
-        ssh: None,
-        name: name.to_owned(),
-        unknown: Unknown::default(),
-    };
-    let cert = cert_of(&body, &person.master.key, &device.signing.key);
-    let bytes = |bytes: &[u8]| {
-        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        format!("'\\x{hex}'::bytea")
-    };
-    db.execute(&format!(
-        "INSERT INTO devices (id, account_id, kind, signing, hpke, name, cert) \
-         VALUES ('{}'::uuid, '{}'::uuid, 'client', {}, {}, {}, {})",
-        device.id,
+    let cert = device.cert_as(person.account, DeviceKind::Client, &person.master);
+    write_devices(
+        db,
         person.account,
-        bytes(&device.signing.public()),
-        bytes(&device.hpke),
-        bytes(name.as_bytes()),
-        bytes(&cert),
-    ));
+        DeviceKind::Client,
+        &[(&device, Some(&cert))],
+    );
     device
 }
