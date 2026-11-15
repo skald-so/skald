@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use skald_crypto::seal_message;
 use skald_proto::{
-    Address, Body, Cbor as _, ChannelId, Content, DeviceId, DeviceKind, Envelope, Frame, Header,
-    MessageId, Name, NonEmpty, RawEnvelope, Roster, Scheme, SendKey, Unknown, VersionRange,
+    Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Envelope, Frame,
+    Header, MessageId, Name, NonEmpty, RawEnvelope, Roster, Scheme, SendKey, Unknown, VersionRange,
 };
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
@@ -48,7 +48,7 @@ enum Answer {
 }
 
 /// An envelope of the outbox, as it goes out.
-struct Queued {
+pub struct Queued {
     outgoing: Outgoing,
     channel: ChannelId,
     /// Its `send` frame.
@@ -61,10 +61,12 @@ impl Queued {
     }
 }
 
-/// What sending the outbox gave: the server's answers, and why the last attempt failed, if it did.
-struct Delivered {
+/// What sending the outbox gave: the server's answers, why the last attempt failed, if it did, and
+/// the connection, if it is still open.
+pub struct Delivered {
     answers: BTreeMap<(MessageId, DeviceId), Answer>,
     failed: Option<String>,
+    pub socket: Option<WebSocket>,
 }
 
 /// Sends `text` to the channel whose ID is `channel`, by the state in `dir`, its secrets in
@@ -92,7 +94,11 @@ pub fn run(
         ..
     } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
         .map_err(|err| with_waiting(dir, scope, err))?;
-    let recipients = admitted(&follower.own, follower.this, &roster, &devices, channel);
+    let recipients: BTreeMap<DeviceId, [u8; 32]> =
+        admitted(&follower.own, follower.this, &roster, &devices, channel)
+            .into_iter()
+            .map(|(device, cert)| (device, cert.body().hpke))
+            .collect();
     if recipients.is_empty() {
         return Err(with_waiting(
             dir,
@@ -112,7 +118,7 @@ pub fn run(
 
 /// `err`, the reason a run sends nothing, saying how many envelopes earlier runs left in the
 /// outbox of the state in `dir` within `scope` still wait, if any: only a run that sends a message
-/// sends them.
+/// or receives sends them.
 fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
     let outbox = dir
         .is_dir()
@@ -128,21 +134,21 @@ fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
     }
     format!(
         "{err}; {waiting} envelopes of earlier messages still wait in the outbox: the next skald \
-         send of a message sends them first"
+         recv, or skald send of a message, sends them first"
     )
 }
 
 /// The admitted `client` devices of `channel` in `roster`, the space's latest revision, but `this`
-/// one, each with the HPKE key of its valid certificate among `devices`: those of the accounts of
-/// the channel's members that their member's `excluded` does not list. The certificates of `own`'s
-/// account are checked against the master key it pinned, any other's against the revision's.
-fn admitted(
+/// one, each with its valid certificate among `devices`: those of the accounts of the channel's
+/// members that their member's `excluded` does not list. The certificates of `own`'s account are
+/// checked against the master key it pinned, any other's against the revision's.
+pub fn admitted<'d>(
     own: &Own,
     this: DeviceId,
     roster: &Roster,
-    devices: &SpaceDevices,
+    devices: &'d SpaceDevices,
     channel: ChannelId,
-) -> BTreeMap<DeviceId, [u8; 32]> {
+) -> BTreeMap<DeviceId, &'d Cert> {
     let body = roster.body();
     let mut admitted = BTreeMap::new();
     let Some(channel) = body.channels.iter().find(|it| it.id == channel) else {
@@ -164,13 +170,13 @@ fn admitted(
             .copied()
             .collect();
         for cert in devices::check(&master, &devices.ids, &devices.certs).linked {
-            let cert = cert.body();
-            if cert.account == member.account
-                && cert.kind == DeviceKind::Client
-                && cert.device != this
-                && !excluded.contains(&cert.device)
+            let body = cert.body();
+            if body.account == member.account
+                && body.kind == DeviceKind::Client
+                && body.device != this
+                && !excluded.contains(&body.device)
             {
-                admitted.insert(cert.device, cert.hpke);
+                admitted.insert(body.device, cert);
             }
         }
     }
@@ -269,7 +275,7 @@ fn enqueue(
 }
 
 /// The envelopes of the outbox of `state` within `scope`, in the order they go out.
-fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
+pub fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
     let outbox = state.outbox().map_err(text)?;
     outbox
         .into_iter()
@@ -296,11 +302,12 @@ fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
 /// Sends each envelope of `queued` that the server has not answered, in order, over a connection
 /// as the device, again with backoff while some are unanswered, for `timeout`; takes each answered
 /// one out of the outbox.
-fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) -> Delivered {
+pub fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) -> Delivered {
     let deadline = Instant::now() + timeout;
     let mut delivered = Delivered {
         answers: BTreeMap::new(),
         failed: None,
+        socket: None,
     };
     let keys = match follower.keys() {
         Ok(keys) => keys,
@@ -318,6 +325,7 @@ fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) -> Del
             .collect();
         let now = Instant::now();
         if unanswered.is_empty() || now >= deadline {
+            delivered.socket = socket;
             return delivered;
         }
         let until = (now + pause).min(deadline);
@@ -413,7 +421,7 @@ fn answers(
 }
 
 /// Sets how long a read of `socket` waits, at least a millisecond.
-fn set_read_timeout(socket: &mut WebSocket, wait: Duration) -> io::Result<()> {
+pub fn set_read_timeout(socket: &mut WebSocket, wait: Duration) -> io::Result<()> {
     let wait = Some(wait.max(Duration::from_millis(1)));
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => stream.set_read_timeout(wait),
@@ -423,12 +431,12 @@ fn set_read_timeout(socket: &mut WebSocket, wait: Duration) -> io::Result<()> {
 }
 
 /// Why a connection broke, by `err`.
-fn broke(err: tungstenite::Error) -> String {
+pub fn broke(err: tungstenite::Error) -> String {
     format!("the connection to the server broke: {err}")
 }
 
 /// Why the server closed a connection, by its close `frame`.
-fn closed(frame: Option<&CloseFrame>) -> String {
+pub fn closed(frame: Option<&CloseFrame>) -> String {
     match frame.map(|frame| frame.reason.as_str()) {
         Some(reason) if !reason.is_empty() => {
             format!("the server closed the connection: {}", printable(reason))
@@ -437,10 +445,20 @@ fn closed(frame: Option<&CloseFrame>) -> String {
     }
 }
 
+/// The refusal `problem`, printable, with what it means for the message if it is over a limit.
+fn explained(problem: &str) -> String {
+    let meaning = match problem {
+        "too-large" => "the message is too large for the server",
+        "quota-exceeded" => "its space has stored as many messages this month as its limit allows",
+        _ => return printable(problem),
+    };
+    format!("{problem} ({meaning})")
+}
+
 /// Says, for each message of `queued`, its ID and, per recipient device, whether the server stored
 /// its envelope, refused it or has not answered it in `delivered`; fails unless every one is
 /// stored.
-fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result<(), String> {
+pub fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result<(), String> {
     let mut messages: Vec<(MessageId, ChannelId, Vec<&Queued>)> = Vec::new();
     for queued in queued {
         match messages
@@ -460,7 +478,7 @@ fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => println!("  {device}  stored"),
                 Some(Answer::Refused(problem)) => {
-                    let problem = printable(problem);
+                    let problem = explained(problem);
                     println!("  {device}  refused: {problem}");
                     refused.push(format!("the message {id} to device {device}: {problem}"));
                 }
@@ -481,7 +499,7 @@ fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result
             .map_or_else(String::new, |err| format!(" ({err})"));
         return Err(format!(
             "the server has not stored {} within {} s{why}; the outbox keeps it, and the next \
-             skald send sends it first",
+             skald send or skald recv sends it first",
             left.join("; "),
             timeout.as_secs()
         ));
@@ -496,22 +514,22 @@ fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use skald_crypto::{HpkeKey, SigningKey, issue};
-    use skald_proto::{AccountId, Cert, CertBody, ChannelMember, HpkePayload, SpaceId};
+    use skald_proto::{AccountId, CertBody, ChannelMember, HpkePayload, SpaceId};
 
     use super::*;
     use crate::spaces::tests::{first, member};
     use crate::test_dir::TestDir;
 
     /// An account and its master key.
-    struct Account {
-        id: AccountId,
-        master: SigningKey,
+    pub(crate) struct Account {
+        pub(crate) id: AccountId,
+        pub(crate) master: SigningKey,
     }
 
     impl Account {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             Account {
                 id: AccountId::generate(),
                 master: SigningKey::generate(),
@@ -521,7 +539,7 @@ mod tests {
         /// A device of the account of `kind`, its certificate issued with `issuer`, the key of
         /// the device `by` or else the master key: the certificate, its HPKE key and its signing
         /// key.
-        fn device(
+        pub(crate) fn device(
             &self,
             kind: DeviceKind,
             issuer: &SigningKey,
@@ -545,8 +563,24 @@ mod tests {
             (cert, hpke, signing)
         }
 
-        fn client(&self) -> (Cert, [u8; 32], SigningKey) {
+        pub(crate) fn client(&self) -> (Cert, [u8; 32], SigningKey) {
             self.device(DeviceKind::Client, &self.master, None)
+        }
+    }
+
+    /// The channel `id` whose members are `accounts`.
+    pub(crate) fn channel_of(id: ChannelId, accounts: &[AccountId]) -> skald_proto::Channel {
+        skald_proto::Channel {
+            id,
+            members: accounts
+                .iter()
+                .map(|&account| ChannelMember {
+                    account,
+                    history: false,
+                })
+                .collect(),
+            services: Vec::new(),
+            unknown: Unknown::default(),
         }
     }
 
@@ -573,17 +607,7 @@ mod tests {
         body.members
             .push(member(carol.id, "carol", carol.master.public_key()));
         let channel = ChannelId::generate();
-        body.channels = vec![skald_proto::Channel {
-            id: channel,
-            members: [ada.id, bob.id]
-                .map(|account| ChannelMember {
-                    account,
-                    history: false,
-                })
-                .to_vec(),
-            services: Vec::new(),
-            unknown: Unknown::default(),
-        }];
+        body.channels = vec![channel_of(channel, &[ada.id, bob.id])];
         let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
         let own = Own {
             account: ada.id,
@@ -594,7 +618,11 @@ mod tests {
             certs: certs.clone(),
         };
 
-        let given = admitted(&own, id(&certs[0]), &roster, &devices, channel);
+        let given: BTreeMap<DeviceId, [u8; 32]> =
+            admitted(&own, id(&certs[0]), &roster, &devices, channel)
+                .into_iter()
+                .map(|(device, cert)| (device, cert.body().hpke))
+                .collect();
 
         assert_eq!(
             given,
@@ -634,7 +662,7 @@ mod tests {
         let waits = |count| {
             format!(
                 "nothing is sent; {count} envelopes of earlier messages still wait in the outbox: \
-                 the next skald send of a message sends them first"
+                 the next skald recv, or skald send of a message, sends them first"
             )
         };
 

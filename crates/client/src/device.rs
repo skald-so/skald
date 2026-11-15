@@ -24,6 +24,9 @@ const HPKE_KEY: &str = "device_hpke_key";
 /// The `name` of a device whose host name is empty.
 const UNNAMED: &str = "skald device";
 
+/// The problem of a registration beyond the devices an account may have.
+const DEVICES_LIMIT: &str = "https://skald.so/problems/devices-limit";
+
 /// Why the device cannot be set up, beyond the server, the state or the secrets.
 #[derive(Debug)]
 pub enum Error {
@@ -39,6 +42,8 @@ pub enum Error {
     Renamed(String),
     /// The server has the device's ID with other keys or `name`, or on another account.
     DeviceTaken,
+    /// The account has as many devices as the server lets it have.
+    DevicesLimit,
     /// The user says it is the account's first device, and the account has a master key.
     NotFirst,
     /// The user says it is not the account's first device, and the account has no master key.
@@ -75,6 +80,10 @@ impl std::fmt::Display for Error {
             ),
             Error::DeviceTaken => f.write_str(
                 "the server has this device's ID with other keys or name, or on another account",
+            ),
+            Error::DevicesLimit => f.write_str(
+                "the account has as many devices as it may on this server; this device is not \
+                 registered",
             ),
             Error::NotFirst => f.write_str(
                 "the account has a master key already: someone else may have created it. This \
@@ -157,6 +166,11 @@ impl Keys {
     /// The device's signing key.
     pub fn signing(&self) -> &SigningKey {
         &self.signing
+    }
+
+    /// The device's HPKE key.
+    pub fn hpke(&self) -> &HpkeKey {
+        &self.hpke
     }
 }
 
@@ -306,6 +320,9 @@ impl Setup<'_> {
         {
             Ok(_) => Ok(()),
             Err(connection::Error::Refused { status: 409, .. }) => Err(Error::DeviceTaken.into()),
+            Err(connection::Error::Refused { kind, .. }) if kind == DEVICES_LIMIT => {
+                Err(Error::DevicesLimit.into())
+            }
             Err(err) => Err(err.into()),
         }
     }

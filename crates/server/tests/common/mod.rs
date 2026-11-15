@@ -513,6 +513,38 @@ impl TestDb {
         .expect("read _sqlx_migrations")
     }
 
+    /// Applies the embedded migrations up to `version`, the last one it applies.
+    pub fn migrate_to(&self, version: i64) {
+        block_on(async {
+            let mut conn = PgConnection::connect(&self.url()).await?;
+            skald_server::MIGRATOR
+                .run_to(version, &mut conn)
+                .await
+                .map_err(|err| sqlx::Error::Migrate(Box::new(err)))?;
+            conn.close().await
+        })
+        .expect("apply the migrations");
+    }
+
+    /// Every column of every table, as `<schema>.<table>.<column> <type>`, sorted: the schema the
+    /// migrations made.
+    pub fn columns(&self) -> Vec<String> {
+        block_on(async {
+            let mut conn = PgConnection::connect(&self.url()).await?;
+            let columns: Vec<(String,)> = sqlx::query_as(
+                "SELECT table_schema || '.' || table_name || '.' || column_name || ' ' || data_type
+                 FROM information_schema.columns
+                 WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                 ORDER BY 1",
+            )
+            .fetch_all(&mut conn)
+            .await?;
+            conn.close().await?;
+            Ok::<_, sqlx::Error>(columns.into_iter().map(|(column,)| column).collect())
+        })
+        .expect("read the database's columns")
+    }
+
     /// Every row of every table but `_sqlx_migrations`, each as PostgreSQL's text form of the row:
     /// what the database holds, whatever its schema.
     pub fn rows(&self) -> Vec<String> {

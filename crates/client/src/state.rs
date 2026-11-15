@@ -98,6 +98,26 @@ const MIGRATIONS: &[&str] = &[
         last INTEGER NOT NULL CHECK (last >= 1),
         PRIMARY KEY (channel, recipient)
     ) STRICT;",
+    // The device's mailbox: its cursor, the highest `seq` it wrote; each entry it wrote that no run
+    // has shown yet, by `seq`, as its `message` or `status` frame; the sending device and `msg_id`
+    // of each message it showed; and the space and channel of each message it sent, which its
+    // statuses report on.
+    "ALTER TABLE device ADD COLUMN mailbox_cursor INTEGER NOT NULL DEFAULT 0
+        CHECK (mailbox_cursor >= 0);
+    CREATE TABLE inbox (
+        seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+        entry BLOB NOT NULL
+    ) STRICT;
+    CREATE TABLE received (
+        sender TEXT NOT NULL,
+        msg_id TEXT NOT NULL,
+        PRIMARY KEY (sender, msg_id)
+    ) STRICT;
+    CREATE TABLE sent (
+        msg_id TEXT PRIMARY KEY,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -673,9 +693,121 @@ impl State {
                     envelope.envelope
                 ],
             )?;
+            tx.execute(
+                "INSERT INTO sent (msg_id, space, channel) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING",
+                params![
+                    envelope.msg_id.to_string(),
+                    envelope.space.to_string(),
+                    channel
+                ],
+            )?;
         }
         tx.commit()?;
         Ok(true)
+    }
+
+    /// The space and channel of the message `msg_id` the device sent, if the state recorded it.
+    pub fn sent(&self, msg_id: MessageId) -> Result<Option<(SpaceId, ChannelId)>, Error> {
+        let row: Option<(String, String)> = self
+            .db
+            .query_row(
+                "SELECT space, channel FROM sent WHERE msg_id = ?1",
+                params![msg_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(space, channel)| {
+            let malformed = || Error::Malformed(format!("the sent message {msg_id}"));
+            Ok((
+                space.parse().map_err(|_| malformed())?,
+                channel.parse().map_err(|_| malformed())?,
+            ))
+        })
+        .transpose()
+    }
+
+    /// The device's mailbox cursor: the highest `seq` it wrote, 0 before the first.
+    pub fn cursor(&self) -> Result<u64, Error> {
+        let cursor: Option<i64> = self
+            .db
+            .query_row("SELECT mailbox_cursor FROM device", [], |row| row.get(0))
+            .optional()?;
+        let cursor = cursor.unwrap_or(0);
+        u64::try_from(cursor).map_err(|_| Error::Malformed(format!("the cursor {cursor}")))
+    }
+
+    /// Writes `entries`, mailbox entries by `seq`, each as its frame, those after the cursor, with
+    /// the new cursor, all at once; gives the cursor.
+    pub fn write_entries(&self, entries: &[(u64, Vec<u8>)]) -> Result<u64, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let read: i64 = tx.query_row("SELECT mailbox_cursor FROM device", [], |row| row.get(0))?;
+        let mut cursor = read;
+        for (seq, entry) in entries {
+            let seq =
+                i64::try_from(*seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+            if seq <= read {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO inbox (seq, entry) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                params![seq, entry],
+            )?;
+            cursor = cursor.max(seq);
+        }
+        tx.execute("UPDATE device SET mailbox_cursor = ?1", params![cursor])?;
+        tx.commit()?;
+        u64::try_from(cursor).map_err(|_| Error::Malformed(format!("the cursor {cursor}")))
+    }
+
+    /// The mailbox entries the device wrote that no run has shown yet, in `seq` order, each as
+    /// its frame.
+    pub fn inbox(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT seq, entry FROM inbox ORDER BY seq")?;
+        let rows = query.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?;
+        rows.map(|row| {
+            let (seq, entry) = row?;
+            let seq = u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+            Ok((seq, entry))
+        })
+        .collect()
+    }
+
+    /// Takes the entry `seq` out of the inbox: a run has shown or dropped it.
+    pub fn remove_entry(&self, seq: u64) -> Result<(), Error> {
+        let seq = i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+        self.db
+            .execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
+        Ok(())
+    }
+
+    /// Whether the device showed a message `msg_id` from the device `sender`.
+    pub fn received(&self, sender: DeviceId, msg_id: MessageId) -> Result<bool, Error> {
+        let found = self
+            .db
+            .query_row(
+                "SELECT 1 FROM received WHERE sender = ?1 AND msg_id = ?2",
+                params![sender.to_string(), msg_id.to_string()],
+                |_| Ok(()),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Records that the device showed the message `msg_id` from the device `sender`, the entry
+    /// `seq`, and takes the entry out of the inbox, at once.
+    pub fn shown(&self, seq: u64, sender: DeviceId, msg_id: MessageId) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO received (sender, msg_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+            params![sender.to_string(), msg_id.to_string()],
+        )?;
+        let seq = i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+        tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// The envelopes in the outbox, in the order they go out.
@@ -1239,6 +1371,68 @@ mod tests {
             state.outbox().unwrap(),
             [outgoing(first, carol, b"1c"), outgoing(second, bob, b"2b")]
         );
+    }
+
+    #[test]
+    fn sent_messages_keep_their_space_and_channel() {
+        let dir = TestDir::new("state-sent");
+        let state = State::open(&dir).unwrap();
+        let (channel, space, msg_id) = (
+            ChannelId::generate(),
+            SpaceId::generate(),
+            MessageId::generate(),
+        );
+        let outgoing = |recipient| Outgoing {
+            msg_id,
+            recipient,
+            space,
+            envelope: vec![1],
+        };
+        let (bob, carol) = (
+            DeviceId::from_signing_key(&[1; 32]),
+            DeviceId::from_signing_key(&[2; 32]),
+        );
+        assert_eq!(state.sent(msg_id).unwrap(), None);
+
+        let both = [(outgoing(bob), 1), (outgoing(carol), 1)];
+        assert!(state.enqueue(channel, &both).unwrap());
+        state.remove_outgoing(msg_id, bob).unwrap();
+        state.remove_outgoing(msg_id, carol).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.sent(msg_id).unwrap(), Some((space, channel)));
+        assert_eq!(state.sent(MessageId::generate()).unwrap(), None);
+    }
+
+    #[test]
+    fn mailbox_entries_after_the_cursor_wait_in_the_inbox_until_shown() {
+        let dir = TestDir::new("state-inbox");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        assert_eq!(state.cursor().unwrap(), 0);
+        let entry = |seq: u64| (seq, vec![u8::try_from(seq).unwrap()]);
+
+        assert_eq!(state.write_entries(&[entry(2), entry(1)]).unwrap(), 2);
+        // Those up to the cursor are not written again; the cursor never goes back.
+        assert_eq!(state.write_entries(&[entry(1), entry(4)]).unwrap(), 4);
+        assert_eq!(state.write_entries(&[entry(3)]).unwrap(), 4);
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.cursor().unwrap(), 4);
+        assert_eq!(state.inbox().unwrap(), [entry(1), entry(2), entry(4)]);
+
+        let (sender, msg_id) = (DeviceId::from_signing_key(&[2; 32]), MessageId::generate());
+        assert!(!state.received(sender, msg_id).unwrap());
+        state.shown(1, sender, msg_id).unwrap();
+        state.remove_entry(4).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.inbox().unwrap(), [entry(2)]);
+        assert!(state.received(sender, msg_id).unwrap());
+        assert!(!state.received(sender, MessageId::generate()).unwrap());
+        let other = DeviceId::from_signing_key(&[3; 32]);
+        assert!(!state.received(other, msg_id).unwrap());
     }
 
     #[test]

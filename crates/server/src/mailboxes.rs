@@ -1,7 +1,9 @@
 //! Storing sent envelopes: `docs/protocol/delivery.md`, "Send" and "Mailbox". The server answers a
 //! device's `send` with `stored` once the envelope and its mailbox entry are committed, or with
 //! `send-refused` and its problem, storing nothing of the envelope. It stores at most one envelope
-//! per idempotency key and answers a retry as it answered the first send.
+//! per idempotency key and answers a retry as it answered the first send. With the server's cloud
+//! limits (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over the size limit,
+//! and a message past its space's number for the month.
 
 use std::num::NonZeroU64;
 
@@ -11,6 +13,7 @@ use skald_proto::{
 };
 use sqlx::{PgConnection, PgPool};
 
+use crate::MAILBOX_LONGEST;
 use crate::delivery::Wakers;
 
 /// The device a connection is authenticated as.
@@ -21,12 +24,23 @@ pub(crate) struct Sender {
     pub(crate) version: NonZeroU64,
 }
 
+/// The server's limits on sends; none without a setting.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Limits {
+    /// The longest payload, in bytes.
+    pub(crate) message_size: Option<u64>,
+    /// The messages a space stores per calendar month in UTC.
+    pub(crate) monthly_messages: Option<u64>,
+}
+
 /// Why a send is refused: the problems of "Send" that the server finds so far.
 #[derive(Debug, Clone, Copy)]
 enum Problem {
     VersionMismatch,
     NotAMember,
     UnknownRecipient,
+    TooLarge,
+    QuotaExceeded,
 }
 
 impl Problem {
@@ -35,6 +49,8 @@ impl Problem {
             Self::VersionMismatch => "version-mismatch",
             Self::NotAMember => "not-a-member",
             Self::UnknownRecipient => "unknown-recipient",
+            Self::TooLarge => "too-large",
+            Self::QuotaExceeded => "quota-exceeded",
         }
     }
 }
@@ -51,17 +67,24 @@ fn send_key(header: &Header) -> SendKey {
     }
 }
 
-/// The answer to `sender`'s send of `envelope` with `report`; a stored envelope wakes its
-/// recipient's connections in `wakers`.
+/// The answer to `sender`'s send of `envelope` with `report`, under `limits`; a stored envelope
+/// wakes its recipient's connections in `wakers`.
 pub(crate) async fn send(
     db: &PgPool,
     wakers: &Wakers,
+    limits: Limits,
     sender: &Sender,
     envelope: &RawEnvelope,
     report: bool,
 ) -> Result<Frame, sqlx::Error> {
     let header = &envelope.envelope().header;
-    let answer = answer(db, sender, header, Some((envelope.bytes(), report))).await?;
+    let outgoing = Outgoing {
+        bytes: envelope.bytes(),
+        size: envelope.envelope().payload.len(),
+        report,
+        ttl: header.ttl,
+    };
+    let answer = answer(db, limits, sender, header, Some(outgoing)).await?;
     // A retry's wake finds no new entry.
     if let Frame::Stored(Stored {
         send_key: SendKey {
@@ -83,19 +106,27 @@ pub(crate) async fn misaddressed(
     sender: &Sender,
     header: &Header,
 ) -> Result<Frame, sqlx::Error> {
-    answer(db, sender, header, None).await
+    answer(db, Limits::default(), sender, header, None).await
 }
 
-/// The answer to `sender`'s send of an envelope with `header`, whose bytes and `report` are
-/// `envelope`, or `None` if it cannot be stored. A retry gets the first answer, whatever its bytes.
+/// The answer to `sender`'s send of an envelope with `header`, which is `envelope`, or `None` if
+/// it cannot be stored, under `limits`. A retry gets the first answer, whatever its bytes.
 async fn answer(
     db: &PgPool,
+    limits: Limits,
     sender: &Sender,
     header: &Header,
-    envelope: Option<(&[u8], bool)>,
+    envelope: Option<Outgoing<'_>>,
 ) -> Result<Frame, sqlx::Error> {
     let key = send_key(header);
     let outcome = match (recipient(db, sender, header).await?, envelope) {
+        (Ok(_), Some(envelope))
+            if limits
+                .message_size
+                .is_some_and(|limit| envelope.size as u64 > limit) =>
+        {
+            Err(Problem::TooLarge)
+        }
         (Ok(recipient), Some(envelope)) => Ok((recipient, envelope)),
         // `recipient` refuses a send without one recipient; this is in case it does not.
         (Ok(_), None) => Err(Problem::UnknownRecipient),
@@ -104,7 +135,13 @@ async fn answer(
     // A send answered before keeps its answer: keeping this one finds its key taken.
     loop {
         let kept = match outcome {
-            Ok((recipient, envelope)) => store(db, sender, &key, recipient, envelope).await?,
+            Ok((recipient, envelope)) => {
+                let counted = limits.monthly_messages.map(|limit| (header.space, limit));
+                match store(db, sender, &key, recipient, envelope, counted).await? {
+                    Kept::Answer(answer) => answer,
+                    Kept::OverQuota => refuse(db, sender, &key, Problem::QuotaExceeded).await?,
+                }
+            }
             Err(problem) => refuse(db, sender, &key, problem).await?,
         };
         if let Some(answer) = kept {
@@ -248,18 +285,37 @@ async fn refuse(
     keep(&mut *db.acquire().await?, sender, key, Some(problem)).await
 }
 
-/// Stores `envelope`, the bytes and `report` of the send of `sender` with `key`, with its entry in
-/// `recipient`'s mailbox, and gives its `stored`; `None` if a send with `key` is answered already.
+/// An envelope to store: its bytes, its payload's length, whether it gets statuses, and its `ttl`.
+#[derive(Clone, Copy)]
+struct Outgoing<'a> {
+    bytes: &'a [u8],
+    size: usize,
+    report: bool,
+    ttl: Option<u64>,
+}
+
+/// What storing a send gave.
+enum Kept {
+    /// Its `stored`; `None` if a send with its key is answered already.
+    Answer(Option<Frame>),
+    /// Nothing: its message is past its space's number for the month.
+    OverQuota,
+}
+
+/// Stores `envelope`, the send of `sender` with `key`, with its entry in `recipient`'s mailbox, and
+/// gives its `stored`. With `counted`, a space and its monthly limit, a message not counted yet
+/// counts in the space's month, and is not stored past the limit.
 async fn store(
     db: &PgPool,
     sender: &Sender,
     key: &SendKey,
     recipient: DeviceId,
-    (envelope, report): (&[u8], bool),
-) -> Result<Option<Frame>, sqlx::Error> {
+    envelope: Outgoing<'_>,
+    counted: Option<(SpaceId, u64)>,
+) -> Result<Kept, sqlx::Error> {
     let mut tx = db.begin().await?;
     let Some(stored) = keep(&mut tx, sender, key, None).await? else {
-        return Ok(None);
+        return Ok(Kept::Answer(None));
     };
     // The mailbox's row lock makes stores to it wait for each other, so its entries are numbered in
     // the order they are committed.
@@ -273,16 +329,62 @@ async fn store(
              ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
              RETURNING last_seq
          )
-         INSERT INTO entries (device_id, seq, envelope_id)
-         SELECT $2::uuid, mailbox.last_seq, envelope.id FROM envelope, mailbox",
+         INSERT INTO entries (device_id, seq, envelope_id, ttl_ends_at)
+         SELECT $2::uuid, mailbox.last_seq, envelope.id, now() + make_interval(secs => $6)
+         FROM envelope, mailbox",
     )
-    .bind(envelope)
+    .bind(envelope.bytes)
     .bind(recipient.to_string())
     .bind(sender.device.to_string())
     .bind(key.msg_id.to_string())
-    .bind(report)
+    .bind(envelope.report)
+    // Past `MAILBOX_LONGEST`, a `ttl` changes nothing.
+    .bind(envelope.ttl.map(|ttl| ttl.min(MAILBOX_LONGEST) as f64))
     .execute(&mut *tx)
     .await?;
+    if let Some((space, limit)) = counted
+        && !count(&mut tx, sender, key, space, limit).await?
+    {
+        return Ok(Kept::OverQuota);
+    }
     tx.commit().await?;
-    Ok(Some(stored))
+    Ok(Kept::Answer(Some(stored)))
+}
+
+/// Counts the message of `sender`'s send with `key` in `space`'s month on `conn`, unless it is
+/// counted already; `false` if it is not, as the space has stored `limit` messages this month.
+async fn count(
+    conn: &mut PgConnection,
+    sender: &Sender,
+    key: &SendKey,
+    space: SpaceId,
+    limit: u64,
+) -> Result<bool, sqlx::Error> {
+    // Of the message's envelopes stored at once, the second waits for the first to commit, and
+    // finds it counted.
+    let new = sqlx::query(
+        "INSERT INTO counted_messages (sender_id, msg_id, space_id)
+         VALUES ($1::uuid, $2::uuid, $3::uuid) ON CONFLICT DO NOTHING",
+    )
+    .bind(sender.device.to_string())
+    .bind(key.msg_id.to_string())
+    .bind(space.to_string())
+    .execute(&mut *conn)
+    .await?;
+    if new.rows_affected() == 0 {
+        return Ok(true);
+    }
+    // Last in the transaction: the month's row lock makes the space's counts wait for each other.
+    let counted: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO message_counts AS c (space_id, month, messages)
+         VALUES ($1::uuid, date_trunc('month', now() AT TIME ZONE 'UTC')::date, 1)
+         ON CONFLICT (space_id, month) DO UPDATE SET messages = c.messages + 1
+         WHERE c.messages < $2
+         RETURNING c.messages",
+    )
+    .bind(space.to_string())
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_optional(conn)
+    .await?;
+    Ok(counted.is_some())
 }

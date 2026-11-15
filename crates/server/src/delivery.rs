@@ -6,11 +6,17 @@
 
 use std::collections::HashMap;
 use std::future::pending;
+use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use skald_proto::{DeliveryStatus, DeviceId, Id, Kind, Push, RawEnvelope, ServerStatus, Unknown};
-use sqlx::PgPool;
+use sqlx::postgres::PgArguments;
+use sqlx::query::QueryAs;
+use sqlx::{PgPool, Postgres};
 use tokio::sync::watch;
+
+use crate::expiry;
 
 /// How many entries the server reads from a mailbox at a time.
 const PAGE: i64 = 100;
@@ -80,6 +86,10 @@ impl Drop for Subscription {
 /// A connection's reading of its device's mailbox.
 pub(crate) struct Reader {
     device: DeviceId,
+    /// The protocol version of the connection.
+    version: NonZeroU64,
+    /// The server's mailbox retention, as [`expiry::seconds`] gives it.
+    retention: Option<f64>,
     subscription: Subscription,
     /// Whether the connection's first `sync` came.
     synced: bool,
@@ -89,10 +99,18 @@ pub(crate) struct Reader {
 }
 
 impl Reader {
-    /// The reading of `device`'s mailbox, woken by `wakers`.
-    pub(crate) fn new(wakers: &Arc<Wakers>, device: DeviceId) -> Self {
+    /// The reading of `device`'s mailbox on a connection of the protocol version `version`, woken
+    /// by `wakers`, on a server with the mailbox retention `retention`.
+    pub(crate) fn new(
+        wakers: &Arc<Wakers>,
+        device: DeviceId,
+        version: NonZeroU64,
+        retention: Option<Duration>,
+    ) -> Self {
         Reader {
             device,
+            version,
+            retention: expiry::seconds(retention),
             subscription: wakers.subscribe(device),
             synced: false,
             sent: 0,
@@ -127,11 +145,19 @@ impl Reader {
     }
 
     /// The next page of entries after those sent, up to `seq` `upto`, in `seq` order; they count
-    /// as sent.
-    pub(crate) async fn next(&mut self, db: &PgPool, upto: i64) -> Result<Vec<Push>, sqlx::Error> {
+    /// as sent. `None` once none is left. Expired entries are left out: those in the page's range
+    /// that expired by time, and each `message` of a version not deliverable on the connection,
+    /// expire as the page reaches them, so no ack of the connection covers one as `delivered`.
+    pub(crate) async fn next(
+        &mut self,
+        db: &PgPool,
+        upto: i64,
+    ) -> Result<Option<Vec<Push>>, sqlx::Error> {
+        let wakers = &self.subscription.wakers;
+        expiry::expire_due(db, wakers, self.device, (self.sent, upto), self.retention).await?;
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT e.seq, v.envelope, e.status, e.msg_id::text, e.recipient_id::text,
-                 floor(extract(epoch FROM e.added_at))::bigint
+                 floor(extract(epoch FROM e.happened_at))::bigint
              FROM entries e LEFT JOIN envelopes v ON v.id = e.envelope_id
              WHERE e.device_id = $1::uuid AND e.seq > $2 AND e.seq <= $3
              ORDER BY e.seq LIMIT $4",
@@ -142,26 +168,38 @@ impl Reader {
         .bind(PAGE)
         .fetch_all(db)
         .await?;
-        if let Some((seq, ..)) = rows.last() {
-            self.sent = *seq;
+        let Some((last, ..)) = rows.last() else {
+            return Ok(None);
+        };
+        self.sent = *last;
+        let mut pushes = Vec::new();
+        for push in rows.into_iter().map(push) {
+            match push {
+                Push::Message { seq, envelope }
+                    if !expiry::deliverable(envelope.envelope().header.v, self.version) =>
+                {
+                    expiry::expire(db, wakers, self.device, seq.get()).await?;
+                }
+                push => pushes.push(push),
+            }
         }
-        Ok(rows.into_iter().map(push).collect())
+        Ok(Some(pushes))
     }
 }
 
 /// An entry as [`Reader::next`] reads it: its `seq`, and its envelope or its status, recipient
-/// device, msg_id and adding time.
+/// device, msg_id and the time it happened.
 type Row = (
     i64,
     Option<Vec<u8>>,
     Option<i16>,
     Option<String>,
     Option<String>,
-    i64,
+    Option<i64>,
 );
 
 /// The frame of the entry `row`.
-fn push((seq, envelope, status, msg_id, device, added): Row) -> Push {
+fn push((seq, envelope, status, msg_id, device, happened): Row) -> Push {
     let seq = u64::try_from(seq)
         .ok()
         .and_then(|seq| seq.try_into().ok())
@@ -178,7 +216,9 @@ fn push((seq, envelope, status, msg_id, device, added): Row) -> Push {
             msg_id: parsed(msg_id),
             device: parsed(device),
             status: server_status(status.expect("a stored status")),
-            timestamp: added.try_into().expect("a time after 1970"),
+            timestamp: happened
+                .and_then(|at| at.try_into().ok())
+                .expect("a stored time after 1970"),
             unknown: Unknown::default(),
         },
     }
@@ -207,23 +247,54 @@ pub(crate) async fn ack(
     device: DeviceId,
     cursor: u64,
 ) -> Result<(), sqlx::Error> {
-    let mut tx = db.begin().await?;
-    // Each deleted entry's envelope, and the sending device and msg_id of a message to report on;
-    // in the order of the senders' mailboxes, so that acks at once lock them in one order.
-    let gone: Vec<(Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
-        "WITH gone AS (
-             DELETE FROM entries WHERE device_id = $1::uuid AND seq <= $2 RETURNING seq, envelope_id
-         )
-         SELECT gone.envelope_id, CASE WHEN v.report THEN v.sender_id::text END, v.msg_id::text
-         FROM gone LEFT JOIN envelopes v ON v.id = gone.envelope_id
-         ORDER BY v.sender_id, gone.seq",
-    )
+    let query = sqlx::query_as(removing!(
+        "DELETE FROM entries WHERE device_id = $1::uuid AND seq <= $2
+         RETURNING device_id, seq, envelope_id, now() AS at"
+    ))
     .bind(device.to_string())
-    .bind(i64::try_from(cursor).unwrap_or(i64::MAX))
-    .fetch_all(&mut *tx)
-    .await?;
+    .bind(i64::try_from(cursor).unwrap_or(i64::MAX));
+    remove(db, wakers, query, ServerStatus::Delivered).await?;
+    Ok(())
+}
+
+/// A mailbox entry an ack or an expiry deleted: its device; its envelope, for a `message`; the
+/// sending device and the msg_id of a message to report on; and when it was acked or expired, in
+/// seconds since the Unix epoch.
+pub(crate) type Removed = (String, Option<i64>, Option<String>, Option<String>, f64);
+
+/// The query that runs the statement `$gone`, which deletes mailbox entries and returns the
+/// `device_id`, `seq`, `envelope_id` and `at` of each, and gives each as [`Removed`]: in the order
+/// of the senders' mailboxes, so that removals at once lock them in one order.
+macro_rules! removing {
+    ($gone:literal) => {
+        concat!(
+            "WITH gone AS (",
+            $gone,
+            ")
+             SELECT gone.device_id::text, gone.envelope_id,
+                 CASE WHEN v.report THEN v.sender_id::text END, v.msg_id::text,
+                 extract(epoch FROM gone.at)::float8
+             FROM gone LEFT JOIN envelopes v ON v.id = gone.envelope_id
+             ORDER BY v.sender_id, gone.device_id, gone.seq"
+        )
+    };
+}
+pub(crate) use removing;
+
+/// Runs `query`, a [`removing!`] one, in a transaction that also adds `status` to the sending
+/// device's mailbox for each message to report on, and deletes the envelopes that no entry refers
+/// to any more; wakes the sending devices' connections in `wakers`. Gives the number of entries it
+/// removed.
+pub(crate) async fn remove<'q>(
+    db: &PgPool,
+    wakers: &Wakers,
+    query: QueryAs<'q, Postgres, Removed, PgArguments>,
+    status: ServerStatus,
+) -> Result<usize, sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let gone = query.fetch_all(&mut *tx).await?;
     let mut senders = Vec::new();
-    for (_, sender, msg_id) in &gone {
+    for (device, _, sender, msg_id, at) in &gone {
         // A message sent with `report` false, or by a device that is gone, gets no status.
         let (Some(sender), Some(msg_id)) = (sender, msg_id) else {
             continue;
@@ -234,18 +305,23 @@ pub(crate) async fn ack(
                  ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
                  RETURNING last_seq
              )
-             INSERT INTO entries (device_id, seq, status, msg_id, recipient_id)
-             SELECT $1::uuid, mailbox.last_seq, $2, $3::uuid, $4::uuid FROM mailbox",
+             INSERT INTO entries (device_id, seq, status, msg_id, recipient_id, happened_at)
+             SELECT $1::uuid, mailbox.last_seq, $2, $3::uuid, $4::uuid, to_timestamp($5)
+             FROM mailbox",
         )
         .bind(sender)
-        .bind(ServerStatus::Delivered as i16)
+        .bind(status as i16)
         .bind(msg_id)
-        .bind(device.to_string())
+        .bind(device)
+        .bind(at)
         .execute(&mut *tx)
         .await?;
         senders.push(sender.parse().expect("a stored device ID"));
     }
-    let envelopes: Vec<i64> = gone.iter().filter_map(|(envelope, ..)| *envelope).collect();
+    let envelopes: Vec<i64> = gone
+        .iter()
+        .filter_map(|(_, envelope, ..)| *envelope)
+        .collect();
     sqlx::query(
         "DELETE FROM envelopes v WHERE v.id = ANY($1)
          AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.envelope_id = v.id)",
@@ -257,7 +333,7 @@ pub(crate) async fn ack(
     for sender in senders {
         wakers.wake(sender);
     }
-    Ok(())
+    Ok(gone.len())
 }
 
 #[cfg(test)]

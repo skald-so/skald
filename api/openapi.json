@@ -1613,6 +1613,21 @@
               }
             }
           },
+          "403": {
+            "description": "The problem `https://skald.so/problems/devices-limit`: a new device of an account that has as many devices with a certificate as the server setting `--devices-limit` allows. Devices without a certificate and `service` devices do not count. Without the setting there is no limit.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "409": {
             "description": "The server has the ID with other keys or `name`, or on another account.",
             "headers": {

@@ -322,6 +322,12 @@ impl Run {
         }
     }
 
+    /// Kills it; gives what it printed until then.
+    pub fn kill(mut self) -> Finished {
+        let _ = self.child.kill();
+        self.finish()
+    }
+
     /// Waits for it to exit, for up to [`RUN_LIMIT`] from its start.
     pub fn finish(mut self) -> Finished {
         let status = loop {

@@ -1,0 +1,9 @@
+# Upgrade boundaries: changes after which a self-hosted stack of an older release cannot be upgraded
+# and needs a new stack. script/self-host-test reads them: across one whose condition holds for the
+# last release and this commit, it brings up a new stack and skips the upgrade tests, naming them.
+# One entry per line, `<link> <condition>`:
+#   <link>       docs/self-host.md#<anchor>, the note in the guide's upgrade section that says why
+#                and what to do
+#   <condition>  a bash command, run in the repository root with $last_release set to the last
+#                release's tag; the boundary is crossed when it exits 0
+# A change that needs a new stack adds its entry and its note.

@@ -5,8 +5,8 @@ use std::num::NonZeroU64;
 
 use skald_crypto::{HpkeError, HpkeKey, open_message, seal_message};
 use skald_proto::{
-    Cbor, ChannelId, Content, DecodeError, Envelope, Header, HpkePayload, MessageId, NonEmpty,
-    Scheme, SpaceId,
+    Cbor, ChannelId, Content, DecodeError, Envelope, FieldProblem, Header, HpkePayload, MessageId,
+    NonEmpty, Scheme, SpaceId,
 };
 
 use crate::fixtures::{
@@ -198,6 +198,14 @@ fn each_error_says_what_failed() {
         (
             HpkeError::Malformed(DecodeError::Truncated),
             "a malformed hpke payload: the CBOR item is truncated",
+        ),
+        (
+            HpkeError::Content {
+                sender: "a90f5ea9-75e5-899a-90ec-3a09f33aebdf".parse().unwrap(),
+                error: DecodeError::Truncated,
+            },
+            "a malformed hpke plaintext from device a90f5ea9-75e5-899a-90ec-3a09f33aebdf: the \
+             CBOR item is truncated",
         ),
         (HpkeError::Open, "the payload does not open with the key"),
         (
@@ -484,6 +492,44 @@ fn malformed_payloads_are_refused() {
         let payload = sealed(Device::Bob, &header, &plaintext);
         assert_eq!(opened(Device::Bob, &header, &payload), None, "{what}");
     }
+}
+
+/// A plaintext that names its sender but whose content breaks the spec's CDDL, such as content
+/// without `counter`, names that sender in its error; one without a sender does not.
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn malformed_content_names_the_sender_its_plaintext_names() {
+    let header = header();
+    let uncounted = Content {
+        counter: None,
+        ..content()
+    };
+    let signature = signature(Device::Alice, &header, &uncounted);
+    let payload = sealed(
+        Device::Bob,
+        &header,
+        &plaintext(Device::Alice, &uncounted, signature),
+    );
+
+    let opened = open_message(&header, &payload, Device::Bob.id(), &Device::Bob.hpke());
+
+    let missing = DecodeError::Field {
+        field: "hpke-plaintext.content",
+        problem: FieldProblem::Embedded(Box::new(DecodeError::Field {
+            field: "content.counter",
+            problem: FieldProblem::Missing,
+        })),
+    };
+    assert_eq!(
+        opened.err(),
+        Some(HpkeError::Content {
+            sender: Device::Alice.id(),
+            error: missing,
+        })
+    );
+    let payload = sealed(Device::Bob, &header, &content().to_cbor());
+    let opened = open_message(&header, &payload, Device::Bob.id(), &Device::Bob.hpke());
+    assert!(matches!(opened, Err(HpkeError::Malformed(_))), "{opened:?}");
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]

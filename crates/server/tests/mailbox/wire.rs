@@ -130,9 +130,10 @@ pub fn now() -> u64 {
         .as_secs()
 }
 
-/// A challenge of `person`'s device session.
-fn challenge(person: &Person) -> Vec<u8> {
-    let response = person.session.call("post", CHALLENGE, None);
+/// A challenge of `person`'s device session from `server`, the request stating `version`.
+fn challenge(server: &Server, person: &Person, version: NonZeroU64) -> Vec<u8> {
+    let session = person.session.on(server);
+    let response = session.call_stating(version, "post", CHALLENGE, None);
     assert_eq!(response.status, 200, "a challenge: {}", text(&response));
     let body = json(&response);
     let challenge = body["challenge"].as_str();
@@ -154,8 +155,20 @@ impl Socket {
     /// challenge of `person`'s session: it opens `/ws` and sends `auth`, signed over the server's
     /// public address.
     pub fn to(server: &Server, flow: &DeviceFlow, person: &Person, device: &Device) -> Self {
-        let challenge = challenge(person);
-        let offer = skald_proto::subprotocol(PROTOCOL_VERSION);
+        Self::stating(server, flow, person, device, PROTOCOL_VERSION)
+    }
+
+    /// As [`Socket::to`], the connection of the protocol version `version`: its challenge request
+    /// states it, and its opening request offers its subprotocol.
+    pub fn stating(
+        server: &Server,
+        flow: &DeviceFlow,
+        person: &Person,
+        device: &Device,
+        version: NonZeroU64,
+    ) -> Self {
+        let challenge = challenge(server, person, version);
+        let offer = skald_proto::subprotocol(version);
         let (mut socket, _) = server
             .open_websocket("/ws", Some(&offer))
             .unwrap_or_else(|response| panic!("/ws refused: {}", text(&response)));

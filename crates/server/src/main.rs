@@ -182,6 +182,46 @@ struct Cli {
     )]
     owned_spaces_limit: Option<u32>,
 
+    /// How long an undelivered mailbox entry waits at most, at most 100 years; the server keeps
+    /// each idempotency key as long [default: entries wait for their ack, keys are kept for good].
+    #[arg(
+        long,
+        env = "SKALD_MAILBOX_RETENTION",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=skald_server::MAILBOX_LONGEST)
+    )]
+    mailbox_retention: Option<u64>,
+
+    /// The longest payload of an envelope a device sends, in bytes; a longer one is refused with
+    /// too-large [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_MESSAGE_SIZE_LIMIT",
+        value_name = "BYTES",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    message_size_limit: Option<u64>,
+
+    /// The number of messages a space stores per calendar month in UTC, each counted once whatever
+    /// its envelopes; the next one is refused with quota-exceeded [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_MONTHLY_MESSAGES_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    monthly_messages_limit: Option<u64>,
+
+    /// The number of devices with a certificate an account may have, service devices aside; a
+    /// new device of an account that has as many does not register [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_DEVICES_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    devices_limit: Option<u32>,
+
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
     #[arg(long, env = "SKALD_SERVER_NAME", value_name = "NAME")]
@@ -386,6 +426,10 @@ impl Cli {
             sign_up,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
+            mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
+            message_size_limit: self.message_size_limit,
+            monthly_messages_limit: self.monthly_messages_limit,
+            devices_limit: self.devices_limit,
         })
     }
 }
@@ -444,9 +488,9 @@ async fn run(mut cli: Cli) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The attachment storage of the arguments `args`, with `secret_key` as the bucket's.
-    fn storage(args: &[&str], secret_key: Option<&str>) -> Result<Option<String>, String> {
-        let mut cli = Cli::try_parse_from(
+    /// The command line of the arguments `args` and a database URL.
+    fn cli(args: &[&str]) -> Cli {
+        Cli::try_parse_from(
             [
                 "skald-server",
                 "--database-url",
@@ -455,9 +499,14 @@ mod tests {
             .iter()
             .chain(args),
         )
-        .expect("valid arguments");
+        .expect("valid arguments")
+    }
+
+    /// The attachment storage of the arguments `args`, with `secret_key` as the bucket's.
+    fn storage(args: &[&str], secret_key: Option<&str>) -> Result<Option<String>, String> {
         let secret_key = secret_key.and_then(|key| ClientSecret::new(key.to_owned()));
-        cli.attachment_storage(secret_key)
+        cli(args)
+            .attachment_storage(secret_key)
             .map(|storage| storage.map(|storage| storage.to_string()))
     }
 
@@ -471,6 +520,59 @@ mod tests {
         "--attachments-bucket-access-key-id",
         "key",
     ];
+
+    #[test]
+    fn the_mailbox_retention_is_from_a_second_to_100_years() {
+        let retention = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--mailbox-retention",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.mailbox_retention)
+            .ok()
+        };
+        assert_eq!(retention(1), Some(Some(1)));
+        let longest = skald_server::MAILBOX_LONGEST;
+        assert_eq!(retention(longest), Some(Some(longest)));
+        assert_eq!(retention(0), None);
+        assert_eq!(retention(longest + 1), None);
+    }
+
+    #[test]
+    fn the_cloud_limits_are_from_1() {
+        let parsed = |setting: &str, value: &str| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                setting,
+                value,
+            ])
+            .map(|cli| {
+                [
+                    cli.message_size_limit,
+                    cli.monthly_messages_limit,
+                    cli.devices_limit.map(u64::from),
+                ]
+            })
+            .ok()
+        };
+        let settings = [
+            "--message-size-limit",
+            "--monthly-messages-limit",
+            "--devices-limit",
+        ];
+        for (at, setting) in settings.into_iter().enumerate() {
+            let mut one = [None; 3];
+            one[at] = Some(1);
+            assert_eq!(parsed(setting, "1"), Some(one), "{setting}");
+            assert_eq!(parsed(setting, "0"), None, "{setting}");
+        }
+        assert_eq!(parsed("--devices-limit", "4294967296"), None);
+    }
 
     #[test]
     fn a_bucket_needs_all_its_settings() {
@@ -511,17 +613,7 @@ mod tests {
 
     /// The sign-up of the arguments `args`.
     fn sign_up(args: &[&str]) -> Result<SignUp, String> {
-        let mut cli = Cli::try_parse_from(
-            [
-                "skald-server",
-                "--database-url",
-                "postgres://localhost/skald",
-            ]
-            .iter()
-            .chain(args),
-        )
-        .expect("valid arguments");
-        cli.sign_up()
+        cli(args).sign_up()
     }
 
     #[test]

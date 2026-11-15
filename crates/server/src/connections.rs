@@ -227,7 +227,12 @@ async fn hold(
     mut ended: oneshot::Receiver<()>,
     sender: &Sender,
 ) {
-    let mut reader = Reader::new(&state.wakers, sender.device);
+    let mut reader = Reader::new(
+        &state.wakers,
+        sender.device,
+        sender.version,
+        state.mailbox_retention,
+    );
     loop {
         let served = tokio::select! {
             // Once the session ends, nothing more is served.
@@ -263,7 +268,15 @@ async fn serve_frame(
 ) -> Result<(), Stop> {
     let answered = match Frame::from_cbor(bytes) {
         Ok(Frame::Send { envelope, report }) => {
-            mailboxes::send(&state.db, &state.wakers, sender, &envelope, report).await
+            mailboxes::send(
+                &state.db,
+                &state.wakers,
+                state.limits,
+                sender,
+                &envelope,
+                report,
+            )
+            .await
         }
         Ok(Frame::Sync { cursor }) => return sync(state, socket, reader, cursor).await,
         Ok(Frame::Ack { seq }) => return ack(state, sender.device, seq.get()).await,
@@ -312,18 +325,16 @@ async fn deliver(
     reader: &mut Reader,
     upto: i64,
 ) -> Result<(), Stop> {
-    loop {
-        let page = reader
-            .next(&state.db, upto)
-            .await
-            .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
-        if page.is_empty() {
-            return Ok(());
-        }
+    while let Some(page) = reader
+        .next(&state.db, upto)
+        .await
+        .map_err(|err| Stop::Close(failed("read a mailbox", err)))?
+    {
         for push in page {
             send_frame(socket, &Frame::Push(push)).await?;
         }
     }
+    Ok(())
 }
 
 /// Sends `frame` on `socket`.
