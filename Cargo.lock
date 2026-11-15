@@ -2909,6 +2909,8 @@ dependencies = [
  "flate2",
  "gethostname",
  "keyring-core",
+ "mls-rs",
+ "mls-rs-crypto-rustcrypto",
  "rusqlite",
  "rustls",
  "rustls-native-certs",
