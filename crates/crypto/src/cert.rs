@@ -1,5 +1,6 @@
 //! Issuing device certificates and checking them against a pinned master key:
-//! `docs/protocol/membership.md`, "Device certificate" and "Device checks", checks 1 and 2.
+//! `docs/protocol/membership.md`, "Device certificate" and "Device checks", checks 1 and 2; checks
+//! 3 and 4 are in [`crate::revocation`].
 
 use std::fmt;
 
@@ -28,6 +29,9 @@ pub fn issue(
 /// Why a device has no valid certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceCheckError {
+    /// Checks 1 and 2 pass, and check 3 or 4 fails at `device`: the checked device, or a revoked
+    /// issuer in its chain whose counting revocations do not all keep the next device down.
+    Revoked { device: DeviceId },
     /// No certificate of the device passes the proof check.
     NoCertificate,
     /// Certificates of the device with different bodies pass the proof check, so none is valid;
@@ -68,6 +72,7 @@ impl fmt::Display for DeviceCheckError {
             }
             Self::TwoBodies => f.write_str("the device has certificates with different bodies"),
             Self::Chain { device, problem } => write!(f, "the certificate of {device}: {problem}"),
+            Self::Revoked { device } => write!(f, "{device} is revoked"),
         }
     }
 }
@@ -100,6 +105,15 @@ pub fn check_device<'c>(
     certs: &'c [Cert],
     device: DeviceId,
 ) -> Result<&'c Cert, DeviceCheckError> {
+    check_chain(master, certs, device).map(|(cert, _)| cert)
+}
+
+/// [`check_device`], with the chain: `device`, then each issuer up to the master key.
+pub(crate) fn check_chain<'c>(
+    master: &[u8; 32],
+    certs: &'c [Cert],
+    device: DeviceId,
+) -> Result<(&'c Cert, Vec<DeviceId>), DeviceCheckError> {
     let mut copies = copies_of(certs, device).map_err(|problem| match problem {
         ChainProblem::TwoBodies => DeviceCheckError::TwoBodies,
         _ => DeviceCheckError::NoCertificate,
@@ -143,7 +157,7 @@ pub fn check_device<'c>(
             .ok_or(fail(ChainProblem::Signature))?;
         let valid = *found.get_or_insert(cert);
         match next {
-            None => return Ok(valid),
+            None => return Ok((valid, chain)),
             Some(next) => copies = next,
         }
     }
