@@ -31,6 +31,7 @@ mod hpke;
 mod joined;
 mod killed;
 mod missing;
+mod rejoined;
 
 // The tests of channel messages' channel, with the kit of the tests of channel groups and the
 // device they play.

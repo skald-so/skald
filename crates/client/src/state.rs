@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
-use skald_proto::{ChannelId, DeviceId, MessageId, SpaceId};
+use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId};
+
+use crate::gaps::{Counters, Source};
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
@@ -156,6 +158,22 @@ const MIGRATIONS: &[&str] = &[
         last INTEGER NOT NULL CHECK (last >= 1)
     ) STRICT;
     ALTER TABLE inbox ADD COLUMN opened BLOB;",
+    // Gap detection: per channel, sending device and scheme (1 `mls`, 2 `hpke`), the counters the
+    // device accepted, as `gaps::Counters` encodes them, with the `seq` of the entry it last
+    // accepted; and the `seq` of the Welcome by which the device last joined each channel's group.
+    // From now on `received` holds only messages without `counter`.
+    "CREATE TABLE received_counter (
+        channel TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        scheme INTEGER NOT NULL CHECK (scheme IN (1, 2)),
+        counters BLOB NOT NULL,
+        seq INTEGER NOT NULL CHECK (seq >= 1),
+        PRIMARY KEY (channel, sender, scheme)
+    ) STRICT;
+    CREATE TABLE channel_joined (
+        channel TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL CHECK (seq >= 1)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -312,6 +330,8 @@ pub struct MlsChanges {
     /// The `seq` of each mailbox entry whose `mls` application message it decrypted, and what that
     /// gave, sealed.
     pub opened: Vec<(u64, Vec<u8>)>,
+    /// Each channel whose group it joined, with the `seq` of the Welcome's entry.
+    pub joined: Vec<(ChannelId, u64)>,
 }
 
 impl MlsChanges {
@@ -321,6 +341,7 @@ impl MlsChanges {
             && self.taken.is_empty()
             && self.messages.is_empty()
             && self.opened.is_empty()
+            && self.joined.is_empty()
     }
 }
 
@@ -588,6 +609,13 @@ impl State {
                 tx.execute(
                     "UPDATE inbox SET opened = ?2 WHERE seq = ?1",
                     params![sql_seq(*seq)?, opened],
+                )?;
+            }
+            for (channel, seq) in &changes.joined {
+                tx.execute(
+                    "INSERT INTO channel_joined (channel, seq) VALUES (?1, ?2)
+                     ON CONFLICT DO UPDATE SET seq = excluded.seq",
+                    params![channel.to_string(), sql_seq(*seq)?],
                 )?;
             }
             Ok(())
@@ -982,6 +1010,69 @@ impl State {
             params![sender.to_string(), msg_id.to_string()],
         )?;
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![sql_seq(seq)?])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The counters the device accepted from `source` that hold for the entry `seq`: none before
+    /// the first, nor, under `mls`, if the device joined the channel's group by a Welcome after
+    /// the entry it last accepted from `source` and before `seq`.
+    pub fn counters(&self, source: &Source, seq: u64) -> Result<Option<Counters>, Error> {
+        let channel = source.channel.to_string();
+        let row: Option<(Vec<u8>, i64)> = self
+            .db
+            .query_row(
+                "SELECT counters, seq FROM received_counter
+                 WHERE channel = ?1 AND sender = ?2 AND scheme = ?3",
+                params![channel, source.device.to_string(), source.scheme as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((counters, accepted)) = row else {
+            return Ok(None);
+        };
+        if source.scheme == Scheme::Mls {
+            let joined: Option<i64> = self
+                .db
+                .query_row(
+                    "SELECT seq FROM channel_joined WHERE channel = ?1",
+                    params![channel],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let seq = sql_seq(seq)?;
+            if joined.is_some_and(|joined| accepted < joined && joined < seq) {
+                return Ok(None);
+            }
+        }
+        Counters::from_bytes(&counters).map(Some).ok_or_else(|| {
+            Error::Malformed(format!("the counters of the device {}", source.device))
+        })
+    }
+
+    /// Records `counters` as those the device accepted from `source` with the entry `seq`, and
+    /// takes the entry out of the inbox, at once.
+    pub fn shown_counted(
+        &self,
+        seq: u64,
+        source: &Source,
+        counters: &Counters,
+    ) -> Result<(), Error> {
+        let seq = sql_seq(seq)?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO received_counter (channel, sender, scheme, counters, seq)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT DO UPDATE SET counters = excluded.counters, seq = excluded.seq",
+            params![
+                source.channel.to_string(),
+                source.device.to_string(),
+                source.scheme as i64,
+                counters.to_bytes(),
+                seq
+            ],
+        )?;
+        tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
         Ok(())
     }
@@ -1727,6 +1818,57 @@ pub(crate) mod tests {
         assert!(!state.received(sender, MessageId::generate()).unwrap());
         let other = DeviceId::from_signing_key(&[3; 32]);
         assert!(!state.received(other, msg_id).unwrap());
+    }
+
+    /// The counters accepted from a sending device are kept per channel and scheme with the entry
+    /// that took them out of the inbox. Under `mls`, a Welcome to the channel's group after that
+    /// entry drops them for the entries after the Welcome; under `hpke`, it does not.
+    #[test]
+    fn counters_are_kept_per_source_until_the_device_joins_the_channel_again() {
+        let dir = TestDir::new("state-counters");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        state.write_entries(&[(3, vec![3]), (4, vec![4])]).unwrap();
+        let (channel, other) = (ChannelId::generate(), ChannelId::generate());
+        let source = |channel, scheme| Source {
+            channel,
+            device: DeviceId::from_signing_key(&[2; 32]),
+            scheme,
+        };
+        let (mls, hpke) = (source(channel, Scheme::Mls), source(channel, Scheme::Hpke));
+        let kept = Counters {
+            highest: 7,
+            missing: vec![(2, 3)],
+        };
+        assert_eq!(state.counters(&mls, 5).unwrap(), None);
+
+        state.shown_counted(3, &mls, &kept).unwrap();
+        state.shown_counted(4, &hpke, &Counters::default()).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert!(state.inbox().unwrap().is_empty());
+        assert_eq!(state.counters(&mls, 5).unwrap(), Some(kept.clone()));
+        assert_eq!(state.counters(&hpke, 5).unwrap(), Some(Counters::default()));
+        assert_eq!(
+            state.counters(&source(other, Scheme::Mls), 5).unwrap(),
+            None
+        );
+        state
+            .mls_change(|_| {
+                let joined = MlsChanges {
+                    joined: vec![(channel, 5)],
+                    ..MlsChanges::default()
+                };
+                Ok((None, joined, ()))
+            })
+            .unwrap();
+        assert_eq!(state.counters(&mls, 4).unwrap(), Some(kept.clone()));
+        assert_eq!(state.counters(&mls, 6).unwrap(), None);
+        assert_eq!(state.counters(&hpke, 6).unwrap(), Some(Counters::default()));
+        state.shown_counted(6, &mls, &kept).unwrap();
+        assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept));
     }
 
     #[test]
