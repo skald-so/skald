@@ -3002,6 +3002,8 @@ dependencies = [
  "clap",
  "getrandom 0.4.3",
  "jsonschema",
+ "mls-rs",
+ "mls-rs-crypto-rustcrypto",
  "ring",
  "rustls",
  "rustls-native-certs",
