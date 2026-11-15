@@ -156,6 +156,18 @@ const MIGRATIONS: &[&str] = &[
         last INTEGER NOT NULL CHECK (last >= 1)
     ) STRICT;
     ALTER TABLE inbox ADD COLUMN opened BLOB;",
+    // Revocations: each one the device holds as counting, as its CBOR bytes, whether the server
+    // gave it, a Commit carried it or the device signed it; one the device signed is `pending` until
+    // the server takes it. And whether the device last held each device it checked revoked, so it
+    // warns when that changes.
+    "CREATE TABLE revocation (
+        revocation BLOB PRIMARY KEY,
+        pending INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1))
+    ) STRICT;
+    CREATE TABLE device_status (
+        device TEXT PRIMARY KEY,
+        revoked INTEGER NOT NULL CHECK (revoked IN (0, 1))
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -312,6 +324,8 @@ pub struct MlsChanges {
     /// The `seq` of each mailbox entry whose `mls` application message it decrypted, and what that
     /// gave, sealed.
     pub opened: Vec<(u64, Vec<u8>)>,
+    /// Revocations that count that a Commit it processed carried, as their CBOR bytes.
+    pub revocations: Vec<Vec<u8>>,
 }
 
 impl MlsChanges {
@@ -321,6 +335,7 @@ impl MlsChanges {
             && self.taken.is_empty()
             && self.messages.is_empty()
             && self.opened.is_empty()
+            && self.revocations.is_empty()
     }
 }
 
@@ -589,6 +604,9 @@ impl State {
                     "UPDATE inbox SET opened = ?2 WHERE seq = ?1",
                     params![sql_seq(*seq)?, opened],
                 )?;
+            }
+            for revocation in &changes.revocations {
+                add_revocation(&tx, revocation, false)?;
             }
             Ok(())
         };
@@ -904,6 +922,69 @@ impl State {
         .transpose()
     }
 
+    /// The revocations the device holds, as their CBOR bytes, with whether each waits for the
+    /// server to take it.
+    pub fn revocations(&self) -> Result<Vec<(Vec<u8>, bool)>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT revocation, pending FROM revocation ORDER BY rowid")?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Keeps `revocations`, as their CBOR bytes, among those the device holds; those it signed
+    /// wait for the server if `pending`.
+    pub fn add_revocations(&self, revocations: &[Vec<u8>], pending: bool) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for revocation in revocations {
+            add_revocation(&tx, revocation, pending)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that the server took `revocation`, which the device signed.
+    pub fn revocation_taken(&self, revocation: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE revocation SET pending = 0 WHERE revocation = ?1",
+            params![revocation],
+        )?;
+        Ok(())
+    }
+
+    /// Records whether each of `devices` is revoked; gives those the device held otherwise before,
+    /// each with whether it is revoked now. A device it never held either way is recorded only.
+    pub fn device_statuses(
+        &self,
+        devices: &[(DeviceId, bool)],
+    ) -> Result<Vec<(DeviceId, bool)>, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let mut changed = Vec::new();
+        for &(device, revoked) in devices {
+            let id = device.to_string();
+            let held: Option<bool> = tx
+                .query_row(
+                    "SELECT revoked FROM device_status WHERE device = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if held == Some(revoked) {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO device_status (device, revoked) VALUES (?1, ?2)
+                 ON CONFLICT (device) DO UPDATE SET revoked = excluded.revoked",
+                params![id, revoked],
+            )?;
+            if held.is_some() {
+                changed.push((device, revoked));
+            }
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+
     /// The device's mailbox cursor: the highest `seq` it wrote, 0 before the first.
     pub fn cursor(&self) -> Result<u64, Error> {
         let cursor: Option<i64> = self
@@ -1088,6 +1169,17 @@ type EnvelopeRow = ([String; 3], Vec<u8>);
 fn id<T: std::str::FromStr>(what: &str, text: &str) -> Result<T, Error> {
     text.parse()
         .map_err(|_| Error::Malformed(format!("the {what} {text:?}")))
+}
+
+/// Keeps `revocation`, as its CBOR bytes, in `tx`, waiting for the server if `pending`; one held
+/// already keeps waiting only while both wait.
+fn add_revocation(tx: &Transaction, revocation: &[u8], pending: bool) -> Result<(), Error> {
+    tx.execute(
+        "INSERT INTO revocation (revocation, pending) VALUES (?1, ?2)
+         ON CONFLICT (revocation) DO UPDATE SET pending = pending AND excluded.pending",
+        params![revocation, pending],
+    )?;
+    Ok(())
 }
 
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
@@ -1976,6 +2068,79 @@ pub(crate) mod tests {
 
         assert_eq!(saved, Err(Error::WalBusy.to_string()));
         reader.db.execute_batch("COMMIT").unwrap();
+    }
+
+    #[test]
+    fn revocation_the_device_signed_waits_until_the_server_takes_it() {
+        let dir = TestDir::new("state-revocations");
+        let state = State::open(&dir).unwrap();
+        let (signed, given, other) = (vec![1, 2], vec![3, 4], vec![5, 6]);
+
+        state
+            .add_revocations(&[signed.clone(), other.clone()], true)
+            .unwrap();
+        state
+            .add_revocations(std::slice::from_ref(&given), false)
+            .unwrap();
+        state
+            .add_revocations(std::slice::from_ref(&given), true)
+            .unwrap();
+        assert_eq!(
+            state.revocations().unwrap(),
+            vec![
+                (signed.clone(), true),
+                (other.clone(), true),
+                (given.clone(), false)
+            ]
+        );
+
+        state.revocation_taken(&signed).unwrap();
+        state
+            .mls_change(|_| {
+                let changes = MlsChanges {
+                    revocations: vec![vec![7]],
+                    ..MlsChanges::default()
+                };
+                Ok((None, changes, ()))
+            })
+            .unwrap();
+
+        assert_eq!(
+            state.revocations().unwrap(),
+            vec![
+                (signed, false),
+                (other, true),
+                (given, false),
+                (vec![7], false)
+            ]
+        );
+    }
+
+    #[test]
+    fn device_status_changes_are_given_once_and_first_statuses_are_only_recorded() {
+        let dir = TestDir::new("state-device-statuses");
+        let state = State::open(&dir).unwrap();
+        let (ada, bob) = (
+            DeviceId::from_signing_key(&[1; 32]),
+            DeviceId::from_signing_key(&[2; 32]),
+        );
+
+        assert_eq!(
+            state.device_statuses(&[(ada, false), (bob, true)]).unwrap(),
+            vec![]
+        );
+        assert_eq!(
+            state.device_statuses(&[(ada, true), (bob, false)]).unwrap(),
+            vec![(ada, true), (bob, false)]
+        );
+        assert_eq!(
+            state.device_statuses(&[(ada, true), (bob, false)]).unwrap(),
+            vec![]
+        );
+        assert_eq!(
+            state.device_statuses(&[(ada, false)]).unwrap(),
+            vec![(ada, false)]
+        );
     }
 
     #[test]

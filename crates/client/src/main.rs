@@ -11,6 +11,7 @@ mod groups;
 mod key_packages;
 mod plain_path;
 mod recv;
+mod revocations;
 mod secrets;
 mod send;
 mod set_username;
@@ -131,10 +132,22 @@ enum Command {
     },
     /// Lists the devices of the account this machine signed in to, from the server of its session.
     ///
-    /// Each device is checked against the account's master key this machine pinned: a device with
-    /// a valid certificate shows by its certificate's name, kind and date issued; any other, such
-    /// as one only the server signed, is listed apart as not linked, by its ID only.
+    /// Each device is checked against the account's master key this machine pinned and the
+    /// account's revocations: a device with a valid certificate shows by its certificate's name,
+    /// kind and date issued, and a revoked one so too, marked revoked; any other, such as one only
+    /// the server signed, is listed apart as not linked, by its ID only. Warns of each device
+    /// revoked, or valid again, since this device last checked it.
     Devices,
+    /// Revokes a device of the account this machine signed in to, this one included, on a device
+    /// with a valid certificate: this device signs the revocation, and the server stores it. A
+    /// revocation the server has not taken waits in the local state, and the next skald command
+    /// that connects sends it again. The other member devices remove the revoked device from each
+    /// channel, and it reads nothing sent after; a revoked device sends and receives nothing.
+    RevokeDevice {
+        /// The device's ID, as skald devices shows it.
+        #[arg(value_name = "DEVICE")]
+        device: String,
+    },
     /// Signs this machine out: ends its session on the server it signed in to and deletes the
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
     /// account resumes the same device.
@@ -162,8 +175,9 @@ enum Command {
     /// and warns of each one that has no effect.
     Spaces,
     /// Shows the members of a space this device follows, as its last accepted roster revision gives
-    /// them: each one's handle and role, and its devices with a valid certificate. It first accepts
-    /// the revisions the server has, and warns of each one that has no effect.
+    /// them: each one's handle and role, and its devices with a valid certificate, then its revoked
+    /// ones. It first accepts the revisions the server has, and warns of each one that has no
+    /// effect and of each device revoked, or valid again, since this device last checked it.
     Members {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
@@ -345,6 +359,10 @@ fn main() -> ExitCode {
                 .and_then(|dir| devices::run(&dir, cli.key_storage, speaks, timeout));
             exit(result)
         }
+        Command::RevokeDevice { device } => exit(
+            state::dir(cli.state_dir)
+                .and_then(|dir| revocations::run(&dir, cli.key_storage, speaks, timeout, &device)),
+        ),
         Command::SignOut => {
             let result = state::dir(cli.state_dir)
                 .and_then(|dir| sign_out::run(&dir, cli.key_storage, speaks, timeout));

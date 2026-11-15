@@ -8,7 +8,10 @@
 //!   if its signer is admitted, and processes another device's Commit, warning of each device it
 //!   adds that is not admitted once it accepted the space's latest revisions.
 //! - It commits the Remove of each member that is not admitted, and, when it signed the space's
-//!   last accepted revision, the Adds of the admitted devices the group lacks.
+//!   last accepted revision, the Adds of the admitted devices the group lacks. A Commit with the
+//!   Remove of a revoked device carries the revocations by which this device holds it revoked; of
+//!   those another device's Commit carries, it keeps the ones that count, and warns of the devices
+//!   they revoke, before it judges the new epoch.
 //! - Its own Commit goes into the outbox with the state that holds it pending, all at once, before
 //!   it is sent, and is sent again with the same bytes until the server answers. After `stored` it
 //!   merges the Commit, uploads the new epoch's GroupInfo, then sends the Welcome to the devices it
@@ -43,8 +46,9 @@ use skald_proto::{
 use crate::connection::{Method, WebSocket};
 use crate::device::Keys;
 use crate::devices::text;
-use crate::follow::SpaceDevices;
+use crate::follow::{self, SpaceDevices};
 use crate::key_packages;
+use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
 use crate::state::{self, Counted, MlsChanges, MlsOutgoing, Outgoing, State};
@@ -560,9 +564,13 @@ pub fn align(
         }
         let aligned = match held.get(&id) {
             None => create(follower, link, (space, id), &admitted),
-            Some(members) => {
-                keep_in_line(follower, link, (space, id), (roster, &admitted), members)
-            }
+            Some(members) => keep_in_line(
+                follower,
+                link,
+                (space, id),
+                (roster, devices, &admitted),
+                members,
+            ),
         };
         if let Err(err) = aligned {
             eprintln!(
@@ -594,14 +602,14 @@ fn create(
     })
 }
 
-/// Commits the Remove of each of `members`, the group of `channel`, that is not admitted; with
-/// none, and if this device signed `roster`, the Adds of the devices of `others`, the other
-/// admitted devices, that the group lacks.
+/// Commits the Remove of each of `members`, the group of `channel`, that is not admitted, carrying
+/// the revocations of `devices` by which those revoked are; with none, and if this device signed
+/// `roster`, the Adds of the devices of `others`, the other admitted devices, that the group lacks.
 fn keep_in_line(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
-    (roster, others): (&Roster, &BTreeMap<DeviceId, Cert>),
+    (roster, devices, others): (&Roster, &SpaceDevices, &BTreeMap<DeviceId, Cert>),
     members: &[MemberDevice],
 ) -> Result<(), String> {
     let this = follower.this;
@@ -611,8 +619,14 @@ fn keep_in_line(
         .map(|member| member.device)
         .collect();
     if !strangers.is_empty() {
+        let own = &follower.own;
+        let carried = revocations::carried(
+            devices,
+            |account| follow::master_of(roster, own, account),
+            &strangers,
+        );
         return commit(follower, link, (space, channel), |device| {
-            device.remove_devices(channel, &strangers, b"", now())
+            device.remove_devices(channel, &strangers, &carried, now())
         });
     }
     if roster.body().signer != this {
@@ -879,9 +893,10 @@ fn sync_again(follower: &mut Follower, space: &state::Space, rosters: &mut Roste
     }
 }
 
-/// Processes another device's Commit that `taking` holds. Of each device it adds that is not
-/// admitted, the device warns once it accepted the space's latest revisions; it then uploads the
-/// GroupInfo if the server has none of the new epoch.
+/// Processes another device's Commit that `taking` holds. It keeps the revocations the Commit
+/// carries that count, with the epoch, and warns of the devices they revoke. Of each device it adds
+/// that is not admitted, the device warns once it accepted the space's latest revisions; it then
+/// uploads the GroupInfo if the server has none of the new epoch.
 fn processed(
     follower: &mut Follower,
     link: &mut Link,
@@ -891,21 +906,25 @@ fn processed(
     let (seq, space, envelope) = (taking.seq, taking.space, taking.envelope);
     let channel = envelope.header.channel;
     let mut seen = None;
+    let mut learned = Vec::new();
+    let (roster, devices) = &rosters[&space.id];
+    let own = &follower.own;
+    let master = |account| follow::master_of(roster, own, account);
     let result = step(follower, &link.keys, |device, changes| {
         changes.taken.push(seq);
         if device.epoch(channel).is_err() {
             // A Commit of a group the device is not in.
             return Ok(None);
         }
-        Ok(Some(device.process_commit(
-            channel,
-            &envelope.payload,
-            now(),
-            |change| {
-                seen = Some(change.clone());
-                true
-            },
-        )))
+        let processed = device.process_commit(channel, &envelope.payload, now(), |change| {
+            learned = revocations::learned(&change.authenticated_data, devices, master);
+            seen = Some(change.clone());
+            true
+        });
+        if processed.is_ok() {
+            changes.revocations = learned.iter().map(skald_proto::Cbor::to_cbor).collect();
+        }
+        Ok(Some(processed))
     })?;
     let name = &space.name;
     let change = match (result, seen) {
@@ -919,6 +938,14 @@ fn processed(
         }
         _ => return Ok(()),
     };
+    if !learned.is_empty()
+        && let Some((roster, devices)) = rosters.get_mut(&space.id)
+    {
+        devices.revocations.extend(learned);
+        for warning in follow::device_changes(&follower.state, roster, devices, &follower.own)? {
+            eprintln!("skald: warning: {warning}");
+        }
+    }
     let mut added = strangers(follower, &rosters[&space.id], channel, &change.added);
     if !added.is_empty() {
         // Before it holds them not admitted, the device accepts the space's latest revisions.

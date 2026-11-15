@@ -238,7 +238,7 @@ pub fn admitted<'d>(
             .flat_map(|ids| ids.iter())
             .copied()
             .collect();
-        for cert in devices::check(&master, &devices.ids, &devices.certs).linked {
+        for cert in devices::check(&master, devices).linked {
             let body = cert.body();
             if body.account == member.account
                 && body.kind == DeviceKind::Client
@@ -678,6 +678,7 @@ pub(crate) mod tests {
         let devices = SpaceDevices {
             ids: certs.iter().map(id).collect(),
             certs: certs.clone(),
+            revocations: Vec::new(),
         };
 
         let given: BTreeMap<DeviceId, [u8; 32]> =

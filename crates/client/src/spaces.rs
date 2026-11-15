@@ -33,6 +33,7 @@ use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
 use crate::groups;
 use crate::key_packages;
+use crate::revocations;
 use crate::secrets;
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -379,7 +380,8 @@ impl Follower {
         let Some((device, master, cert)) = certified(&state)? else {
             return Ok(None);
         };
-        let connection = to_session(&server, speaks, timeout)?;
+        let mut connection = to_session(&server, speaks, timeout)?;
+        revocations::send_pending(&mut connection, &token, &state);
         Ok(Some(Follower {
             state,
             connection,
@@ -413,6 +415,16 @@ impl Follower {
         self.connection
             .open_websocket_as("/ws", &self.token, keys.id(), keys.signing())
             .map_err(text)
+    }
+
+    /// Fails, saying so, if this device is revoked ([`revocations::refuse_if_revoked`]).
+    pub fn refuse_if_revoked(&mut self) -> Result<(), String> {
+        revocations::refuse_if_revoked(
+            &mut self.connection,
+            &self.token,
+            &self.state,
+            (&self.own.master, &self.cert),
+        )
     }
 
     /// The device's keys.
@@ -535,7 +547,12 @@ impl Follower {
             eprintln!("skald: warning: {}", unsent.why);
             if unsent.waits {
                 let held = follow::read(&self.state, space.id, &space.name)?;
-                let devices = follow::space_devices(&mut self.connection, &self.token, space.id)?;
+                let devices = follow::space_devices(
+                    &mut self.connection,
+                    &self.token,
+                    &self.state,
+                    space.id,
+                )?;
                 return Ok((follow::decode(&held.last, &space.name)?, devices));
             }
         }
@@ -875,6 +892,7 @@ pub fn synced(
 /// The space of the channel `channel` that the device of the machine whose state is in `dir`, its
 /// secrets in `storage`, follows, synced ([`Follower::sync`]); within `scope`. The spaces whose
 /// last accepted revision has the channel are synced first, then, while none has it, the others.
+/// Fails first if the device is revoked ([`Follower::refuse_if_revoked`]).
 pub fn of_channel(
     dir: &Path,
     storage: secrets::Storage,
@@ -884,6 +902,7 @@ pub fn of_channel(
     scope: Scope,
 ) -> Result<Synced, String> {
     let mut follower = following(dir, storage, speaks, timeout, scope)?;
+    follower.refuse_if_revoked()?;
     let mut spaces: Vec<state::Space> = follower
         .state
         .spaces()
@@ -1024,9 +1043,9 @@ pub fn members(synced: Synced) -> Result<(), String> {
 
 /// What `skald members` shows of `roster`, a space's last accepted revision, with `devices`, those
 /// of its accounts: each member's handle and role, and under it each device of its account with a
-/// valid certificate, as `skald devices` shows it, `this` device marked; and the warnings of
-/// `skald devices` for them. A certificate is checked against the master key `own` pinned for its
-/// own account, and against the `master` the revision gives any other.
+/// valid certificate, then each revoked one, as `skald devices` shows them, `this` device marked;
+/// and the warnings of `skald devices` for them. A certificate is checked against the master key
+/// `own` pinned for its own account, and against the `master` the revision gives any other.
 fn members_listing(
     roster: &Roster,
     devices: &SpaceDevices,
@@ -1047,7 +1066,7 @@ fn members_listing(
         } else {
             member.master
         };
-        let checked = devices::check(&master, &devices.ids, &devices.certs);
+        let checked = devices::check(&master, devices);
         for warning in devices::two_bodies_warnings(&checked) {
             if !warnings.contains(&warning) {
                 warnings.push(warning);
@@ -1065,6 +1084,9 @@ fn members_listing(
         }
         for cert in linked {
             out.push_str(&format!("    {}\n", devices::linked_line(cert, this)));
+        }
+        for cert in (checked.revoked.iter()).filter(|cert| cert.body().account == member.account) {
+            out.push_str(&format!("    {}\n", devices::revoked_line(cert, this)));
         }
     }
     (out, warnings)
@@ -1243,12 +1265,58 @@ pub(crate) mod tests {
             certs: &[Cert],
             this: DeviceId,
         ) -> (String, Vec<String>) {
+            self.listing_with(roster, (certs, Vec::new()), this)
+        }
+
+        /// As [`Pair::listing`], with `revocations`.
+        fn listing_with(
+            &self,
+            roster: &Roster,
+            (certs, revocations): (&[Cert], Vec<skald_proto::Revocation>),
+            this: DeviceId,
+        ) -> (String, Vec<String>) {
             let devices = SpaceDevices {
                 ids: certs.iter().map(|cert| cert.body().device).collect(),
                 certs: certs.to_vec(),
+                revocations,
             };
             members_listing(roster, &devices, &self.own(), this)
         }
+    }
+
+    #[test]
+    fn members_show_each_members_revoked_devices_after_its_valid_ones() {
+        let pair = Pair::new();
+        let keys: Vec<SigningKey> = (0..3).map(|_| SigningKey::generate()).collect();
+        let certs = vec![
+            cert(pair.bob, &pair.bob_master, &keys[0], "bob-old"),
+            cert(pair.bob, &pair.bob_master, &keys[1], "bob-new"),
+            cert(pair.ada, &pair.ada_master, &keys[2], "ada-laptop"),
+        ];
+        let (old, new) = (certs[0].body().device, certs[1].body().device);
+        let body = skald_proto::RevocationBody {
+            account: pair.bob,
+            device: old,
+            keep: None,
+            signer: Some(new),
+            timestamp: 1_800_000_000,
+            also: None,
+            unknown: skald_proto::Unknown::default(),
+        };
+        let revocation = skald_crypto::sign_revocation(&body, &keys[1]).unwrap();
+        let roster = pair.roster();
+        let this = certs[2].body().device;
+
+        let (shown, _) = pair.listing_with(&roster, (&certs, vec![revocation]), this);
+
+        assert!(
+            shown.ends_with(&format!(
+                "  bob  member\n    {}\n    {}\n",
+                devices::linked_line(&certs[1], this),
+                devices::revoked_line(&certs[0], this)
+            )),
+            "{shown}"
+        );
     }
 
     #[test]

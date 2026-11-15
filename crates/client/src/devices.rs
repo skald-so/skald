@@ -1,7 +1,10 @@
 //! `skald devices`: the account's devices, as the server gives them, checked against the master key
-//! the machine pinned in its local state, never against the one the server gives
+//! the machine pinned in its local state, never against the one the server gives, and against the
+//! revocations the server gives with them and those the device holds
 //! (`docs/protocol/membership.md`, "Device certificate" and "Device checks"). A device shows by its
-//! certificate's `name`, `kind` and `issued` only when it is valid; the others show by ID only.
+//! certificate's `name`, `kind` and `issued` only when checks 1 and 2 pass, marked if it is
+//! revoked; the others show by ID only. It warns of each device revoked, or valid again, since the
+//! device last checked it.
 
 use std::path::Path;
 use std::time::Duration;
@@ -9,10 +12,12 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
-use skald_crypto::{ChainProblem, DeviceCheckError, check_device};
-use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, VersionRange};
+use skald_crypto::{ChainProblem, DeviceCheckError, check_device, check_valid_device};
+use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, Revocation, VersionRange};
 
 use crate::connection::{self, Connection, printable};
+use crate::follow::SpaceDevices;
+use crate::revocations;
 use crate::secrets;
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -24,6 +29,8 @@ const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --
 #[derive(Deserialize)]
 struct Devices {
     devices: Vec<Entry>,
+    #[serde(default)]
+    revocations: Vec<String>,
 }
 
 /// `Device` in the API spec: anything else the server gives with it, such as a name, is ignored.
@@ -57,14 +64,66 @@ pub fn run(
     };
 
     let mut connection = to_session(&server, speaks, timeout)?;
-    let (ids, certs) = fetch(&mut connection, "/devices", &token)?;
+    revocations::send_pending(&mut connection, &token, &state);
+    let devices = own(&mut connection, &token, &state, &master)?;
 
-    let checked = check(&master, &ids, &certs);
+    let checked = check(&master, &devices);
     print!("{}", listing(&checked, this));
-    for warning in two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked)) {
+    let changed = statuses(&state, &checked, None, "this account")?;
+    for warning in
+        (two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked))).chain(changed)
+    {
         eprintln!("skald: warning: {warning}");
     }
     Ok(())
+}
+
+/// The devices of the account of the session `token`, with the revocations the server gives and
+/// those `state` holds; keeps in `state` those the server gives that count against the pinned
+/// `master` key.
+pub fn own(
+    connection: &mut Connection,
+    token: &str,
+    state: &State,
+    master: &[u8; 32],
+) -> Result<SpaceDevices, String> {
+    let devices = fetch(connection, "/devices", token, state)?;
+    revocations::keep(state, &devices, |_| Some(*master))?;
+    Ok(devices)
+}
+
+/// Records in `state` whether each device `checked` holds with a certificate that passes checks 1
+/// and 2, of `account` if given, is revoked; gives the warning of each that is revoked, or valid
+/// again, since the device last checked it, as a device of `whose` ("Device checks").
+pub fn statuses(
+    state: &State,
+    checked: &Checked,
+    account: Option<skald_proto::AccountId>,
+    whose: &str,
+) -> Result<Vec<String>, String> {
+    let of = |cert: &Cert| account.is_none_or(|account| cert.body().account == account);
+    let seen: Vec<(DeviceId, bool)> = (checked.linked.iter().map(|cert| (cert, false)))
+        .chain(checked.revoked.iter().map(|cert| (cert, true)))
+        .filter(|(cert, _)| of(cert))
+        .map(|(cert, revoked)| (cert.body().device, revoked))
+        .collect();
+    let changed = state.device_statuses(&seen).map_err(text)?;
+    Ok(changed
+        .into_iter()
+        .map(|(device, revoked)| {
+            if revoked {
+                format!(
+                    "the device {device} of {whose} is revoked: this device no longer sends to it, \
+                     accepts content from it or admits it to a channel"
+                )
+            } else {
+                format!(
+                    "the device {device} of {whose} is valid again: a revocation by its account's \
+                     master key voided the revocation of it"
+                )
+            }
+        })
+        .collect())
 }
 
 /// The warning of each device in `checked` with certificates of two bodies
@@ -94,13 +153,15 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
         .collect()
 }
 
-/// `GET <path>` as the session `token`: a device list, as the IDs of its devices and the
-/// certificates it gives; a certificate that does not decode counts as none.
+/// `GET <path>` as the session `token`: a device list, as the IDs of its devices, the
+/// certificates it gives, and the revocations it gives with those `state` holds; a certificate or
+/// revocation that does not decode counts as none.
 pub fn fetch(
     connection: &mut Connection,
     path: &str,
     token: &str,
-) -> Result<(Vec<DeviceId>, Vec<Cert>), String> {
+    state: &State,
+) -> Result<SpaceDevices, String> {
     let body = connection.get_as(path, token).map_err(text)?;
     let devices: Devices = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
@@ -117,7 +178,16 @@ pub fn fetch(
             Cert::from_cbor(&bytes).ok()
         })
         .collect();
-    Ok((ids, certs))
+    let given = devices.revocations.iter().filter_map(|text| {
+        let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
+        Revocation::from_cbor(&bytes).ok()
+    });
+    let revocations = revocations::with_held(state, given)?;
+    Ok(SpaceDevices {
+        ids,
+        certs,
+        revocations,
+    })
 }
 
 /// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the
@@ -192,29 +262,41 @@ pub fn text(err: impl std::fmt::Display) -> String {
 pub struct Checked<'c> {
     /// The valid certificates, one per device, in the list's order.
     pub linked: Vec<&'c Cert>,
-    /// The devices without a valid certificate, in the list's order.
+    /// The certificates that pass checks 1 and 2 of revoked devices, one per device, in the list's
+    /// order.
+    pub revoked: Vec<&'c Cert>,
+    /// The devices without a certificate that passes checks 1 and 2, in the list's order.
     apart: Vec<DeviceId>,
     /// The devices, listed or issuers in a chain, with certificates of two bodies.
     two_bodies: Vec<DeviceId>,
 }
 
-/// Checks each of `devices` once against the pinned `master` key, with `certs`, all the
-/// certificates the server gave.
-pub fn check<'c>(master: &[u8; 32], devices: &[DeviceId], certs: &'c [Cert]) -> Checked<'c> {
+/// Checks each device of `devices` once against the pinned `master` key, with all the
+/// certificates and revocations it holds.
+pub fn check<'c>(master: &[u8; 32], devices: &'c SpaceDevices) -> Checked<'c> {
+    let SpaceDevices {
+        ids,
+        certs,
+        revocations,
+    } = devices;
     let mut checked = Checked {
         linked: Vec::new(),
+        revoked: Vec::new(),
         apart: Vec::new(),
         two_bodies: Vec::new(),
     };
     let mut seen = Vec::new();
-    for &device in devices {
+    for &device in ids {
         if seen.contains(&device) {
             continue;
         }
         seen.push(device);
         let twice = match check_device(master, certs, device) {
             Ok(cert) => {
-                checked.linked.push(cert);
+                match check_valid_device(master, certs, revocations, device) {
+                    Ok(_) => checked.linked.push(cert),
+                    Err(_) => checked.revoked.push(cert),
+                }
                 continue;
             }
             Err(DeviceCheckError::TwoBodies) => Some(device),
@@ -234,8 +316,8 @@ pub fn check<'c>(master: &[u8; 32], devices: &[DeviceId], certs: &'c [Cert]) -> 
     checked
 }
 
-/// The list of `checked` on `this` device: the linked devices, then those not linked, each part
-/// under its heading if it has any.
+/// The list of `checked` on `this` device: the linked devices, the revoked ones, then those not
+/// linked, each part under its heading if it has any.
 fn listing(checked: &Checked, this: DeviceId) -> String {
     let mut out = String::new();
     if !checked.linked.is_empty() {
@@ -244,6 +326,12 @@ fn listing(checked: &Checked, this: DeviceId) -> String {
         );
         for cert in &checked.linked {
             out.push_str(&format!("  {}\n", linked_line(cert, this)));
+        }
+    }
+    if !checked.revoked.is_empty() {
+        out.push_str("Revoked: chained to that key, and revoked since\n");
+        for cert in &checked.revoked {
+            out.push_str(&format!("  {}\n", revoked_line(cert, this)));
         }
     }
     if !checked.apart.is_empty() {
@@ -273,6 +361,12 @@ pub fn linked_line(cert: &Cert, this: DeviceId) -> String {
         line.push_str("  (this device)");
     }
     line
+}
+
+/// The line of a revoked device with `cert`, its certificate that passes checks 1 and 2, marked if
+/// it is `this` device.
+pub fn revoked_line(cert: &Cert, this: DeviceId) -> String {
+    format!("{}  revoked", linked_line(cert, this))
 }
 
 /// The date of `seconds` since the Unix epoch, as `YYYY-MM-DD` in UTC.
@@ -311,6 +405,15 @@ mod tests {
     use super::*;
     use skald_crypto::{SigningKey, issue};
     use skald_proto::{AccountId, CertBody, Unknown};
+
+    /// The list of `ids` with `certs` and `revocations`.
+    fn list(ids: &[DeviceId], certs: Vec<Cert>, revocations: Vec<Revocation>) -> SpaceDevices {
+        SpaceDevices {
+            ids: ids.to_vec(),
+            certs,
+            revocations,
+        }
+    }
 
     /// A device with keys of its own.
     struct Device {
@@ -372,13 +475,59 @@ mod tests {
             server_made.id(),
         ];
 
-        let checked = check(&master.public_key(), &ids, &certs);
+        let devices = list(&ids, certs, Vec::new());
 
+        let checked = check(&master.public_key(), &devices);
+
+        let certs = &devices.certs;
         assert_eq!(
             checked,
             Checked {
                 linked: vec![&certs[1], &certs[0]],
+                revoked: vec![],
                 apart: vec![server_made.id(), bare.id()],
+                two_bodies: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn revoked_devices_and_those_they_certified_are_apart_from_the_valid_ones() {
+        let account = AccountId::generate();
+        let master = SigningKey::generate();
+        let (first, second, third) = (Device::new(), Device::new(), Device::new());
+        let certs = vec![
+            first.cert(account, None, &master, "first"),
+            second.cert(account, Some(first.id()), &first.key, "second"),
+            third.cert(account, None, &master, "third"),
+        ];
+        let revocation = |device: DeviceId, key: &SigningKey, signer: DeviceId| {
+            let body = skald_proto::RevocationBody {
+                account,
+                device,
+                keep: None,
+                signer: Some(signer),
+                timestamp: 1_800_000_000,
+                also: None,
+                unknown: Unknown::default(),
+            };
+            skald_crypto::sign_revocation(&body, key).expect("a revocation")
+        };
+        let ids = [first.id(), second.id(), third.id()];
+        // By the third device, which counts; and by the second for the third, signed by another key.
+        let counting = revocation(first.id(), &third.key, third.id());
+        let forged = revocation(third.id(), &first.key, second.id());
+
+        let devices = list(&ids, certs, vec![counting, forged]);
+        let checked = check(&master.public_key(), &devices);
+
+        let certs = &devices.certs;
+        assert_eq!(
+            checked,
+            Checked {
+                linked: vec![&certs[2]],
+                revoked: vec![&certs[0], &certs[1]],
+                apart: vec![],
                 two_bodies: vec![],
             }
         );
@@ -395,12 +544,15 @@ mod tests {
             issued.cert(account, Some(issuer.id()), &issuer.key, "issued"),
         ];
 
-        let checked = check(&master.public_key(), &[issued.id(), issuer.id()], &certs);
+        let devices = list(&[issued.id(), issuer.id()], certs, Vec::new());
+
+        let checked = check(&master.public_key(), &devices);
 
         assert_eq!(
             checked,
             Checked {
                 linked: vec![],
+                revoked: vec![],
                 apart: vec![issued.id(), issuer.id()],
                 two_bodies: vec![issuer.id()],
             }
@@ -440,18 +592,33 @@ mod tests {
         );
         let apart =
             format!("Not linked: no valid certificate, so the server's word alone\n  {other}\n");
-        let listed = |linked: Vec<&Cert>, apart: Vec<DeviceId>| {
+        let gone = Device::new();
+        let gone_cert = gone.cert(AccountId::generate(), None, &master, "gone");
+        let revoked = format!(
+            "Revoked: chained to that key, and revoked since\n  {}  revoked\n",
+            linked_line(&gone_cert, id)
+        );
+        let listed = |linked: Vec<&Cert>, revoked: Vec<&Cert>, apart: Vec<DeviceId>| {
             let checked = Checked {
                 linked,
+                revoked,
                 apart,
                 two_bodies: vec![],
             };
             listing(&checked, id)
         };
-        assert_eq!(listed(vec![&cert], vec![other]), format!("{linked}{apart}"));
-        assert_eq!(listed(vec![&cert], vec![]), linked);
-        assert_eq!(listed(vec![], vec![other]), apart);
-        assert_eq!(listed(vec![], vec![]), "");
+        assert_eq!(
+            listed(vec![&cert], vec![&gone_cert], vec![other]),
+            format!("{linked}{revoked}{apart}")
+        );
+        assert_eq!(
+            listed(vec![&cert], vec![], vec![other]),
+            format!("{linked}{apart}")
+        );
+        assert_eq!(listed(vec![&cert], vec![], vec![]), linked);
+        assert_eq!(listed(vec![], vec![&gone_cert], vec![]), revoked);
+        assert_eq!(listed(vec![], vec![], vec![other]), apart);
+        assert_eq!(listed(vec![], vec![], vec![]), "");
     }
 
     #[test]
