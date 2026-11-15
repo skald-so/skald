@@ -170,5 +170,5 @@ The public cloud applies these limits; a self-hosted server does not.
 | Messages per space | About 10M per month |
 | Message text | 64 KB |
 | Attachment | 10 MB |
-| Undelivered messages kept | 7 days |
+| Undelivered messages kept | 7 days: the server setting `--mailbox-retention` (`SKALD_MAILBOX_RETENTION`), in seconds; unset, until delivered or the envelope's `ttl` ends |
 | History kept | 90 days |
