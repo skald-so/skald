@@ -27,6 +27,7 @@ mod google;
 mod http_client;
 mod links;
 mod mailboxes;
+mod notices;
 mod oidc;
 mod protocol;
 mod refusal;
@@ -109,6 +110,7 @@ struct AppState {
     mailbox_retention: Option<Duration>,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
+    notices: Arc<notices::Notices>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
@@ -222,6 +224,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             mailbox_retention: settings.mailbox_retention,
             connections: Arc::default(),
             wakers,
+            notices: Arc::default(),
             google: settings
                 .sign_in
                 .as_ref()
