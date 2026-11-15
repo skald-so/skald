@@ -379,6 +379,7 @@ async fn store(
         .map(|ttl| ttl.min(MAILBOX_LONGEST) as f64);
     // Mailboxes locked in one order, so stores to the same ones at once never wait for each other.
     recipients.sort_by_key(|device| *device.as_bytes());
+    recipients.dedup();
     for recipient in &recipients {
         // The mailbox's row lock makes stores to it wait for each other, so its entries are
         // numbered in the order they are committed.
