@@ -26,6 +26,12 @@
       "groupSlug": "non-breaking"
     },
     {
+      "description": "The self-host stack stays on PostgreSQL 19: docker-compose.yml",
+      "matchFileNames": ["docker-compose.yml"],
+      "matchDepNames": ["postgres"],
+      "allowedVersions": "/^19([^0-9]|$)/"
+    },
+    {
       "description": "Stays on 0.2: see prototypes/mls/openmls/Cargo.toml",
       "matchDepNames": ["getrandom-02"],
       "allowedVersions": "<0.3"

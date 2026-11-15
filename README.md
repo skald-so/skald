@@ -94,24 +94,8 @@ skald update               # update to the latest stable release, never a beta; 
 
 ## Self-hosting
 
-- The server needs PostgreSQL and, for sign-in, a GitHub OAuth App or a Google OAuth client of your own. Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
-- The server image is `ghcr.io/skald-so/skald-server`, tagged with the release's version without the `v`. It listens on `0.0.0.0:8080` and needs `SKALD_DATABASE_URL`, a PostgreSQL connection URL. `skald-server --help` lists the other settings.
-
-### A server for other machines
-
-Clients on other machines reach the server only over HTTPS: [Network](docs/dev/architecture.md#network). For the domain `skald.example.com`:
-
-- A reverse proxy in front of `skald-server` serves TLS and passes WebSocket upgrades. Caddy does both and gets the certificate itself:
-
-  ```text
-  skald.example.com {
-      reverse_proxy 127.0.0.1:8080
-  }
-  ```
-
-- `SKALD_LISTEN` is an address the proxy reaches.
-- `--public-url https://skald.example.com`.
-- The GitHub OAuth App's callback URL is `https://skald.example.com/auth/github/callback`; the Google OAuth client's redirect URI is `https://skald.example.com/auth/google/callback`.
+- A server for your domain with HTTPS, by Docker Compose: [docs/self-host.md](docs/self-host.md).
+- Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally). `skald-server --help` lists its settings.
 
 ## Contributing
 

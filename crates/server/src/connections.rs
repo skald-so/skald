@@ -184,29 +184,31 @@ pub(crate) async fn open(
         .on_upgrade(move |socket| serve(state, socket, version))
 }
 
-/// A connection's device and account, once its `auth` proved them, and its hold: the receiver
-/// fires when the session ends.
+/// A connection, once its `auth` proved its device, held as the device's.
 struct Proved {
     device: DeviceId,
     account: AccountId,
-    held: (Registration, oneshot::Receiver<()>),
+    /// Lets the connection go when dropped.
+    _registration: Registration,
+    /// Fires when the session ends.
+    ended: oneshot::Receiver<()>,
 }
 
 /// Takes `socket`, of the protocol version `version`, once it proves its device, and serves it
 /// until it closes or its session ends.
 async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
-    let proved = match prove(&state, &mut socket).await {
-        Ok(Some(proved)) => proved,
-        Ok(None) => return finish(socket).await,
-        Err(closing) => return close(socket, closing).await,
-    };
-    let (_registration, ended) = proved.held;
-    let sender = Sender {
-        device: proved.device,
-        account: proved.account,
-        version,
-    };
-    hold(&state, socket, ended, &sender).await;
+    match prove(&state, &mut socket).await {
+        Ok(Some(proved)) => {
+            let sender = Sender {
+                device: proved.device,
+                account: proved.account,
+                version,
+            };
+            hold(&state, socket, proved.ended, &sender).await;
+        }
+        Ok(None) => finish(socket).await,
+        Err(closing) => close(socket, closing).await,
+    }
 }
 
 /// Why the server stops serving a connection.
@@ -225,9 +227,16 @@ async fn hold(
     mut ended: oneshot::Receiver<()>,
     sender: &Sender,
 ) {
-    let mut reader = Reader::new(&state.wakers, sender.device);
+    let mut reader = Reader::new(
+        &state.wakers,
+        sender.device,
+        sender.version,
+        state.mailbox_retention,
+    );
     loop {
         let served = tokio::select! {
+            // Once the session ends, nothing more is served.
+            biased;
             _ = &mut ended => return close(socket, Closing::SessionEnded).await,
             () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
             message = socket.recv() => match message {
@@ -308,18 +317,16 @@ async fn deliver(
     reader: &mut Reader,
     upto: i64,
 ) -> Result<(), Stop> {
-    loop {
-        let page = reader
-            .next(&state.db, upto)
-            .await
-            .map_err(|err| Stop::Close(failed("read a mailbox", err)))?;
-        if page.is_empty() {
-            return Ok(());
-        }
+    while let Some(page) = reader
+        .next(&state.db, upto)
+        .await
+        .map_err(|err| Stop::Close(failed("read a mailbox", err)))?
+    {
         for push in page {
             send_frame(socket, &Frame::Push(push)).await?;
         }
     }
+    Ok(())
 }
 
 /// Sends `frame` on `socket`.
@@ -368,11 +375,12 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
         &signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
-    let account = account.parse().expect("a stored account ID");
+    let (registration, ended) = held;
     Ok(Some(Proved {
         device,
-        account,
-        held,
+        account: account.parse().expect("a stored account ID"),
+        _registration: registration,
+        ended,
     }))
 }
 

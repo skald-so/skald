@@ -1,18 +1,19 @@
 //! The accounts of the tests and their requests to the spaces API.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use skald_proto::{AccountId, ChannelId, Name, SpaceId};
 
-use crate::common::device_flow::{DeviceFlow, json, text};
+use crate::common::device_flow::{DeviceFlow, INTERVAL, json, text};
 use crate::common::devices::{
     Device, Key, account_id, assert_taken, b64, devices_of, machine, unb64,
 };
 use crate::common::sign_in::is_uuid_v7;
 use crate::common::spec::{operation_violations, spec};
-use crate::common::{Response, get_url, send};
+use crate::common::{Response, Server, get_url, send};
 
 /// Creates a space: `POST`; the account's spaces: `GET`.
 pub const SPACES: &str = "/spaces";
@@ -63,8 +64,13 @@ impl Session {
     /// The same session, its requests to `flow`'s server, such as one started again on the same
     /// database.
     pub fn at(&self, flow: &DeviceFlow) -> Self {
+        self.on(&flow.stand.server)
+    }
+
+    /// The same session, its requests to `server`, such as another instance on the same database.
+    pub fn on(&self, server: &Server) -> Self {
         Session {
-            base: flow.stand.server.base().to_owned(),
+            base: server.base().to_owned(),
             token: self.token.clone(),
         }
     }
@@ -72,8 +78,19 @@ impl Session {
     /// `<method> <path>`, `method` `get` or `post`, with the JSON `body` if given; checked against
     /// the spec.
     pub fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Response {
+        self.call_stating(skald_proto::PROTOCOL_VERSION, method, path, body)
+    }
+
+    /// As [`Session::call`], stating the protocol version `version`.
+    pub fn call_stating(
+        &self,
+        version: NonZeroU64,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Response {
         let url = format!("{}{path}", self.base);
-        let version = skald_proto::PROTOCOL_VERSION.to_string();
+        let version = version.to_string();
         let mut headers = vec![(skald_proto::VERSION_HEADER, version.as_str())];
         let bearer = self.token.as_ref().map(|token| format!("Bearer {token}"));
         if let Some(bearer) = &bearer {
@@ -270,7 +287,14 @@ pub const ACME: &str = "acme";
 impl Team {
     /// The team, with `acme` created and no revision stored; GitHub user IDs from `github` on.
     pub fn new(github: u64) -> Self {
-        let flow = DeviceFlow::start();
+        Self::with(github, &[])
+    }
+
+    /// As [`Team::new`], on a server with the extra arguments `args`.
+    pub fn with(github: u64, args: &[&str]) -> Self {
+        let mut all = vec![INTERVAL, "1"];
+        all.extend_from_slice(args);
+        let flow = DeviceFlow::start_with(&all);
         let alice = Person::new(&flow, github, "alice");
         let bob = Person::new(&flow, github + 1, "bob");
         let carol = Person::new(&flow, github + 2, "carol");

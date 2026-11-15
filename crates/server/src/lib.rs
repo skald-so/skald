@@ -21,6 +21,7 @@ mod connections;
 mod delivery;
 mod device_flow;
 mod devices;
+mod expiry;
 mod github;
 mod google;
 mod http_client;
@@ -80,6 +81,11 @@ pub struct Settings {
     /// The server's name in agent addresses; without it, the host of sign-in's public address, if
     /// that is a valid server name.
     pub server_name: Option<ServerName>,
+    /// How long an undelivered mailbox entry waits at most, up to 100 years, and the least time the
+    /// server keeps an idempotency key (`docs/protocol/delivery.md`, "Send" and "Mailbox"); without
+    /// it, entries wait for their device's ack, unless an envelope's `ttl` ends first, and keys are
+    /// kept for good.
+    pub mailbox_retention: Option<Duration>,
 }
 
 /// The state the handlers share.
@@ -91,13 +97,21 @@ struct AppState {
     google: Option<Arc<Google>>,
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
+    mailbox_retention: Option<Duration>,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
 }
 
-/// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
+/// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
+/// entries in a task on the Tokio runtime it is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
+    let wakers = Arc::<delivery::Wakers>::default();
+    tokio::spawn(expiry::run(
+        db.clone(),
+        Arc::clone(&wakers),
+        settings.mailbox_retention,
+    ));
     let server_name = settings.server_name.or_else(|| {
         settings
             .sign_in
@@ -196,8 +210,9 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             versions,
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
+            mailbox_retention: settings.mailbox_retention,
             connections: Arc::default(),
-            wakers: Arc::default(),
+            wakers,
             google: settings
                 .sign_in
                 .as_ref()

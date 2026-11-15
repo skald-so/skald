@@ -20,6 +20,8 @@ const GITHUB_SECRET_ENV: &str = "SKALD_GITHUB_CLIENT_SECRET";
 const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
 /// The environment variable that holds the attachment bucket's secret key.
 const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
+/// The longest mailbox retention, in seconds: 100 years.
+const MAILBOX_RETENTION_LONGEST: u64 = 100 * 365 * 24 * 3_600;
 /// The least time between two reads of Google's keys.
 const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
 
@@ -133,6 +135,16 @@ struct Cli {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     owned_spaces_limit: Option<u32>,
+
+    /// How long an undelivered mailbox entry waits at most, at most 100 years; the server keeps
+    /// each idempotency key as long [default: entries wait for their ack, keys are kept for good].
+    #[arg(
+        long,
+        env = "SKALD_MAILBOX_RETENTION",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=MAILBOX_RETENTION_LONGEST)
+    )]
+    mailbox_retention: Option<u64>,
 
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
@@ -293,6 +305,7 @@ impl Cli {
             sign_in,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
+            mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
         })
     }
 }
@@ -374,6 +387,26 @@ mod tests {
         "--attachments-bucket-access-key-id",
         "key",
     ];
+
+    #[test]
+    fn the_mailbox_retention_is_from_a_second_to_100_years() {
+        let retention = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--mailbox-retention",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.mailbox_retention)
+            .ok()
+        };
+        assert_eq!(retention(1), Some(Some(1)));
+        let longest = MAILBOX_RETENTION_LONGEST;
+        assert_eq!(retention(longest), Some(Some(longest)));
+        assert_eq!(retention(0), None);
+        assert_eq!(retention(longest + 1), None);
+    }
 
     #[test]
     fn a_bucket_needs_all_its_settings() {
