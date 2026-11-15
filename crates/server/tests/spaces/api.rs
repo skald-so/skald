@@ -12,7 +12,7 @@ use crate::common::devices::{
 };
 use crate::common::sign_in::is_uuid_v7;
 use crate::common::spec::{operation_violations, spec};
-use crate::common::{Response, get_url, send};
+use crate::common::{Response, Server, get_url, send};
 
 /// Creates a space: `POST`; the account's spaces: `GET`.
 pub const SPACES: &str = "/spaces";
@@ -63,8 +63,13 @@ impl Session {
     /// The same session, its requests to `flow`'s server, such as one started again on the same
     /// database.
     pub fn at(&self, flow: &DeviceFlow) -> Self {
+        self.on(&flow.stand.server)
+    }
+
+    /// The same session, its requests to `server`, such as another instance on the same database.
+    pub fn on(&self, server: &Server) -> Self {
         Session {
-            base: flow.stand.server.base().to_owned(),
+            base: server.base().to_owned(),
             token: self.token.clone(),
         }
     }
@@ -174,6 +179,19 @@ impl Session {
         let id = body["channel"].as_str().expect("a channel ID");
         assert!(is_uuid_v7(id), "channel ID {id:?} is not a UUIDv7");
         id.parse().expect("a channel ID")
+    }
+
+    /// `DELETE /session`: signs this session out. The spaces tests sign out no session.
+    #[allow(dead_code)]
+    pub fn sign_out(&self) -> Response {
+        let url = format!("{}{}", self.base, crate::common::sign_in::SESSION);
+        let bearer = format!("Bearer {}", self.token.as_deref().expect("a session"));
+        let version = skald_proto::PROTOCOL_VERSION.to_string();
+        let headers = [
+            ("authorization", bearer.as_str()),
+            (skald_proto::VERSION_HEADER, version.as_str()),
+        ];
+        crate::common::delete_url(&url, &headers)
     }
 }
 
