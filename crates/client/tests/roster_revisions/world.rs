@@ -135,12 +135,7 @@ impl World {
     pub fn person(&self, user: User, machine: Machine, host: &'static str) -> Person {
         let cloud = &self.cloud;
         let token = cloud.last_token();
-        let (status, session) = cloud.session_of(&token);
-        assert_eq!(status, 200, "GET /session: {session}");
-        let handle: Name = session["username"]
-            .as_str()
-            .and_then(|name| name.parse().ok())
-            .unwrap_or_else(|| panic!("a username that is a valid name: {session}"));
+        let handle = handle_of(cloud, &token);
         let devices = cloud.devices(&token);
         assert_eq!(devices.len(), 1, "the account's devices: {devices:?}");
         let cert = devices[0]
@@ -160,6 +155,16 @@ impl World {
             key,
         }
     }
+}
+
+/// The username of the account of the session `token`, its handle in the spaces it is in.
+pub fn handle_of(cloud: &Cloud, token: &str) -> Name {
+    let (status, session) = cloud.session_of(token);
+    assert_eq!(status, 200, "GET /session: {session}");
+    session["username"]
+        .as_str()
+        .and_then(|name| name.parse().ok())
+        .unwrap_or_else(|| panic!("a username that is a valid name: {session}"))
 }
 
 /// Seconds since the Unix epoch.
