@@ -9,6 +9,7 @@ mod frame;
 mod history;
 mod id;
 mod receipt;
+mod revocation;
 mod roster;
 mod signed;
 mod version;
@@ -32,6 +33,7 @@ pub use id::{
     MessageId, QueueId, SpaceId, TaskId, kind,
 };
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
+pub use revocation::{REVOCATION_LABEL, Revocation, RevocationBody};
 pub use roster::{
     Ceilings, Channel, ChannelMember, HISTORY_MIN, Member, Mode, NEW_SPACE_HISTORY, Policy,
     ROSTER_LABEL, Role, Roster, RosterBody, ServiceAgent,

@@ -5,8 +5,8 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - Each vector is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
-- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant and of the delegation from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, and each other [frame](delivery.md#frames). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation and in a revocation's `keep` or `also` from "TEST 3".
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), and a [revocation](membership.md#revocation) by a device and by the master key. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -30,6 +30,8 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Frame `batch`](#frame-batch)
 - [Frame `space-notice`](#frame-space-notice)
 - [Frame `auth`](#frame-auth)
+- [Revocation by a device](#revocation-by-a-device)
+- [Revocation by the master key](#revocation-by-the-master-key)
 
 ## Envelope under `mls`
 
@@ -525,4 +527,53 @@ b1e1583b84bd49c70301041a69127c80
 1c1d1e1f5019ac5f784938823586a6c5809a18f6dd58405a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Revocation by a device
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'188e6ae45b2d8247b1e1583b84bd49c7',
+    3: [
+      h'42592ce391c8869ebdf88dff1cbfc25a'
+    ],
+    4: h'19ac5f784938823586a6c5809a18f6dd',
+    5: 1762819200
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+825850a50150019a6f1e2b3c7d4e8f5061a2b3c4d5e90250188e6ae45b2d8247
+b1e1583b84bd49c703815042592ce391c8869ebdf88dff1cbfc25a045019ac5f
+784938823586a6c5809a18f6dd051a69127c8058405a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Revocation by the master key
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'188e6ae45b2d8247b1e1583b84bd49c7',
+    5: 1762819200,
+    6: [
+      h'42592ce391c8869ebdf88dff1cbfc25a'
+    ]
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+82583ea40150019a6f1e2b3c7d4e8f5061a2b3c4d5e90250188e6ae45b2d8247
+b1e1583b84bd49c7051a69127c8006815042592ce391c8869ebdf88dff1cbfc2
+5a58405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a
 ```

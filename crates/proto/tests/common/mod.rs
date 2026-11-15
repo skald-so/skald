@@ -7,10 +7,11 @@ use std::fmt::Debug;
 use std::num::NonZeroU64;
 
 use skald_proto::{
-    Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation, DelegationBody,
-    DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody, Header, HpkePayload,
-    HpkePlaintext, MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus, Scheme, SendKey,
-    ServerStatus, SpaceId, Stored, Unknown,
+    AccountId, Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
+    DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
+    Header, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push, RawEnvelope, Receipt,
+    ReceiptStatus, Revocation, RevocationBody, Scheme, SendKey, ServerStatus, SpaceId, Stored,
+    Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -240,6 +241,30 @@ pub fn delivery_status(status: ServerStatus) -> DeliveryStatus {
     }
 }
 
+/// Alice's account.
+pub fn account() -> AccountId {
+    "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5e9".parse().unwrap()
+}
+
+/// A revocation of Bob's device on Alice's account, signed by `signer` or, with `None`, the master
+/// key.
+pub fn revocation(
+    keep: Option<NonEmpty<DeviceId>>,
+    signer: Option<DeviceId>,
+    also: Option<NonEmpty<DeviceId>>,
+) -> Revocation {
+    let body = RevocationBody {
+        account: account(),
+        device: bob_device(),
+        keep,
+        signer,
+        timestamp: 1_762_819_200,
+        also,
+        unknown: Unknown::default(),
+    };
+    Revocation::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
 /// Decodes bytes as a vector's type and encodes the result again.
 pub type Decode = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, DecodeError>>;
 
@@ -405,6 +430,18 @@ pub fn vectors() -> Vec<Vector> {
                 device: alice_device(),
                 signature: SIGNATURE,
             },
+        ),
+        vector(
+            "Revocation by a device",
+            revocation(
+                Some(NonEmpty::new(server_device())),
+                Some(alice_device()),
+                None,
+            ),
+        ),
+        vector(
+            "Revocation by the master key",
+            revocation(None, None, Some(NonEmpty::new(server_device()))),
         ),
     ]
 }
