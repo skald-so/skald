@@ -827,9 +827,15 @@ impl State {
 
     /// The rules, by folder: each one's folder, as its canonical path, and its space's name.
     pub fn rules(&self) -> Result<Vec<(String, String)>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT folder, space FROM folder_rule ORDER BY folder")?;
+        self.pairs("SELECT folder, space FROM folder_rule ORDER BY folder")
+    }
+
+    /// The rows `sql` selects, each as its first two columns.
+    fn pairs<A: rusqlite::types::FromSql, B: rusqlite::types::FromSql>(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<(A, B)>, Error> {
+        let mut query = self.db.prepare(sql)?;
         let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -925,11 +931,7 @@ impl State {
     /// The revocations the device holds, as their CBOR bytes, with whether each waits for the
     /// server to take it.
     pub fn revocations(&self) -> Result<Vec<(Vec<u8>, bool)>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT revocation, pending FROM revocation ORDER BY rowid")?;
-        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        self.pairs("SELECT revocation, pending FROM revocation ORDER BY rowid")
     }
 
     /// Keeps `revocations`, as their CBOR bytes, among those the device holds; those it signed

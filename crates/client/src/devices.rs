@@ -497,9 +497,9 @@ mod tests {
         let master = SigningKey::generate();
         let (first, second, third) = (Device::new(), Device::new(), Device::new());
         let certs = vec![
-            first.cert(account, None, &master, "first"),
-            second.cert(account, Some(first.id()), &first.key, "second"),
             third.cert(account, None, &master, "third"),
+            first.cert(account, None, &master, "revoked"),
+            second.cert(account, Some(first.id()), &first.key, "certified"),
         ];
         let revocation = |device: DeviceId, key: &SigningKey, signer: DeviceId| {
             let body = skald_proto::RevocationBody {
@@ -525,8 +525,8 @@ mod tests {
         assert_eq!(
             checked,
             Checked {
-                linked: vec![&certs[2]],
-                revoked: vec![&certs[0], &certs[1]],
+                linked: vec![&certs[0]],
+                revoked: vec![&certs[1], &certs[2]],
                 apart: vec![],
                 two_bodies: vec![],
             }
