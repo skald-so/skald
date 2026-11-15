@@ -1,10 +1,8 @@
 //! The baseline under `mls` again: a device that joins a channel's group again counts from the
 //! first message it gets from each sending device after that.
 
-use crate::fixtures::cert_of;
 use crate::gaps::{assert_none_reported, bob_in, bob_sends, marked};
 use crate::kit::received;
-use crate::played::take_key_package;
 use crate::talk::{BOB_HOST, Talk, assert_shows_once};
 use crate::world::now;
 
@@ -45,14 +43,7 @@ fn device_that_joins_the_channel_again_reports_none_of_the_messages_before_missi
     for (counter, text) in (3..).zip(WITHOUT) {
         bob_sends(&mut talk, counter, text);
     }
-    let (cloud, ada, bob) = (&talk.world.cloud, &talk.ada, &mut talk.played[0]);
-    let package = take_key_package(cloud, &bob.person.token, ada.device);
-    let commit = (bob.mls)
-        .add_devices(channel, &[package], &[cert_of(cloud, ada)], now())
-        .expect("a Commit adding Ada's device");
-    let welcome = bob.commits(cloud, at, &commit).expect("a Welcome");
-    bob.uploads_group_info(cloud, at);
-    bob.stores(cloud, at, &welcome, &[ada.device]);
+    (talk.played[0]).welcomes(&talk.world.cloud, at, &talk.ada);
     let fifth = bob_sends(&mut talk, 5, AFTER);
 
     let next = received(&talk.ada.machine).shown();
