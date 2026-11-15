@@ -95,6 +95,21 @@ export interface Space {
 }
 
 /**
+ * A revocation's CBOR bytes (docs/protocol/membership.md, "Revocation") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type Revocation = string;
+
+export interface RevocationRequest {
+  revocation: Revocation;
+}
+
+export interface StoredRevocation {
+  /** The revocation as stored. */
+  revocation: Revocation;
+}
+
+/**
  * `github`, or `google` for the server's OIDC provider.
  */
 export type SignInMethodProvider =
@@ -148,6 +163,8 @@ export interface Device {
 
 export interface Devices {
   devices: Device[];
+  /** The stored revocations of the listed devices' accounts, each as the server got it, once. */
+  revocations: Revocation[];
 }
 
 export type DeviceRegistrationKind =

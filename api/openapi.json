@@ -310,6 +310,120 @@
         }
       }
     },
+    "/account/revocations": {
+      "post": {
+        "operationId": "storeRevocation",
+        "summary": "Store a revocation",
+        "description": "A device of the session's account stores a revocation of one of the account's devices (docs/protocol/membership.md, \"Revocation\"), as the bytes the server got. The server stores it only if it counts against the account's master key, the certificates the server holds and the revocations it stored before. Once stored, each device that checks 3 and 4 of \"Device checks\" revoke with the account's revocations has no certificate wherever the server checks one: its mailbox entries expire, its connections close and it gets no later entry.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevocationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The account has this revocation with these bytes: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredRevocation"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredRevocation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-revocation`, for bytes that do not decode as a `revocation` or a revocation that does not count for the session's account, such as one of another account, one whose signature does not verify with the key `signer` names, or one with `also` by a device.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/sign-in-methods": {
       "get": {
         "operationId": "listSignInMethods",
@@ -1457,7 +1571,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The devices of the session's account, each with its certificate as the device sent it, or `null` while it has none.",
+            "description": "The devices of the session's account, each with its certificate as the device sent it, or `null` while it has none, and the account's revocations.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -2699,7 +2813,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The devices of the accounts the space's revisions list, each with its certificate as the device sent it, or `null` while it has none.",
+            "description": "The devices of the accounts the space's revisions list, each with its certificate as the device sent it, or `null` while it has none, and those accounts' revocations.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3364,12 +3478,19 @@
       },
       "Devices": {
         "type": "object",
-        "required": ["devices"],
+        "required": ["devices", "revocations"],
         "properties": {
           "devices": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Device"
+            }
+          },
+          "revocations": {
+            "description": "The stored revocations of the listed devices' accounts, each as the server got it, once.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revocation"
             }
           }
         },
@@ -3547,6 +3668,21 @@
         "type": "string",
         "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
       },
+      "Revocation": {
+        "description": "A revocation's CBOR bytes (docs/protocol/membership.md, \"Revocation\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "RevocationRequest": {
+        "type": "object",
+        "required": ["revocation"],
+        "properties": {
+          "revocation": {
+            "$ref": "#/components/schemas/Revocation"
+          }
+        },
+        "additionalProperties": false
+      },
       "RosterRevision": {
         "description": "A roster revision's CBOR bytes (docs/protocol/membership.md, \"Roster\") in base64url without padding (RFC 4648, §5).",
         "type": "string",
@@ -3697,6 +3833,17 @@
             "items": {
               "$ref": "#/components/schemas/Space"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "StoredRevocation": {
+        "type": "object",
+        "required": ["revocation"],
+        "properties": {
+          "revocation": {
+            "description": "The revocation as stored.",
+            "$ref": "#/components/schemas/Revocation"
           }
         },
         "additionalProperties": false

@@ -1,7 +1,8 @@
 //! Server instances waking each other: `docs/dev/architecture.md`, "Network". An instance that adds
-//! mailbox entries, stores a roster revision or ends a session tells the others through PostgreSQL
-//! `NOTIFY`, in the transaction that does it. Each instance listens, and wakes the device's
-//! connections, sends the `space-notice` or closes that session's connections.
+//! mailbox entries, stores a roster revision, ends a session or revokes a device tells the others
+//! through PostgreSQL `NOTIFY`, in the transaction that does it. Each instance listens, and wakes
+//! the device's connections, sends the `space-notice`, or closes that session's or that device's
+//! connections.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -102,6 +103,8 @@ pub(crate) enum Event {
     Revision(SpaceId, i64),
     /// The session whose token's SHA-256 this is has ended.
     SessionEnded(Vec<u8>),
+    /// The device is revoked.
+    Revoked(DeviceId),
 }
 
 impl Event {
@@ -114,6 +117,7 @@ impl Event {
             Self::SessionEnded(session) => {
                 format!("{id} session {}", URL_SAFE_NO_PAD.encode(session))
             }
+            Self::Revoked(device) => format!("{id} revoked {device}"),
         }
     }
 
@@ -128,6 +132,7 @@ impl Event {
                 Self::Revision(space.parse().ok()?, revision.parse().ok()?)
             }
             ("session", session, None) => Self::SessionEnded(URL_SAFE_NO_PAD.decode(session).ok()?),
+            ("revoked", device, None) => Self::Revoked(device.parse().ok()?),
             _ => return None,
         };
         words.next().is_none().then_some((instance, event))
@@ -230,6 +235,7 @@ async fn act(instance: &Instance, local: &Local, payload: &str) {
             }
         }
         Event::SessionEnded(session) => local.connections.end_session(&session),
+        Event::Revoked(device) => local.connections.end_device(device),
     }
 }
 
@@ -253,7 +259,8 @@ async fn members(
 }
 
 /// Sends `local`'s connections what the other instances may have told while `instance` did not
-/// listen: wakes each device's connections, closes each connection whose session has ended, and
+/// listen: wakes each device's connections, closes each connection whose session has ended or whose
+/// device is revoked, and
 /// sends each connected account the notices of the revisions in `latest`, the latest of each space,
 /// that the instance does not know, all of them before it first listens.
 async fn catch_up(
@@ -272,6 +279,23 @@ async fn catch_up(
         if !live.iter().any(|(live,)| *live == session) {
             local.connections.end_session(&session);
         }
+    }
+    let devices: Vec<String> = local
+        .connections
+        .devices()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let revoked: Vec<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM devices WHERE id = ANY($1::text[]::uuid[]) AND revoked",
+    )
+    .bind(&devices)
+    .fetch_all(&local.db)
+    .await?;
+    for (device,) in revoked {
+        local
+            .connections
+            .end_device(device.parse().expect("a stored device ID"));
     }
     let (spaces, revisions): (Vec<String>, Vec<i64>) = latest
         .iter()
@@ -324,6 +348,7 @@ mod tests {
             Event::Entries(device),
             Event::Revision(space, 7),
             Event::SessionEnded(vec![0, 15, 16, 255]),
+            Event::Revoked(device),
         ] {
             let payload = event.payload(&instance());
             assert_eq!(Event::parse(&payload), Some(("a1", event)), "{payload}");
@@ -345,6 +370,8 @@ mod tests {
             format!("a1 revision {space} 7 more"),
             "a1 session a".to_owned(),
             "a1 session a=".to_owned(),
+            "a1 revoked nodevice".to_owned(),
+            format!("a1 revoked {device} more"),
             format!("a1 later {device}"),
         ] {
             assert_eq!(Event::parse(&payload), None, "{payload}");

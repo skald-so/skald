@@ -14,10 +14,10 @@ use skald_proto::{
 };
 use sqlx::PgPool;
 
-use crate::AppState;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
+use crate::{AppState, revocations};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -263,7 +263,8 @@ pub(crate) async fn revisions(State(state): State<AppState>, Gotten(found): Gott
     Ok(Json(Revisions { revisions }).into_response())
 }
 
-/// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list.
+/// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list, and those
+/// accounts' revocations.
 pub(crate) async fn devices(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     let listed = sqlx::query_as(
         "SELECT id::text, cert FROM devices
@@ -274,7 +275,8 @@ pub(crate) async fn devices(State(state): State<AppState>, Gotten(found): Gotten
     .fetch_all(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's devices", err))?;
-    Ok(Json(Devices::of(listed)).into_response())
+    let revocations = revocations::of_space(&state.db, found.id).await?;
+    Ok(Json(Devices::of(listed, &revocations)).into_response())
 }
 
 /// `POST /spaces/<space>/channels`: a new channel ID for the space, for an admin's session.
@@ -405,10 +407,12 @@ async fn check(
         return Err(refused("the revision has another name than the space's"));
     }
 
-    // The signer: a device of the session's account with a certificate, and its key's signature.
+    // The signer: a device of the session's account with a certificate, not revoked, and its key's
+    // signature.
     let signer: Option<(Vec<u8>, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT d.signing, a.master FROM devices d JOIN accounts a ON a.id = d.account_id
-         WHERE d.id = $1::uuid AND d.account_id = $2::uuid AND d.cert IS NOT NULL",
+         WHERE d.id = $1::uuid AND d.account_id = $2::uuid AND d.cert IS NOT NULL
+           AND NOT d.revoked",
     )
     .bind(body.signer.to_string())
     .bind(account.to_string())
@@ -421,7 +425,7 @@ async fn check(
         Some((signing, master))
     });
     let (signing, master) = keys.ok_or_else(|| {
-        refused("the signer is no device of the session's account with a certificate")
+        refused("the signer is no device of the session's account with a certificate, or revoked")
     })?;
     skald_crypto::verify(
         &signing,
@@ -482,8 +486,11 @@ fn admin(roster: &Roster, account: AccountId) -> bool {
         .any(|member| member.account == account && member.role == Role::Admin)
 }
 
-/// The certificates of the devices of `accounts`, as the devices sent them.
-async fn certs(db: &PgPool, accounts: &[String]) -> Result<Vec<Cert>, Refusal> {
+/// The certificates of the devices of `accounts`, as the devices sent them, revoked or not.
+pub(crate) async fn certs(
+    db: impl sqlx::PgExecutor<'_>,
+    accounts: &[String],
+) -> Result<Vec<Cert>, Refusal> {
     let found: Vec<(Vec<u8>,)> = sqlx::query_as(
         "SELECT cert FROM devices
          WHERE account_id = ANY($1::text[]::uuid[]) AND cert IS NOT NULL",

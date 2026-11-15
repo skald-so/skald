@@ -25,6 +25,7 @@ import type {
   Problem,
   Protocol,
   ProtocolProblem,
+  RevocationRequest,
   RosterRevisionRequest,
   RosterRevisions,
   Server,
@@ -33,6 +34,7 @@ import type {
   Space,
   SpaceRequest,
   Spaces,
+  StoredRevocation,
   StoredRosterRevision,
   UsernameRequest,
 } from "./skald.schemas";
@@ -281,6 +283,93 @@ export const getTakePersonalSpaceResponseMock500 = (
   ...overrideResponse,
 });
 
+export const getStoreRevocationResponseMock = (
+  overrideResponse: Partial<Extract<StoredRevocation, object>> = {},
+): StoredRevocation =>
+  faker.helpers.arrayElement([
+    {
+      revocation: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+    {
+      revocation: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getStoreRevocationResponseMock200 = (
+  overrideResponse: Partial<Extract<StoredRevocation, object>> = {},
+): StoredRevocation => ({
+  revocation: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreRevocationResponseMock201 = (
+  overrideResponse: Partial<Extract<StoredRevocation, object>> = {},
+): StoredRevocation => ({
+  revocation: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreRevocationResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreRevocationResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreRevocationResponseMock400 = ():
+  ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getStoreRevocationResponseProtocolProblemMock() },
+    { ...getStoreRevocationResponseProblemMock() },
+  ]);
+
+export const getStoreRevocationResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreRevocationResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getListSignInMethodsResponseMock = (
   overrideResponse: Partial<Extract<SignInMethods, object>> = {},
 ): SignInMethods => ({
@@ -436,6 +525,10 @@ export const getGetDevicesResponseMock = (
       null,
     ]),
   })),
+  revocations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
   ...overrideResponse,
 });
 
@@ -454,6 +547,10 @@ export const getGetDevicesResponseMock200 = (
       null,
     ]),
   })),
+  revocations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
   ...overrideResponse,
 });
 
@@ -1242,6 +1339,10 @@ export const getGetSpaceDevicesResponseMock = (
       null,
     ]),
   })),
+  revocations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
   ...overrideResponse,
 });
 
@@ -1260,6 +1361,10 @@ export const getGetSpaceDevicesResponseMock200 = (
       null,
     ]),
   })),
+  revocations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
   ...overrideResponse,
 });
 
@@ -1969,6 +2074,184 @@ export const getTakePersonalSpaceMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getTakePersonalSpaceResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreRevocationMockHandler = (
+  overrideResponse?:
+    | StoredRevocation
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, RevocationRequest>
+        >[0],
+      ) => Promise<StoredRevocation> | StoredRevocation),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, RevocationRequest>(
+    "*/account/revocations",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, RevocationRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreRevocationResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreRevocationMockHandler200 = (
+  overrideResponse?:
+    | StoredRevocation
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, RevocationRequest>
+        >[0],
+      ) => Promise<StoredRevocation> | StoredRevocation),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, RevocationRequest>(
+    "*/account/revocations",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, RevocationRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreRevocationResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreRevocationMockHandler201 = (
+  overrideResponse?:
+    | StoredRevocation
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, RevocationRequest>
+        >[0],
+      ) => Promise<StoredRevocation> | StoredRevocation),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, RevocationRequest>(
+    "*/account/revocations",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, RevocationRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreRevocationResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreRevocationMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, RevocationRequest>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, RevocationRequest>(
+    "*/account/revocations",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, RevocationRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreRevocationResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreRevocationMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, RevocationRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, RevocationRequest>(
+    "*/account/revocations",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, RevocationRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreRevocationResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreRevocationMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<PathParams, RevocationRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, RevocationRequest>(
+    "*/account/revocations",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, RevocationRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreRevocationResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -4693,6 +4976,7 @@ export const getSkaldAPIMock = () => [
   getGetMasterKeyMockHandler(),
   getPutMasterKeyMockHandler(),
   getTakePersonalSpaceMockHandler(),
+  getStoreRevocationMockHandler(),
   getListSignInMethodsMockHandler(),
   getPutUsernameMockHandler(),
   getGetDevicesMockHandler(),

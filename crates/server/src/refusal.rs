@@ -38,6 +38,8 @@ pub(crate) enum Refusal {
     NotAllowed(String),
     /// A roster revision the server does not store, for the reason it holds.
     Roster(String),
+    /// A revocation the server does not store, for the reason it holds.
+    Revocation(String),
     SpaceNameTaken,
     /// The account owns as many spaces as it may: the number it holds.
     OwnedSpacesLimit(u32),
@@ -112,6 +114,9 @@ impl IntoResponse for Refusal {
             }
             Refusal::Roster(detail) => {
                 problem(bad, "invalid-roster", "Invalid roster revision", &detail)
+            }
+            Refusal::Revocation(detail) => {
+                problem(bad, "invalid-revocation", "Invalid revocation", &detail)
             }
             Refusal::SpaceNameTaken => problem(
                 conflict,

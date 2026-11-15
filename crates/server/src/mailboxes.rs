@@ -237,13 +237,14 @@ pub(crate) async fn latest(db: &PgPool, space: SpaceId) -> Result<Option<Roster>
     Ok(found.map(|(roster,)| Roster::from_cbor(&roster).expect("a stored revision decodes")))
 }
 
-/// The account of `device` if it has a certificate on the server.
+/// The account of `device` if it has a certificate on the server and is not revoked.
 async fn certified_account(
     db: &PgPool,
     device: DeviceId,
 ) -> Result<Option<AccountId>, sqlx::Error> {
     let found: Option<(String,)> = sqlx::query_as(
-        "SELECT account_id::text FROM devices WHERE id = $1::uuid AND cert IS NOT NULL",
+        "SELECT account_id::text FROM devices
+         WHERE id = $1::uuid AND cert IS NOT NULL AND NOT revoked",
     )
     .bind(device.to_string())
     .fetch_optional(db)
@@ -322,14 +323,16 @@ enum Kept {
     Answer(Option<Frame>),
     /// Nothing: its message is past its space's number for the month.
     OverQuota,
-    /// Nothing: the channel's group refuses it with this problem.
+    /// Nothing, for this problem: its `hpke` recipient is revoked, or the channel's group refuses
+    /// it.
     Refused(Problem),
 }
 
 /// Stores `envelope`, the send of `sender` with `key` and `header`, with an entry in the mailbox of
 /// each device `route` gives, and gives its `stored`; tells the other instances in `wakers`, and
 /// wakes the recipients' connections on this one. With `counted`, a space and its monthly limit, a
-/// message not counted yet counts in the space's month, and is not stored past the limit.
+/// message not counted yet counts in the space's month, and is not stored past the limit. Nothing
+/// is stored for a revoked `hpke` recipient, and no entry for a revoked device.
 #[allow(clippy::too_many_arguments)]
 async fn store(
     db: &PgPool,
@@ -342,15 +345,23 @@ async fn store(
     counted: Option<(SpaceId, u64)>,
 ) -> Result<Kept, sqlx::Error> {
     let mut tx = db.begin().await?;
-    let mut recipients = match route {
-        Route::Device(device) => vec![*device],
-        Route::Group(framing) => {
-            // Locks the channel's group: its envelopes are stored one at a time.
-            match groups::route(&mut tx, sender, header, framing, envelope.payload).await? {
-                Ok(devices) => devices,
-                Err(problem) => return Ok(Kept::Refused(problem)),
+    let routed = match route {
+        Route::Device(device) => {
+            let open = receiving(&mut tx, &[*device]).await?;
+            if open.is_empty() {
+                Err(Problem::UnknownRecipient)
+            } else {
+                Ok(open)
             }
         }
+        // Locks the channel's group: its envelopes are stored one at a time.
+        Route::Group(framing) => {
+            groups::route(&mut tx, sender, header, framing, envelope.payload).await?
+        }
+    };
+    let mut recipients = match routed {
+        Ok(devices) => devices,
+        Err(problem) => return Ok(Kept::Refused(problem)),
     };
     let Some(stored) = keep(&mut tx, sender, key, None).await? else {
         return Ok(Kept::Answer(None));
@@ -411,6 +422,28 @@ async fn store(
         wakers.wake(recipient);
     }
     Ok(Kept::Answer(Some(stored)))
+}
+
+/// Of `devices`, those that get a mailbox entry: with a certificate, not revoked. Locked on `conn`
+/// until it commits: a device's row lock makes its revocation wait for the entries stored for it,
+/// which the revocation then expires, or these stores see the revocation.
+pub(crate) async fn receiving(
+    conn: &mut PgConnection,
+    devices: &[DeviceId],
+) -> Result<Vec<DeviceId>, sqlx::Error> {
+    let devices: Vec<String> = devices.iter().map(ToString::to_string).collect();
+    let found: Vec<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM devices
+         WHERE id = ANY($1::text[]::uuid[]) AND cert IS NOT NULL AND NOT revoked
+         ORDER BY id FOR SHARE",
+    )
+    .bind(devices)
+    .fetch_all(conn)
+    .await?;
+    Ok(found
+        .iter()
+        .map(|(device,)| device.parse().expect("a stored device ID"))
+        .collect())
 }
 
 /// Counts the message of `sender`'s send with `key` in `space`'s month on `conn`, unless it is

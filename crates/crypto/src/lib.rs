@@ -17,7 +17,7 @@ pub use mls::{
     ChannelView, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice, MlsContent, MlsDevice,
     MlsError, MlsFraming, Processed,
 };
-pub use revocation::{check_valid_device, sign_revocation};
+pub use revocation::{check_valid_device, counts, revoked_devices, sign_revocation};
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
 pub use sign::{SignatureError, SigningKey, verify};

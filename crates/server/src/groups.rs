@@ -20,7 +20,7 @@ use sqlx::PgConnection;
 
 use crate::AppState;
 use crate::devices::{base64, bytes};
-use crate::mailboxes::{Problem, Sender, latest as latest_revision};
+use crate::mailboxes::{Problem, Sender, latest as latest_revision, receiving};
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
 use crate::spaces::find;
 
@@ -245,23 +245,6 @@ fn followed_by(channel: ChannelId, saved: &[u8], commit: &[u8], sender: DeviceId
     (next.signer().device == sender).then(|| Saved::of(&next))
 }
 
-/// Of `devices`, those that get a mailbox entry: with a certificate on the server.
-async fn receiving(
-    tx: &mut PgConnection,
-    devices: &[DeviceId],
-) -> Result<Vec<DeviceId>, sqlx::Error> {
-    let found: Vec<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM devices WHERE id = ANY($1::text[]::uuid[]) AND cert IS NOT NULL",
-    )
-    .bind(texts(devices))
-    .fetch_all(tx)
-    .await?;
-    Ok(found
-        .iter()
-        .map(|(device,)| device.parse().expect("a stored device ID"))
-        .collect())
-}
-
 /// `devices` as text, as the queries take them.
 fn texts(devices: &[DeviceId]) -> Vec<String> {
     devices.iter().map(ToString::to_string).collect()
@@ -361,10 +344,11 @@ pub(crate) async fn upload(
         .await
         .map_err(failed)?
         .ok_or_else(|| Refusal::GroupInfoConflict("the channel has no group yet".to_owned()))?;
-    // The uploader's devices that the GroupInfo lists.
+    // The uploader's devices that the GroupInfo lists, with a certificate: a revoked one has none.
     let uploaders: Vec<(String,)> = sqlx::query_as(
         "SELECT id::text FROM devices
-         WHERE account_id = $1::uuid AND id = ANY($2::text[]::uuid[]) AND cert IS NOT NULL",
+         WHERE account_id = $1::uuid AND id = ANY($2::text[]::uuid[]) AND cert IS NOT NULL
+           AND NOT revoked",
     )
     .bind(&account)
     .bind(texts(&uploaded.members))
@@ -398,7 +382,8 @@ pub(crate) async fn upload(
             }
             if uploaders.is_empty() {
                 return Err(Refusal::NotAllowed(
-                    "the GroupInfo lists no device of the session's account".to_owned(),
+                    "the GroupInfo lists no device of the session's account that is not revoked"
+                        .to_owned(),
                 ));
             }
             false

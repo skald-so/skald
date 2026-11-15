@@ -16,6 +16,7 @@ import type {
   Problem,
   Protocol,
   ProtocolProblem,
+  RevocationRequest,
   RosterRevisionRequest,
   RosterRevisions,
   Server,
@@ -24,6 +25,7 @@ import type {
   Space,
   SpaceRequest,
   Spaces,
+  StoredRevocation,
   StoredRosterRevision,
   UsernameRequest,
 } from "./skald.schemas";
@@ -250,6 +252,100 @@ export const takePersonalSpace = async (
     status: res.status,
     headers: res.headers,
   } as takePersonalSpaceResponse;
+};
+
+export type storeRevocationResponse200 = {
+  data: StoredRevocation;
+  status: 200;
+};
+
+export type storeRevocationResponse201 = {
+  data: StoredRevocation;
+  status: 201;
+};
+
+export type storeRevocationResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type storeRevocationResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type storeRevocationResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type storeRevocationResponseSuccess = (
+  storeRevocationResponse200 | storeRevocationResponse201
+) & {
+  headers: Headers;
+};
+export type storeRevocationResponseError = (
+  | storeRevocationResponse400
+  | storeRevocationResponse401
+  | storeRevocationResponse500
+) & {
+  headers: Headers;
+};
+
+export type storeRevocationResponse =
+  storeRevocationResponseSuccess | storeRevocationResponseError;
+
+export const getStoreRevocationUrl = () => {
+  return `/account/revocations`;
+};
+
+/**
+ * A device of the session's account stores a revocation of one of the account's devices (docs/protocol/membership.md, "Revocation"), as the bytes the server got. The server stores it only if it counts against the account's master key, the certificates the server holds and the revocations it stored before. Once stored, each device that checks 3 and 4 of "Device checks" revoke with the account's revocations has no certificate wherever the server checks one: its mailbox entries expire, its connections close and it gets no later entry.
+ * @summary Store a revocation
+ */
+export const storeRevocation = async (
+  revocationRequest: RevocationRequest,
+  options?: RequestInit,
+): Promise<storeRevocationResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getStoreRevocationUrl(), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(revocationRequest),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: storeRevocationResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as storeRevocationResponse;
 };
 
 export type listSignInMethodsResponse200 = {
