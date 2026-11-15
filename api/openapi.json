@@ -2418,6 +2418,265 @@
         }
       }
     },
+    "/spaces/{space}/channels/{channel}/group-info": {
+      "get": {
+        "operationId": "getGroupInfo",
+        "summary": "The channel's GroupInfo",
+        "description": "Whether the channel has an MLS group, and its GroupInfo of the current epoch if the server has one (docs/protocol/membership.md, \"MLS profile\"). After each Commit the server has none until a member device uploads one of the new epoch.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel's group.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelGroup"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it, or the space's latest revision lists no such channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "uploadGroupInfo",
+        "summary": "Upload the channel's GroupInfo",
+        "description": "The server keeps a GroupInfo of the channel's current epoch, with the `ratchet_tree` and `external_pub` extensions, that verifies, has the GroupContext of the group the server follows and lists a member device of the session's account; it gives the latest one. The channel's first GroupInfo, of epoch 1, comes only from the account of the device whose Commit of epoch 0 the server kept, listing that device; the server follows the group from it (docs/protocol/membership.md, \"MLS profile\", \"Creating a channel\" and \"Commit ordering\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupInfoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Kept as the channel's GroupInfo.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the GroupInfo is refused: a malformed body, or no GroupInfo of the channel with `ratchet_tree` and `external_pub` whose tree checks and whose signature verifies with its signer leaf's key.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The GroupInfo lists no device of the session's account with a certificate, or, the channel's first, not the device of its first Commit.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it, or the space's latest revision lists no such channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The channel has no group yet, or the GroupInfo is not of the group the server follows in its current epoch, or, the channel's first, not of epoch 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/devices": {
       "get": {
         "operationId": "getSpaceDevices",
@@ -2835,6 +3094,15 @@
   },
   "components": {
     "parameters": {
+      "Channel": {
+        "name": "channel",
+        "in": "path",
+        "required": true,
+        "description": "The channel's ID.",
+        "schema": {
+          "$ref": "#/components/schemas/ChannelId"
+        }
+      },
       "ProtocolVersion": {
         "name": "Skald-Protocol-Version",
         "in": "header",
@@ -2905,6 +3173,28 @@
             "description": "32 random bytes in base64url without padding (RFC 4648, §5).",
             "type": "string",
             "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ChannelGroup": {
+        "type": "object",
+        "required": ["group", "group_info"],
+        "properties": {
+          "group": {
+            "description": "Whether the channel has an MLS group: the server kept its first Commit.",
+            "type": "boolean"
+          },
+          "group_info": {
+            "description": "The GroupInfo of the current epoch; `null` while the server has none.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -3081,6 +3371,21 @@
             "items": {
               "$ref": "#/components/schemas/Device"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "GroupInfo": {
+        "description": "A channel's GroupInfo in an `MLSMessage` (RFC 9420, §6), with the `ratchet_tree` and `external_pub` extensions (docs/protocol/membership.md, \"MLS profile\"), in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "GroupInfoRequest": {
+        "type": "object",
+        "required": ["group_info"],
+        "properties": {
+          "group_info": {
+            "$ref": "#/components/schemas/GroupInfo"
           }
         },
         "additionalProperties": false

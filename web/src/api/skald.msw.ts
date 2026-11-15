@@ -11,10 +11,12 @@ import type {
 } from "msw";
 
 import type {
+  ChannelGroup,
   Device,
   DeviceRegistration,
   Devices,
   GetOpenApiSpec200,
+  GroupInfoRequest,
   Health,
   HealthUnavailable,
   MasterKey,
@@ -1047,6 +1049,175 @@ export const getCreateChannelResponseMock404 = (
 });
 
 export const getCreateChannelResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetGroupInfoResponseMock = (
+  overrideResponse: Partial<Extract<ChannelGroup, object>> = {},
+): ChannelGroup => ({
+  group: faker.datatype.boolean(),
+  group_info: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetGroupInfoResponseMock200 = (
+  overrideResponse: Partial<Extract<ChannelGroup, object>> = {},
+): ChannelGroup => ({
+  group: faker.datatype.boolean(),
+  group_info: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetGroupInfoResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetGroupInfoResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetGroupInfoResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetGroupInfoResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetGroupInfoResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadGroupInfoResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getUploadGroupInfoResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getUploadGroupInfoResponseMock400 = ():
+  ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getUploadGroupInfoResponseProtocolProblemMock() },
+    { ...getUploadGroupInfoResponseProblemMock() },
+  ]);
+
+export const getUploadGroupInfoResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadGroupInfoResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadGroupInfoResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadGroupInfoResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUploadGroupInfoResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -3392,6 +3563,532 @@ export const getCreateChannelMockHandler500 = (
   );
 };
 
+export const getGetGroupInfoMockHandler = (
+  overrideResponse?:
+    | ChannelGroup
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<ChannelGroup> | ChannelGroup),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetGroupInfoResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetGroupInfoMockHandler200 = (
+  overrideResponse?:
+    | ChannelGroup
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<ChannelGroup> | ChannelGroup),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetGroupInfoResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetGroupInfoMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetGroupInfoResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetGroupInfoMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetGroupInfoResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetGroupInfoMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetGroupInfoResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetGroupInfoMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetGroupInfoResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetGroupInfoMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetGroupInfoResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler204 = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadGroupInfoResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadGroupInfoResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadGroupInfoResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadGroupInfoResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadGroupInfoResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadGroupInfoMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<
+            { space: string; channel: string },
+            GroupInfoRequest
+          >
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; channel: string }, GroupInfoRequest>(
+    "*/spaces/:space/channels/:channel/group-info",
+    async (
+      info: Parameters<
+        HttpResponseResolver<
+          { space: string; channel: string },
+          GroupInfoRequest
+        >
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadGroupInfoResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetSpaceDevicesMockHandler = (
   overrideResponse?:
     | Devices
@@ -4008,6 +4705,8 @@ export const getSkaldAPIMock = () => [
   getGetSpacesMockHandler(),
   getCreateSpaceMockHandler(),
   getCreateChannelMockHandler(),
+  getGetGroupInfoMockHandler(),
+  getUploadGroupInfoMockHandler(),
   getGetSpaceDevicesMockHandler(),
   getGetRosterRevisionsMockHandler(),
   getStoreRosterRevisionMockHandler(),

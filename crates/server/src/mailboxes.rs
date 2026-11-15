@@ -1,12 +1,14 @@
 //! Storing sent envelopes: `docs/protocol/delivery.md`, "Send" and "Mailbox". The server answers a
-//! device's `send` with `stored` once the envelope and its mailbox entry are committed, or with
-//! `send-refused` and its problem, storing nothing of the envelope. It stores at most one envelope
-//! per idempotency key and answers a retry as it answered the first send. With the server's cloud
-//! limits (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over the size limit,
-//! and a message past its space's number for the month.
+//! device's `send` with `stored` once the envelope and its mailbox entries are committed, or with
+//! `send-refused` and its problem, storing nothing of the envelope. An `hpke` envelope goes to its
+//! one recipient; the channel's group routes an `mls` one ([`groups`](crate::groups)). It stores
+//! at most one envelope per idempotency key and answers a retry as it answered the first send. With
+//! the server's cloud limits (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over
+//! the size limit, and a message past its space's number for the month.
 
 use std::num::NonZeroU64;
 
+use skald_crypto::MlsFraming;
 use skald_proto::{
     AccountId, Cbor as _, DeviceId, Frame, Header, RawEnvelope, Roster, Scheme, SendKey, SpaceId,
     Stored,
@@ -15,6 +17,7 @@ use sqlx::{PgConnection, PgPool};
 
 use crate::MAILBOX_LONGEST;
 use crate::delivery::Wakers;
+use crate::groups;
 
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
@@ -33,11 +36,12 @@ pub(crate) struct Limits {
     pub(crate) monthly_messages: Option<u64>,
 }
 
-/// Why a send is refused: the problems of "Send" that the server finds so far.
-#[derive(Debug, Clone, Copy)]
-enum Problem {
+/// Why a send is refused: the problems of "Send".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Problem {
     VersionMismatch,
     NotAMember,
+    EpochMismatch,
     UnknownRecipient,
     TooLarge,
     QuotaExceeded,
@@ -48,6 +52,7 @@ impl Problem {
         match self {
             Self::VersionMismatch => "version-mismatch",
             Self::NotAMember => "not-a-member",
+            Self::EpochMismatch => "epoch-mismatch",
             Self::UnknownRecipient => "unknown-recipient",
             Self::TooLarge => "too-large",
             Self::QuotaExceeded => "quota-exceeded",
@@ -68,7 +73,7 @@ fn send_key(header: &Header) -> SendKey {
 }
 
 /// The answer to `sender`'s send of `envelope` with `report`, under `limits`; a stored envelope
-/// wakes its recipient's connections in `wakers`, on each instance.
+/// wakes its recipients' connections in `wakers`, on each instance.
 pub(crate) async fn send(
     db: &PgPool,
     wakers: &Wakers,
@@ -83,20 +88,9 @@ pub(crate) async fn send(
         size: envelope.envelope().payload.len(),
         report,
         ttl: header.ttl,
+        payload: &envelope.envelope().payload,
     };
-    let answer = answer(db, wakers, limits, sender, header, Some(outgoing)).await?;
-    // A retry's wake finds no new entry.
-    if let Frame::Stored(Stored {
-        send_key: SendKey {
-            recipient: Some(recipient),
-            ..
-        },
-        ..
-    }) = &answer
-    {
-        wakers.wake(*recipient);
-    }
-    Ok(answer)
+    answer(db, wakers, limits, sender, header, Some(outgoing)).await
 }
 
 /// The answer to `sender`'s send of an `hpke` envelope with `header`, whose `recipients` is not one
@@ -122,7 +116,7 @@ async fn answer(
     envelope: Option<Outgoing<'_>>,
 ) -> Result<Frame, sqlx::Error> {
     let key = send_key(header);
-    let outcome = match (recipient(db, sender, header).await?, envelope) {
+    let outcome = match (route(db, sender, header, envelope).await?, envelope) {
         (Ok(_), Some(envelope))
             if limits
                 .message_size
@@ -130,22 +124,26 @@ async fn answer(
         {
             Err(Problem::TooLarge)
         }
-        (Ok(recipient), Some(envelope)) => Ok((recipient, envelope)),
-        // `recipient` refuses a send without one recipient; this is in case it does not.
+        (Ok(route), Some(envelope)) => Ok((route, envelope)),
+        // `route` refuses a send without one recipient; this is in case it does not.
         (Ok(_), None) => Err(Problem::UnknownRecipient),
         (Err(problem), _) => Err(problem),
     };
     // A send answered before keeps its answer: keeping this one finds its key taken.
     loop {
-        let kept = match outcome {
-            Ok((recipient, envelope)) => {
-                let counted = limits.monthly_messages.map(|limit| (header.space, limit));
-                match store(db, wakers, sender, &key, recipient, envelope, counted).await? {
+        let kept = match &outcome {
+            Ok((route, envelope)) => {
+                // A handshake message is no message of the space's to count.
+                let counted = (limits.monthly_messages)
+                    .filter(|_| !route.lasting())
+                    .map(|limit| (header.space, limit));
+                match store(db, wakers, sender, header, &key, route, *envelope, counted).await? {
                     Kept::Answer(answer) => answer,
                     Kept::OverQuota => refuse(db, sender, &key, Problem::QuotaExceeded).await?,
+                    Kept::Refused(problem) => refuse(db, sender, &key, problem).await?,
                 }
             }
-            Err(problem) => refuse(db, sender, &key, problem).await?,
+            Err(problem) => refuse(db, sender, &key, *problem).await?,
         };
         if let Some(answer) = kept {
             return Ok(answer);
@@ -171,13 +169,14 @@ fn frame(key: &SendKey, timestamp: i64, problem: Option<String>) -> Frame {
     }
 }
 
-/// The one recipient device that `sender`'s envelope with `header` is stored for, or the problem
-/// it is refused with.
-async fn recipient(
+/// Where `sender`'s envelope with `header`, which is `envelope` if it can be stored, goes, or the
+/// problem it is refused with.
+async fn route(
     db: &PgPool,
     sender: &Sender,
     header: &Header,
-) -> Result<Result<DeviceId, Problem>, sqlx::Error> {
+    envelope: Option<Outgoing<'_>>,
+) -> Result<Result<Route, Problem>, sqlx::Error> {
     if header.v != sender.version {
         return Ok(Err(Problem::VersionMismatch));
     }
@@ -195,21 +194,39 @@ async fn recipient(
                 m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device))
             })
     };
-    // No channel has an MLS group yet, so no device may send under `mls`.
-    if !in_channel(sender.account, sender.device) || header.scheme == Scheme::Mls {
+    if !in_channel(sender.account, sender.device) {
         return Ok(Err(Problem::NotAMember));
+    }
+    if header.scheme == Scheme::Mls {
+        let framing = envelope.and_then(|envelope| MlsFraming::read(envelope.payload));
+        return Ok(groups::addressed(header, framing).map(Route::Group));
     }
     let Some(recipient) = send_key(header).recipient else {
         return Ok(Err(Problem::UnknownRecipient));
     };
     match certified_account(db, recipient).await? {
-        Some(account) if in_channel(account, recipient) => Ok(Ok(recipient)),
+        Some(account) if in_channel(account, recipient) => Ok(Ok(Route::Device(recipient))),
         _ => Ok(Err(Problem::UnknownRecipient)),
     }
 }
 
+/// Where an envelope goes.
+enum Route {
+    /// To its one recipient device, under `hpke`.
+    Device(DeviceId),
+    /// Where the channel's group routes it, under `mls`: an `MLSMessage` of this framing.
+    Group(MlsFraming),
+}
+
+impl Route {
+    /// Whether its entries do not expire by time: those of a handshake message.
+    fn lasting(&self) -> bool {
+        matches!(self, Self::Group(framing) if framing.is_handshake())
+    }
+}
+
 /// The latest roster revision of `space`, if it has one.
-async fn latest(db: &PgPool, space: SpaceId) -> Result<Option<Roster>, sqlx::Error> {
+pub(crate) async fn latest(db: &PgPool, space: SpaceId) -> Result<Option<Roster>, sqlx::Error> {
     let found: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT roster FROM roster_revisions WHERE space_id = $1::uuid
          ORDER BY revision DESC LIMIT 1",
@@ -288,13 +305,15 @@ async fn refuse(
     keep(&mut *db.acquire().await?, sender, key, Some(problem)).await
 }
 
-/// An envelope to store: its bytes, its payload's length, whether it gets statuses, and its `ttl`.
+/// An envelope to store: its bytes, its payload's length, whether it gets statuses, its `ttl`, and
+/// its payload.
 #[derive(Clone, Copy)]
 struct Outgoing<'a> {
     bytes: &'a [u8],
     size: usize,
     report: bool,
     ttl: Option<u64>,
+    payload: &'a [u8],
 }
 
 /// What storing a send gave.
@@ -303,57 +322,93 @@ enum Kept {
     Answer(Option<Frame>),
     /// Nothing: its message is past its space's number for the month.
     OverQuota,
+    /// Nothing: the channel's group refuses it with this problem.
+    Refused(Problem),
 }
 
-/// Stores `envelope`, the send of `sender` with `key`, with its entry in `recipient`'s mailbox, and
-/// gives its `stored`; tells the other instances in `wakers`. With `counted`, a space and its
-/// monthly limit, a message not counted yet counts in the space's month, and is not stored past the
-/// limit.
+/// Stores `envelope`, the send of `sender` with `key` and `header`, with an entry in the mailbox of
+/// each device `route` gives, and gives its `stored`; tells the other instances in `wakers`, and
+/// wakes the recipients' connections on this one. With `counted`, a space and its monthly limit, a
+/// message not counted yet counts in the space's month, and is not stored past the limit.
+#[allow(clippy::too_many_arguments)]
 async fn store(
     db: &PgPool,
     wakers: &Wakers,
     sender: &Sender,
+    header: &Header,
     key: &SendKey,
-    recipient: DeviceId,
+    route: &Route,
     envelope: Outgoing<'_>,
     counted: Option<(SpaceId, u64)>,
 ) -> Result<Kept, sqlx::Error> {
     let mut tx = db.begin().await?;
+    let mut recipients = match route {
+        Route::Device(device) => vec![*device],
+        Route::Group(framing) => {
+            // Locks the channel's group: its envelopes are stored one at a time.
+            match groups::route(&mut tx, sender, header, framing, envelope.payload).await? {
+                Ok(devices) => devices,
+                Err(problem) => return Ok(Kept::Refused(problem)),
+            }
+        }
+    };
     let Some(stored) = keep(&mut tx, sender, key, None).await? else {
         return Ok(Kept::Answer(None));
     };
-    // The mailbox's row lock makes stores to it wait for each other, so its entries are numbered in
-    // the order they are committed.
-    sqlx::query(
-        "WITH envelope AS (
-             INSERT INTO envelopes (envelope, sender_id, msg_id, report)
-             VALUES ($1, $3::uuid, $4::uuid, $5) RETURNING id
-         ),
-         mailbox AS (
-             INSERT INTO mailboxes (device_id, last_seq) VALUES ($2::uuid, 1)
-             ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
-             RETURNING last_seq
-         )
-         INSERT INTO entries (device_id, seq, envelope_id, ttl_ends_at)
-         SELECT $2::uuid, mailbox.last_seq, envelope.id, now() + make_interval(secs => $6)
-         FROM envelope, mailbox",
-    )
-    .bind(envelope.bytes)
-    .bind(recipient.to_string())
-    .bind(sender.device.to_string())
-    .bind(key.msg_id.to_string())
-    .bind(envelope.report)
-    // Past `MAILBOX_LONGEST`, a `ttl` changes nothing.
-    .bind(envelope.ttl.map(|ttl| ttl.min(MAILBOX_LONGEST) as f64))
-    .execute(&mut *tx)
-    .await?;
+    // An envelope no entry refers to is not kept: a channel's first Commit goes to no one.
+    let envelope_id: Option<(i64,)> = if recipients.is_empty() {
+        None
+    } else {
+        Some(
+            sqlx::query_as(
+                "INSERT INTO envelopes (envelope, sender_id, msg_id, report)
+         VALUES ($1, $2::uuid, $3::uuid, $4) RETURNING id",
+            )
+            .bind(envelope.bytes)
+            .bind(sender.device.to_string())
+            .bind(key.msg_id.to_string())
+            .bind(envelope.report)
+            .fetch_one(&mut *tx)
+            .await?,
+        )
+    };
+    let lasting = route.lasting();
+    // Past `MAILBOX_LONGEST`, a `ttl` changes nothing; a handshake message's entry has none.
+    let ttl = (envelope.ttl)
+        .filter(|_| !lasting)
+        .map(|ttl| ttl.min(MAILBOX_LONGEST) as f64);
+    // Mailboxes locked in one order, so stores to the same ones at once never wait for each other.
+    recipients.sort_by_key(|device| *device.as_bytes());
+    for recipient in &recipients {
+        // The mailbox's row lock makes stores to it wait for each other, so its entries are
+        // numbered in the order they are committed.
+        sqlx::query(
+            "WITH mailbox AS (
+                 INSERT INTO mailboxes (device_id, last_seq) VALUES ($1::uuid, 1)
+                 ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
+                 RETURNING last_seq
+             )
+             INSERT INTO entries (device_id, seq, envelope_id, ttl_ends_at, lasting)
+             SELECT $1::uuid, mailbox.last_seq, $2, now() + make_interval(secs => $3), $4
+             FROM mailbox",
+        )
+        .bind(recipient.to_string())
+        .bind(envelope_id.map(|(id,)| id))
+        .bind(ttl)
+        .bind(lasting)
+        .execute(&mut *tx)
+        .await?;
+    }
     if let Some((space, limit)) = counted
         && !count(&mut tx, sender, key, space, limit).await?
     {
         return Ok(Kept::OverQuota);
     }
-    wakers.tell(&mut tx, [recipient]).await?;
+    wakers.tell(&mut tx, recipients.iter().copied()).await?;
     tx.commit().await?;
+    for recipient in recipients {
+        wakers.wake(recipient);
+    }
     Ok(Kept::Answer(Some(stored)))
 }
 
