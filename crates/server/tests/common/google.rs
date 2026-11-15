@@ -21,7 +21,7 @@ use super::accounts::Who;
 use super::browser::{Browser, Page, Visit};
 use super::sign_in::{
     CLIENT_SECRET as GITHUB_CLIENT_SECRET, Jar, SECRET_ENV as GITHUB_SECRET_ENV, SESSION,
-    authorize_link, github_args, github_session, github_stand_in, page_session, start_url,
+    authorize_link, github_session, github_settings, github_stand_in, page_session, start_url,
     to_callback, to_github_callback,
 };
 use super::{Response, Server, TestDb, get_url, on_free_port};
@@ -90,15 +90,16 @@ pub fn settings<'a>(
     google: Option<(&'a str, &'a str)>,
     github: Option<&'a GitHub>,
 ) -> (Vec<&'a str>, Vec<(&'a str, &'a str)>) {
-    let mut args = vec!["--public-url", public];
-    let mut envs = Vec::new();
+    let (mut args, mut envs) = match github {
+        Some(github) => (
+            github_settings(public, github),
+            vec![(GITHUB_SECRET_ENV, GITHUB_CLIENT_SECRET)],
+        ),
+        None => (vec!["--public-url", public], Vec::new()),
+    };
     if let Some((issuer, secret)) = google {
         args.extend(["--google-client-id", CLIENT_ID, "--google-issuer", issuer]);
         envs.push((SECRET_ENV, secret));
-    }
-    if let Some(github) = github {
-        args.extend(github_args(github));
-        envs.push((GITHUB_SECRET_ENV, GITHUB_CLIENT_SECRET));
     }
     (args, envs)
 }

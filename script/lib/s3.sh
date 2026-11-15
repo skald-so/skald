@@ -3,6 +3,7 @@
 # script/image-test; the caller removes the container with s3_stop, e.g. in its EXIT trap.
 # script/self-host-test runs $s3_image as the bucket's stand-in.
 
+# Renovate updates it by this line's form: renovate.json.
 s3_image=versity/versitygw:v1.11.0@sha256:8319a530d08d537426e2f855bae5280709795dc73a3f0c347973ef915d6343c5
 # Not S3's default region: a client that ignores the region setting is refused.
 s3_region=eu-central-2
