@@ -11,7 +11,7 @@ on:
 
 permissions: {}
 
-# One run at a time, in order; none is cancelled.
+# One run at a time, in order; a newer run replaces a waiting run.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false

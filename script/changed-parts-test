@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests script/changed-parts on a scratch repository: a PR checks only the parts of script/test it
 # changes; the OpenAPI spec, scripts, CI and unknown paths check everything; docs, the root's
-# Markdown files and site/ check the website.
+# Markdown files and site/ check the website, and so do any Markdown file and a removed path that
+# docs/ links to.
 # With --since, the changes from where HEAD branched off the base to the working tree count.
 # The self-host stack's part: the paths of the server image, the browser's packages, the compose file,
 # Caddy's config and the self-host guide, the one path in docs/ that marks another part than site.
@@ -78,6 +79,8 @@ cd "$tmp"
 git init --quiet
 for file in api/openapi.json Cargo.toml Cargo.lock deny.toml crates/server/src/lib.rs \
   web/package.json web/package-lock.json web/src/App.tsx web/README.md docs/dev/roadmap.md task.md \
+  web/logo.svg web/logo.svg.bak prototypes/mls/benchmarks/src/main.rs \
+  prototypes/edits/overlap/dictionary/names.txt \
   docs/self-host.md site/package.json \
   crates/server/Dockerfile .dockerignore \
   prototypes/mls/Cargo.toml prototypes/mls/Cargo.lock prototypes/mls/openmls/src/lib.rs \
@@ -86,6 +89,14 @@ for file in api/openapi.json Cargo.toml Cargo.lock deny.toml crates/server/src/l
   script/test .github/workflows/ci.yml renovate.json .gitattributes; do
   apply "$file"
 done
+# Links that leave docs/ for files and a directory outside it.
+cat >docs/dev/links.md <<'EOF2'
+[Screenshots](../../web/README.md#reference-screenshots), [logo](../../web/logo.svg),
+[benchmarks](../../prototypes/mls/benchmarks).
+<img src="../../prototypes/edits/overlap/dictionary/names.txt"> [Policy](../../deny.toml)
+
+[manifest]: ../../Cargo.toml
+EOF2
 git add --all
 git commit --quiet --message base
 base=$(git rev-parse HEAD)
@@ -96,7 +107,8 @@ crates='workspace wasm image self-host repository'
 all="$rust tooling web site"
 
 expect web web/src/App.tsx
-expect web web/README.md
+# Any Markdown file: a link of docs/ can name its headings.
+expect 'web site' web/README.md
 # The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
 # self-host stack's part runs for its packages too.
 expect 'workspace self-host web' web/package.json
@@ -105,7 +117,7 @@ expect 'workspace self-host web' -web/package.json
 expect 'web site' web/src/App.tsx docs/dev/roadmap.md task.md
 
 expect "$crates" crates/server/src/lib.rs
-expect "$crates" crates/server/README.md
+expect "$crates site" crates/server/README.md
 expect "$crates" Cargo.toml
 expect "$crates" Cargo.lock
 expect "$crates site" crates/server/src/lib.rs docs/dev/roadmap.md
@@ -132,7 +144,7 @@ expect 'edits repository' -prototypes/edits/overlap/src/lib.rs
 expect 'agents edits repository' prototypes/agents/inbox/src/lib.rs prototypes/edits/Cargo.toml
 expect 'agents edits repository' 'prototypes/edits/overlap/src/lib.rs->prototypes/agents/overlap.rs'
 # Any other path in prototypes/: every part of the Rust code.
-expect "$rust" prototypes/README.md
+expect "$rust site" prototypes/README.md
 expect "$rust" prototypes/new/src/lib.rs
 expect "$rust" prototypes/mlsx/src/lib.rs
 
@@ -151,7 +163,24 @@ expect "$all" api/README.md
 expect "$all" web/src/App.tsx api/openapi.json
 expect "$all" prototypes/edits/Cargo.toml script/test
 
-# The website and docs: docs/, the root's Markdown files that docs/ links to, and site/.
+# A removed path that docs/ links to, or that lies in a directory it links to, as a link's whole
+# target: also the website.
+expect web web/logo.svg
+expect 'web site' -web/logo.svg
+expect 'web site' 'web/logo.svg->web/logo-old.svg'
+expect web -web/logo.svg.bak
+expect web -web/src/App.tsx
+expect 'mls repository' prototypes/mls/benchmarks/src/main.rs
+expect 'mls repository site' -prototypes/mls/benchmarks/src/main.rs
+expect 'edits repository site' -prototypes/edits/overlap/dictionary/names.txt
+expect 'repository site' -deny.toml
+expect "$crates site" -Cargo.toml
+# Without --since, HEAD counts, not the working tree.
+changed -web/logo.svg >/dev/null
+apply web/logo.svg
+got=$(parts "$base")
+[[ $got == 'web site' ]] || fail "a file removed in HEAD but not in the working tree: got '$got', want 'web site'"
+rm web/logo.svg
 expect site docs/dev/roadmap.md
 expect site docs/dev/new.md task.md README.md
 expect site site/package.json
@@ -231,6 +260,10 @@ mkdir -p crates
 got=$(cd crates && "$root/script/changed-parts" --since "$base" | sed -n 's/=true$//p' | paste -sd ' ' -)
 [[ $got == 'edits repository web' ]] || fail "--since in crates/: got '$got', want 'edits repository web'"
 rm web/new.ts
+# A file docs/ links to, removed from the working tree.
+rm web/logo.svg
+since 'edits repository web site' "$base"
+git checkout --quiet -- web/logo.svg
 branch=$(git rev-parse HEAD)
 git checkout --quiet --detach "$base"
 apply crates/server/src/lib.rs
@@ -388,8 +421,8 @@ for path in docs/self-host.md docker-compose.yml Caddyfile; do
   mkdir -p "$copy/web" "$copy/site"
   reads "$path" script/self-host-test
 done
-# The website and docs: its packages and build for docs/, the root's Markdown files and site/.
-for path in docs/dev/roadmap.md README.md site/config.mjs; do
+# The website and docs: its packages and build for docs/, any Markdown file and site/.
+for path in docs/dev/roadmap.md README.md web/README.md site/config.mjs; do
   mkdir -p "$copy/site"
   reads "$path" 'site: npm ci --no-audit --no-fund' script/site-test
 done
