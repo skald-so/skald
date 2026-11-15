@@ -4,6 +4,7 @@ mod cert;
 mod history;
 mod hpke;
 mod mls;
+mod revocation;
 mod roster;
 mod sealed;
 mod sign;
@@ -16,6 +17,7 @@ pub use mls::{
     ChannelView, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice, MlsDevice, MlsError,
     Processed,
 };
+pub use revocation::{check_valid_device, sign_revocation};
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
 pub use sign::{SignatureError, SigningKey, verify};
