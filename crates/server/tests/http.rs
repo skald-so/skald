@@ -1,4 +1,5 @@
-//! Runs `skald-server` and checks its HTTP API against the OpenAPI spec in `api/openapi.json`.
+//! Runs `skald-server` and checks its HTTP API against the OpenAPI spec in `api/openapi.json`; and
+//! the tests' own HTTP client.
 
 mod common;
 
@@ -189,6 +190,62 @@ fn spec_violations_reports_responses_outside_spec() {
             String::from_utf8_lossy(&response.body)
         );
     }
+}
+
+/// The tests' HTTP client keeps its connection for the next request until the server closes it.
+#[test]
+fn the_tests_http_client_keeps_its_connection_until_the_server_closes_it() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Shutdown, TcpStream};
+    use std::sync::mpsc;
+    use std::thread;
+
+    // Answers each request on a connection with `ok`, until the connection ends.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let url = format!("http://{}/", listener.local_addr().expect("local address"));
+    let (accepted, connections) = mpsc::channel::<TcpStream>();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let _ = accepted.send(stream.try_clone().expect("clone a stream"));
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().expect("clone a stream"));
+                let mut writer = stream;
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if line == "\r\n"
+                        && writer
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let get = || {
+        common::agent::agent()
+            .get(&url)
+            .call()
+            .expect("GET")
+            .body_mut()
+            .read_to_string()
+            .expect("the body")
+    };
+
+    assert_eq!((get(), get()), ("ok".to_owned(), "ok".to_owned()));
+    let first = connections.try_recv().expect("a connection");
+    assert!(connections.try_recv().is_err(), "a second connection");
+
+    first.shutdown(Shutdown::Both).expect("end the connection");
+    assert_eq!(get(), "ok");
+    connections
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a new connection");
 }
 
 #[test]

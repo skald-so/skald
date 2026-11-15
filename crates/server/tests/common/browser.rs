@@ -68,7 +68,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// in that moment keeps the pipe open, and the other test waits for its end as long as that
 /// program lives.
 #[cfg(unix)]
-pub fn inherit_only_stdio(command: &mut Command) {
+fn inherit_only_stdio(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     let mut limit = libc::rlimit {
         rlim_cur: 0,
@@ -94,7 +94,7 @@ pub fn inherit_only_stdio(command: &mut Command) {
 
 /// On Windows a program inherits only the handles Rust marks inheritable while it starts it.
 #[cfg(not(unix))]
-pub fn inherit_only_stdio(_command: &mut Command) {}
+fn inherit_only_stdio(_command: &mut Command) {}
 
 impl Driver {
     fn start() -> Result<Self, String> {

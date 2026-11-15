@@ -186,6 +186,29 @@ try {
     }
   };
 
+  // The stand-in and the proxy end each answer with its connection: closing() in
+  // script/lib/release-check-stub.mjs.
+  const headersOf = (url) =>
+    new Promise((resolve, reject) =>
+      http
+        .get(url, { agent: false }, (answer) => answer.resume().on('end', () => resolve(answer.headers)))
+        .on('error', reject),
+    );
+  const standIn = await serve(world);
+  const proxied = await proxy(standIn.url);
+  try {
+    for (const [who, url] of [['the stand-in', standIn.url], ['the proxy', proxied.url]]) {
+      const headers = await headersOf(`${url}/download/${tag}/install.sh`);
+      if (headers.connection !== 'close' || 'content-length' in headers || 'transfer-encoding' in headers) {
+        fail(`${who}'s answer does not end with its connection: ${JSON.stringify(headers)}`);
+      }
+    }
+  } finally {
+    await proxied.close();
+    await standIn.close();
+  }
+  world.requests.length = 0;
+
   const tail = (output) => output.trim().split('\n').slice(-6).join(' | ');
   let r = await check('install');
   if (r.status !== 0) fail(`with SKALD_RELEASE_CHECK_STEPS=install it verifies nothing and passes, but exits ${r.status}: ${tail(r.output)}`);

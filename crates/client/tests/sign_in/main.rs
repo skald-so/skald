@@ -235,8 +235,9 @@ fn machines_with_their_own_state_directories_keep_their_own_sessions() {
     assert_eq!(cloud.grants().len(), 2);
 }
 
-/// A machine's directory that a killed test process left goes once no test can be using it; one
-/// in use stays. Unix only: Windows opens no directory as a file to date it back.
+/// A machine's directory that a killed test process left goes as a later machine is made, once no
+/// test can be using it; one in use stays. Unix only: Windows opens no directory as a file to date
+/// it back.
 #[cfg(unix)]
 #[test]
 fn a_machine_left_by_a_killed_test_is_removed_later() {
@@ -251,7 +252,7 @@ fn a_machine_left_by_a_killed_test_is_removed_later() {
         .and_then(|dir| dir.set_modified(long_ago))
         .expect("date the directory back");
 
-    machine::remove_abandoned();
+    let _later = Machine::new();
 
     let removed = !left.exists();
     let _ = fs::remove_dir_all(&left);

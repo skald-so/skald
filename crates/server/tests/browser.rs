@@ -89,7 +89,8 @@ fn the_browser_is_chrome_headless_shell_or_skald_chrome() {
 }
 
 /// The driver keeps open no pipe of another test: one that is not close-on-exec yet as the driver
-/// starts, as happens on macOS, closes at its writer's end alone.
+/// starts, as happens on macOS, closes at its writer's end alone. Checked in a run of this binary
+/// of its own, where no other test starts a program that could hold the pipe.
 #[cfg(unix)]
 #[test]
 fn the_driver_inherits_no_descriptor_but_its_standard_streams() {
@@ -97,29 +98,39 @@ fn the_driver_inherits_no_descriptor_but_its_standard_streams() {
     use std::io::Read;
     use std::os::fd::FromRawFd;
     use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::sync::mpsc;
+
+    const TEST: &str = "the_driver_inherits_no_descriptor_but_its_standard_streams";
+    /// Set in the environment of that run.
+    const ALONE: &str = "SKALD_TEST_BROWSER_ALONE";
+    if env::var_os(ALONE).is_none() {
+        let run = Command::new(env::current_exe().expect("this test binary"))
+            .args([TEST, "--exact"])
+            .env(ALONE, "1")
+            .stdin(Stdio::null())
+            .stderr(Stdio::inherit())
+            .output()
+            .expect("run this test binary");
+        let output = String::from_utf8_lossy(&run.stdout);
+        assert!(run.status.success(), "{output}");
+        assert!(output.contains("1 passed"), "the run ran no test: {output}");
+        return;
+    }
 
     let mut fds = [0; 2];
     // SAFETY: `pipe` writes only `fds`; each end is owned by one `File` from here on.
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "make a pipe");
     let (mut reader, writer) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
-    // Runs longer than the test waits.
-    let mut command = Command::new("sleep");
-    command.arg("60").stdin(Stdio::null()).stdout(Stdio::null());
-    common::browser::inherit_only_stdio(&mut command);
-    let mut sleeping = command.spawn().expect("start sleep");
-
+    // The driver and its browser run as long as this run.
+    let _browser = Browser::launch();
     drop(writer);
-    let started = Instant::now();
-    let read = reader.read(&mut [0; 1]);
-    let waited = started.elapsed();
-    let _ = sleeping.kill();
-    let _ = sleeping.wait();
+    let (send, ended) = mpsc::channel();
+    thread::spawn(move || send.send(reader.read(&mut [0; 1]).map_err(|err| err.to_string())));
+    let wait = Duration::from_secs(30);
+    let read = ended
+        .recv_timeout(wait)
+        .unwrap_or_else(|_| panic!("the pipe did not end within {wait:?}"));
     assert_eq!(read.expect("read the pipe"), 0, "the pipe's end");
-    assert!(
-        waited < Duration::from_secs(30),
-        "the pipe ended after {waited:?}"
-    );
 }
 
 /// How the browser ends. A killed process does nothing on its way out: SIGKILL.

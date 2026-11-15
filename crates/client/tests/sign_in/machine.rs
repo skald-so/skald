@@ -70,8 +70,7 @@ impl Machine {
     pub fn new() -> Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        static SWEPT: std::sync::Once = std::sync::Once::new();
-        SWEPT.call_once(remove_abandoned);
+        remove_abandoned();
         // Removed on drop from here on: also when making the machine fails, before it exists.
         let root = TestDir::named(&format!(
             "{PREFIX}{}-{}",
@@ -229,7 +228,7 @@ pub const ABANDONED: Duration = Duration::from_secs(60 * 60);
 
 /// Removes the machines' directories that no test has used for [`ABANDONED`]: a test process that
 /// is killed, as `cargo mutants` kills one past its timeout, never drops its machines.
-pub fn remove_abandoned() {
+fn remove_abandoned() {
     let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
         return;
     };

@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod accounts;
+pub mod agent;
 pub mod browser;
 pub mod cbor;
 pub mod check;
@@ -28,6 +29,8 @@ use tungstenite::http::HeaderMap;
 use tungstenite::protocol::CloseFrame;
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
+
+use agent::agent;
 
 pub const SERVER: &str = env!("CARGO_BIN_EXE_skald-server");
 
@@ -310,17 +313,6 @@ pub fn send(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> R
     }
     let response = request.send(body);
     read(response.unwrap_or_else(|err| panic!("{method} {url}: {err}")))
-}
-
-/// An HTTP client that answers any status and follows no redirect.
-fn agent() -> ureq::Agent {
-    let config = ureq::Agent::config_builder()
-        .proxy(None)
-        .http_status_as_error(false)
-        .max_redirects(0)
-        .max_redirects_will_error(false)
-        .build();
-    ureq::Agent::new_with_config(config)
 }
 
 fn read(mut response: ureq::http::Response<ureq::Body>) -> Response {
