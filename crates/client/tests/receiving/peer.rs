@@ -7,8 +7,6 @@ use std::net::TcpStream;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_crypto::SigningKey;
 use skald_proto::{AUTH_LABEL, Cbor as _, DeviceId, Frame, PROTOCOL_VERSION, Push, RawEnvelope};
 use tungstenite::client::IntoClientRequest as _;
@@ -16,7 +14,7 @@ use tungstenite::http::HeaderValue;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::{Message, WebSocket};
 
-use super::cloud::Cloud;
+use super::cloud::{Cloud, unb64};
 use super::world::{Person, post_as};
 
 /// How long the peer waits for a frame from the server.
@@ -38,17 +36,17 @@ impl Peer {
         );
         let challenge = body["challenge"]
             .as_str()
-            .and_then(|text| URL_SAFE_NO_PAD.decode(text).ok())
+            .map(unb64)
             .unwrap_or_else(|| panic!("a challenge in base64url: {body}"));
         let signature = key.sign(AUTH_LABEL, &[&challenge, cloud.public.as_bytes()]);
-        let address = cloud.relay.url.trim_start_matches("http://").to_owned();
+        let address = cloud.relay.address();
         let mut request = format!("ws://{address}/ws")
             .into_client_request()
             .expect("a WebSocket request");
         let offer = HeaderValue::from_str(&skald_proto::subprotocol(PROTOCOL_VERSION))
             .expect("a subprotocol header");
         request.headers_mut().insert(SEC_WEBSOCKET_PROTOCOL, offer);
-        let stream = TcpStream::connect(&address).expect("reach the relay");
+        let stream = TcpStream::connect(address).expect("reach the relay");
         stream.set_read_timeout(Some(READ)).expect("a read timeout");
         let (socket, _) = tungstenite::client(request, stream)
             .unwrap_or_else(|err| panic!("open a WebSocket: {err}"));

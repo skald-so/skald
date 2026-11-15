@@ -11,14 +11,12 @@
 //! `skald send` sends that first (`docs/protocol/delivery.md`, "Send").
 //!
 //! Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, behind
-//! the recording relay and, before it, a front at the server's public address,
-//! `http://localhost:<port>`, which reads the WebSocket frames and can lose or change the server's
-//! answers, swallow a `send` and take the server down for delivery; a test plays the person on the
-//! verification page in headless Chrome. Each machine keeps its state in a directory of its own and
-//! its secrets in a file there. The tests sign fixture revisions with the keys of the machines'
-//! devices, read from their secrets files, and store them through the API, as an admin's device
-//! would. Devices beside the machines' are written to the server's database, as linking will
-//! register them.
+//! the recording relay and, before it, the front of `front.rs` at the server's public address,
+//! `http://localhost:<port>`; a test plays the person on the verification page in headless Chrome.
+//! Each machine keeps its state in a directory of its own and its secrets in a file there. The
+//! tests sign fixture revisions with the keys of the machines' devices, read from their secrets
+//! files, and store them through the API, as an admin's device would. Devices beside the machines'
+//! are written to the server's database, as linking will register them.
 //!
 //! The CLI, as these tests use it, beside the commands of the tests of roster revisions, of
 //! creating channels and of agent isolation:
@@ -59,7 +57,8 @@ use std::time::{Duration, Instant};
 use cloud::Cloud;
 use fixtures::{
     Channel, Issuer, Keyed, TIMEOUT, acme, ada_and_bob, add_device, cert_of, database, fronted,
-    hex, keyed, kill_once, last_channel, msg_id, person_address, recipient, send, send_args, strs,
+    hex, keyed, kill_once, last_channel, msg_id, person_address, recipient, send, send_args,
+    sent_after, strs,
 };
 use front::{Answers, Front, Sent};
 use machine::Finished;
@@ -81,11 +80,6 @@ const THIRD: &str = "rolling back the canary in five minutes";
 
 /// The agent the tests send as.
 const CLAUDE: &str = "claude-k3s8vq";
-
-/// The `send` frames the front saw after its first `from`.
-fn sent_after(front: &Front, from: usize) -> Vec<Sent> {
-    front.sent().split_off(from)
-}
 
 /// The distinct envelopes of `sent` to `device`, by their bytes, in the order they were first
 /// sent.

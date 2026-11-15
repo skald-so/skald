@@ -7,16 +7,14 @@
 
 use skald_proto::{MessageId, PROTOCOL_VERSION, ServerStatus};
 
-use crate::expiring::{
-    DAY, EXPIRY, HOUR, RETENTION_ENV, WEEK, assert_retry_stores_nothing, move_back, restart,
-    retained, send_bob_with,
-};
+use crate::common::times::{DAY, EXPIRY, HOUR, RETENTION_ENV, WEEK};
+use crate::expiring::{assert_retry_stores_nothing, restart, retained, send_bob_with};
 use crate::link::{
     Entry, Link, assert_delivered, assert_status, await_seqs, await_seqs_within, bytes, messages,
     seqs,
 };
 use crate::scene::Scene;
-use crate::wire::{assert_nowhere, now};
+use crate::wire::{assert_nowhere, move_back, now};
 
 #[test]
 fn a_message_expires_after_its_ttl_and_is_not_sent() {

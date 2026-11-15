@@ -17,7 +17,7 @@ fn refused_as(pair: &Pair, problem: &str, text: &str) -> (Finished, Vec<Sent>) {
     let before = pair.front.sent().len();
     pair.front.answer(Answers::Refuse(problem.into()));
     let finished = pair.send(text);
-    (finished, pair.front.sent().split_off(before))
+    (finished, sent_after(&pair.front, before))
 }
 
 /// A message refused as `too-large`, then one refused as `quota-exceeded`: each run names the

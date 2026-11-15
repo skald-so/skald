@@ -7,14 +7,15 @@ use std::time::{Duration, Instant};
 
 use tungstenite::protocol::frame::coding::CloseCode;
 
+use crate::common::Closed;
 use crate::common::device_flow::text;
 use crate::common::devices::assert_taken;
 use crate::fixture::Fixture;
-use crate::instances::{CLOSE, RELISTEN, Role, WAKE, instance_at, sender, store, watch};
+use crate::instances::{CLOSE, RELISTEN, Role, WAKE, sender, store, watch};
 use crate::link::{Entry, messages};
 use crate::proxy::Proxy;
 use crate::rosters::{member, next};
-use crate::watch::{Closed, Watch};
+use crate::watch::Watch;
 
 #[test]
 fn entries_stored_while_an_instance_did_not_listen_reach_its_connections_once_it_listens_again() {
@@ -96,7 +97,11 @@ fn an_instance_whose_first_listening_is_refused_takes_connections_once_it_listen
     let first = &t.flow.stand.server;
     let proxy = Proxy::to(fixture.db());
     proxy.refuse_listening(true);
-    let behind = instance_at(&fixture, &proxy.url(fixture.db()), &[]);
+    let behind = fixture
+        .team
+        .flow
+        .stand
+        .instance_at(&proxy.url(fixture.db()), &[], &[]);
     let deadline = Instant::now() + RELISTEN;
     while proxy.refused() == 0 {
         assert!(
@@ -132,7 +137,11 @@ fn entries_stored_after_a_listening_connection_went_silent_reach_its_instance_s_
     let t = &fixture.team;
     let first = &t.flow.stand.server;
     let proxy = Proxy::to(fixture.db());
-    let behind = instance_at(&fixture, &proxy.url(fixture.db()), &[]);
+    let behind = fixture
+        .team
+        .flow
+        .stand
+        .instance_at(&proxy.url(fixture.db()), &[], &[]);
     let bob = t.bob.laptop.id;
     let mut on_behind = watch(&behind, &fixture, &t.bob);
     let mut alice = sender(first, &fixture, &t.alice);

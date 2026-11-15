@@ -7,14 +7,12 @@ use std::collections::BTreeMap;
 use skald_proto::{DeliveryStatus, DeviceId, Header, MessageId, ServerStatus};
 
 use crate::common::Server;
+use crate::common::times::{EXPIRY, HOUR, WEEK};
 use crate::fixture::Fixture;
-use crate::instances::{
-    EXPIRY, HOUR, WAKE, WEEK, assert_status, expiring, instance, move_back, sender, settled, store,
-    watch,
-};
-use crate::link::{Entry, WAIT, messages, seqs};
+use crate::instances::{WAKE, expiring, instance, sender, settled, store, watch};
+use crate::link::{Entry, WAIT, assert_status, messages, seqs};
 use crate::watch::Watch;
-use crate::wire::Socket;
+use crate::wire::{Socket, move_back};
 
 /// How many messages the tests of several expiring instances send.
 const MANY: usize = 20;
@@ -86,7 +84,8 @@ impl Scene {
                 let [entry @ Entry::Status(_, status)] = found[..] else {
                     panic!("one status for {}: {found:?}", header.msg_id);
                 };
-                assert_status(entry, status.status, header, self.bob());
+                // At any time up to now.
+                assert_status(entry, status.status, header, self.bob(), 0);
                 status.clone()
             })
             .collect();
@@ -107,7 +106,7 @@ fn expired_added_by_one_instance_reaches_the_sender_on_another_at_once() {
     assert_eq!(settled(s.fixture.db(), alice, 1, EXPIRY), [1]);
     let expired = s.alice.entry_within(WAKE);
     assert_eq!(
-        assert_status(&expired, ServerStatus::Expired, &header, s.bob()),
+        assert_status(&expired, ServerStatus::Expired, &header, s.bob(), 0),
         1
     );
     s.alice.assert_quiet();

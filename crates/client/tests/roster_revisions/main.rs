@@ -53,21 +53,18 @@ use skald_proto::{
     Unknown,
 };
 use world::{
-    ACME, ADMIN, MEMBER, MEMBERS, Person, SPACES, World, assert_role, create, holds_word, members,
-    next, next_by, now, plain_lines, revisions_request, run, set_role, space_certs, store,
-    warnings, words,
+    ACME, ADMIN, FORK, GLOBEX, MEMBER, MEMBERS, Person, SPACES, World, assert_role,
+    broken_signature, create, devices_request, holds_word, members, next, next_by, now,
+    plain_lines, revisions_request, run, serve_revisions, set_role, space_certs, store, warnings,
+    words,
 };
 
-/// What the warnings of a forked roster and of a changed `master` also say.
-const FORK: &str = "fork";
+/// What the warning of a changed `master` also says.
 const MASTER: &str = "master";
 
 /// The handles of the accounts that forged revisions add; no account of a test has them.
 const MALLORY: &str = "mallory";
 const TRUDY: &str = "trudy";
-
-/// A space beside [`ACME`].
-const GLOBEX: &str = "globex";
 
 /// A member a forged revision adds: a made-up account with a master key of its own.
 fn made_up_member(handle: &str) -> Member {
@@ -80,30 +77,6 @@ fn made_up_member(handle: &str) -> Member {
         excluded: None,
         unknown: Unknown::default(),
     }
-}
-
-/// `roster` with its signature broken.
-fn broken_signature(roster: &Roster) -> Roster {
-    let mut signature = *roster.signature();
-    signature[0] ^= 1;
-    Roster::from_parts(roster.body_bytes().to_vec(), signature).expect("a revision")
-}
-
-/// The request for the devices of `space`'s accounts, as its line starts.
-fn devices_request(space: SpaceId) -> String {
-    format!("GET /spaces/{space}/devices")
-}
-
-/// From now on, the proxy gives the machines `revisions` as `space`'s revisions, whatever the server
-/// holds.
-fn serve_revisions(cloud: &Cloud, space: SpaceId, revisions: &[&Roster]) {
-    let list: Vec<String> = revisions
-        .iter()
-        .map(|roster| URL_SAFE_NO_PAD.encode(roster.to_cbor()))
-        .collect();
-    cloud.relay.rewrite(&revisions_request(space), move |_| {
-        json!({ "revisions": list }).to_string()
-    });
 }
 
 /// From now on, the proxy gives the machines `space`'s revisions as the server holds them.

@@ -27,6 +27,8 @@ mod api;
 mod rosters;
 
 mod fixture;
+// Also the frames and times of the tests of delivering a mailbox; this binary uses some of them.
+#[allow(dead_code)]
 mod wire;
 
 mod frames;

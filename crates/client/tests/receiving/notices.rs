@@ -22,46 +22,18 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde_json::json;
-use skald_proto::{Cbor as _, Role, Roster, SpaceId};
+use skald_proto::{Role, Roster, SpaceId};
 
 use crate::cloud::{Cloud, WAIT};
 use crate::fixtures::{await_running, fronted};
 use crate::front::Front;
 use crate::machine::{Finished, Machine, Run};
 use crate::world::{
-    ACME, ADMIN, AGENT, CLIENT_A, CLIENT_B, Desk, MEMBER, Person, SPACES, assert_role, create,
-    members, next_by, revisions_request, run, set_role, store, warnings,
+    ACME, ADMIN, AGENT, CLIENT_A, CLIENT_B, Desk, FORK, GLOBEX, MEMBER, Person, assert_role,
+    broken_signature, create, devices_request, members, next_by, revisions_request,
+    serve_revisions, set_role, spaces, store, warnings,
 };
 use crate::{CLAUDE, Joining, RECV, assert_shows_once, received};
-
-/// What the warning of a forked roster also says.
-const FORK: &str = "fork";
-
-/// A space beside [`ACME`].
-const GLOBEX: &str = "globex";
-
-/// The request for the devices of `space`'s accounts, as its line starts.
-fn devices_request(space: SpaceId) -> String {
-    format!("GET /spaces/{space}/devices")
-}
-
-/// Waits for up to [`WAIT`] until the front holds back the end of a catch-up of `run`, which
-/// waits for it; fails if `run` exits first.
-fn await_held_end(front: &Front, run: &mut Run) {
-    let deadline = Instant::now() + WAIT;
-    while front.held_ends() == 0 {
-        run.assert_running();
-        assert!(
-            Instant::now() < deadline,
-            "no catch-up held back: {}",
-            run.shown()
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
-}
 
 /// Starts a run with `start`, the end of its catch-up held back until a `space-notice`; once the
 /// front holds it, Bob's device stores `revision`. Fails unless the run succeeds and Ada's device
@@ -76,7 +48,7 @@ fn stored_while_held(
 ) -> (Finished, Instant) {
     front.hold_end_until_notice(true);
     let mut run = start();
-    await_held_end(front, &mut run);
+    await_running(&mut run, "catch-up held back", || front.held_ends() > 0);
     let stored_at = cloud.relay.mark();
     store(cloud, &bob.token, revision);
     let finished = run.finish();
@@ -88,18 +60,6 @@ fn stored_while_held(
         "no notice of {space}: {finished:?}"
     );
     (finished, stored_at)
-}
-
-/// From now on, the relay gives the machines `revisions` as `space`'s revisions.
-fn give_revisions(cloud: &Cloud, space: SpaceId, revisions: &[&Roster]) {
-    let encoded: Vec<String> = revisions
-        .iter()
-        .map(|revision| URL_SAFE_NO_PAD.encode(revision.to_cbor()))
-        .collect();
-    let answer = json!({ "revisions": encoded }).to_string();
-    cloud
-        .relay
-        .rewrite(&revisions_request(space), move |_| answer.clone());
 }
 
 /// A space of Ada's machine and its revisions, as the server holds them.
@@ -148,7 +108,7 @@ fn assert_accepted(cloud: &Cloud, space: &Followed, ada: &Person, bob: &Person, 
     assert_ne!(other.hash(), accepted.hash(), "the same revision");
     let mut given: Vec<&Roster> = space.revisions.iter().collect();
     given.push(&other);
-    give_revisions(cloud, space.id(), &given);
+    serve_revisions(cloud, space.id(), &given);
 
     let shown = members(&ada.machine, &space.revisions[0].body().name.to_string());
 
@@ -246,8 +206,7 @@ fn notice_of_a_space_the_device_does_not_follow_fetches_nothing() {
             "the run sent {request}: {finished:?}"
         );
     }
-    let listed = run(&ada.machine, &[SPACES]);
-    assert!(listed.success, "{listed:?}");
+    let listed = spaces(&ada.machine);
     assert!(
         !listed.shown().to_lowercase().contains(GLOBEX),
         "globex is listed: {listed:?}"
@@ -279,10 +238,8 @@ fn agent_output_names_nothing_of_another_spaces_revisions() {
     let third = next_by(&second, &bob, |list| {
         set_role(list, ada.account, Role::Member);
     });
-    let mut signature = *third.signature();
-    signature[0] ^= 1;
-    let broken = Roster::from_parts(third.body_bytes().to_vec(), signature).expect("a revision");
-    give_revisions(cloud, client_b, &[&desk.client_b, &second, &broken]);
+    let broken = broken_signature(&third);
+    serve_revisions(cloud, client_b, &[&desk.client_b, &second, &broken]);
     let folder = desk.dir("work/clientA");
     desk.add_rule(&folder, CLIENT_A);
 
@@ -343,7 +300,7 @@ fn revision_and_message_stored_while_the_run_connects_reach_it() {
 /// Sends `request`, such as `GET /spaces/<id>/devices`, through the relay without a session, so
 /// that a request the relay holds until a second one comes goes on.
 fn through_relay(cloud: &Cloud, request: &str) {
-    let address = cloud.relay.url.trim_start_matches("http://");
+    let address = cloud.relay.address();
     let mut stream = TcpStream::connect(address).expect("reach the relay");
     write!(
         stream,

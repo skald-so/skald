@@ -30,7 +30,6 @@ use tungstenite::stream::MaybeTlsStream;
 use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{WebSocket, printable};
 use crate::devices::{self, text};
-use crate::folders;
 use crate::follow::{ATTEMPTS, Own, SpaceDevices};
 use crate::secrets;
 use crate::spaces::{self, Follower, Scope, Synced};
@@ -83,10 +82,7 @@ pub fn run(
     let channel: ChannelId = channel
         .parse()
         .map_err(|_| format!("\"{}\" is not a channel ID", printable(channel)))?;
-    let scope = match agent {
-        Some(_) => Scope::Only(folders::working_space(dir)?.id),
-        None => Scope::All,
-    };
+    let scope = Scope::of_run(dir, agent.is_some())?;
     let Synced {
         mut follower,
         roster,
@@ -332,10 +328,7 @@ pub fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) ->
         pause = (pause * 2).min(LONGEST_PAUSE);
         let opened = match socket.take() {
             Some(socket) => Ok(socket),
-            None => follower
-                .connection
-                .open_websocket_as("/ws", &follower.token, keys.id(), keys.signing())
-                .map_err(text),
+            None => follower.connect(&keys),
         };
         let attempt = opened.and_then(|mut opened| {
             for queued in &unanswered {

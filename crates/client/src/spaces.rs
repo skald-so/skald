@@ -26,9 +26,10 @@ use skald_proto::{
     SpaceId, VersionRange,
 };
 
-use crate::connection::{self, Connection, Method, printable};
+use crate::connection::{self, Connection, Method, WebSocket, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
+use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
 use crate::secrets;
 use crate::sign_in;
@@ -374,6 +375,13 @@ impl Follower {
         }))
     }
 
+    /// A WebSocket at `/ws` to the server as the device, proving its `keys`.
+    pub fn connect(&mut self, keys: &device::Keys) -> Result<WebSocket, String> {
+        self.connection
+            .open_websocket_as("/ws", &self.token, keys.id(), keys.signing())
+            .map_err(text)
+    }
+
     /// The device's keys.
     pub fn keys(&self) -> Result<device::Keys, String> {
         device::known_keys(&self.stored, Some(&self.device))
@@ -648,6 +656,15 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// The scope of a run in `dir`: the space of its folder for an `agent`, otherwise every space.
+    pub fn of_run(dir: &Path, agent: bool) -> Result<Self, String> {
+        Ok(if agent {
+            Scope::Only(folders::working_space(dir)?.id)
+        } else {
+            Scope::All
+        })
+    }
+
     /// Whether the space `id` is outside the scope.
     pub fn excludes(self, id: SpaceId) -> bool {
         matches!(self, Scope::Only(only) if only != id)

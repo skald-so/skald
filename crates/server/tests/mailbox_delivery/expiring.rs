@@ -1,70 +1,23 @@
-//! What the expiry tests share: the server's mailbox retention, time passing as the database shows
-//! it, and a server started again on the same database.
+//! What the expiry tests share besides the retention and time passing of `common/times.rs`: a
+//! server started again on the same database, and sends and retries of an envelope.
 
 use std::thread;
 use std::time::Duration;
 
 use skald_proto::Stored;
-use sqlx::{AssertSqlSafe, Connection as _};
 
-use crate::common::sign_in::{CLIENT_SECRET, SECRET_ENV, github_settings};
-use crate::common::{Server, TestDb};
+use crate::common::Server;
+use crate::common::times::{RETENTION, WEEK};
 use crate::link::{Link, Sent, seqs};
 use crate::scene::Scene;
-use crate::wire::{Answer, Socket, assert_nowhere, envelope, query};
+use crate::wire::{Answer, Socket, assert_nowhere, envelope};
 
-/// The server setting of the mailbox retention, in seconds; unset, there is none.
-pub const RETENTION: &str = "--mailbox-retention";
-/// The environment variable of the same setting.
-pub const RETENTION_ENV: &str = "SKALD_MAILBOX_RETENTION";
 /// The server setting of the protocol versions it accepts.
 pub const VERSIONS: &str = "--protocol-versions";
-
-pub const HOUR: u64 = 3_600;
-pub const DAY: u64 = 24 * HOUR;
-/// The retention the tests set.
-pub const WEEK: u64 = 7 * DAY;
-pub const YEAR: u64 = 365 * DAY;
-
-/// How soon the server finds an expired entry by itself, with no connection of its device.
-pub const EXPIRY: Duration = Duration::from_secs(30);
-
-/// The tables whose times the tests move back.
-const TIMED: [&str; 3] = ["envelopes", "sends", "entries"];
 
 /// The scene on a server with a mailbox retention of [`WEEK`]; GitHub user IDs from `github` on.
 pub fn retained(github: u64) -> Scene {
     Scene::with(github, &[RETENTION, &WEEK.to_string()])
-}
-
-/// Moves every time the server keeps of envelopes, sends and mailbox entries `seconds` back, as if
-/// that much time had passed: each `timestamptz` column of the tables `envelopes`, `sends` and
-/// `entries`, all at once.
-pub fn move_back(db: &TestDb, seconds: u64) {
-    let tables: Vec<String> = TIMED.iter().map(|&table| table.to_owned()).collect();
-    let columns: Vec<(String, String)> = query(db, async |conn| {
-        sqlx::query_as(
-            "SELECT table_name::text, column_name::text FROM information_schema.columns
-             WHERE table_schema = current_schema() AND table_name = ANY ($1)
-               AND data_type = 'timestamp with time zone'",
-        )
-        .bind(tables)
-        .fetch_all(conn)
-        .await
-    });
-    assert!(!columns.is_empty(), "no times in {TIMED:?}");
-    // In one transaction, so that the server never sees some times moved and others not, such as
-    // an entry it expires before the `expired` it adds is moved back too.
-    query(db, async |conn| {
-        let mut tx = conn.begin().await?;
-        for (table, column) in &columns {
-            let sql = format!(
-                r#"UPDATE "{table}" SET "{column}" = "{column}" - make_interval(secs => {seconds})"#
-            );
-            sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut *tx).await?;
-        }
-        tx.commit().await
-    });
 }
 
 /// Stores on alice's connection an envelope to bob with `ttl` and `report`; gives it and its
@@ -84,11 +37,7 @@ pub fn send_bob_with(s: &mut Scene, ttl: Option<u64>, report: bool) -> (Sent, St
 pub fn restart(s: &mut Scene, args: &[&str], envs: &[(&str, &str)]) -> Server {
     let stand = &mut s.fixture.team.flow.stand;
     stand.server.stop();
-    let mut all = github_settings(&stand.public, &stand.github);
-    all.extend_from_slice(args);
-    let mut all_envs = vec![(SECRET_ENV, CLIENT_SECRET)];
-    all_envs.extend_from_slice(envs);
-    Server::launch(&stand.db, "127.0.0.1:0", &all, &all_envs)
+    stand.instance(args, envs)
 }
 
 /// Checks that a retry of `sent`, which bob's connection `link` has acked, gets the `stored` of its
