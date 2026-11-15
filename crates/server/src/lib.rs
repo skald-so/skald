@@ -32,6 +32,7 @@ mod notices;
 mod oidc;
 mod protocol;
 mod refusal;
+mod revocations;
 mod sign_in;
 mod sign_up;
 mod spaces;
@@ -102,8 +103,8 @@ pub struct Settings {
     /// The number of messages a space stores per calendar month in UTC (`docs/dev/architecture.md`,
     /// "Cloud limits"); no limit without it.
     pub monthly_messages_limit: Option<u64>,
-    /// The number of devices with a certificate an account may have, `service` devices aside
-    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    /// The number of devices with a certificate an account may have, `service` and revoked devices
+    /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
 }
 
@@ -167,6 +168,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/account/personal-space",
             post(spaces::personal).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/revocations",
+            post(revocations::store).layer(checked(Statement::Header)),
         )
         .route(
             "/account/sign-in-methods",

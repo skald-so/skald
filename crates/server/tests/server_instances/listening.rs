@@ -1,6 +1,7 @@
 //! An instance whose listening connection drops listens again, then sends its connections what
-//! they missed: entries, notices and the close of an ended session's connections. It also notices a
-//! listening connection that goes silent, and takes no connection before it first listens.
+//! they missed: entries, notices and the close of an ended session's or a revoked device's
+//! connections. It also notices a listening connection that goes silent, and takes no connection
+//! before it first listens.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -54,7 +55,7 @@ fn entries_stored_while_an_instance_did_not_listen_reach_its_connections_once_it
 }
 
 #[test]
-fn a_revision_and_a_sign_out_an_instance_missed_reach_it_once_it_listens_again() {
+fn a_revision_a_sign_out_and_a_revocation_an_instance_missed_reach_it_once_it_listens_again() {
     let fixture = Fixture::new(3_121_290_091);
     let t = &fixture.team;
     let first = &t.flow.stand.server;
@@ -62,6 +63,7 @@ fn a_revision_and_a_sign_out_an_instance_missed_reach_it_once_it_listens_again()
     let listening = role.instance(&fixture);
     let mut bob = watch(&listening, &fixture, &t.bob);
     let mut carol = watch(&listening, &fixture, &t.carol);
+    let mut dave = watch(&listening, &fixture, &t.dave);
 
     role.set_login(false);
     role.end_listening();
@@ -75,15 +77,21 @@ fn a_revision_and_a_sign_out_an_instance_missed_reach_it_once_it_listens_again()
     assert_taken(&t.alice.session.on(first).store(t.space, &revision));
     let ended = t.bob.session.on(first).sign_out();
     assert_eq!(ended.status, 204, "{}", text(&ended));
+    t.dave.revoke(&t.dave.by_master(t.dave.laptop.id, &[]));
     role.set_login(true);
 
     assert_eq!(carol.notice_within(RELISTEN), t.space);
     carol.assert_quiet();
     let session_ended = Some(Closed::Frame(CloseCode::Policy, "session-ended".to_owned()));
     assert_eq!(bob.closed_within(WAKE), session_ended);
-    // The connection of another session stays.
+    let device_refused = Some(Closed::Frame(
+        CloseCode::Policy,
+        "device-refused".to_owned(),
+    ));
+    assert_eq!(dave.closed_within(WAKE), device_refused);
+    // The connection of another session and device stays.
     assert_eq!(carol.closed_within(CLOSE), None);
-    drop((bob, carol));
+    drop((bob, carol, dave));
     drop(listening);
 }
 
