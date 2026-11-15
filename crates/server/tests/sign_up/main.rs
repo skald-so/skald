@@ -35,13 +35,8 @@ use common::Server;
 use common::accounts::Who;
 use common::browser::{Page, Visit};
 use common::device_flow::INTERVAL;
-use common::google::{
-    CLIENT_ID, CLIENT_SECRET, GITHUB_START, Google, SECRET_ENV, Setup, text as body_text,
-};
-use common::sign_in::{
-    CLIENT_SECRET as GITHUB_CLIENT_SECRET, SECRET_ENV as GITHUB_SECRET_ENV, github_args,
-    github_rows, github_session,
-};
+use common::google::{CLIENT_SECRET, GITHUB_START, Google, Setup, settings, text as body_text};
+use common::sign_in::{github_rows, github_session};
 use skald_github_stand_in::User;
 use skald_oidc_stand_in::Person;
 
@@ -124,21 +119,13 @@ pub fn restarted(google: Google, args: &[&str], envs: &[(&str, &str)]) -> Google
     drop(server);
     let server = {
         let github = github.as_ref().expect("the server has GitHub's settings");
-        let mut all = vec![
-            "--public-url",
-            public.as_str(),
-            "--google-client-id",
-            CLIENT_ID,
-            "--google-issuer",
-            provider.issuer(),
-        ];
-        all.extend(github_args(github));
+        let (mut all, mut all_envs) = settings(
+            &public,
+            Some((provider.issuer(), CLIENT_SECRET)),
+            Some(github),
+        );
         all.extend([INTERVAL, "1"]);
         all.extend_from_slice(args);
-        let mut all_envs = vec![
-            (SECRET_ENV, CLIENT_SECRET),
-            (GITHUB_SECRET_ENV, GITHUB_CLIENT_SECRET),
-        ];
         all_envs.extend_from_slice(envs);
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {

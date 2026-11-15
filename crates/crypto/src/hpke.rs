@@ -159,8 +159,10 @@ pub fn seal_message(
 ///
 /// # Errors
 /// [`HpkeError::Scheme`] if `header` is not under `hpke`; [`HpkeError::Recipients`] if
-/// `recipients` is not `recipient` alone; [`HpkeError::Malformed`] if the payload or its plaintext
-/// breaks the spec's CDDL; [`HpkeError::Open`] if it does not open with `key` under `header`.
+/// `recipients` is not `recipient` alone; [`HpkeError::Content`] if the plaintext names its
+/// `sender` but its content breaks the spec's CDDL; [`HpkeError::Malformed`] if the payload or its
+/// plaintext otherwise breaks it; [`HpkeError::Open`] if it does not open with `key` under
+/// `header`.
 pub fn open_message(
     header: &Header,
     payload: &[u8],
@@ -174,7 +176,12 @@ pub fn open_message(
     let HpkePayload { enc, ct } = HpkePayload::from_cbor(payload).map_err(HpkeError::Malformed)?;
     let aad = header.to_cbor();
     let opened = key.open(&enc, LABEL.as_bytes(), &aad, &ct)?;
-    let plaintext = HpkePlaintext::from_cbor(&opened).map_err(HpkeError::Malformed)?;
+    let plaintext = HpkePlaintext::from_cbor(&opened).map_err(|error| {
+        match HpkePlaintext::sender_in(&opened) {
+            Some(sender) => HpkeError::Content { sender, error },
+            None => HpkeError::Malformed(error),
+        }
+    })?;
     Ok(HpkeMessage {
         header: aad,
         plaintext,
@@ -236,6 +243,12 @@ pub enum HpkeError {
     Recipients,
     /// The payload or its plaintext breaks the spec's CDDL.
     Malformed(DecodeError),
+    /// The plaintext names `sender`, but the rest of it, such as its content, breaks the spec's
+    /// CDDL; `sender` is not authenticated.
+    Content {
+        sender: DeviceId,
+        error: DecodeError,
+    },
     /// Check 1: it does not open with the key, `info` and `aad`.
     Open,
     /// Check 2: the certificate is not `sender`'s.
@@ -251,6 +264,12 @@ impl fmt::Display for HpkeError {
             Self::Scheme => f.write_str("the header is not under hpke"),
             Self::Recipients => f.write_str("recipients is not the one opening device"),
             Self::Malformed(error) => write!(f, "a malformed hpke payload: {error}"),
+            Self::Content { sender, error } => {
+                write!(
+                    f,
+                    "a malformed hpke plaintext from device {sender}: {error}"
+                )
+            }
             Self::Open => f.write_str("the payload does not open with the key"),
             Self::Certificate => f.write_str("the certificate is not the sender's"),
             Self::Signature => f.write_str("the signature does not verify with the sender's key"),

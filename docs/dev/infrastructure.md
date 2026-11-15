@@ -66,7 +66,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - After the tests, also when one fails, a `skald-update-*` or `skald-client-*` directory left in the temporary directory fails the job.
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **Daily:** e2e with real Claude Code and Codex.
-- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, the Docker base images and the images of `docker-compose.yml`, its PostgreSQL kept on major version 19, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
+- **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, the Docker base images, the images of `docker-compose.yml`, its PostgreSQL kept on major version 19, and the S3-compatible server's of `script/lib/s3.sh`, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
   - Only on Mondays, 00:00–06:00 UTC, open PRs included: one PR with every patch and digest update and every minor update from 1.0 on; a PR of its own for each major update and each minor update of a 0.x version, which breaks under SemVer; the lock file refresh.
   - A fix for a known vulnerability (GitHub's alerts and OSV) comes at once, in a PR of its own.
 
@@ -178,4 +178,4 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **Addresses:** `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation.
 
 ## Self-host
-- `docker compose up` brings up `skald-server`, PostgreSQL and Caddy for the domain in `.env`, with HTTPS from the first start; attachments stay in a volume or an S3-compatible bucket; people sign in through the admin's own GitHub OAuth App or Google OAuth client: [self-host.md](../self-host.md).
+- The stack and its setup: [self-host.md](../self-host.md).

@@ -488,9 +488,9 @@ async fn run(mut cli: Cli) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The attachment storage of the arguments `args`, with `secret_key` as the bucket's.
-    fn storage(args: &[&str], secret_key: Option<&str>) -> Result<Option<String>, String> {
-        let mut cli = Cli::try_parse_from(
+    /// The command line of the arguments `args` and a database URL.
+    fn cli(args: &[&str]) -> Cli {
+        Cli::try_parse_from(
             [
                 "skald-server",
                 "--database-url",
@@ -499,9 +499,14 @@ mod tests {
             .iter()
             .chain(args),
         )
-        .expect("valid arguments");
+        .expect("valid arguments")
+    }
+
+    /// The attachment storage of the arguments `args`, with `secret_key` as the bucket's.
+    fn storage(args: &[&str], secret_key: Option<&str>) -> Result<Option<String>, String> {
         let secret_key = secret_key.and_then(|key| ClientSecret::new(key.to_owned()));
-        cli.attachment_storage(secret_key)
+        cli(args)
+            .attachment_storage(secret_key)
             .map(|storage| storage.map(|storage| storage.to_string()))
     }
 
@@ -608,17 +613,7 @@ mod tests {
 
     /// The sign-up of the arguments `args`.
     fn sign_up(args: &[&str]) -> Result<SignUp, String> {
-        let mut cli = Cli::try_parse_from(
-            [
-                "skald-server",
-                "--database-url",
-                "postgres://localhost/skald",
-            ]
-            .iter()
-            .chain(args),
-        )
-        .expect("valid arguments");
-        cli.sign_up()
+        cli(args).sign_up()
     }
 
     #[test]

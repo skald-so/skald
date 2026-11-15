@@ -189,6 +189,8 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
+# The bucket's S3-compatible server: the image of the attachment storage tests.
+source script/lib/s3.sh
 
 guide=docs/self-host.md
 domain=skald.self-host.test
@@ -224,7 +226,7 @@ cleanup() {
     docker rm --force --volumes "$machine" >/dev/null
   fi
   for image in "skald-server:$tag" "skald-self-host-machine:$tag" "skald-self-host-caddy:$tag" \
-    "skald-self-host-bucket:$tag" "skald-self-host-browser:$tag"; do
+    "skald-self-host-browser:$tag"; do
     if docker image inspect "$image" >/dev/null 2>&1; then
       docker image rm "$image" >/dev/null
     fi
@@ -372,7 +374,7 @@ fi
 docker build --quiet --file crates/server/Dockerfile --build-arg "REVISION=$(git rev-parse HEAD)" \
   --tag "skald-server:$tag" . >/dev/null
 docker build --quiet --file script/lib/self-host/client.Dockerfile --output "$work/client" . >/dev/null
-for target in machine caddy bucket browser; do
+for target in machine caddy browser; do
   docker build --quiet --file script/lib/self-host/machine.Dockerfile --target "$target" \
     --tag "skald-self-host-$target:$tag" script/lib/self-host >/dev/null
 done
@@ -512,14 +514,14 @@ docker cp "$work/client/skald" "$machine:/usr/local/bin/skald"
 docker cp "$work/client/skald-github-stand-in" "$machine:/opt/self-host-test/bin/"
 docker cp "$work/client/skald-oidc-stand-in" "$machine:/opt/self-host-test/bin/"
 dockerd_start
-docker save "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" \
-  "skald-self-host-browser:$tag" | mi docker load >/dev/null
+docker save "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-browser:$tag" |
+  mi docker load >/dev/null
 m docker tag "skald-server:$tag" skald-server:self-host-test
-for target in caddy bucket browser; do
+for target in caddy browser; do
   m docker tag "skald-self-host-$target:$tag" "skald-self-host-$target:test"
 done
-m docker image rm "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-bucket:$tag" \
-  "skald-self-host-browser:$tag" >/dev/null
+m docker image rm "skald-server:$tag" "skald-self-host-caddy:$tag" "skald-self-host-browser:$tag" \
+  >/dev/null
 
 # Pebble, with its root for the whole run in /self-host/acme-root.pem.
 docker exec --detach --workdir /self-host/pebble --env PEBBLE_VA_NOSLEEP=1 \
@@ -538,8 +540,14 @@ if ! m test -s /self-host/acme-root.pem; then
   exit 1
 fi
 
+# stand_in_user <ID> <login>: adds the GitHub user to the GitHub stand-in.
+stand_in_user() {
+  m curl --silent --fail --request PUT --header 'Content-Type: application/json' \
+    --data "{\"id\":$1,\"login\":\"$2\",\"email\":null,\"name\":null}" http://127.0.0.1:14100/_stand-in/users
+}
+
 # The GitHub and Google stand-ins, processes on the machine, their callbacks on the domain; GitHub's
-# with its user.
+# with its two users.
 docker exec --detach "$machine" sh -c "exec /opt/self-host-test/bin/skald-github-stand-in \
   --listen 0.0.0.0:14100 --client-id '$github_client_id' --client-secret '$github_secret' \
   --callback 'https://$domain/auth/github/callback' >>/self-host/stand-ins/github.log 2>&1"
@@ -550,9 +558,8 @@ docker exec --detach "$machine" sh -c "exec /opt/self-host-test/bin/skald-oidc-s
 stand_ins=
 for _ in $(seq 60); do
   if m curl --silent --fail --output /dev/null http://127.0.0.1:14200/.well-known/openid-configuration &&
-    m curl --silent --fail --request PUT --header 'Content-Type: application/json' --data \
-      "{\"id\":$github_user,\"login\":\"$github_login\",\"email\":null,\"name\":null}" \
-      http://127.0.0.1:14100/_stand-in/users; then
+    stand_in_user "$github_user" "$github_login" &&
+    stand_in_user "$github_other_user" "$github_other_login"; then
     stand_ins=1
     break
   fi
@@ -573,9 +580,9 @@ m docker run --detach --name self-host-letsencrypt --restart unless-stopped \
   --network-alias "$google_host" --add-host host.docker.internal:host-gateway \
   --volume /self-host/stand-ins/Caddyfile:/etc/caddy/Caddyfile:ro --volume /self-host/ca:/self-host/ca:ro \
   skald-self-host-caddy:test >/dev/null
-m docker run --detach --name self-host-bucket --restart unless-stopped \
+m docker run --detach --quiet --name self-host-bucket --restart unless-stopped \
   --network skald-self-host-internet --network-alias "${bucket_endpoint#https://}" \
-  --volume /self-host/ca:/self-host/ca:ro --entrypoint sh skald-self-host-bucket:test -c \
+  --volume /self-host/ca:/self-host/ca:ro --entrypoint sh "$s3_image" -c \
   "mkdir -p /data/$bucket_name && exec versitygw --access $bucket_key_id --secret $bucket_secret \
     --port :443 --cert /self-host/ca/bucket.pem --key /self-host/ca/bucket-key.pem posix /data" >/dev/null
 
@@ -603,25 +610,36 @@ scenario() {
   docker cp "$work/run/$name/." "$machine:/self-host/run/$name/"
 }
 
-# run_scenario <name>: runs the scenario's script on the machine, its standard input this one, its
-# output in $work/run/<name>/output; fails, showing the output's end, unless it exits 0.
+# run_script <name> <seconds>: runs the scenario's script on the machine for up to <seconds>, its
+# standard input this one, its output in $work/run/<name>/output; exits as the script does.
+run_script() {
+  mi env HOME=/root sh -c "cd /root && timeout $2 bash /self-host/run/$1/script.sh" \
+    >"$work/run/$1/output" 2>&1
+}
+
+# edit_script <name> <sed command>: edits the scenario's script by <sed command>, on the machine too.
+edit_script() {
+  sed -i.bak "$2" "$work/run/$1/script.sh"
+  rm "$work/run/$1/script.sh.bak"
+  docker cp "$work/run/$1/script.sh" "$machine:/self-host/run/$1/script.sh"
+}
+
+# run_scenario <name>: runs the scenario's script by run_script; fails, showing the output's end,
+# unless it exits 0.
 run_scenario() {
   local status=0
-  mi env HOME=/root sh -c "cd /root && timeout 1500 bash /self-host/run/$1/script.sh" \
-    >"$work/run/$1/output" 2>&1 || status=$?
+  run_script "$1" 1500 || status=$?
   if [[ $status -ne 0 ]]; then
     fail "scenario $1: exit code $status; its output's end:"$'\n'"$(tail -n 40 "$work/run/$1/output")"
     return 1
   fi
 }
 
-# in_stack <scenario> <command>...: runs <command> on the machine in the scenario's stack directory,
-# with its compose files.
+# in_stack <scenario> <command>...: runs <command>, a command or a function of the part's hooks, on
+# the machine in the scenario's stack directory, with its compose files.
 in_stack() {
-  local name=$1
-  shift
-  m sh -c 'cd "$(cat "$1/dir")" && COMPOSE_FILE=$(cat "$1/compose-file") && export COMPOSE_FILE &&
-    shift && exec "$@"' sh "/self-host/run/$name" "$@"
+  m bash -c 'self_host_scenario=$1 && source /self-host/hooks.sh && self_host_resume "$1" && shift &&
+    "$@"' sh "$@"
 }
 
 # containers <scenario>: the IDs of the stack's containers.
@@ -646,6 +664,13 @@ container() {
 server_image='skald-server:self-host-test'
 caddy_image='([^ ]*/)?caddy[:@][^ ]*'
 postgres_image='([^ ]*/)?postgres[:@][^ ]*'
+
+# sql <container> <query>: runs <query> in the database of the stack's PostgreSQL container
+# <container>; prints the rows, unaligned, without headers.
+sql() {
+  m docker exec "$1" sh -c 'psql --quiet --tuples-only --no-align -v ON_ERROR_STOP=1 \
+    --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1"' sh "$2"
+}
 
 # published <scenario>: the stack's published ports, `<container> <port>/<protocol> <host IP> <host
 # port>`, the host IP `*` for all addresses.
@@ -673,6 +698,15 @@ leaf_certificate() {
   m curl --silent --show-error --fail --cacert /self-host/acme-root.pem --output /dev/null \
     --write-out '%{certs}' "https://$domain/health" |
     awk '/BEGIN CERTIFICATE/ { n++ } n == 1 { print } /END CERTIFICATE/ && n == 1 { exit }'
+}
+
+# answers_health <scenario> <when>: after <when>, the domain's /health answers over HTTPS; returns 1
+# if not.
+answers_health() {
+  in_stack "$1" self_host_wait_https >/dev/null 2>&1 || {
+    fail "$1: after $2, https://$domain/health does not answer"
+    return 1
+  }
 }
 
 # check_https <scenario>: /health answers ok over HTTPS with the ACME server's certificate for the
@@ -823,9 +857,7 @@ if [[ -n $main_ok ]]; then
   certificate=$(leaf_certificate || true)
   [[ -n $certificate ]] || fail "main: no certificate over HTTPS"
   if [[ -n $postgres ]]; then
-    m docker exec "$postgres" sh -c 'psql --quiet -v ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgres}" \
-      --dbname "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}" --command "CREATE TABLE self_host_test_marker ()"' ||
-      fail "main: cannot write to PostgreSQL"
+    sql "$postgres" 'CREATE TABLE self_host_test_marker ()' || fail "main: cannot write to PostgreSQL"
   fi
   if [[ -n $server ]]; then
     m docker run --rm --volumes-from "$server" --entrypoint touch skald-self-host-caddy:test \
@@ -834,14 +866,10 @@ if [[ -n $main_ok ]]; then
   # kept <when>: the stack runs with the same certificate, database and attachments.
   kept() {
     local id
-    if ! m bash -c 'self_host_scenario=main && source /self-host/hooks.sh && self_host_wait_https'; then
-      fail "main: after $1, https://$domain/health does not answer"
-      return
-    fi
+    answers_health main "$1" || return 0
     [[ $(leaf_certificate || true) == "$certificate" ]] || fail "main: after $1, the certificate changed"
     if id=$(container main "$postgres_image"); then
-      table=$(m docker exec "$id" sh -c 'psql --tuples-only --no-align --username "${POSTGRES_USER:-postgres}" \
-        --dbname "${POSTGRES_DB:-${POSTGRES_USER:-postgres}}" --command "SELECT to_regclass('\''self_host_test_marker'\'')"' || true)
+      table=$(sql "$id" "SELECT to_regclass('self_host_test_marker')" || true)
       [[ $table == self_host_test_marker ]] || fail "main: after $1, the database lost its data"
     else
       fail "main: after $1, PostgreSQL does not run"
@@ -928,6 +956,27 @@ start_sign_in() {
     --first-device yes </dev/null >$dir/sign-in.out 2>&1; echo \$? >$dir/sign-in.status"
 }
 
+# sign_in_shown <scenario> <machine> <pattern>: the output of the machine's sign-in of start_sign_in,
+# once it matches the extended regular expression <pattern> or the run ends, within 60 s.
+sign_in_shown() {
+  local dir=/self-host/run/$1/$2 out
+  for _ in $(seq 120); do
+    out=$(m cat "$dir/sign-in.out" 2>/dev/null || true)
+    if grep -qE -- "$3" <<<"$out" || m test -e "$dir/sign-in.status"; then break; fi
+    sleep 0.5
+  done
+  printf '%s\n' "$out"
+}
+
+# sign_in_status <scenario> <machine> <seconds>: the exit code of the machine's sign-in of
+# start_sign_in, once it ends within <seconds>; nothing if it still runs.
+sign_in_status() {
+  for _ in $(seq $(($3 * 2))); do
+    if m cat "/self-host/run/$1/$2/sign-in.status" 2>/dev/null; then return 0; fi
+    sleep 0.5
+  done
+}
+
 # sign_in <scenario> <machine> <GitHub|Google>: signs a new machine in to the stack by device flow,
 # `skald sign-in --first-device yes`, its person signing in with the provider on the verification
 # page; fails unless the run succeeds and says it created the account's master key and holds its
@@ -940,17 +989,10 @@ sign_in() {
     Google) provider_page=https://$google_host/_stand-in/sign-in?sub=$google_subject ;;
   esac
   start_sign_in "$scenario" "$name"
-  for _ in $(seq 120); do
-    out=$(m cat "$dir/sign-in.out" 2>/dev/null || true)
-    if [[ $out =~ [A-Z]{4}-[A-Z]{4} ]]; then
-      code=${BASH_REMATCH[0]}
-      break
-    fi
-    if m test -e "$dir/sign-in.status"; then break; fi
-    sleep 0.5
-  done
+  out=$(sign_in_shown "$scenario" "$name" '[A-Z]{4}-[A-Z]{4}')
+  code=$(grep -oE '[A-Z]{4}-[A-Z]{4}' <<<"$out" | head -n 1 || true)
   page=$(grep -oE "https://$domain/[^ ?]*( |\$)" <<<"$out" | head -n 1 | tr -d ' ' || true)
-  if [[ -z ${code:-} || -z $page ]]; then
+  if [[ -z $code || -z $page ]]; then
     fail "$scenario: skald sign-in on $name shows no verification page and code:"$'\n'"$out"
     return 1
   fi
@@ -958,12 +1000,9 @@ sign_in() {
     fail "$scenario: the person of $name cannot approve its code, signing in with $provider:"$'\n'"$said"
     return 1
   fi
-  for _ in $(seq 120); do
-    if status=$(m cat "$dir/sign-in.status" 2>/dev/null); then break; fi
-    sleep 0.5
-  done
+  status=$(sign_in_status "$scenario" "$name" 60)
   out=$(m cat "$dir/sign-in.out")
-  if [[ ${status:-} != 0 ]]; then
+  if [[ $status != 0 ]]; then
     fail "$scenario: skald sign-in on $name, its person signing in with $provider: exit code" \
       "${status:-none yet}:"$'\n'"$out"
     return 1
@@ -1031,15 +1070,10 @@ no_secret_in_logs() {
 # in; fails unless the callback refuses the sign-up, a 403 page naming its problem type, and the run
 # then ends within 30 s, failing and saying sign-up is closed.
 refused_sign_in() {
-  local scenario=$1 name=$2 user=$3 dir=/self-host/run/$1/$2 out complete said status=
+  local scenario=$1 name=$2 user=$3 dir=/self-host/run/$1/$2 out complete said status
   start_sign_in "$scenario" "$name"
-  complete=
-  for _ in $(seq 120); do
-    out=$(m cat "$dir/sign-in.out" 2>/dev/null || true)
-    complete=$(grep -oE "https://$domain/[^ ]*user_code=[^ ]*" <<<"$out" | head -n 1 | sed 's/[,.;]$//' || true)
-    if [[ -n $complete ]] || m test -e "$dir/sign-in.status"; then break; fi
-    sleep 0.5
-  done
+  out=$(sign_in_shown "$scenario" "$name" "https://$domain/[^ ]*user_code=")
+  complete=$(grep -oE "https://$domain/[^ ]*user_code=[^ ]*" <<<"$out" | head -n 1 | sed 's/[,.;]$//' || true)
   if [[ -z $complete ]]; then
     fail "$scenario: skald sign-in on $name shows no verification page with its code:"$'\n'"$out"
     return 1
@@ -1052,10 +1086,7 @@ refused_sign_in() {
     fail "$scenario: the refused sign-up of $name's person answers $(head -n 1 <<<"$said"), not 403"
   [[ $said == *https://skald.so/problems/sign-up-closed* ]] ||
     fail "$scenario: the refused sign-up's page does not name https://skald.so/problems/sign-up-closed:"$'\n'"$said"
-  for _ in $(seq 60); do
-    if status=$(m cat "$dir/sign-in.status" 2>/dev/null); then break; fi
-    sleep 0.5
-  done
+  status=$(sign_in_status "$scenario" "$name" 30)
   out=$(m cat "$dir/sign-in.out")
   if [[ -z $status ]]; then
     fail "$scenario: skald sign-in on $name still runs 30 s after its person's sign-up was refused:"$'\n'"$out"
@@ -1092,9 +1123,6 @@ check_env sign-in
 stack_down sign-in
 
 # sign-up: closed, the stand-in's GitHub login listed; another GitHub user is refused.
-m curl --silent --fail --request PUT --header 'Content-Type: application/json' --data \
-  "{\"id\":$github_other_user,\"login\":\"$github_other_login\",\"email\":null,\"name\":null}" \
-  http://127.0.0.1:14100/_stand-in/users || fail "sign-up: cannot add $github_other_login to the GitHub stand-in"
 scenario sign-up release files env github sign-up :before_up up :wait_https :trust_checks github-check \
   :trust_system
 if run_scenario sign-up <<<"$github_secret"; then
@@ -1169,13 +1197,9 @@ stack_down proxy-network
 
 # --- image: the guide's image check refuses :edge, which has no signature.
 scenario image release image-check
-sed -i.bak "s|^self_host_release\$|self_host_release; SKALD_VERSION=edge; SKALD_DIGEST=$edge_digest|" \
-  "$work/run/image/script.sh"
-rm "$work/run/image/script.sh.bak"
-docker cp "$work/run/image/script.sh" "$machine:/self-host/run/image/script.sh"
+edit_script image "s|^self_host_release\$|self_host_release; SKALD_VERSION=edge; SKALD_DIGEST=$edge_digest|"
 status=0
-mi env HOME=/root sh -c 'cd /root && timeout 600 bash /self-host/run/image/script.sh' \
-  >"$work/run/image/output" 2>&1 </dev/null || status=$?
+run_script image 600 </dev/null || status=$?
 if [[ $status -eq 0 ]]; then
   fail "image: the guide's image check passes :edge, $edge_digest"
 elif ! grep -qiE 'no (matching )?signatures' "$work/run/image/output"; then
@@ -1187,18 +1211,13 @@ backups=/self-host/backups
 m mkdir -p "$backups"
 
 # with_backup <scenario> <path>: the scenario's script with <path> for `<backup file>`.
-with_backup() {
-  sed -i.bak "s|<backup file>|$2|g" "$work/run/$1/script.sh"
-  rm "$work/run/$1/script.sh.bak"
-  docker cp "$work/run/$1/script.sh" "$machine:/self-host/run/$1/script.sh"
-}
+with_backup() { edit_script "$1" "s|<backup file>|$2|g"; }
 
 # run_refused <scenario> <step>: runs the scenario's script on the machine, as run_scenario does,
 # where it ends with the guide's <step>; fails unless the script reaches <step> and exits non-zero.
 run_refused() {
   local status=0
-  mi env HOME=/root sh -c "cd /root && timeout 1500 bash /self-host/run/$1/script.sh" \
-    >"$work/run/$1/output" 2>&1 </dev/null || status=$?
+  run_script "$1" 1500 </dev/null || status=$?
   if ! grep -qx "self-host-test: step $2" "$work/run/$1/output"; then
     fail "$1: the script does not reach the guide's $2; its output's end:"$'\n'"$(tail -n 40 "$work/run/$1/output")"
     return 1
@@ -1209,19 +1228,8 @@ run_refused() {
   fi
 }
 
-# volume <scenario> <volume>: the name of the stack's volume <volume> of its compose file.
-volume() {
-  in_stack "$1" docker compose config --format json | jq --raw-output --exit-status --arg volume "$2" \
-    '.volumes[$volume].name'
-}
-
-# in_volume <scenario> <command>: runs the shell <command> as root in a container with the stack's
-# attachments volume at /a.
-in_volume() {
-  local name
-  name=$(volume "$1" attachments) || return 1
-  m docker run --rm --volume "$name:/a" --entrypoint sh skald-self-host-caddy:test -c "$2"
-}
+# in_volume <scenario> <command>: self_host_in_volume in the scenario's stack.
+in_volume() { in_stack "$1" self_host_in_volume "$2"; }
 
 # put_attachments <scenario> <directory> <text>: files in the stack's attachments volume, the
 # server's user's: <directory>/note with <text>, <directory>/blob with 2 MB of random bytes.
@@ -1239,11 +1247,17 @@ attachment_files() {
     done'
 }
 
+# postgres_up <scenario>: starts the stack's PostgreSQL, if it does not run; prints its container's
+# ID.
+postgres_up() {
+  in_stack "$1" docker compose up --detach --wait postgres >/dev/null 2>&1 || return 1
+  container "$1" "$postgres_image"
+}
+
 # database_print <scenario>: a digest of the stack's database, PostgreSQL started for it.
 database_print() {
   local id
-  in_stack "$1" docker compose up --detach --wait postgres >/dev/null 2>&1 || return 1
-  id=$(container "$1" "$postgres_image") || return 1
+  id=$(postgres_up "$1") || return 1
   m sh -c "docker exec $id sh -c 'pg_dump --username \"\$POSTGRES_USER\" --dbname \"\$POSTGRES_DB\"' |
     grep -vE '^.(un)?restrict ' | sha256sum"
 }
@@ -1252,10 +1266,8 @@ database_print() {
 # own schemas, PostgreSQL started for it.
 database_tables() {
   local id
-  in_stack "$1" docker compose up --detach --wait postgres >/dev/null 2>&1 || return 1
-  id=$(container "$1" "$postgres_image") || return 1
-  m docker exec "$id" sh -c 'psql --tuples-only --no-align --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
-    --command "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('\''pg_catalog'\'', '\''information_schema'\'')"'
+  id=$(postgres_up "$1") || return 1
+  sql "$id" "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')"
 }
 
 # listing <scenario>/<machine>: what skald devices and skald spaces show on the machine of
@@ -1266,6 +1278,14 @@ listing() {
     echo \"spaces: exit code \$?\""
 }
 
+# listed_cleanly <scenario> <listing>...: fails for each listing of `listing` that shows an error.
+listed_cleanly() {
+  local listed
+  for listed in "${@:2}"; do
+    if grep -q '^skald:' <<<"$listed"; then fail "$1: a machine lists with errors:"$'\n'"$listed"; fi
+  done
+}
+
 # lists_as_before <scenario> <scenario>/<machine> <when> <listing>: after <when>, the machine lists
 # the same devices and spaces as <listing>.
 lists_as_before() {
@@ -1273,12 +1293,6 @@ lists_as_before() {
   now=$(listing "$2")
   [[ $now == "$4" ]] ||
     fail "$1: after $3, $2 lists other devices or spaces:"$'\n'"before:"$'\n'"$4"$'\n'"after:"$'\n'"$now"
-}
-
-# answers_health <scenario> <when>: after <when>, the domain's /health answers over HTTPS.
-answers_health() {
-  m bash -c "self_host_scenario=$1 && source /self-host/hooks.sh && self_host_wait_https" >/dev/null 2>&1 ||
-    fail "$1: after $2, https://$domain/health does not answer"
 }
 
 # backup_private <scenario> <backup>: the backup is a file of root, the user who made it, that no
@@ -1301,8 +1315,8 @@ backup_private() {
 backup_holds() {
   local scenario=$1 file=$2 setup=$3 found secrets
   shift 3
-  found=$(m bash -c 'self_host_scenario=$1 && source /self-host/hooks.sh && shift && backup_finds "$@"' \
-    sh "$scenario" "$file" "/self-host/run/$setup/env" "$@") || fail "$scenario: cannot read the backup $file"
+  found=$(in_stack "$setup" backup_finds "$file" "/self-host/run/$setup/env" "$@") ||
+    fail "$scenario: cannot read the backup $file"
   holds=$(sed -n 's/^holds //p' <<<"$found")
   secrets=$(grep -cE '^checked [A-Z_]*(PASSWORD|SECRET)' <<<"$found" || true)
   grep -qx 'checked SKALD_DATABASE_PASSWORD' <<<"$found" && ((secrets >= 3)) ||
@@ -1342,9 +1356,7 @@ if [[ -n $backup_ok ]]; then
   files_before=$(attachment_files backup)
   ada_before=$(listing backup/ada-machine)
   grace_before=$(listing backup/grace-machine)
-  for before in "$ada_before" "$grace_before"; do
-    if grep -q '^skald:' <<<"$before"; then fail "backup: a machine lists with errors:"$'\n'"$before"; fi
-  done
+  listed_cleanly backup "$ada_before" "$grace_before"
 
   # The guide's backup.
   started_before=$(started backup || true)
@@ -1357,7 +1369,7 @@ if [[ -n $backup_ok ]]; then
   else
     backup_ok=
   fi
-  answers_health backup "the guide's backup"
+  answers_health backup "the guide's backup" || true
   started_after=$(started backup || true)
   [[ -n $started_before && -n $started_after && $started_after != "$started_before" ]] ||
     fail "backup: the guide's backup does not restart the server: started '$started_before', then '$started_after'"
@@ -1371,7 +1383,7 @@ if [[ -n $backup_ok ]]; then
   run_refused backup-full backup || true
   left=$(m find /self-host/full -mindepth 1)
   [[ -z $left ]] || fail "backup-full: the backup that fails leaves files:"$'\n'"$left"
-  answers_health backup "a backup that fails"
+  answers_health backup "a backup that fails" || true
   lists_as_before backup backup/ada-machine "a backup that fails" "$ada_before"
   lists_as_before backup backup/grace-machine "a backup that fails" "$grace_before"
   m umount /self-host/full
@@ -1460,7 +1472,7 @@ if [[ -n $bucket_backup_ok ]]; then
   fi
   [[ $(m docker exec self-host-bucket cat "/data/$bucket_name/self-host-test-object" || true) == "$bucket_marker" ]] ||
     fail "bucket-backup-run: after the backup, the bucket's object is gone"
-  answers_health bucket-backup "the guide's backup"
+  answers_health bucket-backup "the guide's backup" || true
   lists_as_before bucket-backup bucket-backup/ada-machine "the guide's backup" "$bucket_ada_before"
 fi
 stack_down bucket-backup
@@ -1481,9 +1493,6 @@ release_tag=v$version
 release_skald=/self-host/release/skald
 release_image=skald-server:last-release
 upgrade_backup=$backups/skald-upgrade-backup
-# The second GitHub user, for the second account of the last release's stack.
-second_user=4120711302
-second_login=kai-self-host
 upgrade_tests='last-release upgrade upgrade-client rollback-refused rollback-missing rollback-broken'
 upgrade_tests+=' rollback-no-database rollback upgrade-restored'
 ran=
@@ -1589,9 +1598,6 @@ elif [[ $said != *"$version"* ]]; then
   fail "upgrade: the skald of $release_tag says another version:"$'\n'"$said"
   release_ready=
 fi
-m curl --silent --fail --request PUT --header 'Content-Type: application/json' --data \
-  "{\"id\":$second_user,\"login\":\"$second_login\",\"email\":null,\"name\":null}" \
-  http://127.0.0.1:14100/_stand-in/users || fail "upgrade: the GitHub stand-in takes no second user"
 
 # machine_copy <scenario>/<machine> <scenario>/<machine> [<skald>]: a copy of the first machine's home
 # and state as the second, with its host name, run by this commit's skald or <skald>.
@@ -1629,8 +1635,7 @@ runs_server() {
 has_files() {
   local file
   for file in docker-compose.yml Caddyfile; do
-    m sh -c "cmp -s \"\$(cat /self-host/run/$1/dir)/$file\" $2/$file" ||
-      fail "$1: after $3, the stack's $file is not the one in $2"
+    in_stack "$1" cmp -s "$file" "$2/$file" || fail "$1: after $3, the stack's $file is not the one in $2"
   done
 }
 
@@ -1643,7 +1648,7 @@ caddy_restarted() {
     return
   fi
   started=$(m date -d "$(m docker inspect --format '{{.State.StartedAt}}' "$id")" +%s%N)
-  written=$(m sh -c "date -r \"\$(cat /self-host/run/$1/dir)/Caddyfile\" +%s%N")
+  written=$(in_stack "$1" date -r Caddyfile +%s%N)
   ((started > written)) || fail "$1: after $2, Caddy runs since before its Caddyfile was written"
 }
 
@@ -1674,7 +1679,7 @@ upgrade_down() {
 
 # upgrade_from_last_release: the upgrade tests.
 upgrade_from_last_release() {
-  local ok=1 ada kai listed files database database_upgraded files_upgraded status said bad
+  local ok=1 ada kai files database database_upgraded files_upgraded status said bad
   scenario last-release release :last_release files env github :before_up_release :prepare_attachments \
     up :wait_https
   ran+=' last-release'
@@ -1688,7 +1693,7 @@ upgrade_from_last_release() {
   else
     ok=
   fi
-  if github_user=$second_user client_bin=$release_skald sign_in last-release kai-machine GitHub; then
+  if github_user=$github_other_user client_bin=$release_skald sign_in last-release kai-machine GitHub; then
     creates_spaces last-release kai-machine quill reed
   else
     ok=
@@ -1698,9 +1703,7 @@ upgrade_from_last_release() {
   files=$(attachment_files last-release)
   ada=$(listing last-release/ada-machine)
   kai=$(listing last-release/kai-machine)
-  for listed in "$ada" "$kai"; do
-    if grep -q '^skald:' <<<"$listed"; then fail "last-release: a machine lists with errors:"$'\n'"$listed"; fi
-  done
+  listed_cleanly last-release "$ada" "$kai"
   m sh -c 'mkdir -p /self-host/run/snapshot && cp -a /self-host/run/last-release/ada-machine \
     /self-host/run/last-release/kai-machine /self-host/run/snapshot/'
   database=$(database_print last-release) || fail "last-release: cannot read the database"

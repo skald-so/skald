@@ -62,12 +62,18 @@ self_host_before_up_release() {
 # the stack's attachments volume as this commit's image does: owned by the server's user 65532,
 # mode 0700.
 self_host_prepare_attachments() {
-  local volume
   if [[ $self_host_release_attachments != prepare ]]; then return 0; fi
   docker compose create
-  volume=$(docker compose config --format json | "$jq" --raw-output --exit-status '.volumes.attachments.name')
-  docker run --rm --volume "$volume:/a" --entrypoint sh "$self_host_caddy_image" -c \
-    'chown 65532:65532 /a && chmod 0700 /a'
+  self_host_in_volume 'chown 65532:65532 /a && chmod 0700 /a'
+}
+
+# self_host_in_volume <command>: runs the shell <command> as root in a container with the stack's
+# attachments volume at /a.
+self_host_in_volume() {
+  local volume
+  volume=$(docker compose config --format json | "$jq" --raw-output --exit-status '.volumes.attachments.name') ||
+    return 1
+  docker run --rm --volume "$volume:/a" --entrypoint sh "$self_host_caddy_image" -c "$1"
 }
 
 # self_host_missing_values: for each value of .env, `docker compose up` without it; writes
@@ -215,9 +221,8 @@ self_host_proxy_in_container() {
 # self_host_resume <scenario>: continues in the stack of an earlier scenario: its directory and its
 # compose files.
 self_host_resume() {
-  cd "$(cat "/self-host/run/$1/dir")"
-  COMPOSE_FILE=$(cat "/self-host/run/$1/compose-file")
-  export COMPOSE_FILE
+  cd "$(cat "/self-host/run/$1/dir")" && COMPOSE_FILE=$(cat "/self-host/run/$1/compose-file") &&
+    export COMPOSE_FILE
 }
 
 # backup_finds <backup> <env> [<label>=<text>]...: what the backup holds, as lines: `checked <label>`

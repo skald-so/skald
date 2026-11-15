@@ -21,7 +21,7 @@ use super::accounts::Who;
 use super::browser::{Browser, Page, Visit};
 use super::sign_in::{
     CLIENT_SECRET as GITHUB_CLIENT_SECRET, Jar, SECRET_ENV as GITHUB_SECRET_ENV, SESSION,
-    authorize_link, github_args, github_session, github_stand_in, page_session, start_url,
+    authorize_link, github_session, github_settings, github_stand_in, page_session, start_url,
     to_callback, to_github_callback,
 };
 use super::{Response, Server, TestDb, get_url, on_free_port};
@@ -82,6 +82,28 @@ pub struct Google {
     pub public: String,
 }
 
+/// The server's arguments and environment variables for the public address `public`, Google's
+/// settings with the issuer and the client secret `google`, if given, and GitHub's against the
+/// stand-in `github`, if given.
+pub fn settings<'a>(
+    public: &'a str,
+    google: Option<(&'a str, &'a str)>,
+    github: Option<&'a GitHub>,
+) -> (Vec<&'a str>, Vec<(&'a str, &'a str)>) {
+    let (mut args, mut envs) = match github {
+        Some(github) => (
+            github_settings(public, github),
+            vec![(GITHUB_SECRET_ENV, GITHUB_CLIENT_SECRET)],
+        ),
+        None => (vec!["--public-url", public], Vec::new()),
+    };
+    if let Some((issuer, secret)) = google {
+        args.extend(["--google-client-id", CLIENT_ID, "--google-issuer", issuer]);
+        envs.push((SECRET_ENV, secret));
+    }
+    (args, envs)
+}
+
 impl Google {
     /// A server with Google's settings only, whose public address is plain HTTP under `skald.test`.
     pub fn start() -> Self {
@@ -113,16 +135,9 @@ impl Google {
                 redirect_uri: format!("{public}{CALLBACK}"),
             });
             let github = setup.github.then(|| github_stand_in(&public));
-            let mut args = vec!["--public-url", public.as_str()];
-            let mut envs = Vec::new();
-            if !setup.no_google {
-                args.extend(["--google-client-id", CLIENT_ID, "--google-issuer", &issuer]);
-                envs.push((SECRET_ENV, setup.secret.unwrap_or(CLIENT_SECRET)));
-            }
-            if let Some(github) = &github {
-                args.extend(github_args(github));
-                envs.push((GITHUB_SECRET_ENV, GITHUB_CLIENT_SECRET));
-            }
+            let google = (!setup.no_google)
+                .then(|| (issuer.as_str(), setup.secret.unwrap_or(CLIENT_SECRET)));
+            let (mut args, envs) = settings(&public, google, github.as_ref());
             args.extend_from_slice(setup.args);
             let server = Server::try_launch(&db, &format!("127.0.0.1:{port}"), &args, &envs)?;
             Ok((github, server, public))

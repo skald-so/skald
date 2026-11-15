@@ -169,6 +169,16 @@ impl Codec for HpkePayload {
     }
 }
 
+impl HpkePlaintext {
+    /// The `sender` that `bytes`, an `hpke-plaintext`, names, even when its content breaks the
+    /// spec's CDDL, such as content without `counter`.
+    pub fn sender_in(bytes: &[u8]) -> Option<DeviceId> {
+        let item = cbor::parse(bytes).ok()?;
+        let [sender, _, _] = item.tuple("hpke-plaintext").ok()?;
+        sender.id("hpke-plaintext.sender").ok()
+    }
+}
+
 impl Codec for HpkePlaintext {
     fn encode(&self) -> Vec<u8> {
         cbor::array([
