@@ -62,10 +62,46 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Makes `command`'s program inherit no file descriptor but its standard streams. The driver lives
+/// as long as its test binary. On macOS, which has no `pipe2`, a pipe that another test's thread is
+/// making, such as for `Command::output`, is not close-on-exec yet for a moment; a program started
+/// in that moment keeps the pipe open, and the other test waits for its end as long as that
+/// program lives.
+#[cfg(unix)]
+pub fn inherit_only_stdio(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `getrlimit` writes only `limit`.
+    let open = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
+        limit.rlim_cur.min(1 << 20)
+    } else {
+        1 << 16
+    };
+    let open = libc::c_int::try_from(open).expect("a number of descriptors");
+    // SAFETY: between `fork` and `exec` the closure calls only `fcntl`, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(move || {
+            for fd in 3..open {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+            Ok(())
+        });
+    }
+}
+
+/// On Windows a program inherits only the handles Rust marks inheritable while it starts it.
+#[cfg(not(unix))]
+pub fn inherit_only_stdio(_command: &mut Command) {}
+
 impl Driver {
     fn start() -> Result<Self, String> {
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let mut child = Command::new("node")
+        let mut command = Command::new("node");
+        inherit_only_stdio(&mut command);
+        let mut child = command
             .arg(crates.join("server/tests/common/browser.mjs"))
             .arg(crates.join("../web"))
             .stdin(Stdio::piped())

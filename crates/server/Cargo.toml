@@ -30,3 +30,7 @@ serde_urlencoded = "0.7"
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
 tungstenite = "0.30"
+
+[target.'cfg(unix)'.dev-dependencies]
+# The browser tests' driver inherits no descriptor of the test binary but its standard streams.
+libc = "0.2"

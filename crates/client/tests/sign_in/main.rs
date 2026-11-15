@@ -234,3 +234,27 @@ fn machines_with_their_own_state_directories_keep_their_own_sessions() {
     }
     assert_eq!(cloud.grants().len(), 2);
 }
+
+/// A machine's directory that a killed test process left goes once no test can be using it; one
+/// in use stays. Unix only: Windows opens no directory as a file to date it back.
+#[cfg(unix)]
+#[test]
+fn a_machine_left_by_a_killed_test_is_removed_later() {
+    use std::fs::{self, File};
+    use std::time::SystemTime;
+
+    let in_use = Machine::new();
+    let left = std::env::temp_dir().join(format!("{}left-{}", machine::PREFIX, std::process::id()));
+    fs::create_dir_all(left.join("state")).expect("a machine's directory");
+    let long_ago = SystemTime::now() - machine::ABANDONED - Duration::from_secs(60);
+    File::open(&left)
+        .and_then(|dir| dir.set_modified(long_ago))
+        .expect("date the directory back");
+
+    machine::remove_abandoned();
+
+    let removed = !left.exists();
+    let _ = fs::remove_dir_all(&left);
+    assert!(removed, "{} is still there", left.display());
+    assert!(in_use.root().join("state").is_dir(), "the machine in use");
+}

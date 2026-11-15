@@ -24,7 +24,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { reporter } from './lib/report.mjs';
-import { imageName, localTarget as target, serve, standInTools } from './lib/release-check-stub.mjs';
+import { closing, imageName, localTarget as target, serve, standInTools } from './lib/release-check-stub.mjs';
 import { commands, event, isUnknown, open, readWorkflow, template } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -102,6 +102,7 @@ try {
   const proxy = (url, unserved, partial, limit) =>
     new Promise((resolve) => {
       const server = http.createServer(async (request, response) => {
+        closing(response);
         if (limit) {
           const now = Math.floor(Date.now() / 1000);
           const tokenless = String(request.headers['user-agent'] ?? '').startsWith('skald/');

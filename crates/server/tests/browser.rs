@@ -88,6 +88,40 @@ fn the_browser_is_chrome_headless_shell_or_skald_chrome() {
     }
 }
 
+/// The driver keeps open no pipe of another test: one that is not close-on-exec yet as the driver
+/// starts, as happens on macOS, closes at its writer's end alone.
+#[cfg(unix)]
+#[test]
+fn the_driver_inherits_no_descriptor_but_its_standard_streams() {
+    use std::fs::File;
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut fds = [0; 2];
+    // SAFETY: `pipe` writes only `fds`; each end is owned by one `File` from here on.
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "make a pipe");
+    let (mut reader, writer) = unsafe { (File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])) };
+    // Runs longer than the test waits.
+    let mut command = Command::new("sleep");
+    command.arg("60").stdin(Stdio::null()).stdout(Stdio::null());
+    common::browser::inherit_only_stdio(&mut command);
+    let mut sleeping = command.spawn().expect("start sleep");
+
+    drop(writer);
+    let started = Instant::now();
+    let read = reader.read(&mut [0; 1]);
+    let waited = started.elapsed();
+    let _ = sleeping.kill();
+    let _ = sleeping.wait();
+    assert_eq!(read.expect("read the pipe"), 0, "the pipe's end");
+    assert!(
+        waited < Duration::from_secs(30),
+        "the pipe ended after {waited:?}"
+    );
+}
+
 /// How the browser ends. A killed process does nothing on its way out: SIGKILL.
 #[cfg(unix)]
 mod exits {
