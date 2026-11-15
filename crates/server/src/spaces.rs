@@ -555,13 +555,11 @@ async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) 
     tx.commit()
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
-    // An account the revision removes gets no notice. The listener, catching up, may have sent the
-    // notice first.
-    if state.instance.stored(space, revision) {
-        state
-            .notices
-            .notify(body.members.iter().map(|member| member.account), space);
-    }
+    state.instance.record(space, revision);
+    // An account the revision removes gets no notice.
+    state
+        .notices
+        .notify(body.members.iter().map(|member| member.account), space);
     taken(
         true,
         StoredRevision {

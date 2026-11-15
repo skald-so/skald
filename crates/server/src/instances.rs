@@ -22,9 +22,8 @@ use crate::notices::Notices;
 
 /// The channel the instances notify each other on.
 const CHANNEL: &str = "skald_instances";
-/// How long an instance waits before it tries to listen again, at first, and at most.
-const RETRY_FIRST: Duration = Duration::from_millis(250);
-const RETRY_LONGEST: Duration = Duration::from_secs(5);
+/// How long an instance waits before it tries again to listen.
+const RETRY: Duration = Duration::from_secs(2);
 /// This instance, as it names itself in its notifications, and the latest revision of each space
 /// it knows of.
 #[derive(Clone)]
@@ -45,14 +44,17 @@ impl Instance {
         }
     }
 
-    /// Records that `space` has the revision `revision`; `true` if it is later than any this
-    /// instance knew of, so that its notice is not sent yet.
-    pub(crate) fn stored(&self, space: SpaceId, revision: i64) -> bool {
+    /// Records that `space` has the revision `revision`.
+    pub(crate) fn record(&self, space: SpaceId, revision: i64) {
         let mut latest = self.latest.lock().expect("the latest revisions");
         let known = latest.entry(space).or_default();
-        let later = revision > *known;
         *known = (*known).max(revision);
-        later
+    }
+
+    /// Whether this instance knows of the revision `revision` of `space`, or a later one.
+    fn knows(&self, space: SpaceId, revision: i64) -> bool {
+        let latest = self.latest.lock().expect("the latest revisions");
+        latest.get(&space).is_some_and(|known| *known >= revision)
     }
 
     /// Tells the other instances of `events` on `conn`, once its transaction commits.
@@ -127,27 +129,18 @@ pub(crate) struct Local {
 /// `local`. When the listening connection drops, it listens again, then sends what was missed.
 pub(crate) async fn listen(instance: Instance, local: Local) {
     let mut listened = false;
-    let mut retry = RETRY_FIRST;
-    let mut failing = false;
     loop {
         match open(&instance, &local, listened).await {
             Ok(mut listener) => {
                 listened = true;
-                retry = RETRY_FIRST;
-                failing = false;
                 // A lost connection or any other failure leaves the listener for a new one.
                 while let Ok(Some(notification)) = listener.try_recv().await {
                     act(&instance, &local, notification.payload()).await;
                 }
             }
             Err(err) => {
-                // Once per outage, so that the server's output does not fill up.
-                if !failing {
-                    eprintln!("skald-server: cannot listen to the other instances: {err}");
-                    failing = true;
-                }
-                tokio::time::sleep(retry).await;
-                retry = (retry * 2).min(RETRY_LONGEST);
+                eprintln!("skald-server: cannot listen to the other instances: {err}");
+                tokio::time::sleep(RETRY).await;
             }
         }
     }
@@ -171,23 +164,21 @@ async fn open(
     // A lost connection ends the listener, and `listen` opens a new one.
     listener.eager_reconnect(false);
     listener.listen(CHANNEL).await?;
-    if listened {
-        catch_up(local).await?;
-    }
-    // What is stored from here on comes as a notification; a revision stored before, also as one
-    // that is late, sends no notice twice.
+    // A revision stored from here on comes as a notification too.
     let latest: Vec<(String, i64)> = sqlx::query_as(
         "SELECT space_id::text, max(revision) FROM roster_revisions GROUP BY space_id",
     )
     .fetch_all(&local.db)
     .await?;
+    let latest: Vec<(SpaceId, i64)> = latest
+        .into_iter()
+        .map(|(space, revision)| (space.parse().expect("a stored space ID"), revision))
+        .collect();
+    if listened {
+        catch_up(instance, local, &latest).await?;
+    }
     for (space, revision) in latest {
-        let space = space.parse().expect("a stored space ID");
-        if instance.stored(space, revision) && listened {
-            // A revision that no notification told of.
-            let accounts = members(&local.db, space, revision).await?;
-            local.notices.notify(accounts, space);
-        }
+        instance.record(space, revision);
     }
     Ok(listener)
 }
@@ -204,14 +195,13 @@ async fn act(instance: &Instance, local: &Local, payload: &str) {
     }
     match event {
         Event::Entries(device) => local.wakers.wake(device),
-        Event::Revision(space, revision) if instance.stored(space, revision) => {
+        Event::Revision(space, revision) => {
+            instance.record(space, revision);
             match members(&local.db, space, revision).await {
                 Ok(accounts) => local.notices.notify(accounts, space),
                 Err(err) => eprintln!("skald-server: cannot read a revision's members: {err}"),
             }
         }
-        // The notice of that revision is sent.
-        Event::Revision(..) => {}
         Event::SessionEnded(session) => local.connections.end_session(&session),
     }
 }
@@ -235,10 +225,14 @@ async fn members(
         .collect())
 }
 
-/// Sends `local`'s connections the entries and closes the other instances may have told of while
-/// this one did not listen: wakes each device's connections, and closes each connection whose
-/// session has ended.
-async fn catch_up(local: &Local) -> Result<(), sqlx::Error> {
+/// Sends `local`'s connections what the other instances may have told while `instance` did not
+/// listen: wakes each device's connections, closes each connection whose session has ended, and
+/// sends the notices of the revisions in `latest`, the latest of each space, that it does not know.
+async fn catch_up(
+    instance: &Instance,
+    local: &Local,
+    latest: &[(SpaceId, i64)],
+) -> Result<(), sqlx::Error> {
     local.wakers.wake_all();
     let sessions = local.connections.sessions();
     let live: Vec<(Vec<u8>,)> =
@@ -249,6 +243,12 @@ async fn catch_up(local: &Local) -> Result<(), sqlx::Error> {
     for session in sessions {
         if !live.iter().any(|(live,)| *live == session) {
             local.connections.end_session(&session);
+        }
+    }
+    for &(space, revision) in latest {
+        if !instance.knows(space, revision) {
+            let accounts = members(&local.db, space, revision).await?;
+            local.notices.notify(accounts, space);
         }
     }
     Ok(())
@@ -301,18 +301,18 @@ mod tests {
     }
 
     #[test]
-    fn only_a_later_revision_is_new() {
+    fn an_instance_knows_the_revisions_up_to_the_latest_it_recorded() {
         let instance = instance();
         let (first, second) = (SpaceId::from_bytes([1; 16]), SpaceId::from_bytes([2; 16]));
-        assert!(instance.stored(first, 2));
-        assert!(!instance.stored(first, 2));
-        assert!(!instance.stored(first, 1));
-        assert!(instance.stored(second, 1));
-        assert!(instance.stored(first, 3));
-        assert!(
-            !instance.clone().stored(first, 3),
-            "a clone shares what it knows"
-        );
+        assert!(!instance.knows(first, 1));
+        instance.record(first, 2);
+        instance.record(first, 1);
+        assert!(instance.knows(first, 1));
+        assert!(instance.knows(first, 2));
+        assert!(!instance.knows(first, 3));
+        assert!(!instance.knows(second, 1));
+        instance.clone().record(first, 3);
+        assert!(instance.knows(first, 3), "a clone shares what it records");
     }
 
     #[test]
