@@ -3,11 +3,13 @@
 // with the HTTP status in <dir><path>.status if that file exists, 200 otherwise; a missing file is a
 // 404. It reads the files on each request, so a test can change them between runs. A request with
 // an Authorization header fails with 400: the command reads only public data.
+// It answers as script/lib/release-check-stub.mjs's closing() says.
 // Usage: node recorded-api-stub.mjs <dir> <port file>; it listens on 127.0.0.1 and writes its port
 // to <port file> once it accepts connections.
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { closing } from './release-check-stub.mjs';
 
 const [dir, portFile] = process.argv.slice(2);
 
@@ -28,6 +30,7 @@ const server = http.createServer((req, res) => {
   req.resume();
   req.on('end', () => {
     const [status, body] = reply(req);
+    closing(res);
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(body);
   });

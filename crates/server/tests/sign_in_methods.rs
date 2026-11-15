@@ -24,7 +24,6 @@ use common::sign_in::{Account, SESSION, SignIn, cookie_set};
 use common::{Response, TestDb, get_url, hex};
 use skald_github_stand_in::User;
 use skald_proto::AccountId;
-use sqlx::{Connection, PgConnection};
 
 /// The last migration of a server whose accounts had no sign-in methods: each account had its
 /// GitHub ID and login.
@@ -58,28 +57,18 @@ fn sorted(mut methods: Vec<Method>) -> Vec<Method> {
     methods
 }
 
-fn run<T>(work: impl Future<Output = Result<T, sqlx::Error>>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("start a tokio runtime")
-        .block_on(work)
-        .expect("query the test database")
-}
-
 /// Every sign-in method on `db`'s server, by account, provider and subject.
 fn methods(db: &TestDb) -> Vec<Method> {
-    let rows: Vec<(String, String, String, Option<String>)> = run(async {
-        let mut conn = PgConnection::connect(&db.url()).await?;
-        let rows = sqlx::query_as(
-            "SELECT account_id::text, provider::text, subject::text, login::text
-             FROM sign_in_methods",
-        )
-        .fetch_all(&mut conn)
-        .await?;
-        conn.close().await?;
-        Ok(rows)
-    });
+    let rows: Vec<(String, String, String, Option<String>)> = db
+        .query(async |conn| {
+            sqlx::query_as(
+                "SELECT account_id::text, provider::text, subject::text, login::text
+                 FROM sign_in_methods",
+            )
+            .fetch_all(conn)
+            .await
+        })
+        .expect("query the test database");
     sorted(
         rows.into_iter()
             .map(|(account, provider, subject, login)| Method {
@@ -94,14 +83,13 @@ fn methods(db: &TestDb) -> Vec<Method> {
 
 /// The IDs of every account on `db`'s server, in order.
 fn accounts(db: &TestDb) -> Vec<String> {
-    let ids: Vec<(String,)> = run(async {
-        let mut conn = PgConnection::connect(&db.url()).await?;
-        let ids = sqlx::query_as("SELECT id::text FROM accounts ORDER BY id")
-            .fetch_all(&mut conn)
-            .await?;
-        conn.close().await?;
-        Ok(ids)
-    });
+    let ids: Vec<(String,)> = db
+        .query(async |conn| {
+            sqlx::query_as("SELECT id::text FROM accounts ORDER BY id")
+                .fetch_all(conn)
+                .await
+        })
+        .expect("query the test database");
     ids.into_iter().map(|(id,)| id).collect()
 }
 
@@ -131,14 +119,7 @@ fn sign_in(flow: &DeviceFlow, user: &User) -> Account {
 /// A database with the schema of a server whose accounts had no sign-in methods.
 fn database_before_methods() -> TestDb {
     let db = TestDb::create();
-    run(async {
-        let mut conn = PgConnection::connect(&db.url()).await?;
-        skald_server::MIGRATOR
-            .run_to(BEFORE_SIGN_IN_METHODS, &mut conn)
-            .await
-            .map_err(|err| sqlx::Error::Migrate(Box::new(err)))?;
-        conn.close().await
-    });
+    db.migrate_to(BEFORE_SIGN_IN_METHODS);
     db
 }
 
