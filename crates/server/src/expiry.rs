@@ -1,9 +1,10 @@
 //! Expiry of mailbox entries: `docs/protocol/delivery.md`, "Mailbox". A `message` expires at its
-//! storing time plus its envelope's `ttl`, capped by the server's mailbox retention, unless it holds
-//! a handshake message, and a `status` at its adding time plus the retention; a `message` of a version not deliverable on a connection
-//! expires when the connection reaches it. The server looks for expired entries by itself, deletes
-//! them and adds `expired` for each message sent with `report` true; it forgets an idempotency key
-//! once the retention has passed since its send, and so a counted message since its count.
+//! storing time plus its envelope's `ttl`, capped by the server's mailbox retention, unless it
+//! holds a handshake message, and a `status` at its adding time plus the retention; a `message` of
+//! a version not deliverable on a connection expires when the connection reaches it. The server
+//! looks for expired entries by itself, deletes them and adds `expired` for each message sent with
+//! `report` true; it forgets an idempotency key once the retention has passed since its send, and
+//! so a counted message since its count.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
