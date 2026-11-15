@@ -360,7 +360,7 @@ pub(crate) async fn remove_on<'q>(
         };
         // The sending device's row lock makes its revocation wait for this status, which the
         // revocation then expires, or this insert see the revocation.
-        let added = sqlx::query(
+        let added: Option<(String,)> = sqlx::query_as(
             "WITH sender AS (
                  SELECT id FROM devices WHERE id = $1::uuid AND NOT revoked FOR SHARE
              ),
@@ -371,16 +371,16 @@ pub(crate) async fn remove_on<'q>(
              )
              INSERT INTO entries (device_id, seq, status, msg_id, recipient_id, happened_at)
              SELECT $1::uuid, mailbox.last_seq, $2, $3::uuid, $4::uuid, to_timestamp($5)
-             FROM mailbox",
+             FROM mailbox RETURNING device_id::text",
         )
         .bind(sender)
         .bind(status as i16)
         .bind(msg_id)
         .bind(device)
         .bind(at)
-        .execute(&mut *conn)
+        .fetch_optional(&mut *conn)
         .await?;
-        if added.rows_affected() > 0 {
+        if let Some((sender,)) = added {
             senders.push(sender.parse().expect("a stored device ID"));
         }
     }

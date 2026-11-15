@@ -1,5 +1,6 @@
 //! An instance whose listening connection drops listens again, then sends its connections what
-//! they missed: entries, notices and the close of an ended session's connections. It also notices a
+//! they missed: entries, notices and the close of an ended session's or a revoked device's
+//! connections. It also notices a
 //! listening connection that goes silent, and takes no connection before it first listens.
 
 use std::thread;
@@ -82,6 +83,31 @@ fn a_revision_and_a_sign_out_an_instance_missed_reach_it_once_it_listens_again()
     let session_ended = Some(Closed::Frame(CloseCode::Policy, "session-ended".to_owned()));
     assert_eq!(bob.closed_within(WAKE), session_ended);
     // The connection of another session stays.
+    assert_eq!(carol.closed_within(CLOSE), None);
+    drop((bob, carol));
+    drop(listening);
+}
+
+#[test]
+fn a_revocation_an_instance_missed_closes_its_devices_connections_once_it_listens_again() {
+    let fixture = Fixture::new(3_131_320_431);
+    let t = &fixture.team;
+    let role = Role::create(fixture.db());
+    let listening = role.instance(&fixture);
+    let mut bob = watch(&listening, &fixture, &t.bob);
+    let mut carol = watch(&listening, &fixture, &t.carol);
+
+    role.set_login(false);
+    role.end_listening();
+    t.bob.revoke(&t.bob.by_master(t.bob.laptop.id, &[]));
+    role.set_login(true);
+
+    let device_refused = Some(Closed::Frame(
+        CloseCode::Policy,
+        "device-refused".to_owned(),
+    ));
+    assert_eq!(bob.closed_within(RELISTEN), device_refused);
+    // The connection of another device stays.
     assert_eq!(carol.closed_within(CLOSE), None);
     drop((bob, carol));
     drop(listening);

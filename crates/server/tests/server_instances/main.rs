@@ -1,8 +1,8 @@
 //! Server instances waking each other (`docs/dev/architecture.md`, "Network"): several
 //! `skald-server` instances on one database wake each other through PostgreSQL `LISTEN/NOTIFY`.
-//! An instance that adds mailbox entries, stores a roster revision or ends a session notifies the
-//! others, which push the entries, send the `space-notice` or close that session's connections at
-//! once, whichever instance a device is connected to. An instance whose listening connection drops
+//! An instance that adds mailbox entries, stores a roster revision, ends a session or revokes a
+//! device notifies the others, which push the entries, send the `space-notice` or close that
+//! session's or that device's connections at once, whichever instance a device is connected to. An instance whose listening connection drops
 //! listens again, then sends its connections what they missed. Expiry on several instances adds one
 //! `expired` per entry, and an ack racing an expiry gives exactly one of `delivered` and `expired`.
 //! Against instances on the database of the tests of storing sent envelopes, whose fixture and
@@ -40,6 +40,11 @@ mod link;
 #[allow(dead_code)]
 #[path = "../mailbox/wire.rs"]
 mod wire;
+
+// The revocations of the tests of revocations on the server; this binary uses some of them.
+#[allow(dead_code)]
+#[path = "../revocations/kit.rs"]
+mod kit;
 
 mod instances;
 mod proxy;

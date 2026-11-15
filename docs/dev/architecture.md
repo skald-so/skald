@@ -60,7 +60,7 @@
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
-  - a notification names a mailbox with new entries, a stored roster revision or an ended session, never an envelope;
+  - a notification names a mailbox with new entries, a stored roster revision, an ended session or a revoked device, never an envelope;
   - an instance takes no device connection before it first listens;
   - an instance whose listening connection drops or goes silent listens again, then sends its connections what they missed;
   - each instance takes up to 11 PostgreSQL connections: 10 in its pool and 1 that listens; a replaced listening connection can stay open for a while after its replacement.
@@ -169,7 +169,7 @@ The public cloud applies these limits; a self-hosted server does not.
 |---|---|
 | Spaces an account owns: the ones it created, its personal space included | 2: the server setting `--owned-spaces-limit` (`SKALD_OWNED_SPACES_LIMIT`); unset, no limit |
 | Members per space | No limit |
-| Devices per member | 50: the server setting `--devices-limit` (`SKALD_DEVICES_LIMIT`), devices with a certificate per account, `service` devices aside; unset, no limit |
+| Devices per member | 50: the server setting `--devices-limit` (`SKALD_DEVICES_LIMIT`), devices with a certificate per account, `service` and revoked devices aside; unset, no limit |
 | Service agents per space | 10 |
 | Messages per space | About 10M per month: the server setting `--monthly-messages-limit` (`SKALD_MONTHLY_MESSAGES_LIMIT`), per calendar month in UTC, each message counted once whatever its envelopes; unset, no limit |
 | Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), the payload in bytes; unset, no limit |
