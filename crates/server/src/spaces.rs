@@ -381,7 +381,7 @@ pub(crate) async fn store(
         return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
-    insert(db, found.id, &roster, &sent).await
+    insert(&state, found.id, &roster, &sent).await
 }
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after
@@ -498,9 +498,11 @@ async fn certs(db: &PgPool, accounts: &[String]) -> Result<Vec<Cert>, Refusal> {
         .collect())
 }
 
-/// Stores `roster`, received as `sent`, as the next revision of `space`, with its members. Of two
-/// revisions with one number at once, the first is stored and the other refused.
-async fn insert(db: &PgPool, space: SpaceId, roster: &Roster, sent: &[u8]) -> Answer {
+/// Stores `roster`, received as `sent`, as the next revision of `space`, with its members, and
+/// gives their accounts' connections a notice of `space`. Of two revisions with one number at
+/// once, the first is stored and the other refused.
+async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) -> Answer {
+    let db = &state.db;
     let body = roster.body();
     let number = body.revision;
     let revision = i64::try_from(number).map_err(|_| {
@@ -547,6 +549,10 @@ async fn insert(db: &PgPool, space: SpaceId, roster: &Roster, sent: &[u8]) -> An
     tx.commit()
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
+    // An account the revision removes gets no notice.
+    state
+        .notices
+        .notify(body.members.iter().map(|member| member.account), space);
     taken(
         true,
         StoredRevision {

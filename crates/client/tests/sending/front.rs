@@ -9,7 +9,9 @@
 //! the server's `message` pushes or the empty `batch` that ends catch-up; and put envelopes into a
 //! device's catch-up as `message` pushes before that `batch`, numbered after every `seq` the
 //! connection stated or carried, or numbered as the cursor its first `sync` stated, as a
-//! redelivery.
+//! redelivery. It keeps each `space-notice` the server sent a device, and can hold back the `batch`
+//! that ends a catch-up until the server sends that connection a `space-notice`, which then comes
+//! first. It can hold back a device's `auth`, and what the machine sends after it, until released.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -19,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use skald_proto::{Cbor as _, DeviceId, Frame, Push, RawEnvelope};
+use skald_proto::{Cbor as _, DeviceId, Frame, Push, RawEnvelope, SpaceId};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -85,6 +87,17 @@ struct State {
     redeliveries: Vec<(DeviceId, RawEnvelope)>,
     /// How many envelopes it put into catch-ups.
     injected: usize,
+    /// Whether it holds back the `batch` that ends catch-up until the connection gets a
+    /// `space-notice`.
+    hold_end_until_notice: bool,
+    /// How many such `batch` frames it held back so far.
+    held_ends: usize,
+    /// Each `space-notice` the server sent: the connection's device and the space it names.
+    notices: Vec<(Option<DeviceId>, SpaceId)>,
+    /// The device whose `auth` it holds back, with what follows it, while set.
+    hold_auth_of: Option<DeviceId>,
+    /// How many `auth` frames it held back so far.
+    held_auths: usize,
 }
 
 /// What the front knows of one WebSocket connection.
@@ -98,6 +111,10 @@ struct Link {
     cursor: Mutex<Option<u64>>,
     /// The highest `seq` the machine stated or the server pushed on it.
     last_seq: Mutex<u64>,
+    /// Whether the server has sent it a `space-notice`.
+    noticed: AtomicBool,
+    /// The end of catch-up it holds back until a `space-notice` comes, as it would forward it.
+    held_end: Mutex<Option<Vec<u8>>>,
 }
 
 impl Link {
@@ -160,6 +177,11 @@ impl Front {
                 injections: Vec::new(),
                 redeliveries: Vec::new(),
                 injected: 0,
+                hold_end_until_notice: false,
+                held_ends: 0,
+                notices: Vec::new(),
+                hold_auth_of: None,
+                held_auths: 0,
             }),
             down: AtomicBool::new(false),
         });
@@ -269,6 +291,39 @@ impl Front {
     pub fn injected(&self) -> usize {
         self.shared.state().injected
     }
+
+    /// From now on, if `hold`, holds back the `batch` that ends each catch-up until the server
+    /// sends that connection a `space-notice`, then forwards the notice and, after it, the `batch`.
+    pub fn hold_end_until_notice(&self, hold: bool) {
+        self.shared.state().hold_end_until_notice = hold;
+    }
+
+    /// How many `batch` frames that end a catch-up it held back until a notice so far.
+    pub fn held_ends(&self) -> usize {
+        self.shared.state().held_ends
+    }
+
+    /// From now on, holds back the `auth` of `device`, if any, and what its machine sends after it,
+    /// until called with another device or `None`.
+    pub fn hold_auth_of(&self, device: Option<DeviceId>) {
+        self.shared.state().hold_auth_of = device;
+    }
+
+    /// How many `auth` frames it held back so far.
+    pub fn held_auths(&self) -> usize {
+        self.shared.state().held_auths
+    }
+
+    /// The spaces of the `space-notice` frames the server sent `device` so far, in order.
+    pub fn notices_to(&self, device: DeviceId) -> Vec<SpaceId> {
+        self.shared
+            .state()
+            .notices
+            .iter()
+            .filter(|(to, _)| *to == Some(device))
+            .map(|(_, space)| *space)
+            .collect()
+    }
 }
 
 /// Forwards `machine`'s connection, number `connection`, to the target, both ways.
@@ -356,6 +411,16 @@ fn to_server(
                 }
                 Some(Frame::Auth { device, .. }) => {
                     *link.device.lock().expect("a connection's device") = Some(device);
+                    let held = |state: &State| state.hold_auth_of == Some(device);
+                    let mut state = shared.state();
+                    if held(&state) {
+                        state.held_auths += 1;
+                    }
+                    while held(&state) {
+                        drop(state);
+                        thread::sleep(Duration::from_millis(10));
+                        state = shared.state();
+                    }
                     false
                 }
                 Some(Frame::Sync { cursor }) => {
@@ -498,6 +563,19 @@ fn forward_answers(
                 Some(raw)
             }
             Some(Frame::Batch(entries)) if entries.is_empty() => end_of_catch_up(raw, shared, link),
+            Some(Frame::Push(Push::SpaceNotice { space })) => {
+                Some(noticed(&[space], raw, shared, link))
+            }
+            Some(Frame::Batch(entries)) => {
+                let spaces: Vec<SpaceId> = entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        Push::SpaceNotice { space } => Some(*space),
+                        _ => None,
+                    })
+                    .collect();
+                Some(noticed(&spaces, raw, shared, link))
+            }
             _ => Some(raw),
         };
         if let Some(out) = out
@@ -509,10 +587,41 @@ fn forward_answers(
     true
 }
 
+/// `raw`, a frame from the server carrying a `space-notice` for each of `spaces`, kept, and after
+/// it the end of catch-up the connection held back until a notice, if any.
+fn noticed(spaces: &[SpaceId], mut raw: Vec<u8>, shared: &Shared, link: &Link) -> Vec<u8> {
+    if spaces.is_empty() {
+        return raw;
+    }
+    let device = link.device();
+    shared
+        .state()
+        .notices
+        .extend(spaces.iter().map(|space| (device, *space)));
+    link.noticed.store(true, Ordering::SeqCst);
+    if let Some(held) = link.held_end.lock().expect("a held end").take() {
+        raw.extend(held);
+    }
+    raw
+}
+
 /// The `batch` `raw` that ends a catch-up, as the rules say: held back, or after the envelopes to
 /// put into the catch-up of the connection's device, as `message` pushes numbered after the
-/// highest `seq` it saw.
+/// highest `seq` it saw; held back until a `space-notice`, if the connection has had none yet.
 fn end_of_catch_up(raw: Vec<u8>, shared: &Shared, link: &Link) -> Option<Vec<u8>> {
+    let out = catch_up_end(raw, shared, link)?;
+    let mut state = shared.state();
+    if state.hold_end_until_notice && !link.noticed.load(Ordering::SeqCst) {
+        state.held_ends += 1;
+        *link.held_end.lock().expect("a held end") = Some(out);
+        return None;
+    }
+    Some(out)
+}
+
+/// The `batch` `raw` that ends a catch-up, as [`end_of_catch_up`] says, but for a hold until a
+/// `space-notice`.
+fn catch_up_end(raw: Vec<u8>, shared: &Shared, link: &Link) -> Option<Vec<u8>> {
     let mut state = shared.state();
     if state.hold_messages || state.hold_end {
         return None;

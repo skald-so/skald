@@ -56,6 +56,8 @@ mod front;
 mod keys;
 #[path = "../sign_in/machine.rs"]
 mod machine;
+// The tests of new roster revisions, which share this binary's helpers.
+mod notices;
 mod peer;
 #[path = "../sign_in/relay.rs"]
 mod relay;
@@ -774,51 +776,95 @@ fn envelopes_failing_a_check_are_dropped_with_a_warning() {
     }
 }
 
+/// Carol joining a channel of Ada's: Ada, Bob and Carol sign up, and Ada's machine creates `acme`
+/// with all three, its channel Ada's and Bob's, and accepts its revisions.
+struct Joining {
+    ada: Person,
+    carol: Person,
+    /// Carol's device's signing key.
+    carol_key: SigningKey,
+    channel: Channel,
+    /// The revision after the latest, signed by Ada's device, that adds Carol's account to the
+    /// channel.
+    joined: skald_proto::Roster,
+    /// Carol's message to Ada's device in the channel, its text [`SECOND`].
+    envelope: RawEnvelope,
+}
+
+impl Joining {
+    /// The people sign up as the GitHub users `ids`, with `logins`, in that order.
+    fn new(world: &World, ids: [u64; 3], logins: [&str; 3]) -> Self {
+        let cloud = &world.cloud;
+        let hosts = ["ada-workstation", "bob-workstation", "carol-laptop"];
+        let [ada, bob, carol] = [0, 1, 2].map(|at| world.sign_up(ids[at], logins[at], hosts[at]));
+        let channel = acme(cloud, &ada, &[&bob, &carol], &[&bob], &[]);
+        members(&ada.machine, ACME);
+        let (_, last) = cloud
+            .revisions(&ada.token, channel.space)
+            .pop()
+            .expect("a revision");
+        let joined = next_with(&last, (ada.device, &ada.key), |body| {
+            body.channels
+                .iter_mut()
+                .find(|listed| listed.id == channel.id)
+                .expect("the channel")
+                .members
+                .push(ChannelMember {
+                    account: carol.account,
+                    history: false,
+                });
+        });
+        let carol_key = keyed(cloud, &carol).signing;
+        let ada_key = cert_of(cloud, &ada).body().hpke;
+        let envelope = Draft::new(&channel, person_address(ACME, &carol), SECOND)
+            .seal(&carol_key, ada.device, &ada_key);
+        Joining {
+            ada,
+            carol,
+            carol_key,
+            channel,
+            joined,
+            envelope,
+        }
+    }
+
+    /// Stores the revision that adds Carol's account, then Carol's message.
+    fn store(&self, cloud: &Cloud) {
+        store(cloud, &self.ada.token, &self.joined);
+        Peer::connect(cloud, &self.carol, &self.carol_key).stored(&self.envelope);
+    }
+
+    /// Carol's message as Ada's CLI shows it.
+    fn shown(&self) -> Shown<'_> {
+        Shown {
+            text: SECOND,
+            channel: self.channel.id,
+            from: person_address(ACME, &self.carol),
+            device: self.carol.host,
+        }
+    }
+}
+
 /// Carol's device sends to Ada's in the channel, which a revision Ada's machine has not accepted
 /// yet adds Carol's account to; Ada's `skald recv` accepts the revision first and shows her
 /// message.
 #[test]
 fn message_from_an_account_a_revision_not_yet_accepted_adds_is_shown() {
     let (world, _front) = fronted();
-    let cloud = &world.cloud;
-    let ada = world.sign_up(4_122_071_801, "ada-admits-standin", "ada-workstation");
-    let bob = world.sign_up(4_122_071_802, "bob-member-standin", "bob-workstation");
-    let carol = world.sign_up(4_122_071_803, "carol-joins-standin", "carol-laptop");
-    let channel = acme(cloud, &ada, &[&bob, &carol], &[&bob], &[]);
-    members(&ada.machine, ACME);
-    let (_, last) = cloud
-        .revisions(&ada.token, channel.space)
-        .pop()
-        .expect("a revision");
-    let joined = next_with(&last, (ada.device, &ada.key), |body| {
-        body.channels
-            .iter_mut()
-            .find(|listed| listed.id == channel.id)
-            .expect("the channel")
-            .members
-            .push(ChannelMember {
-                account: carol.account,
-                history: false,
-            });
-    });
-    store(cloud, &ada.token, &joined);
-    let carol_keyed = keyed(cloud, &carol);
-    let draft = Draft::new(&channel, person_address(ACME, &carol), SECOND);
-    let ada_key = cert_of(cloud, &ada).body().hpke;
-    let envelope = draft.seal(&carol_keyed.signing, ada.device, &ada_key);
-    Peer::connect(cloud, &carol, &carol_keyed.signing).stored(&envelope);
-
-    let finished = received(&ada.machine);
-
-    assert_shows_once(
-        &finished.shown(),
-        &Shown {
-            text: SECOND,
-            channel: channel.id,
-            from: person_address(ACME, &carol),
-            device: carol.host,
-        },
+    let joining = Joining::new(
+        &world,
+        [4_122_071_801, 4_122_071_802, 4_122_071_803],
+        [
+            "ada-admits-standin",
+            "bob-member-standin",
+            "carol-joins-standin",
+        ],
     );
+    joining.store(&world.cloud);
+
+    let finished = received(&joining.ada.machine);
+
+    assert_shows_once(&finished.shown(), &joining.shown());
 }
 
 /// The texts of the agent test: what Bob's device sends to each space's channel, and what the

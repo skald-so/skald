@@ -197,10 +197,10 @@ enum Command {
         text: String,
     },
     /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
-    /// of the device's mailbox and exits. Shows each message that passes the protocol's checks,
-    /// once, and each delivered and expired of this device's messages; warns of each message it
-    /// drops. As an agent, only those of the space of the agent's folder: the rest wait for a later
-    /// run.
+    /// of the device's mailbox and exits, accepting meanwhile the new revisions of each space this
+    /// device follows. Shows each message that passes the protocol's checks, once, and each
+    /// delivered and expired of this device's messages; warns of each message it drops. As an
+    /// agent, only those of the space of the agent's folder: the rest wait for a later run.
     Recv,
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,

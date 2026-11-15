@@ -26,6 +26,8 @@
 //!   tables `envelopes`, `sends` and `entries`, and reads them there: the tests move them back to
 //!   let time pass.
 //! - The server finds an expired entry within 30 seconds, with no connection of its device.
+//!
+//! The `space-notice` of a new roster revision, which is no mailbox entry: `notices.rs`.
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -48,6 +50,7 @@ mod wire;
 
 mod expiring;
 mod link;
+mod listener;
 mod scene;
 
 mod acks;
@@ -58,5 +61,6 @@ mod connections;
 mod expired_entries;
 mod expiry;
 mod no_retention;
+mod notices;
 mod receipts;
 mod versions;

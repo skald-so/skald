@@ -1,15 +1,16 @@
 //! `skald recv`: the device gets its mailbox (`docs/protocol/delivery.md`, "Mailbox"). It first
 //! sends what is left in the outbox, then states its cursor, writes each entry it gets after the
 //! cursor to the local state with the new cursor at once, acks, and stops once catch-up has sent
-//! every entry. It then shows the entries it wrote: a `message` only if it passes the checks of
-//! `docs/protocol/README.md`, "Envelope" and "Scheme `hpke`", with the space's latest revisions
-//! accepted first, and the sending device admitted to the channel ("Admitted devices"), once per
-//! sending device and `msg_id`; a warning for any other; and each `delivered` and `expired` of the
-//! device's messages. As an agent, only those of its folder's space: the rest wait in the local
-//! state.
+//! every entry. It then accepts the revisions of each space it follows, and those of the space of
+//! each `space-notice` that came meanwhile ("Frames"). It then shows the entries it wrote: a
+//! `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope" and "Scheme
+//! `hpke`", with the space's latest revisions accepted first, and the sending device admitted to
+//! the channel ("Admitted devices"), once per sending device and `msg_id`; a warning for any other;
+//! and each `delivered` and `expired` of the device's messages. As an agent, only those of its
+//! folder's space: the rest wait in the local state.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -52,18 +53,30 @@ pub fn run(
     if let Err(err) = send::report(&queued, &delivered, timeout) {
         eprintln!("skald: warning: {err}");
     }
-    let received = receive(&mut follower, delivered.socket.take(), timeout);
-    let shown = show(&mut follower, scope);
+    let mut synced = BTreeMap::new();
+    let received = receive(
+        &mut follower,
+        delivered.socket.take(),
+        (timeout, scope),
+        &mut synced,
+    );
+    let shown = show(&mut follower, scope, synced);
     received?;
     shown
 }
 
-/// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends: writes
-/// each entry after the cursor with the new cursor and acks it.
+/// The spaces a run synced: each one's last accepted revision and its accounts' devices.
+type Synced = BTreeMap<SpaceId, (Roster, SpaceDevices)>;
+
+/// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
+/// for each frame for `timeout`: writes each entry after the cursor with the new cursor and acks
+/// it. Then it syncs into `synced` each space within `scope` the device follows, and the space of
+/// each `space-notice` that came meanwhile.
 fn receive(
     follower: &mut Follower,
     socket: Option<WebSocket>,
-    timeout: Duration,
+    (timeout, scope): (Duration, Scope),
+    synced: &mut Synced,
 ) -> Result<(), String> {
     let mut socket = match socket {
         Some(socket) => socket,
@@ -98,9 +111,78 @@ fn receive(
             write(&mut socket, &Frame::Ack { seq })?;
         }
     }
+    // By the end of catch-up the server sends the connection its notices: a revision stored before
+    // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
+    // space fetched here.
+    let mut due: BTreeSet<SpaceId> = follower
+        .state
+        .spaces()
+        .map_err(text)?
+        .iter()
+        .map(|space| space.id)
+        .collect();
+    while !due.is_empty() {
+        sync_due(follower, scope, &mut due, synced)?;
+        due.extend(waiting_notices(&mut socket));
+    }
     let _ = socket.close(None);
     let _ = socket.flush();
     Ok(())
+}
+
+/// Syncs into `synced` each space of `due` within `scope` that the device follows, and empties
+/// `due`. A space that fails to sync is warned of, and synced again at its first message.
+fn sync_due(
+    follower: &mut Follower,
+    scope: Scope,
+    due: &mut BTreeSet<SpaceId>,
+    synced: &mut Synced,
+) -> Result<(), String> {
+    if due.is_empty() {
+        return Ok(());
+    }
+    let followed = follower.state.spaces().map_err(text)?;
+    for space in followed
+        .iter()
+        .filter(|space| due.contains(&space.id) && !scope.excludes(space.id))
+    {
+        match follower.sync(space) {
+            Ok(done) => {
+                synced.insert(space.id, done);
+            }
+            Err(err) => {
+                synced.remove(&space.id);
+                eprintln!("skald: warning: {err}");
+            }
+        }
+    }
+    due.clear();
+    Ok(())
+}
+
+/// The spaces of the `space-notice` frames that came on `socket` and wait to be read; the other
+/// frames are dropped, and the next run gets their entries.
+fn waiting_notices(socket: &mut WebSocket) -> Vec<SpaceId> {
+    let mut spaces = Vec::new();
+    if set_read_timeout(socket, Duration::from_millis(1)).is_err() {
+        return spaces;
+    }
+    while let Ok(message) = socket.read() {
+        if let Message::Binary(bytes) = message
+            && let Got::Entries(entries) = got(Frame::from_cbor(&bytes).ok())
+        {
+            spaces.extend(noticed(&entries));
+        }
+    }
+    spaces
+}
+
+/// The spaces of the `space-notice` entries of `entries`.
+fn noticed(entries: &[Push]) -> impl Iterator<Item = SpaceId> + '_ {
+    entries.iter().filter_map(|push| match push {
+        Push::SpaceNotice { space } => Some(*space),
+        _ => None,
+    })
 }
 
 /// What a frame from the server gives a run that waits for the end of catch-up.
@@ -169,16 +251,17 @@ fn write(socket: &mut WebSocket, frame: &Frame) -> Result<(), String> {
 struct Checks {
     keys: crate::device::Keys,
     followed: Vec<state::Space>,
-    synced: BTreeMap<SpaceId, (Roster, SpaceDevices)>,
+    synced: Synced,
     server: Option<Option<ServerName>>,
 }
 
-/// Shows each entry the state holds within `scope`, in `seq` order, and takes it out.
-fn show(follower: &mut Follower, scope: Scope) -> Result<(), String> {
+/// Shows each entry the state holds within `scope`, in `seq` order, and takes it out; checks
+/// messages against the spaces as `synced` holds them, syncing any other at its first message.
+fn show(follower: &mut Follower, scope: Scope, synced: Synced) -> Result<(), String> {
     let mut checks = Checks {
         keys: follower.keys()?,
         followed: follower.state.spaces().map_err(text)?,
-        synced: BTreeMap::new(),
+        synced,
         server: None,
     };
     for (seq, bytes) in follower.state.inbox().map_err(text)? {
@@ -705,6 +788,17 @@ mod tests {
         }
     }
 
+    /// A `delivered` of a message of this device.
+    fn delivered() -> DeliveryStatus {
+        DeliveryStatus {
+            msg_id: MessageId::generate(),
+            device: DeviceId::from_signing_key(&[2; 32]),
+            status: ServerStatus::Delivered,
+            timestamp: 1_800_000_000,
+            unknown: Unknown::default(),
+        }
+    }
+
     /// Of a catch-up, only the `message` and `status` entries after the cursor are written, each
     /// as its frame.
     #[test]
@@ -728,13 +822,7 @@ mod tests {
             .to_cbor(),
         )
         .unwrap();
-        let status = DeliveryStatus {
-            msg_id: MessageId::generate(),
-            device: DeviceId::from_signing_key(&[2; 32]),
-            status: ServerStatus::Delivered,
-            timestamp: 1_800_000_000,
-            unknown: Unknown::default(),
-        };
+        let status = delivered();
         let message = |at| Push::Message {
             seq: seq(at),
             envelope: envelope.clone(),
@@ -787,6 +875,22 @@ mod tests {
         assert_eq!(got(Some(Frame::Batch(Vec::new()))), Got::End);
         assert_eq!(got(Some(Frame::Sync { cursor: 1 })), Got::Nothing);
         assert_eq!(got(None), Got::Nothing);
+    }
+
+    /// Of a catch-up's entries, the `space-notice` ones give their spaces, in order.
+    #[test]
+    fn notices_give_their_spaces() {
+        let (first, second) = (SpaceId::generate(), SpaceId::generate());
+        let entries = [
+            Push::SpaceNotice { space: first },
+            Push::Status {
+                seq: NonZeroU64::MIN,
+                status: delivered(),
+            },
+            Push::SpaceNotice { space: second },
+        ];
+
+        assert_eq!(noticed(&entries).collect::<Vec<_>>(), [first, second]);
     }
 
     /// A read that times out says the server sent nothing in time; any other failure, that the
