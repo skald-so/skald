@@ -44,6 +44,12 @@ impl Notices {
         }
     }
 
+    /// The accounts with connections that get notices.
+    pub(crate) fn accounts(&self) -> Vec<AccountId> {
+        let by_account = self.by_account.lock().expect("the notices");
+        by_account.keys().copied().collect()
+    }
+
     /// The notices of a connection of a device of `account`, from now on.
     pub(crate) fn listen(self: &Arc<Self>, account: AccountId) -> Listening {
         let id = self.next.fetch_add(1, Ordering::Relaxed);

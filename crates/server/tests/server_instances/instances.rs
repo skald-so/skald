@@ -46,7 +46,7 @@ pub fn instance(fixture: &Fixture, args: &[String]) -> Server {
 }
 
 /// As [`instance`], on the fixture's database at `url`.
-fn instance_at(fixture: &Fixture, url: &str, args: &[String]) -> Server {
+pub fn instance_at(fixture: &Fixture, url: &str, args: &[String]) -> Server {
     let stand = &fixture.team.flow.stand;
     let mut all = github_settings(&stand.public, &stand.github);
     all.extend(args.iter().map(String::as_str));

@@ -46,6 +46,7 @@ mod link;
 mod wire;
 
 mod instances;
+mod proxy;
 mod watch;
 
 mod expiry;

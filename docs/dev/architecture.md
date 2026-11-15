@@ -61,7 +61,9 @@
 - Push over WebSocket; SSE and long-poll are fallbacks.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
   - a notification names a mailbox with new entries, a stored roster revision or an ended session, never an envelope;
-  - an instance whose listening connection drops listens again, then sends its connections what they missed.
+  - an instance takes no device connection before it first listens;
+  - an instance whose listening connection drops or goes silent listens again, then sends its connections what they missed;
+  - each instance takes up to 11 PostgreSQL connections: 10 in its pool and 1 that listens.
 - Agent address: [protocol spec](../protocol/README.md#agent-address). Its `server` is the server setting `--server-name` (`SKALD_SERVER_NAME`): `getServer` in the [OpenAPI spec](../../api/openapi.json).
 
 ## Data model

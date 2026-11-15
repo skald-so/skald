@@ -12,24 +12,31 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_proto::{AccountId, DeviceId, SpaceId};
-use sqlx::postgres::{PgListener, PgPoolOptions};
+use sqlx::postgres::{PgListener, PgNotification, PgPoolOptions};
 use sqlx::{PgConnection, PgPool};
+use tokio::sync::watch;
 
 use crate::DATABASE_TIMEOUT;
 use crate::connections::Connections;
 use crate::delivery::Wakers;
 use crate::notices::Notices;
 
-/// The channel the instances notify each other on.
+/// The channel the instances notify each other on, and the statement that listens on it.
 const CHANNEL: &str = "skald_instances";
+const LISTEN: &str = r#"LISTEN "skald_instances""#;
 /// How long an instance waits before it tries again to listen.
 const RETRY: Duration = Duration::from_secs(2);
-/// This instance, as it names itself in its notifications, and the latest revision of each space
-/// it knows of.
+/// How long the listening connection may go without a notification before the instance checks it,
+/// and how long the check may take: a connection lost without a close sends nothing.
+const CHECK_AFTER: Duration = Duration::from_secs(3);
+const CHECK_WAIT: Duration = Duration::from_secs(2);
+/// This instance: how it names itself in its notifications, the latest revision of each space it
+/// knows of, and whether it has listened yet.
 #[derive(Clone)]
 pub(crate) struct Instance {
     id: Arc<str>,
     latest: Arc<Mutex<HashMap<SpaceId, i64>>>,
+    listened: Arc<watch::Sender<bool>>,
 }
 
 impl Instance {
@@ -41,7 +48,19 @@ impl Instance {
         Instance {
             id: id.into(),
             latest: Arc::default(),
+            listened: Arc::new(watch::Sender::new(false)),
         }
+    }
+
+    /// Waits until this instance has listened to the others, so that a connection it takes from
+    /// then on misses nothing they tell.
+    pub(crate) async fn listening(&self) {
+        // The sender lives as long as this instance.
+        let _ = self
+            .listened
+            .subscribe()
+            .wait_for(|listened| *listened)
+            .await;
     }
 
     /// Records that `space` has the revision `revision`.
@@ -126,15 +145,14 @@ pub(crate) struct Local {
 }
 
 /// Listens to the other instances for good, as `instance`, and acts on their notifications for
-/// `local`. When the listening connection drops, it listens again, then sends what was missed.
+/// `local`. Each time it starts to listen, also again after the listening connection dropped, it
+/// sends what its connections may have missed.
 pub(crate) async fn listen(instance: Instance, local: Local) {
-    let mut listened = false;
     loop {
-        match open(&instance, &local, listened).await {
+        match open(&instance, &local).await {
             Ok(mut listener) => {
-                listened = true;
-                // A lost connection or any other failure leaves the listener for a new one.
-                while let Ok(Some(notification)) = listener.try_recv().await {
+                instance.listened.send_replace(true);
+                while let Some(notification) = next(&mut listener).await {
                     act(&instance, &local, notification.payload()).await;
                 }
             }
@@ -146,13 +164,26 @@ pub(crate) async fn listen(instance: Instance, local: Local) {
     }
 }
 
-/// Listens on a connection of its own, then records the latest revision of each space; if
-/// `listened` before, first sends `local` what it missed.
-async fn open(
-    instance: &Instance,
-    local: &Local,
-    listened: bool,
-) -> Result<PgListener, sqlx::Error> {
+/// The next notification on `listener`; `None` once its connection is lost, also without a close.
+async fn next(listener: &mut PgListener) -> Option<PgNotification> {
+    loop {
+        match tokio::time::timeout(CHECK_AFTER, listener.try_recv()).await {
+            Ok(Ok(Some(notification))) => return Some(notification),
+            Ok(Ok(None) | Err(_)) => return None,
+            Err(_) => {
+                // Listening again changes nothing, so the connection still shows as listening.
+                let check = sqlx::raw_sql(LISTEN).execute(&mut *listener);
+                if !matches!(tokio::time::timeout(CHECK_WAIT, check).await, Ok(Ok(_))) {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Listens on a connection of its own, sends `local` what it may have missed, then records the
+/// latest revision of each space.
+async fn open(instance: &Instance, local: &Local) -> Result<PgListener, sqlx::Error> {
     // Its own pool, so that the listening connection takes none of the server's.
     let pool = PgPoolOptions::new()
         .max_connections(1)
@@ -174,9 +205,7 @@ async fn open(
         .into_iter()
         .map(|(space, revision)| (space.parse().expect("a stored space ID"), revision))
         .collect();
-    if listened {
-        catch_up(instance, local, &latest).await?;
-    }
+    catch_up(instance, local, &latest).await?;
     for (space, revision) in latest {
         instance.record(space, revision);
     }
@@ -227,7 +256,8 @@ async fn members(
 
 /// Sends `local`'s connections what the other instances may have told while `instance` did not
 /// listen: wakes each device's connections, closes each connection whose session has ended, and
-/// sends the notices of the revisions in `latest`, the latest of each space, that it does not know.
+/// sends each connected account the notices of the revisions in `latest`, the latest of each space,
+/// that the instance does not know, all of them before it first listens.
 async fn catch_up(
     instance: &Instance,
     local: &Local,
@@ -245,11 +275,33 @@ async fn catch_up(
             local.connections.end_session(&session);
         }
     }
-    for &(space, revision) in latest {
-        if !instance.knows(space, revision) {
-            let accounts = members(&local.db, space, revision).await?;
-            local.notices.notify(accounts, space);
-        }
+    let (spaces, revisions): (Vec<String>, Vec<i64>) = latest
+        .iter()
+        .filter(|(space, revision)| !instance.knows(*space, *revision))
+        .map(|(space, revision)| (space.to_string(), *revision))
+        .unzip();
+    let accounts: Vec<String> = local
+        .notices
+        .accounts()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let notified: Vec<(String, String)> = sqlx::query_as(
+        "SELECT m.space_id::text, m.account_id::text
+         FROM roster_members m
+         JOIN unnest($1::uuid[], $2::bigint[]) AS l (space_id, revision) USING (space_id, revision)
+         WHERE m.account_id = ANY($3::uuid[])",
+    )
+    .bind(spaces)
+    .bind(revisions)
+    .bind(accounts)
+    .fetch_all(&local.db)
+    .await?;
+    for (space, account) in notified {
+        local.notices.notify(
+            [account.parse().expect("a stored account ID")],
+            space.parse().expect("a stored space ID"),
+        );
     }
     Ok(())
 }
@@ -262,6 +314,7 @@ mod tests {
         Instance {
             id: "a1".into(),
             latest: Arc::default(),
+            listened: Arc::new(watch::Sender::new(false)),
         }
     }
 

@@ -32,6 +32,8 @@ use crate::{AppState, database_failed};
 const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
 /// How long the server waits for a connection's `auth`.
 const PROOF_WAIT: Duration = Duration::from_secs(5);
+/// How long a proved connection waits for the instance to listen to the others.
+const LISTEN_WAIT: Duration = Duration::from_secs(5);
 
 /// Why the server closes a connection: the reasons of "Connecting".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,6 +214,13 @@ struct Proved {
 async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
     match prove(&state, &mut socket).await {
         Ok(Some(proved)) => {
+            // Until the instance listens to the others, a connection would miss what they tell.
+            if tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
+                .await
+                .is_err()
+            {
+                return close(socket, Closing::ServerError).await;
+            }
             let sender = Sender {
                 device: proved.device,
                 account: proved.account,
