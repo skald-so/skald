@@ -310,8 +310,8 @@ pub(crate) use removing;
 
 /// Runs `query`, a [`removing!`] one, in a transaction that also adds `status` to the sending
 /// device's mailbox for each message to report on, and deletes the envelopes that no entry refers
-/// to any more; wakes the sending devices' connections in `wakers`, on each instance. Gives the number of entries it
-/// removed.
+/// to any more; wakes the sending devices' connections in `wakers`, on each instance. Gives the
+/// number of entries it removed.
 pub(crate) async fn remove<'q>(
     db: &PgPool,
     wakers: &Wakers,

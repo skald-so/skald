@@ -500,8 +500,8 @@ async fn certs(db: &PgPool, accounts: &[String]) -> Result<Vec<Cert>, Refusal> {
 }
 
 /// Stores `roster`, received as `sent`, as the next revision of `space`, with its members, and
-/// gives their accounts' connections a notice of `space`, on each instance. Of two revisions with one number at
-/// once, the first is stored and the other refused.
+/// gives their accounts' connections a notice of `space`, on each instance. Of two revisions with
+/// one number at once, the first is stored and the other refused.
 async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) -> Answer {
     let db = &state.db;
     let body = roster.body();
