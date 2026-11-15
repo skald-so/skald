@@ -1,9 +1,9 @@
 //! Acceptance tests of `skald sign-in` against a server whose sign-up is closed: when the person's
 //! sign-up is refused on the verification page, `skald sign-in` ends at once, saying sign-up is
 //! closed on the server, instead of waiting for its code to expire; a listed person's machine signs
-//! in. The server is the `skald-server` binary of this build, which `cargo build --workspace` puts
-//! next to this test binary's directory and the test builds if it is missing, with GitHub sign-in
-//! through the GitHub stand-in, on PostgreSQL; the person is a test in headless Chrome.
+//! in. The server is the `skald-server` binary of these sources, which the test builds with Cargo,
+//! with GitHub sign-in through the GitHub stand-in, on PostgreSQL; the person is a test in headless
+//! Chrome.
 //!
 //! The server's settings these tests use: `--sign-up closed` and `--sign-up-github-logins`, a
 //! comma-separated list of the GitHub logins that may sign up.
@@ -44,9 +44,10 @@ const LISTED: &str = "ada-cli-listed";
 /// How long the device codes work: far longer than any wait of these tests.
 const CODE_LIFETIME: &str = "600";
 
-/// Builds the `skald-server` binary with the Cargo that runs this test and gives its path. A build
-/// of the client alone, such as cargo-mutants', lacks it.
-fn build_server() -> PathBuf {
+/// The `skald-server` binary of these sources, built by the Cargo that runs this test, which
+/// rebuilds it only when they changed: a build of the client alone, such as cargo-mutants', has
+/// none, and one an earlier build left may be of other sources, such as a server mutant's.
+fn server_binary() -> PathBuf {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let built = Command::new(cargo)
         .args(["build", "--locked", "-p", "skald-server"])
@@ -66,18 +67,6 @@ fn build_server() -> PathBuf {
         .filter(|message| message["target"]["name"] == "skald-server")
         .find_map(|message| message["executable"].as_str().map(PathBuf::from))
         .unwrap_or_else(|| panic!("cargo build gave no skald-server binary: {messages}"))
-}
-
-/// The `skald-server` binary of this build: in the profile's directory, above this test binary's,
-/// which is `deps/` in it or, in Cargo's newer build directory layout, deeper; built if missing.
-fn server_binary() -> PathBuf {
-    let exe = env::current_exe().expect("this test binary");
-    let name = format!("skald-server{}", env::consts::EXE_SUFFIX);
-    exe.ancestors()
-        .skip(1)
-        .map(|dir| dir.join(&name))
-        .find(|path| path.is_file())
-        .unwrap_or_else(build_server)
 }
 
 /// A new database on the PostgreSQL server of the tests; dropped on drop.
