@@ -12,8 +12,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use skald_proto::{CERT_NAME_MAX, Cbor as _, Cert, DeviceId};
 
-use crate::AppState;
 use crate::refusal::{Answer, Refusal, account, answer, parse};
+use crate::{AppState, revocations};
 
 /// The only kind of device that registers here; other kinds come with later stories.
 const CLIENT: &str = "client";
@@ -67,16 +67,25 @@ impl Device {
 #[derive(Serialize)]
 pub(crate) struct Devices {
     devices: Vec<Device>,
+    revocations: Vec<String>,
 }
 
 impl Devices {
-    /// The devices `found`, each an ID and its certificate as the device sent it.
-    pub(crate) fn of(found: Vec<(String, Option<Vec<u8>>)>) -> Self {
+    /// The devices `found`, each an ID and its certificate as the device sent it, and the
+    /// `revocations` of their accounts as the server got them.
+    pub(crate) fn of(found: Vec<(String, Option<Vec<u8>>)>, revocations: &[(Vec<u8>,)]) -> Self {
         let devices = found
             .into_iter()
             .map(|(device, cert)| Device::new(device, cert))
             .collect();
-        Devices { devices }
+        let revocations = revocations
+            .iter()
+            .map(|(revocation,)| base64(revocation))
+            .collect();
+        Devices {
+            devices,
+            revocations,
+        }
     }
 }
 
@@ -144,7 +153,7 @@ impl Checked {
 
 /// `POST /devices`: registers a device of the session's account; the same registration again is
 /// taken as stored. With the devices limit, a new device of an account that has as many devices
-/// with a certificate, `service` devices aside, is refused.
+/// with a certificate, `service` and revoked devices aside, is refused.
 pub(crate) async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -157,7 +166,7 @@ pub(crate) async fn register(
         if let Some(limit) = state.devices_limit {
             // Registering certifies no device, so registrations at once cannot pass the limit.
             let (certified, known): (i64, bool) = sqlx::query_as(
-                "SELECT count(*) FILTER (WHERE cert IS NOT NULL AND kind <> 'service'),
+                "SELECT count(*) FILTER (WHERE cert IS NOT NULL AND kind <> 'service' AND NOT revoked),
                      bool_or(id = $2::uuid) IS TRUE
                  FROM devices WHERE account_id = $1::uuid",
             )
@@ -195,7 +204,8 @@ pub(crate) async fn register(
     .await
 }
 
-/// `GET /devices`: the session's account's devices, each with its certificate as the device sent it.
+/// `GET /devices`: the session's account's devices, each with its certificate as the device sent it,
+/// and the account's revocations.
 pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
     answer(async {
         let account = account(&state.db, &headers).await?;
@@ -207,7 +217,8 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         .fetch_all(&state.db)
         .await
         .map_err(|err| Refusal::Database("read the devices", err))?;
-        Ok(Json(Devices::of(found)).into_response())
+        let revocations = revocations::of_account(&state.db, &account).await?;
+        Ok(Json(Devices::of(found, &revocations)).into_response())
     })
     .await
 }

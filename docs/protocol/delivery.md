@@ -81,7 +81,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 - The server takes the connection, as the device's, only if:
   - `auth` is the first frame and comes within a few seconds of the opening;
   - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection has used it before; a challenge works once, used or refused;
-  - the device is a `client` device with a certificate on the server, of the challenge's session's account;
+  - the device is a `client` device with a certificate on the server, of the challenge's session's account, and not revoked ([Revocation](membership.md#revocation));
   - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
 - Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
 
@@ -89,10 +89,10 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 |---|---|
 | `auth-required` | Sends another frame first, or none in time |
 | `challenge-refused` | Names a challenge that is unknown, used, expired or of an ended session |
-| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account |
+| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account, or a revoked one |
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
-- A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends.
+- A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends, and with the reason `device-refused` when its device is revoked.
 - A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
 ## Send

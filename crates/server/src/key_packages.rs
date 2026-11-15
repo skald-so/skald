@@ -65,7 +65,7 @@ fn now() -> u64 {
 }
 
 /// The device `device`, a path parameter, of the session's `account`: its ID, and its certificate
-/// if it is a `client` device with one.
+/// if it is a `client` device with one that is not revoked.
 async fn own_device(
     db: &PgPool,
     device: &str,
@@ -74,7 +74,7 @@ async fn own_device(
     let id: DeviceId = device.parse().map_err(|_| Refusal::NoDevice)?;
     let id = id.to_string();
     let found: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
-        "SELECT CASE WHEN kind = 'client' THEN cert END FROM devices
+        "SELECT CASE WHEN kind = 'client' AND NOT revoked THEN cert END FROM devices
          WHERE id = $1::uuid AND account_id = $2::uuid",
     )
     .bind(&id)
@@ -144,7 +144,7 @@ fn checked(texts: &[String], cert: &Cert, now: u64) -> Result<Vec<(Vec<u8>, i64)
 }
 
 /// `POST /devices/<device>/key-packages`: takes KeyPackages of a `client` device of the session's
-/// account with a certificate, and its last-resort one, which replaces the one it had; one that
+/// account with a certificate, not revoked, and its last-resort one, which replaces the one it had; one that
 /// fails the checks refuses them all. Gives the device's count.
 pub(crate) async fn upload(
     State(state): State<AppState>,
@@ -156,7 +156,9 @@ pub(crate) async fn upload(
     let (device, cert) = own_device(db, &device, &account).await?;
     let upload: Upload = parse(&body)?;
     let cert = cert.ok_or_else(|| {
-        Refusal::NotAllowed("only a `client` device with a certificate has KeyPackages".to_owned())
+        Refusal::NotAllowed(
+            "only a `client` device with a certificate, not revoked, has KeyPackages".to_owned(),
+        )
     })?;
     let cert = Cert::from_cbor(&cert).map_err(|err| {
         Refusal::NotAllowed(format!("the device's certificate is unreadable: {err}"))
@@ -166,6 +168,16 @@ pub(crate) async fn upload(
     let last = checked(upload.last_resort.as_slice(), &cert, now)?;
     let failed = |err| Refusal::Database("store KeyPackages", err);
     let mut tx = db.begin().await.map_err(failed)?;
+    // The device's row lock makes its revocation, which deletes its KeyPackages, wait for this
+    // upload, or this upload see the revocation.
+    let open = sqlx::query("SELECT 1 FROM devices WHERE id = $1::uuid AND NOT revoked FOR SHARE")
+        .bind(&device)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(failed)?;
+    if open.is_none() {
+        return Err(Refusal::NotAllowed("the device is revoked".to_owned()));
+    }
     for (key_package, expires) in &others {
         sqlx::query(
             "INSERT INTO key_packages (device_id, last_resort, key_package, expires_at)
@@ -212,8 +224,8 @@ pub(crate) async fn upload(
 }
 
 /// `POST /key-packages`: hands out one KeyPackage of each device asked for that is a `client`
-/// device with a certificate of an account that shares a space with the session's: another one,
-/// which it deletes, or once none is left its last-resort one, never an expired one.
+/// device with a certificate, not revoked, of an account that shares a space with the session's:
+/// another one, which it deletes, or once none is left its last-resort one, never an expired one.
 pub(crate) async fn hand_out(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -234,6 +246,7 @@ pub(crate) async fn hand_out(
     let shared: Vec<(String,)> = sqlx::query_as(
         "SELECT d.id::text FROM devices d
          WHERE d.id = ANY($1::text[]::uuid[]) AND d.kind = 'client' AND d.cert IS NOT NULL
+           AND NOT d.revoked
            AND EXISTS (
                SELECT 1 FROM space_access mine
                JOIN space_access theirs ON theirs.space_id = mine.space_id
