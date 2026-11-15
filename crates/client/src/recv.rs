@@ -767,6 +767,17 @@ mod tests {
         }
     }
 
+    /// A `delivered` of a message of this device.
+    fn delivered() -> DeliveryStatus {
+        DeliveryStatus {
+            msg_id: MessageId::generate(),
+            device: DeviceId::from_signing_key(&[2; 32]),
+            status: ServerStatus::Delivered,
+            timestamp: 1_800_000_000,
+            unknown: Unknown::default(),
+        }
+    }
+
     /// Of a catch-up, only the `message` and `status` entries after the cursor are written, each
     /// as its frame.
     #[test]
@@ -790,13 +801,7 @@ mod tests {
             .to_cbor(),
         )
         .unwrap();
-        let status = DeliveryStatus {
-            msg_id: MessageId::generate(),
-            device: DeviceId::from_signing_key(&[2; 32]),
-            status: ServerStatus::Delivered,
-            timestamp: 1_800_000_000,
-            unknown: Unknown::default(),
-        };
+        let status = delivered();
         let message = |at| Push::Message {
             seq: seq(at),
             envelope: envelope.clone(),
@@ -855,18 +860,11 @@ mod tests {
     #[test]
     fn notices_give_their_spaces() {
         let (first, second) = (SpaceId::generate(), SpaceId::generate());
-        let status = DeliveryStatus {
-            msg_id: MessageId::generate(),
-            device: DeviceId::from_signing_key(&[2; 32]),
-            status: ServerStatus::Delivered,
-            timestamp: 1_800_000_000,
-            unknown: Unknown::default(),
-        };
         let entries = [
             Push::SpaceNotice { space: first },
             Push::Status {
                 seq: NonZeroU64::MIN,
-                status,
+                status: delivered(),
             },
             Push::SpaceNotice { space: second },
         ];
