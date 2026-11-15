@@ -26,7 +26,8 @@
 - `ask_user` and attachments.
 - Notifications to Telegram, Slack or a webhook, also when a session waits on its agent CLI's own permission prompt or a task result is invalid.
 - Running tasks from other people.
-- Browser linking and content sections in the web UI (WASM): history and search, queue panel, delivery trace, loop analysis.
+- Browser linking and content sections in the web UI (WASM): history and search, messages from the person to their own agents, queue panel, delivery trace, loop analysis.
+- Every web UI screen works on a phone; voice input there is the keyboard's dictation.
 - One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code, Codex and the agents of [agents.md](agents.md#setup-by-skald-connect), new device confirmation, invite by link, Claude Code plugin.
 - Admin rights transfer, "only one admin" warning, account deletion.
 - Load testing before launch.

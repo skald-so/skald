@@ -27,7 +27,7 @@
 - The recovery key is entered only in the CLI, never in a web page.
 - **A browser is also a linked device**, linked only with the link code it shows, entered on an already linked `client` device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
   - it reads through history keys wrapped to its key;
-  - it sends actions (approve, answer `ask_user`) as signed messages via HPKE;
+  - it sends the person's messages to their own agents and actions (approve, answer `ask_user`) as signed messages via HPKE;
   - it enqueues, restarts and cancels tasks through the API: [protocol spec](../protocol/queues.md).
 
 ## Membership
