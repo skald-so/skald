@@ -268,7 +268,7 @@ With attachments in a bucket, its provider sees the sizes and times of their upl
 Message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads and code.
 
 ## Trade-offs
-- HPKE messages (ephemeral agents, browser actions, `ask_user` questions and answers) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
+- HPKE messages (ephemeral agents, browser actions, the person's messages from a browser, `ask_user` questions and answers) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
 - a leaked recovery key exposes the history;
 - the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
 - metadata is visible;
