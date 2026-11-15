@@ -34,6 +34,7 @@ jobs:
       repository: ${{ steps.parts.outputs.repository }}
       tooling: ${{ steps.parts.outputs.tooling }}
       web: ${{ steps.parts.outputs.web }}
+      site: ${{ steps.parts.outputs.site }}
     steps:
       # The checkout is the PR merged into dev; its first parent is dev.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -334,3 +335,21 @@ jobs:
           name: kit-diff
           path: web/kit-diff/
           if-no-files-found: ignore
+
+  site:
+    name: Site
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.site == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: ./script/test
+        env:
+          SKALD_TEST_PARTS: site

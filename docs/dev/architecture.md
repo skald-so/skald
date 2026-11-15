@@ -174,7 +174,7 @@ The public cloud applies these limits; a self-hosted server does not.
 | Members per space | No limit |
 | Devices per member | 50: the server setting `--devices-limit` (`SKALD_DEVICES_LIMIT`), devices with a certificate per account, `service` and revoked devices aside; unset, no limit |
 | Service agents per space | 10 |
-| Messages per space | About 10M per month: the server setting `--monthly-messages-limit` (`SKALD_MONTHLY_MESSAGES_LIMIT`), per calendar month in UTC, each message counted once whatever its envelopes; unset, no limit |
+| Messages per space | About 10M per month: the server setting `--monthly-messages-limit` (`SKALD_MONTHLY_MESSAGES_LIMIT`), per calendar month in UTC, each message counted once whatever its envelopes, a handshake message ([Mailbox](../protocol/delivery.md#mailbox)) not at all; unset, no limit |
 | Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), the payload in bytes; unset, no limit |
 | Attachment | 10 MB |
 | Undelivered messages kept | 7 days: the server setting `--mailbox-retention` (`SKALD_MAILBOX_RETENTION`), in seconds; unset, until delivered or the envelope's `ttl` ends |
