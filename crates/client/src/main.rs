@@ -187,7 +187,7 @@ enum Command {
     /// message for each device admitted to the channel but this one and has the server store it.
     /// Says the message's ID and, per recipient device, whether the server stored it. What the
     /// server has not stored within the request timeout waits in the local state, and the next
-    /// skald send sends it first.
+    /// skald send or skald recv sends it first.
     Send {
         /// The channel's ID, as skald channels shows it.
         #[arg(value_name = "CHANNEL")]
