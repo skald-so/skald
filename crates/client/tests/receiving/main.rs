@@ -73,8 +73,8 @@ use std::time::{Duration, Instant};
 use cloud::{Cloud, WAIT};
 use fixtures::{
     Channel, Issuer, Keyed, acme, ada_and_bob, add_device, cert_of, channel_in, database, fronted,
-    fronted_with, hex, keyed, kill_once, killed_once, msg_id, person_address, recipient, send,
-    send_args, sent_after, strs,
+    fronted_with, hex, hpke_sent, hpke_sent_after, keyed, kill_once, killed_once, msg_id,
+    person_address, recipient, send, send_args, stored_to, strs,
 };
 use front::{Acks, Answers, Front, Sent};
 use machine::{Finished, Machine, Run};
@@ -476,14 +476,17 @@ fn send_retried_after_a_lost_stored_reaches_the_recipient_once() {
     pair.front.answer(Answers::Lose);
     let lost = send(&pair.ada.machine, pair.channel.id, FIRST);
     assert!(!lost.success, "{lost:?}");
-    assert!(pair.front.lost() > 0, "no stored was lost: {lost:?}");
+    assert!(
+        stored_to(&pair.front, pair.bob.device),
+        "the message's stored was not lost: {lost:?}"
+    );
     let left = envelope_to(&pair.front, pair.bob.device);
     pair.front.answer(Answers::Forward);
-    let before = pair.front.sent().len();
+    let before = hpke_sent(&pair.front).len();
 
     received(&pair.ada.machine);
 
-    let resent = sent_after(&pair.front, before);
+    let resent = hpke_sent_after(&pair.front, before);
     assert!(
         resent
             .iter()
@@ -506,9 +509,12 @@ fn message_a_killed_send_left_in_the_outbox_is_sent_by_the_next_recv() {
         |_| {},
     );
     pair.front.swallow(true);
-    kill_once(pair.start_send(FIRST), "swallowed send", || {
-        pair.front.swallowed() > 0
-    });
+    // Ada's Commits go out before the message, and are swallowed too.
+    kill_once(
+        pair.start_send(FIRST),
+        "swallowed send of the message",
+        || !hpke_sent(&pair.front).is_empty(),
+    );
     let left = envelope_to(&pair.front, pair.bob.device);
     assert!(
         !database(pair.cloud()).contains(&hex(left.envelope.bytes())),
@@ -871,8 +877,8 @@ fn agent_receives_only_in_the_space_of_its_folder() {
         .world
         .sign_up(4_122_071_902, "bob-client-standin", "bob-workstation");
     let mut channels = Vec::new();
-    for first in [&desk.client_a, &desk.client_b] {
-        channels.push(channel_in(cloud, ada, first, &[&bob], &[&bob], &[]));
+    for created in [&desk.client_a, &desk.client_b] {
+        channels.push(channel_in(cloud, ada, created, &[&bob], &[&bob], &[]));
     }
     let folder = desk.dir("work/clientA");
     desk.add_rule(&folder, CLIENT_A);

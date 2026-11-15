@@ -2,9 +2,10 @@
 //! `skald-server` instances on one database wake each other through PostgreSQL `LISTEN/NOTIFY`.
 //! An instance that adds mailbox entries, stores a roster revision, ends a session or revokes a
 //! device notifies the others, which push the entries, send the `space-notice` or close that
-//! session's or that device's connections at once, whichever instance a device is connected to. An instance whose listening connection drops
-//! listens again, then sends its connections what they missed. Expiry on several instances adds one
-//! `expired` per entry, and an ack racing an expiry gives exactly one of `delivered` and `expired`.
+//! session's or that device's connections at once, whichever instance a device is connected to.
+//! An instance whose listening connection drops listens again, then sends its connections what
+//! they missed. Expiry on several instances adds one `expired` per entry, and an ack racing an
+//! expiry gives exactly one of `delivered` and `expired`.
 //! Against instances on the database of the tests of storing sent envelopes, whose fixture and
 //! frames these tests share.
 //!
