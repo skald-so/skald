@@ -151,6 +151,8 @@ mod tests {
 
         drop(first);
         assert_eq!(notices.by_account.lock().unwrap()[&account(1)].len(), 1);
+        notices.notify([account(1)], space(1));
+        assert_eq!(now(&second), vec![space(1)]);
         drop(second);
 
         assert!(notices.by_account.lock().unwrap().is_empty());
