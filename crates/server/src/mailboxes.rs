@@ -11,6 +11,8 @@ use skald_proto::{
 };
 use sqlx::{PgConnection, PgPool};
 
+use crate::delivery::Wakers;
+
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
     pub(crate) device: DeviceId,
@@ -49,19 +51,29 @@ fn send_key(header: &Header) -> SendKey {
     }
 }
 
-/// The answer to `sender`'s send of `envelope`.
+/// The answer to `sender`'s send of `envelope` with `report`; a stored envelope wakes its
+/// recipient's connections in `wakers`.
 pub(crate) async fn send(
     db: &PgPool,
+    wakers: &Wakers,
     sender: &Sender,
     envelope: &RawEnvelope,
+    report: bool,
 ) -> Result<Frame, sqlx::Error> {
-    answer(
-        db,
-        sender,
-        &envelope.envelope().header,
-        Some(envelope.bytes()),
-    )
-    .await
+    let header = &envelope.envelope().header;
+    let answer = answer(db, sender, header, Some((envelope.bytes(), report))).await?;
+    // A retry's wake finds no new entry.
+    if let Frame::Stored(Stored {
+        send_key: SendKey {
+            recipient: Some(recipient),
+            ..
+        },
+        ..
+    }) = &answer
+    {
+        wakers.wake(*recipient);
+    }
+    Ok(answer)
 }
 
 /// The answer to `sender`'s send of an `hpke` envelope with `header`, whose `recipients` is not one
@@ -74,13 +86,13 @@ pub(crate) async fn misaddressed(
     answer(db, sender, header, None).await
 }
 
-/// The answer to `sender`'s send of an envelope with `header`, whose bytes are `envelope`, or
-/// `None` if it cannot be stored. A retry gets the first answer, whatever its bytes.
+/// The answer to `sender`'s send of an envelope with `header`, whose bytes and `report` are
+/// `envelope`, or `None` if it cannot be stored. A retry gets the first answer, whatever its bytes.
 async fn answer(
     db: &PgPool,
     sender: &Sender,
     header: &Header,
-    envelope: Option<&[u8]>,
+    envelope: Option<(&[u8], bool)>,
 ) -> Result<Frame, sqlx::Error> {
     let key = send_key(header);
     let outcome = match (recipient(db, sender, header).await?, envelope) {
@@ -236,14 +248,14 @@ async fn refuse(
     keep(&mut *db.acquire().await?, sender, key, Some(problem)).await
 }
 
-/// Stores `envelope`, the send of `sender` with `key`, with its entry in `recipient`'s mailbox, and
-/// gives its `stored`; `None` if a send with `key` is answered already.
+/// Stores `envelope`, the bytes and `report` of the send of `sender` with `key`, with its entry in
+/// `recipient`'s mailbox, and gives its `stored`; `None` if a send with `key` is answered already.
 async fn store(
     db: &PgPool,
     sender: &Sender,
     key: &SendKey,
     recipient: DeviceId,
-    envelope: &[u8],
+    (envelope, report): (&[u8], bool),
 ) -> Result<Option<Frame>, sqlx::Error> {
     let mut tx = db.begin().await?;
     let Some(stored) = keep(&mut tx, sender, key, None).await? else {
@@ -252,7 +264,10 @@ async fn store(
     // The mailbox's row lock makes stores to it wait for each other, so its entries are numbered in
     // the order they are committed.
     sqlx::query(
-        "WITH envelope AS (INSERT INTO envelopes (envelope) VALUES ($1) RETURNING id),
+        "WITH envelope AS (
+             INSERT INTO envelopes (envelope, sender_id, msg_id, report)
+             VALUES ($1, $3::uuid, $4::uuid, $5) RETURNING id
+         ),
          mailbox AS (
              INSERT INTO mailboxes (device_id, last_seq) VALUES ($2::uuid, 1)
              ON CONFLICT (device_id) DO UPDATE SET last_seq = mailboxes.last_seq + 1
@@ -263,6 +278,9 @@ async fn store(
     )
     .bind(envelope)
     .bind(recipient.to_string())
+    .bind(sender.device.to_string())
+    .bind(key.msg_id.to_string())
+    .bind(report)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

@@ -190,7 +190,7 @@ impl Socket {
     }
 
     /// The next frame the server sends by `deadline`: `Ok(None)` if none comes by then.
-    fn next(&mut self, deadline: Instant) -> Result<Option<Message>, tungstenite::Error> {
+    pub fn next(&mut self, deadline: Instant) -> Result<Option<Message>, tungstenite::Error> {
         use std::io::ErrorKind::{TimedOut, WouldBlock};
         loop {
             let read = self.socket.read();
@@ -310,7 +310,10 @@ fn answer_in(bytes: &[u8]) -> Option<Answer> {
 }
 
 /// Runs `work` on a connection to `db`.
-fn query<T>(db: &TestDb, work: impl AsyncFnOnce(&mut PgConnection) -> Result<T, sqlx::Error>) -> T {
+pub fn query<T>(
+    db: &TestDb,
+    work: impl AsyncFnOnce(&mut PgConnection) -> Result<T, sqlx::Error>,
+) -> T {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

@@ -18,6 +18,7 @@ use sqlx::{Connection, PgConnection, PgPool};
 mod accounts;
 mod attachments;
 mod connections;
+mod delivery;
 mod device_flow;
 mod devices;
 mod github;
@@ -96,6 +97,7 @@ struct AppState {
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     connections: Arc<connections::Connections>,
+    wakers: Arc<delivery::Wakers>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`.
@@ -200,6 +202,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             connections: Arc::default(),
+            wakers: Arc::default(),
             google: settings
                 .sign_in
                 .as_ref()

@@ -123,6 +123,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
   - On WebSocket, the server sends no `message` or `status` on a connection before its first `sync`.
   - Every `sync` acks like `ack`. Only the first `sync` of a connection starts catch-up; a later one only acks.
 - **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
+  - On WebSocket, once catch-up has sent every entry the mailbox held at the first `sync`, the server sends an empty `batch`, so a client that runs once knows it has them all.
 - A device MAY hold several connections. The server sends each of them the entries in `seq` order.
 - **Expiry:** an entry expires when it is not acked in time:
   - a `message` at its storing time plus the envelope's `ttl`, capped by the server's retention (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)), unless it holds a handshake message;
