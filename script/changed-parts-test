@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Tests script/changed-parts on a scratch repository: a PR checks only the parts of script/test it
-# changes; the OpenAPI spec, scripts, CI and unknown paths check everything; docs check nothing.
+# changes; the OpenAPI spec, scripts, CI and unknown paths check everything; docs, the root's
+# Markdown files and site/ check the website.
 # With --since, the changes from where HEAD branched off the base to the working tree count.
 # The self-host stack's part: the paths of the server image, the browser's packages, the compose file,
-# Caddy's config and the self-host guide, the one path in docs/ that marks a part.
+# Caddy's config and the self-host guide, the one path in docs/ that marks another part than site.
 # Also tests that script/test rejects an unknown part instead of skipping it, and that with
 # SKALD_TEST_SINCE it checks the parts the changes since that base touch, on a copy that runs no
 # check (script/lib/test-stand-ins.sh): every part when none or when that cannot be told; a change
@@ -77,7 +78,7 @@ cd "$tmp"
 git init --quiet
 for file in api/openapi.json Cargo.toml Cargo.lock deny.toml crates/server/src/lib.rs \
   web/package.json web/package-lock.json web/src/App.tsx web/README.md docs/dev/roadmap.md task.md \
-  docs/self-host.md \
+  docs/self-host.md site/package.json \
   crates/server/Dockerfile .dockerignore \
   prototypes/mls/Cargo.toml prototypes/mls/Cargo.lock prototypes/mls/openmls/src/lib.rs \
   prototypes/agents/Cargo.toml prototypes/agents/inbox/src/lib.rs \
@@ -92,7 +93,7 @@ base=$(git rev-parse HEAD)
 # The parts of the Rust code, those the workspace's crates touch, and all of them.
 rust='workspace wasm image self-host mls agents edits repository'
 crates='workspace wasm image self-host repository'
-all="$rust tooling web"
+all="$rust tooling web site"
 
 expect web web/src/App.tsx
 expect web web/README.md
@@ -101,13 +102,13 @@ expect web web/README.md
 expect 'workspace self-host web' web/package.json
 expect 'workspace self-host web' web/package-lock.json
 expect 'workspace self-host web' -web/package.json
-expect web web/src/App.tsx docs/dev/roadmap.md task.md
+expect 'web site' web/src/App.tsx docs/dev/roadmap.md task.md
 
 expect "$crates" crates/server/src/lib.rs
 expect "$crates" crates/server/README.md
 expect "$crates" Cargo.toml
 expect "$crates" Cargo.lock
-expect "$crates" crates/server/src/lib.rs docs/dev/roadmap.md
+expect "$crates site" crates/server/src/lib.rs docs/dev/roadmap.md
 # The skald-server image: its definition and its build context.
 expect "$crates" crates/server/Dockerfile
 expect "$crates" crates/server/migrations/new.sql
@@ -150,27 +151,32 @@ expect "$all" api/README.md
 expect "$all" web/src/App.tsx api/openapi.json
 expect "$all" prototypes/edits/Cargo.toml script/test
 
-expect none docs/dev/roadmap.md
-expect none docs/dev/new.md task.md README.md
+# The website and docs: docs/, the root's Markdown files that docs/ links to, and site/.
+expect site docs/dev/roadmap.md
+expect site docs/dev/new.md task.md README.md
+expect site site/package.json
+expect site site/config.mjs
+expect site -docs/dev/roadmap.md
 expect none
 
-# The self-host stack: its guide, the one path in docs/ that marks a part, and only that part; the
+# The self-host stack: its guide, the one path in docs/ that marks another part than site; the
 # compose file, Caddy's config and the part's tests.
-expect self-host docs/self-host.md
-expect self-host docs/self-host.md docs/dev/infrastructure.md README.md
-expect 'self-host web' docs/self-host.md web/src/App.tsx
-expect none docs/dev/infrastructure.md
-expect none docs/self-hosting.md
-expect none docs/self-host/notes.md
-expect self-host 'docs/self-host.md->docs/self-host-old.md'
+expect 'self-host site' docs/self-host.md
+expect 'self-host site' docs/self-host.md docs/dev/infrastructure.md README.md
+expect 'self-host web site' docs/self-host.md web/src/App.tsx
+expect site docs/dev/infrastructure.md
+expect site docs/self-hosting.md
+expect site docs/self-host/notes.md
+expect 'self-host site' 'docs/self-host.md->docs/self-host-old.md'
+expect self-host docker-compose.yml
 marks self-host docker-compose.yml
 marks self-host Caddyfile
 marks self-host script/self-host-test
 marks self-host script/lib/self-host/machine.Dockerfile
 
 # A moved file counts in both places.
-expect "$crates" 'crates/server/src/lib.rs->docs/lib.rs'
-expect web 'docs/dev/roadmap.md->web/roadmap.md'
+expect "$crates site" 'crates/server/src/lib.rs->docs/lib.rs'
+expect 'web site' 'docs/dev/roadmap.md->web/roadmap.md'
 
 # CI checks out the PR merged into dev and compares it with its first parent, dev:
 # changes that reached dev after the PR branched do not count.
@@ -190,7 +196,7 @@ git checkout --quiet --detach "$base"
 apply crates/server/src/lib.rs
 git commit --quiet --all --message rust
 got=$("$root/script/changed-parts" "$base")
-want=$'workspace=true\nwasm=true\nimage=true\nself-host=true\nmls=false\nagents=false\nedits=false\nrepository=true\ntooling=false\nweb=false'
+want=$'workspace=true\nwasm=true\nimage=true\nself-host=true\nmls=false\nagents=false\nedits=false\nrepository=true\ntooling=false\nweb=false\nsite=false'
 [[ $got == "$want" ]] || fail "output: got '$got', want '$want'"
 
 if "$root/script/changed-parts" >/dev/null 2>&1; then
@@ -278,14 +284,14 @@ checking() {
 }
 checking "$all"
 checking edits SKALD_TEST_PARTS=edits
-# No change since the base, or only docs: every part.
+# No change since the base: every part.
 checking "$all" SKALD_TEST_SINCE="$copy_base"
 apply docs/dev/roadmap.md
 git commit --quiet --all --message docs
-checking "$all" SKALD_TEST_SINCE="$copy_base"
+checking site SKALD_TEST_SINCE="$copy_base"
 apply prototypes/edits/src/lib.rs
 git commit --quiet --all --message edits
-checking 'edits repository' SKALD_TEST_SINCE="$copy_base"
+checking 'edits repository site' SKALD_TEST_SINCE="$copy_base"
 # A base that moved on after HEAD branched off it: its new commits do not count.
 branch=$(git rev-parse HEAD)
 git checkout --quiet --detach "$copy_base"
@@ -293,13 +299,13 @@ apply prototypes/agents/src/lib.rs
 git commit --quiet --all --message dev
 moved=$(git rev-parse HEAD)
 git checkout --quiet --detach "$branch"
-checking 'edits repository' SKALD_TEST_SINCE="$moved"
+checking 'edits repository site' SKALD_TEST_SINCE="$moved"
 # Uncommitted and untracked changes count; ignored files do not.
 apply prototypes/agents/src/lib.rs
-checking 'agents edits repository' SKALD_TEST_SINCE="$copy_base"
+checking 'agents edits repository site' SKALD_TEST_SINCE="$copy_base"
 git checkout --quiet -- prototypes/agents/src/lib.rs
 apply web/new.ts
-checking 'edits repository web' SKALD_TEST_SINCE="$copy_base"
+checking 'edits repository web site' SKALD_TEST_SINCE="$copy_base"
 rm web/new.ts
 # A base the copy cannot compare with: every part.
 checking "$all" SKALD_TEST_SINCE=no-such-commit
@@ -379,8 +385,13 @@ reads prototypes/edits/overlap/src/lib.rs "${prototype_checks[@]}" "${tree_check
 # The self-host stack's guide, compose file and Caddy config. A run of every part enters web/, which
 # the copy's base does not track.
 for path in docs/self-host.md docker-compose.yml Caddyfile; do
-  mkdir -p "$copy/web"
+  mkdir -p "$copy/web" "$copy/site"
   reads "$path" script/self-host-test
+done
+# The website and docs: its packages and build for docs/, the root's Markdown files and site/.
+for path in docs/dev/roadmap.md README.md site/config.mjs; do
+  mkdir -p "$copy/site"
+  reads "$path" 'site: npm ci --no-audit --no-fund' script/site-test
 done
 # The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
 # self-host stack's part runs for its packages too.

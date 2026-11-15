@@ -3,8 +3,8 @@
 //   - it runs on a PR into dev, and on every push to dev, whatever the push changes; a push's run is
 //     in a concurrency group of its own commit, which no other push and no PR shares, and is not
 //     cancelled by a newer run; a PR's run is in the PR's group and cancels the PR's older run;
-//   - the checks the ruleset of dev requires, Changed parts, Rust, Tooling and Web, are each the name
-//     of one job;
+//   - the checks the ruleset of dev requires, Changed parts, Rust, Tooling, Web and Site, are each
+//     the name of one job;
 //   - each check script/test runs, run with stand-ins for its scripts and tools
 //     (script/lib/test-stand-ins.sh), runs in exactly one of the jobs that run script/test, by their
 //     SKALD_TEST_PARTS: none is left out and none runs twice; installing the packages of web/ and
@@ -111,7 +111,7 @@ if (first.cancels !== false) fail("a push to dev's run cancels the older run of 
 if (prRun.cancels !== true) fail("a PR's run does not cancel the PR's older run");
 
 // The checks the ruleset of dev requires (docs/dev/infrastructure.md, "Branches").
-const required = ['Changed parts', 'Rust', 'Tooling', 'Web'];
+const required = ['Changed parts', 'Rust', 'Tooling', 'Web', 'Site'];
 for (const name of required) {
   const named = Object.keys(jobs).filter((key) => nameOf(key) === name);
   if (named.length !== 1) fail(`not one job is named ${name}, a check dev requires: ${named.join(', ') || 'none'}`);

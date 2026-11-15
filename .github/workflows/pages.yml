@@ -1,0 +1,107 @@
+name: Pages
+
+# Publishes the website and docs, built from docs/ by site/build.mjs, to GitHub Pages from the
+# latest stable release's tag: on the push of that tag, or on a manual run on it. Any other ref
+# publishes nothing, and so does every run until the repository's Pages publishes from GitHub
+# Actions. script/pages-workflow-test tests this file.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+permissions: {}
+
+# One run at a time, in order; none is cancelled.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      # Every tag, to find the latest stable release's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # build: the run's ref is the latest stable release's tag; publish: also, Pages publishes from
+      # GitHub Actions. Pages set up otherwise fails the run.
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          if [[ $GITHUB_REF_TYPE != tag || $GITHUB_REF_NAME != "$latest" ]]; then
+            echo "pages: $GITHUB_REF is not the latest stable release's tag, ${latest:-none}; publishing nothing"
+            printf 'build=false\npublish=false\n' >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo build=true >>"$GITHUB_OUTPUT"
+          if source=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type 2>"$RUNNER_TEMP/pages-error"); then
+            if [[ $source != workflow ]]; then
+              echo "pages: GitHub Pages publishes from '$source', not from GitHub Actions" >&2
+              exit 1
+            fi
+            echo publish=true >>"$GITHUB_OUTPUT"
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/pages-error"; then
+            echo "pages: GitHub Pages is not set up; publishing nothing"
+            echo publish=false >>"$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/pages-error" >&2
+            exit 1
+          fi
+
+  build:
+    name: Build
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      - name: Install the packages of site/
+        working-directory: site
+        run: npm ci --no-audit --no-fund
+      # Links to files outside docs/ name the tag.
+      - name: Build
+        env:
+          SKALD_SITE_REF: ${{ github.ref_name }}
+        run: node site/build.mjs "$RUNNER_TEMP/site"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/site
+
+  publish:
+    name: Publish
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    # Only this job writes: the Pages deployment, with an OIDC token.
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
