@@ -737,7 +737,11 @@ fn join_by_itself(
         ));
     }
     let version = follower.connection.version();
+    // Gap detection counts the channel's `mls` messages from their baseline again: those after the
+    // cursor.
+    let cursor = follower.state.cursor().map_err(text)?;
     let queued = step(follower, &link.keys, |device, changes| {
+        changes.joined.push((channel, cursor + 1));
         let commit = device
             .join_by_itself(channel, group_info, now(), |joining| {
                 let listed = (&joining.signer, joining.members.as_slice());
@@ -1033,8 +1037,10 @@ fn join(
         if !last && matches!(joined, Err(MlsError::Refused)) {
             return Ok((None, MlsChanges::default(), None));
         }
+        // Gap detection counts the channel's `mls` messages from their baseline again.
         let mut taken = MlsChanges {
             taken: vec![seq],
+            joined: joined.iter().map(|&channel| (channel, seq)).collect(),
             ..MlsChanges::default()
         };
         match joined {
