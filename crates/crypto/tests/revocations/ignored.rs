@@ -1,7 +1,8 @@
 //! Revocations a client ignores, `membership.md`, "Revocation": one counts only if its signature
-//! verifies with the master key, or it has no `also` and its signature verifies with the
-//! certificate of `signer`, a `client` or `browser` device of `account` whose certificate passes
-//! checks 1 and 2. An ignored revocation revokes nothing and has no say in `keep`.
+//! verifies with the key `signer` names: without `signer`, the master key; with `signer` and
+//! without `also`, the key of the certificate of `signer`, a `client` or `browser` device of
+//! `account` whose certificate passes checks 1 and 2. An ignored revocation revokes nothing and
+//! has no say in `keep`.
 
 use crate::fixtures::*;
 
@@ -112,4 +113,16 @@ fn a_revocation_by_a_device_with_also_is_ignored() {
         Rev::by(BROWSER, DESKTOP).also(&[SERVICE]).keep(&[PHONE]),
     ]);
     assert_revoked(&[Rev::by(LAPTOP, TABLET).also(&[BROWSER])], &[]);
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_revocation_with_a_signer_signed_by_the_master_key_is_ignored() {
+    let by_master = |rev: Rev| Rev { key: MASTER, ..rev };
+    assert_ignored(&[
+        by_master(Rev::by(LAPTOP, DESKTOP)),
+        by_master(Rev::by(DESKTOP, DESKTOP)),
+        by_master(Rev::by(LAPTOP, DESKTOP).also(&[TABLET])),
+        by_master(Rev::by(UNCERTIFIED, DESKTOP)),
+    ]);
 }

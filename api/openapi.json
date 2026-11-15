@@ -3050,7 +3050,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`ProtocolProblem`), or the revision is refused: a malformed body; bytes that do not decode as a `roster`; another space or name than this one; a `signer` that is no device of the session's account with a certificate, or a signature that does not verify with its key; revision 1 that does not list the creator as an admin; checks 2 to 4 of \"Roster\" failed, on revision 1 checks 3 and 4; or a channel whose ID the server did not issue for this space.",
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the revision is refused: a malformed body; bytes that do not decode as a `roster`; another space or name than this one; a `signer` that is no device of the session's account with a certificate or is revoked, or a signature that does not verify with its key; revision 1 that does not list the creator as an admin; checks 2 to 4 of \"Roster\" failed, on revision 1 checks 3 and 4, a revoked service agent failing check 4; or a channel whose ID the server did not issue for this space.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"

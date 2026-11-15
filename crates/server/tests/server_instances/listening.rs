@@ -1,7 +1,7 @@
 //! An instance whose listening connection drops listens again, then sends its connections what
 //! they missed: entries, notices and the close of an ended session's or a revoked device's
-//! connections. It also notices a
-//! listening connection that goes silent, and takes no connection before it first listens.
+//! connections. It also notices a listening connection that goes silent, and takes no connection
+//! before it first listens.
 
 use std::thread;
 use std::time::{Duration, Instant};
