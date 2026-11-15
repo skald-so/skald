@@ -26,6 +26,9 @@ url = "2.5"
 
 [dev-dependencies]
 jsonschema = { version = "0.61", default-features = false }
+# KeyPackages of an MLS client of the tests' own, which breaks the checks the server runs.
+mls-rs = "0.57.1"
+mls-rs-crypto-rustcrypto = "0.23"
 serde_urlencoded = "0.7"
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
