@@ -145,27 +145,27 @@ impl Reader {
     }
 
     /// The next page of entries after those sent, up to `seq` `upto`, in `seq` order; they count
-    /// as sent. `None` once none is left. Expired entries are left out: a `message` of a version
-    /// not deliverable on the connection expires as the page reaches it.
+    /// as sent. `None` once none is left. Expired entries are left out: those in the page's range
+    /// that expired by time, and each `message` of a version not deliverable on the connection,
+    /// expire as the page reaches them, so no ack of the connection covers one as `delivered`.
     pub(crate) async fn next(
         &mut self,
         db: &PgPool,
         upto: i64,
     ) -> Result<Option<Vec<Push>>, sqlx::Error> {
+        let wakers = &self.subscription.wakers;
+        expiry::expire_due(db, wakers, self.device, (self.sent, upto), self.retention).await?;
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT e.seq, v.envelope, e.status, e.msg_id::text, e.recipient_id::text,
                  floor(extract(epoch FROM e.happened_at))::bigint
              FROM entries e LEFT JOIN envelopes v ON v.id = e.envelope_id
              WHERE e.device_id = $1::uuid AND e.seq > $2 AND e.seq <= $3
-               AND coalesce(least(e.ttl_ends_at, e.added_at + make_interval(secs => $5)) > now(),
-                   true)
              ORDER BY e.seq LIMIT $4",
         )
         .bind(self.device.to_string())
         .bind(self.sent)
         .bind(upto)
         .bind(PAGE)
-        .bind(self.retention)
         .fetch_all(db)
         .await?;
         let Some((last, ..)) = rows.last() else {
@@ -178,7 +178,6 @@ impl Reader {
                 Push::Message { seq, envelope }
                     if !expiry::deliverable(envelope.envelope().header.v, self.version) =>
                 {
-                    let wakers = &self.subscription.wakers;
                     expiry::expire(db, wakers, self.device, seq.get()).await?;
                 }
                 push => pushes.push(push),

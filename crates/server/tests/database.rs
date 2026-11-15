@@ -66,6 +66,31 @@ fn exits_with_error_when_migrations_fail() {
 }
 
 #[test]
+fn exits_without_migrating_when_a_newer_server_migrated_the_database() {
+    let db = TestDb::create();
+    let migrations = embedded_migrations();
+    db.migrate_to(migrations[0].0);
+    // A migration of a newer server, after every one this server has.
+    let unknown = migrations.last().expect("a migration").0 + 1;
+    db.execute(&format!(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)
+         VALUES ({unknown}, 'newer', true, '\\x00', 0)"
+    ));
+    let applied = db.applied_migrations();
+    let columns = db.columns();
+
+    let stderr = start_failure(&["--listen", "127.0.0.1:0", "--database-url", &db.url()]);
+
+    assert!(
+        stderr.starts_with("skald-server: cannot apply migrations: ")
+            && stderr.contains(&unknown.to_string()),
+        "stderr: {stderr:?}"
+    );
+    assert_eq!(db.applied_migrations(), applied, "applied migrations");
+    assert_eq!(db.columns(), columns, "the schema");
+}
+
+#[test]
 fn exits_with_error_when_database_is_unreachable() {
     let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
     let addr = closed.local_addr().expect("local address");
