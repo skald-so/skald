@@ -1,6 +1,7 @@
 # A local S3-compatible server in a container for the tests of attachment storage in a bucket:
 # versitygw, its buckets and objects in a tmpfs. Sourced by script/test, script/mutants and
 # script/image-test; the caller removes the container with s3_stop, e.g. in its EXIT trap.
+# script/self-host-test runs $s3_image as the bucket's stand-in.
 
 s3_image=versity/versitygw:v1.11.0@sha256:8319a530d08d537426e2f855bae5280709795dc73a3f0c347973ef915d6343c5
 # Not S3's default region: a client that ignores the region setting is refused.

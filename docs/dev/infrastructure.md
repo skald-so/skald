@@ -178,4 +178,4 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **Addresses:** `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation.
 
 ## Self-host
-- `docker compose up` brings up `skald-server`, PostgreSQL and Caddy for the domain in `.env`, with HTTPS from the first start; attachments stay in a volume or an S3-compatible bucket; people sign in through the admin's own GitHub OAuth App or Google OAuth client: [self-host.md](../self-host.md).
+- The stack and its setup: [self-host.md](../self-host.md).

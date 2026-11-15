@@ -8,7 +8,10 @@ use std::process::{self, Command};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::common::browser::Browser;
-use super::common::sign_in::{CLIENT_ID as GITHUB_CLIENT_ID, SignIn, github_stand_in};
+use super::common::sign_in::{
+    CLIENT_SECRET as GITHUB_CLIENT_SECRET, SECRET_ENV as GITHUB_SECRET_ENV, SignIn, github_args,
+    github_stand_in,
+};
 use super::common::{SERVER, TestDb};
 use super::*;
 
@@ -74,13 +77,8 @@ fn start_log(args: &[&str], envs: &[(&str, &str)]) -> String {
         &url,
         "--public-url",
         "http://127.0.0.1:9",
-        "--github-client-id",
-        GITHUB_CLIENT_ID,
-        "--github-url",
-        github.url(),
-        "--github-api-url",
-        github.url(),
     ];
+    all.extend(github_args(&github));
     all.extend_from_slice(args);
     let mut all_envs = vec![(GITHUB_SECRET_ENV, GITHUB_CLIENT_SECRET)];
     all_envs.extend_from_slice(envs);
