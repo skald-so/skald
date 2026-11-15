@@ -51,8 +51,8 @@ use relay::Lose;
 use skald_crypto::{check_device, check_roster};
 use skald_proto::{Cbor as _, ROSTER_LABEL, RosterBody, SpaceId};
 use world::{
-    ACME, ADMIN, PERSONAL_REQUEST, Person, STORE, World, assert_role, create, give_as_personal,
-    mark_as_personal, members, plain_lines, run, space_certs, spaces, words,
+    ACME, ADMIN, PERSONAL_REQUEST, Person, STORE, World, assert_default_after, assert_role, create,
+    give_as_personal, mark_as_personal, members, plain_lines, run, space_certs, spaces, words,
 };
 
 /// The word that marks the personal space in the space list.
@@ -64,11 +64,18 @@ fn server_spaces(cloud: &Cloud, token: &str) -> BTreeMap<SpaceId, String> {
     cloud.spaces(token).into_iter().collect()
 }
 
-/// Fails unless the server gives `person`'s account one space named `name`, holding one revision:
-/// a new space's revision 1, signed by `person`'s machine, with the account the only member and
-/// admin, with its username as handle and its master key, which passes checks 3 and 4. Gives the
-/// space and the revision's bytes.
-fn assert_personal(cloud: &Cloud, person: &Person, name: &str) -> (SpaceId, Vec<u8>) {
+/// Fails unless the server gives `person`'s account one space named `name`, holding a new space's
+/// revision 1, signed by `person`'s machine, with the account the only member and admin, with its
+/// username as handle and its master key, which passes checks 3 and 4; and, if `default`, the
+/// revision after it with its default channel ([`assert_default_after`]), signed by the machine
+/// too, as a later run that follows the space adds it; nothing more. Gives the space and revision
+/// 1's bytes.
+fn assert_personal(
+    cloud: &Cloud,
+    person: &Person,
+    name: &str,
+    default: bool,
+) -> (SpaceId, Vec<u8>) {
     let spaces = server_spaces(cloud, &person.token);
     let named: Vec<SpaceId> = spaces
         .iter()
@@ -77,7 +84,8 @@ fn assert_personal(cloud: &Cloud, person: &Person, name: &str) -> (SpaceId, Vec<
     assert_eq!(named.len(), 1, "one space {name}: {spaces:?}");
     let space = named[0];
     let mut revisions = cloud.revisions(&person.token, space);
-    assert_eq!(revisions.len(), 1, "{name}'s revisions: {revisions:?}");
+    let held = 1 + usize::from(default);
+    assert_eq!(revisions.len(), held, "{name}'s revisions: {revisions:?}");
     let (bytes, roster) = revisions.remove(0);
     assert_eq!(roster.to_cbor(), bytes, "the revision re-encodes otherwise");
     let expected = RosterBody::first(
@@ -102,6 +110,10 @@ fn assert_personal(cloud: &Cloud, person: &Person, name: &str) -> (SpaceId, Vec<
     )
     .expect("the machine's signature");
     check_roster(&roster, &certs).expect("revision 1 passes checks 3 and 4");
+    if let Some((_, second)) = revisions.first() {
+        let by = (person.account, &person.master, person.device);
+        assert_default_after(&roster, second, &certs, by);
+    }
     (space, bytes)
 }
 
@@ -141,7 +153,7 @@ fn new_accounts_first_machine_is_in_its_personal_space_as_its_admin() {
     assert!(asked.is_some(), "the sign-in asked for no personal space");
     assert!(asked > certified, "asked before the certificate was taken");
     let name = ada.handle.as_str();
-    let (space, _) = assert_personal(cloud, &ada, name);
+    let (space, _) = assert_personal(cloud, &ada, name, false);
     assert_eq!(server_spaces(cloud, &ada.token).len(), 1, "one space");
 
     assert_marked(&ada.machine, name, &ada);
@@ -164,13 +176,14 @@ fn new_accounts_first_machine_is_in_its_personal_space_as_its_admin() {
         "{listed:?}"
     );
     assert_eq!(server_spaces(cloud, &ada.token).len(), 1, "one space");
-    assert_eq!(cloud.revisions(&ada.token, space).len(), 1, "one revision");
+    assert_eq!(assert_personal(cloud, &ada, name, true).0, space);
 }
 
 /// The relay loses the server's answer to `request` during the first machine's sign-in, as `how`
 /// says: it closes the connection, or it withholds the answer and the test kills the CLI. The next
 /// run, `skald spaces`, leaves one personal space, the one the server created first, with one
-/// revision 1: if the server took one, that one, byte for byte; and lists it as personal.
+/// revision 1: if the server took one, that one, byte for byte, then its default channel's; and
+/// lists it as personal.
 fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
     let world = World::start();
     let cloud = &world.cloud;
@@ -204,7 +217,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
         cloud.count_sent(since, request) >= 2,
         "{request} was not sent again"
     );
-    let (space, bytes) = assert_personal(cloud, &ada, ada.handle.as_str());
+    let (space, bytes) = assert_personal(cloud, &ada, ada.handle.as_str(), true);
     assert_eq!(space, created[0], "another space");
     assert_eq!(server_spaces(cloud, &ada.token).len(), 1, "one space");
     if let Some((first, _)) = taken.first() {
@@ -244,7 +257,7 @@ fn personal_revision_1_answer_lost_with_the_cli_killed_is_recovered_by_the_next_
 /// An account whose first machine signed in while the server had no personal spaces, as one
 /// created before them: the server answers the request for the personal space as a server without
 /// it would, so the account has none. The machine's next run gets the personal space, signs its
-/// revision 1 and lists it as personal.
+/// revision 1, then its default channel, and lists it as personal.
 #[test]
 fn existing_accounts_machine_signs_revision_1_of_its_personal_space_on_its_next_run() {
     let world = World::start();
@@ -266,7 +279,7 @@ fn existing_accounts_machine_signs_revision_1_of_its_personal_space_on_its_next_
         "no personal space was asked for"
     );
     let name = ada.handle.as_str();
-    assert_personal(cloud, &ada, name);
+    assert_personal(cloud, &ada, name, true);
     assert_eq!(server_spaces(cloud, &ada.token).len(), 1, "one space");
     assert_marked(&ada.machine, name, &ada);
 }
@@ -285,7 +298,7 @@ fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
     let (machine, signed_in) = cloud.first_machine(&world.browser.page(), &user, host);
     assert!(signed_in.success, "{signed_in:?}");
     let ada = world.person(user, machine, host);
-    let (space, _) = assert_personal(cloud, &ada, ada.handle.as_str());
+    let (space, _) = assert_personal(cloud, &ada, ada.handle.as_str(), false);
 
     let said = format!(
         "This device signed revision 1 of the account's personal space {} ({space}) as its admin, \
@@ -300,7 +313,8 @@ fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
 /// A machine of an existing account, without a personal space, creates a team space while the
 /// server answers the request for the personal space as a server without it would: both runs warn
 /// that the personal space is not set up. Its next run gets the personal space, signs its
-/// revision 1 and lists it as personal, and leaves the team space unmarked.
+/// revision 1, then its default channel, and lists it as personal, and leaves the team space
+/// unmarked.
 #[test]
 fn machine_following_a_team_space_signs_revision_1_of_its_personal_space_on_its_next_run() {
     let world = World::start();
@@ -321,7 +335,7 @@ fn machine_following_a_team_space_signs_revision_1_of_its_personal_space_on_its_
     spaces(&ada.machine);
 
     let name = ada.handle.as_str();
-    assert_personal(cloud, &ada, name);
+    assert_personal(cloud, &ada, name, true);
     assert_eq!(server_spaces(cloud, &ada.token).len(), 2, "two spaces");
     assert_marked(&ada.machine, name, &ada);
     let listed = spaces(&ada.machine);
@@ -345,7 +359,7 @@ fn proxy_giving_another_personal_space_does_not_move_the_lists_mark() {
     let cloud = &world.cloud;
     let ada = world.sign_up(4_120_701_301, "ada-pinned-standin", "ada-workstation");
     let name = ada.handle.as_str();
-    let (personal, first) = assert_personal(cloud, &ada, name);
+    let (personal, first) = assert_personal(cloud, &ada, name, false);
     let acme = create(cloud, &ada, ACME).body().space;
     let made_up = SpaceId::generate();
 
@@ -364,9 +378,17 @@ fn proxy_giving_another_personal_space_does_not_move_the_lists_mark() {
         let store = format!("POST /spaces/{other}/revisions");
         assert_eq!(cloud.count_sent(since, &store), 0, "{other_name}: sent");
     }
-    assert_eq!(cloud.revisions(&ada.token, personal)[0].0, first);
-    assert_eq!(cloud.revisions(&ada.token, personal).len(), 1);
-    assert_eq!(cloud.revisions(&ada.token, acme).len(), 1);
+    let still = assert_personal(cloud, &ada, name, true);
+    assert_eq!(
+        still,
+        (personal, first),
+        "the personal space or its revision 1 changed"
+    );
+    assert_eq!(
+        cloud.revisions(&ada.token, acme).len(),
+        2,
+        "{ACME}'s revisions"
+    );
 }
 
 /// When another account's space has the name the account's username gives, the personal space has
@@ -382,6 +404,6 @@ fn personal_space_takes_the_numbered_name_when_another_space_has_the_username() 
 
     assert_eq!(ada.handle.as_str(), "ada-taken-standin");
     let name = "ada-taken-standin-2";
-    assert_personal(cloud, &ada, name);
+    assert_personal(cloud, &ada, name, false);
     assert_marked(&ada.machine, name, &ada);
 }

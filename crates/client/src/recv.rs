@@ -2,12 +2,16 @@
 //! sends what is left in the outbox, then states its cursor, writes each entry it gets after the
 //! cursor to the local state with the new cursor at once, acks, and stops once catch-up has sent
 //! every entry. It then accepts the revisions of each space it follows, and those of the space of
-//! each `space-notice` that came meanwhile ("Frames"). It then shows the entries it wrote: a
-//! `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope" and "Scheme
-//! `hpke`", with the space's latest revisions accepted first, and the sending device admitted to
-//! the channel ("Admitted devices"), once per sending device and `msg_id`; a warning for any other;
-//! and each `delivered` and `expired` of the device's messages. As an agent, only those of its
-//! folder's space: the rest wait in the local state.
+//! each `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes, Commits
+//! and `mls` application messages it wrote, decrypting each message in its channel's group, and
+//! brings the group of each channel of those spaces in line ([`crate::groups`]). It then shows the
+//! other entries it wrote: a `message` only if it passes the checks of `docs/protocol/README.md`,
+//! "Envelope", "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
+//! first, the sending device's certificate valid and the channel's members taken from its group:
+//! the sending device under `mls`, the group as this device holds it under `hpke`; once per
+//! sending device and `msg_id`; a replay without a word; a warning for any other; and each
+//! `delivered` and `expired` of the device's messages. As an agent, only those of its folder's
+//! space: the rest wait in the local state.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,10 +20,10 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
 
-use skald_crypto::{HpkeError, HpkeMessage, open_message};
+use skald_crypto::{HpkeError, HpkeMessage, MemberDevice, StateKey, open_message};
 use skald_proto::{
-    Address, Body, Cbor as _, ChannelId, DeliveryStatus, DeviceId, Envelope, Frame, Header, Push,
-    Roster, ServerName, ServerStatus, SpaceId, VersionRange,
+    Address, Body, Cbor as _, Cert, ChannelId, Content, DeliveryStatus, DeviceId, DeviceKind,
+    Envelope, Frame, Header, Push, Roster, ServerName, ServerStatus, SpaceId, VersionRange,
 };
 use tungstenite::Message;
 
@@ -27,8 +31,9 @@ use crate::agents::server_name;
 use crate::connection::{WebSocket, printable};
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
+use crate::groups::{self, Link, Opened, Rosters};
 use crate::secrets;
-use crate::send::{self, admitted, broke, closed, set_read_timeout};
+use crate::send::{self, broke, closed, set_read_timeout};
 use crate::spaces::{self, Follower, Scope};
 use crate::state;
 
@@ -43,8 +48,12 @@ pub fn run(
 ) -> Result<(), String> {
     let scope = Scope::of_run(dir, agent)?;
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
+    let mut link = Link::new(&follower)?;
+    if let Err(err) = groups::flush(&mut follower, &mut link, scope) {
+        eprintln!("skald: warning: {err}");
+    }
     let queued = send::queued(&follower.state, scope)?;
-    let mut delivered = send::deliver(&mut follower, &queued, timeout);
+    let mut delivered = send::deliver(&mut follower, &queued, timeout, None);
     if let Err(err) = send::report(&queued, &delivered, timeout) {
         eprintln!("skald: warning: {err}");
     }
@@ -55,24 +64,65 @@ pub fn run(
         (timeout, scope),
         &mut synced,
     );
+    let aligned = align(&mut follower, &mut link, scope, &mut synced);
     let shown = show(&mut follower, scope, synced);
     received?;
+    aligned?;
     shown
 }
 
-/// The spaces a run synced: each one's last accepted revision and its accounts' devices.
-type Synced = BTreeMap<SpaceId, (Roster, SpaceDevices)>;
+/// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
+/// then brings the groups of the channels of each space of `synced` in line ([`crate::groups`]).
+pub fn align(
+    follower: &mut Follower,
+    link: &mut Link,
+    scope: Scope,
+    synced: &mut Rosters,
+) -> Result<(), String> {
+    groups::take_in(follower, link, scope, synced)?;
+    for (space, (roster, devices)) in synced.iter() {
+        groups::align(follower, link, *space, (roster, devices), None)?;
+    }
+    Ok(())
+}
 
 /// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
-/// for each frame for `timeout`: writes each entry after the cursor with the new cursor and acks
-/// it. Then it syncs into `synced` each space within `scope` the device follows, and the space of
-/// each `space-notice` that came meanwhile.
+/// for each frame for `timeout`, as [`catch_up`] does. Then it syncs into `synced` each space
+/// within `scope` the device follows, and the space of each `space-notice` that came meanwhile.
 fn receive(
     follower: &mut Follower,
     socket: Option<WebSocket>,
     (timeout, scope): (Duration, Scope),
-    synced: &mut Synced,
+    synced: &mut Rosters,
 ) -> Result<(), String> {
+    let mut socket = catch_up(follower, socket, timeout)?;
+    // By the end of catch-up the server sends the connection its notices: a revision stored before
+    // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
+    // space fetched here.
+    let mut due: BTreeSet<SpaceId> = follower
+        .state
+        .spaces()
+        .map_err(text)?
+        .iter()
+        .map(|space| space.id)
+        .collect();
+    while !due.is_empty() {
+        sync_due(follower, scope, &mut due, synced)?;
+        due.extend(waiting_notices(&mut socket));
+    }
+    let _ = socket.close(None);
+    let _ = socket.flush();
+    Ok(())
+}
+
+/// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
+/// for each frame for `timeout`: writes each entry after the cursor with the new cursor and acks
+/// it. Gives the connection.
+pub fn catch_up(
+    follower: &mut Follower,
+    socket: Option<WebSocket>,
+    timeout: Duration,
+) -> Result<WebSocket, String> {
     let mut socket = match socket {
         Some(socket) => socket,
         None => follower.connect(&follower.keys()?)?,
@@ -100,23 +150,7 @@ fn receive(
             write(&mut socket, &Frame::Ack { seq })?;
         }
     }
-    // By the end of catch-up the server sends the connection its notices: a revision stored before
-    // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
-    // space fetched here.
-    let mut due: BTreeSet<SpaceId> = follower
-        .state
-        .spaces()
-        .map_err(text)?
-        .iter()
-        .map(|space| space.id)
-        .collect();
-    while !due.is_empty() {
-        sync_due(follower, scope, &mut due, synced)?;
-        due.extend(waiting_notices(&mut socket));
-    }
-    let _ = socket.close(None);
-    let _ = socket.flush();
-    Ok(())
+    Ok(socket)
 }
 
 /// Syncs into `synced` each space of `due` within `scope` that the device follows, and empties
@@ -125,7 +159,7 @@ fn sync_due(
     follower: &mut Follower,
     scope: Scope,
     due: &mut BTreeSet<SpaceId>,
-    synced: &mut Synced,
+    synced: &mut Rosters,
 ) -> Result<(), String> {
     if due.is_empty() {
         return Ok(());
@@ -236,32 +270,53 @@ fn write(socket: &mut WebSocket, frame: &Frame) -> Result<(), String> {
 }
 
 /// What a run checks messages with, besides the state: the spaces it synced, each one's last
-/// accepted revision and its accounts' devices, and the server's name, once it asked for it.
+/// accepted revision and its accounts' devices, the server's name, once it asked for it, and the
+/// key that opens what decrypting the mailbox's application messages gave, once it needed it.
 struct Checks {
     keys: crate::device::Keys,
     followed: Vec<state::Space>,
-    synced: Synced,
+    synced: Rosters,
     server: Option<Option<ServerName>>,
+    inbox_key: Option<StateKey>,
 }
 
 /// Shows each entry the state holds within `scope`, in `seq` order, and takes it out; checks
 /// messages against the spaces as `synced` holds them, syncing any other at its first message.
-fn show(follower: &mut Follower, scope: Scope, synced: Synced) -> Result<(), String> {
+fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), String> {
     let mut checks = Checks {
         keys: follower.keys()?,
         followed: follower.state.spaces().map_err(text)?,
         synced,
         server: None,
+        inbox_key: None,
     };
-    for (seq, bytes) in follower.state.inbox().map_err(text)? {
-        match Frame::from_cbor(&bytes) {
+    for entry in follower.state.inbox().map_err(text)? {
+        let (seq, bytes) = (entry.seq, &entry.frame);
+        // A Welcome or Commit waits for a run that can check it.
+        if groups::is_handshake(bytes) {
+            continue;
+        }
+        match Frame::from_cbor(bytes) {
             Ok(Frame::Push(Push::Message { envelope, .. })) => {
                 let envelope = envelope.envelope();
                 if scope.excludes(envelope.header.space) {
                     continue;
                 }
+                let verdict = if groups::is_application(bytes) {
+                    let key = match &checks.inbox_key {
+                        Some(key) => key,
+                        None => checks.inbox_key.insert(groups::inbox_key(follower)?),
+                    };
+                    // An application message waits for a run that decrypts it in its group.
+                    let Some(opened) = groups::opened(follower, key, &entry) else {
+                        continue;
+                    };
+                    decrypted(follower, &mut checks, envelope, opened)?
+                } else {
+                    verdict(follower, &mut checks, envelope)?
+                };
                 let header = &envelope.header;
-                match verdict(follower, &mut checks, envelope)? {
+                match verdict {
                     Verdict::Show(sender, message) => {
                         println!(
                             "The message {} in the channel {} from {}, by the device {} \
@@ -312,14 +367,14 @@ fn show(follower: &mut Follower, scope: Scope, synced: Synced) -> Result<(), Str
 enum Verdict {
     /// Shows the message from the sending device: it passed every check.
     Show(DeviceId, Received),
-    /// Drops it without a word: the device showed it already.
+    /// Drops it without a word: the device showed it already, or it is a replay.
     Repeat,
     /// Drops it with a warning that names the sending device, if the payload names one, and why.
     Drop(Option<DeviceId>, String),
 }
 
-/// What `envelope`, a `message` entry of a space within the run's scope, gives, by the checks of
-/// the run: the space is synced at the first message of it.
+/// What `envelope`, an `hpke` `message` entry of a space within the run's scope, gives, by the
+/// checks of the run: the space is synced at the first message of it.
 fn verdict(
     follower: &mut Follower,
     checks: &mut Checks,
@@ -342,6 +397,57 @@ fn verdict(
         }
     };
     let sender = opened.sender();
+    let held = groups::members(follower, &checks.keys, header.channel)?;
+    judge(
+        follower,
+        checks,
+        (header, sender, Group::Held(held.as_deref())),
+        signed(opened),
+    )
+}
+
+/// What gives the content of `opened` with the sending device's certificate: it, once its
+/// signature verifies with it.
+fn signed(opened: HpkeMessage) -> impl FnOnce(&Cert) -> Result<Content, String> {
+    |cert| {
+        opened.verify(cert).map_err(|_| {
+            "its signature does not verify with the sending device's certificate".to_owned()
+        })
+    }
+}
+
+/// What `envelope`, an `mls` application message of a space within the run's scope, gives, by
+/// what decrypting it in its channel's group gave, `opened`, and the checks of the run.
+fn decrypted(
+    follower: &mut Follower,
+    checks: &mut Checks,
+    envelope: &Envelope,
+    opened: Opened,
+) -> Result<Verdict, String> {
+    match opened {
+        Opened::Replay => Ok(Verdict::Repeat),
+        Opened::Failed(why) => Ok(Verdict::Drop(None, why)),
+        Opened::Read(sender, plaintext) => judge(
+            follower,
+            checks,
+            (&envelope.header, sender, Group::Sender),
+            |_| {
+                Content::from_cbor(&plaintext)
+                    .map_err(|err| format!("its content breaks the protocol: {err}"))
+            },
+        ),
+    }
+}
+
+/// What a message with `header` from the device `sender`, whose content `content` gives with the
+/// sending device's certificate, gives, by the checks of the run, the channel's members taken from
+/// `group`: the space is synced at its first message.
+fn judge(
+    follower: &mut Follower,
+    checks: &mut Checks,
+    (header, sender, group): (&Header, DeviceId, Group),
+    content: impl FnOnce(&Cert) -> Result<Content, String>,
+) -> Result<Verdict, String> {
     let Some(space) = checks
         .followed
         .iter()
@@ -361,12 +467,12 @@ fn verdict(
     let (roster, devices) = &checks.synced[&space.id];
     let context = Context {
         own: &follower.own,
-        this: follower.this,
         roster,
         devices,
         server: checks.server.as_ref().and_then(Option::as_ref),
+        group,
     };
-    Ok(match check(opened, header, &context) {
+    Ok(match check(sender, content, header, &context) {
         Err(why) => Verdict::Drop(Some(sender), why),
         Ok(_)
             if follower
@@ -380,14 +486,25 @@ fn verdict(
     })
 }
 
+/// Where a check takes the members of a message's channel from: its MLS group.
+#[derive(Clone, Copy)]
+enum Group<'g> {
+    /// The sending device, which decrypting an `mls` message in the group shows a member.
+    Sender,
+    /// The member devices of the group as this device holds it, none if it holds none: for a
+    /// message under `hpke`.
+    Held(Option<&'g [MemberDevice]>),
+}
+
 /// What a message is checked against: the device's account and the master key it pinned, the
-/// device, the space's last accepted revision and its accounts' devices, and the server's name.
+/// space's last accepted revision and its accounts' devices, the server's name, and where the
+/// channel's members come from.
 struct Context<'c> {
     own: &'c Own,
-    this: DeviceId,
     roster: &'c Roster,
     devices: &'c SpaceDevices,
     server: Option<&'c ServerName>,
+    group: Group<'c>,
 }
 
 /// A message that passed the checks.
@@ -399,27 +516,67 @@ struct Received {
     text: String,
 }
 
-/// The message of `opened`, the payload of an envelope with `header` that opened for this device,
-/// once it passes the checks against `context`; why it fails otherwise.
-fn check(opened: HpkeMessage, header: &Header, context: &Context) -> Result<Received, String> {
+/// The valid certificate of `device` of an account of the space in `context`'s revision that its
+/// member's `excluded` does not list, checked against the master key the device pinned for its own
+/// account and the revision's for any other.
+fn valid_cert<'c>(context: &Context<'c>, device: DeviceId) -> Option<&'c Cert> {
+    let own = context.own;
+    context.roster.body().members.iter().find_map(|member| {
+        if member
+            .excluded
+            .as_ref()
+            .is_some_and(|excluded| excluded.contains(&device))
+        {
+            return None;
+        }
+        let master = if member.account == own.account {
+            own.master
+        } else {
+            member.master
+        };
+        let devices = context.devices;
+        let checked = crate::devices::check(&master, &devices.ids, &devices.certs);
+        checked.linked.into_iter().find(|cert| {
+            let body = cert.body();
+            body.device == device && body.account == member.account
+        })
+    })
+}
+
+/// Whether a `client` device of `account` is in the channel's group, as `context` takes its
+/// members, `cert` the sending device's.
+fn in_group(context: &Context, cert: &Cert) -> bool {
+    let account = cert.body().account;
+    match context.group {
+        Group::Sender => cert.body().kind == DeviceKind::Client,
+        Group::Held(members) => members.into_iter().flatten().any(|member| {
+            valid_cert(context, member.device).is_some_and(|cert| {
+                let body = cert.body();
+                body.signing == member.signing
+                    && body.account == account
+                    && body.kind == DeviceKind::Client
+            })
+        }),
+    }
+}
+
+/// The message from the device `sender` whose content `content` gives with its certificate, of an
+/// envelope with `header`, once it passes the checks against `context`; why it fails otherwise.
+fn check(
+    sender: DeviceId,
+    content: impl FnOnce(&Cert) -> Result<Content, String>,
+    header: &Header,
+    context: &Context,
+) -> Result<Received, String> {
     let body = context.roster.body();
     let (name, revision) = (body.name.as_str(), body.revision);
-    let admitted = admitted(
-        context.own,
-        context.this,
-        context.roster,
-        context.devices,
-        header.channel,
-    );
-    let cert = *admitted.get(&opened.sender()).ok_or_else(|| {
+    let cert = valid_cert(context, sender).ok_or_else(|| {
         format!(
-            "revision {revision} of the space {name} admits no such device with a valid \
-             certificate to the channel"
+            "revision {revision} of the space {name} lists no account with such a device with a \
+             valid certificate that it does not bar"
         )
     })?;
-    let content = opened.verify(cert).map_err(|_| {
-        "its signature does not verify with the sending device's certificate".to_owned()
-    })?;
+    let content = content(cert)?;
     let from = &content.from;
     let handle = body
         .member(cert.body().account)
@@ -431,6 +588,13 @@ fn check(opened: HpkeMessage, header: &Header, context: &Context) -> Result<Rece
         return Err(format!(
             "its from is no address of the sending device's account in the space {name}"
         ));
+    }
+    if !in_group(context, cert) {
+        return Err(
+            "no client device of the sending device's account is in the channel's group on this \
+             device"
+                .to_owned(),
+        );
     }
     if content.counter.is_none() {
         return Err("its content has no counter".to_owned());
@@ -486,7 +650,7 @@ mod tests {
     use crate::spaces::tests::{first, member};
 
     /// Ada's device, this one, in `acme` with Bob, whose device sends in the channel they are both
-    /// in.
+    /// in, and whose group holds both devices.
     struct World {
         own: Own,
         this: DeviceId,
@@ -497,6 +661,8 @@ mod tests {
         bob: DeviceId,
         bob_key: SigningKey,
         server: ServerName,
+        members: Vec<MemberDevice>,
+        bob_account: Account,
     }
 
     impl World {
@@ -510,6 +676,13 @@ mod tests {
             let channel = ChannelId::generate();
             body.channels = vec![channel_of(channel, &[ada.id, bob.id])];
             let certs = vec![this_cert, bob_cert];
+            let members = certs
+                .iter()
+                .map(|cert| MemberDevice {
+                    device: cert.body().device,
+                    signing: cert.body().signing,
+                })
+                .collect();
             World {
                 own: Own {
                     account: ada.id,
@@ -526,6 +699,20 @@ mod tests {
                 bob: DeviceId::from_signing_key(&bob_key.public_key()),
                 bob_key,
                 server: "skald.example".parse().unwrap(),
+                members,
+                bob_account: bob,
+            }
+        }
+
+        /// What a message is checked against, `roster` the space's revision and the channel's
+        /// members taken from `group`.
+        fn context<'c>(&'c self, roster: &'c Roster, group: Group<'c>) -> Context<'c> {
+            Context {
+                own: &self.own,
+                roster,
+                devices: &self.devices,
+                server: Some(&self.server),
+                group,
             }
         }
 
@@ -585,14 +772,8 @@ mod tests {
             let payload =
                 seal_message(header, content, key, &self.hpke.public_key()).expect("sealed");
             let opened = open_message(header, &payload, self.this, &self.hpke).expect("opens");
-            let context = Context {
-                own: &self.own,
-                this: self.this,
-                roster,
-                devices: &self.devices,
-                server: Some(&self.server),
-            };
-            check(opened, header, &context)
+            let context = self.context(roster, Group::Held(Some(&self.members)));
+            check(opened.sender(), signed(opened), header, &context)
         }
 
         fn checked(&self, header: &Header, content: &Content) -> Result<Received, String> {
@@ -619,35 +800,102 @@ mod tests {
         );
     }
 
-    /// A device not admitted to the channel fails: one of an account outside it, one its member
-    /// excludes, and any device in a channel the revision does not have.
+    /// A device of an account the revision does not list, or one its member's `excluded` lists,
+    /// fails; so does one whose account has no `client` device in the channel's group as this
+    /// device holds it: a group without it, or with it under another key, and no group.
     #[test]
-    fn device_not_admitted_to_the_channel_fails() {
+    fn device_without_a_client_device_of_its_account_in_the_group_fails() {
         let world = World::new();
+        let header = world.header();
+        let content = world.content(World::a2a(&header, &["hi"]));
+        let payload =
+            seal_message(&header, &content, &world.bob_key, &world.hpke.public_key()).unwrap();
+        let check_in = |roster: &Roster, group| {
+            let opened = open_message(&header, &payload, world.this, &world.hpke).unwrap();
+            check(
+                opened.sender(),
+                signed(opened),
+                &header,
+                &world.context(roster, group),
+            )
+        };
         let mut outside = world.roster.body().clone();
-        outside.channels[0].members.truncate(1);
-        let mut excluded = world.roster.body().clone();
-        let mut members = excluded.members.clone().into_vec();
+        let mut members = outside.members.clone().into_vec();
+        members.truncate(1);
+        outside.members = NonEmpty::from_vec(members).unwrap();
+        let mut barred = world.roster.body().clone();
+        let mut members = barred.members.clone().into_vec();
         members[1].excluded = Some(NonEmpty::new(world.bob));
-        excluded.members = NonEmpty::from_vec(members).unwrap();
-        let mut elsewhere = world.roster.body().clone();
-        elsewhere.channels[0].id = ChannelId::generate();
-        for body in [outside, excluded, elsewhere] {
+        barred.members = NonEmpty::from_vec(members).unwrap();
+        let in_group = Group::Held(Some(&world.members));
+
+        for body in [outside, barred] {
             let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
-            let header = world.header();
-            let content = world.content(World::a2a(&header, &["hi"]));
-
-            let checked = world.checked_in(&roster, &header, &content, &world.bob_key);
-
             assert_eq!(
-                checked,
+                check_in(&roster, in_group),
                 Err(
-                    "revision 1 of the space acme admits no such device with a valid certificate \
-                     to the channel"
+                    "revision 1 of the space acme lists no account with such a device with a \
+                     valid certificate that it does not bar"
                         .to_owned()
                 )
             );
         }
+        let rekeyed = MemberDevice {
+            signing: SigningKey::generate().public_key(),
+            ..world.members[1]
+        };
+        let ada_only = &world.members[..1];
+        let rekeyed = [world.members[0], rekeyed];
+        for group in [
+            Group::Held(Some(ada_only)),
+            Group::Held(Some(&rekeyed)),
+            Group::Held(None),
+        ] {
+            assert_eq!(
+                check_in(&world.roster, group),
+                Err(
+                    "no client device of the sending device's account is in the channel's group \
+                     on this device"
+                        .to_owned()
+                )
+            );
+        }
+        assert!(check_in(&world.roster, in_group).is_ok());
+    }
+
+    /// Under `mls`, the sending device is in the group: one of a `client` device passes, one of
+    /// another kind fails.
+    #[test]
+    fn sender_in_the_group_passes_as_a_client_device() {
+        let world = World::new();
+        let header = world.header();
+        let content = world.content(World::a2a(&header, &["hi"]));
+        let context = world.context(&world.roster, Group::Sender);
+        let as_client = check(world.bob, |_| Ok(content.clone()), &header, &context);
+        assert!(as_client.is_ok(), "{as_client:?}");
+
+        let bob = &world.bob_account;
+        let (service, ..) = bob.device(DeviceKind::Service, &world.bob_key, Some(world.bob));
+        let id = service.body().device;
+        let mut devices = SpaceDevices {
+            ids: world.devices.ids.clone(),
+            certs: world.devices.certs.clone(),
+        };
+        devices.ids.push(id);
+        devices.certs.push(service);
+        let context = Context {
+            devices: &devices,
+            ..world.context(&world.roster, Group::Sender)
+        };
+        assert!(check(world.bob, |_| Ok(content.clone()), &header, &context).is_ok());
+        assert_eq!(
+            check(id, |_| Ok(content.clone()), &header, &context),
+            Err(
+                "no client device of the sending device's account is in the channel's group on \
+                 this device"
+                    .to_owned()
+            )
+        );
     }
 
     /// Content signed by a key other than that of the certificate of the device it names fails.
@@ -671,16 +919,10 @@ mod tests {
         .unwrap();
         let payload = HpkePayload { enc, ct }.to_cbor();
         let opened = open_message(&header, &payload, world.this, &world.hpke).expect("opens");
-        let context = Context {
-            own: &world.own,
-            this: world.this,
-            roster: &world.roster,
-            devices: &world.devices,
-            server: Some(&world.server),
-        };
+        let context = world.context(&world.roster, Group::Held(Some(&world.members)));
 
         assert_eq!(
-            check(opened, &header, &context),
+            check(opened.sender(), signed(opened), &header, &context),
             Err("its signature does not verify with the sending device's certificate".to_owned())
         );
     }
@@ -712,13 +954,13 @@ mod tests {
             .expect("sealed");
         let opened = open_message(&header, &payload, world.this, &world.hpke).unwrap();
         let unnamed = Context {
-            own: &world.own,
-            this: world.this,
-            roster: &world.roster,
-            devices: &world.devices,
             server: None,
+            ..world.context(&world.roster, Group::Held(Some(&world.members)))
         };
-        assert_eq!(check(opened, &header, &unnamed), failed);
+        assert_eq!(
+            check(opened.sender(), signed(opened), &header, &unnamed),
+            failed
+        );
     }
 
     /// Content without `counter`, without an A2A message, or whose A2A message is no JSON or has

@@ -77,16 +77,17 @@ impl Followed {
     }
 }
 
-/// Ada's machine creates the space `name`, whose revision 2, signed by Ada's device and stored,
-/// adds Bob as an admin; Ada's machine accepts it.
+/// Ada's machine creates the space `name`, with its default channel in revision 2, whose
+/// revision 3, signed by Ada's device and stored, adds Bob as an admin; Ada's machine accepts it.
 fn shared_space(cloud: &Cloud, ada: &Person, bob: &Person, name: &str) -> Followed {
-    let first = create(cloud, ada, name);
-    let second = next_by(&first, ada, |list| list.push(bob.member(Role::Admin)));
-    store(cloud, &ada.token, &second);
+    let second = create(cloud, ada, name);
+    let third = next_by(&second, ada, |list| list.push(bob.member(Role::Admin)));
+    store(cloud, &ada.token, &third);
     let shown = members(&ada.machine, name);
     assert_role(&shown, &bob.handle, ADMIN);
+    let held = cloud.revisions(&ada.token, second.body().space);
     Followed {
-        revisions: vec![first, second],
+        revisions: held.into_iter().map(|(_, roster)| roster).collect(),
     }
 }
 
@@ -129,21 +130,21 @@ fn connected_device_gets_a_notice_of_a_new_revision_and_accepts_it() {
     let ada = world.sign_up(4_122_081_001, "ada-notified-standin", "ada-workstation");
     let bob = world.sign_up(4_122_081_002, "bob-revises-standin", "bob-workstation");
     let acme = shared_space(cloud, &ada, &bob, ACME);
-    let third = ada_demoted(&acme, &ada, &bob);
+    let demoted = ada_demoted(&acme, &ada, &bob);
 
     let (finished, since) = stored_while_held(
         &front,
         cloud,
         (&ada, &bob),
         || ada.machine.start(&[RECV]),
-        &third,
+        &demoted,
     );
 
     assert!(
         cloud.count_sent(since, &revisions_request(acme.id())) > 0,
         "the run fetched no revision after the notice: {finished:?}"
     );
-    assert_accepted(cloud, &acme, &ada, &bob, &third);
+    assert_accepted(cloud, &acme, &ada, &bob, &demoted);
 }
 
 /// Bob's device stores a revision of `acme` while Ada's device is offline, so Ada's device gets no
@@ -157,8 +158,8 @@ fn device_offline_when_a_revision_was_stored_accepts_it_on_connecting() {
     let bob = world.sign_up(4_122_081_102, "bob-online-standin", "bob-workstation");
     let acme = shared_space(cloud, &ada, &bob, ACME);
     let globex = create(cloud, &ada, GLOBEX).body().space;
-    let third = ada_demoted(&acme, &ada, &bob);
-    store(cloud, &bob.token, &third);
+    let demoted = ada_demoted(&acme, &ada, &bob);
+    store(cloud, &bob.token, &demoted);
     let since = cloud.relay.mark();
 
     let finished = received(&ada.machine);
@@ -169,7 +170,7 @@ fn device_offline_when_a_revision_was_stored_accepts_it_on_connecting() {
             "the run fetched no revision of {space}: {finished:?}"
         );
     }
-    assert_accepted(cloud, &acme, &ada, &bob, &third);
+    assert_accepted(cloud, &acme, &ada, &bob, &demoted);
 }
 
 /// Bob's machine creates `globex` and adds Ada's account, but Ada's device follows only the spaces
@@ -183,11 +184,11 @@ fn notice_of_a_space_the_device_does_not_follow_fetches_nothing() {
     let ada = world.sign_up(4_122_081_201, "ada-unfollowing-standin", "ada-workstation");
     let bob = world.sign_up(4_122_081_202, "bob-elsewhere-standin", "bob-workstation");
     create(cloud, &ada, ACME);
-    let first = create(cloud, &bob, GLOBEX);
-    let globex = first.body().space;
-    let second = next_by(&first, &bob, |list| list.push(ada.member(Role::Member)));
-    store(cloud, &bob.token, &second);
-    let third = next_by(&second, &bob, |list| {
+    let second = create(cloud, &bob, GLOBEX);
+    let globex = second.body().space;
+    let third = next_by(&second, &bob, |list| list.push(ada.member(Role::Member)));
+    store(cloud, &bob.token, &third);
+    let fourth = next_by(&third, &bob, |list| {
         set_role(list, ada.account, Role::Admin);
     });
 
@@ -196,7 +197,7 @@ fn notice_of_a_space_the_device_does_not_follow_fetches_nothing() {
         cloud,
         (&ada, &bob),
         || ada.machine.start(&[RECV]),
-        &third,
+        &fourth,
     );
 
     for request in [revisions_request(globex), devices_request(globex)] {
@@ -219,8 +220,8 @@ fn agent_run(machine: &Machine, dir: &Path) -> Run {
 }
 
 /// As an agent in `~/work/clientA`, `skald recv` waits for the end of its catch-up while Bob's
-/// device stores revision 3 of `clientb`, whose revision 2 the device has not accepted yet either;
-/// the relay gives revision 3 with its signature broken. The agent's output names nothing of
+/// device stores revision 4 of `clientb`, whose revision 3 the device has not accepted yet either;
+/// the relay gives revision 4 with its signature broken. The agent's output names nothing of
 /// `clientb` and holds no warning; the person's next `skald recv` warns of the broken revision.
 #[test]
 fn agent_output_names_nothing_of_another_spaces_revisions() {
@@ -231,15 +232,16 @@ fn agent_output_names_nothing_of_another_spaces_revisions() {
         .world
         .sign_up(4_122_081_302, "bob-partner-standin", "bob-workstation");
     let client_b = desk.client_b.body().space;
-    let second = next_by(&desk.client_b, ada, |list| {
+    let third = next_by(&desk.client_b, ada, |list| {
         list.push(bob.member(Role::Admin));
     });
-    store(cloud, &ada.token, &second);
-    let third = next_by(&second, &bob, |list| {
+    store(cloud, &ada.token, &third);
+    let fourth = next_by(&third, &bob, |list| {
         set_role(list, ada.account, Role::Member);
     });
-    let broken = broken_signature(&third);
-    serve_revisions(cloud, client_b, &[&desk.client_b, &second, &broken]);
+    let broken = broken_signature(&fourth);
+    let (_, first) = cloud.revisions(&ada.token, client_b).remove(0);
+    serve_revisions(cloud, client_b, &[&first, &desk.client_b, &third, &broken]);
     let folder = desk.dir("work/clientA");
     desk.add_rule(&folder, CLIENT_A);
 
@@ -248,7 +250,7 @@ fn agent_output_names_nothing_of_another_spaces_revisions() {
         cloud,
         (ada, &bob),
         || agent_run(&ada.machine, &folder),
-        &third,
+        &fourth,
     );
 
     let shown = agent.shown().to_lowercase();
@@ -326,7 +328,7 @@ fn revision_stored_after_the_fetch_at_the_end_of_catch_up_is_accepted_by_its_not
         "bob-workstation",
     );
     let acme = shared_space(cloud, &ada, &bob, ACME);
-    let third = ada_demoted(&acme, &ada, &bob);
+    let demoted = ada_demoted(&acme, &ada, &bob);
     let devices = devices_request(acme.id());
     cloud.relay.hold(&devices, 2, WAIT);
 
@@ -334,7 +336,7 @@ fn revision_stored_after_the_fetch_at_the_end_of_catch_up_is_accepted_by_its_not
     await_running(&mut run, "devices request held back", || {
         cloud.relay.held() > 0
     });
-    store(cloud, &bob.token, &third);
+    store(cloud, &bob.token, &demoted);
     await_running(&mut run, "notice", || {
         front.notices_to(ada.device).contains(&acme.id())
     });
@@ -344,5 +346,5 @@ fn revision_stored_after_the_fetch_at_the_end_of_catch_up_is_accepted_by_its_not
     let finished = run.finish();
 
     assert!(finished.success, "{finished:?}");
-    assert_accepted(cloud, &acme, &ada, &bob, &third);
+    assert_accepted(cloud, &acme, &ada, &bob, &demoted);
 }
