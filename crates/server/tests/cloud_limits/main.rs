@@ -1,6 +1,6 @@
 //! The cloud limits on delivery (`docs/dev/architecture.md`, "Cloud limits"): server settings give
 //! the largest message, the messages a space stores per calendar month and the devices with a
-//! certificate an account may have. Unset, none applies, as a self-hosted server applies no plan
+//! certificate an account may have. Unset, none applies, as a self-hosted server applies no cloud
 //! limits. Against a `skald-server` as in the tests of storing sent envelopes, whose fixture and
 //! frames these tests share; every HTTP response is checked against the OpenAPI spec in
 //! `api/openapi.json`.
@@ -46,6 +46,7 @@ mod wire;
 
 mod limits;
 
+mod counting;
 mod devices;
 mod message_size;
 mod monthly_messages;

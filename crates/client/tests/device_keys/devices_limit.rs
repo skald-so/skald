@@ -40,3 +40,27 @@ fn registration_over_the_limit_says_the_account_has_as_many_devices_as_it_may() 
     );
     assert_eq!(ids(&cloud.devices(&first.token)), vec![first.id]);
 }
+
+/// Another refusal of the registration, also a `403`, is not taken for the devices limit: the run
+/// fails without saying the account has as many devices as it may.
+#[test]
+fn another_refusal_of_the_registration_does_not_say_the_devices_limit() {
+    let (cloud, browser) = setup();
+    let page = browser.page();
+    let ada = cloud.user(4_122_102_011, "ada-other-refusal-standin");
+    let machine = Machine::new().with_host_name("ada-first");
+    first_device(&cloud, &page, &machine, &ada, &[]);
+    let other_problem = OVER_LIMIT.replace("devices-limit", "not-allowed");
+    cloud
+        .relay
+        .refuse_with(REGISTER, "403 Forbidden", &other_problem);
+    let other = Machine::new().with_host_name("ada-refused");
+
+    let refused = cloud.signed_in(&page, &other, &ada, &[FIRST_DEVICE, NO]);
+
+    assert!(!refused.success, "{refused:?}");
+    assert!(
+        !says(&refused, SAID),
+        "another refusal says the account has as many devices as it may: {refused:?}"
+    );
+}
