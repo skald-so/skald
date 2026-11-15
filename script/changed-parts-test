@@ -264,6 +264,16 @@ rm web/new.ts
 rm web/logo.svg
 since 'edits repository web site' "$base"
 git checkout --quiet -- web/logo.svg
+# A search of docs/ that fails, on an ignored file it cannot read, fails the script.
+echo docs/unreadable >>.git/info/exclude
+touch docs/unreadable
+chmod 000 docs/unreadable
+rm web/src/App.tsx
+if "$root/script/changed-parts" --since "$base" >/dev/null 2>&1; then
+  fail "expected an error when a file of docs/ cannot be read"
+fi
+rm -f docs/unreadable
+git checkout --quiet -- web/src/App.tsx
 branch=$(git rev-parse HEAD)
 git checkout --quiet --detach "$base"
 apply crates/server/src/lib.rs
