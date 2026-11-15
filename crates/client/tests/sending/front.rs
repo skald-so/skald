@@ -11,7 +11,7 @@
 //! connection stated or carried, or numbered as the cursor its first `sync` stated, as a
 //! redelivery. It keeps each `space-notice` the server sent a device, and can hold back the `batch`
 //! that ends a catch-up until the server sends that connection a `space-notice`, which then comes
-//! first.
+//! first. It can hold back a device's `auth`, and what the machine sends after it, until released.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -94,6 +94,10 @@ struct State {
     held_ends: usize,
     /// Each `space-notice` the server sent: the connection's device and the space it names.
     notices: Vec<(Option<DeviceId>, SpaceId)>,
+    /// The device whose `auth` it holds back, with what follows it, while set.
+    hold_auth_of: Option<DeviceId>,
+    /// How many `auth` frames it held back so far.
+    held_auths: usize,
 }
 
 /// What the front knows of one WebSocket connection.
@@ -176,6 +180,8 @@ impl Front {
                 hold_end_until_notice: false,
                 held_ends: 0,
                 notices: Vec::new(),
+                hold_auth_of: None,
+                held_auths: 0,
             }),
             down: AtomicBool::new(false),
         });
@@ -297,6 +303,17 @@ impl Front {
         self.shared.state().held_ends
     }
 
+    /// From now on, holds back the `auth` of `device`, if any, and what its machine sends after it,
+    /// until called with another device or `None`.
+    pub fn hold_auth_of(&self, device: Option<DeviceId>) {
+        self.shared.state().hold_auth_of = device;
+    }
+
+    /// How many `auth` frames it held back so far.
+    pub fn held_auths(&self) -> usize {
+        self.shared.state().held_auths
+    }
+
     /// The spaces of the `space-notice` frames the server sent `device` so far, in order.
     pub fn notices_to(&self, device: DeviceId) -> Vec<SpaceId> {
         self.shared
@@ -394,6 +411,16 @@ fn to_server(
                 }
                 Some(Frame::Auth { device, .. }) => {
                     *link.device.lock().expect("a connection's device") = Some(device);
+                    let held = |state: &State| state.hold_auth_of == Some(device);
+                    let mut state = shared.state();
+                    if held(&state) {
+                        state.held_auths += 1;
+                    }
+                    while held(&state) {
+                        drop(state);
+                        thread::sleep(Duration::from_millis(10));
+                        state = shared.state();
+                    }
                     false
                 }
                 Some(Frame::Sync { cursor }) => {

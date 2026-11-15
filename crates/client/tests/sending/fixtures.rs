@@ -265,13 +265,18 @@ pub fn kill_once(run: Run, what: &str, done: impl Fn() -> bool) {
 
 /// As [`kill_once`]; gives what `run` showed.
 pub fn killed_once(mut run: Run, what: &str, done: impl Fn() -> bool) -> Finished {
+    await_running(&mut run, what, done);
+    run.kill()
+}
+
+/// Waits for up to [`WAIT`] until `done` holds while `run` goes on; fails if `run` exits first.
+pub fn await_running(run: &mut Run, what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !done() {
         run.assert_running();
         assert!(Instant::now() < deadline, "no {what}: {}", run.shown());
         thread::sleep(Duration::from_millis(20));
     }
-    run.kill()
 }
 
 /// In `world`, Ada, GitHub user `ids[0]` with `logins[0]`, whose machine retries for [`TIMEOUT`],
