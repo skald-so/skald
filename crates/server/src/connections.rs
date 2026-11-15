@@ -268,7 +268,15 @@ async fn serve_frame(
 ) -> Result<(), Stop> {
     let answered = match Frame::from_cbor(bytes) {
         Ok(Frame::Send { envelope, report }) => {
-            mailboxes::send(&state.db, &state.wakers, sender, &envelope, report).await
+            mailboxes::send(
+                &state.db,
+                &state.wakers,
+                state.limits,
+                sender,
+                &envelope,
+                report,
+            )
+            .await
         }
         Ok(Frame::Sync { cursor }) => return sync(state, socket, reader, cursor).await,
         Ok(Frame::Ack { seq }) => return ack(state, sender.device, seq.get()).await,

@@ -143,7 +143,8 @@ impl Checked {
 }
 
 /// `POST /devices`: registers a device of the session's account; the same registration again is
-/// taken as stored.
+/// taken as stored. With the devices limit, a new device of an account that has as many devices
+/// with a certificate, `service` devices aside, is refused.
 pub(crate) async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -153,6 +154,22 @@ pub(crate) async fn register(
         let account = account(&state.db, &headers).await?;
         let checked = Checked::of(parse(&body)?)?;
         let device = checked.device.to_string();
+        if let Some(limit) = state.devices_limit {
+            // Registering certifies no device, so registrations at once cannot pass the limit.
+            let (certified, known): (i64, bool) = sqlx::query_as(
+                "SELECT count(*) FILTER (WHERE cert IS NOT NULL AND kind <> 'service'),
+                     bool_or(id = $2::uuid) IS TRUE
+                 FROM devices WHERE account_id = $1::uuid",
+            )
+            .bind(&account)
+            .bind(&device)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|err| Refusal::Database("count the devices", err))?;
+            if !known && certified >= i64::from(limit) {
+                return Err(Refusal::DevicesLimit(limit));
+            }
+        }
         // A new ID is inserted. A taken one is updated to itself, and so returned, only if this
         // registration is the one it has: `xmax` is `0` only in the row of an insert.
         let stored: Option<(bool, Option<Vec<u8>>)> = sqlx::query_as(

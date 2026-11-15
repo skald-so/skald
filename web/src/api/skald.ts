@@ -479,6 +479,11 @@ export type registerDeviceResponse401 = {
   status: 401;
 };
 
+export type registerDeviceResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
 export type registerDeviceResponse409 = {
   data: Problem;
   status: 409;
@@ -497,6 +502,7 @@ export type registerDeviceResponseSuccess = (
 export type registerDeviceResponseError = (
   | registerDeviceResponse400
   | registerDeviceResponse401
+  | registerDeviceResponse403
   | registerDeviceResponse409
   | registerDeviceResponse500
 ) & {

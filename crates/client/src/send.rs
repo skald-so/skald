@@ -437,6 +437,16 @@ fn closed(frame: Option<&CloseFrame>) -> String {
     }
 }
 
+/// The refusal `problem`, printable, with what it means for the message if it is over a limit.
+fn explained(problem: &str) -> String {
+    let meaning = match problem {
+        "too-large" => "the message is too large for the server",
+        "quota-exceeded" => "its space has stored as many messages this month as its limit allows",
+        _ => return printable(problem),
+    };
+    format!("{problem} ({meaning})")
+}
+
 /// Says, for each message of `queued`, its ID and, per recipient device, whether the server stored
 /// its envelope, refused it or has not answered it in `delivered`; fails unless every one is
 /// stored.
@@ -460,7 +470,7 @@ fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => println!("  {device}  stored"),
                 Some(Answer::Refused(problem)) => {
-                    let problem = printable(problem);
+                    let problem = explained(problem);
                     println!("  {device}  refused: {problem}");
                     refused.push(format!("the message {id} to device {device}: {problem}"));
                 }
