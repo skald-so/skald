@@ -112,6 +112,19 @@ impl Connections {
         (registration, ended)
     }
 
+    /// The SHA-256s of the tokens of the sessions with connections, each once.
+    pub(crate) fn sessions(&self) -> Vec<Vec<u8>> {
+        let by_device = self.by_device.lock().expect("the connections");
+        let mut sessions: Vec<Vec<u8>> = by_device
+            .values()
+            .flatten()
+            .map(|held| held.session.clone())
+            .collect();
+        sessions.sort();
+        sessions.dedup();
+        sessions
+    }
+
     /// Closes every connection of the session whose token's SHA-256 is `session`.
     pub(crate) fn end_session(&self, session: &[u8]) {
         let mut by_device = self.by_device.lock().expect("the connections");
@@ -286,7 +299,9 @@ async fn serve_frame(
         // A frame of a type the server does not know, or one it does not serve yet.
         Ok(_) => return Ok(()),
         Err(_) => match Frame::misaddressed_send(bytes) {
-            Some(header) => mailboxes::misaddressed(&state.db, sender, &header).await,
+            Some(header) => {
+                mailboxes::misaddressed(&state.db, &state.wakers, sender, &header).await
+            }
             None => return Err(Stop::Close(Closing::Malformed)),
         },
     };
