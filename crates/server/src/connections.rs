@@ -563,12 +563,19 @@ mod tests {
         assert_eq!(held(&connections), HashMap::new());
     }
 
+    /// Held connections of device 1 on sessions 1 and 2, and of device 2 on session 1.
+    fn three(connections: &Arc<Connections>) -> [(Registration, oneshot::Receiver<Closing>); 3] {
+        [
+            connections.hold(device(1), vec![1]),
+            connections.hold(device(1), vec![2]),
+            connections.hold(device(2), vec![1]),
+        ]
+    }
+
     #[test]
     fn ending_a_session_closes_its_connections_only() {
         let connections = Arc::new(Connections::default());
-        let (_a, mut a) = connections.hold(device(1), vec![1]);
-        let (_b, mut b) = connections.hold(device(1), vec![2]);
-        let (_c, mut c) = connections.hold(device(2), vec![1]);
+        let [(_a, mut a), (_b, mut b), (_c, mut c)] = three(&connections);
 
         connections.end_session(&[1]);
 
@@ -581,9 +588,7 @@ mod tests {
     #[test]
     fn revoking_a_device_closes_its_connections_only() {
         let connections = Arc::new(Connections::default());
-        let (_a, mut a) = connections.hold(device(1), vec![1]);
-        let (_b, mut b) = connections.hold(device(1), vec![2]);
-        let (_c, mut c) = connections.hold(device(2), vec![1]);
+        let [(_a, mut a), (_b, mut b), (_c, mut c)] = three(&connections);
         assert_eq!(
             sorted(connections.devices()),
             sorted(vec![device(1), device(2)])
