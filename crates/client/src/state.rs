@@ -156,6 +156,12 @@ const MIGRATIONS: &[&str] = &[
         last INTEGER NOT NULL CHECK (last >= 1)
     ) STRICT;
     ALTER TABLE inbox ADD COLUMN opened BLOB;",
+    // The channels whose group the device joins by itself even though the latest GroupInfo lists
+    // it: one whose Welcome it refused or whose Commit it could not process, until the server
+    // stores a Commit of its own there or it joins from a Welcome.
+    "CREATE TABLE rejoin (
+        channel TEXT PRIMARY KEY
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -312,6 +318,10 @@ pub struct MlsChanges {
     /// The `seq` of each mailbox entry whose `mls` application message it decrypted, and what that
     /// gave, sealed.
     pub opened: Vec<(u64, Vec<u8>)>,
+    /// Channels whose group the device joins by itself even though the latest GroupInfo lists it.
+    pub rejoin: Vec<ChannelId>,
+    /// Channels of [`MlsChanges::rejoin`] the device is back in.
+    pub rejoined: Vec<ChannelId>,
 }
 
 impl MlsChanges {
@@ -321,6 +331,8 @@ impl MlsChanges {
             && self.taken.is_empty()
             && self.messages.is_empty()
             && self.opened.is_empty()
+            && self.rejoin.is_empty()
+            && self.rejoined.is_empty()
     }
 }
 
@@ -590,6 +602,18 @@ impl State {
                     params![sql_seq(*seq)?, opened],
                 )?;
             }
+            for channel in &changes.rejoin {
+                tx.execute(
+                    "INSERT OR IGNORE INTO rejoin (channel) VALUES (?1)",
+                    params![channel.to_string()],
+                )?;
+            }
+            for channel in &changes.rejoined {
+                tx.execute(
+                    "DELETE FROM rejoin WHERE channel = ?1",
+                    params![channel.to_string()],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -598,6 +622,16 @@ impl State {
             self.truncate_wal().map_err(failed)?;
         }
         Ok(done)
+    }
+
+    /// The channels whose group the device joins by itself even though the latest GroupInfo lists
+    /// it ([`MlsChanges::rejoin`]).
+    pub fn rejoining(&self) -> Result<Vec<ChannelId>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT channel FROM rejoin ORDER BY channel")?;
+        let rows = query.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|channel| id("channel ID", &channel?)).collect()
     }
 
     /// The device's own Commits and Welcomes in the outbox, in the order they go out.

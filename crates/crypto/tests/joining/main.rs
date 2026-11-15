@@ -21,10 +21,6 @@
 //!   one device of `GroupChange::added` are the joiner, and `GroupChange::removed` holds the leaf
 //!   the Commit removes, if any.
 
-// The acceptance tests of joining by itself, which fail until the code they test lands; the
-// implementation removes this gate and the `acceptance` feature.
-#![cfg(feature = "acceptance")]
-
 #[path = "../common/devices.rs"]
 mod devices;
 #[path = "../mls/fixtures.rs"]
