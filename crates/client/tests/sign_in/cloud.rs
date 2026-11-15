@@ -24,7 +24,7 @@ use super::relay::{Relay, strings_named};
 
 #[path = "../../../server/tests/common/agent.rs"]
 mod agent;
-pub use agent::agent;
+pub use agent::{agent, call};
 
 /// How long a test waits for the server to see what it expects.
 pub const WAIT: Duration = Duration::from_secs(60);
@@ -297,12 +297,14 @@ impl Cloud {
     /// status and the body.
     pub fn get_as(&self, path: &str, token: &str) -> (u16, Value) {
         let version = skald_proto::PROTOCOL_VERSION.to_string();
-        let mut response = agent()
-            .get(format!("{}{path}", self.server.url))
-            .header(skald_proto::VERSION_HEADER, version)
-            .header("authorization", format!("Bearer {token}"))
-            .call()
-            .unwrap_or_else(|err| panic!("GET {path}: {err}"));
+        let mut response = call(|| {
+            agent()
+                .get(format!("{}{path}", self.server.url))
+                .header(skald_proto::VERSION_HEADER, &version)
+                .header("authorization", format!("Bearer {token}"))
+                .call()
+        })
+        .unwrap_or_else(|err| panic!("GET {path}: {err}"));
         let status = response.status().as_u16();
         let body = response
             .body_mut()

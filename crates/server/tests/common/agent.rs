@@ -26,3 +26,21 @@ pub fn agent() -> ureq::Agent {
         })
         .clone()
 }
+
+/// What `request` gives, sending it again once if its connection ended before an answer came: a
+/// kept connection that its server closed just as the request went out, before this process saw
+/// the close.
+pub fn call<T>(mut request: impl FnMut() -> Result<T, ureq::Error>) -> Result<T, ureq::Error> {
+    use std::io::ErrorKind;
+    match request() {
+        Err(ureq::Error::Io(err))
+            if matches!(
+                err.kind(),
+                ErrorKind::UnexpectedEof | ErrorKind::ConnectionReset | ErrorKind::BrokenPipe
+            ) =>
+        {
+            request()
+        }
+        result => result,
+    }
+}

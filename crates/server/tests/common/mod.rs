@@ -7,6 +7,7 @@ pub mod agent;
 pub mod browser;
 pub mod cbor;
 pub mod check;
+pub mod connections;
 pub mod device_flow;
 pub mod devices;
 pub mod google;
@@ -30,7 +31,8 @@ use tungstenite::protocol::CloseFrame;
 use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 
-use agent::agent;
+use agent::{agent, call};
+use connections::Database;
 
 pub const SERVER: &str = env!("CARGO_BIN_EXE_skald-server");
 
@@ -271,47 +273,55 @@ impl Server {
 
 /// `GET <url>` with the request headers `headers`; a redirect is returned, not followed.
 pub fn get_url(url: &str, headers: &[(&str, &str)]) -> Response {
-    let mut request = agent().get(url);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let response = request.call();
+    let response = call(|| {
+        let mut request = agent().get(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.call()
+    });
     read(response.unwrap_or_else(|err| panic!("GET {url}: {err}")))
 }
 
 /// `DELETE <url>` with the request headers `headers`; a redirect is returned, not followed.
 pub fn delete_url(url: &str, headers: &[(&str, &str)]) -> Response {
-    let mut request = agent().delete(url);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let response = request.call();
+    let response = call(|| {
+        let mut request = agent().delete(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.call()
+    });
     read(response.unwrap_or_else(|err| panic!("DELETE {url}: {err}")))
 }
 
 /// `POST <url>` of the form `fields`, `application/x-www-form-urlencoded`, with the request headers
 /// `headers`; a redirect is returned, not followed.
 pub fn post_form(url: &str, headers: &[(&str, &str)], fields: &[(&str, &str)]) -> Response {
-    let mut request = agent().post(url);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let response = request.send_form(fields.iter().copied());
+    let response = call(|| {
+        let mut request = agent().post(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.send_form(fields.iter().copied())
+    });
     read(response.unwrap_or_else(|err| panic!("POST {url}: {err}")))
 }
 
 /// `<method> <url>`, `method` `post` or `put`, of `body` with the request headers `headers`; a
 /// redirect is returned, not followed.
 pub fn send(method: &str, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Response {
-    let mut request = match method {
-        "post" => agent().post(url),
-        "put" => agent().put(url),
-        _ => panic!("a method with a body: {method}"),
-    };
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let response = request.send(body);
+    let response = call(|| {
+        let mut request = match method {
+            "post" => agent().post(url),
+            "put" => agent().put(url),
+            _ => panic!("a method with a body: {method}"),
+        };
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.send(body)
+    });
     read(response.unwrap_or_else(|err| panic!("{method} {url}: {err}")))
 }
 
@@ -457,8 +467,16 @@ pub struct AppliedMigration {
 /// `SKALD_TEST_DATABASE_URL` is a connection URL without a database name, e.g.
 /// `postgres://postgres:password@127.0.0.1:5432`; `script/test` sets it.
 pub struct TestDb {
-    server: String,
-    name: String,
+    db: Database,
+}
+
+/// Its URL and the queries on its kept connections.
+impl std::ops::Deref for TestDb {
+    type Target = Database;
+
+    fn deref(&self) -> &Database {
+        &self.db
+    }
 }
 
 impl TestDb {
@@ -471,17 +489,10 @@ impl TestDb {
             process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        let db = TestDb { server, name };
-        db.admin(&[
-            format!("DROP DATABASE IF EXISTS {}", db.name),
-            format!("CREATE DATABASE {}", db.name),
-        ])
-        .expect("create a test database");
-        db
-    }
-
-    pub fn url(&self) -> String {
-        format!("{}/{}", self.server, self.name)
+        let db = Database::create(server, name, |url| {
+            Box::pin(async move { PgConnection::connect(&url).await })
+        });
+        TestDb { db }
     }
 
     /// The URL of this database for the role `role` with `password`.
@@ -495,12 +506,13 @@ impl TestDb {
 
     /// Runs `sql` in this database.
     pub fn execute(&self, sql: &str) {
-        execute(&self.url(), &[sql.to_owned()]).unwrap_or_else(|err| panic!("{sql}: {err}"));
+        self.query(async |conn| sqlx::raw_sql(AssertSqlSafe(sql)).execute(conn).await)
+            .unwrap_or_else(|err| panic!("{sql}: {err}"));
     }
 
     /// Makes the database refuse new connections and closes the open ones, or accept them again.
     pub fn set_reachable(&self, reachable: bool) {
-        let name = &self.name;
+        let name = self.db.name();
         let mut statements = vec![format!(
             "ALTER DATABASE {name} ALLOW_CONNECTIONS {reachable}"
         )];
@@ -511,35 +523,31 @@ impl TestDb {
                  WHERE datname = '{name}'"
             ));
         }
-        self.admin(&statements)
+        self.db
+            .admin(&statements)
             .expect("change whether the test database is reachable");
     }
 
     /// The migrations recorded in `_sqlx_migrations`, by version.
     pub fn applied_migrations(&self) -> Vec<AppliedMigration> {
-        block_on(async {
-            let mut conn = PgConnection::connect(&self.url()).await?;
-            let applied = sqlx::query_as(
+        self.query(async |conn| {
+            sqlx::query_as(
                 "SELECT version, checksum, success, installed_on::text AS installed_on
                  FROM _sqlx_migrations ORDER BY version",
             )
-            .fetch_all(&mut conn)
-            .await?;
-            conn.close().await?;
-            Ok::<_, sqlx::Error>(applied)
+            .fetch_all(conn)
+            .await
         })
         .expect("read _sqlx_migrations")
     }
 
     /// Applies the embedded migrations up to `version`, the last one it applies.
     pub fn migrate_to(&self, version: i64) {
-        block_on(async {
-            let mut conn = PgConnection::connect(&self.url()).await?;
+        self.query(async |conn| {
             skald_server::MIGRATOR
-                .run_to(version, &mut conn)
+                .run_to(version, conn)
                 .await
-                .map_err(|err| sqlx::Error::Migrate(Box::new(err)))?;
-            conn.close().await
+                .map_err(|err| sqlx::Error::Migrate(Box::new(err)))
         })
         .expect("apply the migrations");
     }
@@ -547,18 +555,16 @@ impl TestDb {
     /// Every column of every table, as `<schema>.<table>.<column> <type>`, sorted: the schema the
     /// migrations made.
     pub fn columns(&self) -> Vec<String> {
-        block_on(async {
-            let mut conn = PgConnection::connect(&self.url()).await?;
+        self.query(async |conn| {
             let columns: Vec<(String,)> = sqlx::query_as(
                 "SELECT table_schema || '.' || table_name || '.' || column_name || ' ' || data_type
                  FROM information_schema.columns
                  WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
                  ORDER BY 1",
             )
-            .fetch_all(&mut conn)
+            .fetch_all(conn)
             .await?;
-            conn.close().await?;
-            Ok::<_, sqlx::Error>(columns.into_iter().map(|(column,)| column).collect())
+            Ok(columns.into_iter().map(|(column,)| column).collect())
         })
         .expect("read the database's columns")
     }
@@ -566,63 +572,26 @@ impl TestDb {
     /// Every row of every table but `_sqlx_migrations`, each as PostgreSQL's text form of the row:
     /// what the database holds, whatever its schema.
     pub fn rows(&self) -> Vec<String> {
-        block_on(async {
-            let mut conn = PgConnection::connect(&self.url()).await?;
+        self.query(async |conn| {
             let tables: Vec<(String, String)> = sqlx::query_as(
                 "SELECT table_schema::text, table_name::text FROM information_schema.tables
                  WHERE table_type = 'BASE TABLE'
                    AND table_schema NOT IN ('pg_catalog', 'information_schema')
                    AND table_name <> '_sqlx_migrations'",
             )
-            .fetch_all(&mut conn)
+            .fetch_all(&mut *conn)
             .await?;
             let mut rows = Vec::new();
             for (schema, table) in tables {
                 let quote = |name: &str| format!("\"{}\"", name.replace('"', "\"\""));
                 let sql = format!("SELECT t::text FROM {}.{} t", quote(&schema), quote(&table));
                 let found: Vec<(String,)> = sqlx::query_as(AssertSqlSafe(sql))
-                    .fetch_all(&mut conn)
+                    .fetch_all(&mut *conn)
                     .await?;
                 rows.extend(found.into_iter().map(|(row,)| format!("{table}: {row}")));
             }
-            conn.close().await?;
-            Ok::<_, sqlx::Error>(rows)
+            Ok(rows)
         })
         .expect("read the database's rows")
     }
-
-    /// Runs `statements` one by one in the `postgres` maintenance database of the server.
-    fn admin(&self, statements: &[String]) -> Result<(), sqlx::Error> {
-        execute(&format!("{}/postgres", self.server), statements)
-    }
-}
-
-impl Drop for TestDb {
-    fn drop(&mut self) {
-        let _ = self.admin(&[format!(
-            "DROP DATABASE IF EXISTS {} WITH (FORCE)",
-            self.name
-        )]);
-    }
-}
-
-/// Runs `statements` at `url` one by one: some, like `CREATE DATABASE`, cannot share a transaction.
-fn execute(url: &str, statements: &[String]) -> Result<(), sqlx::Error> {
-    block_on(async {
-        let mut conn = PgConnection::connect(url).await?;
-        for sql in statements {
-            sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
-                .execute(&mut conn)
-                .await?;
-        }
-        conn.close().await
-    })
-}
-
-fn block_on<F: Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("start a tokio runtime")
-        .block_on(future)
 }

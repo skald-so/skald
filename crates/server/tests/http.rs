@@ -192,21 +192,27 @@ fn spec_violations_reports_responses_outside_spec() {
     }
 }
 
-/// The tests' HTTP client keeps its connection for the next request until the server closes it.
+/// The tests' HTTP client keeps its connection for the next request. A request on a kept
+/// connection that its server closes as the request comes goes again on a new one.
 #[test]
-fn the_tests_http_client_keeps_its_connection_until_the_server_closes_it() {
+fn the_tests_http_client_keeps_its_connection_and_sends_again_when_the_server_closes_it() {
     use std::io::{BufRead, BufReader, Write};
-    use std::net::{Shutdown, TcpStream};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::thread;
 
-    // Answers each request on a connection with `ok`, until the connection ends.
+    // Answers each request on a connection with `ok`, until the connection ends; with `closing`
+    // set, closes the connection of the next request instead.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
     let url = format!("http://{}/", listener.local_addr().expect("local address"));
-    let (accepted, connections) = mpsc::channel::<TcpStream>();
+    let closing = Arc::new(AtomicBool::new(false));
+    let close_next = Arc::clone(&closing);
+    let (accepted, connections) = mpsc::channel();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let _ = accepted.send(stream.try_clone().expect("clone a stream"));
+            let _ = accepted.send(());
+            let closing = Arc::clone(&close_next);
             thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().expect("clone a stream"));
                 let mut writer = stream;
@@ -216,8 +222,11 @@ fn the_tests_http_client_keeps_its_connection_until_the_server_closes_it() {
                     if reader.read_line(&mut line).unwrap_or(0) == 0 {
                         return;
                     }
-                    if line == "\r\n"
-                        && writer
+                    if line != "\r\n" {
+                        continue;
+                    }
+                    if closing.swap(false, Ordering::SeqCst)
+                        || writer
                             .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
                             .is_err()
                     {
@@ -228,9 +237,7 @@ fn the_tests_http_client_keeps_its_connection_until_the_server_closes_it() {
         }
     });
     let get = || {
-        common::agent::agent()
-            .get(&url)
-            .call()
+        common::agent::call(|| common::agent::agent().get(&url).call())
             .expect("GET")
             .body_mut()
             .read_to_string()
@@ -238,14 +245,11 @@ fn the_tests_http_client_keeps_its_connection_until_the_server_closes_it() {
     };
 
     assert_eq!((get(), get()), ("ok".to_owned(), "ok".to_owned()));
-    let first = connections.try_recv().expect("a connection");
-    assert!(connections.try_recv().is_err(), "a second connection");
+    assert_eq!(connections.try_iter().count(), 1, "connections");
 
-    first.shutdown(Shutdown::Both).expect("end the connection");
+    closing.store(true, Ordering::SeqCst);
     assert_eq!(get(), "ok");
-    connections
-        .recv_timeout(Duration::from_secs(5))
-        .expect("a new connection");
+    assert_eq!(connections.try_iter().count(), 1, "new connections");
 }
 
 #[test]
