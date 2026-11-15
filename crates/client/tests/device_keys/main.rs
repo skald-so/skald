@@ -21,6 +21,7 @@ mod cloud;
 #[allow(dead_code)]
 #[path = "../common/mod.rs"]
 mod common;
+mod devices_limit;
 mod keys;
 #[allow(dead_code)]
 #[path = "../sign_in/machine.rs"]
