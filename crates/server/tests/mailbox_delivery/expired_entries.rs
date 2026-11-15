@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 
 use skald_proto::{Header, ServerStatus};
 
-use crate::expiring::{EXPIRY, HOUR, VERSIONS, WEEK, move_back, restart, retained, send_bob_with};
+use crate::common::times::{EXPIRY, HOUR, WEEK};
+use crate::expiring::{VERSIONS, restart, retained, send_bob_with};
 use crate::link::{
     Entry, Link, assert_delivered, assert_status, await_seqs_within, bytes, messages, store_to,
 };
 use crate::scene::Scene;
-use crate::wire::{envelope, now, query, version};
+use crate::wire::{envelope, move_back, now, query, version};
 
 /// Checks that `entry` is the `expired` of the message of `header` to bob, dated `at`, within the
 /// second its time is rounded to.

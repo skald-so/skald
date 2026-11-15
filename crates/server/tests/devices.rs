@@ -14,7 +14,7 @@ use common::devices::{
     DEVICES, Device, Key, MASTER, Machine, account_id, assert_refused, assert_taken, b64, cert_of,
     devices_of, machine, master_of,
 };
-use common::get_url;
+use common::{get_url, hex};
 use serde_json::{Value, json};
 use skald_proto::{CERT_LABEL, Cbor, Cert, CertBody, DeviceKind, PROOF_LABEL};
 
@@ -668,8 +668,7 @@ fn held(row: &str, bytes: &[u8]) -> bool {
     use base64::Engine as _;
     use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    let mut forms = vec![hex];
+    let mut forms = vec![hex(bytes)];
     for engine in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
         forms.push(engine.encode(bytes));
     }

@@ -17,10 +17,6 @@
 //!   `session-ended` ("Connecting").
 //! - An instance's listening connection: its backend in PostgreSQL whose last statement is `LISTEN`
 //!   or `UNLISTEN`, as `pg_stat_activity` shows it.
-//! - The mailbox retention: the server setting `--mailbox-retention <SECONDS>`; unset, the instance
-//!   expires nothing. The server keeps the times of envelopes, sends and mailbox entries in the
-//!   `timestamptz` columns of the tables `envelopes`, `sends` and `entries`, which the tests move
-//!   back; it finds an expired entry by itself within 30 s.
 
 #[path = "../common/mod.rs"]
 mod common;

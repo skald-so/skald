@@ -11,13 +11,11 @@
 //! those of its folder's space.
 //!
 //! Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, behind
-//! the recording relay and, before it, the front of the tests of sending, at the server's public
-//! address. The front can also cut a connection at a machine's first ack, swallow the acks, hold
-//! back the server's `message` pushes and the `batch` that ends catch-up, and put envelopes the
-//! tests seal into a device's catch-up, as a compromised server would. A test plays the person on
-//! the verification page in headless Chrome. The tests sign fixture revisions with the keys of the
-//! machines' devices, read from their secrets files, and store them through the API, as an admin's
-//! device would; they move storing times back in the server's database.
+//! the recording relay and, before it, the front of the tests of sending (`sending/front.rs`), at
+//! the server's public address. A test plays the person on the verification page in headless
+//! Chrome. The tests sign fixture revisions with the keys of the machines' devices, read from their
+//! secrets files, and store them through the API, as an admin's device would; they move storing
+//! times back in the server's database.
 //!
 //! A device follows only the spaces it created until invites and linking give it others, so the
 //! CLI under test runs on the machine that created the space. The other members' devices are
@@ -61,6 +59,8 @@ mod notices;
 mod peer;
 #[path = "../sign_in/relay.rs"]
 mod relay;
+#[path = "../../../server/tests/common/times.rs"]
+mod times;
 #[path = "../roster_revisions/world.rs"]
 mod world;
 
@@ -74,7 +74,7 @@ use cloud::{Cloud, WAIT};
 use fixtures::{
     Channel, Issuer, Keyed, acme, ada_and_bob, add_device, cert_of, channel_in, database, fronted,
     fronted_with, hex, keyed, kill_once, killed_once, msg_id, person_address, recipient, send,
-    send_args, strs,
+    send_args, sent_after, strs,
 };
 use front::{Acks, Answers, Front, Sent};
 use machine::{Finished, Machine, Run};
@@ -86,6 +86,7 @@ use skald_proto::{
     MessageId, NonEmpty, PROTOCOL_VERSION, RawEnvelope, Scheme, SpaceId, Unknown,
 };
 use skald_server::Settings;
+use times::{DAY, MAILBOX, WEEK, moved_back};
 use world::{
     ACME, AGENT, CLIENT_A, CLIENT_B, Desk, Person, WARNING, World, members, next_with, run, store,
 };
@@ -96,9 +97,6 @@ const RECV: &str = "recv";
 /// The server statuses as the CLI shows them.
 const DELIVERED: &str = "delivered";
 const EXPIRED: &str = "expired";
-
-/// The server's mailbox retention in these tests: 7 days.
-const RETENTION_DAYS: u64 = 7;
 
 /// The texts the tests send; none is anywhere else.
 const FIRST: &str = "the release train leaves at noon sharp";
@@ -111,30 +109,16 @@ const CONTROL_SHOWN: &str = r"\u{1b}]0;pwned\u{7}\u{1b}[2Kfake line";
 /// The agent the tests receive as.
 const CLAUDE: &str = "claude-r7m2xd";
 
-/// Gives the server a mailbox retention of [`RETENTION_DAYS`] (`docs/protocol/delivery.md`,
-/// "Mailbox", expiry).
+/// Gives the server a mailbox retention of [`WEEK`] (`docs/protocol/delivery.md`, "Mailbox",
+/// expiry).
 fn retained(settings: &mut Settings) {
-    settings.mailbox_retention = Some(Duration::from_secs(RETENTION_DAYS * 24 * 60 * 60));
+    settings.mailbox_retention = Some(Duration::from_secs(WEEK));
 }
 
 /// Moves the storing and adding times of every envelope, send and mailbox entry the server holds
 /// back by `interval`, a PostgreSQL interval such as `10 hours`.
 fn move_back(cloud: &Cloud, interval: &str) {
-    cloud.execute(&format!(
-        "DO $$
-         DECLARE c record;
-         BEGIN
-             FOR c IN
-                 SELECT table_name, column_name FROM information_schema.columns
-                 WHERE table_schema = current_schema()
-                     AND table_name IN ('envelopes', 'sends', 'entries')
-                     AND data_type = 'timestamp with time zone'
-             LOOP
-                 EXECUTE format('UPDATE %I SET %I = %I - interval %L',
-                     c.table_name, c.column_name, c.column_name, '{interval}');
-             END LOOP;
-         END $$"
-    ));
+    cloud.execute(&moved_back(&MAILBOX, interval));
 }
 
 /// Runs `skald recv` on `machine`.
@@ -499,7 +483,7 @@ fn send_retried_after_a_lost_stored_reaches_the_recipient_once() {
 
     received(&pair.ada.machine);
 
-    let resent: Vec<Sent> = pair.front.sent().split_off(before);
+    let resent = sent_after(&pair.front, before);
     assert!(
         resent
             .iter()
@@ -645,7 +629,7 @@ fn message_expired_before_the_recipient_connects_shows_expired_to_its_sender() {
         retained,
     );
     let sent = pair.ada_sends(FIRST);
-    move_back(pair.cloud(), &format!("{} days", RETENTION_DAYS + 1));
+    move_back(pair.cloud(), &format!("{} seconds", WEEK + DAY));
     let (id, bob) = (msg_id(&sent), pair.bob.device);
 
     let shown = received_until(&pair.ada.machine, EXPIRED, |shown| {

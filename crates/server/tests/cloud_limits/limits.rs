@@ -6,15 +6,14 @@
 use std::thread;
 use std::time::Duration;
 
-use skald_proto::{
-    AccountId, Cbor, CertBody, DeviceKind, Envelope, Header, HpkePayload, Stored, Unknown,
-};
+use skald_proto::{Cbor, DeviceKind, Envelope, Header, HpkePayload, Stored};
 
 use crate::api::Person;
 use crate::common::TestDb;
 use crate::common::device_flow::{DeviceFlow, INTERVAL};
-use crate::common::devices::{Device, cert_of, random};
+use crate::common::devices::{Device, random, write_devices};
 use crate::common::sign_in::SignIn;
+use crate::common::times::moved_back;
 use crate::fixture::Fixture;
 use crate::wire::{Answer, Socket, assert_nowhere, key_of, query};
 
@@ -56,28 +55,11 @@ pub fn sized(header: &Header, len: usize) -> Vec<u8> {
     .to_cbor()
 }
 
-/// The CBOR head of major type `major` with the argument `arg`, of any size, in the shortest form.
-fn wide_head(major: u8, arg: usize) -> Vec<u8> {
-    let top = major << 5;
-    let arg = u64::try_from(arg).expect("an argument of 64 bits");
-    match arg {
-        0..=23 => vec![top | arg as u8],
-        24..=0xff => vec![top | 24, arg as u8],
-        0x100..=0xffff => [vec![top | 25], (arg as u16).to_be_bytes().to_vec()].concat(),
-        0x1_0000..=0xffff_ffff => [vec![top | 26], (arg as u32).to_be_bytes().to_vec()].concat(),
-        _ => [vec![top | 27], arg.to_be_bytes().to_vec()].concat(),
-    }
-}
-
 /// Sends `envelope` of `header`, of any length, with `report` true, and gives the server's answer,
 /// checking that it names the envelope's send-key.
 #[track_caller]
 pub fn answer_to(socket: &mut Socket, header: &Header, envelope: &[u8]) -> Answer {
-    let mut frame = vec![0x83, 0x01];
-    frame.extend(wide_head(2, envelope.len()));
-    frame.extend_from_slice(envelope);
-    frame.push(0xf5);
-    socket.frame(frame);
+    socket.send(envelope);
     let answer = socket.answer();
     let key = match &answer {
         Answer::Stored(stored) => &stored.send_key,
@@ -136,27 +118,7 @@ const COUNTED: [&str; 4] = ["envelopes", "sends", "entries", "message_counts"];
 /// Moves every time and month the server keeps of envelopes, sends, entries and message counts one
 /// month back, as if the month had ended: each `timestamptz` and `date` column of [`COUNTED`].
 pub fn to_the_month_before(db: &TestDb) {
-    let tables: Vec<String> = COUNTED.iter().map(|&table| table.to_owned()).collect();
-    let columns: Vec<(String, String, String)> = query(db, async |conn| {
-        sqlx::query_as(
-            "SELECT table_name::text, column_name::text, data_type::text
-             FROM information_schema.columns
-             WHERE table_schema = current_schema() AND table_name = ANY ($1)
-               AND data_type IN ('timestamp with time zone', 'date')",
-        )
-        .bind(tables)
-        .fetch_all(conn)
-        .await
-    });
-    assert!(!columns.is_empty(), "no times in {COUNTED:?}");
-    for (table, column, kind) in columns {
-        let moved = if kind == "date" {
-            format!(r#"("{column}" - interval '1 month')::date"#)
-        } else {
-            format!(r#"(("{column}" AT TIME ZONE 'UTC') - interval '1 month') AT TIME ZONE 'UTC'"#)
-        };
-        db.execute(&format!(r#"UPDATE "{table}" SET "{column}" = {moved}"#));
-    }
+    db.execute(&moved_back(&COUNTED, "1 month"));
 }
 
 /// How long a test of the monthly count takes at most, past its setup.
@@ -190,53 +152,15 @@ pub fn add_devices(
     let devices: Vec<Device> = (0..count)
         .map(|at| Device::new(&format!("added-{at}")))
         .collect();
-    let kind_name = match kind {
-        DeviceKind::Client => "client",
-        DeviceKind::Browser => "browser",
-        DeviceKind::Service => "service",
-    };
-    let bytes = |bytes: &[u8]| {
-        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        format!("'\\x{hex}'::bytea")
-    };
-    let rows: Vec<String> = devices
+    let certs: Vec<Option<Vec<u8>>> = devices
         .iter()
-        .map(|device| {
-            let cert = certified.then(|| {
-                let body = body_of(device, person.account, kind);
-                cert_of(&body, &person.master.key, &device.signing.key)
-            });
-            let columns = [
-                format!("'{}'::uuid", device.id),
-                format!("'{}'::uuid", person.account),
-                format!("'{kind_name}'"),
-                bytes(&device.signing.public()),
-                bytes(&device.hpke),
-                bytes(device.name.as_bytes()),
-                cert.as_deref().map_or_else(|| "NULL".to_owned(), bytes),
-            ];
-            format!("({})", columns.join(", "))
-        })
+        .map(|device| certified.then(|| device.cert_as(person.account, kind, &person.master)))
         .collect();
-    db.execute(&format!(
-        "INSERT INTO devices (id, account_id, kind, signing, hpke, name, cert) VALUES {}",
-        rows.join(", ")
-    ));
+    let rows: Vec<(&Device, Option<&[u8]>)> = devices
+        .iter()
+        .zip(&certs)
+        .map(|(device, cert)| (device, cert.as_deref()))
+        .collect();
+    write_devices(db, person.account, kind, &rows);
     devices
-}
-
-/// The certificate body of `device` of `kind` on `account`, issued by the master key.
-fn body_of(device: &Device, account: AccountId, kind: DeviceKind) -> CertBody {
-    CertBody {
-        account,
-        device: device.id,
-        kind,
-        signing: device.signing.public(),
-        hpke: device.hpke,
-        issuer: None,
-        issued: 1_794_000_000,
-        ssh: None,
-        name: device.name.clone(),
-        unknown: Unknown::default(),
-    }
 }

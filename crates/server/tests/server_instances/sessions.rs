@@ -2,11 +2,11 @@
 
 use tungstenite::protocol::frame::coding::CloseCode;
 
+use crate::common::Closed;
 use crate::common::device_flow::text;
 use crate::fixture::Fixture;
 use crate::instances::{CLOSE, WAKE, instance, sender, store, watch};
 use crate::link::Entry;
-use crate::watch::Closed;
 
 #[test]
 fn signing_out_through_one_instance_closes_the_sessions_connections_on_the_others() {

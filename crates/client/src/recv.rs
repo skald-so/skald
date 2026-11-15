@@ -26,7 +26,6 @@ use tungstenite::Message;
 use crate::agents::server_name;
 use crate::connection::{WebSocket, printable};
 use crate::devices::text;
-use crate::folders;
 use crate::follow::{Own, SpaceDevices};
 use crate::secrets;
 use crate::send::{self, admitted, broke, closed, set_read_timeout};
@@ -42,11 +41,7 @@ pub fn run(
     timeout: Duration,
     agent: bool,
 ) -> Result<(), String> {
-    let scope = if agent {
-        Scope::Only(folders::working_space(dir)?.id)
-    } else {
-        Scope::All
-    };
+    let scope = Scope::of_run(dir, agent)?;
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
     let queued = send::queued(&follower.state, scope)?;
     let mut delivered = send::deliver(&mut follower, &queued, timeout);
@@ -80,13 +75,7 @@ fn receive(
 ) -> Result<(), String> {
     let mut socket = match socket {
         Some(socket) => socket,
-        None => {
-            let keys = follower.keys()?;
-            follower
-                .connection
-                .open_websocket_as("/ws", &follower.token, keys.id(), keys.signing())
-                .map_err(text)?
-        }
+        None => follower.connect(&follower.keys()?)?,
     };
     let mut cursor = follower.state.cursor().map_err(text)?;
     write(&mut socket, &Frame::Sync { cursor })?;

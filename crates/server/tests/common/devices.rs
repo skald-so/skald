@@ -25,9 +25,10 @@ use skald_crypto::{SigningKey, issue};
 use skald_github_stand_in::User;
 use skald_proto::{AccountId, Cbor, CertBody, DeviceId, DeviceKind, Unknown};
 
+use super::cbor::{array_of, byte_item, uint};
 use super::device_flow::{DeviceFlow, json, text};
 use super::sign_in::Account;
-use super::{Response, post_form};
+use super::{Response, TestDb, hex, post_form};
 
 /// Registers a device: `POST`; the account's devices: `GET`.
 pub const DEVICES: &str = "/devices";
@@ -111,10 +112,16 @@ impl Device {
     /// The certificate body that matches this device's registration on `account`, issued by the
     /// master key.
     pub fn body(&self, account: &Account) -> CertBody {
+        self.body_as(account_id(account), DeviceKind::Client)
+    }
+
+    /// The certificate body of this device as a device of `kind` on `account`, issued by the master
+    /// key.
+    pub fn body_as(&self, account: AccountId, kind: DeviceKind) -> CertBody {
         CertBody {
-            account: account_id(account),
+            account,
             device: self.id,
-            kind: DeviceKind::Client,
+            kind,
             signing: self.signing.public(),
             hpke: self.hpke,
             issuer: None,
@@ -127,8 +134,69 @@ impl Device {
 
     /// The CBOR bytes of this device's certificate on `account`, issued by `master`.
     pub fn cert(&self, account: &Account, master: &Key) -> Vec<u8> {
-        cert_of(&self.body(account), &master.key, &self.signing.key)
+        self.cert_as(account_id(account), DeviceKind::Client, master)
     }
+
+    /// The CBOR bytes of this device's certificate as a device of `kind` on `account`, issued by
+    /// `master`.
+    pub fn cert_as(&self, account: AccountId, kind: DeviceKind, master: &Key) -> Vec<u8> {
+        cert_of(&self.body_as(account, kind), &master.key, &self.signing.key)
+    }
+}
+
+/// Writes `devices` of `kind` on `account` to `db`'s table `devices`, each with the CBOR bytes of
+/// its certificate if it has one: devices the server's API does not register.
+pub fn write_devices(
+    db: &TestDb,
+    account: AccountId,
+    kind: DeviceKind,
+    devices: &[(&Device, Option<&[u8]>)],
+) {
+    let kind = match kind {
+        DeviceKind::Client => "client",
+        DeviceKind::Browser => "browser",
+        DeviceKind::Service => "service",
+    };
+    let bytes = |bytes: &[u8]| format!("'\\x{}'::bytea", hex(bytes));
+    let rows: Vec<String> = devices
+        .iter()
+        .map(|(device, cert)| {
+            let columns = [
+                format!("'{}'::uuid", device.id),
+                format!("'{account}'::uuid"),
+                format!("'{kind}'"),
+                bytes(&device.signing.public()),
+                bytes(&device.hpke),
+                bytes(device.name.as_bytes()),
+                cert.map_or_else(|| "NULL".to_owned(), bytes),
+            ];
+            format!("({})", columns.join(", "))
+        })
+        .collect();
+    db.execute(&format!(
+        "INSERT INTO devices (id, account_id, kind, signing, hpke, name, cert) VALUES {}",
+        rows.join(", ")
+    ));
+}
+
+/// A device session's challenge: `POST`.
+pub const CHALLENGE: &str = "/session/challenge";
+/// The label of the signature in `auth`.
+const AUTH_LABEL: &str = "skald auth";
+
+/// The signature in `auth` by `key` over `challenge` and `origin`, the server's public address.
+pub fn auth_signature(key: &SigningKey, challenge: &[u8], origin: &str) -> [u8; 64] {
+    key.sign(AUTH_LABEL, &[challenge, origin.as_bytes()])
+}
+
+/// The `auth` frame of `challenge`, `device` and `signature`.
+pub fn auth_frame(challenge: &[u8], device: DeviceId, signature: &[u8]) -> Vec<u8> {
+    array_of(&[
+        uint(10),
+        byte_item(challenge),
+        byte_item(device.as_bytes()),
+        byte_item(signature),
+    ])
 }
 
 /// The CBOR bytes of the certificate of `body`, signed by `issuer` and proved by `device`.

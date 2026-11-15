@@ -4,12 +4,14 @@
 
 pub mod accounts;
 pub mod browser;
+pub mod cbor;
 pub mod check;
 pub mod device_flow;
 pub mod devices;
 pub mod google;
 pub mod sign_in;
 pub mod spec;
+pub mod times;
 
 use std::env;
 use std::io::{BufRead, BufReader, Read};
@@ -23,6 +25,8 @@ use std::time::{Duration, Instant};
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::http::HeaderMap;
+use tungstenite::protocol::CloseFrame;
+use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 
 pub const SERVER: &str = env!("CARGO_BIN_EXE_skald-server");
@@ -330,7 +334,6 @@ pub fn stored_forms(secret: &str) -> Vec<String> {
     use base64::Engine as _;
     use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 
-    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let mut forms = vec![
         secret.to_owned(),
         secret.to_lowercase(),
@@ -344,6 +347,11 @@ pub fn stored_forms(secret: &str) -> Vec<String> {
         }
     }
     forms
+}
+
+/// `bytes` in lowercase hex.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Checks that none of `rows`, a database's, holds any of `secrets` in a form of [`stored_forms`].
@@ -371,6 +379,24 @@ pub fn collect(pipe: impl Read + Send + 'static, output: &Arc<Mutex<String>>) ->
 }
 
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// How the server ended a connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Closed {
+    /// With a close frame of this code and reason.
+    Frame(CloseCode, String),
+    /// Without a close frame.
+    Dropped,
+}
+
+impl Closed {
+    /// How a `Close` message with `frame` ended the connection.
+    pub fn of(frame: Option<CloseFrame>) -> Self {
+        frame.map_or(Closed::Dropped, |frame| {
+            Closed::Frame(frame.code, frame.reason.as_str().to_owned())
+        })
+    }
+}
 
 impl Drop for Server {
     fn drop(&mut self) {

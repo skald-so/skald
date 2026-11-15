@@ -39,7 +39,7 @@ pub fn fronted() -> (World, Front) {
 pub fn fronted_with(change: impl FnOnce(&mut Settings)) -> (World, Front) {
     let front = Front::bind();
     let cloud = Cloud::fronted_with(HOST, front.port(), 120, 1, change);
-    front.forward_to(cloud.relay.url.trim_start_matches("http://"));
+    front.forward_to(cloud.relay.address());
     let world = World {
         cloud,
         browser: Browser::launch(),
@@ -267,6 +267,11 @@ pub fn kill_once(run: Run, what: &str, done: impl Fn() -> bool) {
 pub fn killed_once(mut run: Run, what: &str, done: impl Fn() -> bool) -> Finished {
     await_running(&mut run, what, done);
     run.kill()
+}
+
+/// The `send` frames the front saw after its first `from`.
+pub fn sent_after(front: &Front, from: usize) -> Vec<Sent> {
+    front.sent().split_off(from)
 }
 
 /// Waits for up to [`WAIT`] until `done` holds while `run` goes on; fails if `run` exits first.

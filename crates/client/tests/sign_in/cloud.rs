@@ -75,7 +75,8 @@ pub fn certified(devices: &[Device]) -> Vec<DeviceId> {
         .collect()
 }
 
-fn unb64(text: &str) -> Vec<u8> {
+/// The bytes of `text`, base64url without padding.
+pub fn unb64(text: &str) -> Vec<u8> {
     URL_SAFE_NO_PAD
         .decode(text)
         .unwrap_or_else(|err| panic!("{text:?} is not base64url without padding: {err}"))

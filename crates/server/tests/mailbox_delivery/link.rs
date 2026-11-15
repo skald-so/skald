@@ -15,9 +15,7 @@ use crate::api::Person;
 use crate::common::device_flow::DeviceFlow;
 use crate::common::{Server, TestDb};
 use crate::fixture::Fixture;
-use crate::wire::{
-    Socket, array_of, assert_stored_at, byte_item, envelope, key_of, now, query, uint,
-};
+use crate::wire::{Socket, assert_stored_at, envelope, key_of, now, query, send_frame};
 
 /// How long a test waits for the end of catch-up, an answer or a database change.
 pub const WAIT: Duration = Duration::from_secs(15);
@@ -41,6 +39,17 @@ impl Entry {
             Self::Message(seq, _) | Self::Status(seq, _) => *seq,
         }
     }
+
+    /// The entry `push` carries: none for a `space-notice` or a type this version does not know.
+    pub fn of(push: Push) -> Option<Self> {
+        match push {
+            Push::Message { seq, envelope } => {
+                Some(Self::Message(seq.get(), envelope.bytes().to_vec()))
+            }
+            Push::Status { seq, status } => Some(Self::Status(seq.get(), status)),
+            Push::SpaceNotice { .. } | Push::Unknown(_) => None,
+        }
+    }
 }
 
 /// What a frame from the server says to a mailbox's reader.
@@ -55,14 +64,7 @@ enum Read {
 
 /// What `frame` says; nothing for a frame these tests do not read, such as a `space-notice`.
 fn reads_of(frame: Frame) -> Vec<Read> {
-    let entry = |push: Push| match push {
-        Push::Message { seq, envelope } => Some(Read::Entry(Entry::Message(
-            seq.get(),
-            envelope.bytes().to_vec(),
-        ))),
-        Push::Status { seq, status } => Some(Read::Entry(Entry::Status(seq.get(), status))),
-        Push::SpaceNotice { .. } | Push::Unknown(_) => None,
-    };
+    let entry = |push| Entry::of(push).map(Read::Entry);
     match frame {
         Frame::Push(push) => entry(push).into_iter().collect(),
         Frame::Batch(pushes) if pushes.is_empty() => vec![Read::End],
@@ -113,21 +115,17 @@ impl Link {
 
     /// States the cursor in `sync`.
     pub fn sync(&mut self, cursor: u64) {
-        self.socket
-            .frame(array_of(&[uint(4), uint(usize::try_from(cursor).unwrap())]));
+        self.socket.sync(cursor);
     }
 
     /// Acks up to `seq` in `ack`.
     pub fn ack(&mut self, seq: u64) {
-        self.socket
-            .frame(array_of(&[uint(7), uint(usize::try_from(seq).unwrap())]));
+        self.socket.ack(seq);
     }
 
     /// Sends `envelope` in a `send` with `report`.
     pub fn send(&mut self, envelope: &[u8], report: bool) {
-        let report = vec![if report { 0xf5 } else { 0xf4 }];
-        self.socket
-            .frame(array_of(&[uint(1), byte_item(envelope), report]));
+        self.socket.frame(send_frame(envelope, report));
     }
 
     /// The next reads from the server by `deadline`, none if nothing comes by then.

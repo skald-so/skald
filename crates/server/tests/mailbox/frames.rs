@@ -2,10 +2,9 @@
 //! a frame of a type it does not know, and the connection goes on; a frame that does not decode
 //! closes its connection, and the server serves the next one.
 
+use crate::common::cbor::{array_of, byte_item, uint};
 use crate::fixture::Fixture;
-use crate::wire::{
-    Socket, array_of, assert_nowhere, byte_item, envelope, envelopes_of, send_frame, uint,
-};
+use crate::wire::{Socket, assert_nowhere, envelope, envelopes_of, send_frame};
 
 /// The CBOR text string `text`, up to 23 bytes.
 fn short_text(text: &str) -> Vec<u8> {
@@ -45,7 +44,7 @@ fn a_malformed_frame_closes_its_connection_and_the_server_serves_the_next() {
     let fixture = Fixture::new(3_121_230_411);
     let t = &fixture.team;
     let probe = envelope(&fixture.to(t.bob.laptop.id));
-    let full = send_frame(&probe);
+    let full = send_frame(&probe, true);
     let mut non_shortest = vec![0x83, 0x18, 0x01];
     non_shortest.extend_from_slice(&full[2..]);
     let not_an_envelope = array_of(&[uint(1), byte_item(&[0x83, 0x01, 0x02, 0x03]), vec![0xf5]]);

@@ -177,6 +177,22 @@ impl SignIn {
         }
     }
 
+    /// Another instance of the server on its database, with its public address and sign-in, the
+    /// extra arguments `args` and the environment variables `envs`.
+    pub fn instance(&self, args: &[&str], envs: &[(&str, &str)]) -> Server {
+        self.instance_at(&self.db.url(), args, envs)
+    }
+
+    /// As [`SignIn::instance`], on the database at `url`, such as its database reached as another
+    /// role.
+    pub fn instance_at(&self, url: &str, args: &[&str], envs: &[(&str, &str)]) -> Server {
+        let mut all = github_settings(&self.public, &self.github);
+        all.extend_from_slice(args);
+        let mut all_envs = vec![(SECRET_ENV, CLIENT_SECRET)];
+        all_envs.extend_from_slice(envs);
+        Server::launch_at(url, "127.0.0.1:0", &all, &all_envs)
+    }
+
     /// Adds a GitHub user to the stand-in and gives it.
     pub fn user(&self, id: u64, login: &str) -> User {
         let user = User::new(id, login);
