@@ -245,6 +245,9 @@ jobs:
           Start-Service -InputObject $service
           & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      # The client's sign-up test runs this build's skald-server.
+      - name: Build the server
+        run: cargo build -p skald-server --locked
       # PGUSER and PGPASSWORD of the image name its superuser. Every failing test target shows. A
       # fresh runner's Credential Manager is the one key storage a test may use.
       - name: Test the client
