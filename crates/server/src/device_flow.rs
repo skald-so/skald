@@ -34,6 +34,9 @@ const WRONG_CODE_LIMIT: i64 = 10;
 const WRONG_CODE_WINDOW: Duration = Duration::from_secs(900);
 /// How long expired codes are kept, so that polls for them answer `expired_token`.
 const EXPIRED_KEPT: Duration = Duration::from_secs(3_600);
+/// How much sooner than the interval a poll may come without `slow_down`: the database's clock can
+/// step against the machine's.
+const CLOCK_ERROR: Duration = Duration::from_secs(1);
 /// The verification page's content security policy: no scripts, its forms only to this server,
 /// never in a frame.
 const PAGE_POLICY: &str = "default-src 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -257,10 +260,11 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
     // The row's lock makes polls for one code wait for each other: only one gives its token.
     let found: Option<(String, bool, bool)> = sqlx::query_as(
         "SELECT state, expires_at > now(),
-                coalesce(polled_at > now() - make_interval(secs => poll_interval), false)
+                coalesce(polled_at > now() - make_interval(secs => poll_interval - $2), false)
          FROM device_codes WHERE device_code_hash = $1 FOR UPDATE",
     )
     .bind(&hash)
+    .bind(CLOCK_ERROR.as_secs_f64())
     .fetch_optional(&mut *tx)
     .await?;
     let Some((code_state, live, too_soon)) = found else {

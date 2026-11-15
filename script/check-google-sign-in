@@ -25,28 +25,28 @@ check_start check-google-sign-in "$@"
 issuer=${GOOGLE_ISSUER:-https://accounts.google.com}
 issuer=${issuer%/}
 if [[ ! $issuer =~ $url_parts ]]; then
-  echo "check-google-sign-in: GOOGLE_ISSUER is not a URL" >&2
+  say "check-google-sign-in: GOOGLE_ISSUER is not a URL" >&2
   exit 2
 fi
 
 metadata() {
   local status endpoint
   status=$(get metadata "$issuer/.well-known/openid-configuration") || {
-    echo "no answer from $issuer/.well-known/openid-configuration"
+    say "no answer from $issuer/.well-known/openid-configuration"
     return 1
   }
   [[ $status == 200 ]] || {
-    echo "HTTP $status from $issuer/.well-known/openid-configuration"
+    say "HTTP $status from $issuer/.well-known/openid-configuration"
     return 1
   }
   jq -e --arg issuer "$issuer" 'objects | .issuer | strings | rtrimstr("/") == $issuer' \
     "$tmp/metadata" >/dev/null 2>&1 || {
-    echo "the metadata does not name the issuer $issuer"
+    say "the metadata does not name the issuer $issuer"
     return 1
   }
   endpoint=$(jq -r '.authorization_endpoint | strings' "$tmp/metadata")
   normal_url "$endpoint" >"$tmp/endpoint" && [[ $endpoint == http*://* ]] || {
-    echo "the metadata names no authorization endpoint"
+    say "the metadata names no authorization endpoint"
     return 1
   }
 }
@@ -58,19 +58,19 @@ verification_page() {
   query=$(cat "$tmp/query")
   scopes=$(param "$query" scope)
   [[ $scopes != *$'\n'* && $(tr ' ' '\n' <<<"$scopes" | sort) == $'email\nopenid' ]] || {
-    echo "the sign-in start does not ask for the scopes openid and email only"
+    say "the sign-in start does not ask for the scopes openid and email only"
     return 1
   }
   for name in state nonce; do
     values=$(param "$query" "$name")
     [[ -n $values && $values != *$'\n'* ]] || {
-      echo "the sign-in start does not send one $name"
+      say "the sign-in start does not send one $name"
       return 1
     }
   done
   values=$(param "$query" code_challenge_method)
   [[ $values == S256 && $(param "$query" code_challenge) =~ ^[A-Za-z0-9_-]{43}$ ]] || {
-    echo "the sign-in start does not send an S256 PKCE challenge"
+    say "the sign-in start does not send an S256 PKCE challenge"
     return 1
   }
 }
@@ -78,18 +78,18 @@ verification_page() {
 authorization() {
   local status error
   status=$(get authorization "$(cat "$tmp/location")" --location --max-redirs 10) || {
-    echo "no answer from the authorization endpoint"
+    say "no answer from the authorization endpoint"
     return 1
   }
   for error in redirect_uri_mismatch invalid_client; do
     if grep -aqE "(^|[^A-Za-z0-9_])$error([^A-Za-z0-9_]|\$)" "$tmp/authorization" \
       "$tmp/authorization.headers"; then
-      echo "the provider answers $error"
+      say "the provider answers $error"
       return 1
     fi
   done
   [[ $status == [123]?? ]] || {
-    echo "HTTP $status from the provider"
+    say "HTTP $status from the provider"
     return 1
   }
 }
