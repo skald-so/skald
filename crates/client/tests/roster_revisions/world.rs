@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use skald_crypto::SigningKey;
 use skald_github_stand_in::User;
 use skald_proto::{
-    AccountId, Cbor, Cert, DeviceId, Member, Name, NonEmpty, Role, Roster, RosterBody, SpaceId,
-    Unknown,
+    AccountId, Cbor, Cert, ChannelMember, DeviceId, Member, Name, NonEmpty, Role, Roster,
+    RosterBody, SpaceId, Unknown,
 };
 
 use super::browser::Browser;
@@ -217,7 +217,7 @@ pub struct Desk {
     pub ada: Person,
     /// The name of the account's personal space: its username.
     pub personal: String,
-    /// Revisions 1 of `clienta` and `clientb`.
+    /// Revisions 2 of `clienta` and `clientb`, with their default channels.
     pub client_a: Roster,
     pub client_b: Roster,
 }
@@ -256,14 +256,17 @@ impl Desk {
     }
 }
 
-/// `person`'s machine creates the space `name`; gives its revision 1, as the server holds it.
+/// `person`'s machine creates the space `name`, which then has revision 1 and revision 2, which
+/// adds its default channel, the one channel; gives revision 2, as the server holds it.
 pub fn create(cloud: &Cloud, person: &Person, name: &str) -> Roster {
     let created = run(&person.machine, &[CREATE_SPACE, name]);
     assert!(created.success, "{name}: {created:?}");
     let space = space_id(cloud, &person.token, name);
-    let revisions = cloud.revisions(&person.token, space);
-    assert_eq!(revisions.len(), 1, "{name}: {revisions:?}");
-    revisions[0].1.clone()
+    let mut revisions = cloud.revisions(&person.token, space);
+    assert_eq!(revisions.len(), 2, "{name}: {revisions:?}");
+    let (_, second) = revisions.remove(1);
+    assert_eq!(second.body().channels.len(), 1, "{name}: {second:?}");
+    second
 }
 
 /// From now on the relay gives `space`, named `name`, as the account's personal space, as a
@@ -289,7 +292,8 @@ pub fn mark_as_personal(cloud: &Cloud, space: SpaceId) {
 }
 
 /// The revision after `previous`, signed by `signer` with `key`, with the members `members`
-/// gives.
+/// gives. Its first channel, the default one, holds every member, as a device keeps it: a new
+/// member with `history` true.
 pub fn next(
     previous: &Roster,
     (signer, key): (DeviceId, &SigningKey),
@@ -298,6 +302,23 @@ pub fn next(
     next_with(previous, (signer, key), |body| {
         let mut list = body.members.clone().into_vec();
         members(&mut list);
+        if let Some(default) = body.channels.first_mut() {
+            default
+                .members
+                .retain(|entry| list.iter().any(|member| member.account == entry.account));
+            for member in &list {
+                if !default
+                    .members
+                    .iter()
+                    .any(|entry| entry.account == member.account)
+                {
+                    default.members.push(ChannelMember {
+                        account: member.account,
+                        history: true,
+                    });
+                }
+            }
+        }
         body.members = NonEmpty::from_vec(list).expect("a member");
     })
 }
@@ -425,6 +446,39 @@ pub fn space_certs(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<Cert> {
             Cert::from_cbor(&bytes).expect("a certificate")
         })
         .collect()
+}
+
+/// Fails unless `second` is the revision after `first` that the device `device` of `account`,
+/// with the master key `master`, signed to add the space's default channel: one `account` accepts
+/// with `certs`, whose one change is a new first channel with every member, each with `history`
+/// true, and no services.
+#[track_caller]
+pub fn assert_default_after(
+    first: &Roster,
+    second: &Roster,
+    certs: &[Cert],
+    (account, master, device): (AccountId, &[u8; 32], DeviceId),
+) {
+    skald_crypto::accept_next(first, second, certs, account, master)
+        .unwrap_or_else(|err| panic!("the revision with the default channel fails: {err}"));
+    let (before, after) = (first.body(), second.body());
+    assert_eq!(after.signer, device, "signed by another device");
+    let mut unchanged = after.clone();
+    let default = unchanged.channels.remove(0);
+    let every: Vec<ChannelMember> = (before.members.iter())
+        .map(|member| ChannelMember {
+            account: member.account,
+            history: true,
+        })
+        .collect();
+    assert_eq!(default.members, every, "the default channel's members");
+    assert!(default.services.is_empty(), "{default:?}");
+    (unchanged.revision, unchanged.prev) = (before.revision, before.prev);
+    (unchanged.signer, unchanged.timestamp) = (before.signer, before.timestamp);
+    assert_eq!(
+        &unchanged, before,
+        "it changes more than the default channel"
+    );
 }
 
 /// The words of `line`: its runs of ASCII letters, digits and `-`.

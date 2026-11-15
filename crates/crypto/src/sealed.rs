@@ -46,11 +46,12 @@ impl StateKey {
         XChaCha20Poly1305::new((&*self.0).into())
     }
 
-    /// `plaintext` sealed as item `name` of `device`: the nonce, then the ciphertext.
+    /// `plaintext` sealed as item `name` of `device`: the nonce, then the ciphertext. The caller
+    /// seals with it, too, what it keeps beside the MLS state, under names of its own.
     ///
     /// # Panics
     /// If the random generator fails.
-    pub(crate) fn seal(&self, device: DeviceId, name: &[u8], plaintext: &[u8]) -> Vec<u8> {
+    pub fn seal(&self, device: DeviceId, name: &[u8], plaintext: &[u8]) -> Vec<u8> {
         let mut nonce = [0; NONCE_LEN];
         getrandom::fill(&mut nonce).expect("the random generator failed");
         let aad = associated_data(device, name);
@@ -69,12 +70,7 @@ impl StateKey {
 
     /// The plaintext of item `name` of `device`, as [`StateKey::seal`] sealed it; `None` for
     /// anything else.
-    pub(crate) fn open(
-        &self,
-        device: DeviceId,
-        name: &[u8],
-        sealed: &[u8],
-    ) -> Option<Zeroizing<Vec<u8>>> {
+    pub fn open(&self, device: DeviceId, name: &[u8], sealed: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         let (nonce, ciphertext) = sealed.split_at_checked(NONCE_LEN)?;
         let nonce: [u8; NONCE_LEN] = nonce.try_into().ok()?;
         let aad = associated_data(device, name);
