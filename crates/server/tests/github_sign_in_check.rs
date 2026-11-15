@@ -5,9 +5,10 @@
 //! The check: `script/check-github-sign-in <server address> <client ID>`, with GitHub's address in
 //! `GITHUB_URL`, `https://github.com` without it. It needs no person and runs these steps in order:
 //! - `device authorization`: `POST <address>/auth/device` gives a user code, a device code and a
-//!   verification page address on that server;
-//! - `verification page`: the page sends a browser without a session to GitHub's authorization page,
-//!   `<GitHub>/login/oauth/authorize`, with that client ID and a callback on that server;
+//!   verification page address;
+//! - `verification page`: the page is on that server and sends a browser without a session to
+//!   GitHub's authorization page, `<GitHub>/login/oauth/authorize`, with that client ID and a
+//!   callback on that server;
 //! - `polling`: `POST <address>/auth/token` with the new device code answers
 //!   `authorization_pending`.
 //!
@@ -142,6 +143,15 @@ fn run_check(case: &str, address: &str, client_id: &str, github: &str) -> Run {
     )
 }
 
+/// A tamper that changes the device authorization's answer by `change`.
+fn to_grant(change: fn(&mut Value)) -> Tamper {
+    on("POST", DEVICE_AUTHORIZATION, move |answer| {
+        let mut grant = json_of(&answer);
+        change(&mut grant);
+        Answer::of_json(answer.status, &grant)
+    })
+}
+
 /// A tamper that changes the address the sign-in start sends the browser to, by `change`.
 fn to_github(change: impl Fn(&mut Url) + Send + Sync + 'static) -> Tamper {
     to_provider(START, change)
@@ -225,21 +235,8 @@ fn check_fails_at_device_authorization_without_a_server_with_github_sign_in() {
 }
 
 #[test]
-fn check_fails_at_device_authorization_when_it_gives_no_codes_or_page_on_that_server() {
+fn check_fails_at_device_authorization_when_it_gives_no_codes_or_page() {
     let stage = Stage::start();
-    let post = |change: fn(&mut Value)| {
-        on("POST", DEVICE_AUTHORIZATION, move |answer| {
-            let mut grant = json_of(&answer);
-            change(&mut grant);
-            Answer::of_json(answer.status, &grant)
-        })
-    };
-    let elsewhere = |grant: &mut Value| {
-        let code = grant["user_code"].as_str().expect("a user code").to_owned();
-        let page = format!("http://{ELSEWHERE}{VERIFICATION_PAGE}");
-        grant["verification_uri_complete"] = json!(format!("{page}?user_code={code}"));
-        grant["verification_uri"] = json!(page);
-    };
     let cases = [
         (
             "the server fails",
@@ -263,7 +260,7 @@ fn check_fails_at_device_authorization_when_it_gives_no_codes_or_page_on_that_se
         ),
         (
             "no user code",
-            post(|grant| {
+            to_grant(|grant| {
                 grant
                     .as_object_mut()
                     .expect("an object")
@@ -272,7 +269,7 @@ fn check_fails_at_device_authorization_when_it_gives_no_codes_or_page_on_that_se
         ),
         (
             "no device code",
-            post(|grant| {
+            to_grant(|grant| {
                 grant
                     .as_object_mut()
                     .expect("an object")
@@ -281,13 +278,12 @@ fn check_fails_at_device_authorization_when_it_gives_no_codes_or_page_on_that_se
         ),
         (
             "no verification page",
-            post(|grant| {
+            to_grant(|grant| {
                 let grant = grant.as_object_mut().expect("an object");
                 grant.remove("verification_uri");
                 grant.remove("verification_uri_complete");
             }),
         ),
-        ("a verification page on another server", post(elsewhere)),
     ];
     for (case, tamper) in cases {
         stage.assert_fails_at(Step::DeviceAuthorization, case, tamper);
@@ -306,7 +302,14 @@ fn check_fails_at_the_verification_page_when_it_sends_the_browser_elsewhere() {
             }
         })
     };
+    let elsewhere = to_grant(|grant| {
+        let code = grant["user_code"].as_str().expect("a user code").to_owned();
+        let page = format!("http://{ELSEWHERE}{VERIFICATION_PAGE}");
+        grant["verification_uri_complete"] = json!(format!("{page}?user_code={code}"));
+        grant["verification_uri"] = json!(page);
+    });
     let cases = [
+        ("a verification page on another server", elsewhere),
         (
             "the page fails",
             answer_with(

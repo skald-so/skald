@@ -24,9 +24,9 @@ use crate::instances::Event;
 use crate::oidc::OidcSettings;
 use crate::{AppState, database_failed, device_flow, links, problem};
 
-/// GitHub sign-in's start's path under the public address.
+/// GitHub sign-in's start's path under the web address.
 pub(crate) const START_PATH: &str = "/auth/github";
-/// GitHub's callback's path under the public address.
+/// GitHub's callback's path under the web address.
 pub const CALLBACK_PATH: &str = "/auth/github/callback";
 /// The problem type of a refused sign-up, named on its page.
 const SIGN_UP_CLOSED: &str = "https://skald.so/problems/sign-up-closed";
@@ -35,7 +35,7 @@ const STATE_COOKIE: &str = "skald_sign_in";
 /// The session cookie.
 const SESSION_COOKIE: &str = "skald_session";
 
-/// The server's public address: an http or https origin, such as `https://skald.example`.
+/// An address of the server: an http or https origin, such as `https://skald.example`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicUrl(Url);
 
@@ -89,8 +89,11 @@ impl FromStr for PublicUrl {
 /// Sign-in's settings: the providers and the device flow.
 #[derive(Debug, Clone)]
 pub struct SignInSettings {
-    /// The server's public address; the providers' callbacks are under it.
+    /// The server's public address, where machines and devices reach it.
     pub public_url: PublicUrl,
+    /// Where browsers sign in, if not at the public address: the providers' callbacks, the pages a
+    /// sign-in returns to, the verification page and the origin of browser forms.
+    pub web_url: Option<PublicUrl>,
     /// GitHub sign-in; off without it. The device flow is off without any provider.
     pub github: Option<GitHubApp>,
     /// Google sign-in, with the OIDC provider at Google's issuer; off without it.
@@ -106,8 +109,13 @@ pub struct SignInSettings {
 }
 
 impl SignInSettings {
+    /// Where browsers sign in: the web address, by default the public address.
+    pub(crate) fn web(&self) -> &PublicUrl {
+        self.web_url.as_ref().unwrap_or(&self.public_url)
+    }
+
     /// A cookie of `name` with `value` for `path`, which page scripts cannot read, sent only over
-    /// HTTPS under an https public address.
+    /// HTTPS under an https web address.
     fn cookie(
         &self,
         name: &str,
@@ -120,7 +128,7 @@ impl SignInSettings {
         if let Some(seconds) = max_age {
             cookie.push_str(&format!("; Max-Age={seconds}"));
         }
-        if self.public_url.secure() {
+        if self.web().secure() {
             cookie.push_str("; Secure");
         }
         HeaderValue::try_from(cookie).expect("a cookie of tokens and paths is a header value")
@@ -139,11 +147,11 @@ pub(crate) struct Flow<'a> {
     pub name: &'static str,
     /// The provider of its sign-in methods: [`GITHUB`] or an OIDC provider's issuer.
     pub provider: &'a str,
-    /// The sign-in start's path under the public address.
+    /// The sign-in start's path under the web address.
     pub start: &'static str,
-    /// The callback's path under the public address.
+    /// The callback's path under the web address.
     pub callback: &'static str,
-    /// The link start's path under the public address.
+    /// The link start's path under the web address.
     pub link: &'static str,
 }
 
@@ -291,10 +299,10 @@ pub(crate) async fn start_with<P: Provider>(
     link: Option<&[u8]>,
 ) -> Response {
     let flow = provider.flow();
-    let public = &settings.public_url;
+    let web = settings.web();
     let return_to = return_to
-        .and_then(|to| public.page(to))
-        .unwrap_or_else(|| public.page("/").expect("the root is a page of the server"));
+        .and_then(|to| web.page(to))
+        .unwrap_or_else(|| web.page("/").expect("the root is a page of the server"));
     let secrets = Secrets::new(flow.provider != GITHUB);
     let token = random_token();
     let stored = sqlx::query(
@@ -420,7 +428,7 @@ async fn hop(
     }
     let again = escape(&format!(
         "{}?{}",
-        settings.public_url.at(flow.callback),
+        settings.web().at(flow.callback),
         query.unwrap_or_default()
     ));
     let body = format!(
@@ -640,7 +648,7 @@ impl Provider for GitHubApp {
         authorize
             .query_pairs_mut()
             .append_pair("client_id", &self.client_id)
-            .append_pair("redirect_uri", &settings.public_url.at(CALLBACK_PATH))
+            .append_pair("redirect_uri", &settings.web().at(CALLBACK_PATH))
             .append_pair("state", state)
             .append_pair("code_challenge", &secrets.challenge())
             .append_pair("code_challenge_method", "S256");
@@ -654,7 +662,7 @@ impl Provider for GitHubApp {
         secrets: Secrets,
     ) -> Result<Identity, Failure> {
         let github = self.clone();
-        let callback = settings.public_url.at(CALLBACK_PATH);
+        let callback = settings.web().at(CALLBACK_PATH);
         let user = blocking(Self::NAME, move || {
             github.user(&code, &callback, &secrets.verifier)
         })
@@ -801,13 +809,13 @@ pub(crate) fn form_page_failed(doing: &str, err: sqlx::Error, policy: &'static s
     )
 }
 
-/// Whether the request comes from a page of this server, as its `Origin` says: browsers state the
-/// origin of every `POST`.
+/// Whether the request comes from a page of this server's web address, as its `Origin` says:
+/// browsers state the origin of every `POST`.
 pub(crate) fn from_this_server(settings: &SignInSettings, headers: &HeaderMap) -> bool {
     let origin = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok());
-    origin == Some(settings.public_url.origin().as_str())
+    origin == Some(settings.web().origin().as_str())
 }
 
 /// `text` safe in HTML text and attributes.

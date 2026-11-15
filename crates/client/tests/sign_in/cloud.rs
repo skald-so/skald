@@ -182,6 +182,7 @@ impl Cloud {
             });
             let sign_in = SignInSettings {
                 public_url: public.parse().expect("a public address"),
+                web_url: None,
                 github: (providers != Providers::Google).then(|| GitHubApp {
                     client_id: CLIENT_ID.to_owned(),
                     client_secret: ClientSecret::new(CLIENT_SECRET.to_owned())

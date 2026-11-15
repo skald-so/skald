@@ -1,5 +1,5 @@
 # What script/check-github-sign-in and script/check-google-sign-in share, sourced by them after
-# `set -euo pipefail`: the usage, the server's address, the requests, the steps' output, the device
+# `set -euo pipefail`: the usage, the server's addresses, the requests, the steps' output, the device
 # authorization and the verification page's sign-in start. They make their own HTTPS requests with
 # curl, which checks the server's certificate and reads no curl config.
 
@@ -36,14 +36,30 @@ normal_url() {
   put '%s%s' "$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")" "${BASH_REMATCH[3]}"
 }
 
-# check_start <name> <server address> <client ID>: checks the usage and the tools; sets check,
-# client_id, server_origin, server_path, server, the server's address without a trailing slash,
+# address <name> <url>: sets address_origin and address_path, <url>'s origin as origin prints it
+# and its path without a trailing slash; exits 2 naming <name> unless <url> is an http or https URL
+# without a query, a fragment, spaces or control characters.
+address() {
+  address_origin='' address_path=''
+  if [[ $2 =~ $url_parts && $2 != *[[:space:][:cntrl:]?#]* ]]; then
+    address_path=${BASH_REMATCH[3]%/}
+    address_origin=$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  fi
+  if [[ $address_origin != http://?* && $address_origin != https://?* ]]; then
+    say "$check: the $1 is not an http or https URL" >&2
+    exit 2
+  fi
+}
+
+# check_start <name> <server address> <client ID> [<web address>]: checks the usage and the tools;
+# sets check, client_id, server_origin, server_path, server, the server's address without a
+# trailing slash, web_origin, web_path, web, the same of the web address, by default the server's,
 # and tmp, a directory removed on exit.
 check_start() {
   check=$1
   shift
-  if [[ $# -ne 2 || -z $2 ]]; then
-    say "usage: $0 <server address> <client ID>" >&2
+  if [[ $# -lt 2 || $# -gt 3 || -z $2 ]]; then
+    say "usage: $0 <server address> <client ID> [<web address>]" >&2
     exit 2
   fi
   local tool
@@ -54,29 +70,31 @@ check_start() {
     fi
   done
   client_id=$2
-  if [[ $1 =~ $url_parts && $1 != *[[:space:][:cntrl:]?#]* ]]; then
-    server_path=${BASH_REMATCH[3]%/}
-    server_origin=$(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  address 'server address' "$1"
+  server_origin=$address_origin server_path=$address_path
+  server=$server_origin$server_path
+  if [[ $# -eq 3 ]]; then
+    address 'web address' "$3"
   fi
-  server=${server_origin:-}${server_path:-}
-  if [[ ${server_origin:-} != http://?* && ${server_origin:-} != https://?* ]]; then
-    say "$check: the server address is not an http or https URL" >&2
-    exit 2
-  fi
+  web_origin=$address_origin web_path=$address_path
+  web=$web_origin$web_path
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/$check.XXXXXX")
   trap 'rm -rf "$tmp"' EXIT
 }
 
-# on_server <url>: prints the part of <url> after the server's address; fails if <url> is not on
-# the server or has spaces or control characters.
-on_server() {
+# on_address <origin> <path> <url>: prints the part of <url> after the address <origin><path>; fails
+# if <url> is not on that address or has spaces or control characters.
+on_address() {
   local rest
-  [[ $1 != *[[:space:][:cntrl:]]* && $1 =~ $url_parts ]] || return 1
+  [[ $3 != *[[:space:][:cntrl:]]* && $3 =~ $url_parts ]] || return 1
   rest=${BASH_REMATCH[3]}
-  [[ $(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}") == "$server_origin" ]] || return 1
-  [[ $rest == "$server_path"/* ]] || return 1
-  put '%s' "${rest#"$server_path"}"
+  [[ $(origin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}") == "$1" ]] || return 1
+  [[ $rest == "$2"/* ]] || return 1
+  put '%s' "${rest#"$2"}"
 }
+
+# on_web <url>: as on_address, on the web address.
+on_web() { on_address "$web_origin" "$web_path" "$1"; }
 
 # request <name> <curl option>...: requests with curl, the URL among the options, the answer's body
 # in $tmp/<name>, its headers in $tmp/<name>.headers; prints the HTTP status. Fails without an
@@ -114,7 +132,7 @@ param() {
 }
 
 # device_authorization: POST <server>/auth/device gives a user code, a device code and a
-# verification page on that server; the answer in $tmp/device, the page's address in $tmp/page-url.
+# verification page; the answer in $tmp/device.
 device_authorization() {
   local status
   status=$(request device --header "$version" --data client_id="$machine" \
@@ -138,29 +156,58 @@ device_authorization() {
     say "no device code"
     return 1
   }
-  local uri complete
-  uri=$(jq -r '.verification_uri | strings' "$tmp/device")
-  complete=$(jq -r '.verification_uri_complete | strings' "$tmp/device")
-  [[ -n $uri ]] || {
+  jq -e '.verification_uri | strings | length > 0' "$tmp/device" >/dev/null || {
     say "no verification page"
     return 1
   }
-  on_server "$uri" >/dev/null && { [[ -z $complete ]] || on_server "$complete" >/dev/null; } || {
-    say "the verification page is not on $server"
-    return 1
-  }
-  printf '%s' "${complete:-$uri}" >"$tmp/page-url"
 }
 
-# sign_in_start <link text> <link> <authorization endpoint> <callback>: the verification page,
-# without a session, has a link on the server whose text matches the extended regular expression
-# <link text>, described as <link> in the reasons; the link sends the browser to <authorization
-# endpoint>, as normal_url prints it, with the client ID and the callback <server><callback>. The
-# address the browser is sent to in $tmp/location, its query in $tmp/query.
+# page_origin <url>: the origin of <url>, the verification page's, as origin prints it, if it has
+# only the characters of a host and port and none of the codes in $tmp/device.
+page_origin() {
+  local scheme authority shown code
+  [[ $1 =~ $url_parts ]] || return 1
+  scheme=${BASH_REMATCH[1]} authority=${BASH_REMATCH[2]}
+  [[ $authority =~ ^[][A-Za-z0-9.:-]+$ ]] || return 1
+  shown=$(origin "$scheme" "$authority")
+  for code in user_code device_code; do
+    code=$(jq -r --arg name "$code" '.[$name] | strings' "$tmp/device" |
+      tr '[:upper:]' '[:lower:]')
+    [[ -z $code || $shown != *"$code"* ]] || return 1
+  done
+  put '%s' "$shown"
+}
+
+# page_on_web: the verification page of $tmp/device is on the web address; prints its address.
+page_on_web() {
+  local uri complete off shown
+  uri=$(jq -r '.verification_uri | strings' "$tmp/device")
+  complete=$(jq -r '.verification_uri_complete | strings' "$tmp/device")
+  for off in "$uri" "$complete"; do
+    [[ -n $off ]] || continue
+    on_web "$off" >/dev/null && continue
+    if shown=$(page_origin "$off"); then
+      say "the verification page is on $shown, not on $web"
+    else
+      say "the verification page is not on $web"
+    fi
+    return 1
+  done
+  put '%s' "${complete:-$uri}"
+}
+
+# sign_in_start <link text> <link> <authorization endpoint> <callback>: the verification page is on
+# the web address and, without a session, has a link on the web address whose text matches the
+# extended regular expression <link text>, described as <link> in the reasons; the link sends the
+# browser to <authorization endpoint>, as normal_url prints it, with the client ID and the callback
+# <web><callback>. The address the browser is sent to in $tmp/location, its query in $tmp/query.
 sign_in_start() {
   local text=$1 described=$2 authorize=$3 callback=$4
   local page status link start query values
-  page=$(cat "$tmp/page-url")
+  page=$(page_on_web) || {
+    say "$page"
+    return 1
+  }
   status=$(get page "$page") || {
     say "no answer from the verification page"
     return 1
@@ -182,17 +229,17 @@ sign_in_start() {
   if [[ $link =~ ^[A-Za-z][A-Za-z0-9+.-]*: ]]; then
     start=$link
   elif [[ $link == //* ]]; then
-    start=${server_origin%%://*}:$link
+    start=${web_origin%%://*}:$link
   elif [[ $link == /* ]]; then
-    start=$server_origin$link
+    start=$web_origin$link
   elif [[ $link == '?'* ]]; then
     start=${page%%[?#]*}$link
   else
     start=${page%%[?#]*}
     start=${start%/*}/$link
   fi
-  on_server "$start" >/dev/null || {
-    say "the $described leads off $server"
+  on_web "$start" >/dev/null || {
+    say "the $described leads off $web"
     return 1
   }
   status=$(get start "$start") || {
@@ -222,8 +269,8 @@ sign_in_start() {
     return 1
   }
   values=$(param "$query" redirect_uri)
-  [[ -n $values && $(on_server "$values") == "$callback" ]] || {
-    say "the sign-in start does not send the callback $server$callback"
+  [[ -n $values && $(on_web "$values") == "$callback" ]] || {
+    say "the sign-in start does not send the callback $web$callback"
     return 1
   }
 }

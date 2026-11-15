@@ -9,9 +9,9 @@ use crate::links;
 use crate::oidc::{OidcError, OidcProvider, OidcSettings};
 use crate::sign_in::{Failure, Flow, Identity, Provider, Secrets, SignInSettings, blocking};
 
-/// The sign-in start's path under the public address.
+/// The sign-in start's path under the web address.
 pub(crate) const START_PATH: &str = "/auth/google";
-/// The callback's path under the public address: the redirect URI of the server's Google client.
+/// The callback's path under the web address: the redirect URI of the server's Google client.
 pub(crate) const CALLBACK_PATH: &str = "/auth/google/callback";
 
 /// Google, as the server reaches it: discovered at the first sign-in that reaches it, so that the
@@ -86,7 +86,7 @@ impl Provider for Google {
             .as_deref()
             .expect("an OIDC sign-in has a nonce");
         let authorize = provider.authorization_url(
-            &settings.public_url.at(CALLBACK_PATH),
+            &settings.web().at(CALLBACK_PATH),
             state,
             nonce,
             &secrets.challenge(),
@@ -104,7 +104,7 @@ impl Provider for Google {
         let Secrets { verifier, nonce } = secrets;
         let nonce = nonce.ok_or(Failure::Refused("the sign-in is not an OIDC one."))?;
         let provider = self.provider().await?;
-        let redirect_uri = settings.public_url.at(CALLBACK_PATH);
+        let redirect_uri = settings.web().at(CALLBACK_PATH);
         let identity = blocking(Self::NAME, move || {
             let id_token = provider.exchange(&code, &redirect_uri, &verifier)?;
             provider.check(&id_token, &nonce)

@@ -71,7 +71,7 @@ At start, the server writes, reads back and deletes an object of its own there, 
 
 ### Sign-in
 
-People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Who gets an account: [Sign-up](#sign-up).
+People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Who gets an account: [Sign-up](#sign-up). Browsers and machines both use your domain: leave the server setting `SKALD_WEB_URL` unset.
 
 A GitHub OAuth App, in GitHub's Settings, Developer settings, OAuth Apps, New OAuth App:
 

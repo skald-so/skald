@@ -4,19 +4,20 @@
 #   metadata              $GOOGLE_ISSUER/.well-known/openid-configuration names that issuer and an
 #                         authorization endpoint
 #   device authorization  POST <server>/auth/device gives a user code, a device code and a
-#                         verification page on that server
-#   verification page     the page, without a session, has a link on that server whose text names
-#                         Google, and the link sends the browser to the authorization endpoint with
-#                         <client ID>, the callback <server>/auth/google/callback, the scopes openid
-#                         and email only, a state, a nonce and an S256 PKCE challenge
+#                         verification page
+#   verification page     the page is on <web>, and, without a session, has a link on <web> whose
+#                         text names Google; the link sends the browser to the authorization
+#                         endpoint with <client ID>, the callback <web>/auth/google/callback, the
+#                         scopes openid and email only, a state, a nonce and an S256 PKCE challenge
 #   authorization         that address, followed through the provider's redirects, answers neither
 #                         an HTTP error nor a page that says redirect_uri_mismatch or invalid_client
+# <server> is the server's public address, <web> its web address, by default <server>.
 # Google's issuer is $GOOGLE_ISSUER, https://accounts.google.com by default. No one signs in.
 # Prints a line `<step>: pass` or `<step>: fail: <reason>` per step it runs, then `pass` or `fail`;
 # never a code the server gave, a state, a nonce or a PKCE challenge, nor curl's own messages. Exits 0
 # only when every step passes, 1 when one fails, 2 on wrong usage.
-# crates/server/tests/google_sign_in_check.rs tests it.
-# Usage: script/check-google-sign-in <server address> <client ID>
+# crates/server/tests/google_sign_in_check.rs and sign_in_checks_web_address.rs test it.
+# Usage: script/check-google-sign-in <server address> <client ID> [<web address>]
 set -euo pipefail
 
 source "$(dirname "$0")/lib/sign-in-check.sh"
