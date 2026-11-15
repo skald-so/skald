@@ -41,8 +41,18 @@
 //!
 //! Bytes are base64url without padding. Every response is checked against the OpenAPI spec.
 
-#[path = "../common/mod.rs"]
-mod common;
+// The fixture and frames of the tests of storing sent envelopes; this binary uses some of them.
+#[allow(dead_code)]
+#[path = "../mailbox/fixture.rs"]
+mod fixture;
+#[allow(dead_code)]
+#[path = "../mailbox/wire.rs"]
+mod wire;
+
+// The connections of the tests of delivering a mailbox.
+#[allow(dead_code)]
+#[path = "../mailbox_delivery/link.rs"]
+mod link;
 
 // The spaces tests' accounts and revisions; this binary uses some of them.
 #[allow(dead_code)]
@@ -52,17 +62,8 @@ mod api;
 #[path = "../spaces/rosters.rs"]
 mod rosters;
 
-// The fixture and frames of the tests of storing sent envelopes, and the connections of the tests
-// of delivering a mailbox; this binary uses some of them.
-#[allow(dead_code)]
-#[path = "../mailbox/fixture.rs"]
-mod fixture;
-#[allow(dead_code)]
-#[path = "../mailbox_delivery/link.rs"]
-mod link;
-#[allow(dead_code)]
-#[path = "../mailbox/wire.rs"]
-mod wire;
+#[path = "../common/mod.rs"]
+mod common;
 
 mod foreign;
 mod scene;
