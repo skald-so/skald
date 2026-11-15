@@ -262,3 +262,39 @@ A restore goes into a new stack on a machine without a `skald` stack: the stack'
 ```
 
 A restore that fails after its check passed leaves the new stack partly filled: `docker compose down --volumes` empties it for another try. After a refusal, it would delete the data the check found.
+
+## Upgrade
+
+To a new release, in `~/skald`:
+
+1. [The release](#the-release) with the new release's values.
+2. Its compose file and Caddy's config, and its image in `.env`:
+
+   ```sh self-host=upgrade
+   curl -fsSLO "$SKALD_FILES/docker-compose.yml"
+   curl -fsSLO "$SKALD_FILES/Caddyfile"
+   sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+   ```
+
+3. The image's signature, as in [The release](#the-release).
+4. A [backup](#backup-and-restore) into a new file, for a [rollback](#rollback).
+5. [Start](#start). The server applies the release's new migrations at start.
+
+## Rollback
+
+Back to the release before an upgrade, with the backup from that upgrade. A server refuses a database that a newer server migrated ([Cloud](dev/infrastructure.md#cloud), "Deployment"), so the rollback replaces the stack's database and attachments with the backup's: what changed after the upgrade is lost.
+
+In `~/skald`:
+
+1. [The release](#the-release) with the earlier release's values.
+2. The stack stopped, its database and attachments volumes removed, the release's files and image in place:
+
+   ```sh self-host=rollback
+   docker compose down
+   docker volume rm skald_database skald_attachments
+   curl -fsSLO "$SKALD_FILES/docker-compose.yml"
+   curl -fsSLO "$SKALD_FILES/Caddyfile"
+   sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+   ```
+
+3. The [restore](#backup-and-restore) of the backup, then [Start](#start).
