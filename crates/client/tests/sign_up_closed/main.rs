@@ -29,9 +29,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use browser::{APPROVE, Browser, CODE_FIELD, Page, SIGN_IN_GITHUB, SUBMIT};
+use common::TestDb;
 use machine::{FIRST_DEVICE, Machine, Run, SERVER, SIGN_IN, YES};
 use skald_github_stand_in::{App, GitHub, User};
-use sqlx::AssertSqlSafe;
 use tokio::runtime::Runtime;
 
 /// The fake OAuth App's client ID and secret.
@@ -61,56 +61,6 @@ fn server_binary() -> PathBuf {
         })
 }
 
-/// A new database on the PostgreSQL server of the tests; dropped on drop.
-struct Db {
-    name: String,
-}
-
-impl Db {
-    fn create() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let db = Db {
-            name: format!(
-                "skald_client_test_{}_{}",
-                process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ),
-        };
-        db.admin(&[
-            format!("DROP DATABASE IF EXISTS {}", db.name),
-            format!("CREATE DATABASE {}", db.name),
-        ]);
-        db
-    }
-
-    fn url(&self) -> String {
-        format!("{}/{}", common::server(), self.name)
-    }
-
-    fn admin(&self, statements: &[String]) {
-        let runtime = Runtime::new().expect("start a tokio runtime");
-        runtime.block_on(async {
-            let mut conn = common::connect(&format!("{}/postgres", common::server()))
-                .await
-                .expect("connect to PostgreSQL");
-            for sql in statements {
-                sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
-                    .execute(&mut conn)
-                    .await
-                    .unwrap_or_else(|err| panic!("{sql}: {err}"));
-            }
-            common::close(conn).await;
-        });
-    }
-}
-
-impl Drop for Db {
-    fn drop(&mut self) {
-        let statement = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
-        self.admin(&[statement]);
-    }
-}
-
 /// A `skald-server` process with GitHub sign-in through the stand-in and sign-up closed but for
 /// [`LISTED`]; killed on drop.
 struct Closed {
@@ -120,13 +70,13 @@ struct Closed {
     child: Child,
     /// The file its output goes to; removed on drop.
     log: PathBuf,
-    db: Db,
+    db: TestDb,
 }
 
 impl Closed {
     fn start() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let db = Db::create();
+        let db = TestDb::create(&Runtime::new().expect("start a tokio runtime"));
         let log = env::temp_dir().join(format!(
             "skald-client-sign-up-{}-{}.log",
             process::id(),

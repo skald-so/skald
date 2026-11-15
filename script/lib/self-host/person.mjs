@@ -54,23 +54,34 @@ async function open(url) {
   return response?.status();
 }
 
-if (op === "approve" && args.length === 4) {
-  const [provider, signIn, verification, code] = args;
+/** Signs in to `provider`'s stand-in at its sign-in page `signIn`, then opens `verification`. */
+async function openSignedIn(provider, signIn, verification) {
   const status = await open(signIn);
   if (status !== 200)
     await refuse(`the ${provider} stand-in's sign-in answers ${status}`);
   await open(verification);
+}
+
+/** Signs in to the server with `provider` on the page; gives the answer of its callback. */
+async function signInWith(provider) {
+  const link = page.locator(providerLink(provider));
+  if ((await link.count()) === 0) await refuse(`no sign-in with ${provider}`);
+  const callback = `/auth/${provider.toLowerCase()}/callback`;
+  const [answer] = await Promise.all([
+    page.waitForResponse(
+      (response) => new URL(response.url()).pathname === callback,
+    ),
+    link.first().click(),
+  ]);
+  await page.waitForLoadState("networkidle");
+  return answer;
+}
+
+if (op === "approve" && args.length === 4) {
+  const [provider, signIn, verification, code] = args;
+  await openSignedIn(provider, signIn, verification);
   if ((await page.locator(CODE_FIELD).count()) === 0) {
-    const link = page.locator(providerLink(provider));
-    if ((await link.count()) === 0) await refuse(`no sign-in with ${provider}`);
-    const callback = `/auth/${provider.toLowerCase()}/callback`;
-    await Promise.all([
-      page.waitForResponse(
-        (response) => new URL(response.url()).pathname === callback,
-      ),
-      link.first().click(),
-    ]);
-    await page.waitForLoadState("networkidle");
+    await signInWith(provider);
     await open(verification);
   }
   if ((await page.locator(CODE_FIELD).count()) !== 1)
@@ -84,20 +95,8 @@ if (op === "approve" && args.length === 4) {
   await submit(APPROVE);
 } else if (op === "refused" && args.length === 3) {
   const [provider, signIn, verification] = args;
-  const status = await open(signIn);
-  if (status !== 200)
-    await refuse(`the ${provider} stand-in's sign-in answers ${status}`);
-  await open(verification);
-  const link = page.locator(providerLink(provider));
-  if ((await link.count()) === 0) await refuse(`no sign-in with ${provider}`);
-  const callback = `/auth/${provider.toLowerCase()}/callback`;
-  const [answer] = await Promise.all([
-    page.waitForResponse(
-      (response) => new URL(response.url()).pathname === callback,
-    ),
-    link.first().click(),
-  ]);
-  await page.waitForLoadState("networkidle");
+  await openSignedIn(provider, signIn, verification);
+  const answer = await signInWith(provider);
   console.log(answer.status());
   console.log(await page.content());
 } else if (op === "offers" && args.length === 1) {

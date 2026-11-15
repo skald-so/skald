@@ -244,7 +244,7 @@ pub fn server() -> String {
 }
 
 /// A new empty database on the PostgreSQL server at `SKALD_TEST_DATABASE_URL`, dropped on drop.
-struct TestDb {
+pub struct TestDb {
     server: String,
     name: String,
 }
@@ -253,7 +253,7 @@ impl TestDb {
     /// The start of the names of the test databases: `<PREFIX><pid>_<n>`.
     const PREFIX: &str = "skald_client_test_";
 
-    fn create(runtime: &Runtime) -> Self {
+    pub fn create(runtime: &Runtime) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let name = format!(
             "{}{}_{}",
@@ -277,7 +277,7 @@ impl TestDb {
         db
     }
 
-    fn url(&self) -> String {
+    pub fn url(&self) -> String {
         format!("{}/{}", self.server, self.name)
     }
 

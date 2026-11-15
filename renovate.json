@@ -11,6 +11,17 @@
     "schedule": ["* 0-5 * * 1"]
   },
   "osvVulnerabilityAlerts": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The S3-compatible server's image of the tests: s3_image in script/lib/s3.sh",
+      "managerFilePatterns": ["/^script/lib/s3\\.sh$/"],
+      "matchStrings": [
+        "s3_image=(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[0-9a-f]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
   "packageRules": [
     {
       "description": "The weekly PR: patch and digest updates",

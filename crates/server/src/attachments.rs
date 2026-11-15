@@ -15,7 +15,7 @@ use url::Url;
 
 use crate::github::ClientSecret;
 use crate::http_client::{agent, printable};
-use crate::oidc::{bare, provider_url};
+use crate::oidc::bare_url;
 
 /// How long a signed request to the bucket stays valid.
 const SIGNED_FOR: Duration = Duration::from_secs(60);
@@ -47,10 +47,7 @@ impl FromStr for BucketEndpoint {
     type Err = String;
 
     fn from_str(text: &str) -> Result<Self, String> {
-        let url = provider_url(text)?;
-        bare(&url)
-            .then_some(BucketEndpoint(url))
-            .ok_or("an endpoint has no user, query or fragment".to_owned())
+        bare_url(text, "an endpoint").map(BucketEndpoint)
     }
 }
 
