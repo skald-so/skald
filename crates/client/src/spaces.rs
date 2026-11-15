@@ -22,8 +22,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
-    AccountId, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, Name, Role, Roster,
-    RosterBody, SpaceId, Unknown, VersionRange,
+    AccountId, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, Member, Name,
+    NonEmpty, Role, Roster, RosterBody, SpaceId, Unknown, VersionRange,
 };
 
 use crate::connection::{self, Connection, Method, WebSocket, printable};
@@ -132,7 +132,7 @@ pub fn create(
 
 /// Accepts the revisions of the space named `name`, which signs its default channel, and brings
 /// the groups of its channels in line ([`crate::groups`]); warns of what fails.
-fn finish(follower: &mut Follower, name: &str) {
+pub fn finish(follower: &mut Follower, name: &str) {
     let finished = follower.space(name).and_then(|space| {
         let (roster, devices) = follower.sync(&space)?;
         let mut link = groups::Link::new(follower)?;
@@ -573,15 +573,8 @@ impl Follower {
         let id = issue_channel(&mut self.connection, &self.token, space.id)
             .map_err(|err| format!("the space {name} gets no default channel yet: {err}"))?;
         let default = default_channel(id, latest.body());
-        let next = self.next_with(latest, Some(default), &[])?.to_cbor();
-        if !self
-            .state
-            .set_pending(space.id, &latest.to_cbor(), None, &next)
-            .map_err(text)?
-        {
-            return Err(CHANGED_MEANWHILE.to_owned());
-        }
-        self.store(space, next).map_err(|unsent| unsent.why)?;
+        let next = self.next_with(latest, Some(default), &[])?;
+        self.submit(space, latest, &next)?;
         Ok(true)
     }
 
@@ -602,11 +595,11 @@ impl Follower {
 
     /// Sends `pending`, in CBOR, the pending revision of `space` after revision 1, until the server
     /// takes it; gives the revision it took. When another revision came first, it accepts the new
-    /// revisions and signs the channels `pending` adds into the latest, as the next pending one: a
-    /// default channel it put first only while the latest needs one ([`needs_default`]), with
-    /// every member of the latest. It drops the pending revision when the server refuses it, when
-    /// it accepts no revision that came first, or when the latest makes this device no admin's;
-    /// and, giving the latest, when nothing of it is left to add.
+    /// revisions and signs what `pending` changes into the latest, as the next pending one
+    /// ([`Change`]). It drops the pending revision when the server refuses it, when it accepts no
+    /// revision that came first, when the latest makes this device no admin's or when the change
+    /// signed into the latest fails the checks of accepting it; and, giving the latest, when
+    /// nothing of it is left to change.
     pub fn store(&mut self, space: &state::Space, mut pending: Vec<u8>) -> Result<Roster, Unsent> {
         let (id, name) = (space.id, space.name.as_str());
         for _ in 0..follow::ATTEMPTS {
@@ -633,9 +626,9 @@ impl Follower {
                 }
                 Sent::Failed(err) => return Err(waits(err)),
                 Sent::Conflict(_) => {
-                    // Another revision came first. The change is what `pending` adds to the
+                    // Another revision came first. The change is what `pending` makes in the
                     // revision it was signed on, which the state may have accepted others after.
-                    let (latest, _, given) = self.follow(space).map_err(waits)?;
+                    let (latest, devices, given) = self.follow(space).map_err(waits)?;
                     let prev = roster.body().prev;
                     let base = given
                         .into_iter()
@@ -648,19 +641,10 @@ impl Follower {
                     } else if !admin_device(&latest, self.own.account, self.this) {
                         no_admin(&latest)
                     } else {
-                        let channels = &roster.body().channels;
-                        let mut added: Vec<Channel> = channels
-                            .iter()
-                            .filter(|new| !base.body().channels.iter().any(|old| old.id == new.id))
-                            .cloned()
-                            .collect();
-                        let first = channels.first().map(|channel| channel.id);
-                        let default = (added.first().map(|channel| channel.id) == first
-                            && first.is_some())
-                        .then(|| added.remove(0))
-                        .filter(|_| needs_default(&latest))
-                        .map(|default| default_channel(default.id, latest.body()));
-                        if default.is_none() && added.is_empty() {
+                        let change = Change::between(base.body(), roster.body());
+                        let mut body = latest.body().clone();
+                        change.onto(&mut body, needs_default(&latest));
+                        if body == *latest.body() {
                             self.state
                                 .clear_pending(id, &pending)
                                 .map_err(text)
@@ -668,19 +652,27 @@ impl Follower {
                             return Ok(latest);
                         }
                         let next = self
-                            .next_with(&latest, default, &added)
-                            .map_err(waits)?
-                            .to_cbor();
-                        let set = self
-                            .state
-                            .set_pending(id, &latest.to_cbor(), Some(&pending), &next)
-                            .map_err(text)
+                            .next_by(&latest, |next| {
+                                next.members = body.members;
+                                next.channels = body.channels;
+                            })
                             .map_err(waits)?;
-                        if !set {
-                            return Err(waits(CHANGED_MEANWHILE.to_owned()));
+                        match self.accepts(&latest, &next, &devices.certs) {
+                            Ok(()) => {
+                                let next = next.to_cbor();
+                                let set = self
+                                    .state
+                                    .set_pending(id, &latest.to_cbor(), Some(&pending), &next)
+                                    .map_err(text)
+                                    .map_err(waits)?;
+                                if !set {
+                                    return Err(waits(CHANGED_MEANWHILE.to_owned()));
+                                }
+                                pending = next;
+                                continue;
+                            }
+                            Err(err) => format!("signed into the latest revision, {err}"),
                         }
-                        pending = next;
-                        continue;
                     }
                 }
             };
@@ -704,6 +696,42 @@ impl Follower {
         })
     }
 
+    /// Fails unless this device may sign a change into `latest`, the last accepted revision of
+    /// `space`: no revision it signed waits for the server, and it is a device of an admin.
+    pub fn may_change(&self, space: &state::Space, latest: &Roster) -> Result<(), String> {
+        if self.space(&space.name)?.pending.is_some() {
+            return Err(format!(
+                "the space {} waits for the server to take a revision this device signed; this \
+                 device changes nothing in it until then",
+                space.name
+            ));
+        }
+        if !admin_device(latest, self.own.account, self.this) {
+            return Err(no_admin(latest));
+        }
+        Ok(())
+    }
+
+    /// Writes `next`, the revision after `latest` that this device signed, as the pending revision
+    /// of `space`, then sends it until the server takes it ([`Follower::store`]); gives the
+    /// revision the server took.
+    pub fn submit(
+        &mut self,
+        space: &state::Space,
+        latest: &Roster,
+        next: &Roster,
+    ) -> Result<Roster, String> {
+        let next = next.to_cbor();
+        if !self
+            .state
+            .set_pending(space.id, &latest.to_cbor(), None, &next)
+            .map_err(text)?
+        {
+            return Err(CHANGED_MEANWHILE.to_owned());
+        }
+        self.store(space, next).map_err(|unsent| unsent.why)
+    }
+
     /// The revision after `latest`, with `first` added before its channels and `channels` after
     /// them, signed by this device.
     pub fn next_with(
@@ -711,6 +739,18 @@ impl Follower {
         latest: &Roster,
         first: Option<Channel>,
         channels: &[Channel],
+    ) -> Result<Roster, String> {
+        self.next_by(latest, |body| {
+            body.channels.splice(0..0, first);
+            body.channels.extend_from_slice(channels);
+        })
+    }
+
+    /// The revision after `latest` with what `edit` changes in its body, signed by this device.
+    pub fn next_by(
+        &self,
+        latest: &Roster,
+        edit: impl FnOnce(&mut RosterBody),
     ) -> Result<Roster, String> {
         let keys = self.keys()?;
         let mut body = latest.body().clone();
@@ -721,10 +761,129 @@ impl Follower {
         body.prev = Some(latest.hash());
         body.signer = self.this;
         body.timestamp = now();
-        body.channels.splice(0..0, first);
-        body.channels.extend_from_slice(channels);
+        edit(&mut body);
         skald_crypto::sign_roster(&body, keys.signing())
             .map_err(|err| format!("revision {} of the space fails: {err}", body.revision))
+    }
+
+    /// Whether this device accepts `next` after `latest`, with `certs`, the certificates of the
+    /// space's devices, as its members do ([`skald_crypto::accept_next`]); why not otherwise.
+    pub fn accepts(&self, latest: &Roster, next: &Roster, certs: &[Cert]) -> Result<(), String> {
+        skald_crypto::accept_next(latest, next, certs, self.own.account, &self.own.master).map_err(
+            |err| {
+                format!(
+                    "revision {} of the space fails its checks: {err}",
+                    next.body().revision
+                )
+            },
+        )
+    }
+}
+
+/// What a revision this device signed changes in the one it was signed on, as a run signs it into
+/// a later one: the channels it adds, a default channel among them, the members it removes, the
+/// devices it bars, and the members it adds to and removes from channels.
+#[derive(Debug, Default, PartialEq)]
+struct Change {
+    default: Option<ChannelId>,
+    channels: Vec<Channel>,
+    removed: Vec<AccountId>,
+    excluded: Vec<(AccountId, DeviceId)>,
+    joined: Vec<(ChannelId, ChannelMember)>,
+    left: Vec<(ChannelId, AccountId)>,
+}
+
+impl Change {
+    /// What `next` changes in `base`.
+    fn between(base: &RosterBody, next: &RosterBody) -> Self {
+        let mut change = Change::default();
+        for (at, channel) in next.channels.iter().enumerate() {
+            match base.channels.iter().find(|old| old.id == channel.id) {
+                None if at == 0 => change.default = Some(channel.id),
+                None => change.channels.push(channel.clone()),
+                Some(old) => {
+                    let has = |channel: &Channel, account| {
+                        channel.members.iter().any(|entry| entry.account == account)
+                    };
+                    for entry in channel
+                        .members
+                        .iter()
+                        .filter(|entry| !has(old, entry.account))
+                    {
+                        change.joined.push((channel.id, *entry));
+                    }
+                    for entry in old
+                        .members
+                        .iter()
+                        .filter(|entry| !has(channel, entry.account))
+                    {
+                        change.left.push((channel.id, entry.account));
+                    }
+                }
+            }
+        }
+        for member in base.members.iter() {
+            let Some(kept) = next.member(member.account) else {
+                change.removed.push(member.account);
+                continue;
+            };
+            let barred = |member: &Member| member.excluded.as_deref().unwrap_or_default().to_vec();
+            let before = barred(member);
+            for device in barred(kept).into_iter().filter(|id| !before.contains(id)) {
+                change.excluded.push((member.account, device));
+            }
+        }
+        change
+            .left
+            .retain(|(_, account)| !change.removed.contains(account));
+        change
+    }
+
+    /// Makes the change in `body`, so far as it still applies: a member it removes leaves every
+    /// channel; it bars a device and adds a member to a channel only of a member of `body`; it
+    /// removes no member from the default channel, the first one, which keeps every member; and
+    /// it puts its default channel first, with every member, only if `needs_default`.
+    fn onto(&self, body: &mut RosterBody, needs_default: bool) {
+        let mut members = body.members.clone().into_vec();
+        members.retain(|member| !self.removed.contains(&member.account));
+        for member in &mut members {
+            let mut barred = member
+                .excluded
+                .clone()
+                .map_or_else(Vec::new, |e| e.into_vec());
+            for (_, device) in self.excluded.iter().filter(|(of, _)| *of == member.account) {
+                if !barred.contains(device) {
+                    barred.push(*device);
+                }
+            }
+            member.excluded = NonEmpty::from_vec(barred);
+        }
+        if let Some(members) = NonEmpty::from_vec(members) {
+            body.members = members;
+        }
+        let is_member = |account: AccountId| body.members.iter().any(|m| m.account == account);
+        let mut channels = body.channels.clone();
+        for (at, channel) in channels.iter_mut().enumerate() {
+            channel.members.retain(|entry| {
+                is_member(entry.account)
+                    && (at == 0 || !self.left.contains(&(channel.id, entry.account)))
+            });
+            for (_, entry) in self.joined.iter().filter(|(id, _)| *id == channel.id) {
+                let listed = channel.members.iter().any(|it| it.account == entry.account);
+                if is_member(entry.account) && !listed {
+                    channel.members.push(*entry);
+                }
+            }
+        }
+        channels.extend(
+            (self.channels.iter())
+                .filter(|new| !body.channels.iter().any(|old| old.id == new.id))
+                .cloned(),
+        );
+        if let Some(id) = self.default.filter(|_| needs_default) {
+            channels.insert(0, default_channel(id, body));
+        }
+        body.channels = channels;
     }
 }
 
@@ -1391,6 +1550,144 @@ pub(crate) mod tests {
         assert!(!admin_device(&excluded, ada, device(1)), "excluded");
         assert!(admin_device(&excluded, ada, device(2)));
         assert!(!admin_device(&excluded, bob, device(2)), "a member");
+    }
+
+    /// The body of a revision of `acme` with `members`, the first its admin, and `channels`, each
+    /// with its members' accounts, every one with `history` true.
+    fn acme(members: &[AccountId], channels: &[(ChannelId, &[AccountId])]) -> RosterBody {
+        let mut body = first(members[0]).body().clone();
+        for account in &members[1..] {
+            // The random end of the account's ID.
+            let handle = format!("m{}", &account.to_string()[24..]);
+            body.members.push(member(*account, &handle, [4; 32]));
+        }
+        body.channels = channels
+            .iter()
+            .map(|(id, accounts)| Channel {
+                id: *id,
+                members: accounts
+                    .iter()
+                    .map(|&account| ChannelMember {
+                        account,
+                        history: true,
+                    })
+                    .collect(),
+                services: Vec::new(),
+                unknown: Unknown::default(),
+            })
+            .collect();
+        body
+    }
+
+    /// Bars `device` of `account` in `body`.
+    fn bar(body: &mut RosterBody, account: AccountId, device: DeviceId) {
+        let mut members = body.members.clone().into_vec();
+        for member in members
+            .iter_mut()
+            .filter(|member| member.account == account)
+        {
+            member.excluded = NonEmpty::from_vec(vec![device]);
+        }
+        body.members = NonEmpty::from_vec(members).unwrap();
+    }
+
+    /// A revision that removes Carol from the space, bars a device of Bob's, removes Bob from a
+    /// channel, adds Dave to it and adds a channel changes the same in a later revision that added
+    /// Eve, who stays in every channel she is in.
+    #[test]
+    fn change_is_made_again_in_a_later_revision() {
+        let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
+        let [default, team, new] = [(); 3].map(|()| ChannelId::generate());
+        let barred = DeviceId::from_signing_key(&[9; 32]);
+        let base = acme(
+            &[ada, bob, carol, dave],
+            &[
+                (default, &[ada, bob, carol, dave]),
+                (team, &[ada, bob, carol]),
+            ],
+        );
+        let mut next = acme(
+            &[ada, bob, dave],
+            &[
+                (default, &[ada, bob, dave]),
+                (team, &[ada, dave]),
+                (new, &[ada]),
+            ],
+        );
+        next.channels[1].members[1].history = false;
+        bar(&mut next, bob, barred);
+
+        let change = Change::between(&base, &next);
+
+        let dave_in = ChannelMember {
+            account: dave,
+            history: false,
+        };
+        assert_eq!(
+            change,
+            Change {
+                default: None,
+                channels: vec![next.channels[2].clone()],
+                removed: vec![carol],
+                excluded: vec![(bob, barred)],
+                joined: vec![(team, dave_in)],
+                left: vec![(team, bob)],
+            }
+        );
+        let mut latest = acme(
+            &[ada, bob, carol, dave, eve],
+            &[
+                (default, &[ada, bob, carol, dave, eve]),
+                (team, &[ada, bob, carol, eve]),
+            ],
+        );
+        let (space, signer) = (latest.space, latest.signer);
+        change.onto(&mut latest, false);
+        let mut expected = acme(
+            &[ada, bob, dave, eve],
+            &[
+                (default, &[ada, bob, dave, eve]),
+                (team, &[ada, eve]),
+                (new, &[ada]),
+            ],
+        );
+        expected.channels[1].members.push(dave_in);
+        bar(&mut expected, bob, barred);
+        (expected.space, expected.signer) = (space, signer);
+        assert_eq!(latest, expected);
+    }
+
+    /// Of a change, what no longer applies to a later revision is left out: a removed or barred
+    /// member that is gone, a member added to a channel who left the space or is in it already, a
+    /// member removed from the default channel, and a default channel the revision does not need.
+    /// One that needs it gets it first, with every member.
+    #[test]
+    fn change_leaves_out_what_no_longer_applies() {
+        let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
+        let [default, team, added] = [(); 3].map(|()| ChannelId::generate());
+        let entry = |account| ChannelMember {
+            account,
+            history: false,
+        };
+        let change = Change {
+            default: Some(added),
+            channels: Vec::new(),
+            removed: vec![carol],
+            excluded: vec![(carol, DeviceId::from_signing_key(&[9; 32]))],
+            joined: vec![(team, entry(carol)), (team, entry(ada))],
+            left: vec![(default, bob)],
+        };
+        let latest = acme(&[ada, bob], &[(default, &[ada, bob]), (team, &[ada])]);
+
+        let mut kept = latest.clone();
+        change.onto(&mut kept, false);
+        assert_eq!(kept, latest);
+
+        let mut needing = latest.clone();
+        change.onto(&mut needing, true);
+        let mut expected = latest.clone();
+        expected.channels.insert(0, default_channel(added, &latest));
+        assert_eq!(needing, expected);
     }
 
     #[test]

@@ -64,6 +64,10 @@ skald spaces               # the device's spaces, its personal space marked, and
 skald members <space>      # a space's members, their roles and their devices with a valid certificate
 skald create-channel <space>  # add a channel to a space, as its admin
 skald channels <space>     # a space's channels and their members
+skald add-to-channel <space> <channel> <handle> --history yes|no  # add a member to a channel, as an admin
+skald remove-from-channel <space> <channel> <handle>  # remove a member from a channel other than the default one, as an admin
+skald remove-member <space> <handle>  # remove a member from the space and its channels, as an admin
+skald exclude-device <space> <device>  # bar a member's device from the space and its channels, as an admin
 skald send <channel> <text>  # send a text to a channel, encrypted in its MLS group for its other devices
 skald recv                 # receive the device's messages, checked, and the statuses of the messages it sent
 skald --agent <name> address  # the agent's address in the space of the working directory

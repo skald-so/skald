@@ -1,5 +1,6 @@
 //! The `skald` client binary.
 
+mod admin;
 mod agents;
 mod channels;
 mod connection;
@@ -179,6 +180,47 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
+    /// Removes a member from a space this device follows and from every channel of it, on a device
+    /// of an admin of it, by the space's next roster revision, which the device signs as skald
+    /// create-channel does. Member devices then remove the member's devices from the channels.
+    RemoveMember {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The member's handle, as skald members shows it.
+        #[arg(value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: String,
+    },
+    /// Bars a member's device from a space this device follows, on a device of an admin of it, by
+    /// the space's next roster revision, which the device signs as skald create-channel does.
+    /// Member devices then remove the device from the channels.
+    ExcludeDevice {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The device's ID.
+        #[arg(value_name = "DEVICE")]
+        device: String,
+    },
+    /// Adds a member of a space this device follows to a channel of it, on a device of an admin of
+    /// it, by the space's next roster revision, which the device signs as skald create-channel
+    /// does. This device adds the member's devices to the channel's group if it is in it;
+    /// otherwise they join by themselves.
+    AddToChannel {
+        #[command(flatten)]
+        member: InChannel,
+        /// Whether the member reads the channel's history from before it joined.
+        #[arg(long, value_name = "ANSWER")]
+        history: Answer,
+    },
+    /// Removes a member from a channel of a space this device follows, on a device of an admin of
+    /// it, by the space's next roster revision, which the device signs as skald create-channel
+    /// does; the default channel keeps every member. Member devices then remove the member's
+    /// devices from the channel.
+    RemoveFromChannel {
+        #[command(flatten)]
+        member: InChannel,
+    },
     /// Lists the channels of a space this device follows, as its last accepted roster revision gives
     /// them: each one's ID and its members' handles, and the devices in its group as this device
     /// holds it, or that this device is not in it. It first accepts the revisions the server has.
@@ -276,12 +318,37 @@ impl Command {
         match self {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
+            Command::RemoveMember { .. } => Some("remove-member"),
+            Command::ExcludeDevice { .. } => Some("exclude-device"),
+            Command::AddToChannel { .. } => Some("add-to-channel"),
+            Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
             Command::AddRule { .. } => Some("add-rule"),
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
             Command::ApproveBinding { .. } => Some("approve-binding"),
             _ => None,
         }
+    }
+}
+
+/// A member of a space in a channel of it, as a command names them.
+#[derive(clap::Args)]
+struct InChannel {
+    /// The space's name, such as acme.
+    #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+    space: String,
+    /// The channel's ID, as skald channels shows it.
+    #[arg(value_name = "CHANNEL")]
+    channel: String,
+    /// The member's handle, as skald members shows it.
+    #[arg(value_name = "HANDLE", allow_hyphen_values = true)]
+    handle: String,
+}
+
+impl InChannel {
+    /// The change to the space its member makes `change` of it.
+    fn edit(self, change: impl FnOnce(String, String) -> admin::Edit) -> (String, admin::Edit) {
+        (self.space, change(self.channel, self.handle))
     }
 }
 
@@ -392,6 +459,37 @@ fn main() -> ExitCode {
             )
             .and_then(channels::create),
         ),
+        Command::RemoveMember { space, handle } => edit(
+            (cli.state_dir, cli.key_storage, speaks, timeout),
+            &space,
+            admin::Edit::RemoveMember(handle),
+        ),
+        Command::ExcludeDevice { space, device } => edit(
+            (cli.state_dir, cli.key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Exclude(device),
+        ),
+        Command::AddToChannel { member, history } => {
+            let (space, change) = member.edit(|channel, handle| admin::Edit::AddToChannel {
+                channel,
+                handle,
+                history: matches!(history, Answer::Yes),
+            });
+            edit(
+                (cli.state_dir, cli.key_storage, speaks, timeout),
+                &space,
+                change,
+            )
+        }
+        Command::RemoveFromChannel { member } => {
+            let (space, change) =
+                member.edit(|channel, handle| admin::Edit::RemoveFromChannel { channel, handle });
+            edit(
+                (cli.state_dir, cli.key_storage, speaks, timeout),
+                &space,
+                change,
+            )
+        }
         Command::Channels { space } => exit(
             synced(
                 cli.state_dir,
@@ -458,6 +556,25 @@ fn synced(
     let dir = state::dir(state_dir)?;
     let scope = agents::scope(&dir, space, agent)?;
     spaces::synced(&dir, storage, speaks, timeout, space, scope)
+}
+
+/// Makes `change` in the space named `space` ([`admin::run`]), by the state in `state_dir`, its
+/// secrets in `storage`.
+fn edit(
+    (state_dir, storage, speaks, timeout): (
+        Option<PathBuf>,
+        secrets::Storage,
+        VersionRange,
+        Duration,
+    ),
+    space: &str,
+    change: admin::Edit,
+) -> ExitCode {
+    // Agents run none of the admin commands.
+    exit(
+        synced(state_dir, storage, speaks, timeout, space, false)
+            .and_then(|synced| admin::run(synced, &change)),
+    )
 }
 
 /// Exits as `result` says, printing its error.
