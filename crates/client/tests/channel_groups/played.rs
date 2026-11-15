@@ -108,6 +108,15 @@ impl Played {
         took
     }
 
+    /// Takes `envelopes` in order, as a compromised server hands them to the device beside its
+    /// mailbox, as it takes its mailbox's entries; gives what it took of each, `None` for one that
+    /// is no `mls` envelope.
+    pub fn handed(&mut self, envelopes: &[RawEnvelope]) -> Vec<Option<Took>> {
+        let took: Vec<Option<Took>> = envelopes.iter().map(|one| self.take(one)).collect();
+        self.took.extend(took.iter().flatten().cloned());
+        took
+    }
+
     fn take(&mut self, envelope: &RawEnvelope) -> Option<Took> {
         let Envelope { header, payload } = envelope.envelope().clone();
         if header.scheme != Scheme::Mls {
