@@ -1,9 +1,10 @@
 //! A person's device the tests play as its own client would, with its machine's keys and an MLS
 //! state of the tests' own: it keeps KeyPackages it made on the server, goes through its mailbox
-//! in order, joining from Welcomes and processing Commits, and sends `mls` envelopes.
+//! in order, joining from Welcomes, processing Commits and decrypting application messages, and
+//! sends `mls` envelopes.
 
 use serde_json::json;
-use skald_crypto::{GroupChange, Joining, MlsContent, MlsDevice, MlsFraming, StateKey};
+use skald_crypto::{Decrypted, GroupChange, Joining, MlsContent, MlsDevice, MlsFraming, StateKey};
 use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Envelope, Frame, Header, MessageId, NonEmpty, PROTOCOL_VERSION,
     Push, RawEnvelope, Scheme, SpaceId, Unknown,
@@ -28,6 +29,8 @@ pub enum Took {
     Changed(ChannelId, GroupChange),
     /// A Commit removed it from a channel's group.
     Removed(ChannelId),
+    /// It decrypted an application message of a channel's group, of the envelope's `msg_id`.
+    Read(ChannelId, MessageId, Decrypted),
     /// It could not use the entry.
     Failed(String),
 }
@@ -79,8 +82,9 @@ impl Played {
         Peer::connect(cloud, &self.person, &self.person.key)
     }
 
-    /// Goes through the device's mailbox from its cursor in order, joining from each Welcome and
-    /// processing each Commit, and acks it; gives what it took this time.
+    /// Goes through the device's mailbox from its cursor in order, joining from each Welcome,
+    /// processing each Commit and decrypting each application message, and acks it; gives what it
+    /// took this time.
     pub fn take_in(&mut self, cloud: &Cloud) -> Vec<Took> {
         let mut peer = self.connect(cloud);
         let entries = peer.catch_up(self.cursor);
@@ -135,6 +139,16 @@ impl Played {
                     Err(err) => Took::Failed(format!("a Commit of {channel}: {err:?}")),
                 }
             }
+            Some(MlsFraming::Message {
+                content: MlsContent::Application,
+                ..
+            }) => {
+                let channel = header.channel;
+                match self.mls.decrypt(channel, &payload) {
+                    Ok(read) => Took::Read(channel, header.msg_id, read),
+                    Err(err) => Took::Failed(format!("a message of {channel}: {err:?}")),
+                }
+            }
             _ => return None,
         })
     }
@@ -167,6 +181,25 @@ impl Played {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The application messages of `channel` it decrypted, in order, each with its envelope's
+    /// `msg_id`.
+    pub fn read_in(&self, channel: ChannelId) -> Vec<(MessageId, Decrypted)> {
+        self.took
+            .iter()
+            .filter_map(|took| match took {
+                Took::Read(of, msg_id, read) if *of == channel => Some((*msg_id, read.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Whether a Commit removed it from `channel`'s group.
+    pub fn removed_from(&self, channel: ChannelId) -> bool {
+        self.took
+            .iter()
+            .any(|took| matches!(took, Took::Removed(of) if *of == channel))
     }
 
     /// The member devices of `channel`'s group as the device holds it.
