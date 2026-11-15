@@ -314,7 +314,7 @@
       "post": {
         "operationId": "storeRevocation",
         "summary": "Store a revocation",
-        "description": "A device of the session's account stores a revocation of one of the account's devices (docs/protocol/membership.md, \"Revocation\"), as the bytes the server got. The server stores it only if it counts against the account's master key, the certificates the server holds and the revocations it stored before. Once stored, each device that checks 3 and 4 of \"Device checks\" revoke with the account's revocations has no certificate wherever the server checks one: its mailbox entries expire, its connections close and it gets no later entry.",
+        "description": "A device of the session's account stores a revocation of one of the account's devices (docs/protocol/membership.md, \"Revocation\"), as the bytes the server got. The server stores it only if it counts against the account's master key, the certificates the server holds and the revocations it stored before. Once stored, each device that checks 3 and 4 of \"Device checks\" revoke with the account's revocations has no certificate wherever the server checks one: its mailbox entries expire, its KeyPackages are deleted, its connections close and it gets no later entry.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -1775,6 +1775,236 @@
         }
       }
     },
+    "/devices/{device}/key-packages": {
+      "get": {
+        "operationId": "getKeyPackageCount",
+        "summary": "A device's KeyPackages",
+        "description": "How many unused KeyPackages a device of the session's account has, and whether its last-resort one is to be replaced (docs/protocol/membership.md, \"KeyPackages\"). The server deletes expired ones first.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Device"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The device's KeyPackages: how many unused ones expire in more than 7 days, and whether its last-resort one is to be replaced.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyPackageCount"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-device`: the session's account has no such device.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "uploadKeyPackages",
+        "summary": "Upload a device's KeyPackages",
+        "description": "Takes KeyPackages of a `client` device of the session's account with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, \"KeyPackages\"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's; the last-resort one also carries the `last_resort` extension. One that fails refuses them all. The same KeyPackage again is stored once.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Device"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyPackageUpload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Taken: the device's KeyPackages after the upload.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyPackageCount"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the upload is invalid: a malformed body, or the problem `https://skald.so/problems/invalid-key-package`, a KeyPackage that fails the checks.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The device is not a `client` device with a certificate, or is revoked, or it would hold more than 100 unused KeyPackages.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-device`: the session's account has no such device.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "getHealth",
@@ -1796,6 +2026,105 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HealthUnavailable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/key-packages": {
+      "post": {
+        "operationId": "handOutKeyPackages",
+        "summary": "KeyPackages to add devices",
+        "description": "Hands out one KeyPackage of each device asked for that is a `client` device with a certificate, not revoked, of an account that shares a space with the session's (docs/protocol/membership.md, \"KeyPackages\"): another one, which the server then deletes, or, once none is left, the device's last-resort one, which it keeps. No expired one, and no KeyPackage to two requests.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyPackageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The KeyPackages handed out, at most one per device; a device with none for the session is left out.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HandedOutKeyPackages"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body or a device ID that is not one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -3217,6 +3546,15 @@
           "$ref": "#/components/schemas/ChannelId"
         }
       },
+      "Device": {
+        "name": "device",
+        "in": "path",
+        "required": true,
+        "description": "The device's ID.",
+        "schema": {
+          "$ref": "#/components/schemas/DeviceId"
+        }
+      },
       "ProtocolVersion": {
         "name": "Skald-Protocol-Version",
         "in": "header",
@@ -3511,6 +3849,32 @@
         },
         "additionalProperties": false
       },
+      "HandedOutKeyPackage": {
+        "type": "object",
+        "required": ["device", "key_package"],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "key_package": {
+            "$ref": "#/components/schemas/KeyPackage"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HandedOutKeyPackages": {
+        "type": "object",
+        "required": ["key_packages"],
+        "properties": {
+          "key_packages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HandedOutKeyPackage"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Health": {
         "type": "object",
         "required": ["status"],
@@ -3529,6 +3893,56 @@
           "status": {
             "type": "string",
             "enum": ["unavailable"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "KeyPackage": {
+        "description": "A KeyPackage in an `MLSMessage` (RFC 9420, §6 and §10) in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "KeyPackageCount": {
+        "type": "object",
+        "required": ["unused", "replace_last_resort"],
+        "properties": {
+          "unused": {
+            "description": "The device's unused KeyPackages, the last-resort one aside, that expire in more than 7 days.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "replace_last_resort": {
+            "description": "Whether the device has no last-resort KeyPackage, or one that was handed out or expires within 7 days.",
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "KeyPackageRequest": {
+        "type": "object",
+        "required": ["devices"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceId"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "KeyPackageUpload": {
+        "description": "Either field may be left out.",
+        "type": "object",
+        "properties": {
+          "key_packages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyPackage"
+            }
+          },
+          "last_resort": {
+            "$ref": "#/components/schemas/KeyPackage"
           }
         },
         "additionalProperties": false

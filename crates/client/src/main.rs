@@ -7,6 +7,7 @@ mod device;
 mod devices;
 mod folders;
 mod follow;
+mod key_packages;
 mod plain_path;
 mod recv;
 mod secrets;
@@ -113,7 +114,8 @@ enum Command {
     /// At its first sign-in, the machine generates its device's keys, which never leave it, and
     /// registers the device. The account's first device creates the account's master key, issues
     /// its own certificate with it and signs the account's personal space as its admin; any other
-    /// device waits for linking.
+    /// device waits for linking. A device that holds its certificate keeps its KeyPackages, with
+    /// which others add it to channels, on the server, here and on each skald send and skald recv.
     SignIn {
         /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
         /// http://localhost:8080.

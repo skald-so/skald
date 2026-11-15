@@ -84,6 +84,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 **Can:**
 - Sign in as a user, as can each provider linked to the user's account, and do what the server allows without the user's keys: register devices no linked device certifies, see the web UI's non-secret sections, and revoke the user's invites, sessions and tokens.
 - Sign in before the user's first device, as can whoever holds the user's sign-in: its device creates the account's master key and holds the account's root of trust for good, so the account stays unusable for its user. Members of a space it creates or joins as the account trust its devices as the account's, with no warning ([membership.md](protocol/membership.md#security-considerations)).
+- Take the KeyPackages of the account's devices, and upload again those that were used, so that Adds with them fail: a session uploads only KeyPackages the device signed ([KeyPackages](protocol/membership.md#keypackages)).
 - GitHub: sign up as a listed GitHub login on a server whose sign-up is closed ([self-host.md, "Sign-up"](self-host.md#sign-up)).
 - Persuade the user to enter a link code its own device shows, which links that device with the `name` and kind it chose ([membership.md](protocol/membership.md#security-considerations)).
 - GitHub: list an SSH key of its choice as the user's, so a device key signed with it passes the SSH signature check, or a genuine one fails it as a key change ([Device certificate](protocol/membership.md#device-certificate)).

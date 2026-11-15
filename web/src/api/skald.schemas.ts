@@ -189,6 +189,30 @@ export interface DeviceRegistration {
   name: string;
 }
 
+export interface KeyPackageCount {
+  /**
+   * The device's unused KeyPackages, the last-resort one aside, that expire in more than 7 days.
+   * @minimum 0
+   */
+  unused: number;
+  /** Whether the device has no last-resort KeyPackage, or one that was handed out or expires within 7 days. */
+  replace_last_resort: boolean;
+}
+
+/**
+ * A KeyPackage in an `MLSMessage` (RFC 9420, §6 and §10) in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type KeyPackage = string;
+
+/**
+ * Either field may be left out.
+ */
+export interface KeyPackageUpload {
+  key_packages?: KeyPackage[];
+  last_resort?: KeyPackage;
+}
+
 export type HealthStatus = (typeof HealthStatus)[keyof typeof HealthStatus];
 
 export const HealthStatus = {
@@ -208,6 +232,19 @@ export const HealthUnavailableStatus = {
 
 export interface HealthUnavailable {
   status: HealthUnavailableStatus;
+}
+
+export interface KeyPackageRequest {
+  devices: DeviceId[];
+}
+
+export interface HandedOutKeyPackage {
+  device: DeviceId;
+  key_package: KeyPackage;
+}
+
+export interface HandedOutKeyPackages {
+  key_packages: HandedOutKeyPackage[];
 }
 
 export interface Protocol {

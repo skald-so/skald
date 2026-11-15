@@ -4,9 +4,13 @@
 use mls_rs::{
     CipherSuite, MlsMessage, ProtocolVersion,
     crypto::HpkePublicKey,
+    extension::{MlsCodecExtension as _, recommended::LastResortKeyPackageExt},
+    external_client::ExternalClient,
     group::{ExportedTree, LeafNode, LeafNodeSource, Node},
     mls_rs_codec::{MlsDecode as _, MlsEncode as _},
+    time::MlsTime,
 };
+use mls_rs_crypto_rustcrypto::RustCryptoProvider;
 use skald_proto::Cert;
 
 use super::{MlsError, profile};
@@ -32,6 +36,48 @@ impl AsRef<[u8]> for KeyPackage {
     }
 }
 
+/// A KeyPackage of another device as the server takes it ([`check_key_package`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckedKeyPackage {
+    /// The end of its lifetime, its `not_after`, in seconds since the Unix epoch.
+    pub expires: u64,
+    /// Whether it carries the `last_resort` extension.
+    pub last_resort: bool,
+}
+
+/// Checks the KeyPackage in `message`, an `MLSMessage`, of the device of `cert` at the caller's
+/// time `now`, as a device checks one before it adds it ("KeyPackages"): its MLS signatures
+/// verify, its ciphersuite is `0x0001`, its lifetime holds at `now` and spans at most 60 days, and
+/// its leaf keeps to the profile with the device ID and signing key of `cert`. The caller checks
+/// `cert` itself.
+///
+/// # Errors
+/// [`MlsError::Malformed`] if `message` is not a KeyPackage; [`MlsError::Profile`] if its
+/// ciphersuite or leaf breaks the profile; [`MlsError::Lifetime`] if its lifetime fails;
+/// [`MlsError::NotAdmitted`] if it is another device's; [`MlsError::Mls`] if mls-rs refuses it,
+/// such as a signature that does not verify.
+pub fn check_key_package(
+    message: &[u8],
+    cert: &Cert,
+    now: u64,
+) -> Result<CheckedKeyPackage, MlsError> {
+    let message = super::message(message, mls_rs::WireFormat::KeyPackage)?;
+    let expires = check(&message, std::slice::from_ref(cert), now)?;
+    let package = ExternalClient::builder()
+        .crypto_provider(RustCryptoProvider::with_enabled_cipher_suites(vec![
+            profile::SUITE,
+        ]))
+        .identity_provider(profile::Profile)
+        .build()
+        .validate_key_package(message, Some(MlsTime::from(now)))?;
+    Ok(CheckedKeyPackage {
+        expires,
+        last_resort: package
+            .extensions
+            .has_extension(LastResortKeyPackageExt::extension_type()),
+    })
+}
+
 /// The start of the lifetime of a KeyPackage made at the caller's time `now`.
 ///
 /// # Errors
@@ -47,13 +93,13 @@ pub(super) fn lifetime_start(now: u64) -> Result<u64, MlsError> {
 /// Checks the KeyPackage in `message` before an Add at the caller's time `now`: ciphersuite
 /// `0x0001`, a lifetime that holds at `now` and spans at most [`LIFETIME`], and a leaf that keeps
 /// to the profile with the device ID and signing key of one of the `admitted` certificates. mls-rs
-/// verifies its signatures when it commits the Add.
+/// verifies its signatures when it commits the Add. Gives the end of its lifetime, its `not_after`.
 ///
 /// # Errors
 /// [`MlsError::Malformed`] if `message` holds no KeyPackage; [`MlsError::Profile`] if its
 /// ciphersuite or leaf breaks the profile; [`MlsError::Lifetime`] if its lifetime fails;
 /// [`MlsError::NotAdmitted`] if no certificate of `admitted` is its device's.
-pub(super) fn check(message: &MlsMessage, admitted: &[Cert], now: u64) -> Result<(), MlsError> {
+pub(super) fn check(message: &MlsMessage, admitted: &[Cert], now: u64) -> Result<u64, MlsError> {
     let package = message.as_key_package().ok_or(MlsError::Malformed)?;
     if package.cipher_suite() != profile::SUITE {
         return Err(MlsError::Profile);
@@ -71,7 +117,7 @@ pub(super) fn check(message: &MlsMessage, admitted: &[Cert], now: u64) -> Result
         profile::device_of(package.signing_identity()).map_err(|_| MlsError::Profile)?;
     let admits = |cert: &Cert| cert.body().device == device && cert.body().signing == signing;
     if admitted.iter().any(admits) {
-        Ok(())
+        Ok(not_after)
     } else {
         Err(MlsError::NotAdmitted(device))
     }

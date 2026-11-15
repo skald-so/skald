@@ -15,7 +15,9 @@ use mls_rs::{
     group::{LeafNode, LeafNodeSource},
     mls_rs_codec::{MlsDecode, MlsEncode},
 };
-use skald_crypto::{KeyPackage, MlsDevice, MlsError, SealedState, issue};
+use skald_crypto::{
+    CheckedKeyPackage, KeyPackage, MlsDevice, MlsError, SealedState, check_key_package, issue,
+};
 use skald_proto::{AccountId, Cert, CertBody, ChannelId, DeviceKind, Unknown};
 
 use crate::fixtures::{device_id, load, new_state, signing_key};
@@ -530,4 +532,48 @@ fn an_expired_key_packages_private_keys_are_gone_once_a_step_runs_past_its_expir
         try_join(69, &mut kept, &welcome, T + 2 * DAY).expect("the keys before the expiry join"),
         channel
     );
+}
+
+/// The server's check of a KeyPackage it takes gives its expiry and whether it is the last-resort
+/// one, and refuses one of another device, of a lifetime that does not hold, of another
+/// ciphersuite or with a signature that does not verify.
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn the_servers_check_reads_a_key_package_and_refuses_one_that_fails() {
+    let mut state = new_state(70);
+    let package = key_package(70, &mut state, T);
+    let last = last_resort(70, &mut state, T);
+    for (made, last_resort) in [(&package, false), (&last, true)] {
+        assert_eq!(
+            check_key_package(&made.message, &cert(70), T + DAY).expect("taken"),
+            CheckedKeyPackage {
+                expires: made.expires,
+                last_resort,
+            }
+        );
+    }
+
+    let mut altered = package.message.clone();
+    let index = altered.len() - 1;
+    altered[index] ^= 0x40;
+    let other_suite = foreign_key_package(70, CipherSuite::CURVE25519_CHACHA, LIFETIME, T);
+    let refused: [(&[u8], Cert, u64, &str); 6] = [
+        (
+            &package.message,
+            cert(71),
+            T,
+            "another device's certificate",
+        ),
+        (&package.message, cert(70), T - 2 * HOUR, "not holding yet"),
+        (&package.message, cert(70), T + LIFETIME, "holding no more"),
+        (&other_suite, cert(70), T, "ciphersuite 0x0003"),
+        (&altered, cert(70), T, "a signature that does not verify"),
+        (b"not a KeyPackage", cert(70), T, "not a KeyPackage"),
+    ];
+    for (message, cert, now, what) in refused {
+        assert!(
+            check_key_package(message, &cert, now).is_err(),
+            "refused: {what}"
+        );
+    }
 }
