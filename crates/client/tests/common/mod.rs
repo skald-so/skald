@@ -5,6 +5,7 @@ use std::env;
 use std::future::Future;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener};
+use std::pin::Pin;
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,6 +14,10 @@ use std::time::{Duration, Instant};
 
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 use tokio::runtime::Runtime;
+
+#[path = "../../../server/tests/common/connections.rs"]
+mod connections;
+use connections::{Database, maintenance};
 
 pub const CLIENT: &str = env!("CARGO_BIN_EXE_skald");
 
@@ -95,7 +100,7 @@ impl Server {
     /// Starts the server with the settings `settings` gives for the address it listens on.
     pub fn start_with(settings: impl FnOnce(SocketAddr) -> skald_server::Settings) -> Self {
         let runtime = Runtime::new().expect("start a tokio runtime");
-        let db = TestDb::create(&runtime);
+        let db = TestDb::create();
         let url = db.url();
         let pool = runtime
             .block_on(retried_on_reset("connect to the test database", || {
@@ -130,12 +135,10 @@ impl Server {
     /// What every table but `_sqlx_migrations` holds, one XML document per table, whatever its
     /// schema; byte strings in hex, which, unlike base64 there, has no line breaks.
     pub fn rows(&self) -> Vec<String> {
-        let runtime = Runtime::new().expect("start a tokio runtime");
-        runtime
-            .block_on(async {
-                let mut conn = connect(&self.db.url()).await?;
+        self.db
+            .query(async |conn| {
                 sqlx::raw_sql("SET xmlbinary = hex")
-                    .execute(&mut conn)
+                    .execute(&mut *conn)
                     .await?;
                 let tables: Vec<(String,)> = sqlx::query_as(
                     "SELECT query_to_xml(format('SELECT * FROM %I.%I', table_schema, table_name),
@@ -145,24 +148,17 @@ impl Server {
                        AND table_schema NOT IN ('pg_catalog', 'information_schema')
                        AND table_name <> '_sqlx_migrations'",
                 )
-                .fetch_all(&mut conn)
+                .fetch_all(conn)
                 .await?;
-                close(conn).await;
-                Ok::<_, sqlx::Error>(tables.into_iter().map(|(table,)| table).collect())
+                Ok(tables.into_iter().map(|(table,)| table).collect())
             })
             .expect("read the database's rows")
     }
 
     /// Runs `sql`, one or more statements, on the server's database, as an operator would.
     pub fn execute(&self, sql: &str) {
-        let runtime = Runtime::new().expect("start a tokio runtime");
-        runtime
-            .block_on(async {
-                let mut conn = connect(&self.db.url()).await?;
-                sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut conn).await?;
-                close(conn).await;
-                Ok::<_, sqlx::Error>(())
-            })
+        self.db
+            .query(async |conn| sqlx::raw_sql(AssertSqlSafe(sql)).execute(conn).await)
             .unwrap_or_else(|err| panic!("run {sql:?} on the database: {err}"));
     }
 }
@@ -218,22 +214,25 @@ pub async fn close(conn: PgConnection) {
 
 /// The names of the test databases this process has on the PostgreSQL server.
 pub fn test_databases() -> Vec<String> {
-    let runtime = Runtime::new().expect("start a tokio runtime");
     let prefix = format!("{}{}_", TestDb::PREFIX, process::id());
-    runtime
-        .block_on(async {
-            let mut conn = connect(&format!("{}/postgres", server())).await?;
-            let names: Vec<(String,)> = sqlx::query_as("SELECT datname FROM pg_database")
-                .fetch_all(&mut conn)
-                .await?;
-            close(conn).await;
-            Ok::<_, sqlx::Error>(names)
+    maintenance(&server(), connect_to)
+        .run(async |conn| {
+            sqlx::query_as::<_, (String,)>("SELECT datname FROM pg_database")
+                .fetch_all(conn)
+                .await
         })
         .expect("list the databases")
         .into_iter()
         .map(|(name,)| name)
         .filter(|name| name.starts_with(&prefix))
         .collect()
+}
+
+/// Opens a connection to the database at `url`, as [`connect`] does.
+fn connect_to(
+    url: String,
+) -> Pin<Box<dyn Future<Output = Result<PgConnection, sqlx::Error>> + Send>> {
+    Box::pin(async move { connect(&url).await })
 }
 
 /// The PostgreSQL server at `SKALD_TEST_DATABASE_URL`: a connection URL without a database name,
@@ -245,15 +244,14 @@ pub fn server() -> String {
 
 /// A new empty database on the PostgreSQL server at `SKALD_TEST_DATABASE_URL`, dropped on drop.
 pub struct TestDb {
-    server: String,
-    name: String,
+    db: Database,
 }
 
 impl TestDb {
     /// The start of the names of the test databases: `<PREFIX><pid>_<n>`.
     const PREFIX: &str = "skald_client_test_";
 
-    pub fn create(runtime: &Runtime) -> Self {
+    pub fn create() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let name = format!(
             "{}{}_{}",
@@ -261,52 +259,18 @@ impl TestDb {
             process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
-        // Dropped on drop from here on: also when making it fails.
-        let db = TestDb {
-            server: server(),
-            name,
-        };
-        db.admin(
-            runtime,
-            &[
-                format!("DROP DATABASE IF EXISTS {}", db.name),
-                format!("CREATE DATABASE {}", db.name),
-            ],
-        )
-        .expect("create a test database");
-        db
-    }
-
-    pub fn url(&self) -> String {
-        format!("{}/{}", self.server, self.name)
-    }
-
-    /// Runs `statements` one by one in the `postgres` maintenance database of the server: some,
-    /// like `CREATE DATABASE`, cannot share a transaction.
-    fn admin(&self, runtime: &Runtime, statements: &[String]) -> Result<(), String> {
-        runtime.block_on(async {
-            let mut conn = connect(&format!("{}/postgres", self.server))
-                .await
-                .map_err(|err| format!("connect: {err:?}"))?;
-            for sql in statements {
-                sqlx::raw_sql(AssertSqlSafe(sql.as_str()))
-                    .execute(&mut conn)
-                    .await
-                    .map_err(|err| format!("{sql}: {err:?}"))?;
-            }
-            close(conn).await;
-            Ok(())
-        })
+        TestDb {
+            db: Database::create(server(), name, connect_to),
+        }
     }
 }
 
-impl Drop for TestDb {
-    fn drop(&mut self) {
-        let runtime = Runtime::new().expect("start a tokio runtime");
-        let statement = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name);
-        if let Err(err) = self.admin(&runtime, &[statement]) {
-            eprintln!("cannot drop the test database {}: {err}", self.name);
-        }
+/// Its URL and the queries on its kept connections.
+impl std::ops::Deref for TestDb {
+    type Target = Database;
+
+    fn deref(&self) -> &Database {
+        &self.db
     }
 }
 
