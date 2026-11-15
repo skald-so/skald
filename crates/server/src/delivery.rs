@@ -13,21 +13,48 @@ use std::time::Duration;
 use skald_proto::{DeliveryStatus, DeviceId, Id, Kind, Push, RawEnvelope, ServerStatus, Unknown};
 use sqlx::postgres::PgArguments;
 use sqlx::query::QueryAs;
-use sqlx::{PgPool, Postgres};
+use sqlx::{PgConnection, PgPool, Postgres};
 use tokio::sync::watch;
 
 use crate::expiry;
+use crate::instances::{Event, Instance};
 
 /// How many entries the server reads from a mailbox at a time.
 const PAGE: i64 = 100;
 
-/// Wakes a device's connections when an entry is added to its mailbox, on this instance.
-#[derive(Default)]
+/// Wakes a device's connections when an entry is added to its mailbox, on this instance, and tells
+/// the other instances.
 pub(crate) struct Wakers {
     by_device: Mutex<HashMap<DeviceId, watch::Sender<()>>>,
+    instance: Instance,
 }
 
 impl Wakers {
+    pub(crate) fn new(instance: Instance) -> Self {
+        Wakers {
+            by_device: Mutex::default(),
+            instance,
+        }
+    }
+
+    /// Tells the other instances on `conn`, once its transaction commits, that the mailboxes of
+    /// `devices` have new entries.
+    pub(crate) async fn tell(
+        &self,
+        conn: &mut PgConnection,
+        devices: impl IntoIterator<Item = DeviceId>,
+    ) -> Result<(), sqlx::Error> {
+        let events: Vec<Event> = devices.into_iter().map(Event::Entries).collect();
+        self.instance.tell(conn, &events).await
+    }
+
+    /// Wakes the connections of every device, which may have missed wakes.
+    pub(crate) fn wake_all(&self) {
+        for sender in self.by_device.lock().expect("the wakers").values() {
+            sender.send_replace(());
+        }
+    }
+
     /// Wakes the connections of `device`, whose mailbox has a new entry.
     pub(crate) fn wake(&self, device: DeviceId) {
         if let Some(sender) = self.by_device.lock().expect("the wakers").get(&device) {
@@ -283,8 +310,8 @@ pub(crate) use removing;
 
 /// Runs `query`, a [`removing!`] one, in a transaction that also adds `status` to the sending
 /// device's mailbox for each message to report on, and deletes the envelopes that no entry refers
-/// to any more; wakes the sending devices' connections in `wakers`. Gives the number of entries it
-/// removed.
+/// to any more; wakes the sending devices' connections in `wakers`, on each instance. Gives the
+/// number of entries it removed.
 pub(crate) async fn remove<'q>(
     db: &PgPool,
     wakers: &Wakers,
@@ -329,6 +356,7 @@ pub(crate) async fn remove<'q>(
     .bind(envelopes)
     .execute(&mut *tx)
     .await?;
+    wakers.tell(&mut tx, senders.iter().copied()).await?;
     tx.commit().await?;
     for sender in senders {
         wakers.wake(sender);
@@ -351,7 +379,7 @@ mod tests {
 
     #[test]
     fn a_device_is_unsubscribed_once_its_last_subscription_drops() {
-        let wakers = Arc::new(Wakers::default());
+        let wakers = Arc::new(Wakers::new(Instance::new()));
         let first = wakers.subscribe(device(1));
         let second = wakers.subscribe(device(1));
         assert_eq!(subscribed(&wakers), [device(1)]);

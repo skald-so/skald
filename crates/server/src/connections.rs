@@ -32,6 +32,8 @@ use crate::{AppState, database_failed};
 const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
 /// How long the server waits for a connection's `auth`.
 const PROOF_WAIT: Duration = Duration::from_secs(5);
+/// How long a proved connection waits for the instance to listen to the others.
+const LISTEN_WAIT: Duration = Duration::from_secs(5);
 
 /// Why the server closes a connection: the reasons of "Connecting".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +112,19 @@ impl Connections {
             id,
         };
         (registration, ended)
+    }
+
+    /// The SHA-256s of the tokens of the sessions with connections, each once.
+    pub(crate) fn sessions(&self) -> Vec<Vec<u8>> {
+        let by_device = self.by_device.lock().expect("the connections");
+        let mut sessions: Vec<Vec<u8>> = by_device
+            .values()
+            .flatten()
+            .map(|held| held.session.clone())
+            .collect();
+        sessions.sort();
+        sessions.dedup();
+        sessions
     }
 
     /// Closes every connection of the session whose token's SHA-256 is `session`.
@@ -199,6 +214,13 @@ struct Proved {
 async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
     match prove(&state, &mut socket).await {
         Ok(Some(proved)) => {
+            // Until the instance listens to the others, a connection would miss what they tell.
+            if tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
+                .await
+                .is_err()
+            {
+                return close(socket, Closing::ServerError).await;
+            }
             let sender = Sender {
                 device: proved.device,
                 account: proved.account,
@@ -286,7 +308,9 @@ async fn serve_frame(
         // A frame of a type the server does not know, or one it does not serve yet.
         Ok(_) => return Ok(()),
         Err(_) => match Frame::misaddressed_send(bytes) {
-            Some(header) => mailboxes::misaddressed(&state.db, sender, &header).await,
+            Some(header) => {
+                mailboxes::misaddressed(&state.db, &state.wakers, sender, &header).await
+            }
             None => return Err(Stop::Close(Closing::Malformed)),
         },
     };

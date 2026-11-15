@@ -143,8 +143,24 @@ impl Server {
         args: &[&str],
         envs: &[(&str, &str)],
     ) -> Result<Self, String> {
-        let url = db.url();
-        let mut all = vec!["--listen", listen, "--database-url", &url];
+        Self::try_launch_at(&db.url(), listen, args, envs)
+    }
+
+    /// As [`Server::launch`], on the database at `url`, such as a test database reached as another
+    /// role.
+    pub fn launch_at(url: &str, listen: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
+        Self::try_launch_at(url, listen, args, envs)
+            .unwrap_or_else(|line| panic!("unexpected skald-server output: {line:?}"))
+    }
+
+    /// As [`Server::try_launch`], on the database at `url`.
+    pub fn try_launch_at(
+        url: &str,
+        listen: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Result<Self, String> {
+        let mut all = vec!["--listen", listen, "--database-url", url];
         all.extend_from_slice(args);
         let mut child = Command::new(SERVER)
             .args(&all)
@@ -448,6 +464,15 @@ impl TestDb {
 
     pub fn url(&self) -> String {
         format!("{}/{}", self.server, self.name)
+    }
+
+    /// The URL of this database for the role `role` with `password`.
+    pub fn url_as(&self, role: &str, password: &str) -> String {
+        let mut url = url::Url::parse(&self.url()).expect("a database URL");
+        url.set_username(role).expect("a URL with a user");
+        url.set_password(Some(password))
+            .expect("a URL with a password");
+        url.into()
     }
 
     /// Runs `sql` in this database.

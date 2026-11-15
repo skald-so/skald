@@ -68,7 +68,7 @@ fn send_key(header: &Header) -> SendKey {
 }
 
 /// The answer to `sender`'s send of `envelope` with `report`, under `limits`; a stored envelope
-/// wakes its recipient's connections in `wakers`.
+/// wakes its recipient's connections in `wakers`, on each instance.
 pub(crate) async fn send(
     db: &PgPool,
     wakers: &Wakers,
@@ -84,7 +84,7 @@ pub(crate) async fn send(
         report,
         ttl: header.ttl,
     };
-    let answer = answer(db, limits, sender, header, Some(outgoing)).await?;
+    let answer = answer(db, wakers, limits, sender, header, Some(outgoing)).await?;
     // A retry's wake finds no new entry.
     if let Frame::Stored(Stored {
         send_key: SendKey {
@@ -103,16 +103,19 @@ pub(crate) async fn send(
 /// device: [`Frame::misaddressed_send`].
 pub(crate) async fn misaddressed(
     db: &PgPool,
+    wakers: &Wakers,
     sender: &Sender,
     header: &Header,
 ) -> Result<Frame, sqlx::Error> {
-    answer(db, Limits::default(), sender, header, None).await
+    answer(db, wakers, Limits::default(), sender, header, None).await
 }
 
 /// The answer to `sender`'s send of an envelope with `header`, which is `envelope`, or `None` if
-/// it cannot be stored, under `limits`. A retry gets the first answer, whatever its bytes.
+/// it cannot be stored, under `limits`; a stored envelope tells the other instances in `wakers`. A
+/// retry gets the first answer, whatever its bytes.
 async fn answer(
     db: &PgPool,
+    wakers: &Wakers,
     limits: Limits,
     sender: &Sender,
     header: &Header,
@@ -137,7 +140,7 @@ async fn answer(
         let kept = match outcome {
             Ok((recipient, envelope)) => {
                 let counted = limits.monthly_messages.map(|limit| (header.space, limit));
-                match store(db, sender, &key, recipient, envelope, counted).await? {
+                match store(db, wakers, sender, &key, recipient, envelope, counted).await? {
                     Kept::Answer(answer) => answer,
                     Kept::OverQuota => refuse(db, sender, &key, Problem::QuotaExceeded).await?,
                 }
@@ -303,10 +306,12 @@ enum Kept {
 }
 
 /// Stores `envelope`, the send of `sender` with `key`, with its entry in `recipient`'s mailbox, and
-/// gives its `stored`. With `counted`, a space and its monthly limit, a message not counted yet
-/// counts in the space's month, and is not stored past the limit.
+/// gives its `stored`; tells the other instances in `wakers`. With `counted`, a space and its
+/// monthly limit, a message not counted yet counts in the space's month, and is not stored past the
+/// limit.
 async fn store(
     db: &PgPool,
+    wakers: &Wakers,
     sender: &Sender,
     key: &SendKey,
     recipient: DeviceId,
@@ -347,6 +352,7 @@ async fn store(
     {
         return Ok(Kept::OverQuota);
     }
+    wakers.tell(&mut tx, [recipient]).await?;
     tx.commit().await?;
     Ok(Kept::Answer(Some(stored)))
 }

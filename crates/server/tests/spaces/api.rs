@@ -192,6 +192,19 @@ impl Session {
         assert!(is_uuid_v7(id), "channel ID {id:?} is not a UUIDv7");
         id.parse().expect("a channel ID")
     }
+
+    /// `DELETE /session`: signs this session out. The spaces tests sign out no session.
+    #[allow(dead_code)]
+    pub fn sign_out(&self) -> Response {
+        let url = format!("{}{}", self.base, crate::common::sign_in::SESSION);
+        let bearer = format!("Bearer {}", self.token.as_deref().expect("a session"));
+        let version = skald_proto::PROTOCOL_VERSION.to_string();
+        let headers = [
+            ("authorization", bearer.as_str()),
+            (skald_proto::VERSION_HEADER, version.as_str()),
+        ];
+        crate::common::delete_url(&url, &headers)
+    }
 }
 
 /// An account signed in on a machine, with its first device certified by its master key and a

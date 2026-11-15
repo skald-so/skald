@@ -16,6 +16,7 @@ use sqlx::PgPool;
 
 use crate::AppState;
 use crate::devices::{Devices, base64, bytes, taken};
+use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
 
 /// `SpaceRequest` in the spec.
@@ -499,8 +500,8 @@ async fn certs(db: &PgPool, accounts: &[String]) -> Result<Vec<Cert>, Refusal> {
 }
 
 /// Stores `roster`, received as `sent`, as the next revision of `space`, with its members, and
-/// gives their accounts' connections a notice of `space`. Of two revisions with one number at
-/// once, the first is stored and the other refused.
+/// gives their accounts' connections a notice of `space`, on each instance. Of two revisions with
+/// one number at once, the first is stored and the other refused.
 async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) -> Answer {
     let db = &state.db;
     let body = roster.body();
@@ -546,9 +547,15 @@ async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) 
     .execute(&mut *tx)
     .await
     .map_err(|err| Refusal::Database("store a revision's members", err))?;
+    state
+        .instance
+        .tell(&mut tx, &[Event::Revision(space, revision)])
+        .await
+        .map_err(|err| Refusal::Database("tell the other instances of a revision", err))?;
     tx.commit()
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
+    state.instance.record(space, revision);
     // An account the revision removes gets no notice.
     state
         .notices

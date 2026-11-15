@@ -20,6 +20,7 @@ use url::{Host, Url};
 use crate::accounts::{self, GITHUB, Method};
 use crate::github::{GitHubApp, Refusal, http_url};
 use crate::google::Google;
+use crate::instances::Event;
 use crate::oidc::OidcSettings;
 use crate::{AppState, database_failed, device_flow, links, problem};
 
@@ -887,24 +888,39 @@ pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -
 }
 
 /// `DELETE /session`: ends the device session of the request's bearer token and closes its
-/// connections.
+/// connections, on each instance.
 pub(crate) async fn end(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(Some(token)) = bearer(&headers) else {
         return not_signed_in();
     };
     let session = digest(token);
-    let ended = sqlx::query("DELETE FROM sessions WHERE kind = 'device' AND token_hash = $1")
-        .bind(&session)
-        .execute(&state.db)
-        .await;
-    match ended {
-        Ok(done) if done.rows_affected() > 0 => {
+    match end_session(&state, &session).await {
+        Ok(true) => {
             state.connections.end_session(&session);
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(_) => not_signed_in(),
+        Ok(false) => not_signed_in(),
         Err(err) => database_failed("end a session", err),
     }
+}
+
+/// Ends the device session whose token's SHA-256 is `session`, telling the other instances;
+/// `false` if there is none.
+async fn end_session(state: &AppState, session: &[u8]) -> Result<bool, sqlx::Error> {
+    let mut tx = state.db.begin().await?;
+    let ended = sqlx::query("DELETE FROM sessions WHERE kind = 'device' AND token_hash = $1")
+        .bind(session)
+        .execute(&mut *tx)
+        .await?;
+    if ended.rows_affected() == 0 {
+        return Ok(false);
+    }
+    state
+        .instance
+        .tell(&mut tx, &[Event::SessionEnded(session.to_vec())])
+        .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// The account of the request's session: the device session of its bearer token if it has an

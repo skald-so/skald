@@ -25,6 +25,7 @@ mod expiry;
 mod github;
 mod google;
 mod http_client;
+mod instances;
 mod links;
 mod mailboxes;
 mod notices;
@@ -119,20 +120,34 @@ struct AppState {
     mailbox_retention: Option<Duration>,
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
+    instance: instances::Instance,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
     notices: Arc<notices::Notices>,
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries in a task on the Tokio runtime it is called on.
+/// entries and listens to the other instances on that database in tasks on the Tokio runtime it is
+/// called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
-    let wakers = Arc::<delivery::Wakers>::default();
+    let instance = instances::Instance::new();
+    let wakers = Arc::new(delivery::Wakers::new(instance.clone()));
+    let connections = Arc::<connections::Connections>::default();
+    let notices = Arc::<notices::Notices>::default();
     tokio::spawn(expiry::run(
         db.clone(),
         Arc::clone(&wakers),
         settings.mailbox_retention,
+    ));
+    tokio::spawn(instances::listen(
+        instance.clone(),
+        instances::Local {
+            db: db.clone(),
+            wakers: Arc::clone(&wakers),
+            notices: Arc::clone(&notices),
+            connections: Arc::clone(&connections),
+        },
     ));
     let server_name = settings.server_name.or_else(|| {
         settings
@@ -238,9 +253,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 monthly_messages: settings.monthly_messages_limit,
             },
             devices_limit: settings.devices_limit,
-            connections: Arc::default(),
+            instance,
+            connections,
             wakers,
-            notices: Arc::default(),
+            notices,
             google: settings
                 .sign_in
                 .as_ref()
