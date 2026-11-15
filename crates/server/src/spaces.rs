@@ -389,8 +389,8 @@ pub(crate) async fn store(
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after
 /// `previous`, or revision 1 if `None`: its space and name, its signer and signature, checks 2 to 4
-/// of "Roster" with the certificates the server holds (revision 1: checks 3 and 4, and its creator
-/// an admin), and its channels.
+/// of "Roster" with the certificates the server holds, a revoked service agent having none
+/// (revision 1: checks 3 and 4, and its creator an admin), and its channels.
 async fn check(
     db: &PgPool,
     found: &Found,
@@ -458,6 +458,25 @@ async fn check(
         Some(previous) => skald_crypto::accept_next(previous, roster, &certs, account, &master),
     };
     checked.map_err(|err| Refusal::Roster(err.to_string()))?;
+    // Check 4 took revoked devices' certificates, which the chains of the devices they keep need;
+    // a revoked service agent has none.
+    let agents: Vec<String> = body
+        .service_agents
+        .iter()
+        .map(|agent| agent.device.to_string())
+        .collect();
+    let revoked: Option<(String,)> = sqlx::query_as(
+        "SELECT id::text FROM devices WHERE id = ANY($1::text[]::uuid[]) AND revoked LIMIT 1",
+    )
+    .bind(&agents)
+    .fetch_optional(db)
+    .await
+    .map_err(|err| Refusal::Database("read the service agents", err))?;
+    if let Some((device,)) = revoked {
+        return Err(Refusal::Roster(format!(
+            "the service agent {device} is revoked"
+        )));
+    }
 
     let channels: Vec<String> = body.channels.iter().map(|c| c.id.to_string()).collect();
     let (issued,): (i64,) = sqlx::query_as(
