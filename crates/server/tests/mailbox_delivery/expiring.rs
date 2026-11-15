@@ -5,6 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use skald_proto::Stored;
+use sqlx::{AssertSqlSafe, Connection as _};
 
 use crate::common::sign_in::{CLIENT_SECRET, SECRET_ENV, github_settings};
 use crate::common::{Server, TestDb};
@@ -38,7 +39,7 @@ pub fn retained(github: u64) -> Scene {
 
 /// Moves every time the server keeps of envelopes, sends and mailbox entries `seconds` back, as if
 /// that much time had passed: each `timestamptz` column of the tables `envelopes`, `sends` and
-/// `entries`.
+/// `entries`, all at once.
 pub fn move_back(db: &TestDb, seconds: u64) {
     let tables: Vec<String> = TIMED.iter().map(|&table| table.to_owned()).collect();
     let columns: Vec<(String, String)> = query(db, async |conn| {
@@ -52,11 +53,18 @@ pub fn move_back(db: &TestDb, seconds: u64) {
         .await
     });
     assert!(!columns.is_empty(), "no times in {TIMED:?}");
-    for (table, column) in columns {
-        db.execute(&format!(
-            r#"UPDATE "{table}" SET "{column}" = "{column}" - make_interval(secs => {seconds})"#
-        ));
-    }
+    // In one transaction, so that the server never sees some times moved and others not, such as
+    // an entry it expires before the `expired` it adds is moved back too.
+    query(db, async |conn| {
+        let mut tx = conn.begin().await?;
+        for (table, column) in &columns {
+            let sql = format!(
+                r#"UPDATE "{table}" SET "{column}" = "{column}" - make_interval(secs => {seconds})"#
+            );
+            sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut *tx).await?;
+        }
+        tx.commit().await
+    });
 }
 
 /// Stores on alice's connection an envelope to bob with `ttl` and `report`; gives it and its
