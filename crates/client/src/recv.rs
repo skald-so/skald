@@ -2,7 +2,9 @@
 //! sends what is left in the outbox, then states its cursor, writes each entry it gets after the
 //! cursor to the local state with the new cursor at once, acks, and stops once catch-up has sent
 //! every entry. It then accepts the revisions of each space it follows, and those of the space of
-//! each `space-notice` that came meanwhile ("Frames"). It then shows the entries it wrote: a
+//! each `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes and
+//! Commits it wrote and brings the group of each channel of those spaces in line
+//! ([`crate::groups`]). It then shows the other entries it wrote: a
 //! `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope" and "Scheme
 //! `hpke`", with the space's latest revisions accepted first, and the sending device admitted to
 //! the channel ("Admitted devices"), once per sending device and `msg_id`; a warning for any other;
@@ -27,6 +29,7 @@ use crate::agents::server_name;
 use crate::connection::{WebSocket, printable};
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
+use crate::groups::{self, Link, Rosters};
 use crate::secrets;
 use crate::send::{self, admitted, broke, closed, set_read_timeout};
 use crate::spaces::{self, Follower, Scope};
@@ -43,8 +46,12 @@ pub fn run(
 ) -> Result<(), String> {
     let scope = Scope::of_run(dir, agent)?;
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
+    let mut link = Link::new(&follower)?;
+    if let Err(err) = groups::flush(&mut follower, &mut link, scope) {
+        eprintln!("skald: warning: {err}");
+    }
     let queued = send::queued(&follower.state, scope)?;
-    let mut delivered = send::deliver(&mut follower, &queued, timeout);
+    let mut delivered = send::deliver(&mut follower, &queued, timeout, None);
     if let Err(err) = send::report(&queued, &delivered, timeout) {
         eprintln!("skald: warning: {err}");
     }
@@ -55,24 +62,65 @@ pub fn run(
         (timeout, scope),
         &mut synced,
     );
+    let aligned = align(&mut follower, &mut link, scope, &mut synced);
     let shown = show(&mut follower, scope, synced);
     received?;
+    aligned?;
     shown
 }
 
-/// The spaces a run synced: each one's last accepted revision and its accounts' devices.
-type Synced = BTreeMap<SpaceId, (Roster, SpaceDevices)>;
+/// Goes through the Welcomes and Commits the state holds within `scope`, then brings the groups of
+/// the channels of each space of `synced` in line ([`crate::groups`]).
+pub fn align(
+    follower: &mut Follower,
+    link: &mut Link,
+    scope: Scope,
+    synced: &mut Rosters,
+) -> Result<(), String> {
+    groups::take_in(follower, link, scope, synced)?;
+    for (space, (roster, devices)) in synced.iter() {
+        groups::align(follower, link, *space, (roster, devices), None)?;
+    }
+    Ok(())
+}
 
 /// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
-/// for each frame for `timeout`: writes each entry after the cursor with the new cursor and acks
-/// it. Then it syncs into `synced` each space within `scope` the device follows, and the space of
-/// each `space-notice` that came meanwhile.
+/// for each frame for `timeout`, as [`catch_up`] does. Then it syncs into `synced` each space
+/// within `scope` the device follows, and the space of each `space-notice` that came meanwhile.
 fn receive(
     follower: &mut Follower,
     socket: Option<WebSocket>,
     (timeout, scope): (Duration, Scope),
-    synced: &mut Synced,
+    synced: &mut Rosters,
 ) -> Result<(), String> {
+    let mut socket = catch_up(follower, socket, timeout)?;
+    // By the end of catch-up the server sends the connection its notices: a revision stored before
+    // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
+    // space fetched here.
+    let mut due: BTreeSet<SpaceId> = follower
+        .state
+        .spaces()
+        .map_err(text)?
+        .iter()
+        .map(|space| space.id)
+        .collect();
+    while !due.is_empty() {
+        sync_due(follower, scope, &mut due, synced)?;
+        due.extend(waiting_notices(&mut socket));
+    }
+    let _ = socket.close(None);
+    let _ = socket.flush();
+    Ok(())
+}
+
+/// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
+/// for each frame for `timeout`: writes each entry after the cursor with the new cursor and acks
+/// it. Gives the connection.
+pub fn catch_up(
+    follower: &mut Follower,
+    socket: Option<WebSocket>,
+    timeout: Duration,
+) -> Result<WebSocket, String> {
     let mut socket = match socket {
         Some(socket) => socket,
         None => follower.connect(&follower.keys()?)?,
@@ -100,23 +148,7 @@ fn receive(
             write(&mut socket, &Frame::Ack { seq })?;
         }
     }
-    // By the end of catch-up the server sends the connection its notices: a revision stored before
-    // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
-    // space fetched here.
-    let mut due: BTreeSet<SpaceId> = follower
-        .state
-        .spaces()
-        .map_err(text)?
-        .iter()
-        .map(|space| space.id)
-        .collect();
-    while !due.is_empty() {
-        sync_due(follower, scope, &mut due, synced)?;
-        due.extend(waiting_notices(&mut socket));
-    }
-    let _ = socket.close(None);
-    let _ = socket.flush();
-    Ok(())
+    Ok(socket)
 }
 
 /// Syncs into `synced` each space of `due` within `scope` that the device follows, and empties
@@ -125,7 +157,7 @@ fn sync_due(
     follower: &mut Follower,
     scope: Scope,
     due: &mut BTreeSet<SpaceId>,
-    synced: &mut Synced,
+    synced: &mut Rosters,
 ) -> Result<(), String> {
     if due.is_empty() {
         return Ok(());
@@ -240,13 +272,13 @@ fn write(socket: &mut WebSocket, frame: &Frame) -> Result<(), String> {
 struct Checks {
     keys: crate::device::Keys,
     followed: Vec<state::Space>,
-    synced: Synced,
+    synced: Rosters,
     server: Option<Option<ServerName>>,
 }
 
 /// Shows each entry the state holds within `scope`, in `seq` order, and takes it out; checks
 /// messages against the spaces as `synced` holds them, syncing any other at its first message.
-fn show(follower: &mut Follower, scope: Scope, synced: Synced) -> Result<(), String> {
+fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), String> {
     let mut checks = Checks {
         keys: follower.keys()?,
         followed: follower.state.spaces().map_err(text)?,
@@ -254,6 +286,10 @@ fn show(follower: &mut Follower, scope: Scope, synced: Synced) -> Result<(), Str
         server: None,
     };
     for (seq, bytes) in follower.state.inbox().map_err(text)? {
+        // A Welcome or Commit waits for a run that can check it.
+        if groups::is_handshake(&bytes) {
+            continue;
+        }
         match Frame::from_cbor(&bytes) {
             Ok(Frame::Push(Push::Message { envelope, .. })) => {
                 let envelope = envelope.envelope();

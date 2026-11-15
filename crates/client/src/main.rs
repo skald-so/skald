@@ -7,6 +7,7 @@ mod device;
 mod devices;
 mod folders;
 mod follow;
+mod groups;
 mod key_packages;
 mod plain_path;
 mod recv;
@@ -147,8 +148,9 @@ enum Command {
         username: String,
     },
     /// Creates a team space on the server of this machine's session: this device signs the space's
-    /// first roster revision as its first admin, with the account's username as its handle. Run
-    /// again after a lost answer, it finishes the same space.
+    /// first roster revision as its first admin, with the account's username as its handle, then
+    /// the next with the space's default channel, and creates the channel's group. Run again after
+    /// a lost answer, it finishes the same space.
     CreateSpace {
         /// The space's name, such as acme: a-z, 0-9 and '-' inside, 1 to 63 characters.
         #[arg(value_name = "NAME", allow_hyphen_values = true)]
@@ -170,22 +172,24 @@ enum Command {
     /// Adds a channel to a space this device follows, on a device of an admin of it: the device
     /// signs the space's next roster revision with the channel, its account the channel's member.
     /// It first accepts the revisions the server has; when another revision comes first, it signs
-    /// its change into the new one. Says the channel's ID.
+    /// its change into the new one. Says the channel's ID, and creates the channel's group.
     CreateChannel {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
     /// Lists the channels of a space this device follows, as its last accepted roster revision gives
-    /// them: each one's ID and its members' handles. It first accepts the revisions the server has.
+    /// them: each one's ID and its members' handles, and the devices in its group as this device
+    /// holds it, or that this device is not in it. It first accepts the revisions the server has.
     Channels {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
     /// Sends a text to a channel of a space this device follows; as an agent, only in the space of
-    /// the agent's folder. It first accepts the space's latest roster revisions, then seals the
-    /// message for each device admitted to the channel but this one and has the server store it.
+    /// the agent's folder. It first accepts the space's latest roster revisions and goes through the
+    /// mailbox as skald recv does, showing nothing, then seals the message for each device admitted
+    /// to the channel but this one and has the server store it.
     /// Says the message's ID and, per recipient device, whether the server stored it. What the
     /// server has not stored within the request timeout waits in the local state, and the next
     /// skald send or skald recv sends it first.
@@ -199,9 +203,11 @@ enum Command {
     },
     /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
     /// of the device's mailbox and exits, accepting meanwhile the new revisions of each space this
-    /// device follows. Shows each message that passes the protocol's checks, once, and each
-    /// delivered and expired of this device's messages; warns of each message it drops. As an
-    /// agent, only those of the space of the agent's folder: the rest wait for a later run.
+    /// device follows. It joins and follows its channels' groups and keeps them to the devices each
+    /// channel admits, warning of the devices another device added that it does not. Shows each
+    /// message that passes the protocol's checks, once, and each delivered and expired of this
+    /// device's messages; warns of each message it drops. As an agent, only those of the space of
+    /// the agent's folder: the rest wait for a later run.
     Recv,
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,

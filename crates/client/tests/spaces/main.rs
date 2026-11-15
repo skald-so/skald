@@ -7,10 +7,10 @@
 //!
 //! The CLI, as these tests use it:
 //! - `skald create-space <name>`: creates a team space with the name on the server of the machine's
-//!   session and stores its revision 1, signed by the device; a name the server or the client
-//!   refuses fails the run, saying why; on a device without a certificate it fails, saying the
-//!   device is `not linked` yet, and sends nothing; run again after a lost answer, it finishes the
-//!   same space;
+//!   session and stores its revision 1, signed by the device, then revision 2 with the space's
+//!   default channel; a name the server or the client refuses fails the run, saying why; on a
+//!   device without a certificate it fails, saying the device is `not linked` yet, and sends
+//!   nothing; run again after a lost answer, it finishes the same space;
 //! - `skald spaces`: lists the spaces the device accepted a revision of, one line per space, holding
 //!   the space's name, the account's role in it (`admin` or `member`) and its handle.
 //!
@@ -50,7 +50,7 @@ use relay::{Lose, strings_named};
 use serde_json::{Value, json};
 use skald_github_stand_in::User;
 use skald_proto::{AccountId, Cbor, Cert, DeviceKind, Name, Policy, ROSTER_LABEL, Role, SpaceId};
-use world::{ADMIN, CREATE_SPACE, STORE, spaces, words};
+use world::{ADMIN, CREATE_SPACE, STORE, assert_default_after, spaces, words};
 
 /// The request that creates a space, as its line starts.
 const CREATE: &str = "POST /spaces ";
@@ -141,10 +141,12 @@ fn username_of(cloud: &Cloud, token: &str) -> String {
 }
 
 /// Fails unless the server gives `account` exactly one space beside its personal space, `name`,
-/// with exactly one revision: a revision 1 of the space, signed by the account's one device, which
+/// with exactly two revisions: a revision 1 of the space, signed by the account's one device, which
 /// passes the checks of a new space's revision against the account's master key, with the account
 /// the only member and admin, with `handle` and that master key, no service agents or channels and
-/// a new space's policy. Gives the space and the revision's bytes.
+/// a new space's policy; and revision 2 after it, which the device signed, that the account accepts,
+/// with the default channel, the account in it with `history` true, its one change. Gives the
+/// space and revision 1's bytes.
 fn assert_one_first_revision(
     cloud: &Cloud,
     account: &Account,
@@ -156,7 +158,7 @@ fn assert_one_first_revision(
     let (space, found_name) = found[0].clone();
     assert_eq!(found_name, name);
     let revisions = cloud.revisions(&account.token, space);
-    assert_eq!(revisions.len(), 1, "the space's revisions: {revisions:?}");
+    assert_eq!(revisions.len(), 2, "the space's revisions: {revisions:?}");
     let (bytes, roster) = revisions[0].clone();
     assert_eq!(roster.to_cbor(), bytes, "the revision re-encodes otherwise");
 
@@ -198,13 +200,21 @@ fn assert_one_first_revision(
     assert!(body.service_agents.is_empty(), "{:?}", body.service_agents);
     assert!(body.channels.is_empty(), "{:?}", body.channels);
     assert_eq!(body.policy, Policy::new_space());
+
+    let (second_bytes, second) = revisions[1].clone();
+    assert_eq!(
+        second.to_cbor(),
+        second_bytes,
+        "revision 2 re-encodes otherwise"
+    );
+    assert_default_after(&roster, &second, &certs, (id, &master, devices[0].id));
     (space, bytes)
 }
 
 /// Runs `skald create-space <name>` on `account`'s machine; fails unless it succeeds naming the
-/// space, the server holds the space's revision 1 as [`assert_one_first_revision`] says, with
-/// `handle`, and the machine lists the space as its admin with `handle`. Gives the space and the
-/// revision's bytes.
+/// space, the server holds the space's revisions as [`assert_one_first_revision`] says, with
+/// `handle`, and the machine lists the space as its admin with `handle`. Gives the space and
+/// revision 1's bytes.
 fn assert_creates(
     cloud: &Cloud,
     account: &Account,
@@ -259,7 +269,8 @@ fn first_device_creates_a_space_whose_revision_1_it_signed_as_its_admin() {
     assert_creates(&cloud, &ada, "acme", &handle);
 }
 
-/// A device creates several spaces, each with a revision 1 of its own, and lists them all.
+/// A device creates several spaces, each with a revision 1 of its own and a revision 2 with its
+/// default channel, and lists them all.
 #[test]
 fn spaces_lists_each_space_the_device_created() {
     let (cloud, browser) = setup();
@@ -283,8 +294,9 @@ fn spaces_lists_each_space_the_device_created() {
     assert_eq!(names, ["acme", "globex"]);
     for (space, name) in &found {
         let revisions = cloud.revisions(&ada.token, *space);
-        assert_eq!(revisions.len(), 1, "{name}: {revisions:?}");
+        assert_eq!(revisions.len(), 2, "{name}: {revisions:?}");
         assert_eq!(revisions[0].1.body().revision, 1, "{name}");
+        assert_eq!(revisions[1].1.body().channels.len(), 1, "{name}");
         assert_lists_as_admin(&ada.machine, name, &handle);
     }
 }
@@ -368,7 +380,7 @@ fn revision_1_answer_lost_with_the_cli_killed_is_recovered_by_the_next_run() {
 }
 
 /// A name another account's space has creates nothing: the run fails saying why, the account gets
-/// no space beside its personal space and lists none, and the other space keeps its one revision.
+/// no space beside its personal space and lists none, and the other space keeps its revisions.
 #[test]
 fn taken_name_creates_nothing_and_says_why() {
     let (cloud, browser) = setup();

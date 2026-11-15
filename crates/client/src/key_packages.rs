@@ -49,7 +49,7 @@ fn wanted(count: &Count) -> (u64, bool) {
 
 /// The key the MLS state `sealed` is sealed under, from the secrets in `secrets`; for a device
 /// without an MLS state and without one, a new one, saved to them.
-fn state_key(secrets: &Secrets, sealed: &SealedState) -> Result<StateKey, String> {
+pub fn state_key(secrets: &Secrets, sealed: &SealedState) -> Result<StateKey, String> {
     let mut stored = secrets.load().map_err(text)?;
     let held = sealed.items().next().is_some();
     let (key, new) = device::state_key(&mut stored, held).map_err(text)?;

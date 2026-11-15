@@ -5,7 +5,8 @@
 //! `crates/server/tests/cloud_limits`.
 
 use super::{
-    Answers, FIRST, Finished, Pair, SECOND, Sent, THIRD, msg_id, only_envelope_to, sent_after,
+    Answers, FIRST, Finished, Pair, SECOND, Sent, THIRD, hpke_sent, hpke_sent_after, msg_id,
+    only_envelope_to,
 };
 
 /// Each refusal over a limit, by its problem, and what the run says of it, in lowercase.
@@ -14,10 +15,10 @@ const SAID: [(&str, &str); 2] = [("too-large", "too large"), ("quota-exceeded", 
 /// Runs Ada's `skald send` of `text`, the front refusing its envelopes with `problem`; gives what
 /// the run showed and the `send` frames the front saw.
 fn refused_as(pair: &Pair, problem: &str, text: &str) -> (Finished, Vec<Sent>) {
-    let before = pair.front.sent().len();
+    let before = hpke_sent(&pair.front).len();
     pair.front.answer(Answers::Refuse(problem.into()));
     let finished = pair.send(text);
-    (finished, sent_after(&pair.front, before))
+    (finished, hpke_sent_after(&pair.front, before))
 }
 
 /// A message refused as `too-large`, then one refused as `quota-exceeded`: each run names the
@@ -49,12 +50,12 @@ fn refusals_over_a_limit_say_what_they_mean_for_the_message() {
         refused.push(id);
     }
     pair.front.answer(Answers::Forward);
-    let from = pair.front.sent().len();
+    let from = hpke_sent(&pair.front).len();
 
     let finished = pair.send(THIRD);
 
     assert!(finished.success, "{finished:?}");
-    let sent = sent_after(&pair.front, from);
+    let sent = hpke_sent_after(&pair.front, from);
     assert!(
         sent.iter().all(|sent| !refused.contains(&msg_id(sent))),
         "a refused envelope is sent again"

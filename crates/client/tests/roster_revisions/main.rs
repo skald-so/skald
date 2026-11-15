@@ -159,11 +159,13 @@ fn assert_listed(machine: &Machine, name: &str, role: &str, handle: &Name) {
     );
 }
 
-/// A space whose revision 1 Ada's machine created and whose revision 2, signed by Ada's device and
-/// stored on the server, adds Bob as an admin and Carol, if any, as a member.
+/// A space whose revision 1 Ada's machine created, with its default channel in revision 2, and
+/// whose revision 3, signed by Ada's device and stored on the server, adds Bob as an admin and
+/// Carol, if any, as a member.
 struct Space {
     first: Roster,
     second: Roster,
+    third: Roster,
 }
 
 impl Space {
@@ -172,17 +174,22 @@ impl Space {
     }
 }
 
-/// Ada's machine creates `acme`, and revision 2 adds Bob as an admin and `carol` as a member.
+/// Ada's machine creates `acme`, and revision 3 adds Bob as an admin and `carol` as a member.
 fn space(cloud: &Cloud, ada: &Person, bob: &Person, carol: Option<&Person>) -> Space {
-    let first = create(cloud, ada, ACME);
-    let second = next_by(&first, ada, |members| {
+    let second = create(cloud, ada, ACME);
+    let third = next_by(&second, ada, |members| {
         members.push(bob.member(Role::Admin));
         if let Some(carol) = carol {
             members.push(carol.member(Role::Member));
         }
     });
-    store(cloud, &ada.token, &second);
-    Space { first, second }
+    store(cloud, &ada.token, &third);
+    let (_, first) = cloud.revisions(&ada.token, second.body().space).remove(0);
+    Space {
+        first,
+        second,
+        third,
+    }
 }
 
 /// A revision by a device of another admin account is accepted after the one that made the account
@@ -198,10 +205,10 @@ fn revision_by_a_device_of_another_admin_account_is_accepted() {
     let carol = world.sign_up(4_120_681_003, "carol-joins", "carol-laptop");
     create(cloud, &ada, GLOBEX);
     let acme = space(cloud, &ada, &bob, Some(&carol));
-    let third = next_by(&acme.second, &bob, |members| {
+    let fourth = next_by(&acme.third, &bob, |members| {
         set_role(members, ada.account, Role::Member);
     });
-    store(cloud, &bob.token, &third);
+    store(cloud, &bob.token, &fourth);
 
     let shown = members(&ada.machine, ACME);
 
@@ -237,7 +244,7 @@ fn members_show_only_devices_with_a_valid_certificate() {
     assert_hidden(&shown, &["bob-forged-laptop"]);
 }
 
-/// How a forged revision 3 fails check 1 of "Roster".
+/// How a forged revision 4 fails check 1 of "Roster".
 enum Forged {
     /// Signed by the device of Carol, a member that is no admin.
     NoAdmin,
@@ -247,11 +254,11 @@ enum Forged {
     BrokenSignature,
 }
 
-/// The device follows `acme` to revision 2, then the proxy gives it a forged revision 3, which
-/// demotes Ada and adds Mallory, failing as `forged` says, and a revision 4 built on it, validly
+/// The device follows `acme` to revision 3, then the proxy gives it a forged revision 4, which
+/// demotes Ada and adds Mallory, failing as `forged` says, and a revision 5 built on it, validly
 /// signed by Bob's device, which adds Trudy. Neither has an effect: the device warns, and keeps
-/// working with revision 2, in its members and its space list. Once the server gives its own
-/// revisions again, a genuine revision 3 by Bob's device is accepted.
+/// working with revision 3, in its members and its space list. Once the server gives its own
+/// revisions again, a genuine revision 4 by Bob's device is accepted.
 fn forged_revision_has_no_effect(forged: Forged, ids: [u64; 3]) {
     let world = World::start();
     let cloud = &world.cloud;
@@ -268,35 +275,35 @@ fn forged_revision_has_no_effect(forged: Forged, ids: [u64; 3]) {
         members.push(made_up_member(MALLORY));
     };
     let mut certs = space_certs(cloud, &ada.token, acme.id());
-    let third = match forged {
-        Forged::NoAdmin => next_by(&acme.second, &carol, change),
+    let fourth = match forged {
+        Forged::NoAdmin => next_by(&acme.third, &carol, change),
         Forged::ServerCertified => {
             let (device, key, cert) = certified_by_the_server(bob.account, "bob-forged-laptop");
             add_devices(cloud, acme.id(), vec![entry(device, &cert)]);
             certs.push(cert);
-            next(&acme.second, (device, &key), change)
+            next(&acme.third, (device, &key), change)
         }
-        Forged::BrokenSignature => broken_signature(&next_by(&acme.second, &bob, change)),
+        Forged::BrokenSignature => broken_signature(&next_by(&acme.third, &bob, change)),
     };
-    let fourth = next_by(&third, &bob, |members| members.push(made_up_member(TRUDY)));
+    let fifth = next_by(&fourth, &bob, |members| members.push(made_up_member(TRUDY)));
     // The forged revision fails check 1 and passes checks 3 and 4; the one built on it is valid.
     let accepts = |previous: &Roster, next: &Roster| {
         accept_next(previous, next, &certs, ada.account, &ada.master)
     };
     assert!(
         matches!(
-            accepts(&acme.second, &third),
+            accepts(&acme.third, &fourth),
             Err(RosterError::Signer(_) | RosterError::Signature)
         ),
         "{:?}",
-        accepts(&acme.second, &third)
+        accepts(&acme.third, &fourth)
     );
-    assert_eq!(check_roster(&third, &certs), Ok(()));
-    assert_eq!(accepts(&third, &fourth), Ok(()));
+    assert_eq!(check_roster(&fourth, &certs), Ok(()));
+    assert_eq!(accepts(&fourth, &fifth), Ok(()));
     serve_revisions(
         cloud,
         acme.id(),
-        &[&acme.first, &acme.second, &third, &fourth],
+        &[&acme.first, &acme.second, &acme.third, &fourth, &fifth],
     );
 
     let shown = members(&ada.machine, ACME);
@@ -312,7 +319,7 @@ fn forged_revision_has_no_effect(forged: Forged, ids: [u64; 3]) {
     assert_hidden(&again, &[MALLORY, TRUDY]);
 
     serve_stored_revisions(cloud, acme.id());
-    let genuine = next_by(&acme.second, &bob, |members| {
+    let genuine = next_by(&acme.third, &bob, |members| {
         set_role(members, carol.account, Role::Admin);
     });
     store(cloud, &bob.token, &genuine);
@@ -346,9 +353,9 @@ fn revision_with_a_broken_signature_has_no_effect() {
     );
 }
 
-/// After the device accepted revision 2, the proxy gives it another valid revision 2, signed by
-/// Ada's device, which adds Mallory, and a revision 3 built on it, which adds Trudy: the device
-/// warns of a forked roster and keeps its own revision 2.
+/// After the device accepted revision 3, the proxy gives it another valid revision 3, signed by
+/// Ada's device, which adds Mallory, and a revision 4 built on it, which adds Trudy: the device
+/// warns of a forked roster and keeps its own revision 3.
 #[test]
 fn forked_roster_is_warned_of_and_the_accepted_revision_kept() {
     let world = World::start();
@@ -359,19 +366,23 @@ fn forked_roster_is_warned_of_and_the_accepted_revision_kept() {
     let before = members(&ada.machine, ACME);
     assert_role(&before, &bob.handle, ADMIN);
 
-    let other = next_by(&acme.first, &ada, |members| {
+    let other = next_by(&acme.second, &ada, |members| {
         members.push(made_up_member(MALLORY));
     });
     let built = next_by(&other, &ada, |members| members.push(made_up_member(TRUDY)));
-    // Both are valid: the other revision 2 after revision 1, and the one built on it after it.
+    // Both are valid: the other revision 3 after revision 2, and the one built on it after it.
     let certs = space_certs(cloud, &ada.token, acme.id());
     let accepts = |previous: &Roster, next: &Roster| {
         accept_next(previous, next, &certs, ada.account, &ada.master)
     };
-    assert_eq!(accepts(&acme.first, &other), Ok(()));
+    assert_eq!(accepts(&acme.second, &other), Ok(()));
     assert_eq!(accepts(&other, &built), Ok(()));
-    assert_ne!(other.hash(), acme.second.hash(), "the same revision 2");
-    serve_revisions(cloud, acme.id(), &[&acme.first, &other, &built]);
+    assert_ne!(other.hash(), acme.third.hash(), "the same revision 3");
+    serve_revisions(
+        cloud,
+        acme.id(),
+        &[&acme.first, &acme.second, &other, &built],
+    );
 
     let shown = members(&ada.machine, ACME);
 
@@ -400,7 +411,7 @@ fn changed_master_of_a_member_is_warned_of() {
     );
     assert_device(&before, bob.device, bob.host);
 
-    let third = next_by(&acme.second, &bob, |members| {
+    let fourth = next_by(&acme.third, &bob, |members| {
         set_role(members, ada.account, Role::Member);
         members
             .iter_mut()
@@ -408,10 +419,10 @@ fn changed_master_of_a_member_is_warned_of() {
             .expect("Bob")
             .master = SigningKey::generate().public_key();
     });
-    store(cloud, &bob.token, &third);
+    store(cloud, &bob.token, &fourth);
     let certs = space_certs(cloud, &ada.token, acme.id());
     assert_eq!(
-        accept_next(&acme.second, &third, &certs, ada.account, &ada.master),
+        accept_next(&acme.third, &fourth, &certs, ada.account, &ada.master),
         Ok(())
     );
 
