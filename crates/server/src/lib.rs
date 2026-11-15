@@ -32,6 +32,7 @@ mod notices;
 mod oidc;
 mod protocol;
 mod refusal;
+mod revocations;
 mod sign_in;
 mod sign_up;
 mod spaces;
@@ -167,6 +168,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/account/personal-space",
             post(spaces::personal).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/revocations",
+            post(revocations::store).layer(checked(Statement::Header)),
         )
         .route(
             "/account/sign-in-methods",

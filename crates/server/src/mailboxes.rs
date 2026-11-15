@@ -143,6 +143,7 @@ async fn answer(
                 match store(db, wakers, sender, &key, recipient, envelope, counted).await? {
                     Kept::Answer(answer) => answer,
                     Kept::OverQuota => refuse(db, sender, &key, Problem::QuotaExceeded).await?,
+                    Kept::Revoked => refuse(db, sender, &key, Problem::UnknownRecipient).await?,
                 }
             }
             Err(problem) => refuse(db, sender, &key, problem).await?,
@@ -220,13 +221,14 @@ async fn latest(db: &PgPool, space: SpaceId) -> Result<Option<Roster>, sqlx::Err
     Ok(found.map(|(roster,)| Roster::from_cbor(&roster).expect("a stored revision decodes")))
 }
 
-/// The account of `device` if it has a certificate on the server.
+/// The account of `device` if it has a certificate on the server and is not revoked.
 async fn certified_account(
     db: &PgPool,
     device: DeviceId,
 ) -> Result<Option<AccountId>, sqlx::Error> {
     let found: Option<(String,)> = sqlx::query_as(
-        "SELECT account_id::text FROM devices WHERE id = $1::uuid AND cert IS NOT NULL",
+        "SELECT account_id::text FROM devices
+         WHERE id = $1::uuid AND cert IS NOT NULL AND NOT revoked",
     )
     .bind(device.to_string())
     .fetch_optional(db)
@@ -303,12 +305,14 @@ enum Kept {
     Answer(Option<Frame>),
     /// Nothing: its message is past its space's number for the month.
     OverQuota,
+    /// Nothing: its recipient is revoked.
+    Revoked,
 }
 
 /// Stores `envelope`, the send of `sender` with `key`, with its entry in `recipient`'s mailbox, and
 /// gives its `stored`; tells the other instances in `wakers`. With `counted`, a space and its
 /// monthly limit, a message not counted yet counts in the space's month, and is not stored past the
-/// limit.
+/// limit. Nothing is stored for a revoked recipient.
 async fn store(
     db: &PgPool,
     wakers: &Wakers,
@@ -319,6 +323,15 @@ async fn store(
     counted: Option<(SpaceId, u64)>,
 ) -> Result<Kept, sqlx::Error> {
     let mut tx = db.begin().await?;
+    // The recipient's row lock makes its revocation wait for this entry, which the revocation then
+    // expires, or this store see the revocation.
+    let open = sqlx::query("SELECT 1 FROM devices WHERE id = $1::uuid AND NOT revoked FOR SHARE")
+        .bind(recipient.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
+    if open.is_none() {
+        return Ok(Kept::Revoked);
+    }
     let Some(stored) = keep(&mut tx, sender, key, None).await? else {
         return Ok(Kept::Answer(None));
     };

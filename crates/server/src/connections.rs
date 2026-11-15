@@ -1,7 +1,8 @@
 //! Connections authenticated as a device: `docs/protocol/delivery.md`, "Connecting". A device
 //! session gets a challenge; a WebSocket is taken, as its device's, once its first frame signs that
-//! challenge with the key of a certified `client` device of the session's account. A taken
-//! connection carries the device's sends and its mailbox, and closes when its session ends.
+//! challenge with the key of a certified `client` device of the session's account that is not
+//! revoked. A taken connection carries the device's sends and its mailbox, and closes when its
+//! session ends or its device is revoked.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -79,8 +80,8 @@ struct Held {
     id: u64,
     /// The SHA-256 of its session's token.
     session: Vec<u8>,
-    /// Closes it.
-    end: oneshot::Sender<()>,
+    /// Closes it, for the reason it sends.
+    end: oneshot::Sender<Closing>,
 }
 
 /// A connection of `device` while it is held: dropping it lets the connection go.
@@ -91,13 +92,13 @@ struct Registration {
 }
 
 impl Connections {
-    /// Holds a connection of `device` on the session `session`; the receiver fires when the session
-    /// ends.
+    /// Holds a connection of `device` on the session `session`; the receiver fires, with the reason
+    /// to close it, when the session ends or the device is revoked.
     fn hold(
         self: &Arc<Self>,
         device: DeviceId,
         session: Vec<u8>,
-    ) -> (Registration, oneshot::Receiver<()>) {
+    ) -> (Registration, oneshot::Receiver<Closing>) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (end, ended) = oneshot::channel();
         self.by_device
@@ -133,10 +134,29 @@ impl Connections {
         for held in by_device.values_mut() {
             for ended in held.extract_if(.., |held| held.session == session) {
                 // The connection may be closing already.
-                let _ = ended.end.send(());
+                let _ = ended.end.send(Closing::SessionEnded);
             }
         }
         by_device.retain(|_, held| !held.is_empty());
+    }
+
+    /// The devices with connections.
+    pub(crate) fn devices(&self) -> Vec<DeviceId> {
+        let by_device = self.by_device.lock().expect("the connections");
+        by_device.keys().copied().collect()
+    }
+
+    /// Closes every connection of `device`, which is revoked.
+    pub(crate) fn end_device(&self, device: DeviceId) {
+        let held = self
+            .by_device
+            .lock()
+            .expect("the connections")
+            .remove(&device);
+        for ended in held.into_iter().flatten() {
+            // The connection may be closing already.
+            let _ = ended.end.send(Closing::DeviceRefused);
+        }
     }
 }
 
@@ -205,8 +225,8 @@ struct Proved {
     account: AccountId,
     /// Lets the connection go when dropped.
     _registration: Registration,
-    /// Fires when the session ends.
-    ended: oneshot::Receiver<()>,
+    /// Fires when the session ends or the device is revoked.
+    ended: oneshot::Receiver<Closing>,
 }
 
 /// Takes `socket`, of the protocol version `version`, once it proves its device, and serves it
@@ -247,7 +267,7 @@ enum Stop {
 async fn hold(
     state: &AppState,
     mut socket: WebSocket,
-    mut ended: oneshot::Receiver<()>,
+    mut ended: oneshot::Receiver<Closing>,
     sender: &Sender,
 ) {
     let mut reader = Reader::new(
@@ -259,9 +279,11 @@ async fn hold(
     let notices = state.notices.listen(sender.account);
     loop {
         let served = tokio::select! {
-            // Once the session ends, nothing more is served.
+            // Once the session ends or the device is revoked, nothing more is served.
             biased;
-            _ = &mut ended => return close(socket, Closing::SessionEnded).await,
+            closing = &mut ended => {
+                return close(socket, closing.unwrap_or(Closing::SessionEnded)).await;
+            }
             () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
             spaces = notices.next() => notify(&mut socket, spaces).await,
             message = socket.recv() => match message {
@@ -472,7 +494,7 @@ async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<Str
 }
 
 /// The signing key of `device` if it is a `client` device of `account` with a certificate on the
-/// server.
+/// server, not revoked.
 async fn client_key(
     state: &AppState,
     device: DeviceId,
@@ -480,7 +502,8 @@ async fn client_key(
 ) -> Result<Option<[u8; 32]>, Closing> {
     let found: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT signing FROM devices
-         WHERE id = $1::uuid AND account_id = $2::uuid AND kind = 'client' AND cert IS NOT NULL",
+         WHERE id = $1::uuid AND account_id = $2::uuid AND kind = 'client' AND cert IS NOT NULL
+           AND NOT revoked",
     )
     .bind(device.to_string())
     .bind(account)
@@ -535,7 +558,7 @@ mod tests {
         assert_eq!(held(&connections), HashMap::from([(device(1), 1)]));
         // The other connection is still held.
         connections.end_session(&[2]);
-        assert_eq!(ended.try_recv(), Ok(()));
+        assert_eq!(ended.try_recv(), Ok(Closing::SessionEnded));
         drop(second);
         assert_eq!(held(&connections), HashMap::new());
     }
@@ -549,9 +572,34 @@ mod tests {
 
         connections.end_session(&[1]);
 
-        assert_eq!(a.try_recv(), Ok(()));
-        assert_eq!(c.try_recv(), Ok(()));
+        assert_eq!(a.try_recv(), Ok(Closing::SessionEnded));
+        assert_eq!(c.try_recv(), Ok(Closing::SessionEnded));
         assert_eq!(b.try_recv(), Err(oneshot::error::TryRecvError::Empty));
         assert_eq!(held(&connections), HashMap::from([(device(1), 1)]));
+    }
+
+    #[test]
+    fn revoking_a_device_closes_its_connections_only() {
+        let connections = Arc::new(Connections::default());
+        let (_a, mut a) = connections.hold(device(1), vec![1]);
+        let (_b, mut b) = connections.hold(device(1), vec![2]);
+        let (_c, mut c) = connections.hold(device(2), vec![1]);
+        assert_eq!(
+            sorted(connections.devices()),
+            sorted(vec![device(1), device(2)])
+        );
+
+        connections.end_device(device(1));
+
+        assert_eq!(a.try_recv(), Ok(Closing::DeviceRefused));
+        assert_eq!(b.try_recv(), Ok(Closing::DeviceRefused));
+        assert_eq!(c.try_recv(), Err(oneshot::error::TryRecvError::Empty));
+        assert_eq!(held(&connections), HashMap::from([(device(2), 1)]));
+        assert_eq!(connections.devices(), [device(2)]);
+    }
+
+    fn sorted(mut devices: Vec<DeviceId>) -> Vec<DeviceId> {
+        devices.sort();
+        devices
     }
 }
