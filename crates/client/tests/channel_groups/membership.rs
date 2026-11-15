@@ -3,6 +3,7 @@
 //! device's Commit added that the latest revision does not admit, and warns; `skald send` goes
 //! through the mailbox before it sends.
 
+use skald_crypto::{MlsContent, MlsFraming};
 use skald_proto::{ChannelId, Role};
 
 use crate::creating::{ADA_HOST, BOB_HOST, CAROL_HOST, Team, assert_one_welcome};
@@ -18,17 +19,23 @@ use crate::world::{ACME, CREATE_CHANNEL, now, run};
 /// What `skald recv` shows of the device's own message that a recipient device got.
 const DELIVERED: &str = "delivered";
 
-/// The last `hpke` envelope the front saw sent to `device`.
-fn sent_to(front: &Front, device: skald_proto::DeviceId) -> Sent {
+/// The last envelope of a message the front saw sent to `channel`: an `mls` application message.
+fn sent_to(front: &Front, channel: ChannelId) -> Sent {
     front
         .sent()
         .into_iter()
         .rfind(|sent| {
-            let header = &sent.envelope.envelope().header;
-            header.scheme == skald_proto::Scheme::Hpke
-                && header.recipients.as_deref() == Some(&[device][..])
+            let envelope = sent.envelope.envelope();
+            envelope.header.channel == channel
+                && matches!(
+                    MlsFraming::read(&envelope.payload),
+                    Some(MlsFraming::Message {
+                        content: MlsContent::Application,
+                        ..
+                    })
+                )
         })
-        .unwrap_or_else(|| panic!("no envelope to {device}"))
+        .unwrap_or_else(|| panic!("no message to {channel}"))
 }
 
 /// Ada's device creates a channel, then signs a revision, stored as a fixture, that adds Carol to
@@ -171,7 +178,7 @@ fn send_goes_through_the_mailbox_first_and_shows_none_of_it() {
         "the release train leaves at noon",
     );
     assert!(first.success, "{first:?}");
-    let first_id = msg_id(&sent_to(&team.front, team.bob.device()));
+    let first_id = msg_id(&sent_to(&team.front, team.channel));
     let cloud = &team.world.cloud;
     team.bob.take_in(cloud);
     let empty = (team.bob.mls)

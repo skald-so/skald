@@ -1,31 +1,30 @@
 //! `skald send`: the device sends a text to a channel of a space it follows; as an agent, only in
 //! the space of its folder. It first accepts the space's latest revisions and goes through the
 //! mailbox as `skald recv` does, showing none of it: it sends its Commits and Welcomes that wait,
-//! writes each entry, goes through the Welcomes and Commits and brings the channel's group in line
-//! ([`crate::groups`]); a later `skald recv` shows the other entries. It then seals one `hpke`
-//! envelope, with `report` true, to each admitted `client` device of the channel but itself
-//! (`docs/protocol/membership.md`, "Admitted devices"), with the HPKE key of its certificate. The
-//! content is from the person address or the agent's, with `hops` 0, a `counter` per recipient
-//! device and an A2A message with the text (`docs/protocol/README.md`, "Content").
+//! writes each entry, goes through the Welcomes, Commits and application messages and brings the
+//! channel's group in line ([`crate::groups`]); a later `skald recv` shows the messages. It then
+//! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
+//! with `report` true, unless a member device of the group is not admitted, a Commit of its own
+//! there waits for the server or no other device is in the group (`docs/protocol/membership.md`,
+//! "Admitted devices"). The content is from the person address or the agent's, with `hops` 0, the
+//! device's next `counter` in the channel and an A2A message with the text
+//! (`docs/protocol/README.md`, "Content").
 //!
-//! The envelopes and their counters go into the outbox first. The device then sends every envelope
-//! of the outbox, those an earlier run left first, over its connection as its device, and sends
-//! the unanswered ones again with backoff and the same bytes until each gets `stored` or
+//! The envelope goes into the outbox with the MLS state first. The device then sends every
+//! envelope of the outbox, those an earlier run left first, over its connection as its device, and
+//! sends the unanswered ones again with backoff and the same bytes until each gets `stored` or
 //! `send-refused`, for as long as the request timeout (`docs/protocol/delivery.md`, "Send"). What
 //! is left waits in the outbox for the next run.
 
 use std::collections::BTreeMap;
 use std::io;
-use std::num::NonZeroU64;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use skald_crypto::seal_message;
 use skald_proto::{
-    Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Envelope, Frame,
-    Header, MessageId, Name, NonEmpty, RawEnvelope, Roster, Scheme, SendKey, SpaceId, Unknown,
-    VersionRange,
+    Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame, MessageId,
+    Name, RawEnvelope, Roster, SendKey, SpaceId, Unknown, VersionRange,
 };
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
@@ -35,7 +34,7 @@ use tungstenite::stream::MaybeTlsStream;
 use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{WebSocket, printable};
 use crate::devices::{self, text};
-use crate::follow::{ATTEMPTS, Own, SpaceDevices};
+use crate::follow::{Own, SpaceDevices};
 use crate::groups::{self, Link, Rosters};
 use crate::recv;
 use crate::secrets;
@@ -75,7 +74,7 @@ pub struct Queued {
 
 impl Wire for Queued {
     fn key(&self) -> Key {
-        (self.outgoing.msg_id, Some(self.outgoing.recipient))
+        (self.outgoing.msg_id, self.outgoing.recipient)
     }
 
     fn frame(&self) -> &[u8] {
@@ -86,8 +85,9 @@ impl Wire for Queued {
         let (msg_id, recipient) = (self.outgoing.msg_id, self.outgoing.recipient);
         if let Err(err) = state.remove_outgoing(msg_id, recipient) {
             eprintln!(
-                "skald: warning: the outbox keeps the message {msg_id} to device {recipient}, \
-                 which the server answered, so a later run sends it again: {err}"
+                "skald: warning: the outbox keeps the message {msg_id}{}, which the server \
+                 answered, so a later run sends it again: {err}",
+                to_device(recipient)
             );
         }
     }
@@ -137,23 +137,14 @@ pub fn run(
         .map_err(|err| with_waiting(dir, scope, err))?;
     let (roster, devices) =
         through_mailbox(&mut follower, scope, (space.id, channel), (roster, devices))?;
-    let recipients: BTreeMap<DeviceId, [u8; 32]> =
-        admitted(&follower.own, follower.this, &roster, &devices, channel)
-            .into_iter()
-            .map(|(device, cert)| (device, cert.body().hpke))
-            .collect();
-    if recipients.is_empty() {
-        return Err(with_waiting(
-            dir,
-            scope,
-            format!(
-                "no device can receive the message: the channel {channel} has no admitted device \
-                 with a valid certificate but this one; nothing is sent"
-            ),
-        ));
-    }
     let from = sender(&mut follower, &roster, agent)?;
-    enqueue(&follower, &roster, channel, &recipients, &from, text)?;
+    groups::encrypt(
+        &follower,
+        (&roster, &devices),
+        channel,
+        |msg_id, counter| content(&from, msg_id, counter, text),
+    )
+    .map_err(|err| with_waiting(dir, scope, err))?;
     let queued = queued(&follower.state, scope)?;
     let delivered = deliver(&mut follower, &queued, timeout, None);
     report(&queued, &delivered, timeout)
@@ -285,71 +276,36 @@ fn sender(
     })
 }
 
-/// Seals `message` from `from` to each of `recipients`, admitted devices of `channel` in `roster`,
-/// with the next counter to it, and adds the envelopes to the outbox with their counters.
-fn enqueue(
-    follower: &Follower,
-    roster: &Roster,
-    channel: ChannelId,
-    recipients: &BTreeMap<DeviceId, [u8; 32]>,
+/// The content of a message of `text` from `from`, of `msg_id`, with `counter`.
+fn content(
     from: &Address,
-    message: &str,
-) -> Result<(), String> {
-    let space = roster.body().space;
-    let keys = follower.keys()?;
-    let msg_id = MessageId::generate();
+    msg_id: MessageId,
+    counter: std::num::NonZeroU64,
+    text: &str,
+) -> Content {
     let a2a = serde_json::json!({
         "messageId": msg_id.to_string(),
         "role": "ROLE_USER",
-        "parts": [{ "text": message }],
+        "parts": [{ "text": text }],
     })
     .to_string();
-    let ids: Vec<DeviceId> = recipients.keys().copied().collect();
-    for _ in 0..ATTEMPTS {
-        let counters = follower.state.counters(channel, &ids).map_err(text)?;
-        let mut outgoing = Vec::new();
-        for ((&device, hpke), last) in recipients.iter().zip(counters) {
-            let counter = last
-                .checked_add(1)
-                .and_then(NonZeroU64::new)
-                .ok_or_else(|| format!("the counter to device {device} has no next"))?;
-            let header = Header {
-                v: follower.connection.version(),
-                space,
-                channel,
-                msg_id,
-                scheme: Scheme::Hpke,
-                recipients: Some(NonEmpty::new(device)),
-                ttl: None,
-                unknown: Unknown::default(),
-            };
-            let content = Content {
-                from: from.clone(),
-                to: None,
-                counter: Some(counter),
-                hops: 0,
-                reply_to: None,
-                body: Some(Body::A2a(a2a.clone())),
-                delegation: None,
-                grant: None,
-                attachments: None,
-                unknown: Unknown::default(),
-            };
-            let payload = seal_message(&header, &content, keys.signing(), hpke)
-                .map_err(|err| format!("the message cannot be sealed to device {device}: {err}"))?;
-            let envelope = Outgoing {
-                msg_id,
-                recipient: device,
-                space,
-                envelope: Envelope { header, payload }.to_cbor(),
-            };
-            outgoing.push((envelope, counter.get()));
-        }
-        if follower.state.enqueue(channel, &outgoing).map_err(text)? {
-            return Ok(());
-        }
+    Content {
+        from: from.clone(),
+        to: None,
+        counter: Some(counter),
+        hops: 0,
+        reply_to: None,
+        body: Some(Body::A2a(a2a)),
+        delegation: None,
+        grant: None,
+        attachments: None,
+        unknown: Unknown::default(),
     }
-    Err("other skald runs kept sending to the channel meanwhile; run the command again".to_owned())
+}
+
+/// " to device <recipient>", or nothing for none.
+fn to_device(recipient: Option<DeviceId>) -> String {
+    recipient.map_or_else(String::new, |device| format!(" to device {device}"))
 }
 
 /// The envelopes of the outbox of `state` within `scope`, in the order they go out.
@@ -536,9 +492,9 @@ fn explained(problem: &str) -> String {
     format!("{problem} ({meaning})")
 }
 
-/// Says, for each message of `queued`, its ID and, per recipient device, whether the server stored
-/// its envelope, refused it or has not answered it in `delivered`; fails unless every one is
-/// stored.
+/// Says, for each message of `queued`, its ID and, per envelope, by its recipient device under
+/// `hpke`, whether the server stored it, refused it or has not answered it in `delivered`; fails
+/// unless every one is stored.
 pub fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result<(), String> {
     let mut messages: Vec<(MessageId, ChannelId, Vec<&Queued>)> = Vec::new();
     for queued in queued {
@@ -555,22 +511,32 @@ pub fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Re
         println!("The message {id} to the channel {channel}:");
         let mut waiting = Vec::new();
         for queued in envelopes {
-            let device = queued.outgoing.recipient;
+            let recipient = queued.outgoing.recipient;
+            let device =
+                recipient.map_or_else(|| "channel".to_owned(), |device| device.to_string());
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => println!("  {device}  stored"),
                 Some(Answer::Refused(problem)) => {
                     let problem = explained(problem);
                     println!("  {device}  refused: {problem}");
-                    refused.push(format!("the message {id} to device {device}: {problem}"));
+                    refused.push(format!(
+                        "the message {id}{}: {problem}",
+                        to_device(recipient)
+                    ));
                 }
                 None => {
                     println!("  {device}  no answer yet: it waits in the outbox");
-                    waiting.push(device.to_string());
+                    waiting.extend(recipient.map(|device| device.to_string()));
                 }
             }
         }
         if !waiting.is_empty() {
             left.push(format!("the message {id} to {}", waiting.join(", ")));
+        } else if envelopes
+            .iter()
+            .any(|queued| !delivered.answers.contains_key(&queued.key()))
+        {
+            left.push(format!("the message {id}"));
         }
     }
     if !left.is_empty() {
@@ -596,12 +562,27 @@ pub fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Re
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::num::NonZeroU64;
+
     use skald_crypto::{HpkeKey, SigningKey, issue};
-    use skald_proto::{AccountId, CertBody, ChannelMember, HpkePayload, SpaceId};
+    use skald_proto::{
+        AccountId, CertBody, ChannelMember, Envelope, Header, NonEmpty, Scheme, SpaceId,
+    };
 
     use super::*;
     use crate::spaces::tests::{first, member};
+    use crate::state::Counted;
     use crate::test_dir::TestDir;
+
+    /// Puts `outgoing`, the first message in `channel`, in the outbox of `state`.
+    fn put(state: &State, channel: ChannelId, outgoing: Outgoing) {
+        let message = Counted {
+            outgoing,
+            channel,
+            counter: 1,
+        };
+        crate::state::tests::put(state, &[&message]).unwrap();
+    }
 
     /// An account and its master key.
     pub(crate) struct Account {
@@ -730,15 +711,11 @@ pub(crate) mod tests {
         for (number, space) in [own, other, own].into_iter().enumerate() {
             let outgoing = Outgoing {
                 msg_id: MessageId::generate(),
-                recipient: DeviceId::from_signing_key(&[1; 32]),
+                recipient: None,
                 space,
                 envelope: vec![u8::try_from(number).unwrap()],
             };
-            assert!(
-                state
-                    .enqueue(ChannelId::generate(), &[(outgoing, 1)])
-                    .unwrap()
-            );
+            put(&state, ChannelId::generate(), outgoing);
         }
         let waits = |count| {
             format!(
@@ -762,7 +739,6 @@ pub(crate) mod tests {
         let dir = TestDir::new("send-queued");
         let state = State::open(&dir).unwrap();
         let (own, other) = (SpaceId::generate(), SpaceId::generate());
-        let recipient = DeviceId::from_signing_key(&[1; 32]);
         let mut messages = Vec::new();
         for space in [own, other, own] {
             let channel = ChannelId::generate();
@@ -772,23 +748,22 @@ pub(crate) mod tests {
                 space,
                 channel,
                 msg_id,
-                scheme: Scheme::Hpke,
-                recipients: Some(NonEmpty::new(recipient)),
+                scheme: Scheme::Mls,
+                recipients: None,
                 ttl: None,
                 unknown: Unknown::default(),
             };
-            let payload = HpkePayload {
-                enc: [7; 32],
-                ct: vec![1, 2, 3],
-            }
-            .to_cbor();
             let outgoing = Outgoing {
                 msg_id,
-                recipient,
+                recipient: None,
                 space,
-                envelope: Envelope { header, payload }.to_cbor(),
+                envelope: Envelope {
+                    header,
+                    payload: vec![1, 2, 3],
+                }
+                .to_cbor(),
             };
-            assert!(state.enqueue(channel, &[(outgoing, 1)]).unwrap());
+            put(&state, channel, outgoing);
             messages.push((msg_id, channel));
         }
         let ids = |scope| -> Vec<(MessageId, ChannelId)> {
