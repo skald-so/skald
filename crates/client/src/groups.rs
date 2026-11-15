@@ -9,6 +9,11 @@
 //!   adds that is not admitted once it accepted the space's latest revisions.
 //! - It commits the Remove of each member that is not admitted, and, when it signed the space's
 //!   last accepted revision, the Adds of the admitted devices the group lacks.
+//! - Outside a group the server has, it joins by itself from the GroupInfo of the current epoch
+//!   once its signer and members are admitted, unless it lists the device and a Welcome comes. A
+//!   device whose Welcome it refused or whose Commit it could not process rejoins from a GroupInfo
+//!   of a later epoch, removing its old leaf; one a Commit removed while admitted warns and rejoins.
+//!   A Commit of an epoch it has passed is a replay, dropped.
 //! - Its own Commit goes into the outbox with the state that holds it pending, all at once, before
 //!   it is sent, and is sent again with the same bytes until the server answers. After `stored` it
 //!   merges the Commit, uploads the new epoch's GroupInfo, then sends the Welcome to the devices it
@@ -388,16 +393,17 @@ fn failed(channel: ChannelId, err: impl Display) -> String {
     format!("the group of the channel {channel} fails: {err}")
 }
 
-/// Commits in `channel` of `space` what `make` makes in its group, and sends it.
+/// Commits in `channel` of `space` what `make` makes in its group, writing the changes it gives
+/// with it, and sends it.
 fn commit(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
-    make: impl FnOnce(&mut MlsDevice) -> Result<Vec<u8>, MlsError>,
+    make: impl FnOnce(&mut MlsDevice, &mut MlsChanges) -> Result<Vec<u8>, MlsError>,
 ) -> Result<(), String> {
     let version = follower.connection.version();
     let queued = step(follower, &link.keys, |device, changes| {
-        let commit = make(device).map_err(|err| failed(channel, err))?;
+        let commit = make(device, changes).map_err(|err| failed(channel, err))?;
         let queued = outgoing(version, (space, channel), &commit, None);
         changes.queued.push(queued.clone());
         Ok(queued)
@@ -736,23 +742,16 @@ fn join_by_itself(
             strangers.join(", ")
         ));
     }
-    let version = follower.connection.version();
     // Gap detection counts the channel's `mls` messages from their baseline again: those after the
     // cursor.
     let cursor = follower.state.cursor().map_err(text)?;
-    let queued = step(follower, &link.keys, |device, changes| {
+    commit(follower, link, (space, channel), |device, changes| {
         changes.joined.push((channel, cursor + 1));
-        let commit = device
-            .join_by_itself(channel, group_info, now(), |joining| {
-                let listed = (&joining.signer, joining.members.as_slice());
-                joining.channel == channel && not_admitted(own, &admitted, listed).is_empty()
-            })
-            .map_err(|err| failed(channel, err))?;
-        let queued = outgoing(version, (space, channel), &commit, None);
-        changes.queued.push(queued.clone());
-        Ok(queued)
-    })?;
-    send_out(follower, link, queued).map(drop)
+        device.join_by_itself(channel, group_info, now(), |joining| {
+            let listed = (&joining.signer, joining.members.as_slice());
+            joining.channel == channel && not_admitted(own, &admitted, listed).is_empty()
+        })
+    })
 }
 
 /// Creates the group of `channel` in `space`, which has none on the server, with each of `others`,
@@ -765,7 +764,7 @@ fn create(
 ) -> Result<(), String> {
     let packages = key_packages(follower, others)?;
     let certs: Vec<Cert> = others.values().cloned().collect();
-    commit(follower, link, (space, channel), |device| {
+    commit(follower, link, (space, channel), |device, _| {
         device.create_group(channel, now())?;
         device.add_devices(channel, &packages, &certs, now())
     })
@@ -788,7 +787,7 @@ fn keep_in_line(
         .map(|member| member.device)
         .collect();
     if !strangers.is_empty() {
-        return commit(follower, link, (space, channel), |device| {
+        return commit(follower, link, (space, channel), |device, _| {
             device.remove_devices(channel, &strangers, b"", now())
         });
     }
@@ -805,7 +804,7 @@ fn keep_in_line(
         return Ok(());
     }
     let certs: Vec<Cert> = lacking.into_values().collect();
-    commit(follower, link, (space, channel), |device| {
+    commit(follower, link, (space, channel), |device, _| {
         device.add_devices(channel, &packages, &certs, now())
     })
 }
