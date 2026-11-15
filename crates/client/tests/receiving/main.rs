@@ -56,6 +56,8 @@ mod front;
 mod keys;
 #[path = "../sign_in/machine.rs"]
 mod machine;
+// The tests of new roster revisions, which share this binary's helpers.
+mod notices;
 mod peer;
 #[path = "../sign_in/relay.rs"]
 mod relay;
