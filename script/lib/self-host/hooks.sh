@@ -18,11 +18,17 @@ self_host_release() {
   SKALD_FILES=$self_host_files
 }
 
-# self_host_before_up: after the guide's settings, before `docker compose up`: records the stack's
-# directory and the mode of .env; puts this commit's image in place of the release's; in the main
-# scenario, tries `docker compose up` without each value of .env; then points Docker Compose to the
-# override that stands in for the internet.
-self_host_before_up() {
+# self_host_last_release: after the guide's step `release`, for the stack of the last release: the
+# address of its compose file and Caddy config, from its tag or, when the tag has none, this commit's.
+self_host_last_release() { SKALD_FILES=$self_host_release_files; }
+
+# self_host_rc_files: after the guide's step `release`, for the stack on PostgreSQL's release
+# candidate: this commit's compose file with that PostgreSQL, and its Caddy config.
+self_host_rc_files() { SKALD_FILES=$self_host_rc_files; }
+
+# self_host_settings <image>: records the stack's directory and the mode of .env, puts <image> in
+# place of the release's image by its digest and keeps a copy of .env in $run/env.
+self_host_settings() {
   pwd >"$run/dir"
   stat -c %a .env >"$run/env-mode"
   if ! grep -qF "ghcr.io/skald-so/skald-server@$self_host_digest" .env; then
@@ -30,12 +36,38 @@ self_host_before_up() {
       "ghcr.io/skald-so/skald-server@$self_host_digest" >&2
     return 1
   fi
-  sed -i "s|ghcr.io/skald-so/skald-server@$self_host_digest|$self_host_image|g" .env
+  sed -i "s|ghcr.io/skald-so/skald-server@$self_host_digest|$1|g" .env
   cp -p .env "$run/env"
+}
+
+# self_host_before_up: after the guide's settings, before `docker compose up`: self_host_settings
+# with this commit's image; in the main scenario, tries `docker compose up` without each value of
+# .env; then points Docker Compose to the override that stands in for the internet.
+self_host_before_up() {
+  self_host_settings "$self_host_image"
   if [[ $self_host_scenario == main ]]; then
     self_host_missing_values
   fi
   self_host_override
+}
+
+# self_host_before_up_release: as self_host_before_up, for the last release's server: its image,
+# pulled by its digest, under a local name, on the image's one platform.
+self_host_before_up_release() {
+  self_host_settings "$self_host_release_image"
+  self_host_override "$self_host_release_image" "$self_host_release_platform"
+}
+
+# self_host_prepare_attachments: for a last release whose image has no attachments directory, makes
+# the stack's attachments volume as this commit's image does: owned by the server's user 65532,
+# mode 0700.
+self_host_prepare_attachments() {
+  local volume
+  if [[ $self_host_release_attachments != prepare ]]; then return 0; fi
+  docker compose create
+  volume=$(docker compose config --format json | "$jq" --raw-output --exit-status '.volumes.attachments.name')
+  docker run --rm --volume "$volume:/a" --entrypoint sh "$self_host_caddy_image" -c \
+    'chown 65532:65532 /a && chmod 0700 /a'
 }
 
 # self_host_missing_values: for each value of .env, `docker compose up` without it; writes
@@ -60,12 +92,13 @@ self_host_missing_values() {
   done
 }
 
-# self_host_override: exports COMPOSE_FILE: the stack's compose files and, last, an override that
-# only stands in for the internet. It adds to the server's and Caddy's services, found by their
-# images, the test CA in SSL_CERT_FILE and the network of the stand-ins, keeping their own networks;
-# to the server's, the addresses of the GitHub and Google stand-ins.
+# self_host_override [<server image> [<platform>]]: exports COMPOSE_FILE: the stack's compose files
+# and, last, an override that only stands in for the internet. It adds to the server's and Caddy's
+# services, found by their images, the server's this commit's unless given, the test CA in
+# SSL_CERT_FILE and the network of the stand-ins, keeping their own networks; to the server's, the
+# addresses of the GitHub and Google stand-ins and, when given, its image's platform.
 self_host_override() {
-  local files name
+  local files name image=${1:-$self_host_image} platform=${2:-}
   files=$(sed -n 's/^COMPOSE_FILE=//p' .env | tail -n 1)
   files=${files#[\"\']}
   files=${files%[\"\']}
@@ -84,15 +117,15 @@ self_host_override() {
       fi
     done
   fi
-  docker compose config --format json | "$jq" --arg image "$self_host_image" \
-    --arg ca "$self_host_ca" --arg internet "$self_host_internet" \
+  COMPOSE_FILE=$files docker compose config --format json | "$jq" --arg image "$image" \
+    --arg platform "$platform" --arg ca "$self_host_ca" --arg internet "$self_host_internet" \
     --arg github "$self_host_github_url" --arg google "$self_host_google_issuer" '
     [.services | to_entries[]
       | select(.value.image == $image or ((.value.image // "") | test("(^|/)caddy[:@]")))]
     | {
         services: map({
           key,
-          value: {
+          value: ({
             environment: ({SSL_CERT_FILE: "/etc/self-host-test/ca.pem"}
               + if .value.image == $image then
                   {SKALD_GITHUB_URL: $github, SKALD_GITHUB_API_URL: $github,
@@ -100,7 +133,7 @@ self_host_override() {
                 else {} end),
             volumes: [{type: "bind", source: $ca, target: "/etc/self-host-test/ca.pem", read_only: true}],
             networks: ((.value.networks // {default: null}) + {"self-host-test-internet": null})
-          }
+          } + if .value.image == $image and $platform != "" then {platform: $platform} else {} end)
         }) | from_entries,
         networks: {"self-host-test-internet": {external: true, name: $internet}}
       }' >"$run/override.json"

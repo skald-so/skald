@@ -283,3 +283,50 @@ A restore goes into a new stack on a machine without a `skald` stack: the stack'
 ```
 
 A restore that fails after its check passed leaves the new stack partly filled: `docker compose down --volumes` empties it for another try. After a refusal, it would delete the data the check found.
+
+## Upgrade
+
+To a new release, in `~/skald`:
+
+1. [The release](#the-release) with the new release's values, and its image's signature.
+2. A [backup](#backup-and-restore) into a new file, for a [rollback](#rollback).
+3. The release's compose file and Caddy's config, its image in `.env`, and Caddy restarted for its config when the stack runs it:
+
+   ```sh self-host=upgrade
+   (
+     set -eo pipefail
+     curl -fsSLO "$SKALD_FILES/docker-compose.yml"
+     curl -fsSLO "$SKALD_FILES/Caddyfile"
+     sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+     if docker compose ps --services --status running | grep -x caddy >/dev/null; then
+       docker compose restart caddy
+     fi
+   )
+   ```
+
+4. [Start](#start). The server applies the release's new migrations at start.
+
+## Rollback
+
+Back to the release before an upgrade, with the backup from that upgrade, `<backup file>`. The rollback replaces the stack's database and attachments with the backup's ([Cloud](dev/infrastructure.md#cloud), "Deployment"): what changed after the upgrade is lost.
+
+In `~/skald`:
+
+1. [The release](#the-release) with the earlier release's values.
+2. The backup checked; the stack stopped, its database and attachments volumes removed; the release's files and image in place:
+
+   ```sh self-host=rollback
+   (
+     set -eo pipefail
+     file='<backup file>'
+     gzip -t "$file"
+     tar -tzf "$file" database.sql >/dev/null
+     docker compose down
+     docker volume rm skald_database skald_attachments
+     curl -fsSLO "$SKALD_FILES/docker-compose.yml"
+     curl -fsSLO "$SKALD_FILES/Caddyfile"
+     sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
+   )
+   ```
+
+3. The [restore](#backup-and-restore) of the backup, then [Start](#start).
