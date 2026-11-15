@@ -230,7 +230,7 @@ revocation-body = {
 - The signer is a `client` or `browser` device of the account, or its master key.
 - A revocation revokes `device`, each device in `also`, and every device one of them certified, except those in `keep`. The revoking device shows its user the certified devices to choose from.
 - Of several counting revocations of one device, a device it certified stays valid only if every one lists it in `keep`.
-- A client MUST ignore a revocation unless its signature verifies with the master key, or it has no `also` and its signature verifies with the certificate of `signer`, a `client` or `browser` device of `account` whose certificate passes checks 1 and 2 of [Device checks](#device-checks). Otherwise it counts, whether or not its signer is revoked itself, until a master-key revocation voids it.
+- A client MUST ignore a revocation unless its signature verifies with the key `signer` names: without `signer`, the master key; with `signer` and without `also`, the key of the certificate of `signer`, a `client` or `browser` device of `account` whose certificate passes checks 1 and 2 of [Device checks](#device-checks). Otherwise it counts, whether or not its signer is revoked itself, until a master-key revocation voids it.
 - A master-key revocation marks as stolen `device` and every device whose chain passes through it other than through a device in `keep`, and voids every revocation they signed. The device that signs it shows its user the devices the voided revocations named; it lists in `also` those the user keeps revoked, so one object voids and re-revokes.
 - Only voiding undoes a revocation; a master-key revocation is never undone.
 - The server stores revocations and gives them with the certificates.

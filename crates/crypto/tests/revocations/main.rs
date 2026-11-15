@@ -7,10 +7,6 @@
 //! The fixtures encode revocations from their spec fields and sign them with ed25519-dalek, apart
 //! from the crates under test: Ed25519 is deterministic, so signatures match byte for byte.
 
-// The acceptance tests of revocations, which fail until the code they test lands; the
-// implementation removes this gate and the `acceptance` feature.
-#![cfg(feature = "acceptance")]
-
 #[path = "../rosters/cbor.rs"]
 mod cbor;
 #[allow(dead_code)]

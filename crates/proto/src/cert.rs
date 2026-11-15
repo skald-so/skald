@@ -112,11 +112,21 @@ impl Codec for Cert {
     }
 }
 
+/// The fields a certificate and a revocation begin with, `account` and `device`, and the `unknown`
+/// ones.
+pub(crate) fn account_and_device(
+    unknown: &Unknown,
+    account: &AccountId,
+    device: &DeviceId,
+) -> MapOut {
+    MapOut::new(unknown)
+        .put(1, cbor::id(account))
+        .put(2, cbor::id(device))
+}
+
 impl Codec for CertBody {
     fn encode(&self) -> Vec<u8> {
-        MapOut::new(&self.unknown)
-            .put(1, cbor::id(&self.account))
-            .put(2, cbor::id(&self.device))
+        account_and_device(&self.unknown, &self.account, &self.device)
             .put(3, cbor::uint(self.kind as u64))
             .put(4, cbor::bytes(&self.signing))
             .put(5, cbor::bytes(&self.hpke))
