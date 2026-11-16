@@ -68,6 +68,7 @@ mod common;
 mod foreign;
 mod scene;
 
+mod acks;
 mod commits;
 mod creating;
 mod expiry;
@@ -75,3 +76,4 @@ mod group_info;
 mod instances;
 mod quota;
 mod routing;
+mod uploads;

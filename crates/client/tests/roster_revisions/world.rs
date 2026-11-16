@@ -355,12 +355,7 @@ pub fn set_role(members: &mut [Member], account: AccountId, role: Role) {
 /// Sends `POST <path>` with the JSON `request`, or without a body if `None`, as the session
 /// `token`, through the API: the status and the body.
 pub fn post_as(cloud: &Cloud, token: &str, path: &str, request: Option<&Value>) -> (u16, Value) {
-    let agent = ureq::Agent::config_builder()
-        .proxy(None)
-        .http_status_as_error(false)
-        .build()
-        .new_agent();
-    let post = agent
+    let post = super::cloud::agent()
         .post(format!("{}{path}", cloud.url))
         .header(
             skald_proto::VERSION_HEADER,

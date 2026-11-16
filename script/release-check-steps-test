@@ -24,7 +24,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { reporter } from './lib/report.mjs';
-import { imageName, localTarget as target, serve, standInTools } from './lib/release-check-stub.mjs';
+import { closing, imageName, localTarget as target, serve, standInTools } from './lib/release-check-stub.mjs';
 import { commands, event, isUnknown, open, readWorkflow, template } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -102,6 +102,7 @@ try {
   const proxy = (url, unserved, partial, limit) =>
     new Promise((resolve) => {
       const server = http.createServer(async (request, response) => {
+        closing(response);
         if (limit) {
           const now = Math.floor(Date.now() / 1000);
           const tokenless = String(request.headers['user-agent'] ?? '').startsWith('skald/');
@@ -184,6 +185,29 @@ try {
       await server.close();
     }
   };
+
+  // The stand-in and the proxy end each answer with its connection: closing() in
+  // script/lib/release-check-stub.mjs.
+  const headersOf = (url) =>
+    new Promise((resolve, reject) =>
+      http
+        .get(url, { agent: false }, (answer) => answer.resume().on('end', () => resolve(answer.headers)))
+        .on('error', reject),
+    );
+  const standIn = await serve(world);
+  const proxied = await proxy(standIn.url);
+  try {
+    for (const [who, url] of [['the stand-in', standIn.url], ['the proxy', proxied.url]]) {
+      const headers = await headersOf(`${url}/download/${tag}/install.sh`);
+      if (headers.connection !== 'close' || 'content-length' in headers || 'transfer-encoding' in headers) {
+        fail(`${who}'s answer does not end with its connection: ${JSON.stringify(headers)}`);
+      }
+    }
+  } finally {
+    await proxied.close();
+    await standIn.close();
+  }
+  world.requests.length = 0;
 
   const tail = (output) => output.trim().split('\n').slice(-6).join(' | ');
   let r = await check('install');

@@ -9,7 +9,7 @@ use skald_proto::{
     Cbor, ChannelId, DeviceId, Envelope, Header, HpkePayload, MessageId, NonEmpty,
     PROTOCOL_VERSION, Scheme, SendKey, SpaceId, Stored, Unknown,
 };
-use sqlx::{Connection as _, PgConnection};
+use sqlx::PgConnection;
 use tungstenite::Message;
 use tungstenite::stream::MaybeTlsStream;
 
@@ -292,16 +292,7 @@ pub fn query<T>(
     db: &TestDb,
     work: impl AsyncFnOnce(&mut PgConnection) -> Result<T, sqlx::Error>,
 ) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a tokio runtime")
-        .block_on(async {
-            let mut conn = PgConnection::connect(&db.url()).await?;
-            let found = work(&mut conn).await?;
-            conn.close().await?;
-            Ok::<_, sqlx::Error>(found)
-        })
+    db.query(work)
         .unwrap_or_else(|err| panic!("read the mailboxes: {err}"))
 }
 
