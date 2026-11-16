@@ -484,6 +484,7 @@ The server keeps a copy of each channel message under the channel's history key,
 - The key rotates with every epoch:
   - **revocation:** a Remove of a revoked device starts an epoch; when a browser of a channel member's account is revoked, a member device commits an empty Commit before it next sends in the channel;
   - **schedule:** when the current epoch is older than the policy's `history`, the first member device to notice commits an empty Commit.
+- A device counts an epoch's age by its own clock from when it entered the epoch: by creating the group, a Welcome, a Commit, its own or another's, or a join or rejoin. Never from the server's `stored` time.
 - An empty Commit has an UpdatePath and no proposals.
 
 ### Clean epochs

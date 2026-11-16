@@ -3,6 +3,7 @@
 mod admin;
 mod agents;
 mod channels;
+mod clock;
 mod connection;
 mod device;
 mod devices;
@@ -63,6 +64,17 @@ struct Cli {
         hide = true
     )]
     timeout: Option<NonZeroU64>,
+
+    /// Seconds to add to the system's clock when counting a channel epoch's age, for tests
+    /// [default: 0].
+    #[arg(
+        long,
+        env = "SKALD_CLOCK_OFFSET",
+        value_name = "SECONDS",
+        global = true,
+        hide = true
+    )]
+    clock_offset: Option<u64>,
 
     /// The directory of the local state and of the secrets file
     #[cfg_attr(windows, doc = r"[default: %LOCALAPPDATA%\skald].")]
@@ -235,6 +247,18 @@ enum Command {
         #[command(flatten)]
         member: InChannel,
     },
+    /// Sets how long each channel of a space this device follows keeps one history key, on a device
+    /// of an admin of it, by the space's next roster revision, which the device signs as skald
+    /// create-channel does. Member devices then rotate the key of each channel whose current epoch
+    /// is older.
+    SetHistoryPeriod {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// Whole days, such as 7d, or whole hours, such as 36h; at least a day.
+        #[arg(value_name = "PERIOD", value_parser = history_period)]
+        period: u64,
+    },
     /// Lists the channels of a space this device follows, as its last accepted roster revision gives
     /// them: each one's ID and its members' handles, and the devices in its group as this device
     /// holds it, or that this device is not in it. It first accepts the revisions the server has.
@@ -263,7 +287,9 @@ enum Command {
     /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
     /// of the device's mailbox and exits, accepting meanwhile the new revisions of each space this
     /// device follows. It joins and follows its channels' groups and keeps them to the devices each
-    /// channel admits, warning of the devices another device added that it does not. Shows each
+    /// channel admits, warning of the devices another device added that it does not, and starts a
+    /// new epoch, with a new history key, where this device entered the current one longer ago
+    /// than the space's history period. Shows each
     /// message that passes the protocol's checks, once, and each delivered and expired of this
     /// device's messages; warns of each message it drops, and of the messages missing from a
     /// sending device once a later one arrives, which it marks. As an agent, only those of the
@@ -338,6 +364,7 @@ impl Command {
             Command::ExcludeDevice { .. } => Some("exclude-device"),
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
+            Command::SetHistoryPeriod { .. } => Some("set-history-period"),
             Command::AddRule { .. } => Some("add-rule"),
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
@@ -375,12 +402,32 @@ enum Answer {
     No,
 }
 
+/// A policy's `history` in seconds, given as whole days, `<n>d`, or whole hours, `<n>h`; refused
+/// under a day (`docs/protocol/membership.md`, "Policy").
+fn history_period(given: &str) -> Result<u64, String> {
+    let unit = match given.chars().last() {
+        Some('d') => 86_400,
+        Some('h') => 3_600,
+        _ => return Err("give whole days, such as 7d, or whole hours, such as 36h".to_owned()),
+    };
+    let seconds = given[..given.len() - 1]
+        .parse::<u64>()
+        .ok()
+        .and_then(|count| count.checked_mul(unit))
+        .ok_or_else(|| "give whole days, such as 7d, or whole hours, such as 36h".to_owned())?;
+    if seconds < skald_proto::HISTORY_MIN {
+        return Err("the period is under a day, the shortest a space's policy allows".to_owned());
+    }
+    Ok(seconds)
+}
+
 /// The setting of the host name the client reads, for tests; empty, the host name is empty.
 const HOST_NAME: &str = "SKALD_HOST_NAME";
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let speaks = cli.protocol_versions.unwrap_or_default();
+    clock::set_offset(cli.clock_offset.unwrap_or(0));
     let timeout = cli
         .timeout
         .map_or(TIMEOUT, |seconds| Duration::from_secs(seconds.get()));
@@ -510,6 +557,11 @@ fn main() -> ExitCode {
                 change,
             )
         }
+        Command::SetHistoryPeriod { space, period } => edit(
+            (cli.state_dir, cli.key_storage, speaks, timeout),
+            &space,
+            admin::Edit::HistoryPeriod(period),
+        ),
         Command::Channels { space } => exit(
             synced(
                 cli.state_dir,

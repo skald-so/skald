@@ -689,6 +689,7 @@ impl Follower {
                             .next_by(&latest, |next| {
                                 next.members = body.members;
                                 next.channels = body.channels;
+                                next.policy = body.policy;
                             })
                             .map_err(waits)?;
                         match self.accepts(&latest, &next, &devices.certs) {
@@ -816,7 +817,8 @@ impl Follower {
 
 /// What a revision this device signed changes in the one it was signed on, as a run signs it into
 /// a later one: the channels it adds, a default channel among them, the members it removes, the
-/// devices it bars, and the members it adds to and removes from channels.
+/// devices it bars, the members it adds to and removes from channels, and the policy's `history`
+/// it sets.
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     default: Option<ChannelId>,
@@ -825,6 +827,7 @@ struct Change {
     excluded: Vec<(AccountId, DeviceId)>,
     joined: Vec<(ChannelId, ChannelMember)>,
     left: Vec<(ChannelId, AccountId)>,
+    history: Option<u64>,
 }
 
 impl Change {
@@ -870,14 +873,19 @@ impl Change {
         change
             .left
             .retain(|(_, account)| !change.removed.contains(account));
+        change.history = Some(next.policy.history).filter(|&set| set != base.policy.history);
         change
     }
 
     /// Makes the change in `body`, so far as it still applies: a member it removes leaves every
     /// channel; it bars a device and adds a member to a channel only of a member of `body`; it
     /// removes no member from the default channel, the first one, which keeps every member; and
-    /// it puts its default channel first, with every member, only if `needs_default`.
+    /// it puts its default channel first, with every member, only if `needs_default`; it sets the
+    /// policy's `history`.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
+        if let Some(history) = self.history {
+            body.policy.history = history;
+        }
         // A change that would leave no member removes none.
         let _ = remove_members(body, &self.removed);
         let mut members = body.members.clone().into_vec();
@@ -1339,7 +1347,7 @@ fn line(roster: &Roster, account: Option<AccountId>, pending: bool, personal: bo
 pub(crate) mod tests {
     use super::*;
     use skald_crypto::SigningKey;
-    use skald_proto::DeviceId;
+    use skald_proto::{DeviceId, HISTORY_MIN};
 
     /// Revision 1 of the space `acme`, created by `account` with the handle `ada`.
     pub(crate) fn first(account: AccountId) -> Roster {
@@ -1704,8 +1712,8 @@ pub(crate) mod tests {
     }
 
     /// A revision that removes Carol from the space, bars a device of Bob's, removes Bob from a
-    /// channel, adds Dave to it and adds a channel changes the same in a later revision that added
-    /// Eve, who stays in every channel she is in.
+    /// channel, adds Dave to it, adds a channel and sets the history period changes the same in a
+    /// later revision that added Eve, who stays in every channel she is in.
     #[test]
     fn change_is_made_again_in_a_later_revision() {
         let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
@@ -1727,6 +1735,7 @@ pub(crate) mod tests {
             ],
         );
         next.channels[1].members[1].history = false;
+        next.policy.history = 2 * HISTORY_MIN;
         bar(&mut next, bob, barred);
 
         let change = Change::between(&base, &next);
@@ -1744,6 +1753,7 @@ pub(crate) mod tests {
                 excluded: vec![(bob, barred)],
                 joined: vec![(team, dave_in)],
                 left: vec![(team, bob)],
+                history: Some(2 * HISTORY_MIN),
             }
         );
         let mut latest = acme(
@@ -1764,6 +1774,7 @@ pub(crate) mod tests {
             ],
         );
         expected.channels[1].members.push(dave_in);
+        expected.policy.history = 2 * HISTORY_MIN;
         bar(&mut expected, bob, barred);
         (expected.space, expected.signer) = (space, signer);
         assert_eq!(latest, expected);
@@ -1788,6 +1799,7 @@ pub(crate) mod tests {
             excluded: vec![(carol, DeviceId::from_signing_key(&[9; 32]))],
             joined: vec![(team, entry(carol)), (team, entry(ada))],
             left: vec![(default, bob)],
+            history: None,
         };
         let latest = acme(&[ada, bob], &[(default, &[ada, bob]), (team, &[ada])]);
 

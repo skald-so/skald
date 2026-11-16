@@ -8,7 +8,9 @@
 //!   if its signer is admitted, and processes another device's Commit, warning of each device it
 //!   adds that is not admitted once it accepted the space's latest revisions.
 //! - It commits the Remove of each member that is not admitted, and, when it signed the space's
-//!   last accepted revision, the Adds of the admitted devices the group lacks. A Commit with the
+//!   last accepted revision, the Adds of the admitted devices the group lacks; with neither, an
+//!   empty Commit once its current epoch is older than the `history` of the space's policy,
+//!   counted from when the device entered it ("History key"). A Commit with the
 //!   Remove of a revoked device carries the revocations by which this device holds it revoked; of
 //!   those another device's Commit carries, it keeps the ones that count, and warns of the devices
 //!   they revoke, before it judges the new epoch.
@@ -52,6 +54,7 @@ use skald_proto::{
     NonEmpty, Push, RawEnvelope, Roster, Scheme, SpaceId, Unknown,
 };
 
+use crate::clock;
 use crate::connection::{Method, WebSocket};
 use crate::device::Keys;
 use crate::devices::text;
@@ -342,9 +345,13 @@ fn committed(
         changes.rejoined.push(channel);
         let welcome = match device.commit_stored(channel) {
             Ok(welcome) => welcome,
-            Err(MlsError::NoCommitPending(_)) => return Ok(None),
+            Err(MlsError::NoCommitPending(_)) => {
+                entered(device, channel, changes);
+                return Ok(None);
+            }
             Err(err) => return Err(failed(channel, err)),
         };
+        entered(device, channel, changes);
         let added = (devices(device)
             .map_err(|err| failed(channel, err))?
             .into_iter())
@@ -362,6 +369,14 @@ fn committed(
     match welcome {
         Some(welcome) => send_out(follower, link, welcome),
         None => Ok(true),
+    }
+}
+
+/// Records that the device entered its current epoch of `channel`'s group now, by the clock of
+/// epochs' ages, unless it recorded that epoch already.
+fn entered(device: &MlsDevice, channel: ChannelId, changes: &mut MlsChanges) {
+    if let Ok(epoch) = device.epoch(channel) {
+        changes.entered.push((channel, epoch, clock::epoch_now()));
     }
 }
 
@@ -692,8 +707,7 @@ fn behind(
     (space, channel): (SpaceId, ChannelId),
     others: &BTreeMap<DeviceId, Cert>,
 ) -> Result<(), String> {
-    let epoch = read(follower, &link.keys, |device| device.epoch(channel))?
-        .map_err(|err| failed(channel, err))?;
+    let epoch = held_epoch(follower, link, channel)?;
     let Some(group_info) = group_on_server(follower, space, channel)?.1 else {
         return Ok(());
     };
@@ -715,6 +729,11 @@ fn behind(
             ..MlsChanges::default()
         },
     )
+}
+
+/// The epoch of `channel`'s group, which the device holds.
+fn held_epoch(follower: &Follower, link: &Link, channel: ChannelId) -> Result<u64, String> {
+    read(follower, &link.keys, |device| device.epoch(channel))?.map_err(|err| failed(channel, err))
 }
 
 /// `channel`'s GroupInfo `group_info`, the server's, as seen from outside the group.
@@ -802,7 +821,9 @@ fn create(
 
 /// Commits the Remove of each of `members`, the group of `channel`, that is not admitted, carrying
 /// the revocations of `devices` by which those revoked are; with none, and if this device signed
-/// `roster`, the Adds of the devices of `others`, the other admitted devices, that the group lacks.
+/// `roster`, the Adds of the devices of `others`, the other admitted devices, that the group lacks;
+/// with neither, an empty Commit if the epoch is older than the period of `roster`'s policy
+/// ([`rotate_if_aged`]).
 fn keep_in_line(
     follower: &mut Follower,
     link: &mut Link,
@@ -827,21 +848,53 @@ fn keep_in_line(
             device.remove_devices(channel, &strangers, &carried, now())
         });
     }
-    if roster.body().signer != this {
-        return Ok(());
+    if roster.body().signer == this {
+        let lacking: BTreeMap<DeviceId, Cert> = others
+            .iter()
+            .filter(|(device, _)| !members.iter().any(|member| member.device == **device))
+            .map(|(device, cert)| (*device, cert.clone()))
+            .collect();
+        let packages = key_packages(follower, &lacking)?;
+        if !packages.is_empty() {
+            let certs: Vec<Cert> = lacking.into_values().collect();
+            return commit(follower, link, (space, channel), |device, _| {
+                device.add_devices(channel, &packages, &certs, now())
+            });
+        }
     }
-    let lacking: BTreeMap<DeviceId, Cert> = others
-        .iter()
-        .filter(|(device, _)| !members.iter().any(|member| member.device == **device))
-        .map(|(device, cert)| (*device, cert.clone()))
-        .collect();
-    let packages = key_packages(follower, &lacking)?;
-    if packages.is_empty() {
-        return Ok(());
+    let period = roster.body().policy.history;
+    rotate_if_aged(follower, link, (space, channel), period)
+}
+
+/// Commits an empty Commit in `channel` of `space` if the device entered its current epoch more
+/// than `period` seconds ago, by the clock of epochs' ages ("History key"). An epoch it has no
+/// record of entering counts from now: the device records it.
+fn rotate_if_aged(
+    follower: &mut Follower,
+    link: &mut Link,
+    (space, channel): (SpaceId, ChannelId),
+    period: u64,
+) -> Result<(), String> {
+    let epoch = held_epoch(follower, link, channel)?;
+    let at = clock::epoch_now();
+    match follower.state.epoch_entered(channel).map_err(text)? {
+        Some((held, entered)) if held == epoch => {
+            if at.saturating_sub(entered) <= period {
+                return Ok(());
+            }
+        }
+        _ => {
+            return change(
+                follower,
+                MlsChanges {
+                    entered: vec![(channel, epoch, at)],
+                    ..MlsChanges::default()
+                },
+            );
+        }
     }
-    let certs: Vec<Cert> = lacking.into_values().collect();
     commit(follower, link, (space, channel), |device, _| {
-        device.add_devices(channel, &packages, &certs, now())
+        device.commit_empty(channel, &[], now())
     })
 }
 
@@ -1104,7 +1157,10 @@ fn join(
             ..MlsChanges::default()
         };
         match joined {
-            Ok(_) => taken.rejoined.push(channel),
+            Ok(_) => {
+                taken.rejoined.push(channel);
+                entered(&device, channel, &mut taken);
+            }
             // A refused Welcome leaves a leaf in the group that the device cannot use: it joins by
             // itself even though the GroupInfo lists it.
             Err(MlsError::GroupExists(_)) => {}
@@ -1161,10 +1217,14 @@ fn processed(
             seen = Some(change.clone());
             true
         });
-        if processed.is_err() {
-            changes.rejoin.push(channel);
-        } else {
-            changes.revocations = learned.iter().map(skald_proto::Cbor::to_cbor).collect();
+        match processed {
+            Err(_) => changes.rejoin.push(channel),
+            Ok(entered) => {
+                changes.revocations = learned.iter().map(skald_proto::Cbor::to_cbor).collect();
+                if let Processed::Entered { epoch } = entered {
+                    changes.entered.push((channel, epoch, clock::epoch_now()));
+                }
+            }
         }
         Ok(Some(processed))
     })?;

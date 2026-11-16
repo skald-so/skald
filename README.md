@@ -69,6 +69,7 @@ skald add-to-channel <space> <channel> <handle> --history yes|no  # add a member
 skald remove-from-channel <space> <channel> <handle>  # remove a member from a channel other than the default one, as an admin
 skald remove-member <space> <handle>  # remove a member from the space and its channels, as an admin
 skald exclude-device <space> <device>  # bar a member's device from the space and its channels, as an admin
+skald set-history-period <space> <period>  # how long a channel keeps one history key, such as 7d or 36h, at least a day, as an admin
 skald send <channel> <text>  # send a text to a channel, encrypted in its MLS group for its other devices
 skald recv                 # receive the device's messages, checked, and the statuses of the messages it sent
 skald --agent <name> address  # the agent's address in the space of the working directory
