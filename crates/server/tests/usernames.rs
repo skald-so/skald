@@ -30,7 +30,6 @@ use common::{Response, TestDb, get_url};
 use serde_json::json;
 use skald_github_stand_in::User;
 use skald_proto::AccountId;
-use sqlx::{Connection, PgConnection};
 
 /// Sets the session's account's username: `PUT`.
 const USERNAME: &str = "/account/username";
@@ -288,19 +287,7 @@ impl OldAccount {
 /// A database with the schema of a server whose accounts had no username.
 fn database_before_usernames() -> TestDb {
     let db = TestDb::create();
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("start a tokio runtime")
-        .block_on(async {
-            let mut conn = PgConnection::connect(&db.url()).await?;
-            skald_server::MIGRATOR
-                .run_to(BEFORE_USERNAMES, &mut conn)
-                .await
-                .map_err(|err| sqlx::Error::Migrate(Box::new(err)))?;
-            conn.close().await
-        })
-        .expect("migrate the test database");
+    db.migrate_to(BEFORE_USERNAMES);
     db
 }
 

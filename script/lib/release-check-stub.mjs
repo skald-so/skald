@@ -131,9 +131,20 @@ const npmAttestations = (world, version) => {
   };
 };
 
-// serve <world>: resolves to {url, close} once the stand-in listens.
+// closing <response>: the response ends the connection, its body ending with it, so the client reads
+// up to the stand-in's close and never closes first. A closed connection's TIME_WAIT then holds the
+// stand-in's port, not an ephemeral port of the client: the tests' many short connections would
+// otherwise hold thousands of the machine's ephemeral ports for 30 s on macOS, and the machine's
+// runs together use them up (EADDRNOTAVAIL).
+export function closing(response) {
+  response.setHeader('connection', 'close');
+  response.useChunkedEncodingByDefault = false;
+}
+
+// serve <world>: resolves to {url, close} once the stand-in listens. It answers as closing() says.
 export function serve(world) {
   const server = http.createServer((request, response) => {
+    closing(response);
     const url = new URL(request.url, 'http://127.0.0.1');
     const route = decodeURIComponent(url.pathname);
     world.requests.push({ method: request.method, path: route, agent: String(request.headers['user-agent'] ?? '') });

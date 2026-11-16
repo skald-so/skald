@@ -1,0 +1,188 @@
+#!/usr/bin/env node
+// Tests .github/workflows/pages.yml, which publishes the website and docs to GitHub Pages:
+//   - a push of a stable release's tag, vX.Y.Z, and a manual run start it; a push of a beta's tag,
+//     of a branch or another tag, and a PR do not;
+//   - its jobs, their steps run as GitHub runs them with stand-ins for gh, npm and the site build,
+//     on a repository with stable and beta tags: a push of the latest stable tag, or a manual run
+//     on it, builds the site with links at that tag and publishes it once; a push of an older stable
+//     tag, and a manual run on a branch, a beta's tag or an older stable tag, build and publish
+//     nothing and do not fail;
+//   - while the repository's Pages is not set up, GitHub's API answering 404, nothing is published
+//     and the run does not fail; Pages set up from a branch, or another answer of the API, fails it
+//     and publishes nothing;
+//   - every job's permissions are set; only the job that publishes writes, and only pages and
+//     id-token; no other workflow deploys to Pages.
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { reporter } from './lib/report.mjs';
+import { runJobs } from './lib/run-jobs.mjs';
+import { event, permissions, readWorkflows, runsFor, writes } from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const pagesFile = '.github/workflows/pages.yml';
+const { fail, done } = reporter('pages-workflow-test');
+
+const workflows = readWorkflows(root);
+const pages = workflows[pagesFile];
+if (!pages) {
+  console.error(`pages-workflow-test: ${pagesFile} is missing`);
+  process.exit(1);
+}
+const jobs = pages.jobs ?? {};
+const action = (step) => String(step?.uses ?? '').split('@')[0].toLowerCase();
+
+// The events that start it.
+for (const ref of ['refs/tags/v1.2.3', 'refs/tags/v0.10.0']) {
+  if (!runsFor(pages, event('push', ref))) fail(`a push of ${ref} does not start it`);
+}
+for (const [name, ref] of [
+  ['push', 'refs/tags/v1.2.3-beta.1'],
+  ['push', 'refs/tags/v1.2'],
+  ['push', 'refs/tags/release-1.2.3'],
+  ['push', 'refs/heads/dev'],
+  ['push', 'refs/heads/main'],
+  ['pull_request', 'refs/pull/7/merge'],
+]) {
+  if (runsFor(pages, event(name, ref))) fail(`a ${name} on ${ref} starts it`);
+}
+if (!runsFor(pages, event('workflow_dispatch', 'refs/tags/v1.2.3'))) fail('a manual run does not start it');
+
+// Permissions.
+const deployers = Object.keys(jobs).filter((key) => (jobs[key].steps ?? []).some((step) => action(step) === 'actions/deploy-pages'));
+if (deployers.length !== 1) fail(`one job deploys to Pages, not: ${deployers.join(', ') || 'none'}`);
+if (writes(permissions(pages, {})).length > 0 || permissions(pages, {})?.all) fail('the workflow grants its jobs more than nothing by default');
+for (const [key, job] of Object.entries(jobs)) {
+  const p = permissions(pages, job);
+  if (p === null) {
+    fail(`job ${key}: its permissions are not set`);
+    continue;
+  }
+  const w = writes(p);
+  if (p.all) fail(`job ${key}: its token gets ${p.all}-all`);
+  if (deployers.includes(key)) {
+    if (JSON.stringify(w.sort()) !== JSON.stringify(['id-token', 'pages'])) fail(`job ${key} writes pages and id-token only, not: ${w.join(', ') || 'nothing'}`);
+  } else if (w.length > 0) fail(`job ${key} publishes nothing, but its token writes ${w.join(', ')}`);
+}
+for (const [file, workflow] of Object.entries(workflows)) {
+  if (file === pagesFile) continue;
+  for (const [key, job] of Object.entries(workflow.jobs ?? {})) {
+    if ((job.steps ?? []).some((step) => action(step) === 'actions/deploy-pages')) fail(`${file} job ${key} deploys to Pages`);
+    if (writes(permissions(workflow, job)).includes('pages')) fail(`${file} job ${key} writes pages`);
+  }
+}
+
+// The jobs, run.
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pages-workflow-test.')));
+process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
+const work = path.join(tmp, 'work');
+const bin = path.join(tmp, 'bin');
+const log = path.join(tmp, 'log');
+const pagesState = path.join(tmp, 'pages');
+fs.mkdirSync(path.join(work, 'site'), { recursive: true });
+fs.mkdirSync(bin);
+// The site build: writes a page that names SKALD_SITE_REF.
+fs.writeFileSync(
+  path.join(work, 'site/build.mjs'),
+  "import fs from 'node:fs';\nfs.mkdirSync(process.argv[2], { recursive: true });\nfs.writeFileSync(`${process.argv[2]}/index.html`, `ref ${process.env.SKALD_SITE_REF}`);\n",
+);
+// gh: `api repos/skald-so/skald/pages --jq .build_type` answers as the file $pagesState says:
+// a build type, or `404` or `500` as GitHub's errors.
+fs.writeFileSync(
+  path.join(bin, 'gh'),
+  `#!/usr/bin/env bash
+echo "gh $*" >>${JSON.stringify(log)}
+[[ "$*" == 'api repos/skald-so/skald/pages --jq .build_type' ]] || { echo "unexpected gh $*" >&2; exit 2; }
+state=$(cat ${JSON.stringify(pagesState)})
+case $state in
+  404) echo 'gh: Not Found (HTTP 404)' >&2; exit 1 ;;
+  500) echo 'gh: Server Error (HTTP 500)' >&2; exit 1 ;;
+  *) echo "$state" ;;
+esac
+`,
+);
+fs.writeFileSync(path.join(bin, 'npm'), `#!/usr/bin/env bash\necho "npm $* in $(basename "$PWD")" >>${JSON.stringify(log)}\n`);
+fs.chmodSync(path.join(bin, 'gh'), 0o755);
+fs.chmodSync(path.join(bin, 'npm'), 0o755);
+const git = (...args) =>
+  execFileSync('git', ['-c', 'commit.gpgsign=false', '-c', 'tag.gpgsign=false', ...args], {
+    cwd: work,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: tmp, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'test', GIT_AUTHOR_EMAIL: 'test@example.com', GIT_COMMITTER_NAME: 'test', GIT_COMMITTER_EMAIL: 'test@example.com' },
+  }).trim();
+git('init', '-q');
+git('add', '-A');
+git('commit', '-q', '-m', 'release');
+for (const tag of ['v0.9.0', 'v0.10.0', 'v0.2.0', 'v0.11.0-beta.1', 'skald-v9.0.0']) git('tag', tag);
+const sha = git('rev-parse', 'HEAD');
+
+// run <event> <ref> <pages>: the jobs run on <event> at <ref> with Pages answering <pages>;
+// {results, problems, built, published}.
+const run = (eventName, ref, state) => {
+  fs.writeFileSync(pagesState, state);
+  fs.writeFileSync(log, '');
+  const runner = fs.mkdtempSync(path.join(tmp, 'runner.'));
+  const uploaded = [];
+  let published = 0;
+  const { results, problems } = runJobs(pages, Object.keys(jobs), {
+    eventName,
+    ref,
+    version: '0.10.0',
+    sha,
+    work,
+    bin,
+    runner,
+    env: {},
+    action: ({ kind, input }) => {
+      if (kind === 'actions/upload-pages-artifact') {
+        const file = path.join(input('path'), 'index.html');
+        uploaded.push(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : `nothing at ${input('path')}`);
+      } else if (kind === 'actions/deploy-pages') published++;
+      return {};
+    },
+  });
+  return { results, problems, uploaded, published, log: fs.readFileSync(log, 'utf8') };
+};
+const failedJobs = (results) => Object.entries(results).filter(([, r]) => r.result === 'failure').map(([k]) => k);
+
+// The latest stable tag, v0.10.0: by version, not by text; betas and other tags do not count.
+for (const [name, ref] of [
+  ['push', 'refs/tags/v0.10.0'],
+  ['workflow_dispatch', 'refs/tags/v0.10.0'],
+]) {
+  const r = run(name, ref, 'workflow');
+  if (r.problems.length > 0 || failedJobs(r.results).length > 0) fail(`a ${name} on ${ref} fails: ${r.problems.join('; ') || failedJobs(r.results).join(', ')}`);
+  if (JSON.stringify(r.uploaded) !== JSON.stringify(['ref v0.10.0'])) fail(`a ${name} on ${ref} uploads ${JSON.stringify(r.uploaded)}, not one site built at v0.10.0`);
+  if (r.published !== 1) fail(`a ${name} on ${ref} publishes ${r.published} times, not once`);
+  if (!r.log.includes('npm ci --no-audit --no-fund in site')) fail(`a ${name} on ${ref} builds without installing the packages of site/ from their lockfile`);
+}
+for (const [name, ref] of [
+  ['push', 'refs/tags/v0.9.0'],
+  ['push', 'refs/tags/v0.2.0'],
+  ['workflow_dispatch', 'refs/tags/v0.9.0'],
+  ['workflow_dispatch', 'refs/tags/v0.11.0-beta.1'],
+  ['workflow_dispatch', 'refs/tags/skald-v9.0.0'],
+  ['workflow_dispatch', 'refs/heads/dev'],
+  ['workflow_dispatch', 'refs/heads/main'],
+]) {
+  const r = run(name, ref, 'workflow');
+  if (r.problems.length > 0 || failedJobs(r.results).length > 0) fail(`a ${name} on ${ref} fails: ${r.problems.join('; ') || failedJobs(r.results).join(', ')}`);
+  if (r.uploaded.length > 0 || r.published > 0) fail(`a ${name} on ${ref} builds or publishes the site`);
+}
+
+// Pages not set up: nothing is published, and the run passes.
+{
+  const r = run('push', 'refs/tags/v0.10.0', '404');
+  if (r.problems.length > 0 || failedJobs(r.results).length > 0) fail(`with Pages not set up, a release's run fails: ${r.problems.join('; ') || failedJobs(r.results).join(', ')}`);
+  if (r.published > 0) fail('with Pages not set up, the site is published');
+  if (!r.log.includes('gh api repos/skald-so/skald/pages')) fail("the run does not ask GitHub's API whether Pages is set up");
+}
+// Pages set up from a branch, or an error of the API: the run fails and publishes nothing.
+for (const state of ['legacy', '500']) {
+  const r = run('push', 'refs/tags/v0.10.0', state);
+  if (failedJobs(r.results).length === 0) fail(`with Pages answering ${state}, the run passes`);
+  if (r.published > 0) fail(`with Pages answering ${state}, the site is published`);
+}
+
+done();

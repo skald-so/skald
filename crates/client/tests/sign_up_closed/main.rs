@@ -32,7 +32,6 @@ use browser::{APPROVE, Browser, CODE_FIELD, Page, SIGN_IN_GITHUB, SUBMIT};
 use common::TestDb;
 use machine::{FIRST_DEVICE, Machine, Run, SERVER, SIGN_IN, YES};
 use skald_github_stand_in::{App, GitHub, User};
-use tokio::runtime::Runtime;
 
 /// The fake OAuth App's client ID and secret.
 const CLIENT_ID: &str = "Ov23li0signup0closed";
@@ -84,7 +83,7 @@ struct Closed {
 impl Closed {
     fn start() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let db = TestDb::create(&Runtime::new().expect("start a tokio runtime"));
+        let db = TestDb::create();
         let log = env::temp_dir().join(format!(
             "skald-client-sign-up-{}-{}.log",
             process::id(),

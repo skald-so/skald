@@ -28,16 +28,16 @@ pub(crate) enum Refusal {
     UsernameTaken,
     /// No such space, or the session's account does not get it.
     NoSpace,
+    /// No such device of the session's account.
+    NoDevice,
+    /// A KeyPackage that fails the checks, for the reason it holds.
+    KeyPackage(String),
     /// No such channel in the space's latest revision.
     NoChannel,
     /// A GroupInfo the server does not keep, for the reason it holds.
     GroupInfo(String),
     /// A GroupInfo not of the group the server follows, for the reason it holds.
     GroupInfoConflict(String),
-    /// No such device of the session's account.
-    NoDevice,
-    /// A KeyPackage that fails the checks, for the reason it holds.
-    KeyPackage(String),
     /// The session's account may not do this in the space, for the reason it holds.
     NotAllowed(String),
     /// A roster revision the server does not store, for the reason it holds.
@@ -98,6 +98,15 @@ impl IntoResponse for Refusal {
                 "No such space",
                 "No such space, or the session's account does not get it.",
             ),
+            Refusal::NoDevice => problem(
+                StatusCode::NOT_FOUND,
+                "no-device",
+                "No such device",
+                "The session's account has no such device.",
+            ),
+            Refusal::KeyPackage(detail) => {
+                problem(bad, "invalid-key-package", "Invalid KeyPackage", &detail)
+            }
             Refusal::NoChannel => problem(
                 StatusCode::NOT_FOUND,
                 "no-channel",
@@ -113,15 +122,6 @@ impl IntoResponse for Refusal {
                 "Not the channel's group",
                 &detail,
             ),
-            Refusal::NoDevice => problem(
-                StatusCode::NOT_FOUND,
-                "no-device",
-                "No such device",
-                "The session's account has no such device.",
-            ),
-            Refusal::KeyPackage(detail) => {
-                problem(bad, "invalid-key-package", "Invalid KeyPackage", &detail)
-            }
             Refusal::NotAllowed(detail) => {
                 problem(StatusCode::FORBIDDEN, "not-allowed", "Not allowed", &detail)
             }
