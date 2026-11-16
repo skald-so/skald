@@ -54,7 +54,7 @@ pub(crate) async fn events(
         state.mailbox_retention,
     );
     let notices = state.notices.listen(proved.account);
-    if let Err(failed) = ack_listening(&state, proved.device, cursor).await {
+    if let Err(failed) = ack_listening(&state, proved.device, cursor, true).await {
         return *failed;
     }
     let held = match reader.start(&state.db).await {

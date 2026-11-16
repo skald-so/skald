@@ -113,7 +113,8 @@ pub(crate) async fn poll(
     )
     .after(cursor);
     let notices = state.notices.listen(proved.account);
-    if let Err(failed) = ack_listening(&state, proved.device, cursor).await {
+    // Only a long-poll that waits needs what other instances tell.
+    if let Err(failed) = ack_listening(&state, proved.device, cursor, !wait.is_zero()).await {
         return *failed;
     }
     let ends = tokio::time::sleep(wait);
@@ -139,17 +140,19 @@ pub(crate) async fn poll(
     }
 }
 
-/// Acks `device`'s mailbox up to `cursor` once the instance listens to the others, so that a
-/// long-poll or a stream listening to its mailbox misses nothing they tell; the answer if either
-/// fails.
+/// Acks `device`'s mailbox up to `cursor`, once the instance listens to the others if `listen`, so
+/// that a long-poll or a stream waiting on its mailbox misses nothing they tell; the answer if
+/// either fails.
 pub(crate) async fn ack_listening(
     state: &AppState,
     device: DeviceId,
     cursor: u64,
+    listen: bool,
 ) -> Result<(), Box<Response>> {
-    if tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
-        .await
-        .is_err()
+    if listen
+        && tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
+            .await
+            .is_err()
     {
         return Err(Box::new(server_error(
             "The server does not listen to its other instances yet.",

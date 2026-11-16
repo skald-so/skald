@@ -244,6 +244,27 @@ fn a_used_or_unknown_challenge_is_refused() {
     s.assert_untouched();
 }
 
+/// A challenge works only with its own session's token: bob's laptop, with his session's token,
+/// proves itself on a challenge of another live session of his account, and is refused with
+/// `challenge-refused`.
+#[test]
+fn a_challenge_of_another_session_of_the_account_is_refused() {
+    let s = Scene::new(3_141_410_461);
+    let t = &s.f.team;
+    let user = t.flow.stand.user(3_141_410_462, "bob-spaces-standin");
+    let other = machine(&t.flow, &user);
+    let server = &t.flow.stand.server;
+    let on_other = Https::on_session(server, &t.flow, &other.token, &t.bob.laptop);
+    assert_eq!(on_other.poll_now(0).entries, messages(1, &s.sent));
+
+    s.assert_refused(
+        "a challenge of another session",
+        Some(CHALLENGE_REFUSED),
+        || Some(s.bob.proof_on(&on_other.challenge())),
+    );
+    s.assert_untouched();
+}
+
 /// A challenge expires within a minute: past it, its proof is refused with `challenge-refused`.
 #[test]
 fn an_expired_challenge_is_refused() {
