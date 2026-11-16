@@ -10,7 +10,10 @@
 //! - it refuses an upload that does not decode, or names another channel or an epoch the channel
 //!   has not had;
 //! - it gives them, as the bytes it got, only to sessions of accounts the latest revision lists as
-//!   the channel's members.
+//!   the channel's members;
+//! - to an account whose `history` is false in the latest revision, only the links whose `prev` is
+//!   at or after the epoch whose Commit added the account, and the wraps and entries of that epoch
+//!   and later ones ("Access").
 //!
 //! Against a `skald-server` with the scene of the tests of the server as the MLS Delivery Service:
 //! its channel's group, formed by test devices running MLS with `skald-crypto`, the member epochs
@@ -58,6 +61,7 @@ mod common;
 mod kit;
 
 mod access;
+mod earlier_history;
 mod first_kept;
 mod refusals;
 mod storing;
