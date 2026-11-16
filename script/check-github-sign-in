@@ -2,19 +2,21 @@
 # Checks a server's GitHub sign-in without a person, in these steps, each only after the one before
 # passed:
 #   device authorization  POST <server>/auth/device gives a user code, a device code and a
-#                         verification page on that server
-#   verification page     the page, without a session, links "Sign in with GitHub" to that server,
-#                         and the link sends the browser to $GITHUB_URL/login/oauth/authorize with
-#                         <client ID> and the callback <server>/auth/github/callback
+#                         verification page
+#   verification page     the page is on <web>, and, without a session, links "Sign in with
+#                         GitHub" to <web>; the link sends the browser to
+#                         $GITHUB_URL/login/oauth/authorize with <client ID> and the callback
+#                         <web>/auth/github/callback
 #   polling               POST <server>/auth/token with the new device code answers
 #                         authorization_pending
+# <server> is the server's public address, <web> its web address, by default <server>.
 # GitHub's address is $GITHUB_URL, https://github.com by default; the check never contacts it.
 # Prints a line `<step>: pass` or `<step>: fail: <reason>` per step it runs, then `pass` or `fail`;
 # never a code the server gave, nor curl's own messages. Exits 0 only when every step passes, 1 when
 # one fails, 2 on wrong usage.
 # Makes its own HTTPS requests with curl, which checks the server's certificate.
-# crates/server/tests/github_sign_in_check.rs tests it.
-# Usage: script/check-github-sign-in <server address> <client ID>
+# crates/server/tests/github_sign_in_check.rs and sign_in_checks_web_address.rs test it.
+# Usage: script/check-github-sign-in <server address> <client ID> [<web address>]
 set -euo pipefail
 
 source "$(dirname "$0")/lib/sign-in-check.sh"

@@ -12,7 +12,7 @@ use skald_crypto::MemberDevice;
 use skald_proto::{Cbor as _, Cert, Channel, ChannelId, ChannelMember, Roster, Unknown};
 
 use crate::devices::text;
-use crate::groups::{self, Link};
+use crate::groups;
 use crate::spaces::{
     CHANGED_MEANWHILE, Synced, admin_device, heading, issue_channel, needs_default, no_admin,
 };
@@ -65,15 +65,9 @@ pub fn create(synced: Synced) -> Result<(), String> {
         "Created the channel {id} in the space {name}: this device signed its revision {}.",
         stored.body().revision
     );
-    let (roster, devices) = follower.sync(&space)?;
-    let mut link = Link::new(&follower)?;
-    groups::align(
-        &mut follower,
-        &mut link,
-        space.id,
-        (&roster, &devices),
-        Some(id),
-    )
+    follower.sync(&space)?;
+    groups::align_accepted(&mut follower);
+    Ok(())
 }
 
 /// Shows the channels of `synced`, a space the device follows.
