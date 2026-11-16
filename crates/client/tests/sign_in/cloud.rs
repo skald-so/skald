@@ -87,7 +87,9 @@ pub fn unb64(text: &str) -> Vec<u8> {
 }
 
 pub struct Cloud {
-    /// Where machines reach the server: the relay, or the front before it.
+    /// Where machines reach the server, and the tests' own requests too: the relay, or the plain
+    /// HTTP front before it. Behind a TLS front, the relay; machines reach the server at
+    /// [`Cloud::public`] there.
     pub url: String,
     pub relay: Relay,
     /// The GitHub stand-in; it runs also when the server has no GitHub settings.
@@ -137,24 +139,39 @@ impl Cloud {
     ) -> Self {
         Self::serving_at(
             Providers::GitHub,
-            host,
+            &format!("http://{host}"),
             Some(front),
             (lifetime, interval),
             change,
         )
     }
 
-    /// As [`Cloud::with`], the server's public address `http://<host>:<port>`.
-    fn serving(providers: Providers, host: &str, lifetime: u64, interval: u64) -> Self {
-        Self::serving_at(providers, host, None, (lifetime, interval), |_| {})
+    /// As [`Cloud::fronted`], the server's public address `https://<host>:<front>`: that of a TLS
+    /// front, such as `https/front.rs`, which the test runs on the port `front`. Machines reach the
+    /// server there, at [`Cloud::public`]; [`Cloud::url`] is the relay's.
+    pub fn fronted_over_tls(host: &str, front: u16, lifetime: u64, interval: u64) -> Self {
+        Self::serving_at(
+            Providers::GitHub,
+            &format!("https://{host}"),
+            Some(front),
+            (lifetime, interval),
+            |_| {},
+        )
     }
 
-    /// As [`Cloud::serving`], the public address's port `front` if given, machines reaching the
-    /// server there, otherwise the server's own, machines reaching the server at the relay; codes
-    /// living and polling as `(lifetime, interval)` says, and the settings changed by `change`.
+    /// As [`Cloud::with`], the server's public address `http://<host>:<port>`.
+    fn serving(providers: Providers, host: &str, lifetime: u64, interval: u64) -> Self {
+        let site = format!("http://{host}");
+        Self::serving_at(providers, &site, None, (lifetime, interval), |_| {})
+    }
+
+    /// As [`Cloud::serving`], the public address `<site>:<port>`, `site` its scheme and host such
+    /// as `http://skald.test`, its port `front` if given, machines reaching the server there,
+    /// otherwise the server's own, machines reaching the server at the relay; codes living and
+    /// polling as `(lifetime, interval)` says, and the settings changed by `change`.
     fn serving_at(
         providers: Providers,
-        host: &str,
+        site: &str,
         front: Option<u16>,
         (lifetime, interval): (u64, u64),
         change: impl FnOnce(&mut Settings),
@@ -163,7 +180,7 @@ impl Cloud {
         let mut github = None;
         let mut public_url = String::new();
         let server = Server::start_with(|addr| {
-            let public = format!("http://{host}:{}", front.unwrap_or(addr.port()));
+            let public = format!("{site}:{}", front.unwrap_or(addr.port()));
             let stand_in = GitHub::start(App {
                 client_id: CLIENT_ID.to_owned(),
                 client_secret: CLIENT_SECRET.to_owned(),
@@ -212,8 +229,8 @@ impl Cloud {
         let relay = Relay::start(server.url.trim_start_matches("http://"));
         Cloud {
             url: match front {
-                Some(_) => public_url.clone(),
-                None => relay.url.clone(),
+                Some(_) if site.starts_with("http://") => public_url.clone(),
+                _ => relay.url.clone(),
             },
             relay,
             github: github.expect("the stand-in started with the server"),

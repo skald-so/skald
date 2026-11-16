@@ -1299,6 +1299,50 @@
         }
       }
     },
+    "/auth/providers": {
+      "get": {
+        "operationId": "getSignInProviders",
+        "summary": "The sign-in providers and sign-up",
+        "description": "Needs no session. Names the providers the server has settings for and whether its sign-up is open, and nothing of the lists of who may sign up while it is closed.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The server's sign-in providers and sign-up.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInProviders"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/token": {
       "post": {
         "operationId": "requestDeviceToken",
@@ -4311,6 +4355,24 @@
         },
         "additionalProperties": false
       },
+      "ListedSpace": {
+        "description": "A space of the account's spaces list.",
+        "type": "object",
+        "required": ["space", "name", "personal"],
+        "properties": {
+          "space": {
+            "$ref": "#/components/schemas/SpaceId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/SpaceName"
+          },
+          "personal": {
+            "description": "Whether it is the personal space of the session's account; another account's personal space is not.",
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "MasterKey": {
         "type": "object",
         "required": ["master"],
@@ -4529,6 +4591,10 @@
           "github_login": {
             "description": "The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one.",
             "type": "string"
+          },
+          "sign_in_method": {
+            "description": "The provider a web session signed in with; only for a web session.",
+            "$ref": "#/components/schemas/SignInProvider"
           }
         },
         "additionalProperties": false
@@ -4565,6 +4631,30 @@
             "items": {
               "$ref": "#/components/schemas/SignInMethod"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SignInProvider": {
+        "description": "A sign-in provider: `github`, or `google` for the server's OIDC provider.",
+        "type": "string",
+        "enum": ["github", "google"]
+      },
+      "SignInProviders": {
+        "type": "object",
+        "required": ["providers", "sign_up"],
+        "properties": {
+          "providers": {
+            "description": "The providers the server has settings for, each once.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignInProvider"
+            }
+          },
+          "sign_up": {
+            "description": "`open`: a first sign-in creates an account. `closed`: only for the people the server lists.",
+            "type": "string",
+            "enum": ["open", "closed"]
           }
         },
         "additionalProperties": false
@@ -4609,7 +4699,7 @@
           "spaces": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Space"
+              "$ref": "#/components/schemas/ListedSpace"
             }
           }
         },

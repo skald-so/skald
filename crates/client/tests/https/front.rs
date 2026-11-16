@@ -6,7 +6,7 @@
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use rustls::{ServerConfig, ServerConnection};
@@ -25,12 +25,22 @@ pub struct Front {
     port: u16,
     connections: Arc<AtomicUsize>,
     log: Arc<Log>,
+    /// Where it forwards to, once set.
+    target: Arc<OnceLock<String>>,
 }
 
 impl Front {
     /// Forwards to `target`, such as `127.0.0.1:41234`. Its first connections present the
     /// certificates of `tls`, one each in order; the connections after them, the last one.
     pub fn start(target: &str, tls: Vec<Arc<ServerConfig>>) -> Self {
+        let front = Self::bind(tls);
+        front.forward_to(target);
+        front
+    }
+
+    /// As [`Front::start`], forwarding to the target [`Front::forward_to`] sets later, so that the
+    /// server behind it can learn its port first; until then it forwards nothing.
+    pub fn bind(tls: Vec<Arc<ServerConfig>>) -> Self {
         assert!(!tls.is_empty(), "a certificate to present");
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let port = listener
@@ -39,12 +49,13 @@ impl Front {
             .port();
         let connections = Arc::new(AtomicUsize::new(0));
         let log = Arc::new(Log::default());
+        let target = Arc::new(OnceLock::new());
         let (accepted, logged) = (Arc::clone(&connections), Arc::clone(&log));
-        let target = target.to_owned();
+        let forwarding = Arc::clone(&target);
         thread::spawn(move || {
             for machine in listener.incoming().flatten() {
                 let index = accepted.fetch_add(1, Ordering::SeqCst).min(tls.len() - 1);
-                let (config, target) = (Arc::clone(&tls[index]), target.clone());
+                let (config, target) = (Arc::clone(&tls[index]), Arc::clone(&forwarding));
                 let log = Arc::clone(&logged);
                 thread::spawn(move || serve(machine, config, &target, &log));
             }
@@ -53,12 +64,25 @@ impl Front {
             port,
             connections,
             log,
+            target,
         }
+    }
+
+    /// From now on, forwards to `target`, such as `127.0.0.1:41234`.
+    pub fn forward_to(&self, target: &str) {
+        self.target
+            .set(target.to_owned())
+            .expect("a front forwards to one target");
+    }
+
+    /// The port it listens on, at `127.0.0.1`.
+    pub fn port(&self) -> u16 {
+        self.port
     }
 
     /// Its URL with the host `host`, such as `https://127.0.0.1:41235` for `127.0.0.1`.
     pub fn url(&self, host: &str) -> String {
-        format!("https://{host}:{}", self.port)
+        format!("https://{host}:{}", self.port())
     }
 
     /// How many connections it took so far.
@@ -97,8 +121,8 @@ impl Tls {
 }
 
 /// Serves a connection of a machine with TLS by `config`, until the machine closes it or TLS fails;
-/// connects to `target` once the machine has sent something inside TLS.
-fn serve(machine: TcpStream, config: Arc<ServerConfig>, target: &str, log: &Arc<Log>) {
+/// connects to `target`, once set, once the machine has sent something inside TLS.
+fn serve(machine: TcpStream, config: Arc<ServerConfig>, target: &OnceLock<String>, log: &Arc<Log>) {
     let (Ok(connection), Ok(mut from_machine)) =
         (ServerConnection::new(config), machine.try_clone())
     else {
@@ -120,7 +144,7 @@ fn serve(machine: TcpStream, config: Arc<ServerConfig>, target: &str, log: &Arc<
         }
         log.plain.lock().unwrap().extend_from_slice(&plain);
         if server.is_none() {
-            let Ok(stream) = TcpStream::connect(target) else {
+            let Some(Ok(stream)) = target.get().map(TcpStream::connect) else {
                 break;
             };
             let Ok(answers) = stream.try_clone() else {

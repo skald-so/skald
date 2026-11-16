@@ -2,35 +2,6 @@
 
 Agents beyond the six of [architecture.md](architecture.md#delivery-to-agents), "Delivery to agents". Checked 2026-11-11 against the vendors' docs.
 
-## Setup by `skald connect`
-| Agent | How |
-|---|---|
-| [Devin](https://docs.devin.ai/cli/extensibility/mcp/configuration.md), Desktop and CLI | `devin mcp add -s user` |
-| [Cline](https://docs.cline.bot/mcp/adding-and-configuring-servers), CLI | `cline mcp add --yes` |
-| [Junie](https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html) | writes `~/.junie/mcp/mcp.json` |
-| [Kilo Code](https://kilo.ai/docs/automate/mcp/using-in-kilo-code) | adds `mcp.skald` to `~/.config/kilo/kilo.jsonc` |
-| [Factory Droid](https://docs.factory.com/harness/mcp.md) | `droid mcp add` |
-| [Warp](https://docs.warp.dev/agents/capabilities/mcp/), app | writes `~/.warp/.mcp.json` |
-| [Warp](https://docs.warp.dev/agents/cli/configuration/), Agent CLI | writes `~/.warp_cli/.mcp.json` on macOS |
-| [Kiro](https://kiro.dev/docs/mcp/configuration.md), IDE and CLI | `kiro-cli mcp add --scope global` |
-| [Zed](https://zed.dev/docs/ai/mcp.md) | adds `context_servers.skald` to `~/.config/zed/settings.json` |
-| [Augment](https://docs.augmentcode.com/cli/integrations), Auggie CLI | `auggie mcp add` |
-| [Amp](https://ampcode.com/docs/customize/mcp) | `amp mcp add` |
-| [Goose](https://goose-docs.ai/docs/guides/config-files) | adds `extensions.skald` to `~/.config/goose/config.yaml` |
-| [Qwen Code](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/mcp.md) | `qwen mcp add -s user` |
-| [Pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md) | `pi mcp add` |
-| [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | adds `mcp_servers.skald` to `~/.hermes/config.yaml` |
-| [Qoder](https://docs.qoder.com/cli/mcp-servers), CLI | `qoder mcp add -s user` |
-| [CodeBuddy](https://www.codebuddy.ai/docs/cli/mcp), CodeBuddy Code | `codebuddy mcp add --scope user` |
-| [Kimi Code](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/customization/mcp.md) | writes `~/.kimi-code/mcp.json` |
-| [Mistral Vibe](https://docs.mistral.ai/vibe/code/cli/mcp-servers) | `vibe mcp add --transport stdio` |
-| [Deep Agents Code](https://docs.langchain.com/oss/deepagents/code/mcp-tools) | writes `~/.deepagents/.mcp.json` |
-
-- A file edit keeps the other entries and the comments.
-- An agent that already has a `skald` server in its own user config, or reads one from another agent's user config, stays as it is.
-- Grok Build and Oh My Pi read the server from other agents' config: [Config that other agents run](#config-that-other-agents-run).
-- Without setup: Trae, OpenHands, Qoder IDE, CodeBuddy IDE, and Cline's and Augment's IDE extensions set MCP servers only in their UI; Letta Code adds them only from inside a session; the Warp Agent CLI's docs name its MCP file on macOS only; Aider has no MCP.
-
 ## Config that other agents run
 | Config | Agents that also run it |
 |---|---|
