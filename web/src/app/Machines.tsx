@@ -107,7 +107,13 @@ export function MachinesScreen({
     <>
       <PageHeader
         title="Machines"
-        subtitle={`The devices of your account ${username}, as the server lists them. A revoked device loses access to every channel.`}
+        subtitle={
+          <>
+            The devices of your account {username}, as the server lists them;{" "}
+            <code>skald</code> checks them itself. A revoked device loses access
+            to every channel.
+          </>
+        }
       />
       {failed && <Banner>{failed}</Banner>}
       <Table
