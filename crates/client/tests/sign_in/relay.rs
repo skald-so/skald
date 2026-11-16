@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -261,6 +262,23 @@ impl Relay {
         let mut rules = self.shared.rules.lock().expect("the relay's rules");
         rules.rewrites.retain(|(earlier, _)| earlier != request);
         rules.rewrites.push((request.to_owned(), Arc::new(rewrite)));
+    }
+
+    /// As [`Relay::rewrite`], for the first such answer alone; later ones are given as the server
+    /// gives them.
+    pub fn rewrite_once(
+        &self,
+        request: &str,
+        rewrite: impl Fn(&str) -> String + Send + Sync + 'static,
+    ) {
+        let first = AtomicBool::new(true);
+        self.rewrite(request, move |answer| {
+            if first.swap(false, Ordering::SeqCst) {
+                rewrite(answer)
+            } else {
+                answer.to_owned()
+            }
+        });
     }
 
     /// From now on, answers each request whose line starts with `request` itself with `status`,
