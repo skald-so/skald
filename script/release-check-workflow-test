@@ -8,7 +8,9 @@
 //     script/release-check the pushed tag;
 //   - they run after the release is published: when a job that publishes it fails, the gate is
 //     skipped; a job publishes when its permissions are not set, its token writes anything, it reads
-//     a secret other than GITHUB_TOKEN or it calls a workflow of another repository;
+//     a secret other than GITHUB_TOKEN or it calls a workflow of another repository, unless it is the
+//     production deploy, the job in the environment production, which runs after the check and
+//     publishes nothing (script/production-deploy-workflow-test);
 //   - main moves only after the check passes: when the gate fails, the job that runs
 //     script/move-main is skipped;
 //   - a PR into dev that changes only script/release-check, or only the workflow file of the check's
@@ -240,12 +242,16 @@ const secretNames = (value) =>
   [...JSON.stringify(value ?? null).matchAll(/secrets\s*(?:\.\s*([A-Za-z0-9_]+)|\[\s*'([^']+)'\s*\])/gi)]
     .map((m) => (m[1] ?? m[2]).toUpperCase())
     .filter((s) => s !== 'GITHUB_TOKEN');
+// The production deploy: script/production-deploy-workflow-test.
+const deploysProduction = (job) =>
+  job.environment === 'production' && permissions(release, job) !== null && !writesAny(permissions(release, job));
 const publishes = (job) =>
-  permissions(release, job) === null ||
-  writesAny(permissions(release, job)) ||
-  secretNames(job).length > 0 ||
-  job.secrets === 'inherit' ||
-  (typeof job.uses === 'string' && !job.uses.startsWith('./'));
+  !deploysProduction(job) &&
+  (permissions(release, job) === null ||
+    writesAny(permissions(release, job)) ||
+    secretNames(job).length > 0 ||
+    job.secrets === 'inherit' ||
+    (typeof job.uses === 'string' && !job.uses.startsWith('./')));
 const gates = [...new Set(checkers.map((c) => c.gate))];
 const mover = Object.entries(release.jobs ?? {}).find(([, j]) => (j.steps ?? []).some((s) => commands(s.run).some((l) => /script\/move-main\b/.test(l))))?.[0];
 if (!mover) fail(`no job of ${releaseFile} runs script/move-main`);

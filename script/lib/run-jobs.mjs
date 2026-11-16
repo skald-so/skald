@@ -75,14 +75,15 @@ export const readOutputs = (file) => {
 //   options.bin     a directory first on PATH, of the stand-ins;
 //   options.runner  RUNNER_TEMP, also for the step files;
 //   options.env     variables of every step, over those GitHub sets;
+//   options.secrets the run's secrets by name, besides GITHUB_TOKEN; none without it;
 //   options.action  ({step, kind, index, key, where, input, env}) => {outputs, passed, problem}:
 //                   what an action step does; <kind> is its action without the version, <input>
 //                   gives each of its `with` values; it passes unless <passed> is false, and
 //                   <problem>, if any, is one of the run's problems.
 // A job it needs that is not among <keys> succeeds, its outputs that name a tag set to the ref's tag,
 // or v<version> on another ref, those that name a version to <version>, the others unknown. Returns
-// {results, problems}: each job's {result, outputs, outcomes}, <outcomes> each step's outcome by its
-// index, and the steps that failed or could not run.
+// {results, problems}: each job's {result, outputs, outcomes, log}, <outcomes> each step's outcome by
+// its index, <log> what its `run` steps printed, and the steps that failed or could not run.
 export function runJobs(workflow, keys, options) {
   const { eventName, ref, version, sha, work, bin, runner } = options;
   const jobs = workflow.jobs ?? {};
@@ -152,12 +153,13 @@ export function runJobs(workflow, keys, options) {
     let runs = usesStatus(job.if) ? true : jobStatus.success;
     if (job.if !== undefined && truth(condition(job.if, { contexts: jobContexts, status: jobStatus })) === false) runs = false;
     if (!runs) {
-      results[key] = { result: 'skipped', outputs: {}, outcomes: {} };
+      results[key] = { result: 'skipped', outputs: {}, outcomes: {}, log: '' };
       continue;
     }
     let ok = true;
     let jobOutputs = {};
     const outcomes = {};
+    let log = '';
     for (const matrix of combinations(job.strategy?.matrix)) {
       const steps = {};
       const env = { ...baseEnv, GITHUB_JOB: key };
@@ -170,7 +172,7 @@ export function runJobs(workflow, keys, options) {
           steps: open(steps),
           matrix: open(matrix),
           runner: open({ temp: runner, os: 'Linux', arch: 'X64' }),
-          secrets: open({ GITHUB_TOKEN: 'stub-token' }),
+          secrets: open({ ...options.secrets, GITHUB_TOKEN: 'stub-token' }),
           job: open({}),
           strategy: open({}),
         };
@@ -207,6 +209,7 @@ export function runJobs(workflow, keys, options) {
               encoding: 'utf8',
               timeout: 300000,
             });
+            log += `${r.stdout ?? ''}${r.stderr ?? ''}`;
             if (r.status !== 0) {
               problems.push(`${where} exits ${r.status}: ${(r.stderr || r.stdout || String(r.error ?? '')).trim().split('\n').slice(-3).join(' | ')}`);
               passed = false;
@@ -237,7 +240,7 @@ export function runJobs(workflow, keys, options) {
       const status = { success: !failed, failure: failed, always: true, cancelled: false };
       jobOutputs = Object.fromEntries(Object.entries(job.outputs ?? {}).map(([name, v]) => [name, value(v, contexts, status)]));
     }
-    results[key] = { result: ok ? 'success' : 'failure', outputs: open(jobOutputs), outcomes };
+    results[key] = { result: ok ? 'success' : 'failure', outputs: open(jobOutputs), outcomes, log };
   }
   return { results, problems };
 }

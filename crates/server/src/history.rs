@@ -4,14 +4,15 @@
 //! the first wrap per channel, epoch and recipient, each from a member device of its epoch, and the
 //! first entry per sending device and `msg_id`, of the channel's current or previous epoch, from a
 //! member device of the current one. It gives them, as the bytes it got, to sessions of the
-//! accounts the latest revision lists as the channel's members.
+//! accounts the latest revision lists as the channel's members; to those without `history`, only
+//! from their account's join ("Access").
 
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use skald_proto::{
-    Cbor as _, ChannelId, Frame, HistoryEntry, HistoryItem, HistoryLink, HistoryWrap, SpaceId,
-    WrapRecipient,
+    Cbor as _, ChannelId, Frame, HistoryEntry, HistoryItem, HistoryLink, HistoryWrap, Roster,
+    SpaceId, WrapRecipient,
 };
 use sqlx::{PgConnection, PgPool};
 
@@ -238,7 +239,8 @@ pub(crate) const ENTRIES: u8 = 2;
 
 /// `GET /spaces/<space>/channels/<channel>/history/<links|wraps|entries>`: the channel's items of
 /// `KIND`, base64url without padding, in a JSON object under the kind's name; for sessions of the
-/// channel's members in the latest revision.
+/// channel's members in the latest revision. A member without `history` gets only the links whose
+/// `prev`, and the wraps and entries whose epoch, is at or after its account's join ("Access").
 pub(crate) async fn given<const KIND: u8>(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -247,25 +249,104 @@ pub(crate) async fn given<const KIND: u8>(
     let (name, query) = match KIND {
         LINKS => (
             "links",
-            "SELECT link FROM history_links WHERE channel_id = $1::uuid ORDER BY epoch, prev",
+            "SELECT link FROM history_links WHERE channel_id = $1::uuid AND prev >= $2
+             ORDER BY epoch, prev",
         ),
         WRAPS => (
             "wraps",
-            "SELECT wrap FROM history_wraps WHERE channel_id = $1::uuid ORDER BY epoch",
+            "SELECT wrap FROM history_wraps WHERE channel_id = $1::uuid AND epoch >= $2
+             ORDER BY epoch",
         ),
         _ => (
             "entries",
             "SELECT entry FROM history_entries WHERE channel_id = $1::uuid",
         ),
     };
-    let channel = members_channel(&state, &account, &path.0, &path.1).await?;
-    let items: Vec<(Vec<u8>,)> = sqlx::query_as(query)
-        .bind(channel.to_string())
-        .fetch_all(&state.db)
-        .await
-        .map_err(|err| Refusal::Database("read a channel's history", err))?;
-    let items: Vec<String> = items.iter().map(|(bytes,)| base64(bytes)).collect();
+    let (channel, history) = members_channel(&state, &account, &path.0, &path.1).await?;
+    let failed = |err| Refusal::Database("read a channel's history", err);
+    let from = if history {
+        0
+    } else {
+        joined(&state.db, channel, &account)
+            .await
+            .map_err(failed)?
+            .unwrap_or(i64::MAX)
+    };
+    let mut items = sqlx::query_as(query).bind(channel.to_string());
+    if KIND != ENTRIES {
+        items = items.bind(from);
+    }
+    let items: Vec<(Vec<u8>,)> = items.fetch_all(&state.db).await.map_err(failed)?;
+    let given = |bytes: &[u8]| {
+        KIND != ENTRIES
+            || from == 0
+            || HistoryEntry::from_cbor(bytes).is_ok_and(|entry| epoch(entry.epoch) >= from)
+    };
+    let items: Vec<String> = (items.iter())
+        .filter(|(bytes,)| given(bytes))
+        .map(|(bytes,)| base64(bytes))
+        .collect();
     Ok(Json(serde_json::json!({ name: items })).into_response())
+}
+
+/// The epoch whose Commit added `account` to `channel`: the first epoch with a device of the
+/// account among its members after the revision that last added the account to the channel.
+/// `None` if none has one yet.
+async fn joined(
+    db: &PgPool,
+    channel: ChannelId,
+    account: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    let (joined,): (Option<i64>,) = sqlx::query_as(
+        "SELECT min(e.epoch) FROM channel_epochs e
+         WHERE e.channel_id = $1::uuid
+           AND e.epoch > coalesce((
+               SELECT a.epoch FROM channel_additions a
+               WHERE a.channel_id = $1::uuid AND a.account_id = $2::uuid
+           ), 0)
+           AND EXISTS (
+               SELECT 1 FROM devices d WHERE d.id = ANY(e.members) AND d.account_id = $2::uuid
+           )",
+    )
+    .bind(channel.to_string())
+    .bind(account)
+    .fetch_one(db)
+    .await?;
+    Ok(joined)
+}
+
+/// Keeps, on `tx`, the current epoch of each channel of `roster` for each account it lists among
+/// the channel's members that `previous` does not: the account's join comes after it ("Access").
+pub(crate) async fn added(
+    tx: &mut PgConnection,
+    roster: &Roster,
+    previous: Option<&Roster>,
+) -> Result<(), sqlx::Error> {
+    let (mut channels, mut accounts) = (Vec::new(), Vec::new());
+    for channel in &roster.body().channels {
+        let before = previous.and_then(|previous| {
+            (previous.body().channels.iter()).find(|before| before.id == channel.id)
+        });
+        let listed = |account| {
+            before.is_some_and(|before| before.members.iter().any(|m| m.account == account))
+        };
+        for member in channel.members.iter().filter(|m| !listed(m.account)) {
+            channels.push(channel.id.to_string());
+            accounts.push(member.account.to_string());
+        }
+    }
+    sqlx::query(
+        "INSERT INTO channel_additions (channel_id, account_id, epoch)
+         SELECT a.channel::uuid, a.account::uuid, coalesce(g.epoch, 0)
+         FROM unnest($1::text[], $2::text[]) AS a (channel, account)
+         LEFT JOIN channel_groups g ON g.channel_id = a.channel::uuid
+         ON CONFLICT (channel_id, account_id) DO UPDATE SET epoch = excluded.epoch",
+    )
+    .bind(&channels)
+    .bind(&accounts)
+    .execute(tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
