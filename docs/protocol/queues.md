@@ -146,29 +146,32 @@ queue-key-body = {
 | State | The task |
 |---|---|
 | `queued` | Waits for a claim; after a failed attempt, not before its backoff ends |
-| `claimed` | Held by one device until its lease ends |
+| `claimed` | Held by one device until its lease ends, with the progress of its holder's last extend: `started`, it runs; `awaiting-approval`, it waits for its user's yes |
 | `done` | Completed by its last claim |
-| `dead` | In the queue's DLQ: failed for good, released 5 times by any devices, or past its deadline |
+| `dead` | In the queue's DLQ, with the reason: `lease-expired`, `failed`, `released` 5 times by any devices, or `deadline-passed` |
 | `cancelled` | Cancelled by a human |
 
 | From | Event | To |
 |---|---|---|
 | — | Enqueue | `queued`, attempts 0 |
 | `queued` | Claim | `claimed`; generation and attempts plus one |
-| `queued` | `deadline` passes | `dead` |
-| `claimed` | Extend | `claimed`, with a new lease |
+| `queued` | `deadline` passes | `dead`, `deadline-passed` |
+| `claimed` | Extend | `claimed`, with a new lease and the progress it states |
 | `claimed` | Complete | `done` |
 | `claimed` | Release, the n-th since enqueue or the last restart, n from 1 to 4 | `queued` at once; attempts minus one; not handed to the releasing device for `10 × 2^(n−1)` seconds |
-| `claimed` | Release, the 5th since enqueue or the last restart | `dead` |
+| `claimed` | Release, the 5th since enqueue or the last restart | `dead`, `released` |
 | `claimed` | Fail with retry, or the lease ends, under `at-least-once` with attempts below `max_attempts` | `queued` after the backoff |
-| `claimed` | Any other fail, or the end of the lease | `dead` |
+| `claimed` | Any other fail | `dead`, `failed` |
+| `claimed` | Any other end of the lease | `dead`, `lease-expired` |
 | `dead` | Restart | `queued`, attempts and releases 0 |
 | `queued`, `claimed` or `dead` | Cancel | `cancelled` |
 
 - Extend, complete, fail and release pass the [fencing check](#fencing) first.
+- A claim has no progress until its first extend.
+- `lease-expired`: the last holder may have run the task, in part or in full.
 - **Backoff:** after the n-th failed attempt, the task waits `min(10 × 2^(n−1), 3600)` seconds.
 - **Restart and cancel:** a `client` or `browser` device of the account that uploaded the task or of an admin of the space restarts a `dead` task or cancels a task; the server refuses others with `not-allowed`, a restart of a task in another state with `not-dead`, and a cancel of a `done` or `cancelled` task with `not-cancellable`. The holder of a cancelled claim gets `claim-lost`.
-- The server gives a task's `queued-task`, state, attempts and its last claim's `claim_id`, `generation` and device only to devices that may send in the channel.
+- The server gives a task's `queued-task`, state with its progress or reason, attempts and its last claim's `claim_id`, `generation` and device only to devices that may send in the channel.
 - The server deletes a `done`, `dead` or `cancelled` task once the channel's history retention has passed since it got there, and every task of a deleted queue.
 
 ## Claims and leases
@@ -192,11 +195,11 @@ claim = {
 
 - `generation`: one more than the task's previous claim; never reused, restarts included. An agent passes it as a fencing token to systems that take one, so they refuse a write with a lower one. It uses the task ID to make its own side effects idempotent.
 - **Lease:** the claim holds the task for `lease` seconds from the claim or the last extension. The holder counts it on its own clock from when it sent the request; if it passes without an answered extension, the holder SHOULD stop the work, as the server may hand the task to another device.
-- **Heartbeat:** the holder sends `extend` each time a third of the lease has passed. It sends it only while the task runs or waits for its user's approval ([Running a task](#running-a-task)):
+- **Heartbeat:** the holder sends `extend` each time a third of the lease has passed, and at once when the progress changes. It sends it only while the task runs, with the progress `started`, or waits for its user's yes, with `awaiting-approval` ([Running a task](#running-a-task)):
   - with the helper, the helper sends it while the agent session that holds the claim runs, or the task waits;
   - in one-shot mode without the helper, the process running the task sends it;
   - a holder whose process stops sends none, so the lease ends.
-- Extend, complete, fail and release name the task, `claim_id` and `generation`; fail also states whether to retry.
+- Extend, complete, fail and release name the task, `claim_id` and `generation`; extend also states the progress, fail whether to retry.
 - **Release:** a `client` holder hands back a task it did not start, with no result. It MUST NOT release a task it started. The server refuses a release from a `service` device with `not-allowed`; such a device fails the task instead ([Claim checks](#claim-checks)).
 
 ### Fencing
@@ -339,7 +342,7 @@ Queue requests are refused with a problem details object, as in [Server answers]
 | `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 
 ## Security considerations
-- Scheduling is the server's word. It can withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them and hand one task to two devices at once, an `at-most-once` one included. `at-most-once` holds only with an honest server; a claiming device only refuses a claim with `attempt` above 1.
+- Scheduling is the server's word. It can withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, give any progress or reason, restart them and hand one task to two devices at once, an `at-most-once` one included. `at-most-once` holds only with an honest server; a claiming device only refuses a claim with `attempt` above 1.
 - The match of a claim is the server's word too: it can keep a task from its addressee, or hand a device a task of a trust level, template or addressee its claim did not state, which the device does not run (check 6 of [Claim checks](#claim-checks)).
 - Besides the server, `at-most-once` relies on `client` devices: one that releases a task it started, or whoever holds its credentials to the server, gets the task run again, as a restart does. A `service` device releases none.
 - The server cannot read, forge or alter a task: the payload is sealed and signed, `aad` and `task-body` bind it to its channel, queue and ID, and `task-body` repeats `sched`. It can hand an old task out again, as it can hand one out twice, until its `deadline`.

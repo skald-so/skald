@@ -2133,6 +2133,354 @@
         }
       }
     },
+    "/mailbox/ack": {
+      "post": {
+        "operationId": "ackMailbox",
+        "summary": "Ack the mailbox",
+        "description": "Deletes the entries of the device's mailbox up to `seq`, as `ack` on a WebSocket does (docs/protocol/delivery.md, \"Mailbox\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An `ack` frame.",
+          "content": {
+            "application/cbor": {
+              "schema": {
+                "$ref": "#/components/schemas/Frame"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Acked.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a body that is not the operation's frame, or a missing or invalid parameter.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 64 MiB, the longest a WebSocket message may be.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mailbox/poll": {
+      "post": {
+        "operationId": "pollMailbox",
+        "summary": "Long-poll the mailbox",
+        "description": "Acks the device's mailbox up to the `sync` frame's cursor and answers a `batch` of the entries after it, in `seq` order, and a `space-notice` for each space with a roster revision stored since the device's previous long-poll answer (docs/protocol/delivery.md, \"Mailbox\"). It answers at once when it has some or `wait` is 0; otherwise with the first to come within `wait`, through any instance, or an empty `batch` at its end. A waiting long-poll whose session ends or whose device is revoked ends with `401`, as a new request would.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "required": true,
+            "description": "How long to wait for something to answer, in seconds; the server waits at most its setting `--long-poll-max-wait`.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A `sync` frame: the device's cursor.",
+          "content": {
+            "application/cbor": {
+              "schema": {
+                "$ref": "#/components/schemas/Frame"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A `batch` frame.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/Frame"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a body that is not the operation's frame, or a missing or invalid parameter.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 64 MiB, the longest a WebSocket message may be.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mailbox/send": {
+      "post": {
+        "operationId": "sendEnvelope",
+        "summary": "Send an envelope",
+        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "A `send` frame.",
+          "content": {
+            "application/cbor": {
+              "schema": {
+                "$ref": "#/components/schemas/Frame"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The `stored` or `send-refused` frame.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/cbor": {
+                "schema": {
+                  "$ref": "#/components/schemas/Frame"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a body that is not the operation's frame, or a missing or invalid parameter.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 64 MiB, the longest a WebSocket message may be.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/openapi.json": {
       "get": {
         "operationId": "getOpenApiSpec",
@@ -3910,6 +4258,16 @@
           "$ref": "#/components/schemas/DeviceId"
         }
       },
+      "DeviceProof": {
+        "name": "Skald-Device-Proof",
+        "in": "header",
+        "required": true,
+        "description": "The device's proof (docs/protocol/delivery.md, \"Connecting\"): the CBOR `[challenge: bstr, device: id, signature: bstr .size 64]` in base64url without padding. `challenge` is a challenge of the bearer token's session from `POST /session/challenge`, which works once; `signature` signs `[\"skald request\", challenge, origin]`.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      },
       "ProtocolVersion": {
         "name": "Skald-Protocol-Version",
         "in": "header",
@@ -4188,6 +4546,11 @@
           }
         },
         "additionalProperties": false
+      },
+      "Frame": {
+        "description": "A frame of docs/protocol/delivery.md, \"Frames\": one CBOR item.",
+        "type": "string",
+        "format": "binary"
       },
       "GroupInfo": {
         "description": "A channel's GroupInfo in an `MLSMessage` (RFC 9420, §6), with the `ratchet_tree` and `external_pub` extensions (docs/protocol/membership.md, \"MLS profile\"), in base64url without padding (RFC 4648, §5).",
