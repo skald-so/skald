@@ -326,15 +326,22 @@ pub fn to_callback(
         "GET {start}: {}",
         String::from_utf8_lossy(&started.body)
     );
-    let mut provider = Jar::default();
-    provider.take(&get_url(sign_in_url, &[]));
     let authorize = started
         .header("location")
         .expect("a redirect to the provider");
-    let back = get_url(authorize, &[("cookie", &provider.header())]);
-    let callback = back.header("location").expect("the provider goes back");
+    let callback = provider_back(sign_in_url, authorize);
     let callback = callback.replacen(public, server.base(), 1);
     (started, callback)
+}
+
+/// Where the provider sends the browser back from its authorization request `authorize`, as the
+/// person whom its `sign_in_url` signs in.
+pub fn provider_back(sign_in_url: &str, authorize: &str) -> String {
+    let mut provider = Jar::default();
+    provider.take(&get_url(sign_in_url, &[]));
+    let back = get_url(authorize, &[("cookie", &provider.header())]);
+    let callback = back.header("location").expect("the provider goes back");
+    callback.to_owned()
 }
 
 /// The sign-in start `start`, such as `/auth/github`, under the public address `public`, with the

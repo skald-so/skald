@@ -31,8 +31,8 @@ use common::devices::{
 };
 use common::google::{self, Google, Setup};
 use common::sign_in::{
-    self, CLIENT_SECRET, Jar, SECRET_ENV, SignIn, cookie_set, github_args, github_stand_in, param,
-    set_cookie, start_url, to_callback,
+    self, CLIENT_SECRET, SECRET_ENV, SignIn, cookie_set, github_args, github_stand_in, param,
+    provider_back, set_cookie, start_url, to_callback,
 };
 use common::{
     Closed, Response, SERVER, Server, TestDb, WebSocket, get_url, on_free_port, post_form, send,
@@ -403,10 +403,7 @@ fn link_callback_from_another_site_reopens_on_the_web_address() {
     let linking = stage.submit(GITHUB_LINK, &cookie, &stage.web, &[]);
     assert_eq!(linking.status, 302, "{}", text(&linking));
     let authorize = linking.header("location").expect("a redirect to GitHub");
-    let mut github = Jar::default();
-    github.take(&get_url(&stand.github.sign_in_url(ada.id), &[]));
-    let back = get_url(authorize, &[("cookie", &github.header())]);
-    let callback = back.header("location").expect("GitHub goes back");
+    let callback = provider_back(&stand.github.sign_in_url(ada.id), authorize);
     assert!(
         callback.starts_with(&format!("{}{}?", stage.web, sign_in::CALLBACK)),
         "{callback}"
