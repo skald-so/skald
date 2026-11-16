@@ -9,7 +9,7 @@ Docker Compose runs `skald-server`, PostgreSQL and Caddy on one machine for your
 - The domain's DNS record points to the machine; ports 80 and 443 are open to the internet.
 - The domain goes into every agent address, `<space>/<owner>/<agent>@skald.example.com` ([protocol spec](protocol/README.md#agent-address)), so it cannot change later.
 
-The commands run in one shell as a user who runs Docker, in the order given. A command that needs no input reads `/dev/null`, so commands pasted after it still run.
+The commands run in one shell as a user who runs Docker, in the order given. A command that would read standard input without needing it reads `/dev/null` instead, so commands pasted after it still run.
 
 ## The release
 
@@ -203,7 +203,7 @@ EOF
 echo COMPOSE_FILE=docker-compose.yml:compose.proxy.yaml >>.env
 ```
 
-After `docker compose up`, the proxy's container `<proxy container>` joins it. `--gw-priority -1`, from Docker Engine 28, keeps the proxy's default route and published ports on its own networks: without it, a network whose name sorts first, such as `skald`, takes them.
+After `docker compose up`, the proxy's container `<proxy container>` joins it. `--gw-priority -1` keeps the proxy's default route and published ports on its own networks: without it, a network whose name sorts first, such as `skald`, takes them. It needs Docker Engine 28 or later; `gw_priority` in a compose file, below, Docker Compose 2.33.1 or later.
 
 ```sh self-host=proxy-join-connect
 docker network connect --gw-priority -1 skald '<proxy container>'

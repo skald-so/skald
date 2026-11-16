@@ -313,6 +313,58 @@ fn exits_with_error_on_a_google_issuer_neither_https_nor_http_on_loopback() {
     }
 }
 
+/// A sign-in provider's client ID and its secret go together: with only one of them, the server
+/// exits naming the other.
+#[test]
+fn exits_with_error_on_a_provider_s_client_id_or_secret_alone() {
+    // A closed port: a server that took the settings would fail at the database instead.
+    let url = "postgres://postgres@127.0.0.1:1/postgres";
+    let cases: [(&[&str], &[(&str, &str)], &str); 4] = [
+        (
+            &["--github-client-id", "stand-in-github-client"],
+            &[],
+            "skald-server: --github-client-id needs the client secret in SKALD_GITHUB_CLIENT_SECRET",
+        ),
+        (
+            &[],
+            &[("SKALD_GITHUB_CLIENT_SECRET", "stand-in-github-secret")],
+            "skald-server: SKALD_GITHUB_CLIENT_SECRET needs --github-client-id",
+        ),
+        (
+            &["--google-client-id", "stand-in-google-client"],
+            &[],
+            "skald-server: --google-client-id needs the client secret in SKALD_GOOGLE_CLIENT_SECRET",
+        ),
+        (
+            &[],
+            &[("SKALD_GOOGLE_CLIENT_SECRET", "stand-in-google-secret")],
+            "skald-server: SKALD_GOOGLE_CLIENT_SECRET needs --google-client-id",
+        ),
+    ];
+    for (args, envs, refusal) in cases {
+        let output = Command::new(SERVER)
+            .args([
+                "--listen",
+                "127.0.0.1:0",
+                "--database-url",
+                url,
+                "--public-url",
+                "http://127.0.0.1:8080",
+            ])
+            .args(args)
+            .env_remove("SKALD_GITHUB_CLIENT_ID")
+            .env_remove("SKALD_GITHUB_CLIENT_SECRET")
+            .env_remove("SKALD_GOOGLE_CLIENT_ID")
+            .env_remove("SKALD_GOOGLE_CLIENT_SECRET")
+            .envs(envs.iter().copied())
+            .output()
+            .expect("run skald-server");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{refusal}: {stderr}");
+        assert!(stderr.starts_with(refusal), "{refusal}: {stderr}");
+    }
+}
+
 /// The tests' servers whose address must be known before they start: the port they are given can
 /// be taken before they listen on it.
 #[test]
