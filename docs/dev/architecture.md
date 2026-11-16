@@ -112,6 +112,7 @@
 - Queues, tasks, claims, leases, fencing and modes: [protocol spec](../protocol/queues.md).
 - Claim: `SELECT … FOR UPDATE SKIP LOCKED`.
 - `skald send` sends a message and `skald enqueue` a task; the MCP server has both as tools, with `claim` and `complete` for tasks.
+- `skald tasks` lists tasks with their [state](../protocol/queues.md#task-states); the MCP tool `task_status` gives one task's.
 - `skald connect` asks only whether the machine takes its own account's tasks. What it takes from others, [per queue](../protocol/queues.md#running-a-task), the user turns on and changes at any time with `skald serve`, only in the CLI on the machine:
   - `skald serve`: each queue's settings;
   - `skald serve <queue> --dir <folder> --peer read-only`, and `--service` for service agents;
@@ -129,7 +130,7 @@ For users, per surface, with what reaches a session from whom: [Delivery to agen
 | Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI, desktop app, VS Code extension | `UserPromptSubmit` hook, MCP `inbox`: CLI, desktop app, VS Code extension. Scheduled task: desktop app |
 | Codex threads a program starts | App-server: CLI | — |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
-| Agents of [agents.md](agents.md#setup-by-skald-connect) | — | MCP `inbox` |
+| Any agent with MCP | — | MCP `inbox` |
 | Any agent with a shell | — | `skald recv --wait` |
 | CI | — | One-shot mode |
 
