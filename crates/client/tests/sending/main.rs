@@ -665,3 +665,36 @@ fn agent_sends_only_in_the_space_of_its_folder() {
         "the refusal names clientb: {other:?}"
     );
 }
+
+/// A server that closes each connection for a policy violation: without a front, a machine reaches
+/// the server through the relay, at another origin than the server's public address, so the server
+/// refuses each proof (`signature-refused`, 1008). Ada's `skald send`, with a timeout of 20 s, tries
+/// each envelope once and fails, saying why, well before the timeout.
+#[test]
+fn send_whose_connection_the_server_closes_for_a_policy_violation_stops_before_the_timeout() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let timeout = Duration::from_secs(20);
+    let mut ada = world.sign_up(4_122_062_001, "ada-refused-standin", "ada-workstation");
+    ada.machine = ada
+        .machine
+        .with_env(fixtures::TIMEOUT_SETTING, timeout.as_secs().to_string());
+    let bob = world.sign_up(4_122_062_002, "bob-unreached-standin", "bob-workstation");
+    let second = world::create(cloud, &ada, ACME);
+    let default = second.body().channels[0].id;
+    let with_bob = world::next_by(&second, &ada, |members| {
+        members.push(bob.member(skald_proto::Role::Member));
+    });
+    world::store(cloud, &ada.token, &with_bob);
+
+    let started = Instant::now();
+    let refused = send(&ada.machine, default, FIRST);
+
+    let took = started.elapsed();
+    assert!(!refused.success, "{refused:?}");
+    assert!(
+        refused.shown().contains("signature-refused"),
+        "it does not say why: {refused:?}"
+    );
+    assert!(took < timeout / 2, "it ran for {took:?}: {refused:?}");
+}

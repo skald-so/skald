@@ -70,7 +70,7 @@ pub fn run(
 }
 
 /// Goes through the Welcomes and Commits the state holds within `scope`, then brings the groups of
-/// the channels of each space of `synced` in line ([`crate::groups`]).
+/// the channels of each space the run accepted the revisions of in line ([`crate::groups`]).
 pub fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -78,9 +78,7 @@ pub fn align(
     synced: &mut Rosters,
 ) -> Result<(), String> {
     groups::take_in(follower, link, scope, synced)?;
-    for (space, (roster, devices)) in synced.iter() {
-        groups::align(follower, link, *space, (roster, devices), None)?;
-    }
+    groups::align_with(follower, link);
     Ok(())
 }
 
