@@ -138,8 +138,10 @@ export function MachinesScreen({
 }
 
 /** The account's devices, or `null` when the API refuses the session; throws when it gives neither. */
-async function fetchDevices(): Promise<ListedDevice[] | null> {
-  const listed = await listAccountDevices({ headers: versioned });
+async function fetchDevices(
+  signal: AbortSignal,
+): Promise<ListedDevice[] | null> {
+  const listed = await listAccountDevices({ headers: versioned, signal });
   if (listed.status === 401) return null;
   if (listed.status !== 200)
     throw new Error(`GET /account/devices ${listed.status}`);
@@ -164,22 +166,15 @@ export function Machines({
   const [failed, setFailed] = useState<string>();
 
   useEffect(() => {
-    // Not aborted when another page opens, as the cabinet opens on this one: the answer comes whole
-    // and is dropped.
-    let shown = true;
-    fetchDevices().then(
-      (devices) => {
-        if (!shown) return;
-        if (devices) setListed({ devices, at: Date.now() });
-        else onSignedOut();
-      },
+    const request = new AbortController();
+    fetchDevices(request.signal).then(
+      (devices) =>
+        devices ? setListed({ devices, at: Date.now() }) : onSignedOut(),
       () => {
-        if (shown) setFailed("The devices did not load.");
+        if (!request.signal.aborted) setFailed("The devices did not load.");
       },
     );
-    return () => {
-      shown = false;
-    };
+    return () => request.abort();
   }, [onSignedOut]);
 
   return (
