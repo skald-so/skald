@@ -215,6 +215,17 @@ fn admits(admitted: &BTreeMap<DeviceId, Cert>, member: &MemberDevice) -> bool {
         .is_some_and(|cert| cert.body().signing == member.signing)
 }
 
+/// The devices of `members`, leaves of a group, that are not of `admitted`, as [`admits`] says.
+fn unadmitted<'m>(
+    admitted: &BTreeMap<DeviceId, Cert>,
+    members: impl IntoIterator<Item = &'m MemberDevice>,
+) -> Vec<DeviceId> {
+    (members.into_iter())
+        .filter(|member| !admits(admitted, member))
+        .map(|member| member.device)
+        .collect()
+}
+
 /// Sends the device's own Commits and Welcomes that wait in the outbox within `scope`, in order,
 /// and acts on each answer; stops at the first the server has not answered in time.
 pub fn flush(follower: &mut Follower, link: &mut Link, scope: Scope) -> Result<(), String> {
@@ -368,12 +379,36 @@ fn committed(
 /// A new envelope of `channel` in `space`, of protocol version `version`, with `payload`, an MLS
 /// message, to `recipients`, none for the channel, as it goes into the outbox.
 fn outgoing(
-    version: std::num::NonZeroU64,
+    version: NonZeroU64,
     (space, channel): (SpaceId, ChannelId),
     payload: &[u8],
     recipients: Option<NonEmpty<DeviceId>>,
 ) -> MlsOutgoing {
     let msg_id = MessageId::generate();
+    let envelope = mls_envelope(
+        version,
+        (space, channel),
+        msg_id,
+        payload.to_vec(),
+        recipients,
+    );
+    MlsOutgoing {
+        msg_id,
+        space,
+        channel,
+        envelope,
+    }
+}
+
+/// The bytes of the `mls` envelope `msg_id` of `channel` in `space`, of protocol version `version`,
+/// with `payload`, to `recipients`, none for the channel.
+fn mls_envelope(
+    version: NonZeroU64,
+    (space, channel): (SpaceId, ChannelId),
+    msg_id: MessageId,
+    payload: Vec<u8>,
+    recipients: Option<NonEmpty<DeviceId>>,
+) -> Vec<u8> {
     let header = Header {
         v: version,
         space,
@@ -384,16 +419,7 @@ fn outgoing(
         ttl: None,
         unknown: Unknown::default(),
     };
-    MlsOutgoing {
-        msg_id,
-        space,
-        channel,
-        envelope: Envelope {
-            header,
-            payload: payload.to_vec(),
-        }
-        .to_cbor(),
-    }
+    Envelope { header, payload }.to_cbor()
 }
 
 /// Why an MLS step in `channel` failed, by `err`.
@@ -731,13 +757,9 @@ fn not_admitted(
     others: &BTreeMap<DeviceId, Cert>,
     (signer, members): (&MemberDevice, &[MemberDevice]),
 ) -> BTreeSet<DeviceId> {
-    (members.iter().chain([signer]))
-        .filter(|member| {
-            let own = member.device == this && member.signing == *signing;
-            !own && !admits(others, member)
-        })
-        .map(|member| member.device)
-        .collect()
+    let own = |member: &&MemberDevice| member.device == this && member.signing == *signing;
+    let listed = members.iter().chain([signer]).filter(|member| !own(member));
+    unadmitted(others, listed).into_iter().collect()
 }
 
 /// Joins `channel` of `space` by itself from `group_info`, seen as `view`, if its signer and every
@@ -811,11 +833,10 @@ fn keep_in_line(
     members: &[MemberDevice],
 ) -> Result<(), String> {
     let this = follower.this;
-    let strangers: Vec<DeviceId> = members
-        .iter()
-        .filter(|member| member.device != this && !admits(others, member))
-        .map(|member| member.device)
-        .collect();
+    let strangers = unadmitted(
+        others,
+        members.iter().filter(|member| member.device != this),
+    );
     if !strangers.is_empty() {
         let own = &follower.own;
         let carried = revocations::carried(
@@ -853,11 +874,7 @@ fn strangers(
     channel: ChannelId,
     added: &[MemberDevice],
 ) -> Vec<DeviceId> {
-    let admitted = admitted(follower, roster, devices, channel);
-    (added.iter())
-        .filter(|member| !admits(&admitted, member))
-        .map(|member| member.device)
-        .collect()
+    unadmitted(&admitted(follower, roster, devices, channel), added)
 }
 
 /// A Welcome, Commit or application message in the mailbox.
@@ -1029,10 +1046,7 @@ fn welcomed(
         }
     };
     let strangers = |admitted: &BTreeMap<DeviceId, Cert>| -> Vec<DeviceId> {
-        let members = seen.iter().flat_map(|joining| &joining.members);
-        (members.filter(|member| !admits(admitted, member)))
-            .map(|member| member.device)
-            .collect()
+        unadmitted(admitted, seen.iter().flat_map(|joining| &joining.members))
     };
     if joined.is_ok() && !synced && !strangers(&admitted).is_empty() {
         sync_again(follower, space, rosters);
@@ -1363,9 +1377,8 @@ pub fn encrypt(
             }
             err => failed(channel, err),
         })?;
-        let strangers: Vec<String> = (members.iter())
-            .filter(|member| !admits(&admitted, member))
-            .map(|member| member.device.to_string())
+        let strangers: Vec<String> = (unadmitted(&admitted, &members).iter())
+            .map(ToString::to_string)
             .collect();
         if !strangers.is_empty() {
             return Err(format!(
@@ -1397,22 +1410,12 @@ pub fn encrypt(
         let payload = device
             .encrypt(channel, &plaintext)
             .map_err(|err| failed(channel, err))?;
-        let header = Header {
-            v: version,
-            space,
-            channel,
-            msg_id,
-            scheme: Scheme::Mls,
-            recipients: None,
-            ttl: None,
-            unknown: Unknown::default(),
-        };
         let message = Counted {
             outgoing: Outgoing {
                 msg_id,
                 recipient: None,
                 space,
-                envelope: Envelope { header, payload }.to_cbor(),
+                envelope: mls_envelope(version, (space, channel), msg_id, payload, None),
             },
             channel,
             counter: counter.get(),

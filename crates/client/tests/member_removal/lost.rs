@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use skald_proto::Role;
 
-use crate::edits::{Edit, assert_change, last_two, store_request};
+use crate::edits::{Edit, assert_change, last_two};
 use crate::fixtures::{fronted, strs};
 use crate::kit::{channels, create_space, received, rosters, with_channel};
 use crate::relay::Lose;
 use crate::talk::{ADA_HOST, BOB_HOST};
-use crate::world::ACME;
+use crate::world::{ACME, store_request};
 
 /// Which command loses its answer.
 #[derive(Clone, Copy)]

@@ -7,12 +7,12 @@ use skald_proto::{
 };
 
 use crate::cloud::Cloud;
-use crate::fixtures::{sent_after, strs};
+use crate::fixtures::strs;
 use crate::front::Front;
 use crate::kit::{assert_members, group, received, rosters};
 use crate::machine::{Finished, Machine, NO, YES};
 use crate::played::Played;
-use crate::talk::Talk;
+use crate::talk::{Talk, sent_in};
 use crate::world::{ADMIN, Person, run, space_certs};
 
 /// The admin commands.
@@ -275,24 +275,11 @@ pub fn assert_refused_as_no_admin(finished: &Finished) {
     assert_refused(finished, ADMIN);
 }
 
-/// The distinct envelopes of `channel` the front saw sent after its first `from` sends, in the
-/// order each was first sent: a retry with the same bytes is no other one.
+/// The envelopes of [`sent_in`].
 pub fn envelopes_sent(front: &Front, channel: ChannelId, from: usize) -> Vec<RawEnvelope> {
-    let mut distinct: Vec<RawEnvelope> = Vec::new();
-    for sent in sent_after(front, from) {
-        let envelope = sent.envelope;
-        if envelope.envelope().header.channel == channel
-            && distinct.iter().all(|seen| seen.bytes() != envelope.bytes())
-        {
-            distinct.push(envelope);
-        }
-    }
-    distinct
-}
-
-/// The request that stores a revision of `space`, as its line starts.
-pub fn store_request(space: SpaceId) -> String {
-    format!("POST /spaces/{space}/revisions")
+    (sent_in(front, channel, from).into_iter())
+        .map(|sent| sent.envelope)
+        .collect()
 }
 
 /// The requests that change a space: storing a revision, issuing a channel ID, as their lines
