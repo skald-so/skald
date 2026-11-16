@@ -147,10 +147,12 @@ pub(crate) async fn end_one(
             &state,
             sqlx::query_as(
                 "DELETE FROM sessions WHERE account_id = $1::uuid AND id::text = lower($2)
+                     AND (kind = 'device' OR created_at > now() - make_interval(secs => $3))
                  RETURNING token_hash",
             )
             .bind(&session.account)
-            .bind(&id),
+            .bind(&id)
+            .bind(WEB_LIFETIME.as_secs_f64()),
         )
         .await?;
         if ended == 0 {

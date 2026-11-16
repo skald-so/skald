@@ -508,9 +508,11 @@ pub(crate) async fn check(
         proof.signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
-    // The session lists the device it proved, and its use.
+    // The session lists the device it proved, and its use to the minute, as `sign_in::find` does.
     sqlx::query(
-        "UPDATE sessions SET device_id = $1::uuid, last_used_at = now() WHERE token_hash = $2",
+        "UPDATE sessions SET device_id = $1::uuid, last_used_at = now()
+         WHERE token_hash = $2 AND (device_id IS DISTINCT FROM $1::uuid
+             OR last_used_at <= now() - interval '1 minute')",
     )
     .bind(proof.device.to_string())
     .bind(&of)
