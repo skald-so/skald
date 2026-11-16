@@ -6,7 +6,7 @@ use crate::cbor::{
     self, Cbor, Codec, DecodeError, FieldProblem, Item, decode_embedded, field_error,
 };
 use crate::envelope::{Envelope, Header, HpkePayload, Scheme};
-use crate::id::{DeviceId, SpaceId};
+use crate::id::{ChannelId, DeviceId, MessageId, SpaceId};
 use crate::receipt::{DeliveryStatus, STORED, SendKey, Stored};
 
 /// The label of `auth`'s signature.
@@ -81,9 +81,78 @@ pub enum Frame {
     Ack { seq: NonZeroU64 },
     /// `batch`, server → client: the answer to a long poll.
     Batch(Vec<Push>),
+    /// `history`, client → server: an item of a channel's history to keep.
+    History {
+        /// The client's number for the upload, which the answer names.
+        upload: u64,
+        space: SpaceId,
+        channel: ChannelId,
+        item: HistoryItem,
+    },
+    /// `history-stored`, server → client: the item of `upload` is kept, now or before.
+    HistoryStored { upload: u64 },
+    /// `history-refused`, server → client: the item of `upload` is not kept.
+    HistoryRefused {
+        upload: u64,
+        /// The problem, possibly one this version does not know.
+        problem: String,
+    },
     /// A frame of a type this version does not know; holds its type. Encodes as an array of the
     /// type alone.
     Unknown(u64),
+}
+
+/// An item of a channel's history in a `history` frame, as the bytes the client encoded: the server
+/// keeps and gives them as they came, and refuses, rather than closing the connection, those that do
+/// not decode as their kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryItem {
+    /// An encoded `history-link`.
+    Link(Vec<u8>),
+    /// An encoded `history-wrap`.
+    Wrap(Vec<u8>),
+    /// An encoded `history-entry` of the message `msg_id`, which the server cannot read in it.
+    Entry { msg_id: MessageId, entry: Vec<u8> },
+}
+
+// The kinds of a history item.
+const LINK: u64 = 1;
+const WRAP: u64 = 2;
+const ENTRY: u64 = 3;
+
+impl Codec for HistoryItem {
+    fn encode(&self) -> Vec<u8> {
+        match self {
+            Self::Link(link) => cbor::array([cbor::uint(LINK), cbor::bytes(link)]),
+            Self::Wrap(wrap) => cbor::array([cbor::uint(WRAP), cbor::bytes(wrap)]),
+            Self::Entry { msg_id, entry } => {
+                cbor::array([cbor::uint(ENTRY), cbor::id(msg_id), cbor::bytes(entry)])
+            }
+        }
+    }
+
+    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
+        Ok(match frame_type(item, "history.item.kind")? {
+            LINK => {
+                let [_, link] = item.tuple("history.item")?;
+                Self::Link(link.bytes("history.item.link")?.to_vec())
+            }
+            WRAP => {
+                let [_, wrap] = item.tuple("history.item")?;
+                Self::Wrap(wrap.bytes("history.item.wrap")?.to_vec())
+            }
+            ENTRY => {
+                let [_, msg_id, entry] = item.tuple("history.item")?;
+                Self::Entry {
+                    msg_id: msg_id.id("history.item.msg_id")?,
+                    entry: entry.bytes("history.item.entry")?.to_vec(),
+                }
+            }
+            other => {
+                return Err(field_error("history.item.kind", FieldProblem::Value(other)));
+            }
+        })
+    }
 }
 
 /// A frame the server pushes, alone or in a `batch`.
@@ -173,6 +242,9 @@ const ACK: u64 = 7;
 const BATCH: u64 = 8;
 const SPACE_NOTICE: u64 = 9;
 const AUTH: u64 = 10;
+const HISTORY: u64 = 11;
+const HISTORY_STORED: u64 = 12;
+const HISTORY_REFUSED: u64 = 13;
 
 impl Frame {
     /// The header of the envelope in the `send` frame `bytes`, when all that keeps the frame from
@@ -236,6 +308,26 @@ impl Codec for Frame {
                 cbor::uint(BATCH),
                 cbor::array(pushes.iter().map(Push::encode)),
             ]),
+            Self::History {
+                upload,
+                space,
+                channel,
+                item,
+            } => cbor::array([
+                cbor::uint(HISTORY),
+                cbor::uint(*upload),
+                cbor::id(space),
+                cbor::id(channel),
+                item.encode(),
+            ]),
+            Self::HistoryStored { upload } => {
+                cbor::array([cbor::uint(HISTORY_STORED), cbor::uint(*upload)])
+            }
+            Self::HistoryRefused { upload, problem } => cbor::array([
+                cbor::uint(HISTORY_REFUSED),
+                cbor::uint(*upload),
+                cbor::text(problem),
+            ]),
             Self::Unknown(frame_type) => cbor::array([cbor::uint(*frame_type)]),
         }
     }
@@ -288,6 +380,28 @@ impl Codec for Frame {
                         .collect::<Result<_, _>>()?,
                 )
             }
+            HISTORY => {
+                let [_, upload, space, channel, history_item] = item.tuple("history")?;
+                Self::History {
+                    upload: upload.uint("history.upload")?,
+                    space: space.id("history.space")?,
+                    channel: channel.id("history.channel")?,
+                    item: HistoryItem::decode(history_item)?,
+                }
+            }
+            HISTORY_STORED => {
+                let [_, upload] = item.tuple("history-stored")?;
+                Self::HistoryStored {
+                    upload: upload.uint("history-stored.upload")?,
+                }
+            }
+            HISTORY_REFUSED => {
+                let [_, upload, problem] = item.tuple("history-refused")?;
+                Self::HistoryRefused {
+                    upload: upload.uint("history-refused.upload")?,
+                    problem: problem.text("history-refused.problem")?.to_owned(),
+                }
+            }
             other => Self::Unknown(other),
         })
     }
@@ -332,7 +446,8 @@ impl Codec for Push {
                 })
             }
             // A `batch` holds no frame of another known type.
-            other @ (SEND | STORED | SEND_REFUSED | SYNC | ACK | BATCH | AUTH) => {
+            other @ (SEND | STORED | SEND_REFUSED | SYNC | ACK | BATCH | AUTH | HISTORY
+            | HISTORY_STORED | HISTORY_REFUSED) => {
                 Err(field_error("batch.frame.type", FieldProblem::Value(other)))
             }
             other => Ok(Self::Unknown(UnknownPush {

@@ -11,6 +11,9 @@ import type {
   HandedOutKeyPackages,
   Health,
   HealthUnavailable,
+  HistoryEntries,
+  HistoryLinks,
+  HistoryWraps,
   KeyPackageCount,
   KeyPackageRequest,
   KeyPackageUpload,
@@ -1617,6 +1620,228 @@ export const uploadGroupInfo = async (
     status: res.status,
     headers: res.headers,
   } as uploadGroupInfoResponse;
+};
+
+export type getHistoryEntriesResponse200 = {
+  data: HistoryEntries;
+  status: 200;
+};
+
+export type getHistoryEntriesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getHistoryEntriesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getHistoryEntriesResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type getHistoryEntriesResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type getHistoryEntriesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getHistoryEntriesResponseSuccess = getHistoryEntriesResponse200 & {
+  headers: Headers;
+};
+export type getHistoryEntriesResponseError = (
+  | getHistoryEntriesResponse400
+  | getHistoryEntriesResponse401
+  | getHistoryEntriesResponse403
+  | getHistoryEntriesResponse404
+  | getHistoryEntriesResponse500
+) & {
+  headers: Headers;
+};
+
+export type getHistoryEntriesResponse =
+  getHistoryEntriesResponseSuccess | getHistoryEntriesResponseError;
+
+export const getGetHistoryEntriesUrl = (space: string, channel: string) => {
+  return `/spaces/${space}/channels/${channel}/history/entries`;
+};
+
+/**
+ * The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, "History entry"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * @summary The channel's history entries
+ */
+export const getHistoryEntries = async (
+  space: string,
+  channel: string,
+  options?: RequestInit,
+): Promise<getHistoryEntriesResponse> => {
+  const res = await fetch(getGetHistoryEntriesUrl(space, channel), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getHistoryEntriesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getHistoryEntriesResponse;
+};
+
+export type getHistoryLinksResponse200 = {
+  data: HistoryLinks;
+  status: 200;
+};
+
+export type getHistoryLinksResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getHistoryLinksResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getHistoryLinksResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type getHistoryLinksResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type getHistoryLinksResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getHistoryLinksResponseSuccess = getHistoryLinksResponse200 & {
+  headers: Headers;
+};
+export type getHistoryLinksResponseError = (
+  | getHistoryLinksResponse400
+  | getHistoryLinksResponse401
+  | getHistoryLinksResponse403
+  | getHistoryLinksResponse404
+  | getHistoryLinksResponse500
+) & {
+  headers: Headers;
+};
+
+export type getHistoryLinksResponse =
+  getHistoryLinksResponseSuccess | getHistoryLinksResponseError;
+
+export const getGetHistoryLinksUrl = (space: string, channel: string) => {
+  return `/spaces/${space}/channels/${channel}/history/links`;
+};
+
+/**
+ * The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, "Key chain"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * @summary The channel's history links
+ */
+export const getHistoryLinks = async (
+  space: string,
+  channel: string,
+  options?: RequestInit,
+): Promise<getHistoryLinksResponse> => {
+  const res = await fetch(getGetHistoryLinksUrl(space, channel), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getHistoryLinksResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getHistoryLinksResponse;
+};
+
+export type getHistoryWrapsResponse200 = {
+  data: HistoryWraps;
+  status: 200;
+};
+
+export type getHistoryWrapsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getHistoryWrapsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getHistoryWrapsResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type getHistoryWrapsResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type getHistoryWrapsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getHistoryWrapsResponseSuccess = getHistoryWrapsResponse200 & {
+  headers: Headers;
+};
+export type getHistoryWrapsResponseError = (
+  | getHistoryWrapsResponse400
+  | getHistoryWrapsResponse401
+  | getHistoryWrapsResponse403
+  | getHistoryWrapsResponse404
+  | getHistoryWrapsResponse500
+) & {
+  headers: Headers;
+};
+
+export type getHistoryWrapsResponse =
+  getHistoryWrapsResponseSuccess | getHistoryWrapsResponseError;
+
+export const getGetHistoryWrapsUrl = (space: string, channel: string) => {
+  return `/spaces/${space}/channels/${channel}/history/wraps`;
+};
+
+/**
+ * The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, "Wraps"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * @summary The channel's history wraps
+ */
+export const getHistoryWraps = async (
+  space: string,
+  channel: string,
+  options?: RequestInit,
+): Promise<getHistoryWrapsResponse> => {
+  const res = await fetch(getGetHistoryWrapsUrl(space, channel), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getHistoryWrapsResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getHistoryWrapsResponse;
 };
 
 export type getSpaceDevicesResponse200 = {
