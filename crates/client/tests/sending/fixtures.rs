@@ -236,15 +236,6 @@ pub fn last_channel(cloud: &Cloud, person: &Person, space: SpaceId) -> (Roster, 
     (last, id)
 }
 
-/// The recipient device of `sent`, an envelope under `hpke` to one device.
-pub fn recipient(sent: &Sent) -> DeviceId {
-    let header = &sent.envelope.envelope().header;
-    match header.recipients.as_deref() {
-        Some([device]) => *device,
-        other => panic!("not one recipient device: {other:?}"),
-    }
-}
-
 pub fn msg_id(sent: &Sent) -> MessageId {
     sent.envelope.envelope().header.msg_id
 }
@@ -275,29 +266,6 @@ pub fn sent_after(front: &Front, from: usize) -> Vec<Sent> {
     front.sent().split_off(from)
 }
 
-/// The `send` frames of envelopes under `hpke`, the messages, the front saw, in order: the
-/// devices' Commits and Welcomes left out.
-pub fn hpke_sent(front: &Front) -> Vec<Sent> {
-    front
-        .sent()
-        .into_iter()
-        .filter(|sent| sent.envelope.envelope().header.scheme == skald_proto::Scheme::Hpke)
-        .collect()
-}
-
-/// Whether the server answered `stored` to an envelope under `hpke` to `device`, as the front saw
-/// it, lost or not.
-pub fn stored_to(front: &Front, device: DeviceId) -> bool {
-    front.answered().iter().any(|answer| {
-        matches!(answer, skald_proto::Frame::Stored(stored) if stored.send_key.recipient == Some(device))
-    })
-}
-
-/// The frames of [`hpke_sent`] after its first `from`.
-pub fn hpke_sent_after(front: &Front, from: usize) -> Vec<Sent> {
-    hpke_sent(front).split_off(from)
-}
-
 /// Waits for up to [`WAIT`] until `done` holds while `run` goes on; fails if `run` exits first.
 pub fn await_running(run: &mut Run, what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + WAIT;
@@ -306,14 +274,4 @@ pub fn await_running(run: &mut Run, what: &str, done: impl Fn() -> bool) {
         assert!(Instant::now() < deadline, "no {what}: {}", run.shown());
         thread::sleep(Duration::from_millis(20));
     }
-}
-
-/// In `world`, Ada, GitHub user `ids[0]` with `logins[0]`, whose machine retries for [`TIMEOUT`],
-/// and Bob, `ids[1]` with `logins[1]`, sign up, and Ada's machine creates `acme` with a channel
-/// they are both in, Bob added by a revision the machine has not accepted yet.
-pub fn ada_and_bob(world: &World, ids: [u64; 2], logins: [&str; 2]) -> (Person, Person, Channel) {
-    let ada = retrying_for_the_timeout(world.sign_up(ids[0], logins[0], "ada-workstation"));
-    let bob = world.sign_up(ids[1], logins[1], "bob-workstation");
-    let channel = acme(&world.cloud, &ada, &[&bob], &[&bob], &[]);
-    (ada, bob, channel)
 }

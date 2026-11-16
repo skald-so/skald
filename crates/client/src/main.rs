@@ -188,11 +188,13 @@ enum Command {
     },
     /// Sends a text to a channel of a space this device follows; as an agent, only in the space of
     /// the agent's folder. It first accepts the space's latest roster revisions and goes through the
-    /// mailbox as skald recv does, showing nothing, then seals the message for each device admitted
-    /// to the channel but this one and has the server store it.
-    /// Says the message's ID and, per recipient device, whether the server stored it. What the
-    /// server has not stored within the request timeout waits in the local state, and the next
-    /// skald send or skald recv sends it first.
+    /// mailbox as skald recv does, showing nothing, then encrypts the message in the channel's MLS
+    /// group and has the server store it as one envelope to the group. Sends nothing, and says why,
+    /// while the group holds a device the channel does not admit or no other device, or while this
+    /// device's Commit there waits for the server.
+    /// Says the message's ID and whether the server stored it. What the server has not stored
+    /// within the request timeout waits in the local state, and the next skald send or skald recv
+    /// sends it first.
     Send {
         /// The channel's ID, as skald channels shows it.
         #[arg(value_name = "CHANNEL")]

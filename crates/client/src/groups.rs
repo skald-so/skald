@@ -15,21 +15,32 @@
 //!   added, which goes through the outbox too; after a refusal it drops the Commit, and a group
 //!   whose first Commit the server refused, as it kept another, waits for that one's Welcome. A
 //!   member uploads the GroupInfo when the server has none of its current epoch.
+//! - It decrypts each application message of its mailbox in its channel's group in that order,
+//!   among the Welcomes and Commits, and keeps what that gave with the entry, sealed under the
+//!   state key, until a run shows it; a replay gives nothing to show. Once an entry of a channel
+//!   stays for a later run, so does each later one there; a message that comes before the device
+//!   joins the channel's group from its Welcome waits for it, unless the channel does not admit
+//!   the device.
+//! - It encrypts a channel message in the channel's group only while every member device is
+//!   admitted, no Commit of its own there waits for the server and another device is in it; the
+//!   message goes into the outbox with the state, and with its content's `counter`, the device's
+//!   next in the channel.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
+use std::num::NonZeroU64;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{
     ChannelView, Joining, MemberDevice, MlsContent, MlsDevice, MlsError, MlsFraming, Processed,
-    SealedState, check_key_package,
+    SealedState, StateKey, check_key_package,
 };
 use skald_proto::{
-    Cbor as _, Cert, Channel, ChannelId, DeviceId, Envelope, Frame, Header, MessageId, NonEmpty,
-    Push, RawEnvelope, Roster, Scheme, SpaceId, Unknown,
+    Cbor as _, Cert, Channel, ChannelId, Content, DeviceId, Envelope, Frame, Header, MessageId,
+    NonEmpty, Push, RawEnvelope, Roster, Scheme, SpaceId, Unknown,
 };
 
 use crate::connection::{Method, WebSocket};
@@ -39,7 +50,7 @@ use crate::follow::SpaceDevices;
 use crate::key_packages;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
-use crate::state::{self, MlsChanges, MlsOutgoing, State};
+use crate::state::{self, Counted, MlsChanges, MlsOutgoing, Outgoing, State};
 
 /// The problem of a Commit of an epoch that is not the channel's current one.
 const EPOCH_MISMATCH: &str = "epoch-mismatch";
@@ -114,9 +125,28 @@ fn read<T>(
 
 /// The device of `keys` with its MLS state `sealed`, under the state key in its secrets.
 fn load(follower: &Follower, keys: &Keys, sealed: &SealedState) -> Result<MlsDevice, String> {
+    Ok(load_keyed(follower, keys, sealed)?.0)
+}
+
+/// As [`load`], with the state key.
+fn load_keyed(
+    follower: &Follower,
+    keys: &Keys,
+    sealed: &SealedState,
+) -> Result<(MlsDevice, StateKey), String> {
     let state_key = key_packages::state_key(&follower.secrets, sealed)?;
-    MlsDevice::load(keys.signing(), &state_key, sealed)
-        .map_err(|err| format!("this device's MLS state does not load: {err}"))
+    let device = MlsDevice::load(keys.signing(), &state_key, sealed)
+        .map_err(|err| format!("this device's MLS state does not load: {err}"))?;
+    Ok((device, state_key))
+}
+
+/// The member devices of `channel`'s group as the device holds it; none if it holds no group.
+pub fn members(
+    follower: &Follower,
+    keys: &Keys,
+    channel: ChannelId,
+) -> Result<Option<Vec<MemberDevice>>, String> {
+    read(follower, keys, |device| device.members(channel).ok())
 }
 
 /// The member devices of the group of each of `channels` the device holds.
@@ -641,14 +671,17 @@ fn strangers(
         .collect()
 }
 
-/// A Welcome or Commit in the mailbox.
-enum Handshake {
+/// A Welcome, Commit or application message in the mailbox.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
     Welcome,
     Commit,
+    Application,
 }
 
-/// The envelope of `entry`, a mailbox entry as its frame, if it holds a Welcome or a Commit.
-fn handshake(entry: &[u8]) -> Option<(Envelope, Handshake)> {
+/// The envelope of `entry`, a mailbox entry as its frame, if it holds a Welcome, a Commit or an
+/// application message under `mls`.
+fn classify(entry: &[u8]) -> Option<(Envelope, Kind)> {
     let Ok(Frame::Push(Push::Message { envelope, .. })) = Frame::from_cbor(entry) else {
         return None;
     };
@@ -657,12 +690,16 @@ fn handshake(entry: &[u8]) -> Option<(Envelope, Handshake)> {
         return None;
     }
     let kind = match MlsFraming::read(&envelope.payload)? {
-        MlsFraming::Welcome => Handshake::Welcome,
+        MlsFraming::Welcome => Kind::Welcome,
         MlsFraming::Message {
             public: true,
             content: MlsContent::Commit,
             ..
-        } => Handshake::Commit,
+        } => Kind::Commit,
+        MlsFraming::Message {
+            content: MlsContent::Application,
+            ..
+        } => Kind::Application,
         _ => return None,
     };
     Some((envelope, kind))
@@ -670,14 +707,22 @@ fn handshake(entry: &[u8]) -> Option<(Envelope, Handshake)> {
 
 /// Whether `entry`, a mailbox entry as its frame, holds a Welcome or a Commit.
 pub fn is_handshake(entry: &[u8]) -> bool {
-    handshake(entry).is_some()
+    classify(entry).is_some_and(|(_, kind)| kind != Kind::Application)
 }
 
-/// Goes through the Welcomes and Commits of the mailbox entries the state holds within `scope`, in
-/// `seq` order, and takes each one out with the state it leaves, checking them against the spaces
-/// as `rosters` holds them, syncing any other at its first entry. One of a space the device does not
-/// follow or that fails to sync, or of a channel whose Commit of this device waits for the server,
-/// stays for a later run.
+/// Whether `entry`, a mailbox entry as its frame, holds an application message under `mls`.
+pub fn is_application(entry: &[u8]) -> bool {
+    classify(entry).is_some_and(|(_, kind)| kind == Kind::Application)
+}
+
+/// Goes through the Welcomes, Commits and application messages of the mailbox entries the state
+/// holds within `scope`, in `seq` order: takes each Welcome and Commit out with the state it
+/// leaves, checking them against the spaces as `rosters` holds them, syncing any other at its first
+/// entry, and decrypts each application message. One of a space the device does not follow or that
+/// fails to sync, or of a channel whose Commit of this device waits for the server, stays for a
+/// later run, and so does each later one of its channel. An application message of a channel whose
+/// group the device does not hold stays until the device joins the group, then decrypts at once;
+/// one of a channel that does not admit the device fails.
 pub fn take_in(
     follower: &mut Follower,
     link: &mut Link,
@@ -686,22 +731,37 @@ pub fn take_in(
 ) -> Result<(), String> {
     let followed = follower.state.spaces().map_err(text)?;
     let waiting = follower.state.mls_outbox().map_err(text)?;
-    for (seq, entry) in follower.state.inbox().map_err(text)? {
-        let Some((envelope, kind)) = handshake(&entry) else {
+    // The channels whose entries stay for a later run from here on, to keep the mailbox order.
+    let mut later: BTreeSet<ChannelId> =
+        (waiting.iter()).map(|outgoing| outgoing.channel).collect();
+    // The application messages of each channel that wait for the device to join its group.
+    let mut unjoined: BTreeMap<ChannelId, Vec<(u64, Envelope)>> = BTreeMap::new();
+    for entry in follower.state.inbox().map_err(text)? {
+        if entry.opened.is_some() {
+            continue;
+        }
+        let seq = entry.seq;
+        let Some((envelope, kind)) = classify(&entry.frame) else {
             continue;
         };
-        let header = &envelope.header;
-        if scope.excludes(header.space)
-            || waiting
-                .iter()
-                .any(|outgoing| outgoing.channel == header.channel)
-        {
+        let channel = envelope.header.channel;
+        if scope.excludes(envelope.header.space) || later.contains(&channel) {
             continue;
         }
         // One of a space the device does not follow yet waits until it does.
-        let Some(space) = followed.iter().find(|space| space.id == header.space) else {
+        let Some(space) = followed
+            .iter()
+            .find(|space| space.id == envelope.header.space)
+        else {
             continue;
         };
+        if kind == Kind::Application && unjoined.contains_key(&channel) {
+            unjoined.entry(channel).or_default().push((seq, envelope));
+            continue;
+        }
+        if kind == Kind::Application && open(follower, link, seq, &envelope)? {
+            continue;
+        }
         if let Entry::Vacant(vacant) = rosters.entry(space.id) {
             match follower.sync(space) {
                 Ok(done) => {
@@ -709,18 +769,35 @@ pub fn take_in(
                 }
                 Err(err) => {
                     eprintln!("skald: warning: {err}");
+                    later.insert(channel);
                     continue;
                 }
             }
+        }
+        if kind == Kind::Application {
+            let (roster, devices) = &rosters[&space.id];
+            if admitted(follower, roster, devices, channel).contains_key(&follower.this) {
+                unjoined.entry(channel).or_default().push((seq, envelope));
+            } else {
+                let why = "this device is in no group of the channel, which does not admit it";
+                keep(follower, seq, &Opened::Failed(why.to_owned()))?;
+            }
+            continue;
         }
         let taking = Taking {
             seq,
             space,
             envelope: &envelope,
         };
-        match kind {
-            Handshake::Welcome => welcomed(follower, link, &taking, rosters)?,
-            Handshake::Commit => processed(follower, link, &taking, rosters)?,
+        if kind == Kind::Welcome {
+            welcomed(follower, link, &taking, rosters)?;
+        } else {
+            processed(follower, link, &taking, rosters)?;
+        }
+        if unjoined.contains_key(&channel) && members(follower, &link.keys, channel)?.is_some() {
+            for (seq, envelope) in unjoined.remove(&channel).unwrap_or_default() {
+                open(follower, link, seq, &envelope)?;
+            }
         }
     }
     Ok(())
@@ -908,4 +985,214 @@ fn processed(
         eprintln!("skald: warning: {err}");
     }
     Ok(())
+}
+
+/// What decrypting an application message of the mailbox in its channel's group gave, kept with
+/// its entry, sealed under the state key, until a run shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opened {
+    /// The sending device, a member of the group, and the bytes of the content.
+    Read(DeviceId, Vec<u8>),
+    /// The device had used its key already: a replay.
+    Replay,
+    /// It did not decrypt, for this reason.
+    Failed(String),
+}
+
+impl Opened {
+    fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            Opened::Read(sender, content) => [&[0][..], sender.as_bytes(), content].concat(),
+            Opened::Replay => vec![1],
+            Opened::Failed(why) => [&[2][..], why.as_bytes()].concat(),
+        }
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let (tag, rest) = bytes.split_first()?;
+        match tag {
+            0 => {
+                let (sender, content) = rest.split_at_checked(16)?;
+                let sender = DeviceId::from_bytes(sender.try_into().ok()?);
+                Some(Opened::Read(sender, content.to_vec()))
+            }
+            1 if rest.is_empty() => Some(Opened::Replay),
+            2 => Some(Opened::Failed(String::from_utf8(rest.to_vec()).ok()?)),
+            _ => None,
+        }
+    }
+}
+
+/// The name the state key seals what decrypting the entry `seq` gave under.
+fn opened_item(seq: u64) -> Vec<u8> {
+    [b"inbox:".as_slice(), &seq.to_be_bytes()].concat()
+}
+
+/// Decrypts the application message in `envelope`, the entry `seq`, in its channel's group, and
+/// keeps what that gave with the entry, with the state it leaves; gives whether it did: it writes
+/// nothing if the device holds no group of the channel.
+fn open(follower: &Follower, link: &Link, seq: u64, envelope: &Envelope) -> Result<bool, String> {
+    let channel = envelope.header.channel;
+    follower.state.mls_change(|sealed| {
+        let (mut device, state_key) = load_keyed(follower, &link.keys, sealed)?;
+        let (opened, saved) = match device.decrypt(channel, &envelope.payload) {
+            Ok(read) => (
+                Opened::Read(read.sender, read.plaintext),
+                Some(device.seal()),
+            ),
+            Err(MlsError::NoGroup(_)) => return Ok((None, MlsChanges::default(), false)),
+            Err(MlsError::Replay) => (Opened::Replay, None),
+            Err(err) => (
+                Opened::Failed(format!("it does not decrypt in the channel's group: {err}")),
+                None,
+            ),
+        };
+        Ok((saved, kept(follower, &state_key, seq, &opened), true))
+    })
+}
+
+/// Keeps `opened` with the entry `seq` without decrypting it, leaving the MLS state as it is.
+fn keep(follower: &Follower, seq: u64, opened: &Opened) -> Result<(), String> {
+    follower.state.mls_change(|sealed| {
+        let state_key = key_packages::state_key(&follower.secrets, sealed)?;
+        Ok((None, kept(follower, &state_key, seq, opened), ()))
+    })
+}
+
+/// What keeps `opened` with the entry `seq`, sealed under `state_key`.
+fn kept(follower: &Follower, state_key: &StateKey, seq: u64, opened: &Opened) -> MlsChanges {
+    let sealed = state_key.seal(follower.this, &opened_item(seq), &opened.to_bytes());
+    MlsChanges {
+        opened: vec![(seq, sealed)],
+        ..MlsChanges::default()
+    }
+}
+
+/// The key that opens what decrypting the entries of the mailbox gave.
+pub fn inbox_key(follower: &Follower) -> Result<StateKey, String> {
+    follower.state.mls_step(|sealed| {
+        let key = key_packages::state_key(&follower.secrets, sealed)?;
+        Ok((None, key))
+    })
+}
+
+/// What decrypting `entry` gave, opened with `key`, once the device decrypted it.
+pub fn opened(follower: &Follower, key: &StateKey, entry: &state::Entry) -> Option<Opened> {
+    let sealed = entry.opened.as_ref()?;
+    let opened = key
+        .open(follower.this, &opened_item(entry.seq), sealed)
+        .and_then(|bytes| Opened::from_bytes(&bytes));
+    Some(opened.unwrap_or_else(|| {
+        Opened::Failed("what this device kept of its decryption does not open".to_owned())
+    }))
+}
+
+/// Encrypts the content `content` gives for a new message ID and the device's next counter in
+/// `channel` of `roster`, the space's last accepted revision with `devices`, its accounts'
+/// devices, in the channel's group, and puts the `mls` envelope in the outbox with the state it
+/// leaves; gives its message ID. Sends nothing, and says why, while a member device of the group
+/// is not admitted, while a Commit of this device in the channel waits for the server, or when no
+/// other device is in the group.
+pub fn encrypt(
+    follower: &Follower,
+    (roster, devices): (&Roster, &SpaceDevices),
+    channel: ChannelId,
+    content: impl FnOnce(MessageId, NonZeroU64) -> Content,
+) -> Result<MessageId, String> {
+    let keys = follower.keys()?;
+    let admitted = admitted(follower, roster, devices, channel);
+    let waiting = (follower.state.mls_outbox().map_err(text)?)
+        .iter()
+        .any(|outgoing| outgoing.channel == channel);
+    let (space, version) = (roster.body().space, follower.connection.version());
+    follower.state.mls_change(|sealed| {
+        let mut device = load(follower, &keys, sealed)?;
+        let members = device.members(channel).map_err(|err| match err {
+            MlsError::NoGroup(_) => {
+                format!("this device is in no group of the channel {channel} yet; nothing is sent")
+            }
+            err => failed(channel, err),
+        })?;
+        let strangers: Vec<String> = (members.iter())
+            .filter(|member| !admits(&admitted, member))
+            .map(|member| member.device.to_string())
+            .collect();
+        if !strangers.is_empty() {
+            return Err(format!(
+                "the group of the channel {channel} holds the devices {}, which are not admitted \
+                 to the channel; nothing is sent there until the server stores this device's \
+                 Commit that removes them",
+                strangers.join(", ")
+            ));
+        }
+        if waiting {
+            return Err(format!(
+                "this device's Commit in the channel {channel} waits for the server's answer; \
+                 nothing is sent there until the server stores it"
+            ));
+        }
+        if members.iter().all(|member| member.device == follower.this) {
+            return Err(format!(
+                "no device can receive the message: the group of the channel {channel} holds no \
+                 other device; nothing is sent"
+            ));
+        }
+        let last = follower.state.channel_counter(channel).map_err(text)?;
+        let counter = last
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .ok_or_else(|| format!("the counter in the channel {channel} has no next"))?;
+        let msg_id = MessageId::generate();
+        let plaintext = content(msg_id, counter).to_cbor();
+        let payload = device
+            .encrypt(channel, &plaintext)
+            .map_err(|err| failed(channel, err))?;
+        let header = Header {
+            v: version,
+            space,
+            channel,
+            msg_id,
+            scheme: Scheme::Mls,
+            recipients: None,
+            ttl: None,
+            unknown: Unknown::default(),
+        };
+        let message = Counted {
+            outgoing: Outgoing {
+                msg_id,
+                recipient: None,
+                space,
+                envelope: Envelope { header, payload }.to_cbor(),
+            },
+            channel,
+            counter: counter.get(),
+        };
+        let changes = MlsChanges {
+            messages: vec![message],
+            ..MlsChanges::default()
+        };
+        Ok((Some(device.seal()), changes, msg_id))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What decrypting gave comes back as it was kept; bytes of no such form give nothing.
+    #[test]
+    fn opened_is_kept_as_it_was() {
+        let sender = DeviceId::from_signing_key(&[4; 32]);
+        for opened in [
+            Opened::Read(sender, b"content".to_vec()),
+            Opened::Read(sender, Vec::new()),
+            Opened::Replay,
+            Opened::Failed("it does not decrypt".to_owned()),
+        ] {
+            assert_eq!(Opened::from_bytes(&opened.to_bytes()), Some(opened));
+        }
+        for bytes in [&[][..], &[0, 1, 2], &[1, 0], &[2, 0xff], &[3]] {
+            assert_eq!(Opened::from_bytes(bytes), None, "{bytes:?}");
+        }
+    }
 }
