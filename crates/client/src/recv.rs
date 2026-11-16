@@ -16,9 +16,9 @@
 //! wait in the local state.
 //!
 //! A message that passes the checks is kept for the person and for the agents it is for
-//! (`docs/protocol/delivery.md`, "Device to agent"): with `to`, the agent it names if this device
-//! has run as it in the space; without `to`, each agent this device has run as in the space when
-//! it wrote the entry; a message to a person, none. The person's run shows each kept message once,
+//! (`docs/protocol/delivery.md`, "Device to agent"), among the agents this device had run as in
+//! the space when it wrote the entry: with `to`, the one it names; without `to`, each; a message to
+//! a person, none. The person's run shows each kept message once,
 //! whichever run checked it. An agent's run shows the messages kept for it and marks each handed
 //! over only once its line is written, so a run killed in between shows it again; a message waits
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
@@ -437,9 +437,10 @@ fn agent_wait(ttl: Option<u64>) -> u64 {
     ttl.map_or(most, |ttl| ttl.min(most))
 }
 
-/// The agents the message of the entry `seq` with `header` is for, `to` its content's `to`: the
-/// agent it names, if this device has run as it in the space; without `to`, each agent this device
-/// had run as in the space when it wrote the entry; none for a person.
+/// The agents the message of the entry `seq` with `header` is for, `to` its content's `to`, among
+/// the agents this device had run as in the space when it wrote the entry: the one `to` names, if
+/// it is an agent of this account in the space on this server; without `to`, each; none for a
+/// person.
 fn agents_of(
     follower: &Follower,
     checks: &Checks,

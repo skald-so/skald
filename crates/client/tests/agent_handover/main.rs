@@ -27,6 +27,7 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
+mod addresses;
 mod killed;
 mod kinds;
 mod missing;
