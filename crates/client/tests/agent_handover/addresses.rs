@@ -7,7 +7,8 @@ use crate::talk::Line;
 use crate::world::{ACME, AGENT, GLOBEX, HOST};
 use crate::{Agents, CLAUDE, CODEX, assert_handed_once, assert_not_handed};
 
-/// The texts Bob's device sends; none is anywhere else.
+/// The texts of these tests: Bob's device sends all but `SAID`, which Ada's device sends as codex;
+/// none is anywhere else.
 const TO_BOBS: &str = "for bob's own claude: rotate the deploy key";
 const TO_GLOBEX: &str = "for claude in globex: close the sprint";
 const TO_ELSEWHERE: &str = "for claude on another server: archive the logs";
