@@ -14,18 +14,16 @@ use crate::aged::{
     assert_one_commit_each, epochs,
 };
 use crate::cloud::Cloud;
-use crate::edits::{
-    SPACE_CHANGE, assert_refused, assert_refused_as_no_admin, last_two, store_request,
-};
+use crate::edits::{SPACE_CHANGE, assert_refused, assert_refused_as_no_admin, last_two};
 use crate::fixtures::fronted;
 use crate::front::Front;
-use crate::kit::{channels, create_space, latest, received, rosters, stale_once};
+use crate::kit::{channels, create_space, latest, received, rosters};
 use crate::machine::{Finished, Machine};
 use crate::relay::Lose;
 use crate::talk::{ADA_HOST, BOB_HOST, Talk};
 use crate::world::{
     ACME, MEMBER, Person, assert_role, members, next_by, next_with, run, set_role, space_certs,
-    store,
+    stale_once, store, store_request,
 };
 
 /// The command that sets the period.
