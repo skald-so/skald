@@ -1,6 +1,6 @@
 //! Device revocations: `docs/protocol/membership.md`, "Revocation".
 
-use crate::cbor::{self, Codec, DecodeError, Item, NonEmpty, Unknown};
+use crate::cbor::{self, Cbor, Codec, DecodeError, Item, NonEmpty, Unknown};
 use crate::cert::account_and_device;
 use crate::id::{AccountId, DeviceId};
 use crate::signed::{Signed, SignedBody};
@@ -81,3 +81,20 @@ impl Codec for RevocationBody {
 }
 
 cbor::cbor!(RevocationBody);
+
+/// The revocations a Commit's `authenticated_data` carries, the encoded `[+ revocation]`:
+/// `docs/protocol/membership.md`, "Group changes". Each keeps its bytes, as [`Revocation`] does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revocations(pub NonEmpty<Revocation>);
+
+impl Cbor for Revocations {
+    fn to_cbor(&self) -> Vec<u8> {
+        cbor::array(self.0.iter().map(Cbor::to_cbor))
+    }
+
+    fn from_cbor(bytes: &[u8]) -> Result<Self, DecodeError> {
+        cbor::parse(bytes)?
+            .non_empty("revocations", |item| Revocation::from_cbor(item.raw()))
+            .map(Self)
+    }
+}

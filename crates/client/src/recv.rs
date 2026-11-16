@@ -570,8 +570,8 @@ struct Received {
 /// account and the revision's for any other.
 fn valid_cert<'c>(context: &Context<'c>, device: DeviceId) -> Option<&'c Cert> {
     context.roster.body().members.iter().find_map(|member| {
-        (context.devices.of(context.own, member).into_iter())
-            .find(|cert| cert.body().device == device)
+        let certs = context.devices.of(context.roster, context.own, member);
+        certs.into_iter().find(|cert| cert.body().device == device)
     })
 }
 
@@ -735,6 +735,7 @@ mod tests {
                 devices: SpaceDevices {
                     ids: certs.iter().map(|cert| cert.body().device).collect(),
                     certs,
+                    revocations: Vec::new(),
                 },
                 channel,
                 bob: DeviceId::from_signing_key(&bob_key.public_key()),
@@ -931,6 +932,7 @@ mod tests {
         let mut devices = SpaceDevices {
             ids: world.devices.ids.clone(),
             certs: world.devices.certs.clone(),
+            revocations: Vec::new(),
         };
         devices.ids.push(id);
         devices.certs.push(service);

@@ -222,7 +222,7 @@ pub fn admitted<'d>(
         let Some(member) = body.member(entry.account) else {
             continue;
         };
-        for cert in devices.of(own, member) {
+        for cert in devices.of(roster, own, member) {
             let body = cert.body();
             if body.kind == DeviceKind::Client && body.device != this {
                 admitted.insert(body.device, cert);
@@ -658,6 +658,7 @@ pub(crate) mod tests {
         let devices = SpaceDevices {
             ids: certs.iter().map(id).collect(),
             certs: certs.clone(),
+            revocations: Vec::new(),
         };
 
         let given: BTreeMap<DeviceId, [u8; 32]> =
