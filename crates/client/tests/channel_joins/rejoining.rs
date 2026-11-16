@@ -14,7 +14,7 @@ use crate::played::Played;
 use crate::talk::{
     BOB_HOST, CAROL_HOST, Line, Talk, assert_shows_once, commit_sent, encrypted, stored,
 };
-use crate::world::now;
+use crate::world::{now, warnings};
 
 /// `played` commits `make`'s Commit in `at`'s channel, which the server stores; gives its envelope.
 fn commits(
@@ -140,6 +140,11 @@ fn device_that_missed_a_commit_rejoins_and_drops_a_commit_of_an_epoch_it_passed(
     assert!(
         !commit_sent(&talk.front, channel, from),
         "Ada's device commits on a Commit of an epoch it passed: {again:?}"
+    );
+    let id = channel.to_string();
+    assert!(
+        warnings(&again).iter().all(|line| !line.contains(&id)),
+        "a warning about the channel on a Commit of an epoch it passed: {again:?}"
     );
     let still = group(&talk.world.cloud, &talk.ada.token, at.0, channel);
     assert_eq!(

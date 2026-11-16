@@ -138,9 +138,9 @@ const MIGRATIONS: &[&str] = &[
         envelope BLOB NOT NULL
     ) STRICT",
     // Channel messages under `mls`: the outbox holds them without a recipient device; the last
-    // `counter` the device gave its content in each channel; and what decrypting each `mls`
-    // application message of the inbox in its channel's group gave, sealed under the state key,
-    // until a run shows it.
+    // `counter` the device gave its content in each channel, in place of one per recipient device;
+    // and what decrypting each `mls` application message of the inbox in its channel's group gave,
+    // sealed under the state key, until a run shows it.
     "CREATE TABLE outbox_next (
         position INTEGER PRIMARY KEY,
         msg_id TEXT NOT NULL,
@@ -153,6 +153,7 @@ const MIGRATIONS: &[&str] = &[
         SELECT position, msg_id, recipient, space, envelope FROM outbox;
     DROP TABLE outbox;
     ALTER TABLE outbox_next RENAME TO outbox;
+    DROP TABLE send_counter;
     CREATE TABLE channel_counter (
         channel TEXT PRIMARY KEY,
         last INTEGER NOT NULL CHECK (last >= 1)
@@ -160,7 +161,8 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE inbox ADD COLUMN opened BLOB;",
     // Gap detection: per channel, sending device and scheme (1 `mls`, 2 `hpke`), the counters the
     // device accepted, as `gaps::Counters` encodes them, with the `seq` of the entry it last
-    // accepted; and the `seq` of the Welcome by which the device last joined each channel's group.
+    // accepted; and, for each join of a channel's group, the `seq` of the Welcome's entry, or,
+    // joining by itself, the `seq` after its cursor.
     // From now on `received` holds only messages without `counter`.
     "CREATE TABLE received_counter (
         channel TEXT NOT NULL,
@@ -171,8 +173,9 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (channel, sender, scheme)
     ) STRICT;
     CREATE TABLE channel_joined (
-        channel TEXT PRIMARY KEY,
-        seq INTEGER NOT NULL CHECK (seq >= 1)
+        channel TEXT NOT NULL,
+        seq INTEGER NOT NULL CHECK (seq >= 1),
+        PRIMARY KEY (channel, seq)
     ) STRICT;",
     // The channels whose group the device joins by itself even though the latest GroupInfo lists
     // it: one whose Welcome it refused or whose Commit it could not process, until it is in the
@@ -627,7 +630,7 @@ impl State {
             for (channel, seq) in &changes.joined {
                 tx.execute(
                     "INSERT INTO channel_joined (channel, seq) VALUES (?1, ?2)
-                     ON CONFLICT DO UPDATE SET seq = excluded.seq",
+                     ON CONFLICT DO NOTHING",
                     params![channel.to_string(), sql_seq(*seq)?],
                 )?;
             }
@@ -1067,17 +1070,14 @@ impl State {
             return Ok(None);
         };
         if source.scheme == Scheme::Mls {
-            let joined: Option<i64> = self
-                .db
-                .query_row(
-                    "SELECT seq FROM channel_joined WHERE channel = ?1",
-                    params![channel],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let seq = sql_seq(seq)?;
             // A Welcome's entry is not `seq`'s; a join by itself takes the `seq` after the cursor.
-            if joined.is_some_and(|joined| accepted < joined && joined <= seq) {
+            let joined: bool = self.db.query_row(
+                "SELECT EXISTS (SELECT 1 FROM channel_joined
+                 WHERE channel = ?1 AND seq > ?2 AND seq <= ?3)",
+                params![channel, accepted, sql_seq(seq)?],
+                |row| row.get(0),
+            )?;
+            if joined {
                 return Ok(None);
             }
         }
@@ -1750,7 +1750,7 @@ pub(crate) mod tests {
     }
 
     /// An `hpke` envelope an older client left in the outbox keeps its place and its recipient
-    /// device, and leaves once the server answered it.
+    /// device, and leaves once the server answered it; the counters per recipient device go.
     #[test]
     fn hpke_envelopes_of_an_older_client_keep_their_recipient() {
         let dir = TestDir::new("state-outbox-hpke");
@@ -1785,6 +1785,14 @@ pub(crate) mod tests {
         let state = State::open(&dir).unwrap();
 
         assert_eq!(state.outbox().unwrap(), [left]);
+        let counters: i64 = (state.db)
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name = 'send_counter'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(counters, 0, "the counters per recipient device are dropped");
         state.remove_outgoing(msg_id, None).unwrap();
         assert_eq!(state.outbox().unwrap().len(), 1, "taken out as an mls one");
         state.remove_outgoing(msg_id, Some(bob)).unwrap();
@@ -1906,7 +1914,21 @@ pub(crate) mod tests {
         assert_eq!(state.counters(&mls, 6).unwrap(), None);
         assert_eq!(state.counters(&hpke, 6).unwrap(), Some(Counters::default()));
         state.shown_counted(6, &mls, &kept).unwrap();
+        assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept.clone()));
+
+        // Two Welcomes after the entry last accepted: an entry between them follows the first.
+        state
+            .mls_change(|_| {
+                let joined = MlsChanges {
+                    joined: vec![(channel, 8), (channel, 12)],
+                    ..MlsChanges::default()
+                };
+                Ok((None, joined, ()))
+            })
+            .unwrap();
         assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept));
+        assert_eq!(state.counters(&mls, 9).unwrap(), None);
+        assert_eq!(state.counters(&mls, 13).unwrap(), None);
     }
 
     /// The channels to rejoin are written with the MLS state and kept across opens until the

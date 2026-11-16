@@ -42,6 +42,7 @@ mod by_itself;
 mod intruder;
 mod joins;
 mod offline;
+mod refusals;
 mod rejoining;
 
 // The front and fixtures of the tests of sending, and the device the tests of receiving play over
