@@ -2,6 +2,7 @@
 //! the people the tests play, the messages those devices write and read, and what the front saw
 //! Ada's machine send and the CLI show.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ use crate::front::{Front, Sent};
 use crate::kit::{Space, assert_members, create_space, received, with_channel};
 use crate::machine::{Finished, Machine};
 use crate::played::{Played, mls_envelope};
-use crate::world::{ACME, Person, World};
+use crate::world::{ACME, Person, World, revisions_request};
 
 /// The host names of the people's machines, their certificates' `name`.
 pub const ADA_HOST: &str = "ada-workstation";
@@ -129,6 +130,21 @@ impl Talk {
         bob.take_in(&self.world.cloud);
         assert_read(bob, self.channel, (self.ada.device, &from_ada), expected);
     }
+}
+
+/// From now on, the relay answers the first request for `space`'s revisions with no revisions in
+/// the form the API gives them, as a request that fails once.
+pub fn revisions_fail_once(cloud: &Cloud, space: SpaceId) {
+    let first = AtomicBool::new(true);
+    cloud
+        .relay
+        .rewrite(&revisions_request(space), move |answer| {
+            if first.swap(false, Ordering::SeqCst) {
+                "{}".to_owned()
+            } else {
+                answer.to_owned()
+            }
+        });
 }
 
 /// Removes every KeyPackage of `device` from the server, so no device can add it to a group.

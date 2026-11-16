@@ -16,7 +16,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::accept_next;
-use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Roster, SpaceId};
+use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Member, Roster, SpaceId};
 
 use crate::connection::Connection;
 use crate::devices::{self, text};
@@ -44,6 +44,25 @@ pub struct Own {
 pub struct SpaceDevices {
     pub ids: Vec<DeviceId>,
     pub certs: Vec<Cert>,
+}
+
+impl SpaceDevices {
+    /// The valid certificates of `member`'s devices that its `excluded` does not list, checked
+    /// against the master key `own` pinned for its own account and the revision's for any other.
+    pub fn of(&self, own: &Own, member: &Member) -> Vec<&Cert> {
+        let master = if member.account == own.account {
+            own.master
+        } else {
+            member.master
+        };
+        let excluded = |device: &DeviceId| {
+            (member.excluded.as_ref()).is_some_and(|excluded| excluded.contains(device))
+        };
+        let checked = devices::check(&master, &self.ids, &self.certs);
+        (checked.linked.into_iter())
+            .filter(|cert| cert.body().account == member.account && !excluded(&cert.body().device))
+            .collect()
+    }
 }
 
 /// Fetches the revisions of `space`, the space the state holds, and the devices of its accounts, as
