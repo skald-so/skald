@@ -12,7 +12,7 @@ use crate::common::sign_in::{CLIENT_SECRET, SignIn};
 use crate::common::{Closed, TestDb, get_url, hex, post_form};
 use crate::fixture::Fixture;
 use crate::sentry::Sentry;
-use crate::wire::Socket;
+use crate::wire::{self, Socket};
 use crate::{
     AFTER, DSN_ENV, USERNAME, WITHIN, api_headers, assert_failed, assert_hold_none, fail_a_request,
     reported, secret,
@@ -88,8 +88,8 @@ fn a_report_holds_no_token_body_or_secret() {
     );
 }
 
-/// A `send` the server fails to store closes its connection with `server-error`; the reports
-/// that follow hold nothing of its envelope.
+/// A `send` the server fails to store closes its connection with `server-error`, which is reported
+/// naming `/ws`; the reports that follow hold nothing of its envelope.
 #[test]
 fn a_report_holds_no_envelope_content() {
     let sentry = Sentry::start();
@@ -98,6 +98,10 @@ fn a_report_holds_no_envelope_content() {
     let t = &fixture.team;
     let reporting = t.flow.stand.instance(&[], &[(DSN_ENV, &dsn)]);
     let mut alice = Socket::to(&reporting, &t.flow, &t.alice, &t.alice.laptop);
+    // A first envelope stored: the connection is served, so the database's failure, not the wait
+    // for its sign-in, closes it.
+    let first = fixture.to(t.bob.laptop.id);
+    alice.store(&first, &wire::envelope(&first));
     let mut ct = random().to_vec();
     ct.extend_from_slice(&random());
     let envelope = Envelope {
@@ -126,11 +130,7 @@ fn a_report_holds_no_envelope_content() {
         closed,
         Closed::Frame(CloseCode::Error, "server-error".to_owned())
     );
-    sentry.wait_until(WITHIN, |reports| {
-        reports
-            .iter()
-            .any(|report| report.is_for(KEY, 12) && !report.events().is_empty())
-    });
+    sentry.wait_until(WITHIN, |reports| reported(reports, KEY, 12, "/ws"));
     thread::sleep(AFTER);
 
     assert_hold_none(

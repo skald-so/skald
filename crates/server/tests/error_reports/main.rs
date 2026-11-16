@@ -34,6 +34,7 @@ mod api;
 #[path = "../spaces/rosters.rs"]
 mod rosters;
 
+mod background;
 mod contents;
 mod setting;
 

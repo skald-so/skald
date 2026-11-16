@@ -3,8 +3,9 @@
 //! never its headers, query or body, nor a database's message or rows (`docs/threat-model.md`, "The
 //! server sees").
 
+use std::any::Any;
 use std::fmt;
-use std::panic::{self, PanicHookInfo};
+use std::panic::{self, Location};
 use std::str::FromStr;
 use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -94,7 +95,7 @@ pub fn report_errors_to(dsn: SentryDsn) {
         .expect("cannot start the error reports' thread");
     let previous = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        report(&panicked(info), None);
+        report(&panicked(info.location(), info.payload()), None);
         previous(info);
     }));
 }
@@ -126,14 +127,7 @@ impl Cause for sqlx::Error {
                 }
             }
             sqlx::Error::PoolTimedOut => "no database connection in time".to_owned(),
-            sqlx::Error::PoolClosed => "the database pool is closed".to_owned(),
             sqlx::Error::Io(err) => format!("the database connection failed: {:?}", err.kind()),
-            sqlx::Error::Tls(_) => "the database's TLS failed".to_owned(),
-            sqlx::Error::Protocol(_) => "the database broke its protocol".to_owned(),
-            sqlx::Error::RowNotFound => "no database row".to_owned(),
-            sqlx::Error::ColumnDecode { .. } | sqlx::Error::Decode(_) => {
-                "a database value does not decode".to_owned()
-            }
             _ => "the database failed".to_owned(),
         }
     }
@@ -149,6 +143,11 @@ impl Cause for &'static str {
 pub(crate) fn logged(doing: &str, err: &impl Cause) -> String {
     eprintln!("skald-server: cannot {doing}: {err}");
     format!("cannot {doing}: {}", err.reported())
+}
+
+/// Writes that a background task cannot do `doing` for `err` to the server's output, and reports it.
+pub(crate) fn background_failed(doing: &str, err: &impl Cause) {
+    report(&logged(doing, err), None);
 }
 
 /// The cause of a `500` answer that [`report_failures`] reports.
@@ -185,13 +184,13 @@ pub(crate) async fn report_failures(request: Request, next: Next) -> Response {
     response
 }
 
-/// What a report says of a panic: where, and its message only if it is a literal, as a formatted
-/// one could hold a request's data.
-fn panicked(info: &PanicHookInfo<'_>) -> String {
-    let at = info.location().map_or_else(String::new, |location| {
+/// What a report says of a panic at `location` with `payload`: where, and its message only if it is
+/// a literal, as a formatted one could hold a request's data.
+fn panicked(location: Option<&Location<'_>>, payload: &(dyn Any + Send)) -> String {
+    let at = location.map_or_else(String::new, |location| {
         format!(" at {}:{}", location.file(), location.line())
     });
-    match info.payload().downcast_ref::<&'static str>() {
+    match payload.downcast_ref::<&'static str>() {
         Some(message) => format!("panicked{at}: {message}"),
         None => format!("panicked{at}"),
     }
@@ -227,21 +226,34 @@ fn envelope(dsn: &SentryDsn, event: &Value) -> Vec<u8> {
     format!("{header}\n{item}\n{payload}\n").into_bytes()
 }
 
-/// Sends the events of `queue` to `dsn` one by one, until the process ends; drops those that come
-/// while Sentry asks to wait.
+/// What became of a report Sentry was sent.
+#[derive(Debug, PartialEq)]
+enum Sent {
+    Taken,
+    /// Sentry answered `429`: nothing is sent for that long.
+    Paused(Duration),
+    /// Why it was not taken.
+    Failed(String),
+}
+
+/// Sends the events of `queue` to `dsn` one by one, until the queue closes; drops those that come
+/// while Sentry asks to wait. A failure goes to the server's output.
 fn send_all(dsn: &SentryDsn, queue: Receiver<Value>) {
     let mut paused_until = None;
     for event in queue {
         if paused_until.is_some_and(|until| Instant::now() < until) {
             continue;
         }
-        paused_until = send(dsn, &event).map(|pause| Instant::now() + pause);
+        match send(dsn, &event) {
+            Sent::Taken => {}
+            Sent::Paused(pause) => paused_until = Some(Instant::now() + pause),
+            Sent::Failed(why) => eprintln!("skald-server: cannot send an error report: {why}"),
+        }
     }
 }
 
-/// Sends `event` to `dsn`; gives how long to wait if Sentry answers `429`. A failure goes to the
-/// server's output.
-fn send(dsn: &SentryDsn, event: &Value) -> Option<Duration> {
+/// Sends `event` to `dsn`.
+fn send(dsn: &SentryDsn, event: &Value) -> Sent {
     let auth = format!(
         "Sentry sentry_version=7, sentry_key={}, sentry_client={CLIENT}",
         dsn.key
@@ -252,24 +264,15 @@ fn send(dsn: &SentryDsn, event: &Value) -> Option<Duration> {
         .header("x-sentry-auth", auth)
         .send(&envelope(dsn, event)[..]);
     match sent {
-        Ok(response) if response.status() == 429 => Some(pause(
+        Ok(response) if response.status() == 429 => Sent::Paused(pause(
             response
                 .headers()
                 .get("retry-after")
                 .and_then(|value| value.to_str().ok()),
         )),
-        Ok(response) if response.status().is_success() => None,
-        Ok(response) => {
-            eprintln!(
-                "skald-server: Sentry answered {} to an error report",
-                response.status()
-            );
-            None
-        }
-        Err(err) => {
-            eprintln!("skald-server: cannot send an error report: {err}");
-            None
-        }
+        Ok(response) if response.status().is_success() => Sent::Taken,
+        Ok(response) => Sent::Failed(format!("Sentry answered {}", response.status())),
+        Err(err) => Sent::Failed(err.to_string()),
     }
 }
 
@@ -285,6 +288,13 @@ fn pause(retry_after: Option<&str>) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use sqlx::error::{DatabaseError, ErrorKind};
+
     use super::*;
 
     fn dsn(text: &str) -> Result<(String, String, String), String> {
@@ -328,6 +338,44 @@ mod tests {
         }
     }
 
+    /// A database's refusal whose message quotes a request's data.
+    #[derive(Debug)]
+    struct Refused;
+
+    const QUOTED: &str = "duplicate key value (username)=(secret-ada)";
+
+    impl fmt::Display for Refused {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(QUOTED)
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
+    impl DatabaseError for Refused {
+        fn message(&self) -> &str {
+            QUOTED
+        }
+        fn code(&self) -> Option<Cow<'_, str>> {
+            Some("23505".into())
+        }
+        fn constraint(&self) -> Option<&str> {
+            Some("accounts_username_key")
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> ErrorKind {
+            ErrorKind::UniqueViolation
+        }
+    }
+
     #[test]
     fn a_database_error_is_reported_by_its_kind_only() {
         let io = sqlx::Error::Io(std::io::Error::new(
@@ -339,7 +387,14 @@ mod tests {
             "the database connection failed: ConnectionRefused"
         );
         let protocol = sqlx::Error::Protocol("secret detail".to_owned());
-        assert_eq!(protocol.reported(), "the database broke its protocol");
+        assert_eq!(protocol.reported(), "the database failed");
+        let refused = sqlx::Error::Database(Box::new(Refused));
+        let reported = "the database answered SQLSTATE 23505 on accounts_username_key";
+        assert_eq!(refused.reported(), reported);
+        assert_eq!(
+            logged("set a username", &refused),
+            format!("cannot set a username: {reported}")
+        );
         assert_eq!(
             sqlx::Error::PoolTimedOut.reported(),
             "no database connection in time"
@@ -378,5 +433,82 @@ mod tests {
         assert_eq!(pause(Some("soon")), RATE_LIMITED);
         assert_eq!(pause(Some("-1")), RATE_LIMITED);
         assert_eq!(pause(None), RATE_LIMITED);
+    }
+
+    #[test]
+    fn a_panic_is_reported_by_its_place_and_only_a_literal_message() {
+        let here = Location::caller();
+        assert_eq!(
+            panicked(Some(here), &"a literal"),
+            format!("panicked at {}:{}: a literal", here.file(), here.line())
+        );
+        let formatted = format!("{} of a request", "the body");
+        assert_eq!(panicked(None, &formatted), "panicked");
+    }
+
+    /// A stand-in for Sentry that answers each request with `answer`; gives its DSN and the number
+    /// of requests it got.
+    fn stand_in(answer: &'static str) -> (SentryDsn, Arc<Mutex<usize>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let port = listener.local_addr().expect("local address").port();
+        let got = Arc::new(Mutex::new(0));
+        let counted = Arc::clone(&got);
+        thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(&stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).expect("a header");
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        length = value.trim().parse().expect("a length");
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).expect("the body");
+                *counted.lock().expect("the count") += 1;
+                (&stream).write_all(answer.as_bytes()).expect("answer");
+            }
+        });
+        let dsn = format!("http://key@127.0.0.1:{port}/1");
+        (dsn.parse().expect("a DSN"), got)
+    }
+
+    #[test]
+    fn a_report_is_taken_paused_or_failed_by_the_answer() {
+        let event = event("x", None);
+        let (dsn, _) =
+            stand_in("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}");
+        assert_eq!(send(&dsn, &event), Sent::Taken);
+        let (dsn, _) = stand_in(
+            "HTTP/1.1 429 Too Many Requests\r\nretry-after: 7\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        assert_eq!(send(&dsn, &event), Sent::Paused(Duration::from_secs(7)));
+        let (dsn, _) = stand_in(
+            "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        assert_eq!(
+            send(&dsn, &event),
+            Sent::Failed("Sentry answered 500 Internal Server Error".to_owned())
+        );
+    }
+
+    #[test]
+    fn nothing_is_sent_while_sentry_asks_to_wait() {
+        let (dsn, got) = stand_in(
+            "HTTP/1.1 429 Too Many Requests\r\nretry-after: 60\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+        );
+        let (reports, queue) = mpsc::sync_channel(QUEUE);
+        for _ in 0..3 {
+            reports.try_send(event("x", None)).expect("queued");
+        }
+        drop(reports);
+        send_all(&dsn, queue);
+        assert_eq!(*got.lock().expect("the count"), 1);
     }
 }

@@ -44,7 +44,7 @@ pub(crate) async fn run(db: PgPool, wakers: Arc<Wakers>, retention: Option<Durat
     loop {
         looks.tick().await;
         if let Err(err) = sweep(&db, &wakers, seconds(retention)).await {
-            error_reports::report(&error_reports::logged("expire mailbox entries", &err), None);
+            error_reports::background_failed("expire mailbox entries", &err);
         }
     }
 }

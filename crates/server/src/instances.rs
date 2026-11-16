@@ -161,8 +161,7 @@ pub(crate) async fn listen(instance: Instance, local: Local) {
                 }
             }
             Err(err) => {
-                let cause = error_reports::logged("listen to the other instances", &err);
-                error_reports::report(&cause, None);
+                error_reports::background_failed("listen to the other instances", &err);
                 tokio::time::sleep(RETRY).await;
             }
         }
@@ -233,10 +232,7 @@ async fn act(instance: &Instance, local: &Local, payload: &str) {
             instance.record(space, revision);
             match members(&local.db, space, revision).await {
                 Ok(accounts) => local.notices.notify(accounts, space),
-                Err(err) => {
-                    let cause = error_reports::logged("read a revision's members", &err);
-                    error_reports::report(&cause, None);
-                }
+                Err(err) => error_reports::background_failed("read a revision's members", &err),
             }
         }
         Event::SessionEnded(session) => local.connections.end_session(&session),
