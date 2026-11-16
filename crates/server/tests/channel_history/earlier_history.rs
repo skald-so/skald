@@ -108,6 +108,30 @@ fn alice_adds(s: &mut Scene, mls: &mut MlsDevice, device: DeviceId, admitted: &[
     (s.alice.mls.epoch(f.general)).expect("alice's epoch")
 }
 
+/// alice's Commit removes dave's laptop; bob and carol process it. Gives the new epoch.
+#[track_caller]
+fn alice_removes_daves_laptop(s: &mut Scene) -> u64 {
+    let removal = s.alice.commits(&s.fixture, removing(&[s.dave.id]));
+    let epoch = (s.alice.mls.epoch(s.fixture.general)).expect("alice's epoch");
+    for peer in [&mut s.bob, &mut s.carol] {
+        assert_eq!(
+            peer.process(&s.fixture, &removal),
+            epoch,
+            "the Remove's epoch"
+        );
+    }
+    epoch
+}
+
+/// alice adds dave's laptop, removed before, again. Gives the new epoch.
+#[track_caller]
+fn alice_adds_daves_laptop(s: &mut Scene) -> u64 {
+    let (mut laptop, id, admitted) = (s.dave.twin(), s.dave.id, s.admitted());
+    let epoch = alice_adds(s, &mut laptop, id, &admitted);
+    s.dave.mls = laptop;
+    epoch
+}
+
 /// A second `client` device of dave's account, certified by dave's master key and set up in the
 /// database, joins the channel: alice adds it. Gives the new epoch.
 #[track_caller]
@@ -242,20 +266,14 @@ fn removed_and_added_again_with_history_false_a_member_gets_nothing_before_the_s
 
     // A revision without dave in the channel, and alice's Commit removing dave's laptop: epoch 4.
     set_history(&mut s, dave, None);
-    let removal = s.alice.commits(&s.fixture, removing(&[s.dave.id]));
-    for peer in [&mut s.bob, &mut s.carol] {
-        assert_eq!(peer.process(&s.fixture, &removal), 4, "the Remove's epoch");
-    }
+    assert_eq!(alice_removes_daves_laptop(&mut s), 4, "the Remove's epoch");
     up.held(&mut s, link(g, 4, 3), "a link of epoch 4");
     up.held(&mut s, entry(g, 4), "an entry of epoch 4");
     assert_none_given(&s.dave.session, &s.fixture, "dave, out of the channel");
 
     // A revision with dave again, history false, and alice adding dave's laptop again: epoch 5.
     set_history(&mut s, dave, Some(false));
-    let (mut laptop, id, admitted) = (s.dave.twin(), s.dave.id, s.admitted());
-    let epoch = alice_adds(&mut s, &mut laptop, id, &admitted);
-    assert_eq!(epoch, 5, "dave joins again at 5");
-    s.dave.mls = laptop;
+    assert_eq!(alice_adds_daves_laptop(&mut s), 5, "dave joins again at 5");
     up.held(&mut s, link(g, 5, 4), "the second join epoch's link");
     up.held(&mut s, entry(g, 4), "an entry of epoch 4 in epoch 5");
     up.given(&mut s, entry(g, 5), "an entry of epoch 5");
@@ -287,23 +305,14 @@ fn with_history_false_a_member_whose_only_device_a_commit_removes_keeps_its_firs
     up.given(&mut s, wrap_2, "a wrap of epoch 2");
 
     // alice's Commit removes dave's laptop, which the revision still lists: epoch 3.
-    let removal = s.alice.commits(&s.fixture, removing(&[s.dave.id]));
-    for peer in [&mut s.bob, &mut s.carol] {
-        assert_eq!(peer.process(&s.fixture, &removal), 3, "the Remove's epoch");
-    }
+    assert_eq!(alice_removes_daves_laptop(&mut s), 3, "the Remove's epoch");
     up.given(&mut s, link(g, 3, 2), "a link of epoch 3");
     up.given(&mut s, entry(g, 3), "an entry of epoch 3");
     let what = "dave, none of its devices in the group";
     assert_gets(&s, &s.dave.session, &up.since_the_join(), what);
 
     // alice adds dave's laptop again: epoch 4.
-    let (mut laptop, id, admitted) = (s.dave.twin(), s.dave.id, s.admitted());
-    assert_eq!(
-        alice_adds(&mut s, &mut laptop, id, &admitted),
-        4,
-        "the rejoin"
-    );
-    s.dave.mls = laptop;
+    assert_eq!(alice_adds_daves_laptop(&mut s), 4, "the rejoin");
     up.held(&mut s, link(g, 4, 1), "a link of epoch 4 to 1");
     up.given(&mut s, link(g, 4, 3), "a link of epoch 4 to 3");
     up.given(&mut s, entry(g, 4), "an entry of epoch 4");
