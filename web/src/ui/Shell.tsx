@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 import a11y from "./a11y.module.css";
@@ -49,6 +50,11 @@ export interface ShellProps {
   current: string;
   /** A click on a section or a sub-item, before the browser follows its link. */
   onNavigate?: (key: string) => void;
+  /**
+   * Follows a plain click on a link of the side menu, its `href`, in place of the browser, as a
+   * router does; a click with a modifier key is left to the browser.
+   */
+  onFollow?: (href: string) => void;
   spaces: readonly DropdownOption<string>[];
   /** Shown in place of the space switcher while there are no spaces. */
   noSpaces?: ReactNode;
@@ -78,6 +84,7 @@ export function Shell({
   sections,
   current,
   onNavigate,
+  onFollow,
   spaces,
   noSpaces,
   space,
@@ -123,12 +130,28 @@ export function Shell({
     if (menuOpen) close(true);
   };
 
+  /** Follows `href` with `onFollow` after a plain click. */
+  const follow = (event: MouseEvent<HTMLAnchorElement>, href: string) => {
+    const modified =
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey;
+    if (!onFollow || modified) return;
+    event.preventDefault();
+    onFollow(href);
+  };
+
   const link = (item: ShellLink, sub: boolean, marked: boolean) => (
     <a
       href={item.href}
       className={sub ? styles.item : styles.section}
       aria-current={item.key === current ? "page" : marked ? "true" : undefined}
-      onClick={() => choose(item.key)}
+      onClick={(event) => {
+        choose(item.key);
+        follow(event, item.href);
+      }}
     >
       <span className={styles.label}>{item.label}</span>
       {/* A screen reader hears "Queues 2 waiting". */}
@@ -164,7 +187,11 @@ export function Shell({
           >
             {menuOpen ? <CrossIcon size={20} /> : <MenuIcon />}
           </button>
-          <a href={home} className={styles.logo}>
+          <a
+            href={home}
+            className={styles.logo}
+            onClick={(event) => follow(event, home)}
+          >
             <LogoIcon />
             <span>skald</span>
           </a>

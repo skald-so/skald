@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use skald_proto::ServerName;
@@ -38,9 +38,11 @@ mod protocol;
 mod refusal;
 mod requests;
 mod revocations;
+mod sessions;
 mod sign_in;
 mod sign_up;
 mod spaces;
+mod user_agent;
 
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use error_reports::{SentryDsn, report_errors_to};
@@ -185,6 +187,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             post(revocations::store).layer(checked(Statement::Header)),
         )
         .route(
+            "/account/sessions",
+            get(sessions::list).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/sessions/end-others",
+            post(sessions::end_others).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/sessions/{session}",
+            delete(sessions::end_one).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/sign-in-methods",
             get(links::list).layer(checked(Statement::Header)),
         )
@@ -252,7 +266,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/session",
             get(sign_in::session)
-                .delete(sign_in::end)
+                .delete(sessions::sign_out)
                 .layer(checked(Statement::Header)),
         )
         .route(

@@ -1,5 +1,6 @@
-//! Ending a session ends only a device session: a web session can neither be ended nor end one.
-//! Every response is checked against the OpenAPI spec in `api/openapi.json`.
+//! `DELETE /session` without an `Origin` of the server's pages ends no web session, and a web
+//! session's token as a bearer token ends nothing. Every response is checked against the OpenAPI spec
+//! in `api/openapi.json`.
 
 mod common;
 
