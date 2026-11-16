@@ -605,12 +605,14 @@ export const getListSignInMethodsResponseMock = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
+    method: faker.string.uuid(),
     provider: faker.helpers.arrayElement(["github", "google"] as const),
     linked_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     github_login: faker.helpers.arrayElement([
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
     ]),
+    current: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
@@ -622,12 +624,14 @@ export const getListSignInMethodsResponseMock200 = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
+    method: faker.string.uuid(),
     provider: faker.helpers.arrayElement(["github", "google"] as const),
     linked_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     github_login: faker.helpers.arrayElement([
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
     ]),
+    current: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
@@ -661,6 +665,74 @@ export const getListSignInMethodsResponseMock401 = (
 });
 
 export const getListSignInMethodsResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRemoveSignInMethodResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getRemoveSignInMethodResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRemoveSignInMethodResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRemoveSignInMethodResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRemoveSignInMethodResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRemoveSignInMethodResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -3652,6 +3724,210 @@ export const getListSignInMethodsMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getListSignInMethodsResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler204 = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRemoveSignInMethodResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRemoveSignInMethodResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRemoveSignInMethodResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRemoveSignInMethodResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRemoveSignInMethodResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRemoveSignInMethodMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ method: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ method: string }>(
+    "*/account/sign-in-methods/:method",
+    async (info: Parameters<HttpResponseResolver<{ method: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRemoveSignInMethodResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -7653,6 +7929,7 @@ export const getSkaldAPIMock = () => [
   getEndOtherSessionsMockHandler(),
   getEndAccountSessionMockHandler(),
   getListSignInMethodsMockHandler(),
+  getRemoveSignInMethodMockHandler(),
   getPutUsernameMockHandler(),
   getGetSignInProvidersMockHandler(),
   getGetDevicesMockHandler(),

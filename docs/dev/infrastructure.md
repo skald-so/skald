@@ -182,8 +182,9 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Its Google sign-in uses an OAuth client of its own; `script/check-google-sign-in https://dev.skald.so <client ID>` checks it without a person.
   - Every merge into `dev` is deployed to it by this repository's CI: after `.github/workflows/edge.yml` publishes `:edge`, its deploy job deploys that digest over SSH with `script/deploy-staging`: one deploy at a time, only of the head of `dev`, so staging never moves back.
   - The job runs in the environment `staging`: only `dev` deploys from it, only this job uses it. Its secrets are the connection `script/deploy-staging` reads, described there: `STAGING_SSH_KEY`, `STAGING_SSH_HOST_KEY`, `STAGING_SSH_DESTINATION`. The key runs only the deploy on the VPS.
-- **Production:** one server.
+- **Production:** one server, the VPS staging runs on, behind its one Caddy, within caps that leave the other sites their resources. Production publishes no port.
   - PostgreSQL 19, without a replica.
+  - Attachments on a disk volume of the server.
   - Encrypted WAL-G backups on the server's disk.
   - On a push of a stable release's tag, once the release check passes, the release workflow's job `deploy-production` waits for the owner's approval, then deploys the release over SSH with `script/deploy-production`: its deploy command there deploys only a signed and attested release no older than the running one. One deploy at a time.
   - The job runs in the environment `production`: the owner is its required reviewer, only `v*` tags deploy from it, only this job uses it. Its secrets are the connection `script/deploy-production` reads, described there: `PRODUCTION_SSH_KEY`, `PRODUCTION_SSH_HOST_KEY`, `PRODUCTION_SSH_DESTINATION`. The key runs only the deploy command with one version.
