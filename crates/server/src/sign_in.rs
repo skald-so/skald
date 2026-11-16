@@ -21,10 +21,9 @@ use crate::accounts::{self, GITHUB, Method};
 use crate::error_reports::{self, Cause as _};
 use crate::github::{GitHubApp, Refusal, http_url};
 use crate::google::Google;
-use crate::instances::Event;
 use crate::oidc::OidcSettings;
 use crate::sign_up::SignUp;
-use crate::{AppState, database_failed, device_flow, links, problem};
+use crate::{AppState, database_failed, device_flow, links, problem, sessions};
 
 /// GitHub sign-in's start's path under the web address.
 pub(crate) const START_PATH: &str = "/auth/github";
@@ -134,6 +133,12 @@ impl SignInSettings {
             cookie.push_str("; Secure");
         }
         HeaderValue::try_from(cookie).expect("a cookie of tokens and paths is a header value")
+    }
+
+    /// The session cookie with `value`, a web session's token, for `max_age` seconds: as long as the
+    /// session lasts, or `0` to remove it. Sent back only from this server's pages.
+    pub(crate) fn session_cookie(&self, value: &str, max_age: u64) -> HeaderValue {
+        self.cookie(SESSION_COOKIE, value, "/", "Strict", Some(max_age))
     }
 
     /// The cookie that binds `state` of a sign-in of `flow`, sent back on the provider's cross-site
@@ -541,7 +546,11 @@ async fn finish<P: Provider>(
             Ok(links::linked_page(settings, flow, added, &return_to))
         }
         None => {
-            let session = accounts::sign_in(db, &method, &identity.source, may_sign_up)
+            let agent = headers
+                .get(header::USER_AGENT)
+                .and_then(|agent| agent.to_str().ok())
+                .unwrap_or_default();
+            let session = accounts::sign_in(db, &method, &identity.source, may_sign_up, agent)
                 .await
                 .map_err(Failure::Database)?;
             let Some(session) = session else {
@@ -566,7 +575,7 @@ fn signed_in_page(
     let mut response = refresh_page(settings, flow, "Signed in", "Signed in.", return_to);
     response.headers_mut().append(
         header::SET_COOKIE,
-        settings.cookie(SESSION_COOKIE, session, "/", "Strict", None),
+        settings.session_cookie(session, sessions::WEB_LIFETIME.as_secs()),
     );
     response
 }
@@ -880,36 +889,51 @@ pub(crate) struct Session {
     /// The provider a web session signed in with, `github` or `google`; `None` for a device session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sign_in_method: Option<&'static str>,
+    /// The SHA-256 of the session's token.
+    #[serde(skip)]
+    pub token_hash: Vec<u8>,
 }
 
-/// The account of the session of `kind`, `web` or `device`, whose token has one of `hashes`.
+/// The account of the session of `kind`, `web` or `device`, whose token has one of `hashes`, unless
+/// it expired; records its use, to the minute.
 async fn find(
     db: &PgPool,
     kind: &str,
     hashes: Vec<Vec<u8>>,
 ) -> Result<Option<Session>, sqlx::Error> {
-    let found: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT a.id::text, a.username, m.login, s.method_provider FROM sessions s
+    type Found = (String, String, Option<String>, Option<String>, Vec<u8>);
+    let found: Option<Found> = sqlx::query_as(
+        "WITH s AS (
+             SELECT token_hash, account_id, method_provider FROM sessions
+             WHERE kind = $1 AND token_hash = ANY($2)
+                 AND (kind = 'device' OR created_at > now() - make_interval(secs => $4))
+             LIMIT 1
+         ), used AS (
+             UPDATE sessions u SET last_used_at = now() FROM s
+             WHERE u.token_hash = s.token_hash AND u.last_used_at <= now() - interval '1 minute'
+         )
+         SELECT a.id::text, a.username, m.login, s.method_provider, s.token_hash FROM s
          JOIN accounts a ON a.id = s.account_id
          LEFT JOIN LATERAL (
              SELECT login FROM sign_in_methods
              WHERE account_id = a.id AND provider = $3 ORDER BY created_at LIMIT 1
-         ) m ON true
-         WHERE s.kind = $1 AND s.token_hash = ANY($2) LIMIT 1",
+         ) m ON true",
     )
     .bind(kind)
     .bind(hashes)
     .bind(GITHUB)
+    .bind(sessions::WEB_LIFETIME.as_secs_f64())
     .fetch_optional(db)
     .await?;
-    Ok(
-        found.map(|(account, username, github_login, method)| Session {
+    Ok(found.map(
+        |(account, username, github_login, method, token_hash)| Session {
             account,
             username,
             github_login,
             sign_in_method: method.as_deref().map(provider_name),
-        }),
-    )
+            token_hash,
+        },
+    ))
 }
 
 /// The account of the web session in the request's cookie.
@@ -941,42 +965,6 @@ pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -
         Ok(None) => not_signed_in(),
         Err(err) => database_failed("read a session", err),
     }
-}
-
-/// `DELETE /session`: ends the device session of the request's bearer token and closes its
-/// connections, on each instance.
-pub(crate) async fn end(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(Some(token)) = bearer(&headers) else {
-        return not_signed_in();
-    };
-    let session = digest(token);
-    match end_session(&state, &session).await {
-        Ok(true) => {
-            state.connections.end_session(&session);
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(false) => not_signed_in(),
-        Err(err) => database_failed("end a session", err),
-    }
-}
-
-/// Ends the device session whose token's SHA-256 is `session`, telling the other instances;
-/// `false` if there is none.
-async fn end_session(state: &AppState, session: &[u8]) -> Result<bool, sqlx::Error> {
-    let mut tx = state.db.begin().await?;
-    let ended = sqlx::query("DELETE FROM sessions WHERE kind = 'device' AND token_hash = $1")
-        .bind(session)
-        .execute(&mut *tx)
-        .await?;
-    if ended.rows_affected() == 0 {
-        return Ok(false);
-    }
-    state
-        .instance
-        .tell(&mut tx, &[Event::SessionEnded(session.to_vec())])
-        .await?;
-    tx.commit().await?;
-    Ok(true)
 }
 
 /// The account of the request's session: the device session of its bearer token if it has an

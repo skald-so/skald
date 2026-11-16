@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use skald_proto::{CERT_NAME_MAX, Cbor as _, Cert, DeviceId};
 
 use crate::refusal::{Answer, Refusal, account, answer, parse};
+use crate::sign_in::{bearer, digest};
 use crate::{AppState, revocations};
 
 /// The only kind of device that registers here; other kinds come with later stories.
@@ -151,9 +152,10 @@ impl Checked {
     }
 }
 
-/// `POST /devices`: registers a device of the session's account; the same registration again is
-/// taken as stored. With the devices limit, a new device of an account that has as many devices
-/// with a certificate, `service` and revoked devices aside, is refused.
+/// `POST /devices`: registers a device of the session's account, which a device session then lists;
+/// the same registration again is taken as stored. With the devices limit, a new device of an
+/// account that has as many devices with a certificate, `service` and revoked devices aside, is
+/// refused.
 pub(crate) async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -199,6 +201,17 @@ pub(crate) async fn register(
         .await
         .map_err(|err| Refusal::Database("register a device", err))?;
         let (created, cert) = stored.ok_or(Refusal::DeviceTaken)?;
+        // A device session lists the device it registered.
+        if let Some(Some(token)) = bearer(&headers) {
+            sqlx::query(
+                "UPDATE sessions SET device_id = $1::uuid WHERE kind = 'device' AND token_hash = $2",
+            )
+            .bind(&device)
+            .bind(digest(token))
+            .execute(&state.db)
+            .await
+            .map_err(|err| Refusal::Database("record a session's device", err))?;
+        }
         taken(created, Device::new(device, cert))
     })
     .await

@@ -28,6 +28,8 @@ import type {
   RosterRevisions,
   Server,
   Session,
+  SessionId,
+  Sessions,
   SignInMethods,
   SignInProviders,
   Space,
@@ -354,6 +356,215 @@ export const storeRevocation = async (
     status: res.status,
     headers: res.headers,
   } as storeRevocationResponse;
+};
+
+export type listSessionsResponse200 = {
+  data: Sessions;
+  status: 200;
+};
+
+export type listSessionsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listSessionsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listSessionsResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type listSessionsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listSessionsResponseSuccess = listSessionsResponse200 & {
+  headers: Headers;
+};
+export type listSessionsResponseError = (
+  | listSessionsResponse400
+  | listSessionsResponse401
+  | listSessionsResponse403
+  | listSessionsResponse500
+) & {
+  headers: Headers;
+};
+
+export type listSessionsResponse =
+  listSessionsResponseSuccess | listSessionsResponseError;
+
+export const getListSessionsUrl = () => {
+  return `/account/sessions`;
+};
+
+/**
+ * Every session of the web session's account that has not ended or expired, web and device sessions alike, newest first. A request with a device session lists nothing.
+ * @summary The account's sessions
+ */
+export const listSessions = async (
+  options?: RequestInit,
+): Promise<listSessionsResponse> => {
+  const res = await fetch(getListSessionsUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSessionsResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listSessionsResponse;
+};
+
+export type endOtherSessionsResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type endOtherSessionsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type endOtherSessionsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type endOtherSessionsResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type endOtherSessionsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type endOtherSessionsResponseSuccess = endOtherSessionsResponse204 & {
+  headers: Headers;
+};
+export type endOtherSessionsResponseError = (
+  | endOtherSessionsResponse400
+  | endOtherSessionsResponse401
+  | endOtherSessionsResponse403
+  | endOtherSessionsResponse500
+) & {
+  headers: Headers;
+};
+
+export type endOtherSessionsResponse =
+  endOtherSessionsResponseSuccess | endOtherSessionsResponseError;
+
+export const getEndOtherSessionsUrl = () => {
+  return `/account/sessions/end-others`;
+};
+
+/**
+ * Ends every session of the web session's account but itself at once, web and device sessions alike, as `DELETE /account/sessions/{session}` ends one. Only with a web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.
+ * @summary End every other session
+ */
+export const endOtherSessions = async (
+  options?: RequestInit,
+): Promise<endOtherSessionsResponse> => {
+  const res = await fetch(getEndOtherSessionsUrl(), {
+    ...options,
+    method: "POST",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: endOtherSessionsResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as endOtherSessionsResponse;
+};
+
+export type endAccountSessionResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type endAccountSessionResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type endAccountSessionResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type endAccountSessionResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type endAccountSessionResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type endAccountSessionResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type endAccountSessionResponseSuccess = endAccountSessionResponse204 & {
+  headers: Headers;
+};
+export type endAccountSessionResponseError = (
+  | endAccountSessionResponse400
+  | endAccountSessionResponse401
+  | endAccountSessionResponse403
+  | endAccountSessionResponse404
+  | endAccountSessionResponse500
+) & {
+  headers: Headers;
+};
+
+export type endAccountSessionResponse =
+  endAccountSessionResponseSuccess | endAccountSessionResponseError;
+
+export const getEndAccountSessionUrl = (session: SessionId) => {
+  return `/account/sessions/${session}`;
+};
+
+/**
+ * Ends a session of the web session's account at once: every later request with it is refused, and its WebSocket connections close with the reason `session-ended`, on every instance. A web session's links in progress end with it. A device session's device, its keys and its certificate stay, as at `DELETE /session`. Only with a web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.
+ * @summary End a session of the account
+ */
+export const endAccountSession = async (
+  session: SessionId,
+  options?: RequestInit,
+): Promise<endAccountSessionResponse> => {
+  const res = await fetch(getEndAccountSessionUrl(session), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: endAccountSessionResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as endAccountSessionResponse;
 };
 
 export type listSignInMethodsResponse200 = {
@@ -1203,6 +1414,64 @@ export const getSession = async (
   } as getSessionResponse;
 };
 
+export type endSessionResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type endSessionResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type endSessionResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type endSessionResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type endSessionResponseSuccess = endSessionResponse204 & {
+  headers: Headers;
+};
+export type endSessionResponseError = (
+  endSessionResponse400 | endSessionResponse401 | endSessionResponse500
+) & {
+  headers: Headers;
+};
+
+export type endSessionResponse =
+  endSessionResponseSuccess | endSessionResponseError;
+
+export const getEndSessionUrl = () => {
+  return `/session`;
+};
+
+/**
+ * Ends the request's session at once, as `DELETE /account/sessions/{session}` ends one: the device session of its bearer token, which signs a machine out, or the web session of its cookie, only from a page of the web URL. The account's other sessions, its devices and its master key stay.
+ * @summary Sign the session out
+ */
+export const endSession = async (
+  options?: RequestInit,
+): Promise<endSessionResponse> => {
+  const res = await fetch(getEndSessionUrl(), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: endSessionResponse["data"] = body ? JSON.parse(body) : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as endSessionResponse;
+};
+
 export type getSpacesResponse200 = {
   data: Spaces;
   status: 200;
@@ -1673,7 +1942,7 @@ export const getGetHistoryEntriesUrl = (space: string, channel: string) => {
 };
 
 /**
- * The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, "History entry"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, "History entry"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
  * @summary The channel's history entries
  */
 export const getHistoryEntries = async (
@@ -1747,7 +2016,7 @@ export const getGetHistoryLinksUrl = (space: string, channel: string) => {
 };
 
 /**
- * The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, "Key chain"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, "Key chain"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, "Access").
  * @summary The channel's history links
  */
 export const getHistoryLinks = async (
@@ -1821,7 +2090,7 @@ export const getGetHistoryWrapsUrl = (space: string, channel: string) => {
 };
 
 /**
- * The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, "Wraps"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, "Wraps"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
  * @summary The channel's history wraps
  */
 export const getHistoryWraps = async (

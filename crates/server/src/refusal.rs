@@ -30,6 +30,8 @@ pub(crate) enum Refusal {
     NoSpace,
     /// No such device of the session's account.
     NoDevice,
+    /// No such session of the session's account, or an ended one.
+    NoSession,
     /// A KeyPackage that fails the checks, for the reason it holds.
     KeyPackage(String),
     /// No such channel in the space's latest revision.
@@ -103,6 +105,12 @@ impl IntoResponse for Refusal {
                 "no-device",
                 "No such device",
                 "The session's account has no such device.",
+            ),
+            Refusal::NoSession => problem(
+                StatusCode::NOT_FOUND,
+                "no-session",
+                "No such session",
+                "The session's account has no such session, or it has ended.",
             ),
             Refusal::KeyPackage(detail) => {
                 problem(bad, "invalid-key-package", "Invalid KeyPackage", &detail)
