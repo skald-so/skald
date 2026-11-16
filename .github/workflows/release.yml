@@ -8,7 +8,7 @@ name: Release
 # the tag's commit, pushes it to GHCR under its version, signs its digest with cosign and attests it.
 # Once all three are published, the release check runs on every OS and architecture
 # (release-check.yml); once it passes, a stable release, vX.Y.Z, moves main to the tag with the
-# deploy key.
+# deploy key and, once the owner approves it, is deployed to production.
 # Any other run is the dry run: it builds and checks everything and publishes nothing, and it runs the
 # tests of `skald update` on macOS and Windows; a PR that changes the release config, this workflow
 # or `skald update` starts it, and so does a manual run.
@@ -30,11 +30,13 @@ on:
       - installers/**
       # The npm package skald-so.
       - npm/**
+      - script/deploy-production
       - script/installers-test
       - script/lib/release-files.sh
       - script/lib/release-tag-args.sh
       - script/lib/proxy.mjs
       - script/lib/serve.mjs
+      - script/lib/ssh-deploy.sh
       - script/lib/start-server.sh
       - script/move-main
       - script/npm-package-test
@@ -389,3 +391,63 @@ jobs:
           export GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes"
           git remote set-url origin "git@github.com:$GITHUB_REPOSITORY.git"
           script/move-main "$TAG"
+
+  # Whether production's deploy may run: the environment production exists. Until it is set up, a
+  # release deploys nothing and does not fail; another answer of GitHub's API fails the run. A job of
+  # its own checks it, as a job that names an environment creates it.
+  production-set-up:
+    name: Check that production is set up
+    needs: check-release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    runs-on: ubuntu-latest
+    # Reads the repository's environments.
+    permissions:
+      actions: read
+    outputs:
+      set-up: ${{ steps.check.outputs.set-up }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/environments/production" --jq .name >/dev/null 2>"$RUNNER_TEMP/error"; then
+            echo set-up=true >>"$GITHUB_OUTPUT"
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/error"; then
+            echo "production: the environment production is not set up; deploying nothing"
+            echo set-up=false >>"$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/error" >&2
+            exit 1
+          fi
+
+  # Deploys a stable release to production once the release check passes and the owner approves it
+  # in the environment production: script/deploy-production. One deploy at a time; the deploy command
+  # never moves production back to an older release.
+  deploy-production:
+    name: Deploy to production
+    needs: [plan, check-release, production-set-up]
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      needs.production-set-up.outputs.set-up == 'true'
+    runs-on: ubuntu-latest
+    # The required reviewer's approval, only v* tags, and the connection's secrets: the header of
+    # script/deploy-production. Only this job uses it.
+    environment: production
+    # It deploys over SSH with the key: the job's token writes nothing.
+    permissions:
+      contents: read
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Deploy
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          PRODUCTION_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          PRODUCTION_SSH_HOST_KEY: ${{ secrets.PRODUCTION_SSH_HOST_KEY }}
+          PRODUCTION_SSH_DESTINATION: ${{ secrets.PRODUCTION_SSH_DESTINATION }}
+        run: script/deploy-production "${TAG#v}"
