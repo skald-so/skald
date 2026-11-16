@@ -11,6 +11,40 @@ use crate::receipt::{DeliveryStatus, STORED, SendKey, Stored};
 
 /// The label of `auth`'s signature.
 pub const AUTH_LABEL: &str = "skald auth";
+/// The label of the signature of a [`RequestProof`].
+pub const REQUEST_LABEL: &str = "skald request";
+/// The HTTPS request header that carries a [`RequestProof`], in base64url without padding.
+pub const PROOF_HEADER: &str = "Skald-Device-Proof";
+
+/// The proof of a device in an HTTPS request: `docs/protocol/delivery.md`, "Connecting". As `auth`,
+/// without a frame type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestProof {
+    /// The challenge the server issued to the client's session.
+    pub challenge: Vec<u8>,
+    pub device: DeviceId,
+    /// By the device's signing key over `["skald request", challenge, origin]`.
+    pub signature: [u8; 64],
+}
+
+impl Codec for RequestProof {
+    fn encode(&self) -> Vec<u8> {
+        cbor::array([
+            cbor::bytes(&self.challenge),
+            cbor::id(&self.device),
+            cbor::bytes(&self.signature),
+        ])
+    }
+
+    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
+        let [challenge, device, signature] = item.tuple("proof")?;
+        Ok(Self {
+            challenge: challenge.bytes("proof.challenge")?.to_vec(),
+            device: device.id("proof.device")?,
+            signature: signature.fixed("proof.signature")?,
+        })
+    }
+}
 
 /// A frame between a client and the server. A frame of a type this version does not know decodes
 /// as [`Frame::Unknown`], so its reader can ignore it.
@@ -424,4 +458,4 @@ impl Codec for Push {
     }
 }
 
-cbor::cbor!(Frame);
+cbor::cbor!(Frame, RequestProof);

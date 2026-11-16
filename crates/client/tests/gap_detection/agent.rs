@@ -2,9 +2,9 @@
 //! the person's next run reports it.
 
 use crate::gaps::{assert_reported_once, bob_in, reports, second_dropped};
-use crate::kit::{RECV, create_space, received};
+use crate::kit::{assert_names_none, bind_client_a, create_space, received, received_as_agent};
 use crate::talk::{BOB_HOST, Talk, assert_shows_once};
-use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
+use crate::world::{CLIENT_A, CLIENT_B};
 
 /// The agent the tests run as.
 const CLAUDE: &str = "claude-q4m8zt";
@@ -30,10 +30,8 @@ fn agent_names_no_missing_message_of_another_space_and_the_person_s_next_run_rep
         &["ada-desk-gaps", "bob-client-gaps"],
         false,
     );
-    let folder = dir_of(&talk.ada.machine, "work/clientA");
     create_space(talk.cloud(), &talk.ada, CLIENT_A);
-    let bound = run(&talk.ada.machine, &[ADD_RULE, path(&folder), CLIENT_A]);
-    assert!(bound.success, "not bound: {bound:?}");
+    let folder = bind_client_a(&talk.ada.machine);
     let (from_bob, channel, bob) = bob_in(&talk);
     second_dropped(&mut talk, SAYS);
     let space = &talk.space;
@@ -46,22 +44,10 @@ fn agent_names_no_missing_message_of_another_space_and_the_person_s_next_run_rep
     ];
     names.extend(SAYS.map(str::to_owned));
 
-    let agent = (talk.ada.machine)
-        .start_in(&folder, &[AGENT, CLAUDE, RECV])
-        .finish();
+    let agent = received_as_agent(&talk.ada.machine, &folder, CLAUDE);
 
-    assert!(agent.success, "{agent:?}");
-    let shown = agent.shown();
-    let lower = shown.to_lowercase();
-    let named: Vec<&String> = names
-        .iter()
-        .filter(|name| lower.contains(&name.to_lowercase()))
-        .collect();
-    assert!(
-        named.is_empty(),
-        "the agent's output names {named:?}: {agent:?}"
-    );
-    let reported = reports(&shown);
+    assert_names_none(&agent, &names);
+    let reported = reports(&agent.shown());
     assert!(
         reported.is_empty(),
         "the agent's output reports {reported:?}"

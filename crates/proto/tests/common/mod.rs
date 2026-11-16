@@ -10,8 +10,8 @@ use skald_proto::{
     AccountId, Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
     DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
     Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push,
-    RawEnvelope, Receipt, ReceiptStatus, Revocation, RevocationBody, Scheme, SendKey, ServerStatus,
-    SpaceId, Stored, Unknown,
+    RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey,
+    ServerStatus, SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -456,6 +456,14 @@ pub fn vectors() -> Vec<Vector> {
             Frame::HistoryRefused {
                 upload: 6,
                 problem: "epoch-mismatch".to_owned(),
+            },
+        ),
+        vector(
+            "HTTPS proof",
+            RequestProof {
+                challenge: (0..32).collect(),
+                device: alice_device(),
+                signature: SIGNATURE,
             },
         ),
         vector(

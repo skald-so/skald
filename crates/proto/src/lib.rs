@@ -23,7 +23,10 @@ pub use cbor::{
 pub use cert::{CERT_LABEL, CERT_NAME_MAX, Cert, CertBody, DeviceKind, PROOF_LABEL};
 pub use content::{Attachment, Body, Content, Delegation, DelegationBody, Grant, GrantBody};
 pub use envelope::{Envelope, Header, HpkePayload, HpkePlaintext, Scheme};
-pub use frame::{AUTH_LABEL, Frame, HistoryItem, Push, RawEnvelope, UnknownPush};
+pub use frame::{
+    AUTH_LABEL, Frame, HistoryItem, PROOF_HEADER, Push, REQUEST_LABEL, RawEnvelope, RequestProof,
+    UnknownPush,
+};
 pub use history::{
     HISTORY_LABEL, HistoryBody, HistoryEntry, HistoryLink, HistoryPlaintext, HistoryWrap,
     HistoryWrapBody, WrapRecipient,
