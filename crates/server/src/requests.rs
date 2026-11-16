@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use skald_proto::{Cbor as _, Frame, PROOF_HEADER, Push, REQUEST_LABEL, RequestProof};
+use skald_proto::{Cbor as _, DeviceId, Frame, PROOF_HEADER, Push, REQUEST_LABEL, RequestProof};
 use sqlx::PgPool;
 
 use crate::connections::{self, Closing, LISTEN_WAIT, Proof, Proved, Unproved};
@@ -114,15 +114,8 @@ pub(crate) async fn poll(
     .after(cursor);
     let notices = state.notices.listen(proved.account);
     // Only a long-poll that waits needs what other instances tell.
-    if !wait.is_zero()
-        && tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
-            .await
-            .is_err()
-    {
-        return server_error("The server does not listen to its other instances yet.");
-    }
-    if let Err(err) = delivery::ack(&state.db, &state.wakers, proved.device, cursor).await {
-        return database_failed("ack a mailbox", err);
+    if let Err(failed) = ack_listening(&state, proved.device, cursor, !wait.is_zero()).await {
+        return *failed;
     }
     let ends = tokio::time::sleep(wait);
     tokio::pin!(ends);
@@ -144,6 +137,32 @@ pub(crate) async fn poll(
             _ = notices.next() => {}
             () = &mut ends => return frame(&Frame::Batch(Vec::new())),
         }
+    }
+}
+
+/// Acks `device`'s mailbox up to `cursor`, once the instance listens to the others if `listen`, so
+/// that a long-poll waiting on its mailbox misses nothing they tell; the answer if either fails.
+pub(crate) async fn ack_listening(
+    state: &AppState,
+    device: DeviceId,
+    cursor: u64,
+    listen: bool,
+) -> Result<(), Box<Response>> {
+    if listen {
+        listening(state).await?;
+    }
+    delivery::ack(&state.db, &state.wakers, device, cursor)
+        .await
+        .map_err(|err| Box::new(database_failed("ack a mailbox", err)))
+}
+
+/// Waits until the instance listens to the others; the answer if it does not in time.
+pub(crate) async fn listening(state: &AppState) -> Result<(), Box<Response>> {
+    match tokio::time::timeout(LISTEN_WAIT, state.instance.listening()).await {
+        Ok(()) => Ok(()),
+        Err(_) => Err(Box::new(server_error(
+            "The server does not listen to its other instances yet.",
+        ))),
     }
 }
 
@@ -279,7 +298,7 @@ fn refusal(closing: Closing) -> Response {
 }
 
 /// The answer to an invalid request, for the reason `detail`.
-fn invalid(detail: &str) -> Response {
+pub(crate) fn invalid(detail: &str) -> Response {
     problem(
         StatusCode::BAD_REQUEST,
         "invalid-request",
