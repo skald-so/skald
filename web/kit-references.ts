@@ -16,13 +16,17 @@ export interface View {
 }
 
 /**
- * The screens with their check widths. The side menu opens only at phone width, over the window:
- * its view is the window.
+ * The screens with their check widths. The side menu opens only at phone width, over the window,
+ * and a dialog over the window: their views are the window.
  */
 export const screens: { screen: Screen; widths: number[]; window?: true }[] = [
   { screen: "kit", widths },
   { screen: "cabinet", widths },
   { screen: "cabinet-menu", widths: [360], window: true },
+  { screen: "sign-in", widths },
+  { screen: "account", widths },
+  { screen: "access", widths },
+  { screen: "access-confirm", widths, window: true },
 ];
 
 /** Every view of the kit page: each screen in both themes at its check widths. */

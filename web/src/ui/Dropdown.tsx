@@ -13,6 +13,8 @@ export interface DropdownOption<Value extends string> {
   value: Value;
   /** The text in the list and, once chosen, on the button, as "anyone". */
   label: string;
+  /** A word after the label in the list, as "personal". */
+  mark?: string;
 }
 
 export interface DropdownProps<Value extends string> {
@@ -202,6 +204,10 @@ export function Dropdown<Value extends string>({
             >
               <CheckIcon />
               {option.label}
+              {option.mark && " "}
+              {option.mark && (
+                <span className={styles.mark}>{option.mark}</span>
+              )}
             </li>
           ))}
         </ul>

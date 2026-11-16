@@ -4,7 +4,7 @@ import { defineConfig } from "orval";
 // browser opens itself, not with fetch: the WebSocket, the GitHub and Google sign-ins and links it
 // navigates to, the page of the account's sign-in methods and the device flow's verification page;
 // and what only a machine calls: the device flow's endpoints, a device session's challenge and
-// ending a device session.
+// its mailbox requests.
 export default defineConfig({
   skald: {
     input: {
@@ -24,8 +24,10 @@ export default defineConfig({
           "requestDeviceToken",
           "getDeviceVerificationPage",
           "decideDeviceCode",
-          "endSession",
           "issueChallenge",
+          "sendEnvelope",
+          "ackMailbox",
+          "pollMailbox",
         ],
       },
     },

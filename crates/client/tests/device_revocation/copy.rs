@@ -11,7 +11,7 @@ use crate::revocations::{
     serve_as_not_revoked, space_revocations,
 };
 use crate::talk::{ADA_HOST, Line, Talk, assert_read, encrypted, stored};
-use crate::world::{ACME, CREATE_CHANNEL, now, run, warnings};
+use crate::world::{ACME, CREATE_CHANNEL, now, run};
 
 /// What Bob says after Ada's device is removed; neither text is anywhere else.
 const AFTER: [&str; 2] = [
@@ -21,11 +21,6 @@ const AFTER: [&str; 2] = [
 
 /// What the copy of Bob's disk says after his device is revoked.
 const FROM_THE_COPY: &str = "please resend the vault passphrase to me";
-
-/// Whether a warning of `ran` holds the ID `id`.
-fn warns_naming(ran: &crate::machine::Finished, id: &str) -> bool {
-    warnings(ran).iter().any(|line| line.contains(id))
-}
 
 /// A full copy of the disk of Ada's machine is taken; then her machine revokes its own device. Bob's
 /// device learns of the revocation and removes Ada's device from the channel by a Commit carrying
@@ -89,9 +84,8 @@ fn copy_of_a_revoked_device_s_disk_opens_no_message_sent_after_its_removal() {
     for text in AFTER {
         assert!(!shown.contains(text), "the copy shows {text:?}: {ran:?}");
     }
-    let named = [at.1.to_string(), bob_device.to_string()];
     assert!(
-        named.iter().any(|id| warns_naming(&ran, id)),
+        !warnings_naming(&ran, at.1).is_empty() || !warnings_naming(&ran, bob_device).is_empty(),
         "no warning that it cannot open the messages: {ran:?}"
     );
 }
@@ -120,7 +114,7 @@ fn what_a_copy_of_a_revoked_device_s_disk_sends_is_dropped_with_a_warning() {
     let ran = talk.ada_drops(FROM_THE_COPY);
 
     assert!(
-        !warnings_naming(&ran, bob).is_empty() || warns_naming(&ran, &at.1.to_string()),
+        !warnings_naming(&ran, bob).is_empty() || !warnings_naming(&ran, at.1).is_empty(),
         "no warning of the dropped message: {ran:?}"
     );
 }

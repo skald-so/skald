@@ -189,7 +189,8 @@ async function openAccess(user: UserEvent) {
 function expiryForms(expires: string, days: number): RegExp {
   const date = new Date(expires);
   const forms = [
-    `\\b(${days}|${days + 1}) days\\b`,
+    // No \b after "days": the row's text runs on into its "Revoke" button.
+    `\\b(${days}|${days + 1}) days`,
     date.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
     date.toLocaleDateString("en-GB", { month: "short", day: "numeric" }),
     date.toISOString().slice(0, 10),
