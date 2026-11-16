@@ -21,6 +21,9 @@ const browserTests = [
 
 export default defineConfig({
   plugins: [react()],
+  // Every asset a file of its own, never a data: URI: the self-host stack's Content-Security-Policy
+  // admits only the page's own origin (Caddyfile).
+  build: { assetsInlineLimit: 0 },
   server: { proxy },
   preview: { proxy },
   test: {

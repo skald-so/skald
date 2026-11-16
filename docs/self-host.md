@@ -1,11 +1,11 @@
 # Self-hosting
 
-Docker Compose runs `skald-server`, PostgreSQL and Caddy on one machine for your domain, with HTTPS from Let's Encrypt from the first start. Here the domain is `skald.example.com`.
+Docker Compose runs `skald-server`, PostgreSQL and Caddy on one machine for your domain, with HTTPS from Let's Encrypt from the first start; Caddy also serves the web app there. Here the domain is `skald.example.com`.
 
 ## The machine
 
 - Linux on x86-64, the one architecture of the image `ghcr.io/skald-so/skald-server`.
-- Docker Engine with the Compose plugin.
+- Docker Engine with the Compose plugin 2.24.4 or later.
 - The domain's DNS record points to the machine; ports 80 and 443 are open to the internet.
 - The domain goes into every agent address, `<space>/<owner>/<agent>@skald.example.com` ([protocol spec](protocol/README.md#agent-address)), so it cannot change later.
 
@@ -19,6 +19,7 @@ The release to install, from [GitHub Releases](https://github.com/skald-so/skald
 SKALD_VERSION='<version>'
 SKALD_DIGEST='sha256:<digest>'
 SKALD_FILES=https://raw.githubusercontent.com/skald-so/skald/v$SKALD_VERSION
+SKALD_WEB=https://github.com/skald-so/skald/releases/download/v$SKALD_VERSION
 ```
 
 The compose file and Caddy's config, from the release's tag, into the stack's directory `~/skald`:
@@ -36,6 +37,43 @@ docker run --rm ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f88
   verify "ghcr.io/skald-so/skald-server@$SKALD_DIGEST" \
   --certificate-identity "https://github.com/skald-so/skald/.github/workflows/release.yml@refs/tags/v$SKALD_VERSION" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+### The web app
+
+The release's web app: its archive, the archive's checksum and the bundle of its attestation, into `~/skald`:
+
+```sh self-host=web-files
+curl -fsSLO "$SKALD_WEB/skald-web.tar.gz"
+curl -fsSLO "$SKALD_WEB/skald-web.tar.gz.sha256"
+curl -fsSLO "$SKALD_WEB/skald-web.tar.gz.sigstore.json"
+```
+
+The archive's checksum, then its attestation by the release workflow at the release's tag, with cosign in a container ([Trust in builds](dev/infrastructure.md#trust-in-builds)). If the check fails, stop: nothing is unpacked yet.
+
+```sh self-host=web-check
+sha256sum --check --strict skald-web.tar.gz.sha256
+docker run --rm --volume "$PWD/skald-web.tar.gz:/check/skald-web.tar.gz:ro" \
+  --volume "$PWD/skald-web.tar.gz.sigstore.json:/check/skald-web.tar.gz.sigstore.json:ro" \
+  ghcr.io/sigstore/cosign/cosign:v3.1.4@sha256:0f06154836d2de34f887a5c273506d52ca43edaa1d9e53e6510fa78a48f69c2d \
+  verify-blob-attestation /check/skald-web.tar.gz --bundle /check/skald-web.tar.gz.sigstore.json \
+  --type slsaprovenance1 \
+  --certificate-identity "https://github.com/skald-so/skald/.github/workflows/release.yml@refs/tags/v$SKALD_VERSION" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The checked web app in place, in `~/skald/web`, which Caddy serves; the one before it is removed:
+
+```sh self-host=web
+(
+  set -e
+  rm -rf web.new web.old
+  mkdir web.new
+  tar -xzf skald-web.tar.gz -C web.new --no-same-owner
+  if [ -d web ]; then mv web web.old; fi
+  mv web.new web
+  rm -rf web.old
+)
 ```
 
 ## Settings
@@ -127,7 +165,7 @@ A refused person sees that sign-up is closed in the browser, and `skald sign-in`
 docker compose up --detach
 ```
 
-- Caddy gets the domain's certificate at the first start, redirects HTTP to HTTPS and passes HTTPS and WebSocket to the server.
+- Caddy gets the domain's certificate at the first start and redirects HTTP to HTTPS. It passes the paths of the [OpenAPI spec](../api/openapi.json), HTTPS and WebSocket, to the server, and serves the web app at every other path, an unknown one with its index page. The web app's answers admit only its own origin and no framing (`Content-Security-Policy`).
 - Only Caddy publishes ports, 80 and 443; only the server and, while they run, the backup and restore reach PostgreSQL. The server's container is read-only, without capabilities or new privileges.
 - The volumes `skald_database`, `skald_attachments` and `skald_caddy-data` keep the database, the attachments and the certificates.
 - Containers restart unless stopped; each keeps at most 30 MB of logs.
@@ -159,19 +197,19 @@ bash checks/check-google-sign-in https://skald.example.com "$(sed -n 's/^SKALD_G
 
 ## Behind your reverse proxy
 
-On a machine that already runs a reverse proxy on ports 80 and 443, the stack starts no Caddy: an override, which `.env` names, puts it in a compose profile that stays off. `docker compose up` stays one command. Your proxy gets the certificate and passes HTTPS and WebSocket to the server. One of the forms below goes after "Settings", before "Start".
+On a machine that already runs a reverse proxy on ports 80 and 443, the stack's Caddy takes neither: an override, which `.env` names, has it serve plain HTTP on port 8080, without a certificate. `docker compose up` stays one command. Your proxy gets the certificate and passes HTTPS and WebSocket to the stack's Caddy, which serves the web app and passes the API to the server as in [Start](#start); your proxy needs no file of the web app. One of the forms below goes after "Settings", before "Start".
 
 ### A proxy on the machine
 
-The server's port, on loopback only:
+Caddy's port, on loopback only:
 
 ```sh self-host=proxy-host
 cat >compose.proxy.yaml <<'EOF'
 services:
   caddy:
-    profiles: [caddy]
-  skald-server:
-    ports:
+    environment:
+      - SKALD_SITE=http://:8080
+    ports: !override
       - 127.0.0.1:8080:8080
 EOF
 echo COMPOSE_FILE=docker-compose.yml:compose.proxy.yaml >>.env
@@ -187,7 +225,7 @@ skald.example.com {
 
 ### A proxy in a container
 
-The server publishes no port; the proxy reaches it as `skald-server:8080` on a Docker network, either the stack's own network `skald`, which the proxy joins, or a network of the proxy's.
+The stack publishes no port; the proxy reaches its Caddy as `skald-caddy:8080` on a Docker network, either the stack's own network `skald`, which the proxy joins, or a network of the proxy's.
 
 The stack's network:
 
@@ -195,7 +233,12 @@ The stack's network:
 cat >compose.proxy.yaml <<'EOF'
 services:
   caddy:
-    profiles: [caddy]
+    environment:
+      - SKALD_SITE=http://:8080
+    ports: !reset []
+    networks:
+      edge:
+        aliases: [skald-caddy]
 networks:
   edge:
     name: skald
@@ -226,7 +269,12 @@ Or the proxy's network `<proxy network>`, which exists before the stack starts:
 cat >compose.proxy.yaml <<'EOF'
 services:
   caddy:
-    profiles: [caddy]
+    environment:
+      - SKALD_SITE=http://:8080
+    ports: !reset []
+    networks:
+      edge:
+        aliases: [skald-caddy]
 networks:
   edge:
     name: ${SKALD_PROXY_NETWORK:?set SKALD_PROXY_NETWORK in .env}
@@ -240,7 +288,7 @@ The proxy's site, for Caddy:
 
 ```caddy self-host=proxy-container-site
 skald.example.com {
-	reverse_proxy skald-server:8080
+	reverse_proxy skald-caddy:8080
 }
 ```
 
@@ -291,8 +339,10 @@ A restore that fails after its check passed leaves the new stack partly filled: 
 To a new release, in `~/skald`:
 
 1. [The release](#the-release) with the new release's values, and its image's signature.
-2. A [backup](#backup-and-restore) into a new file, for a [rollback](#rollback).
-3. The release's compose file and Caddy's config, its image in `.env`, and Caddy restarted for its config when the stack runs it:
+2. [The web app](#the-web-app)'s files and their check.
+3. A [backup](#backup-and-restore) into a new file, for a [rollback](#rollback).
+4. The checked web app in place, the last block of [The web app](#the-web-app).
+5. The release's compose file and Caddy's config, its image in `.env`, and Caddy recreated with them when the stack runs it:
 
    ```sh self-host=upgrade
    (
@@ -301,12 +351,13 @@ To a new release, in `~/skald`:
      curl -fsSLO "$SKALD_FILES/Caddyfile"
      sed -i "s|^SKALD_IMAGE=.*|SKALD_IMAGE=ghcr.io/skald-so/skald-server@$SKALD_DIGEST|" .env
      if docker compose ps --services --status running | grep -x caddy >/dev/null; then
-       docker compose restart caddy
+       docker compose up --detach --no-deps --force-recreate caddy
      fi
    )
    ```
 
-4. [Start](#start). The server applies the release's new migrations at start.
+6. Behind your reverse proxy, with a `compose.proxy.yaml` that turns Caddy off, `profiles: [caddy]`: the stack keeps serving the API, not the web app. For the web app, write the override and your proxy's site block again from [Behind your reverse proxy](#behind-your-reverse-proxy), in your form, and reload your proxy.
+7. [Start](#start). The server applies the release's new migrations at start.
 
 ## Rollback
 
@@ -331,4 +382,5 @@ In `~/skald`:
    )
    ```
 
-3. The [restore](#backup-and-restore) of the backup, then [Start](#start).
+3. For a release with the web app's archive, `skald-web.tar.gz`: [the web app](#the-web-app), its files, their check and the web app in place.
+4. The [restore](#backup-and-restore) of the backup, then [Start](#start).

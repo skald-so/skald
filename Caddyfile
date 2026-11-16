@@ -1,5 +1,32 @@
-# Caddy of the self-host stack, docker-compose.yml: a certificate for $SKALD_DOMAIN from Let's
-# Encrypt, HTTP redirected to HTTPS, HTTPS and WebSocket passed to the server.
-{$SKALD_DOMAIN} {
-	reverse_proxy skald-server:8080
+# Caddy of the self-host stack, docker-compose.yml, on $SKALD_SITE: the domain, with a certificate
+# from Let's Encrypt and HTTP redirected to HTTPS, or plain HTTP behind the admin's proxy
+# (docs/self-host.md, "Behind your reverse proxy"). The paths of the OpenAPI spec, api/openapi.json,
+# go to the server, HTTPS and WebSocket; every other path to the web app in the stack's directory,
+# an unknown one to its index page.
+{$SKALD_SITE} {
+	@server {
+		path /account/master /account/personal-space /account/revocations
+		path /account/sign-in-methods /account/username
+		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
+		path /auth/google/callback /auth/google/link /auth/providers /auth/token
+		path /device /devices /devices/*/key-packages /health /key-packages
+		path /mailbox/ack /mailbox/poll /mailbox/send /openapi.json /protocol /server
+		path /session /session/challenge /sign-in-methods /spaces /spaces/*/channels
+		path /spaces/*/channels/*/group-info /spaces/*/channels/*/history/entries
+		path /spaces/*/channels/*/history/links /spaces/*/channels/*/history/wraps
+		path /spaces/*/devices /spaces/*/revisions /ws
+	}
+	handle @server {
+		reverse_proxy skald-server:8080
+	}
+
+	# The web app: only its own origin, never in a frame; its pages revalidated, so an upgrade shows
+	# at once.
+	handle {
+		root * /srv/web
+		header Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+		header Cache-Control no-cache
+		try_files {path} /index.html
+		file_server
+	}
 }
