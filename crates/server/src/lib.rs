@@ -41,6 +41,7 @@ mod sessions;
 mod sign_in;
 mod sign_up;
 mod spaces;
+mod usage;
 mod user_agent;
 
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
@@ -210,6 +211,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             delete(links::remove).layer(checked(Statement::Header)),
         )
         .route(
+            "/account/usage",
+            get(usage::account).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/username",
             put(accounts::set_username).layer(checked(Statement::Header)),
         )
@@ -310,6 +315,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(spaces::revisions)
                 .post(spaces::store)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/usage",
+            get(usage::space).layer(checked(Statement::Header)),
         )
         .route(
             "/ws",

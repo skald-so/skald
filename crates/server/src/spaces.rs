@@ -31,9 +31,9 @@ struct SpaceRequest {
 
 /// `Space` in the spec.
 #[derive(Serialize)]
-struct Space {
-    space: String,
-    name: String,
+pub(crate) struct Space {
+    pub(crate) space: String,
+    pub(crate) name: String,
 }
 
 /// `ListedSpace` in the spec.
@@ -128,7 +128,7 @@ pub(crate) async fn find(db: &PgPool, space: &str, account: &str) -> Result<Foun
 }
 
 /// The space of the request's path, which the session's account gets, as a handler's argument.
-pub(crate) struct Gotten(Found);
+pub(crate) struct Gotten(pub(crate) Found);
 
 impl FromRequestParts<AppState> for Gotten {
     type Rejection = Refusal;

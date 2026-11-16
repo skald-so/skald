@@ -19,6 +19,7 @@ import { Machines } from "./app/Machines.tsx";
 import { Members } from "./app/Members.tsx";
 import { accountPath } from "./app/names.ts";
 import { CenteredPage, SignInPage } from "./app/SignInPage.tsx";
+import { Usage } from "./app/Usage.tsx";
 import styles from "./app/SignInPage.module.css";
 import { Button } from "./ui/Button.tsx";
 import { EmptyState } from "./ui/EmptyState.tsx";
@@ -98,6 +99,7 @@ export function App() {
                 element={<Members onSignedOut={reload} />}
               />
               <Route path="/access" element={<Access onSignedOut={reload} />} />
+              <Route path="/usage" element={<Usage onSignedOut={reload} />} />
               <Route
                 path={accountPath}
                 element={
