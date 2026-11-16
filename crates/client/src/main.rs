@@ -10,6 +10,7 @@ mod folders;
 mod follow;
 mod gaps;
 mod groups;
+mod key_chain;
 mod key_packages;
 mod plain_path;
 mod recv;

@@ -4,8 +4,9 @@
 
 use crate::chain::{
     adds_to_channel, assert_chain, assert_opens, assert_reach, assert_talk_links,
-    bob_commits_empty, carol, removes_from_channel,
+    bob_commits_empty, bob_opens, carol, removes_from_channel,
 };
+use crate::edits::{Edit, edited};
 use crate::kit::{assert_members, received};
 use crate::talk::Talk;
 
@@ -61,4 +62,52 @@ fn links_over_several_commits_lead_from_the_latest_key_back_to_epoch_one() {
     let held = assert_chain(&talk, (4, &devices), &[(2, 1), (3, 2), (4, 3)]);
     talk.played[0].take_in(&talk.world.cloud);
     assert_reach(&held, talk.channel, (&talk.played[0], 4), &[1, 2, 3]);
+}
+
+/// Ada's `skald exclude-device` bars Carol's device and commits its Remove: epoch 2. Once the
+/// server stores the Commit, the same run uploads the link of epoch 2 with `prev` 1, before any
+/// catch-up: Bob's key of epoch 2 opens it to his key of epoch 1.
+#[test]
+fn sender_of_a_commit_uploads_its_link_once_the_server_stores_it() {
+    let mut talk = Talk::new(
+        &[4_164_010_001, 4_164_010_002, 4_164_010_003],
+        &["ada-links-at-once", "bob-stays-linked", "carol-barred-now"],
+        false,
+    );
+
+    edited(
+        &talk.ada.machine,
+        &talk.space.name,
+        Edit::Exclude(&talk.played[1].person),
+    );
+
+    let ada_and_bob = [talk.ada.device, talk.played[0].device()];
+    let held = assert_chain(&talk, (2, &ada_and_bob), &[(2, 1)]);
+    bob_opens(&mut talk, &held, (2, 1));
+}
+
+/// Bob's device removes Ada's from the channel's group, epoch 2, and adds it again with a Welcome,
+/// epoch 3, which Ada's next run joins from, then commits an empty Commit: epoch 4. Ada's run judged
+/// epoch 3 clean as it joined: it uploads the link of epoch 3 with `prev` 1, the epoch before it
+/// she judged clean, and that of epoch 4 with `prev` 3. Bob's keys open both.
+#[test]
+fn device_that_joins_from_a_welcome_judges_its_epoch() {
+    let mut talk = Talk::new(
+        &[4_164_011_001, 4_164_011_002],
+        &["ada-welcomed-back", "bob-welcomes-ada"],
+        false,
+    );
+    let (cloud, at) = (&talk.world.cloud, talk.at());
+    talk.played[0].removes(cloud, at, talk.ada.device);
+    talk.played[0].welcomes(cloud, at, &talk.ada);
+    received(&talk.ada.machine);
+    bob_commits_empty(&mut talk, 4);
+
+    received(&talk.ada.machine);
+
+    let held = assert_talk_links(&talk, &[(3, 1), (4, 3)]);
+    let bob = &talk.played[0];
+    for pair in [(3, 1), (4, 3)] {
+        assert_opens(&held, talk.channel, pair, (bob, bob));
+    }
 }

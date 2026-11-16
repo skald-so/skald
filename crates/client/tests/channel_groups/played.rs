@@ -276,6 +276,17 @@ impl Played {
         self.stores(cloud, at, &welcome, &[person.device]);
     }
 
+    /// The device commits the Remove of `device` from `channel`'s group and uploads the new epoch's
+    /// GroupInfo; fails unless the server stores the Commit and takes the GroupInfo.
+    #[track_caller]
+    pub fn removes(&mut self, cloud: &Cloud, at: (SpaceId, ChannelId), device: DeviceId) {
+        let removal = (self.mls)
+            .remove_devices(at.1, &[device], &[], now())
+            .expect("a Commit removing the device");
+        self.commits(cloud, at, &removal);
+        self.uploads_group_info(cloud, at);
+    }
+
     /// The device uploads its GroupInfo of `channel`'s current epoch; fails unless the server takes
     /// it.
     #[track_caller]

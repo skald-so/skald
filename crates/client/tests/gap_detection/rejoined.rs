@@ -4,7 +4,6 @@
 use crate::gaps::{assert_none_reported, bob_in, bob_sends, marked};
 use crate::kit::received;
 use crate::talk::{BOB_HOST, Talk, assert_shows_once};
-use crate::world::now;
 
 /// The texts the test sends; none is anywhere else.
 const BEFORE: [&str; 2] = [
@@ -34,12 +33,7 @@ fn device_that_joins_the_channel_again_reports_none_of_the_messages_before_missi
         assert_shows_once(&shown, text, (channel, &from_bob, BOB_HOST));
     }
     let at = talk.at();
-    let (cloud, ada, bob) = (&talk.world.cloud, &talk.ada, &mut talk.played[0]);
-    let removal = (bob.mls)
-        .remove_devices(channel, &[ada.device], &[], now())
-        .expect("a Commit removing Ada's device");
-    bob.commits(cloud, at, &removal);
-    bob.uploads_group_info(cloud, at);
+    (talk.played[0]).removes(&talk.world.cloud, at, talk.ada.device);
     for (counter, text) in (3..).zip(WITHOUT) {
         bob_sends(&mut talk, counter, text);
     }

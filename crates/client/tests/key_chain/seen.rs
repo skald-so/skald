@@ -2,7 +2,8 @@
 //! device never uploads it again, so a link retention deletes stays deleted.
 
 use crate::chain::{
-    adds_to_channel, assert_links, commits_empty, delete_links, links_sent, uploads_link,
+    adds_to_channel, assert_links, assert_talk_links, bob_commits_empty, commits_empty,
+    delete_links, links_sent, uploads_link,
 };
 use crate::kit::received;
 use crate::played::Played;
@@ -54,4 +55,28 @@ fn link_the_server_has_had_is_not_uploaded_again_once_deleted() {
     let sent = links_sent(&talk.front, at.1, later);
     assert!(sent.is_empty(), "links sent again: {sent:?}");
     assert_links(cloud, &talk.ada.token, at, &[]);
+}
+
+/// Bob's device commits an empty Commit: epoch 2. Ada's run finds the server lacks its link and
+/// uploads it, so her device has seen it only as taken from it. The server's database then deletes
+/// it, as retention does: Ada's next two runs do not upload it again.
+#[test]
+fn link_the_server_took_from_the_device_is_not_uploaded_again_once_deleted() {
+    let mut talk = Talk::new(
+        &[4_164_009_101, 4_164_009_102],
+        &["ada-uploads-once", "bob-leaves-it-to-ada"],
+        false,
+    );
+    bob_commits_empty(&mut talk, 2);
+    received(&talk.ada.machine);
+    assert_talk_links(&talk, &[(2, 1)]);
+    delete_links(talk.cloud(), talk.channel, &[2]);
+    let later = talk.front.uploads().len();
+
+    for _ in 0..2 {
+        received(&talk.ada.machine);
+    }
+
+    assert_eq!(links_sent(&talk.front, talk.channel, later), Vec::new());
+    assert_talk_links(&talk, &[]);
 }
