@@ -52,7 +52,7 @@ impl Proxy {
 
     /// The proxy at `url`, such as `http://user:password@proxy.corp:3128`: `http://` or no scheme,
     /// a host, a port or curl's 1080, and credentials percent-decoded as curl decodes them.
-    fn parse(url: &str) -> Result<Proxy, BadUrl> {
+    pub fn parse(url: &str) -> Result<Proxy, BadUrl> {
         let url = if url.contains("://") {
             url.to_owned()
         } else {
