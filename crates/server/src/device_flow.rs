@@ -18,7 +18,7 @@ use crate::sign_in::{
 };
 use crate::{AppState, database_failed};
 
-/// The verification page's path under the public address.
+/// The verification page's path under the web address.
 pub(crate) const VERIFICATION_PATH: &str = "/device";
 /// The `client_id` of `skald`, the CLI: the only client of the device flow.
 const CLIENT_ID: &str = "skald";
@@ -173,8 +173,7 @@ pub(crate) async fn authorize(State(state): State<AppState>, body: Bytes) -> Res
         .await;
         match stored {
             Ok(Some((true,))) => {
-                let public = &settings.public_url;
-                let verification_uri = public.at(VERIFICATION_PATH);
+                let verification_uri = settings.web().at(VERIFICATION_PATH);
                 let query = url::form_urlencoded::Serializer::new(String::new())
                     .append_pair("user_code", &user_code)
                     .finish();
