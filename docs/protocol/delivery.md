@@ -29,13 +29,15 @@ A message reaches an agent in three hops: the sending device → the server → 
 Client and server exchange envelopes, answers and statuses as frames: CBOR items carried as [Encoding](README.md#encoding) says.
 
 ```cddl
-frame = auth / send / stored / send-refused / sync / message / status / ack / batch / space-notice
+frame = auth / send / stored / send-refused / sync / message / status / ack / batch / space-notice /
+        history / history-stored / history-refused
 
 ; client → server
 auth = [10, challenge: bstr, device: id, signature: bstr .size 64]
 send = [1, envelope: bstr .cbor envelope, report: bool]
 sync = [4, cursor: uint]
 ack = [7, seq]
+history = [11, upload: uint, space: id, channel: id, history-item]
 
 ; server → client
 stored = [2, send-key, timestamp]
@@ -44,6 +46,12 @@ message = [5, seq, envelope: bstr .cbor envelope]
 status = [6, seq, delivery-status]
 batch = [8, [* (message / status / space-notice)]]
 space-notice = [9, space: id]
+history-stored = [12, upload: uint]
+history-refused = [13, upload: uint, problem: tstr]
+
+history-item = [1, link: bstr .cbor history-link] /
+               [2, wrap: bstr .cbor history-wrap] /
+               [3, msg_id: id, entry: bstr .cbor history-entry]
 
 send-key = [
   msg_id: id,
@@ -64,6 +72,7 @@ timestamp = uint       ; seconds since the Unix epoch
 ```
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
+- `history`: an item of the channel's history to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)).
 - `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
 - The client and the server each ignore a frame of a type they do not know.
 - The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).

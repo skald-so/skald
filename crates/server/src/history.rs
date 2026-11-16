@@ -1,0 +1,346 @@
+//! A channel's history on the server: `docs/protocol/membership.md`, "Uploads" and "History
+//! entry". A device uploads links, wraps and entries on its connection, which proves its key, so a
+//! session alone uploads none. The server keeps the first link per channel, epoch and `prev` and
+//! the first wrap per channel, epoch and recipient, each from a member device of its epoch, and the
+//! first entry per sending device and `msg_id`, of the channel's current or previous epoch, from a
+//! member device of the current one. It gives them, as the bytes it got, to sessions of the
+//! accounts the latest revision lists as the channel's members.
+
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::response::IntoResponse;
+use skald_proto::{
+    Cbor as _, ChannelId, Frame, HistoryEntry, HistoryItem, HistoryLink, HistoryWrap, SpaceId,
+    WrapRecipient,
+};
+use sqlx::{PgConnection, PgPool};
+
+use crate::AppState;
+use crate::devices::base64;
+use crate::groups::members_channel;
+use crate::mailboxes::{Sender, receiving};
+use crate::refusal::{Answer, Refusal, SignedIn};
+
+/// Why an upload is refused: the problems of "Uploads".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Problem {
+    Malformed,
+    NotAMember,
+    EpochMismatch,
+}
+
+impl Problem {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::NotAMember => "not-a-member",
+            Self::EpochMismatch => "epoch-mismatch",
+        }
+    }
+}
+
+/// An item to keep, decoded as far as the server reads it.
+enum Upload<'a> {
+    Link {
+        epoch: u64,
+        prev: u64,
+        bytes: &'a [u8],
+    },
+    Wrap {
+        epoch: u64,
+        recipient: WrapRecipient,
+        bytes: &'a [u8],
+    },
+    Entry {
+        epoch: u64,
+        msg_id: String,
+        bytes: &'a [u8],
+    },
+}
+
+impl Upload<'_> {
+    /// The epoch whose member devices may upload it, given the channel's current epoch.
+    fn uploaders(&self, current: u64) -> u64 {
+        match self {
+            Self::Link { epoch, .. } | Self::Wrap { epoch, .. } => *epoch,
+            Self::Entry { .. } => current,
+        }
+    }
+
+    /// Whether its epoch is one the channel may take it for, given its current epoch.
+    fn in_epoch(&self, current: u64) -> bool {
+        match self {
+            Self::Link { epoch, .. } | Self::Wrap { epoch, .. } => *epoch <= current,
+            Self::Entry { epoch, .. } => *epoch == current || *epoch + 1 == current,
+        }
+    }
+}
+
+/// `item` decoded as its kind, of `channel`; `None` if it does not decode, is of another channel
+/// or has a `prev` that is not below its epoch.
+fn decode(item: &HistoryItem, channel: ChannelId) -> Option<Upload<'_>> {
+    let (of, upload) = match item {
+        HistoryItem::Link(bytes) => {
+            let link = HistoryLink::from_cbor(bytes).ok()?;
+            if link.prev >= link.epoch {
+                return None;
+            }
+            let upload = Upload::Link {
+                epoch: link.epoch,
+                prev: link.prev,
+                bytes,
+            };
+            (link.channel, upload)
+        }
+        HistoryItem::Wrap(bytes) => {
+            let wrap = HistoryWrap::from_cbor(bytes).ok()?;
+            let body = wrap.body();
+            let upload = Upload::Wrap {
+                epoch: body.epoch,
+                recipient: body.recipient,
+                bytes,
+            };
+            (body.channel, upload)
+        }
+        HistoryItem::Entry { msg_id, entry } => {
+            let decoded = HistoryEntry::from_cbor(entry).ok()?;
+            let upload = Upload::Entry {
+                epoch: decoded.epoch,
+                msg_id: msg_id.to_string(),
+                bytes: entry,
+            };
+            (decoded.channel, upload)
+        }
+    };
+    (of == channel).then_some(upload)
+}
+
+/// The answer to `sender`'s upload `upload` of `item` in `channel` of `space`: `history-stored`
+/// once it is kept, now or before, otherwise `history-refused`, keeping nothing.
+pub(crate) async fn upload(
+    db: &PgPool,
+    sender: &Sender,
+    upload: u64,
+    space: SpaceId,
+    channel: ChannelId,
+    item: &HistoryItem,
+) -> Result<Frame, sqlx::Error> {
+    let mut tx = db.begin().await?;
+    let answer = match keep(&mut tx, sender, space, channel, item).await? {
+        Ok(()) => Frame::HistoryStored { upload },
+        Err(problem) => Frame::HistoryRefused {
+            upload,
+            problem: problem.name().to_owned(),
+        },
+    };
+    tx.commit().await?;
+    Ok(answer)
+}
+
+/// Keeps `sender`'s `item` in `channel` of `space` on `tx`, unless one is kept in its place, or
+/// gives the problem it is refused with.
+async fn keep(
+    tx: &mut PgConnection,
+    sender: &Sender,
+    space: SpaceId,
+    channel: ChannelId,
+    item: &HistoryItem,
+) -> Result<Result<(), Problem>, sqlx::Error> {
+    let Some(upload) = decode(item, channel) else {
+        return Ok(Err(Problem::Malformed));
+    };
+    // The group's row lock makes a Commit wait for the upload, or the upload see the Commit.
+    let current: Option<(i64,)> = sqlx::query_as(
+        "SELECT g.epoch FROM channel_groups g JOIN channels c ON c.id = g.channel_id
+         WHERE g.channel_id = $1::uuid AND c.space_id = $2::uuid AND g.view IS NOT NULL
+         FOR SHARE OF g",
+    )
+    .bind(channel.to_string())
+    .bind(space.to_string())
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((current,)) = current else {
+        return Ok(Err(Problem::NotAMember));
+    };
+    let current = u64::try_from(current).expect("a stored epoch from 1");
+    if !upload.in_epoch(current) {
+        return Ok(Err(Problem::EpochMismatch));
+    }
+    let member: Option<(bool,)> = sqlx::query_as(
+        "SELECT $3::uuid = ANY(members) FROM channel_epochs
+         WHERE channel_id = $1::uuid AND epoch = $2",
+    )
+    .bind(channel.to_string())
+    .bind(epoch(upload.uploaders(current)))
+    .bind(sender.device.to_string())
+    .fetch_optional(&mut *tx)
+    .await?;
+    // A revoked device is no member: its row lock makes a revocation wait for the upload.
+    if member != Some((true,)) || receiving(tx, &[sender.device]).await?.is_empty() {
+        return Ok(Err(Problem::NotAMember));
+    }
+    // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
+    let channel = channel.to_string();
+    let insert = match &upload {
+        Upload::Link {
+            epoch: e,
+            prev,
+            bytes,
+        } => sqlx::query(
+            "INSERT INTO history_links (channel_id, epoch, prev, link)
+             VALUES ($1::uuid, $2, $3, $4) ON CONFLICT DO NOTHING",
+        )
+        .bind(channel)
+        .bind(epoch(*e))
+        .bind(epoch(*prev))
+        .bind(*bytes),
+        Upload::Wrap {
+            epoch: e,
+            recipient,
+            bytes,
+        } => {
+            let (kind, id) = match recipient {
+                WrapRecipient::Browser(device) => (1_i16, device.to_string()),
+                WrapRecipient::Recovery(account) => (2, account.to_string()),
+            };
+            sqlx::query(
+                "INSERT INTO history_wraps (channel_id, epoch, recipient_kind, recipient_id, wrap)
+                 VALUES ($1::uuid, $2, $3, $4::uuid, $5) ON CONFLICT DO NOTHING",
+            )
+            .bind(channel)
+            .bind(epoch(*e))
+            .bind(kind)
+            .bind(id)
+            .bind(*bytes)
+        }
+        Upload::Entry { msg_id, bytes, .. } => sqlx::query(
+            "INSERT INTO history_entries (sender_id, msg_id, channel_id, entry)
+             VALUES ($1::uuid, $2::uuid, $3::uuid, $4) ON CONFLICT DO NOTHING",
+        )
+        .bind(sender.device.to_string())
+        .bind(msg_id.as_str())
+        .bind(channel)
+        .bind(*bytes),
+    };
+    insert.execute(&mut *tx).await?;
+    Ok(Ok(()))
+}
+
+/// `epoch` as the database keeps it.
+fn epoch(epoch: u64) -> i64 {
+    i64::try_from(epoch).expect("an epoch below 2^63")
+}
+
+/// What a channel's history holds: links, wraps or entries.
+#[derive(Clone, Copy)]
+enum Kind {
+    Links,
+    Wraps,
+    Entries,
+}
+
+/// The items of `kind` of `space`'s channel `channel`, base64url without padding, in a JSON object
+/// under the kind's name; for sessions of the channel's members in the latest revision.
+async fn given(state: &AppState, account: &str, space: &str, channel: &str, kind: Kind) -> Answer {
+    let channel = members_channel(state, account, space, channel, "history").await?;
+    let (name, query) = match kind {
+        Kind::Links => (
+            "links",
+            "SELECT link FROM history_links WHERE channel_id = $1::uuid ORDER BY epoch, prev",
+        ),
+        Kind::Wraps => (
+            "wraps",
+            "SELECT wrap FROM history_wraps WHERE channel_id = $1::uuid ORDER BY epoch",
+        ),
+        Kind::Entries => (
+            "entries",
+            "SELECT entry FROM history_entries WHERE channel_id = $1::uuid",
+        ),
+    };
+    let items: Vec<(Vec<u8>,)> = sqlx::query_as(query)
+        .bind(channel.to_string())
+        .fetch_all(&state.db)
+        .await
+        .map_err(|err| Refusal::Database("read a channel's history", err))?;
+    let items: Vec<String> = items.iter().map(|(bytes,)| base64(bytes)).collect();
+    Ok(Json(serde_json::json!({ name: items })).into_response())
+}
+
+/// `GET /spaces/<space>/channels/<channel>/history/links`.
+pub(crate) async fn links(
+    State(state): State<AppState>,
+    SignedIn(account): SignedIn,
+    Path((space, channel)): Path<(String, String)>,
+) -> Answer {
+    given(&state, &account, &space, &channel, Kind::Links).await
+}
+
+/// `GET /spaces/<space>/channels/<channel>/history/wraps`.
+pub(crate) async fn wraps(
+    State(state): State<AppState>,
+    SignedIn(account): SignedIn,
+    Path((space, channel)): Path<(String, String)>,
+) -> Answer {
+    given(&state, &account, &space, &channel, Kind::Wraps).await
+}
+
+/// `GET /spaces/<space>/channels/<channel>/history/entries`.
+pub(crate) async fn entries(
+    State(state): State<AppState>,
+    SignedIn(account): SignedIn,
+    Path((space, channel)): Path<(String, String)>,
+) -> Answer {
+    given(&state, &account, &space, &channel, Kind::Entries).await
+}
+
+#[cfg(test)]
+mod tests {
+    use skald_proto::Unknown;
+
+    use super::*;
+
+    /// A link of `channel`'s epoch `epoch` to `prev`.
+    fn link(channel: ChannelId, epoch: u64, prev: u64) -> HistoryItem {
+        let link = HistoryLink {
+            channel,
+            epoch,
+            prev,
+            nonce: [0; 12],
+            ciphertext: vec![1; 32],
+            unknown: Unknown::default(),
+        };
+        HistoryItem::Link(link.to_cbor())
+    }
+
+    #[test]
+    fn a_link_decodes_only_of_its_channel_with_prev_below_its_epoch() {
+        let channel = ChannelId::generate();
+        assert!(matches!(
+            decode(&link(channel, 3, 2), channel),
+            Some(Upload::Link {
+                epoch: 3,
+                prev: 2,
+                ..
+            })
+        ));
+        for (item, what) in [
+            (link(channel, 3, 3), "prev at its epoch"),
+            (link(channel, 3, 4), "prev above its epoch"),
+            (link(ChannelId::generate(), 3, 2), "of another channel"),
+        ] {
+            assert!(decode(&item, channel).is_none(), "{what}");
+        }
+    }
+
+    #[test]
+    fn an_entry_is_taken_for_the_current_or_previous_epoch_only() {
+        let entry = |epoch| Upload::Entry {
+            epoch,
+            msg_id: String::new(),
+            bytes: &[],
+        };
+        assert!(entry(3).in_epoch(3) && entry(2).in_epoch(3));
+        assert!(!entry(1).in_epoch(3) && !entry(4).in_epoch(3));
+        assert_eq!(entry(2).uploaders(3), 3, "members of the current epoch");
+    }
+}

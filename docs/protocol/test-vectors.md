@@ -30,6 +30,9 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Frame `batch`](#frame-batch)
 - [Frame `space-notice`](#frame-space-notice)
 - [Frame `auth`](#frame-auth)
+- [Frame `history`](#frame-history)
+- [Frame `history-stored`](#frame-history-stored)
+- [Frame `history-refused`](#frame-history-refused)
 - [Revocation by a device](#revocation-by-a-device)
 - [Revocation by the master key](#revocation-by-the-master-key)
 
@@ -527,6 +530,61 @@ b1e1583b84bd49c70301041a69127c80
 1c1d1e1f5019ac5f784938823586a6c5809a18f6dd58405a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Frame `history`
+
+```cbor-diag
+[
+  11,
+  5,
+  h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+  h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+  [
+    3,
+    h'019a6f201a007c008a00000000000001',
+    <<{
+      1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+      2: 2,
+      3: h'0e0e0e0e0e0e0e0e0e0e0e0e',
+      4: h'c0c1c2c3c4c5c6c7c8c9cacbcccdcecf'
+    }>>
+  ]
+]
+```
+
+```hex
+850b0550019a6f1e2b3c7d4e8f5061a2b3c4d5e650019a6f1e2b3c7d4e8f5061
+a2b3c4d5e7830350019a6f201a007c008a000000000000015835a40150019a6f
+1e2b3c7d4e8f5061a2b3c4d5e70202034c0e0e0e0e0e0e0e0e0e0e0e0e0450c0
+c1c2c3c4c5c6c7c8c9cacbcccdcecf
+```
+
+## Frame `history-stored`
+
+```cbor-diag
+[
+  12,
+  5
+]
+```
+
+```hex
+820c05
+```
+
+## Frame `history-refused`
+
+```cbor-diag
+[
+  13,
+  6,
+  "epoch-mismatch"
+]
+```
+
+```hex
+830d066e65706f63682d6d69736d61746368
 ```
 
 ## Revocation by a device

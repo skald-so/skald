@@ -1,8 +1,8 @@
 //! Connections authenticated as a device: `docs/protocol/delivery.md`, "Connecting". A device
 //! session gets a challenge; a WebSocket is taken, as its device's, once its first frame signs that
 //! challenge with the key of a certified `client` device of the session's account that is not
-//! revoked. A taken connection carries the device's sends and its mailbox, and closes when its
-//! session ends or its device is revoked.
+//! revoked. A taken connection carries the device's sends, its uploads of channels' history and its
+//! mailbox, and closes when its session ends or its device is revoked.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -24,11 +24,11 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::delivery::{self, Reader};
-use crate::error_reports;
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in};
 use crate::{AppState, database_failed};
+use crate::{error_reports, history};
 
 /// How long a challenge works.
 const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
@@ -306,8 +306,8 @@ async fn hold(
     }
 }
 
-/// Serves the frame `bytes` from `sender`: answers a `send`, acks a `sync` or an `ack`, and ignores
-/// a frame of another type.
+/// Serves the frame `bytes` from `sender`: answers a `send` or a `history`, acks a `sync` or an
+/// `ack`, and ignores a frame of another type.
 async fn serve_frame(
     state: &AppState,
     socket: &mut WebSocket,
@@ -326,6 +326,17 @@ async fn serve_frame(
                 report,
             )
             .await
+        }
+        Ok(Frame::History {
+            upload,
+            space,
+            channel,
+            item,
+        }) => {
+            let answer = history::upload(&state.db, sender, upload, space, channel, &item)
+                .await
+                .map_err(|err| Stop::Close(failed("keep a history upload", err)))?;
+            return send_frame(socket, &answer).await;
         }
         Ok(Frame::Sync { cursor }) => return sync(state, socket, reader, cursor).await,
         Ok(Frame::Ack { seq }) => return ack(state, sender.device, seq.get()).await,
