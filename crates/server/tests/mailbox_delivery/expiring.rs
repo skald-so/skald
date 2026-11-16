@@ -35,9 +35,7 @@ pub fn send_bob_with(s: &mut Scene, ttl: Option<u64>, report: bool) -> (Sent, St
 /// arguments `args` and the environment variables `envs`. The scene's connections end with the
 /// first server; new ones go to the one this gives.
 pub fn restart(s: &mut Scene, args: &[&str], envs: &[(&str, &str)]) -> Server {
-    let stand = &mut s.fixture.team.flow.stand;
-    stand.server.stop();
-    stand.instance(args, envs)
+    s.fixture.team.flow.stand.restart(args, envs)
 }
 
 /// Checks that a retry of `sent`, which bob's connection `link` has acked, gets the `stored` of its
