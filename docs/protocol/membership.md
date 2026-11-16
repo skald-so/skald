@@ -582,7 +582,7 @@ A reader MUST drop an entry unless:
 
 ### Access
 - A member's device reads the history through its keys: from its first epoch back along the key chain.
-- A channel member whose `history` is false reads only epochs from the one whose Commit added its account. The server gives its devices neither the links of that epoch nor any link, wrap or entry of an earlier one.
+- A channel member whose `history` is false in the latest revision reads only epochs from its join: the first epoch with a device of its account after the revision that last added the account to the channel. The server gives its sessions only the links whose `prev` is that epoch or a later one, and no wrap or entry of an earlier epoch; before the join, none. A Commit that removes the account's devices does not move its join: its devices that join later read from that epoch too.
 - The recovery key reads every epoch wrapped to it: a device linked with it reads the account's history before it rejoins the channels.
 
 ## Security considerations
@@ -599,7 +599,7 @@ A reader MUST drop an entry unless:
 - A server that reports no master key for an existing account stops a new device whose user says it is not the first. If its user says it is the first, the device creates a second master key, and the account splits into two sets of devices that do not trust each other: devices and members that pinned the first master key reject certificates chained to the second, and the device rejects those chained to the first. The server gains no signing power: the device deletes the second master private key, and only its user sees the second recovery key. No device set change warns of the device: the account's other devices do not count it as theirs.
 - A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
-- A channel member whose `history` is false holds its join epoch's key, which opens the links to the epochs before it: only the server withholding those links keeps it from earlier history.
+- A channel member whose `history` is false holds the key of every epoch from its join on, and each opens that epoch's link: the join epoch's link, or a later one whose uploader judged the epochs between unclean, gives a key from before the join. Only the server withholding those links keeps it from earlier history.
 - The server holds GroupInfo, so it can join a channel by an external Commit from its own device. Members remove the device, and its epoch is not clean: no link opens an earlier key with that epoch's key, and no member writes under it.
 - A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
 - A reader takes a wrap signed by any device of a member account, revoked or not. A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.
