@@ -10,8 +10,8 @@ use skald_proto::{
     AccountId, Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
     DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
     Header, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push, RawEnvelope, Receipt,
-    ReceiptStatus, Revocation, RevocationBody, Scheme, SendKey, ServerStatus, SpaceId, Stored,
-    Unknown,
+    ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey, ServerStatus,
+    SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -426,6 +426,14 @@ pub fn vectors() -> Vec<Vector> {
         vector(
             "Frame `auth`",
             Frame::Auth {
+                challenge: (0..32).collect(),
+                device: alice_device(),
+                signature: SIGNATURE,
+            },
+        ),
+        vector(
+            "HTTPS proof",
+            RequestProof {
                 challenge: (0..32).collect(),
                 device: alice_device(),
                 signature: SIGNATURE,

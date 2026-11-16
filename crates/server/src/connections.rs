@@ -1,8 +1,9 @@
 //! Connections authenticated as a device: `docs/protocol/delivery.md`, "Connecting". A device
 //! session gets a challenge; a WebSocket is taken, as its device's, once its first frame signs that
 //! challenge with the key of a certified `client` device of the session's account that is not
-//! revoked. A taken connection carries the device's sends and its mailbox, and closes when its
-//! session ends or its device is revoked.
+//! revoked, and an HTTPS request ([`requests`](crate::requests)) once its proof does. A taken
+//! connection carries the device's sends and its mailbox, and closes when its session ends or its
+//! device is revoked.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -35,11 +36,11 @@ const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
 /// How long the server waits for a connection's `auth`.
 const PROOF_WAIT: Duration = Duration::from_secs(5);
 /// How long a proved connection waits for the instance to listen to the others.
-const LISTEN_WAIT: Duration = Duration::from_secs(5);
+pub(crate) const LISTEN_WAIT: Duration = Duration::from_secs(5);
 
 /// Why the server closes a connection: the reasons of "Connecting".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Closing {
+pub(crate) enum Closing {
     AuthRequired,
     ChallengeRefused,
     DeviceRefused,
@@ -52,20 +53,43 @@ enum Closing {
 }
 
 impl Closing {
+    /// The reason it names.
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::AuthRequired => "auth-required",
+            Self::ChallengeRefused => "challenge-refused",
+            Self::DeviceRefused => "device-refused",
+            Self::SignatureRefused => "signature-refused",
+            Self::SessionEnded => "session-ended",
+            Self::Malformed => "",
+            Self::ServerError => "server-error",
+        }
+    }
+
     fn frame(self) -> CloseFrame {
-        let (code, reason) = match self {
-            Self::AuthRequired => (close_code::POLICY, "auth-required"),
-            Self::ChallengeRefused => (close_code::POLICY, "challenge-refused"),
-            Self::DeviceRefused => (close_code::POLICY, "device-refused"),
-            Self::SignatureRefused => (close_code::POLICY, "signature-refused"),
-            Self::SessionEnded => (close_code::POLICY, "session-ended"),
-            Self::Malformed => (close_code::INVALID, ""),
-            Self::ServerError => (close_code::ERROR, "server-error"),
+        let code = match self {
+            Self::Malformed => close_code::INVALID,
+            Self::ServerError => close_code::ERROR,
+            _ => close_code::POLICY,
         };
         CloseFrame {
             code,
-            reason: reason.into(),
+            reason: self.reason().into(),
         }
+    }
+}
+
+/// Why a proof is not taken.
+pub(crate) enum Unproved {
+    /// It is refused for this reason.
+    Refused(Closing),
+    /// The database failed at what it holds, such as `read a challenge`.
+    Failed(&'static str, sqlx::Error),
+}
+
+impl From<Closing> for Unproved {
+    fn from(closing: Closing) -> Self {
+        Self::Refused(closing)
     }
 }
 
@@ -86,7 +110,7 @@ struct Held {
 }
 
 /// A connection of `device` while it is held: dropping it lets the connection go.
-struct Registration {
+pub(crate) struct Registration {
     connections: Arc<Connections>,
     device: DeviceId,
     id: u64,
@@ -220,14 +244,14 @@ pub(crate) async fn open(
         .on_upgrade(move |socket| serve(state, socket, version))
 }
 
-/// A connection, once its `auth` proved its device, held as the device's.
-struct Proved {
-    device: DeviceId,
-    account: AccountId,
+/// A connection or a request, once its proof proved its device, held as the device's.
+pub(crate) struct Proved {
+    pub(crate) device: DeviceId,
+    pub(crate) account: AccountId,
     /// Lets the connection go when dropped.
-    _registration: Registration,
+    pub(crate) _registration: Registration,
     /// Fires when the session ends or the device is revoked.
-    ended: oneshot::Receiver<Closing>,
+    pub(crate) ended: oneshot::Receiver<Closing>,
 }
 
 /// Takes `socket`, of the protocol version `version`, once it proves its device, and serves it
@@ -418,16 +442,47 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
     else {
         return Err(Closing::AuthRequired);
     };
-    let session = challenge_session(state, &challenge)
+    let proof = Proof {
+        challenge: &challenge,
+        device,
+        signature: &signature,
+        label: AUTH_LABEL,
+    };
+    match check(state, &proof, None).await {
+        Ok(proved) => Ok(Some(proved)),
+        Err(Unproved::Refused(closing)) => Err(closing),
+        Err(Unproved::Failed(doing, err)) => Err(failed(doing, err)),
+    }
+}
+
+/// A proof of a device: by its signing key, with `label`, over `challenge` and the origin of the
+/// server's public address.
+pub(crate) struct Proof<'p> {
+    pub(crate) challenge: &'p [u8],
+    pub(crate) device: DeviceId,
+    pub(crate) signature: &'p [u8; 64],
+    pub(crate) label: &'static str,
+}
+
+/// Checks `proof`, of a challenge of the session whose token's SHA-256 is `session` if given, and
+/// holds a connection as its device's. The challenge is used up, whether the proof is taken or
+/// refused.
+pub(crate) async fn check(
+    state: &AppState,
+    proof: &Proof<'_>,
+    session: Option<&[u8]>,
+) -> Result<Proved, Unproved> {
+    let of = challenge_session(state, proof.challenge)
         .await?
         .ok_or(Closing::ChallengeRefused)?;
     // Held before the challenge is used, so that once the use finds the session, its end closes
     // the connection; an end before the use deletes the challenge.
-    let held = state.connections.hold(device, session);
-    let account = take_challenge(state, &challenge)
+    let (registration, ended) = state.connections.hold(proof.device, of.clone());
+    let account = take_challenge(state, proof.challenge)
         .await?
+        .filter(|_| session.is_none_or(|session| session == of))
         .ok_or(Closing::ChallengeRefused)?;
-    let signing = client_key(state, device, &account)
+    let signing = client_key(state, proof.device, &account)
         .await?
         .ok_or(Closing::DeviceRefused)?;
     let origin = state
@@ -437,18 +492,26 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
         .ok_or(Closing::SignatureRefused)?;
     skald_crypto::verify(
         &signing,
-        AUTH_LABEL,
-        &[&challenge, origin.as_bytes()],
-        &signature,
+        proof.label,
+        &[proof.challenge, origin.as_bytes()],
+        proof.signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
-    let (registration, ended) = held;
-    Ok(Some(Proved {
-        device,
+    // The session lists the device it proved, and its use.
+    sqlx::query(
+        "UPDATE sessions SET device_id = $1::uuid, last_used_at = now() WHERE token_hash = $2",
+    )
+    .bind(proof.device.to_string())
+    .bind(&of)
+    .execute(&state.db)
+    .await
+    .map_err(|err| Unproved::Failed("record a session's device", err))?;
+    Ok(Proved {
+        device: proof.device,
         account: account.parse().expect("a stored account ID"),
         _registration: registration,
         ended,
-    }))
+    })
 }
 
 /// The bytes of `socket`'s first frame, a binary message, within [`PROOF_WAIT`]; `None` if the
@@ -469,18 +532,21 @@ async fn first_frame(socket: &mut WebSocket) -> Result<Option<Vec<u8>>, Closing>
 }
 
 /// The SHA-256 of the token of `challenge`'s session, if the server holds the challenge.
-async fn challenge_session(state: &AppState, challenge: &[u8]) -> Result<Option<Vec<u8>>, Closing> {
+async fn challenge_session(
+    state: &AppState,
+    challenge: &[u8],
+) -> Result<Option<Vec<u8>>, Unproved> {
     sqlx::query_as("SELECT session_hash FROM connection_challenges WHERE challenge_hash = $1")
         .bind(Sha256::digest(challenge).to_vec())
         .fetch_optional(&state.db)
         .await
         .map(|found| found.map(|(session,)| session))
-        .map_err(|err| failed("read a challenge", err))
+        .map_err(|err| Unproved::Failed("read a challenge", err))
 }
 
 /// Uses up `challenge`: its session's account, if it is one the server issued, unused, unexpired,
 /// to a session that has not ended.
-async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<String>, Closing> {
+async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<String>, Unproved> {
     let taken: Option<(String, bool)> = sqlx::query_as(
         "DELETE FROM connection_challenges c USING sessions s
          WHERE c.challenge_hash = $1 AND s.token_hash = c.session_hash
@@ -489,7 +555,7 @@ async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<Str
     .bind(Sha256::digest(challenge).to_vec())
     .fetch_optional(&state.db)
     .await
-    .map_err(|err| failed("take a challenge", err))?;
+    .map_err(|err| Unproved::Failed("take a challenge", err))?;
     Ok(taken
         .filter(|(_, unexpired)| *unexpired)
         .map(|(account, _)| account))
@@ -501,7 +567,7 @@ async fn client_key(
     state: &AppState,
     device: DeviceId,
     account: &str,
-) -> Result<Option<[u8; 32]>, Closing> {
+) -> Result<Option<[u8; 32]>, Unproved> {
     let found: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT signing FROM devices
          WHERE id = $1::uuid AND account_id = $2::uuid AND kind = 'client' AND cert IS NOT NULL
@@ -511,7 +577,7 @@ async fn client_key(
     .bind(account)
     .fetch_optional(&state.db)
     .await
-    .map_err(|err| failed("read a device", err))?;
+    .map_err(|err| Unproved::Failed("read a device", err))?;
     Ok(found.and_then(|(signing,)| signing.try_into().ok()))
 }
 

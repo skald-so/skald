@@ -45,28 +45,21 @@ mod machine;
 #[path = "../sign_in/relay.rs"]
 mod relay;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use cloud::Cloud;
 use machine::{Finished, Machine};
 use relay::{Lose, strings_named};
-use serde_json::Value;
 use skald_crypto::accept_next;
 use skald_proto::{
     Cbor as _, Channel, ChannelId, ChannelMember, Name, Role, Roster, SpaceId, Unknown,
 };
 use world::{
     ACME, ADMIN, CHANNELS, CREATE_CHANNEL, CREATE_SPACE, MEMBER, Person, SPACES, World,
-    assert_role, create, members, next_by, next_with, plain_lines, post_as, revisions_request, run,
-    set_role, space_certs, store, warnings, words,
+    assert_role, channel_request, create, lines_naming, members, next_by, next_with, plain_lines,
+    post_as, run, set_role, space_certs, stale_once, store, store_request, warnings, words,
 };
-
-/// The request that issues a channel ID for `space`, as its line starts.
-fn channel_request(space: SpaceId) -> String {
-    format!("POST /spaces/{space}/channels")
-}
 
 /// The length of the body of the request whose head, in lowercase, is `head`; fails on a chunked
 /// body.
@@ -78,11 +71,6 @@ fn body_length(head: &str) -> usize {
     head.lines()
         .find_map(|line| line.strip_prefix("content-length:"))
         .map_or(0, |length| length.trim().parse().expect("a length"))
-}
-
-/// The request that stores a revision of `space`, as its line starts.
-fn store_request(space: SpaceId) -> String {
-    format!("POST /spaces/{space}/revisions")
 }
 
 /// Runs `skald create-channel <space>` on `machine`.
@@ -138,24 +126,6 @@ fn channel(id: ChannelId, members: &[(&Person, bool)]) -> Channel {
     }
 }
 
-/// From now on, the first answer the proxy gives to a request for `space`'s revisions holds only
-/// the first `keep` of them, as if the device fetched them before the others were stored; every
-/// later answer holds them all.
-fn stale_once(cloud: &Cloud, space: SpaceId, keep: usize) {
-    let answers = AtomicUsize::new(0);
-    cloud.relay.rewrite(&revisions_request(space), move |body| {
-        if answers.fetch_add(1, Ordering::SeqCst) > 0 {
-            return body.to_owned();
-        }
-        let mut list: Value = serde_json::from_str(body).expect("the server's revisions");
-        list["revisions"]
-            .as_array_mut()
-            .expect("a list of revisions")
-            .truncate(keep);
-        list.to_string()
-    });
-}
-
 /// Fails unless `next`, a revision the server holds, is the one after `previous` that `person`'s
 /// device signed to add one channel: the same members, service agents and policy, every channel of
 /// `previous` as it was, and one new channel whose only member is `person`'s account with `history`
@@ -206,19 +176,11 @@ fn assert_adds_a_channel(
     added[0].id
 }
 
-/// The lines of `listed` but its warnings that hold the channel ID `id` as a word.
-fn lines_of(listed: &Finished, id: &str) -> Vec<String> {
-    plain_lines(listed)
-        .into_iter()
-        .filter(|line| words(line).contains(&id))
-        .collect()
-}
-
 /// Fails unless `listed` shows the channel `id` on one line, with the handles of `with` and none of
 /// `without`.
 fn assert_channel(listed: &Finished, id: ChannelId, with: &[&Name], without: &[&Name]) {
     let id = id.to_string();
-    let lines = lines_of(listed, &id);
+    let lines = lines_naming(listed, &id);
     assert_eq!(lines.len(), 1, "{id} is not listed once: {listed:?}");
     let line = words(&lines[0]);
     for handle in with {
@@ -238,7 +200,11 @@ fn assert_channel(listed: &Finished, id: ChannelId, with: &[&Name], without: &[&
 /// Fails if `listed` shows one of the channel IDs `ids`.
 fn assert_unlisted(listed: &Finished, ids: &[String]) {
     for id in ids {
-        assert_eq!(lines_of(listed, id), Vec::<String>::new(), "{id} is listed");
+        assert_eq!(
+            lines_naming(listed, id),
+            Vec::<String>::new(),
+            "{id} is listed"
+        );
     }
 }
 

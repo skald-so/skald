@@ -469,7 +469,6 @@ A member device:
 - A device's Adds skip devices already in the group, such as one that joined by itself meanwhile.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
 - A device refuses a Welcome whose signer is not admitted, and a GroupInfo whose signer or a member it lists is not; it stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it. A device that joins from a Welcome listing a member that is not admitted warns its user and removes that member.
-- The joiner uploads the GroupInfo of the new epoch.
 
 ### Rejoining
 - **After missing Commits:** a device that cannot process a channel's next handshake message, or that a Commit removed while it is admitted, rejoins with an external Commit that also removes its old leaf. It MUST warn its user if a Commit removed it while it was admitted. A Commit of an epoch the device has passed is a replay: it is dropped.
@@ -484,6 +483,7 @@ The server keeps a copy of each channel message under the channel's history key,
 - The key rotates with every epoch:
   - **revocation:** a Remove of a revoked device starts an epoch; when a browser of a channel member's account is revoked, a member device commits an empty Commit before it next sends in the channel;
   - **schedule:** when the current epoch is older than the policy's `history`, the first member device to notice commits an empty Commit.
+- A device counts an epoch's age by its own clock from when it entered the epoch: by creating the group, a Welcome, a Commit, its own or another's, or a join or rejoin. Never from the server's `stored` time.
 - An empty Commit has an UpdatePath and no proposals.
 
 ### Clean epochs

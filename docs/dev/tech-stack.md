@@ -7,7 +7,7 @@ Versions as of 2026-11-09.
 | Layer | Choice |
 |---|---|
 | HTTP, WebSocket | axum 0.8 + tokio; SSE and long-poll as fallbacks |
-| Client HTTP, WebSocket | ureq 3 and tungstenite 0.30, blocking. HTTPS and WSS, to the server and in `skald update`, with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8; `SSL_CERT_FILE` replaces them); plain HTTP and WS only to a server on this machine ([Network](architecture.md#network)). `HTTPS_PROXY` in `skald update`; to the server, once the client's one-shot mode and helper add it |
+| Client HTTP, WebSocket | ureq 3 and tungstenite 0.30, blocking. HTTPS and WSS, to the server and in `skald update`, with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8; `SSL_CERT_FILE` replaces them); plain HTTP and WS only to a server on this machine ([Network](architecture.md#network)). `HTTPS_PROXY` in `skald update`; `HTTPS_PROXY` and `NO_PROXY` apply to the server too |
 | Client updates | `skald update` compares versions with semver 1 and unpacks the release archives with flate2 1 and tar 0.4 (`.tar.gz`) and zip 9 (`.zip`) |
 | Database | PostgreSQL 19 (in production, from 19.1), sqlx 0.9: `SKIP LOCKED`, `LISTEN/NOTIFY` |
 | Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage): rusty-s3 0.11 signs the requests, path-style, and the server's HTTP client sends them. Its tests use versitygw in a container, pinned by digest |
@@ -19,10 +19,11 @@ Versions as of 2026-11-09.
 | Local state | SQLite, bundled with rusqlite 0.39, the newest that sqlx 0.9 allows: [deny.toml](../../deny.toml) |
 | MCP | rmcp 3.9, stdio |
 | Authentication | GitHub OAuth over the server's HTTP client; OIDC over it too, with no OIDC or JOSE crate: the server's own code reads the metadata, keys and ID tokens with serde_json and base64, and ring 0.17 verifies RS256 and ES256; device flow (RFC 8628) |
+| Session list | The server's own code, no parser crate, reads a web session's browser and OS by name from the `User-Agent` of its sign-in; no version, IP address or location is kept |
 | Server HTTP client | ureq 3 with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8), blocking, in tokio's blocking threads |
 | API | HTTPS + JSON, OpenAPI spec |
 | Envelopes | Deterministic CBOR (RFC 8949, §4.2) with a CDDL schema, over WebSocket, HTTPS and SSE: [protocol spec](../protocol/README.md#encoding). ciborium-ll 0.2 reads and writes CBOR heads; `proto` checks the spec's encoding rules on decoding |
-| Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |
+| Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; React Router 8 in declarative mode routes its pages; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |
 | Web styles | CSS Modules; theme tokens are CSS custom properties with `light-dark()`, following the system setting |
 | Web fonts | Fontsource 5 variable packages: Inter, Space Grotesk, JetBrains Mono; bundled with the build |
 | Browser tests | Chrome Headless Shell of playwright-core 1; in the crates' tests, one per test binary, a browser context per page |

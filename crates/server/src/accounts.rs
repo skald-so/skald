@@ -10,9 +10,9 @@ use serde::Deserialize;
 use skald_proto::{AccountId, Name};
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::AppState;
 use crate::refusal::{Refusal, account, answer, parse};
 use crate::sign_in::{digest, random_token};
+use crate::{AppState, sessions, user_agent};
 
 /// The provider of GitHub methods; an OIDC provider is named by its issuer.
 pub(crate) const GITHUB: &str = "github";
@@ -30,12 +30,14 @@ pub(crate) struct Method<'a> {
 /// Starts a web session of the account that holds `method`, and gives its token. The method's first
 /// sign-in signs up, if `may_sign_up`: it creates an account with that method, its username made
 /// from `source`, such as a GitHub login or an email's local part; else it creates nothing and gives
-/// `None`. A GitHub method's login is updated.
+/// `None`. A GitHub method's login is updated. The session records the browser and OS that `agent`,
+/// the sign-in's `User-Agent`, names; the account's expired web sessions go.
 pub(crate) async fn sign_in(
     db: &PgPool,
     method: &Method<'_>,
     source: &str,
     may_sign_up: bool,
+    agent: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let mut tx = db.begin().await?;
     // Of two first sign-ins with one method at once, the second waits for the first to commit and
@@ -60,11 +62,25 @@ pub(crate) async fn sign_in(
         sign_up(&mut tx, &account, source).await?;
     }
     let session = random_token();
-    sqlx::query("INSERT INTO sessions (token_hash, account_id, kind) VALUES ($1, $2::uuid, 'web')")
-        .bind(digest(&session))
-        .bind(&account)
-        .execute(&mut *tx)
-        .await?;
+    let (browser, os) = user_agent::browser_and_os(agent);
+    sqlx::query(
+        "WITH expired AS (
+             DELETE FROM sessions WHERE account_id = $2::uuid AND kind = 'web'
+                 AND created_at <= now() - make_interval(secs => $7)
+         )
+         INSERT INTO sessions
+             (token_hash, account_id, kind, method_provider, method_subject, browser, os)
+         VALUES ($1, $2::uuid, 'web', $3, $4, $5, $6)",
+    )
+    .bind(digest(&session))
+    .bind(&account)
+    .bind(method.provider)
+    .bind(&method.subject)
+    .bind(browser)
+    .bind(os)
+    .bind(sessions::WEB_LIFETIME.as_secs_f64())
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Some(session))
 }
