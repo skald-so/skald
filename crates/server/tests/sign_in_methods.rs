@@ -243,9 +243,11 @@ fn migrated_accounts_keep_sessions_devices_and_master_key_and_next_sign_in_reach
     );
     assert_eq!(accounts(db), ids);
 
-    // Their web and device sessions still act as their accounts.
+    // Their device sessions still act as their accounts; their web sessions ended at the later
+    // migration that records each web session's sign-in method.
     for old in [&ada, &bob] {
-        assert_eq!(account_of_cookie(&flow, &old.cookie()), old.account);
+        let web = flow.request("get", SESSION, &[("cookie", &old.cookie())], None, true);
+        assert_eq!(web.status, 401, "{}", text(&web));
         assert_eq!(flow.account_of(&old.device_session), old.account);
     }
 
@@ -283,7 +285,7 @@ fn migrated_accounts_keep_sessions_devices_and_master_key_and_next_sign_in_reach
     assert_eq!(reached.id, bob.account.id);
     assert_eq!(reached.github_login, bob_renamed.login);
 
-    // No account or method was added, and the old sessions still act as their accounts.
+    // No account or method was added, and the old device sessions still act as their accounts.
     assert_eq!(accounts(db), ids);
     assert_eq!(
         methods(db),
@@ -292,7 +294,7 @@ fn migrated_accounts_keep_sessions_devices_and_master_key_and_next_sign_in_reach
             github(&bob.account.id, &bob_renamed),
         ])
     );
-    assert_eq!(account_of_cookie(&flow, &ada.cookie()), ada.account);
+    assert_eq!(flow.account_of(&ada.device_session), ada.account);
     assert_eq!(flow.account_of(&bob.device_session).id, bob.account.id);
 }
 

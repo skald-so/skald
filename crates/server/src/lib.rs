@@ -189,6 +189,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             "/auth/device",
             post(device_flow::authorize).layer(checked(Statement::Header)),
         )
+        .route(
+            "/auth/providers",
+            get(sign_in::providers).layer(checked(Statement::Header)),
+        )
         .route(sign_in::START_PATH, get(sign_in::start::<GitHubApp>))
         .route(CALLBACK_PATH, get(sign_in::callback::<GitHubApp>))
         .route(links::GITHUB_PATH, post(links::start::<GitHubApp>))

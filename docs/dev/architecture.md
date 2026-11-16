@@ -13,6 +13,8 @@
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.
 - **GitHub Action:** the client in one-shot mode and the GitHub bridge, which runs inside the Action, not on the server. A `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment. The trust level of such tasks: [threat model](../threat-model.md#the-idp-or-github).
 - **Frontend** — a single static SPA at `app.skald.so`:
+  - its pages' paths start with none of the first segments of the OpenAPI spec's paths, such as `/device`, so one origin serves the SPA and the API;
+  - without a web session, every page shows the sign-in page;
   - gets the non-secret sections from the server API;
   - content sections are decrypted in the browser by a WASM build of the Rust core.
 
@@ -74,7 +76,7 @@
 | Entity | Description |
 |---|---|
 | Account | A person or organization. Reached through its sign-in methods; optionally bound to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking). Has its own username, which any of its sessions changes: `Username` in the [OpenAPI spec](../../api/openapi.json). Sign-up makes it from the GitHub login, or from the email's local part for Google: lowercased, each run of characters a [`name`](../protocol/README.md#agent-address) does not allow made `-`, cut to 63 characters, `-` trimmed at both ends, `user` if nothing is left; when that is taken or reserved, the first free of `-2`, `-3` and on is appended, within 63 characters |
-| Sign-in method | A provider and the subject it gives the person: GitHub and the GitHub user's ID, or an OIDC provider by its issuer and the ID token's `sub`. Belongs to one account and never moves to another; the first sign-in with it creates the account, the same way for every provider, unless the server's sign-up is closed and the identity is on none of its lists: then it creates nothing ([self-host.md, "Sign-up"](../self-host.md#sign-up)). A web session links another one to its account: `startGitHubLink` and `startGoogleLink` in the [OpenAPI spec](../../api/openapi.json). A GitHub method keeps the GitHub login for display, updated at each sign-in |
+| Sign-in method | A provider and the subject it gives the person: GitHub and the GitHub user's ID, or an OIDC provider by its issuer and the ID token's `sub`. Belongs to one account and never moves to another; the first sign-in with it creates the account, the same way for every provider, unless the server's sign-up is closed and the identity is on none of its lists: then it creates nothing ([self-host.md, "Sign-up"](../self-host.md#sign-up)). A web session links another one to its account: `startGitHubLink` and `startGoogleLink` in the [OpenAPI spec](../../api/openapi.json). A GitHub method keeps the GitHub login for display, updated at each sign-in. A web session records the method it signed in with and ends with it: `Session` in the OpenAPI spec |
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
 | Space | A team space and trust boundary. Signed roster and policy: [Membership](#membership); a device can belong to N spaces |

@@ -621,7 +621,7 @@ test("shows the space switcher and the account menu open", () => {
   ).toEqual([
     ["team-a", "false"],
     ["team-b", "true"],
-    ["ana", "false"],
+    ["ana personal", "false"],
   ]);
   expect(
     section

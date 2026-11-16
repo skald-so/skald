@@ -52,7 +52,7 @@ test("choosing a space shows it in the switcher", async () => {
   render(<KitCabinet />);
 
   await user.click(screen.getByRole("button", { name: /^Space / }));
-  await user.click(screen.getByRole("option", { name: "ana" }));
+  await user.click(screen.getByRole("option", { name: "ana personal" }));
   expect(screen.getByRole("button", { name: /^Space / }).textContent).toBe(
     "Space ana",
   );
