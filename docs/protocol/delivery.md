@@ -69,18 +69,18 @@ timestamp = uint       ; seconds since the Unix epoch
 - The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
-  - HTTPS: `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request states the cursor; its answer is a `batch`, empty if nothing arrived before its timeout.
+  - HTTPS: each request proves its device ([Connecting](#connecting)). `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request's body is a `sync` with the cursor; its answer is a `batch` ([Mailbox](#mailbox)).
   - SSE: one `message`, `status` or `space-notice` per event, the event's `id` the `seq` of a `message` or `status`; `Last-Event-ID` states the cursor. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
 
 ## Connecting
-A WebSocket carries other frames only once its first frame, `auth`, proves the key of the connection's device.
+A WebSocket carries other frames only once its first frame, `auth`, proves the key of the connection's device; an HTTPS request, once its proof does.
 
 - Before opening it, the client gets a challenge for its device session: `POST /session/challenge`.
 - `auth` names the device and signs, with the label `skald auth`, `["skald auth", challenge, origin]`. `origin` is the origin [[RFC 6454](https://www.rfc-editor.org/rfc/rfc6454)] of the server URL the client connects to, such as `https://skald.example`, its ASCII serialization as a byte string.
 - The server takes the connection, as the device's, only if:
   - `auth` is the first frame and comes within a few seconds of the opening;
-  - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection has used it before; a challenge works once, used or refused;
+  - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection or request has used it before; a challenge works once, used or refused;
   - the device is a `client` device with a certificate on the server, of the challenge's session's account, and not revoked ([Revocation](membership.md#revocation));
   - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
 - Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
@@ -94,6 +94,16 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 
 - A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends, and with the reason `device-refused` when its device is revoked.
 - A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
+
+Over HTTPS, each request carries a proof in the header `Skald-Device-Proof`, base64url without padding, and the bearer token of a device session:
+
+```cddl
+request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
+```
+
+- `signature` signs, with the label `skald request`, `["skald request", challenge, origin]`, `origin` as in `auth`. A different label keeps a proof from serving as `auth` and the other way round.
+- The server checks it as `auth`, and also that the challenge is of the bearer token's session. A request it does not take reads, acks and stores nothing: `401` with the reason as its problem, `auth-required` for a missing or malformed proof, or `not-signed-in` for a token of no device session.
+- A waiting long-poll ends with the refusal a new request would get when its session ends or its device is revoked.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
@@ -124,6 +134,12 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
   - Every `sync` acks like `ack`. Only the first `sync` of a connection starts catch-up; a later one only acks.
 - **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
   - On WebSocket, once catch-up has sent every entry the mailbox held at the first `sync`, the server sends an empty `batch`, so a client that runs once knows it has them all.
+  - On HTTPS, catch-up ends at the first empty answer to a long-poll with a wait of 0.
+- **Long-poll:** a request states its cursor and a wait in seconds, cut to the server's maximum. Its answer is a `batch`:
+  - the entries after the cursor in `seq` order, up to a server limit per answer;
+  - a `space-notice` of each space with a roster revision listing the device's account stored since the device's previous long-poll answer, every such space at its first, so none is lost between requests.
+
+  It answers at once when it has some or the wait is 0; otherwise with the first to arrive within the wait, through any server instance, or empty at the wait's end.
 - A device MAY hold several connections. The server sends each of them the entries in `seq` order.
 - **Expiry:** an entry expires when it is not acked in time:
   - a `message` at its storing time plus the envelope's `ttl`, capped by the server's retention (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)), unless it holds a handshake message;
@@ -241,7 +257,7 @@ attachment = {
 - Only devices that receive the channel's envelopes can download its blobs.
 
 ## Security considerations
-- A session alone reads and acks no mailbox: a connection takes the device's key. The signature covers the origin the client connects to, so a malicious server cannot relay another server's challenge: that server refuses the proof.
+- A session alone reads, acks and sends nothing: a connection and each HTTPS request take the device's key. The signature covers the origin the client connects to, so a malicious server cannot relay another server's challenge: that server refuses the proof.
 - `stored`, `delivered` and `expired` are the server's word. Only receipt messages and replies are end-to-end: encrypted, and signed by the recipient device.
 - Gap detection catches a message the server drops once a later message from the same sending device in the same channel under the same scheme reaches the recipient. It does not catch the drop of:
   - a sender's latest messages in a channel under a scheme, until it sends another there under it; for a message with `to`, the sender still sees no `read`;
