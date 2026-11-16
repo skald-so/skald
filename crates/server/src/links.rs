@@ -12,6 +12,7 @@ use sqlx::PgPool;
 use crate::AppState;
 use crate::accounts::{GITHUB, Method};
 use crate::refusal::{Refusal, account, answer};
+use crate::sessions::WEB_LIFETIME;
 use crate::sign_in::{
     self, Failure, Flow, Provider, SignInSettings, escape, flows, form_page, form_page_failed,
     from_this_server, off, provider_off, refresh_page, session_hashes, sign_in_links, start_with,
@@ -192,10 +193,13 @@ pub(crate) async fn start<P: Provider>(
     }
     let found: Result<Option<(Vec<u8>, String, bool)>, _> = sqlx::query_as(
         "SELECT token_hash, account_id::text, created_at > now() - make_interval(secs => $2)
-         FROM sessions WHERE kind = 'web' AND token_hash = ANY($1) LIMIT 1",
+         FROM sessions WHERE kind = 'web' AND token_hash = ANY($1)
+             AND created_at > now() - make_interval(secs => $3)
+         LIMIT 1",
     )
     .bind(session_hashes(headers))
     .bind(settings.link_age.as_secs() as f64)
+    .bind(WEB_LIFETIME.as_secs_f64())
     .fetch_optional(&state.db)
     .await;
     match found {
@@ -250,7 +254,7 @@ pub(crate) enum Added {
 }
 
 /// Adds `method` to the account of the web session whose token's SHA-256 is `session`, while the
-/// session lasts, unless another account has the method.
+/// session lasts and has not expired, unless another account has the method.
 pub(crate) async fn add(
     db: &PgPool,
     session: &[u8],
@@ -259,9 +263,12 @@ pub(crate) async fn add(
     let mut tx = db.begin().await.map_err(Failure::Database)?;
     // The session's row stays until the link commits.
     let account: Option<(String,)> = sqlx::query_as(
-        "SELECT account_id::text FROM sessions WHERE token_hash = $1 AND kind = 'web' FOR SHARE",
+        "SELECT account_id::text FROM sessions
+         WHERE token_hash = $1 AND kind = 'web' AND created_at > now() - make_interval(secs => $2)
+         FOR SHARE",
     )
     .bind(session)
+    .bind(WEB_LIFETIME.as_secs_f64())
     .fetch_optional(&mut *tx)
     .await
     .map_err(Failure::Database)?;

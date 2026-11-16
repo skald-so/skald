@@ -3,8 +3,8 @@ import { defineConfig } from "orval";
 // The API client and its MSW mocks, generated from the spec into src/api/. Left out are what a
 // browser opens itself, not with fetch: the WebSocket, the GitHub and Google sign-ins and links it
 // navigates to, the page of the account's sign-in methods and the device flow's verification page;
-// and what only a machine calls: the device flow's endpoints, a device session's challenge, its
-// mailbox requests and stream, and ending a device session.
+// and what only a machine calls: the device flow's endpoints, a device session's challenge and
+// its mailbox requests and stream.
 export default defineConfig({
   skald: {
     input: {
@@ -24,7 +24,6 @@ export default defineConfig({
           "requestDeviceToken",
           "getDeviceVerificationPage",
           "decideDeviceCode",
-          "endSession",
           "issueChallenge",
           "sendEnvelope",
           "ackMailbox",

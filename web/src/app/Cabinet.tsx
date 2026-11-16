@@ -1,7 +1,10 @@
 import { useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router";
+import { endSession } from "../api/skald.ts";
 import type { ListedSpace, Session } from "../api/skald.schemas.ts";
 import type { DropdownOption } from "../ui/Dropdown.tsx";
-import { Shell, type ShellAccount } from "../ui/Shell.tsx";
+import { Shell, type ShellAccount, type ShellSection } from "../ui/Shell.tsx";
+import { versioned } from "./api.ts";
 
 /** The providers' names for people. */
 const methods = { github: "GitHub", google: "Google" } as const;
@@ -9,22 +12,33 @@ const methods = { github: "GitHub", google: "Google" } as const;
 /** Where the account's sign-in methods are: the server's page of them. */
 const signInMethodsPage = "/sign-in-methods";
 
+/** The cabinet's sections, each on its page. */
+const sections: ShellSection[] = [
+  { key: "access", label: "Access", href: "/access" },
+];
+
 /**
  * The cabinet shell around `children`, the page area, for the account of `session` with `spaces`:
- * the space switcher with the personal space marked, or, with no space, what makes one; and the
- * account footer. `menuOpen` opens the side menu at phone width, as on the kit page.
+ * the space switcher with the personal space marked, or, with no space, what makes one; the side
+ * menu's sections, followed in the page; and the account footer, whose Sign out ends this web
+ * session and then calls `onSignedOut`. `menuOpen` opens the side menu at phone width, as on the
+ * kit page.
  */
 export function Cabinet({
   session,
   spaces,
+  onSignedOut,
   menuOpen = false,
   children,
 }: {
   session: Session;
   spaces: readonly ListedSpace[];
+  onSignedOut: () => void;
   menuOpen?: boolean;
   children: ReactNode;
 }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [space, setSpace] = useState(
     () => (spaces.find((space) => space.personal) ?? spaces[0])?.space ?? "",
   );
@@ -36,8 +50,12 @@ export function Cabinet({
 
   return (
     <Shell
-      sections={[]}
-      current=""
+      sections={sections}
+      current={
+        sections.find((section) => section.href === location.pathname)?.key ??
+        ""
+      }
+      onFollow={(href) => navigate(href)}
       spaces={options}
       noSpaces={
         <p>
@@ -47,7 +65,7 @@ export function Cabinet({
       }
       space={space}
       onSpaceChange={setSpace}
-      account={account(session)}
+      account={account(session, onSignedOut)}
       defaultMenuOpen={menuOpen}
     >
       {children}
@@ -57,9 +75,10 @@ export function Cabinet({
 
 /**
  * The account footer of `session`: the username; the method it signed in with, and the GitHub login
- * of the account's GitHub method, as "GitHub · ana" or "Google · GitHub ana".
+ * of the account's GitHub method, as "GitHub · ana" or "Google · GitHub ana"; its menu's Sign out
+ * calls `onSignedOut` once the server has answered.
  */
-function account(session: Session): ShellAccount {
+function account(session: Session, onSignedOut: () => void): ShellAccount {
   const method = session.sign_in_method && methods[session.sign_in_method];
   const login = session.github_login;
   const signIn = [
@@ -74,6 +93,13 @@ function account(session: Session): ShellAccount {
       {
         label: "Sign-in methods",
         onSelect: () => window.location.assign(signInMethodsPage),
+      },
+      {
+        label: "Sign out",
+        onSelect: () => {
+          // Whatever it answers, the web app loads again: the sign-in page once the session ended.
+          endSession({ headers: versioned }).then(onSignedOut, onSignedOut);
+        },
       },
     ],
   };
