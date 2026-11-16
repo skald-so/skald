@@ -1,12 +1,13 @@
 //! Uploads the server refuses, storing nothing of them ("Uploads" and "History entry"): from a
 //! device outside the item's epoch, a revoked device or a connection that proves no device; an
 //! entry of an epoch before the previous one or from a device outside the current epoch; one
-//! naming another channel or an epoch the channel has not had; bytes that do not decode.
+//! naming another channel, the channel with another space or an epoch the channel has not had;
+//! bytes that do not decode.
 
 use std::io::ErrorKind;
 use std::time::Duration;
 
-use skald_proto::{ChannelId, MessageId, PROTOCOL_VERSION};
+use skald_proto::{ChannelId, MessageId, PROTOCOL_VERSION, SpaceId};
 use tungstenite::Message;
 use tungstenite::stream::MaybeTlsStream;
 
@@ -18,7 +19,7 @@ use crate::kit::{
     bob_rotates, entry, entry_of, formed, history_frame, link, link_bytes, refuses, stores,
     upload_to, wrap,
 };
-use crate::scene::{removing, revoke};
+use crate::scene::{Peer, removing, revoke};
 use crate::wire::{Socket, assert_nowhere};
 
 /// How long a test waits for the server to close a connection.
@@ -226,6 +227,79 @@ fn uploads_from_a_revoked_device_are_not_stored() {
         [&[], &[&alices], &[]],
         "alice's wrap alone",
     );
+}
+
+#[test]
+fn uploads_from_a_device_revoked_while_its_connection_stays_open_are_refused() {
+    let (mut s, _) = formed(3_160_110_261);
+    let f = &s.fixture;
+    let t = &f.team;
+    let g = f.general;
+    // bob's laptop is revoked before the revocation's notice reaches the instance holding its
+    // connection: only the upload sees it.
+    f.db().execute(&format!(
+        "UPDATE devices SET revoked = true WHERE id = '{}'",
+        s.bob.id
+    ));
+    let bobs = [wrap(g, 1, &t.dave, &t.bob), entry(g, 1)];
+    for item in &bobs {
+        refuses_in(
+            &mut s.bob,
+            f,
+            t.space,
+            item,
+            "not-a-member",
+            "the revoked bob's",
+        );
+    }
+
+    let alices = wrap(g, 1, &t.dave, &t.alice);
+    stores(&mut s.alice, f, &alices, "alice's wrap to dave");
+}
+
+#[test]
+fn uploads_naming_the_channel_with_another_space_are_refused() {
+    let (mut s, _) = formed(3_160_110_271);
+    bob_rotates(&mut s);
+    let f = &s.fixture;
+    let t = &f.team;
+    let g = f.general;
+    let items = [link(g, 2, 1), wrap(g, 2, &t.alice, &t.alice), entry(g, 2)];
+    for item in &items {
+        let space = SpaceId::generate();
+        refuses_in(
+            &mut s.alice,
+            f,
+            space,
+            item,
+            "not-a-member",
+            "of another space",
+        );
+    }
+
+    let link = link(g, 2, 1);
+    stores(
+        &mut s.alice,
+        f,
+        &link,
+        "alice's link in the channel's space",
+    );
+}
+
+/// Checks that the server refuses `peer`'s upload of `item` in the fixture's channel named with
+/// `space`, with `problem`, and stores nothing of it.
+#[track_caller]
+fn refuses_in(
+    peer: &mut Peer,
+    f: &Fixture,
+    space: SpaceId,
+    item: &Item,
+    problem: &str,
+    what: &str,
+) {
+    let answer = upload_to(peer, space, f.general, item);
+    assert_eq!(answer, Answer::Refused(problem.to_owned()), "{what}");
+    assert_nowhere(f.db(), item.bytes());
 }
 
 /// Opens a connection to the fixture's server and sends `frame` as its first frame, with no

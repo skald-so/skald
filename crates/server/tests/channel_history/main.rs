@@ -10,7 +10,9 @@
 //! - it refuses an upload that does not decode, or names another channel or an epoch the channel
 //!   has not had;
 //! - it gives them, as the bytes it got, only to sessions of accounts the latest revision lists as
-//!   the channel's members.
+//!   the channel's members;
+//! - a database migrated from before history keeps the member devices of each followed group's
+//!   current epoch.
 //!
 //! Against a `skald-server` with the scene of the tests of the server as the MLS Delivery Service:
 //! its channel's group, formed by test devices running MLS with `skald-crypto`, the member epochs
@@ -59,5 +61,6 @@ mod kit;
 
 mod access;
 mod first_kept;
+mod migration;
 mod refusals;
 mod storing;

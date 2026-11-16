@@ -86,15 +86,6 @@ const LINK: u64 = 1;
 const WRAP: u64 = 2;
 const ENTRY: u64 = 3;
 
-impl HistoryItem {
-    /// The item's encoded link, wrap or entry.
-    pub fn bytes(&self) -> &[u8] {
-        match self {
-            Self::Link(bytes) | Self::Wrap(bytes) | Self::Entry { entry: bytes, .. } => bytes,
-        }
-    }
-}
-
 impl Codec for HistoryItem {
     fn encode(&self) -> Vec<u8> {
         match self {
