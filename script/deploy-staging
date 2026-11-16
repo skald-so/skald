@@ -4,15 +4,14 @@
 #
 # Connects over SSH as the deploy key's account and runs `deploy <digest>` there, which passes only
 # when the server runs the image and its health check answers ok; exits 0 only then. The connection
-# comes only from the environment, the secrets of the GitHub environment staging:
-#   STAGING_SSH_KEY          the private key, base64
-#   STAGING_SSH_HOST_KEY     the host key pinned for the connection: `<type> <base64>`
-#   STAGING_SSH_DESTINATION  ssh://<account>@<address>:<port>
+# comes only from the secrets of the GitHub environment staging, STAGING_SSH_KEY,
+# STAGING_SSH_HOST_KEY and STAGING_SSH_DESTINATION: script/lib/ssh-deploy.sh.
 # Prints the commit, the digest and the deploy's own output, its steps and the health check result;
-# never these values: SSH's own messages, which name the address, are off.
+# never these values.
 # Usage: script/deploy-staging <commit> <digest>, in a clone of the repository.
 set -euo pipefail
 source "$(dirname "$0")/lib/dev-head.sh"
+source "$(dirname "$0")/lib/ssh-deploy.sh"
 
 if [[ $# -ne 2 ]]; then
   echo "usage: $0 <commit> <digest>" >&2
@@ -20,48 +19,10 @@ if [[ $# -ne 2 ]]; then
 fi
 commit=$1 digest=$2
 check_commit_and_digest deploy-staging "$commit" "$digest"
-for name in STAGING_SSH_KEY STAGING_SSH_HOST_KEY STAGING_SSH_DESTINATION; do
-  if [[ -z ${!name:-} ]]; then
-    echo "deploy-staging: $name is not set" >&2
-    exit 2
-  fi
-done
-if [[ ! $STAGING_SSH_HOST_KEY =~ ^[a-z0-9@.-]+\ [A-Za-z0-9+/]+={0,2}$ ]]; then
-  echo "deploy-staging: STAGING_SSH_HOST_KEY is not '<type> <base64>'" >&2
-  exit 2
-fi
-if [[ ! $STAGING_SSH_DESTINATION =~ ^ssh://[^[:space:]]+$ ]]; then
-  echo "deploy-staging: STAGING_SSH_DESTINATION is not an ssh:// URL" >&2
-  exit 2
-fi
+check_ssh_secrets deploy-staging STAGING
 
 exit_unless_dev_head deploy-staging "$commit" staging
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/deploy-staging.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
-(
-  umask 077
-  base64 --decode <<<"$STAGING_SSH_KEY" >"$tmp/key" 2>/dev/null
-) || true
-if [[ $(head -n 1 "$tmp/key") != '-----BEGIN OPENSSH PRIVATE KEY-----' ]]; then
-  echo "deploy-staging: STAGING_SSH_KEY is not a base64 private key" >&2
-  exit 2
-fi
-# The pinned host key under an alias: SSH checks it whatever the address and port.
-echo "staging $STAGING_SSH_HOST_KEY" >"$tmp/known_hosts"
-
 echo "deploy-staging: deploying $commit, $digest"
-status=0
-ssh -F /dev/null -i "$tmp/key" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes \
-  -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$tmp/known_hosts" \
-  -o GlobalKnownHostsFile=/dev/null -o HostKeyAlias=staging -o CheckHostIP=no \
-  -o UpdateHostKeys=no -o LogLevel=QUIET -o ConnectTimeout=30 -o ServerAliveInterval=15 \
-  -- "$STAGING_SSH_DESTINATION" deploy "$digest" </dev/null || status=$?
-if [[ $status -eq 255 ]]; then
-  echo "deploy-staging: FAILED: no SSH session: the connection, the pinned host key or the key failed"
-  exit 1
-elif [[ $status -ne 0 ]]; then
-  echo "deploy-staging: FAILED: the deploy exited with $status"
-  exit 1
-fi
+ssh_deploy deploy-staging STAGING deploy "$digest"
 echo "deploy-staging: staging runs $commit, $digest"

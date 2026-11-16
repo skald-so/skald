@@ -3,9 +3,11 @@
 
 use std::num::NonZeroU64;
 
-use skald_proto::{Cbor, DecodeError, Envelope, Frame, Push, RawEnvelope, SendKey, ServerStatus};
+use skald_proto::{
+    Cbor, DecodeError, Envelope, Frame, HistoryItem, Push, RawEnvelope, SendKey, ServerStatus,
+};
 
-use crate::common::{delivery_status, hex, msg, nonzero, space, to_hex, vectors};
+use crate::common::{channel, delivery_status, hex, msg, nonzero, space, to_hex, vectors};
 
 /// `msg_id` of the first and the second message of the vectors.
 pub const MSG_1: &str = "019a6f201a007c008a00000000000001";
@@ -14,6 +16,8 @@ pub const MSG_2: &str = "019a6f201a007c008a00000000000002";
 pub const BOB: &str = "188e6ae45b2d8247b1e1583b84bd49c7";
 /// The space of the vectors.
 pub const SPACE: &str = "019a6f1e2b3c7d4e8f5061a2b3c4d5e6";
+/// The channel of the vectors.
+pub const CHANNEL: &str = "019a6f1e2b3c7d4e8f5061a2b3c4d5e7";
 
 /// The `delivery-status` of the `delivered` vector.
 pub fn delivered_hex() -> String {
@@ -102,6 +106,18 @@ pub fn space_notice_hex() -> String {
     format!("82 09 50{SPACE}")
 }
 
+/// A `history` frame of upload 5 in the vectors' channel with `item`, whose bytes are `item_hex`.
+pub fn history(item: HistoryItem, item_hex: &str) -> (&'static str, Frame, String) {
+    let frame = Frame::History {
+        upload: 5,
+        space: space(),
+        channel: channel(),
+        item,
+    };
+    let text = format!("85 0b 05 50{SPACE} 50{CHANNEL} {item_hex}");
+    ("history", frame, text)
+}
+
 /// One frame of each type and its bytes.
 pub fn frames() -> Vec<(&'static str, Frame, String)> {
     vec![
@@ -135,6 +151,28 @@ pub fn frames() -> Vec<(&'static str, Frame, String)> {
             "space-notice",
             Frame::Push(space_notice_push()),
             space_notice_hex(),
+        ),
+        history(HistoryItem::Link(hex("a0")), "82 01 41a0"),
+        history(HistoryItem::Wrap(hex("a0")), "82 02 41a0"),
+        history(
+            HistoryItem::Entry {
+                msg_id: msg(1),
+                entry: hex("a0"),
+            },
+            &format!("83 03 50{MSG_1} 41a0"),
+        ),
+        (
+            "history-stored",
+            Frame::HistoryStored { upload: 5 },
+            "82 0c 05".to_owned(),
+        ),
+        (
+            "history-refused",
+            Frame::HistoryRefused {
+                upload: 5,
+                problem: "malformed".to_owned(),
+            },
+            format!("83 0d 05 69{}", to_hex(b"malformed")),
         ),
     ]
 }

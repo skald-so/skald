@@ -89,11 +89,13 @@ const { methods } = getListSignInMethodsResponseMock({
       provider: "github",
       linked_at: before(39 * day),
       github_login: "ana",
+      current: true,
     },
     {
       method: "01968a2e-0000-7000-8000-0000000003a2",
       provider: "google",
       linked_at: before(2 * day),
+      current: false,
     },
   ],
 });

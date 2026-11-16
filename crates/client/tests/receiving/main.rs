@@ -884,10 +884,12 @@ const BOB_IN_B: &str = "the other client's contract is signed";
 const FORGED_IN_A: &str = "forged in clienta's channel";
 const FORGED_IN_B: &str = "forged in the other client's channel";
 
-/// As an agent in `~/work/clientA`, `skald recv` shows only clienta's message from Bob, the
-/// `delivered` of Ada's message there and the warning of a message dropped there, each under
-/// `mls`; its output names nothing of clientb. The person's next run shows clientb's message, status and warning, and
-/// nothing of clienta's again.
+/// The agent has run once in `~/work/clientA` before Ada sends, so clienta's messages are handed
+/// over to it. As that agent, `skald recv` shows only clienta's message from Bob, the `delivered`
+/// of Ada's message there and the warning of a message dropped there, each under `mls`; its output
+/// names nothing of clientb. The person's next run shows clientb's message, status and warning,
+/// clienta's message from Bob once, as it shows each message whether or not an agent got it, and
+/// nothing else of clienta's.
 #[test]
 fn agent_receives_only_in_the_space_of_its_folder() {
     let (world, front) = fronted();
@@ -904,6 +906,8 @@ fn agent_receives_only_in_the_space_of_its_folder() {
     }
     let folder = desk.dir("work/clientA");
     desk.add_rule(&folder, CLIENT_A);
+    let first = as_agent(&ada.machine, &folder);
+    assert!(first.success, "{first:?}");
     let mut ada_ids = Vec::new();
     let mut ada_sent = Vec::new();
     for (channel, text) in channels.iter().zip(["ada asks in a", "ada asks in b"]) {
@@ -983,7 +987,7 @@ fn agent_receives_only_in_the_space_of_its_folder() {
         "{shown}"
     );
     assert_eq!(warnings_naming(&shown, bob.device), 1, "{shown}");
-    assert_eq!(times(&shown, BOB_IN_A), 0, "shown again: {shown}");
+    assert_shows_once(&shown, &bob_in(0, BOB_IN_A));
     assert_eq!(lines_of(&shown, ada_ids[0]), 0, "shown again: {shown}");
     assert_eq!(times(&shown, FORGED_IN_B), 0, "{shown}");
 }

@@ -22,6 +22,19 @@
 //     release tag, by another workflow or in another repository fails the check: one release's
 //     files, image and package, checked against the other release's tag.
 //   - a tag with no release fails it.
+//   - the web app's archive, skald-web.tar.gz, with its checksum, skald-web.tar.gz.sha256, and its
+//     attestation as a file of its own, skald-web.tar.gz.sigstore.json, a Sigstore bundle: the check
+//     names the last release published without them, v0.1.0 or later and no newer than the
+//     workspace's version, script/release-version. For that release and those published before
+//     it, or, when GitHub does not list it, those of a lower version, such as v0.0.2, it prints a
+//     line `release-check: skald-web.tar.gz: skipped...` that names that last release, and does not
+//     fail for them. Every release published after it, a beta included, has them: the check verifies
+//     the archive against its checksum and against its attestation file, with the commands of
+//     "Trust in builds" pinned to the release's tag (gh attestation verify --bundle, or cosign
+//     verify-blob-attestation --bundle), and its attestation file needs no attestation of its own. A
+//     missing archive, checksum or attestation file, a mismatched checksum, and an attestation file
+//     made at another release's tag, at a ref that is no release tag, by another workflow or in
+//     another repository fail one step, skald-web.tar.gz, and no other.
 // The stand-ins, script/lib/release-check-stub.mjs, set where it reaches:
 //   SKALD_RELEASES_URL   where the releases' files are instead of
 //                        https://github.com/skald-so/skald/releases/download: <url>/<tag>/<file>;
@@ -168,6 +181,19 @@ function writeArchive(dir, tag, target, behavior) {
   fs.writeFileSync(`${archive}.sha256`, `${sha256(fs.readFileSync(archive))} *${path.basename(archive)}\n\n`);
 }
 
+// writeWeb <dir> <tag>: the web app's archive of the release, its files at the archive's root, and
+// its checksum, as sha256sum writes it.
+const WEB = 'skald-web.tar.gz';
+function writeWeb(dir, tag) {
+  const work = fs.mkdtempSync(path.join(scratch, 'web-'));
+  fs.writeFileSync(path.join(work, 'index.html'), `<!doctype html><title>Skald ${versionOf(tag)}</title>\n`);
+  fs.writeFileSync(path.join(work, 'licenses.txt'), 'The licenses of the packages and fonts the build bundles.\n');
+  const result = spawnSync('tar', ['-czf', path.join(dir, WEB), '-C', work, 'index.html', 'licenses.txt'], { encoding: 'utf8' });
+  if (result.status !== 0) throw new Error(`tar: ${result.stderr}`);
+  fs.rmSync(work, { recursive: true, force: true });
+  fs.writeFileSync(path.join(dir, `${WEB}.sha256`), `${sha256(fs.readFileSync(path.join(dir, WEB)))}  ${WEB}\n`);
+}
+
 const runScript = (script, ...args) => {
   const result = spawnSync(path.join(root, 'script', script), args, { encoding: 'utf8' });
   if (result.status !== 0) throw new Error(`script/${script} ${args.join(' ')}: ${result.stderr}`);
@@ -178,10 +204,12 @@ const packageJson = (tgz) => {
   return JSON.parse(result.stdout);
 };
 
-// The pristine releases and packages, copied into each case.
+// The pristine releases and packages, copied into each case; prepare <tag> makes those of <tag>
+// once.
 const pristine = path.join(scratch, 'pristine');
-for (const tag of [FIRST, BETA, STABLE]) {
+function prepare(tag) {
   const dir = path.join(pristine, tag, 'release');
+  if (fs.existsSync(dir)) return;
   fs.mkdirSync(dir, { recursive: true });
   for (const target of targets) writeArchive(dir, tag, target);
   runScript('release-installers', tag, dir);
@@ -205,9 +233,10 @@ function brokenPackage(tag, dir) {
   return tgz;
 }
 
-// world <dir> <tags>: the stand-in GitHub, GHCR and npm with the releases <tags>, oldest first, as
-// the release workflow publishes them, and helpers to change it.
-function world(dir, tags) {
+// world <dir> <tags> <web>: the stand-in GitHub, GHCR and npm with the releases <tags>, oldest
+// first, as the release workflow publishes them, those of <web> with the web app's archive, and
+// helpers to change it.
+function world(dir, tags, web = []) {
   const w = {
     releases: [],
     latest: null,
@@ -227,6 +256,7 @@ function world(dir, tags) {
     predicateType: provenanceType,
   });
   for (const tag of tags) {
+    prepare(tag);
     const release = { tag, prerelease: tag.includes('-'), immutable: true, dir: path.join(dir, tag, 'release') };
     fs.cpSync(path.join(pristine, tag, 'release'), release.dir, { recursive: true });
     fs.cpSync(path.join(pristine, tag, 'npm'), path.join(dir, tag, 'npm'), { recursive: true });
@@ -262,6 +292,26 @@ function world(dir, tags) {
       .filter((a) => !(a.tag === tag && a.name !== 'image'))
       .concat(fs.readdirSync(release(tag).dir).map((name) => attestFile(tag, path.join(release(tag).dir, name), by)));
   };
+  // webBundle <tag> <by>: the release's attestation file of its web app's archive attests the
+  // archive as it is, made by <by>, {repo, workflow, ref}, the release workflow at the tag by default.
+  w.webBundle = (tag, by = {}) => {
+    const archive = fs.readFileSync(path.join(release(tag).dir, WEB));
+    const standin = {
+      subject: { name: WEB, sha256: sha256(archive) },
+      repo: by.repo ?? repository,
+      workflow: by.workflow ?? releaseWorkflow,
+      ref: by.ref ?? refOf(tag),
+      predicateType: provenanceType,
+    };
+    fs.writeFileSync(path.join(release(tag).dir, `${WEB}.sigstore.json`), JSON.stringify({ mediaType: 'application/vnd.dev.sigstore.bundle.v0.3+json', standin }));
+  };
+  // The web app's archive of each release of <web>, with its checksum, both attested as published,
+  // and its attestation file.
+  for (const tag of web) {
+    writeWeb(release(tag).dir, tag);
+    for (const name of [WEB, `${WEB}.sha256`]) w.attestations.push(attestFile(tag, path.join(release(tag).dir, name)));
+    w.webBundle(tag);
+  }
   w.release = release;
   w.brokenPackage = (tag) => {
     const tgz = brokenPackage(tag, fs.mkdtempSync(path.join(dir, 'broken-')));
@@ -617,7 +667,8 @@ function covered(r, w, tag) {
   const ok = (tool, digest, extra = () => true) =>
     r.calls.some((c) => c.tool === tool && c.status === 0 && c.subjects.includes(digest) && extra(c));
   const verifies = (c) => c.args[0] === 'attestation' && c.args[1] === 'verify';
-  for (const name of fileNames(w, tag)) {
+  // The attestation file of the web app's archive is verified as the archive's: webCovered().
+  for (const name of fileNames(w, tag).filter((n) => n !== `${WEB}.sigstore.json`)) {
     if (!ok('gh', sha256(fs.readFileSync(path.join(w.release(tag).dir, name))), verifies)) {
       fail(`${tag}: the check verifies the attestation of every file of the release, but not of ${name}`);
     }
@@ -633,7 +684,7 @@ function covered(r, w, tag) {
 async function runCase(c, index) {
   const dir = path.join(scratch, `case-${index}`);
   fs.mkdirSync(dir);
-  const w = world(dir, c.tags);
+  const w = world(dir, c.tags, c.web);
   c.change?.(w);
   const r = await runCheck(dir, w, c.args);
   const label = `${c.name} (script/release-check ${c.args.map((a) => JSON.stringify(a)).join(' ')})`;
@@ -647,15 +698,196 @@ async function runCase(c, index) {
   } else {
     const patterns = c.files ? [anyOf(fileNames(w, c.files))] : c.expect;
     if (r.status === 0) fail(`${label}: it fails, but exits 0: ${tail(r.output)}`);
-    else if (!failedLine(r.output, patterns)) {
+    else if (c.steps) {
+      const failed = failedSteps(r.output);
+      if (JSON.stringify(failed) !== JSON.stringify(c.steps)) {
+        fail(`${label}: it fails the step ${c.steps.join(', ')} and no other, not: ${failed.join(', ') || 'none'}: ${tail(r.output)}`);
+      }
+    } else if (!failedLine(r.output, patterns)) {
       fail(`${label}: it fails with a line 'release-check: ...' that names the failed step (${patterns.join(' and ')}), not: ${tail(r.output)}`);
     }
   }
   fs.rmSync(dir, { recursive: true, force: true });
+  return r;
+}
+
+// The web app's archive. failedSteps <output>: the steps of the lines
+// `release-check: <step>: failed: <why>`, sorted, each once.
+const failedSteps = (output) =>
+  [...new Set(output.split('\n').map((l) => l.match(/^release-check: (.*?): failed\b/)?.[1]).filter(Boolean))].sort();
+const releaseTag = /v\d+\.\d+\.\d+(?:-beta\.\d+)?(?![\w.-])/g;
+// skipped <output>: the lines that report the archive as skipped.
+const skipped = (output) => output.split('\n').filter((l) => /^release-check: skald-web\.tar\.gz: skipped\b/.test(l));
+// before <a> <b>: version <a> is lower than <b>.
+const before = (a, b) => {
+  const [x, y] = [a.slice(1).match(/^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/), b.slice(1).match(/^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/)];
+  const key = (m) => [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? Infinity : Number(m[4])];
+  const [p, q] = [key(x), key(y)];
+  for (let i = 0; i < 4; i++) if (p[i] !== q[i]) return p[i] < q[i];
+  return false;
+};
+// reportsSkipped <run> <tag> <last>: the run reports the archive as skipped, naming <last>.
+function reportsSkipped(r, tag, last) {
+  const lines = skipped(r.output);
+  if (lines.length === 0) fail(`${tag}: the check reports the web app's archive as skipped, 'release-check: skald-web.tar.gz: skipped...', but did not: ${tail(r.output)}`);
+  else if (!lines.some((l) => (l.match(releaseTag) ?? []).includes(last))) {
+    fail(`${tag}: the line that reports the web app's archive as skipped names the last release without it, ${last}, not: ${lines.join(' | ')}`);
+  }
+}
+// webCovered <run> <world> <tag>: the passed run verified the release's web app's archive against
+// its attestation file, and reported nothing skipped.
+function webCovered(r, w, tag) {
+  covered(r, w, tag);
+  if (skipped(r.output).length > 0) fail(`${tag}: the release has the web app's archive, but the check reports it as skipped: ${skipped(r.output).join(' | ')}`);
+  const digest = sha256(fs.readFileSync(path.join(w.release(tag).dir, WEB)));
+  const byBundle = (c) =>
+    c.status === 0 &&
+    c.subjects.includes(digest) &&
+    ((c.tool === 'gh' && c.args[0] === 'attestation' && c.args[1] === 'verify' && c.args.some((a) => /^(-b|--bundle)(=|$)/.test(a))) ||
+      (c.tool === 'cosign' && c.args[0] === 'verify-blob-attestation'));
+  if (!r.calls.some(byBundle)) fail(`${tag}: the check verifies ${WEB} against its attestation file, ${WEB}.sigstore.json, but did not`);
+}
+
+// The last release without the web app's archive, as the check names it, checking v0.0.2: every
+// release of skald-so/skald is v0.1.0 or later, and v0.1.0 had none.
+async function lastWithoutWeb() {
+  const r = await runCase({ name: "a release before the last one without the web app's archive passes", tags: all, args: [STABLE], pass: true }, 'web-last');
+  const named = skipped(r.output).flatMap((l) => l.match(releaseTag) ?? []).filter((t) => t !== STABLE);
+  if (named.length === 0) {
+    fail(
+      `${STABLE}: the check reports the web app's archive as skipped, 'release-check: skald-web.tar.gz: skipped...', naming the last release without it, but did not: ${tail(r.output)}`,
+    );
+    // The cases still run, around v0.1.0, a release without the archive.
+    return 'v0.1.0';
+  }
+  if (before(named[0], 'v0.1.0')) fail(`the last release without the web app's archive is v0.1.0 or later, not ${named[0]}`);
+  // Released already: no newer than the workspace's version, which a release only raises.
+  const workspace = `v${spawnSync(path.join(root, 'script/release-version'), { encoding: 'utf8' }).stdout.trim()}`;
+  if (before(workspace, named[0])) fail(`the last release without the web app's archive is released already, no newer than the workspace's ${workspace}, not ${named[0]}`);
+  return named[0];
+}
+
+// webCases <last>: the cases of the web app's archive around <last>, the last release without it.
+function webCases(last) {
+  const m = last.match(/^v(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/);
+  const [major, minor, patch] = [m[1], m[2], Number(m[3])];
+  // The stable release and the beta published after <last>.
+  const next = m[4] === undefined ? `v${major}.${minor}.${patch + 1}` : `v${major}.${minor}.${patch}`;
+  const nextBeta = m[4] === undefined ? `v${major}.${minor}.${patch + 2}-beta.1` : `v${major}.${minor}.${patch}-beta.${Number(m[4]) + 1}`;
+  const tags = [STABLE, last, next];
+  const web = [next];
+  const steps = [WEB];
+  const at = `${WEB}.sigstore.json`;
+  return [
+    {
+      name: "the last release without the web app's archive passes and reports it as skipped",
+      tags: [STABLE, last],
+      args: [last],
+      pass: true,
+      after: (r) => reportsSkipped(r, last, last),
+    },
+    {
+      // A beta: a stable release before the latest fails its dist-tag.
+      name: "a release published before the last one without the web app's archive passes and reports it as skipped",
+      tags: [BETA, last, next],
+      web,
+      args: [BETA],
+      pass: true,
+      after: (r) => reportsSkipped(r, BETA, last),
+    },
+    {
+      name: "the release after the last one without the web app's archive passes with it",
+      tags,
+      web,
+      args: [next],
+      pass: true,
+      after: (r, w) => webCovered(r, w, next),
+    },
+    {
+      name: "a beta after the last release without the web app's archive passes with it",
+      tags: [STABLE, last, nextBeta],
+      web: [nextBeta],
+      args: [nextBeta],
+      pass: true,
+      after: (r, w) => webCovered(r, w, nextBeta),
+    },
+    {
+      name: "the release after the last one without the web app's archive has none",
+      tags,
+      args: [next],
+      steps,
+    },
+    {
+      name: "a beta after the last release without the web app's archive has none",
+      tags: [STABLE, last, nextBeta],
+      args: [nextBeta],
+      steps,
+    },
+    {
+      name: "the web app's archive does not match its checksum",
+      tags,
+      web,
+      change: (w) => {
+        w.replace(next, WEB, 'another archive\n');
+        w.webBundle(next);
+      },
+      args: [next],
+      steps,
+    },
+    {
+      name: "the web app's archive has no checksum",
+      tags,
+      web,
+      change: (w) => fs.rmSync(path.join(w.release(next).dir, `${WEB}.sha256`)),
+      args: [next],
+      steps,
+    },
+    {
+      name: "the web app's archive has no attestation file",
+      tags,
+      web,
+      change: (w) => fs.rmSync(path.join(w.release(next).dir, at)),
+      args: [next],
+      steps,
+    },
+    {
+      name: "the web app's archive's attestation file is made at the last release's tag",
+      tags,
+      web,
+      change: (w) => w.webBundle(next, { ref: refOf(last) }),
+      args: [next],
+      steps,
+    },
+    {
+      name: "the web app's archive's attestation file is made at a ref that is no release tag, refs/heads/dev",
+      tags,
+      web,
+      change: (w) => w.webBundle(next, { ref: 'refs/heads/dev' }),
+      args: [next],
+      steps,
+    },
+    {
+      name: "the web app's archive's attestation file is made by another workflow at the tag",
+      tags,
+      web,
+      change: (w) => w.webBundle(next, { workflow: 'skald-so/skald/.github/workflows/edge.yml' }),
+      args: [next],
+      steps,
+    },
+    {
+      name: "the web app's archive's attestation file is made in another repository",
+      tags,
+      web,
+      change: (w) => w.webBundle(next, { repo: 'fork/skald', workflow: 'fork/skald/.github/workflows/release.yml' }),
+      args: [next],
+      steps,
+    },
+  ];
 }
 
 try {
   if (!fs.statSync(check, { throwIfNoEntry: false })?.isFile()) fail('script/release-check is missing');
+  cases.push(...webCases(await lastWithoutWeb()));
   // Four checks at a time.
   const queue = cases.map((c, i) => [c, i]);
   await Promise.all(

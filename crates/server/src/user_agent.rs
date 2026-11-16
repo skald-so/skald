@@ -110,4 +110,16 @@ mod tests {
             assert_eq!(browser_and_os(agent), (None, None), "{agent}");
         }
     }
+
+    #[test]
+    fn names_safari_only_with_both_its_tokens() {
+        for agent in [
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like \
+             Gecko) Safari/605.1.15",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like \
+             Gecko) Version/18.1",
+        ] {
+            assert_eq!(browser_and_os(agent), (None, Some("macOS")), "{agent}");
+        }
+    }
 }

@@ -2,7 +2,8 @@
 // the answers these tests give for the session, the providers and the account's methods.
 //
 // The API, as these tests use it, beside the spec:
-// - `GET /account/sign-in-methods`: each method also has `"method": <ID>`;
+// - `GET /account/sign-in-methods`: each method also has `"method": <ID>`, and `current` marks the
+//   one this web session signed in with;
 // - `DELETE /account/sign-in-methods/{method}` removes that method, `204`.
 //
 // The web app, as these tests use it: the account menu, the footer's button "Account", has the item
@@ -105,7 +106,12 @@ const server = setupServer(
   ),
   http.get(
     `*${getListSignInMethodsUrl()}`,
-    whileSignedIn(() => ({ methods })),
+    whileSignedIn(() => ({
+      methods: methods.map((method) => ({
+        ...method,
+        current: method.provider === signedInWith,
+      })),
+    })),
   ),
   http.get("*/auth/providers", () =>
     HttpResponse.json({ providers, sign_up: "open" }),

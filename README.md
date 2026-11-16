@@ -75,6 +75,7 @@ skald spaces                 # the device's spaces and the account's role in eac
 skald channels <space>       # a space's channels: each one's ID and members
 skald send <channel> <text>  # send a text to the channel's other member devices
 skald recv                   # receive the device's messages
+skald --agent <name> recv    # the messages handed over to the agent in the working directory's space
 ```
 
 `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
