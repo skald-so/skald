@@ -18,7 +18,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{RosterError, accept_next, check_device, check_valid_device};
-use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Revocation, Roster, SpaceId};
+use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Member, Revocation, Roster, SpaceId};
 
 use crate::connection::Connection;
 use crate::devices::{self, text};
@@ -57,6 +57,23 @@ pub fn master_of(roster: &Roster, own: &Own, account: AccountId) -> Option<[u8; 
         Some(own.master)
     } else {
         roster.body().member(account).map(|member| member.master)
+    }
+}
+
+impl SpaceDevices {
+    /// The valid certificates of `member`'s devices, `member` of `roster`, that its `excluded` does
+    /// not list, checked with the revocations against the master key [`master_of`] gives.
+    pub fn of(&self, roster: &Roster, own: &Own, member: &Member) -> Vec<&Cert> {
+        let Some(master) = master_of(roster, own, member.account) else {
+            return Vec::new();
+        };
+        let excluded = |device: &DeviceId| {
+            (member.excluded.as_ref()).is_some_and(|excluded| excluded.contains(device))
+        };
+        let checked = devices::check(&master, self);
+        (checked.linked.into_iter())
+            .filter(|cert| cert.body().account == member.account && !excluded(&cert.body().device))
+            .collect()
     }
 }
 
