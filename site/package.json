@@ -1,0 +1,10 @@
+{
+  "name": "skald-site",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "devDependencies": {
+    "github-slugger": "2.0.0",
+    "vitepress": "2.0.0-alpha.21"
+  }
+}

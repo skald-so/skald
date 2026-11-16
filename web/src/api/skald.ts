@@ -304,7 +304,7 @@ export const getStoreRevocationUrl = () => {
 };
 
 /**
- * A device of the session's account stores a revocation of one of the account's devices (docs/protocol/membership.md, "Revocation"), as the bytes the server got. The server stores it only if it counts against the account's master key, the certificates the server holds and the revocations it stored before. Once stored, each device that checks 3 and 4 of "Device checks" revoke with the account's revocations has no certificate wherever the server checks one: its mailbox entries expire, its connections close and it gets no later entry.
+ * A device of the session's account stores a revocation of one of the account's devices (docs/protocol/membership.md, "Revocation"), as the bytes the server got. The server stores it only if it counts against the account's master key, the certificates the server holds and the revocations it stored before. Once stored, each device that checks 3 and 4 of "Device checks" revoke with the account's revocations has no certificate wherever the server checks one: its mailbox entries expire, its KeyPackages are deleted, its connections close and it gets no later entry.
  * @summary Store a revocation
  */
 export const storeRevocation = async (
@@ -786,7 +786,7 @@ export const getUploadKeyPackagesUrl = (device: string) => {
 };
 
 /**
- * Takes KeyPackages of a `client` device of the session's account with a certificate, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, "KeyPackages"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's. One that fails refuses them all. The same KeyPackage again is stored once.
+ * Takes KeyPackages of a `client` device of the session's account with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, "KeyPackages"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's; the last-resort one also carries the `last_resort` extension. One that fails refuses them all. The same KeyPackage again is stored once.
  * @summary Upload a device's KeyPackages
  */
 export const uploadKeyPackages = async (
@@ -920,7 +920,7 @@ export const getHandOutKeyPackagesUrl = () => {
 };
 
 /**
- * Hands out one KeyPackage of each device asked for that is a `client` device with a certificate of an account that shares a space with the session's (docs/protocol/membership.md, "KeyPackages"): another one, which the server then deletes, or, once none is left, the device's last-resort one, which it keeps. No expired one, and no KeyPackage to two requests.
+ * Hands out one KeyPackage of each device asked for that is a `client` device with a certificate, not revoked, of an account that shares a space with the session's (docs/protocol/membership.md, "KeyPackages"): another one, which the server then deletes, or, once none is left, the device's last-resort one, which it keeps. No expired one, and no KeyPackage to two requests.
  * @summary KeyPackages to add devices
  */
 export const handOutKeyPackages = async (

@@ -1,4 +1,5 @@
-//! Runs `skald-server` and checks its HTTP API against the OpenAPI spec in `api/openapi.json`.
+//! Runs `skald-server` and checks its HTTP API against the OpenAPI spec in `api/openapi.json`; and
+//! the tests' own HTTP client.
 
 mod common;
 
@@ -189,6 +190,66 @@ fn spec_violations_reports_responses_outside_spec() {
             String::from_utf8_lossy(&response.body)
         );
     }
+}
+
+/// The tests' HTTP client keeps its connection for the next request. A request on a kept
+/// connection that its server closes as the request comes, a GET, goes again on a new one.
+#[test]
+fn the_tests_http_client_keeps_its_connection_and_sends_again_when_the_server_closes_it() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+    use std::thread;
+
+    // Answers each request on a connection with `ok`, until the connection ends; with `closing`
+    // set, closes the connection of the next request instead.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let url = format!("http://{}/", listener.local_addr().expect("local address"));
+    let closing = Arc::new(AtomicBool::new(false));
+    let close_next = Arc::clone(&closing);
+    let (accepted, connections) = mpsc::channel();
+    thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let _ = accepted.send(());
+            let closing = Arc::clone(&close_next);
+            thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().expect("clone a stream"));
+                let mut writer = stream;
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                        return;
+                    }
+                    if line != "\r\n" {
+                        continue;
+                    }
+                    if closing.swap(false, Ordering::SeqCst)
+                        || writer
+                            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok")
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let get = || {
+        common::agent::get(|| common::agent::agent().get(&url).call())
+            .expect("GET")
+            .body_mut()
+            .read_to_string()
+            .expect("the body")
+    };
+
+    assert_eq!((get(), get()), ("ok".to_owned(), "ok".to_owned()));
+    assert_eq!(connections.try_iter().count(), 1, "connections");
+
+    closing.store(true, Ordering::SeqCst);
+    assert_eq!(get(), "ok");
+    assert_eq!(connections.try_iter().count(), 1, "new connections");
 }
 
 #[test]

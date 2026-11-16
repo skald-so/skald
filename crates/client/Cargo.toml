@@ -60,3 +60,7 @@ windows-native-keyring-store = "1"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+# The browser tests' driver inherits no descriptor of the test binary but its standard streams.
+libc = "0.2"

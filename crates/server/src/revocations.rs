@@ -133,7 +133,8 @@ pub(crate) async fn store(
 }
 
 /// Marks the devices of `account` in `revoked` as revoked and its others as not, on `conn`, in its
-/// transaction. Expires every mailbox entry of each device it newly revokes, and tells the other
+/// transaction. Expires every mailbox entry of each device it newly revokes, deletes its
+/// KeyPackages, and tells the other
 /// instances to close its connections once the transaction commits. Gives those devices, and the
 /// statuses the expiry added.
 async fn mark(
@@ -164,6 +165,10 @@ async fn mark(
     ))
     .bind(&newly);
     let statuses = remove_on(conn, &state.wakers, query, ServerStatus::Expired).await?;
+    sqlx::query("DELETE FROM key_packages WHERE device_id = ANY($1::text[]::uuid[])")
+        .bind(&newly)
+        .execute(&mut *conn)
+        .await?;
     let newly: Vec<DeviceId> = newly
         .iter()
         .map(|device| device.parse().expect("a stored device ID"))
