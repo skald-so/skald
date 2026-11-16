@@ -14,10 +14,18 @@
 //! `msg_id`; a duplicate or a replay without a word; a warning for any other; and each `delivered`
 //! and `expired` of the device's messages. As an agent, only those of its folder's space: the rest
 //! wait in the local state.
+//!
+//! A message that passes the checks is kept for the person and for the agents it is for
+//! (`docs/protocol/delivery.md`, "Device to agent"), among the agents this device had run as in
+//! the space when it wrote the entry: with `to`, the one it names; without `to`, each; a message to
+//! a person, none. The person's run shows each kept message once,
+//! whichever run checked it. An agent's run shows the messages kept for it and marks each handed
+//! over only once its line is written, so a run killed in between shows it again; a message waits
+//! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io;
+use std::io::{self, Write as _};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -25,7 +33,7 @@ use std::time::Duration;
 use skald_crypto::{HpkeError, HpkeMessage, MemberDevice, StateKey, open_message};
 use skald_proto::{
     Address, Body, Cbor as _, Cert, ChannelId, Content, DeliveryStatus, DeviceId, DeviceKind,
-    Envelope, Frame, Header, Push, Roster, ServerName, ServerStatus, SpaceId, VersionRange,
+    Envelope, Frame, Header, Name, Push, Roster, ServerName, ServerStatus, SpaceId, VersionRange,
 };
 use tungstenite::Message;
 
@@ -38,19 +46,33 @@ use crate::groups::{self, Link, Opened, Rosters};
 use crate::secrets;
 use crate::send::{self, broke, closed, set_read_timeout};
 use crate::spaces::{self, Follower, Scope};
-use crate::state;
+use crate::state::{self, Kept};
 
-/// Receives the mailbox of the device of the state in `dir`, its secrets in `storage`, as an agent
-/// if `agent`; waits for each frame for `timeout`.
+/// How long a message waits for an agent at most: the cloud's mailbox retention
+/// (`architecture.md`, "Cloud limits").
+pub const AGENT_WAIT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Receives the mailbox of the device of the state in `dir`, its secrets in `storage`, as `agent`
+/// if given; waits for each frame for `timeout`.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
     speaks: VersionRange,
     timeout: Duration,
-    agent: bool,
+    agent: Option<&Name>,
 ) -> Result<(), String> {
-    let scope = Scope::of_run(dir, agent)?;
+    let scope = Scope::of_run(dir, agent.is_some())?;
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
+    let ran_as = match (scope, agent) {
+        (Scope::Only(space), Some(agent)) => {
+            follower
+                .state
+                .add_agent(space, agent.as_str())
+                .map_err(text)?;
+            Some((space, agent))
+        }
+        _ => None,
+    };
     let mut link = Link::new(&follower)?;
     if let Err(err) = groups::flush(&mut follower, &mut link, scope) {
         eprintln!("skald: warning: {err}");
@@ -69,9 +91,14 @@ pub fn run(
     );
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
     let shown = show(&mut follower, scope, synced);
+    let handed = match ran_as {
+        Some((space, agent)) => hand_over(&follower, space, agent),
+        None => show_to_person(&follower),
+    };
     received?;
     aligned?;
-    shown
+    shown?;
+    handed
 }
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
@@ -282,8 +309,9 @@ struct Checks {
     inbox_key: Option<StateKey>,
 }
 
-/// Shows each entry the state holds within `scope`, in `seq` order, and takes it out; checks
-/// messages against the spaces as `synced` holds them, syncing any other at its first message.
+/// Shows each entry the state holds within `scope`, in `seq` order, and takes it out, keeping each
+/// message that passes the checks for the person and the agents it is for; checks messages against
+/// the spaces as `synced` holds them, syncing any other at its first message.
 fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), String> {
     let mut checks = Checks {
         keys: follower.keys()?,
@@ -324,27 +352,15 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
                         if let Some(gap) = gap {
                             eprintln!("skald: warning: {}", missing(header.channel, sender, gap));
                         }
-                        let after = if gap.is_some() {
-                            ", following missing messages"
-                        } else {
-                            ""
-                        };
-                        println!(
-                            "The message {} in the channel {} from {}, by the device {} \
-                             ({sender}){after}:\n  {}",
-                            header.msg_id,
-                            header.channel,
-                            message.from,
-                            printable(&message.device),
-                            printable(&message.text)
-                        );
+                        let kept =
+                            kept(follower, &mut checks, (seq, header, sender), &message, gap)?;
                         match counted {
-                            Some((source, accepted)) => {
-                                follower
-                                    .state
-                                    .shown_counted(seq, &source, &accepted.counters)
-                            }
-                            None => follower.state.shown(seq, sender, header.msg_id),
+                            Some((source, accepted)) => (follower.state).keep_counted(
+                                seq,
+                                (&source, &accepted.counters),
+                                &kept,
+                            ),
+                            None => follower.state.keep(seq, (sender, header.msg_id), &kept),
                         }
                         .map_err(text)?;
                     }
@@ -375,6 +391,131 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
             // This client wrote only entries it reads.
             _ => follower.state.remove_entry(seq).map_err(text)?,
         }
+    }
+    Ok(())
+}
+
+/// How the message of the entry `seq` with `header` from the device `sender`, which passed the
+/// checks, is kept: its line, sealed, and the agents it is for; `gap`, the counters it makes
+/// missing, if any.
+fn kept(
+    follower: &Follower,
+    checks: &mut Checks,
+    (seq, header, sender): (u64, &Header, DeviceId),
+    message: &Received,
+    gap: Option<(u64, u64)>,
+) -> Result<Kept, String> {
+    let after = if gap.is_some() {
+        ", following missing messages"
+    } else {
+        ""
+    };
+    let line = format!(
+        "The message {} in the channel {} from {}, by the device {} ({sender}){after}:\n  {}",
+        header.msg_id,
+        header.channel,
+        message.from,
+        printable(&message.device),
+        printable(&message.text)
+    );
+    let key = match &checks.inbox_key {
+        Some(key) => key,
+        None => checks.inbox_key.insert(groups::inbox_key(follower)?),
+    };
+    Ok(Kept {
+        space: header.space,
+        line: key.seal(follower.this, &kept_item(seq), line.as_bytes()),
+        wait: agent_wait(header.ttl),
+        agents: agents_of(follower, checks, (seq, header), message.to.as_ref())?,
+    })
+}
+
+/// How long a message whose envelope has the `ttl` `ttl`, if any, waits for an agent, in seconds:
+/// its `ttl`, at most [`AGENT_WAIT`].
+fn agent_wait(ttl: Option<u64>) -> u64 {
+    let most = AGENT_WAIT.as_secs();
+    ttl.map_or(most, |ttl| ttl.min(most))
+}
+
+/// The agents the message of the entry `seq` with `header` is for, `to` its content's `to`, among
+/// the agents this device had run as in the space when it wrote the entry: the one `to` names, if
+/// it is an agent of this account in the space on this server; without `to`, each; none for a
+/// person.
+fn agents_of(
+    follower: &Follower,
+    checks: &Checks,
+    (seq, header): (u64, &Header),
+    to: Option<&Address>,
+) -> Result<Vec<String>, String> {
+    let agents = (follower.state).agents(header.space, seq).map_err(text)?;
+    let Some(to) = to else {
+        return Ok(agents);
+    };
+    let Some((roster, _)) = checks.synced.get(&header.space) else {
+        return Ok(Vec::new());
+    };
+    let body = roster.body();
+    let handle = body
+        .member(follower.own.account)
+        .map(|member| &member.handle);
+    let server = checks.server.as_ref().and_then(Option::as_ref);
+    let ours = !to.is_person()
+        && to.space() == &body.name
+        && Some(to.owner()) == handle
+        && Some(to.server()) == server;
+    Ok(agents
+        .into_iter()
+        .filter(|agent| ours && agent == to.agent().as_str())
+        .collect())
+}
+
+/// The name the state key seals the line of the kept message of the entry `seq` under.
+fn kept_item(seq: u64) -> Vec<u8> {
+    [b"kept:".as_slice(), &seq.to_be_bytes()].concat()
+}
+
+/// Shows each kept message the person's run has yet to show, in `seq` order, and marks it shown.
+fn show_to_person(follower: &Follower) -> Result<(), String> {
+    let kept = follower.state.for_person().map_err(text)?;
+    shown_kept(follower, kept, |seq| follower.state.shown_to_person(seq))
+}
+
+/// Hands each kept message that waits for `agent` in `space` over to it, in `seq` order: shows it,
+/// then marks it handed over. A message whose wait ended is dropped first.
+fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<(), String> {
+    let kept = (follower.state)
+        .for_agent(space, agent.as_str(), state::unix_now())
+        .map_err(text)?;
+    shown_kept(follower, kept, |seq| {
+        follower.state.handed_over(seq, agent.as_str())
+    })
+}
+
+/// Writes the line of each of `kept`, kept messages by `seq` with their sealed lines, to the
+/// output, then calls `mark` with its `seq`; a line that does not open is warned of and marked.
+fn shown_kept(
+    follower: &Follower,
+    kept: Vec<(u64, Vec<u8>)>,
+    mark: impl Fn(u64) -> Result<(), state::Error>,
+) -> Result<(), String> {
+    if kept.is_empty() {
+        return Ok(());
+    }
+    let key = groups::inbox_key(follower)?;
+    for (seq, sealed) in kept {
+        match key.open(follower.this, &kept_item(seq), &sealed) {
+            Some(line) => {
+                let mut out = io::stdout().lock();
+                out.write_all(&line)
+                    .and_then(|()| out.write_all(b"\n"))
+                    .and_then(|()| out.flush())
+                    .map_err(|err| format!("cannot write a message to the output: {err}"))?;
+            }
+            None => eprintln!(
+                "skald: warning: a message this device kept does not open, so it is not shown"
+            ),
+        }
+        mark(seq).map_err(text)?;
     }
     Ok(())
 }
@@ -559,6 +700,7 @@ struct Context<'c> {
 #[derive(Debug, PartialEq)]
 struct Received {
     from: Address,
+    to: Option<Address>,
     /// The sending device's certificate `name`.
     device: String,
     text: String,
@@ -656,6 +798,7 @@ fn check(
         .join("\n");
     Ok(Received {
         from: content.from,
+        to: content.to,
         device: cert.body().name.clone(),
         text,
         counter: content.counter,
@@ -689,6 +832,15 @@ mod tests {
     use super::*;
     use crate::send::tests::{Account, channel_of};
     use crate::spaces::tests::{first, member};
+
+    /// A message waits for an agent for its `ttl`, at most 7 days, and 7 days without one.
+    #[test]
+    fn message_waits_for_an_agent_for_its_ttl_at_most_seven_days() {
+        let week = 7 * 24 * 60 * 60;
+        assert_eq!(agent_wait(Some(10)), 10);
+        assert_eq!(agent_wait(Some(week + 1)), week);
+        assert_eq!(agent_wait(None), week);
+    }
 
     /// Ada's device, this one, in `acme` with Bob, whose device sends in the channel they are both
     /// in, and whose group holds both devices.
@@ -836,6 +988,7 @@ mod tests {
             world.checked(&header, &content),
             Ok(Received {
                 from: content.from.clone(),
+                to: None,
                 device: "laptop".to_owned(),
                 text: "first\nsecond".to_owned(),
                 counter: NonZeroU64::new(1),

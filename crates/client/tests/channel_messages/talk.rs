@@ -155,6 +155,10 @@ pub struct Line<'a> {
     /// The A2A `messageId`; `None`, the envelope's `msg_id`.
     pub message_id: Option<MessageId>,
     pub text: &'a str,
+    /// `to`, in text form; `None`, none.
+    pub to: Option<String>,
+    /// The body; `None`, an A2A message of the text.
+    pub body: Option<Body>,
 }
 
 impl<'a> Line<'a> {
@@ -164,6 +168,8 @@ impl<'a> Line<'a> {
             counter,
             message_id: None,
             text,
+            to: None,
+            body: None,
         }
     }
 
@@ -175,11 +181,11 @@ impl<'a> Line<'a> {
             "parts": [{ "text": self.text }],
         });
         Content {
-            body: Some(Body::A2a(message.to_string())),
+            body: Some(self.body.clone().unwrap_or(Body::A2a(message.to_string()))),
             counter: std::num::NonZeroU64::new(self.counter),
             from: self.from.parse::<Address>().expect("an address"),
             hops: 0,
-            to: None,
+            to: (self.to.as_ref()).map(|to| to.parse::<Address>().expect("an address")),
             reply_to: None,
             attachments: None,
             delegation: None,
