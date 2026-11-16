@@ -404,6 +404,25 @@ pub fn devices_request(space: SpaceId) -> String {
     format!("GET /spaces/{space}/devices")
 }
 
+/// From now on, the relay gives the machines the devices the server gives for `space` as `change`
+/// makes the list, as a compromised server would.
+pub fn change_devices(
+    cloud: &Cloud,
+    space: SpaceId,
+    change: impl Fn(&mut Vec<Value>) + Send + Sync + 'static,
+) {
+    cloud.relay.rewrite(&devices_request(space), move |body| {
+        let mut list: Value = serde_json::from_str(body).expect("the server's device list");
+        change(list["devices"].as_array_mut().expect("a device list"));
+        list.to_string()
+    });
+}
+
+/// A device entry of a device list, as the server gives it.
+pub fn device_entry(device: DeviceId, cert: &Cert) -> Value {
+    json!({ "device": device.to_string(), "cert": URL_SAFE_NO_PAD.encode(cert.to_cbor()) })
+}
+
 /// From now on, the relay gives the machines `revisions` as `space`'s revisions, whatever the
 /// server holds, as a compromised server would.
 pub fn serve_revisions(cloud: &Cloud, space: SpaceId, revisions: &[&Roster]) {

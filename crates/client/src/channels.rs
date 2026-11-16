@@ -9,13 +9,10 @@
 use std::collections::BTreeMap;
 
 use skald_crypto::MemberDevice;
-use skald_proto::{Cbor as _, Cert, Channel, ChannelId, ChannelMember, Roster, Unknown};
+use skald_proto::{Cert, Channel, ChannelId, ChannelMember, Roster, Unknown};
 
-use crate::devices::text;
 use crate::groups;
-use crate::spaces::{
-    CHANGED_MEANWHILE, Synced, admin_device, heading, issue_channel, needs_default, no_admin,
-};
+use crate::spaces::{Synced, heading, issue_channel, needs_default};
 
 /// Adds a channel to `synced`, a space the device follows: by the next revision, signed by the
 /// device, of an admin.
@@ -27,15 +24,7 @@ pub fn create(synced: Synced) -> Result<(), String> {
         ..
     } = synced;
     let name = space.name.as_str();
-    if follower.space(name)?.pending.is_some() {
-        return Err(format!(
-            "the space {name} waits for the server to take a revision this device signed; this \
-             device adds no channel until then"
-        ));
-    }
-    if !admin_device(&latest, follower.own.account, follower.this) {
-        return Err(no_admin(&latest));
-    }
+    follower.may_change(&space, &latest)?;
     if needs_default(&latest) {
         return Err(format!(
             "the space {name} has no default channel with every member yet, which this device \
@@ -52,15 +41,8 @@ pub fn create(synced: Synced) -> Result<(), String> {
         services: Vec::new(),
         unknown: Unknown::default(),
     };
-    let next = follower.next_with(&latest, None, &[channel])?.to_cbor();
-    if !follower
-        .state
-        .set_pending(space.id, &latest.to_cbor(), None, &next)
-        .map_err(text)?
-    {
-        return Err(CHANGED_MEANWHILE.to_owned());
-    }
-    let stored = follower.store(&space, next).map_err(|unsent| unsent.why)?;
+    let next = follower.next_with(&latest, None, &[channel])?;
+    let stored = follower.submit(&space, &latest, &next)?;
     println!(
         "Created the channel {id} in the space {name}: this device signed its revision {}.",
         stored.body().revision

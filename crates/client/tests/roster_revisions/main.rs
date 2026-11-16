@@ -42,21 +42,18 @@ mod machine;
 mod relay;
 mod world;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cloud::Cloud;
 use machine::{Finished, Machine};
-use serde_json::{Value, json};
+use serde_json::Value;
 use skald_crypto::{RosterError, SigningKey, accept_next, check_roster, issue};
 use skald_proto::{
-    AccountId, Cbor, Cert, CertBody, DeviceId, DeviceKind, Member, Name, Role, Roster, SpaceId,
-    Unknown,
+    AccountId, Cert, CertBody, DeviceId, DeviceKind, Member, Name, Role, Roster, SpaceId, Unknown,
 };
 use world::{
     ACME, ADMIN, FORK, GLOBEX, MEMBER, MEMBERS, Person, SPACES, World, assert_role,
-    broken_signature, create, devices_request, holds_word, members, next, next_by, now,
-    plain_lines, revisions_request, run, serve_revisions, set_role, space_certs, store, warnings,
-    words,
+    broken_signature, change_devices, create, device_entry, holds_word, members, next, next_by,
+    now, plain_lines, revisions_request, run, serve_revisions, set_role, space_certs, store,
+    warnings, words,
 };
 
 /// What the warning of a changed `master` also says.
@@ -88,17 +85,9 @@ fn serve_stored_revisions(cloud: &Cloud, space: SpaceId) {
 
 /// From now on, the proxy adds `entries` to the devices the server gives for `space`.
 fn add_devices(cloud: &Cloud, space: SpaceId, entries: Vec<Value>) {
-    cloud.relay.rewrite(&devices_request(space), move |body| {
-        let mut list: Value = serde_json::from_str(body).expect("the server's device list");
-        let devices = list["devices"].as_array_mut().expect("a device list");
+    change_devices(cloud, space, move |devices| {
         devices.extend(entries.iter().cloned());
-        list.to_string()
     });
-}
-
-/// A device entry of a device list, as the server gives it.
-fn entry(device: DeviceId, cert: &Cert) -> Value {
-    json!({ "device": device.to_string(), "cert": URL_SAFE_NO_PAD.encode(cert.to_cbor()) })
 }
 
 /// A device a test makes up on `account`, named `name`, with a certificate signed by a key of its
@@ -233,7 +222,7 @@ fn members_show_only_devices_with_a_valid_certificate() {
     let bob = world.sign_up(4_120_681_102, "bob-listed", "bob-workstation");
     let acme = space(cloud, &ada, &bob, None);
     let (device, _, forged) = certified_by_the_server(bob.account, "bob-forged-laptop");
-    add_devices(cloud, acme.id(), vec![entry(device, &forged)]);
+    add_devices(cloud, acme.id(), vec![device_entry(device, &forged)]);
 
     let shown = members(&ada.machine, ACME);
 
@@ -279,7 +268,7 @@ fn forged_revision_has_no_effect(forged: Forged, ids: [u64; 3]) {
         Forged::NoAdmin => next_by(&acme.third, &carol, change),
         Forged::ServerCertified => {
             let (device, key, cert) = certified_by_the_server(bob.account, "bob-forged-laptop");
-            add_devices(cloud, acme.id(), vec![entry(device, &cert)]);
+            add_devices(cloud, acme.id(), vec![device_entry(device, &cert)]);
             certs.push(cert);
             next(&acme.third, (device, &key), change)
         }
@@ -509,9 +498,9 @@ fn members_warn_of_two_bodies_and_shared_names() {
         cloud,
         acme.id(),
         vec![
-            entry(twice, &one),
-            entry(twice, &two),
-            entry(namesake, &same_name),
+            device_entry(twice, &one),
+            device_entry(twice, &two),
+            device_entry(namesake, &same_name),
         ],
     );
 

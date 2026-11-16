@@ -2,7 +2,8 @@
 //! folder. It shows that space's channels and members, lists no other space and refuses a command
 //! that names one; a folder in no space gives the agent nothing. As an agent, it also refuses the
 //! person's commands: adding, listing and removing rules, approving a `.skald.toml`, creating
-//! spaces and channels; a refused command changes nothing, on the device or on the server.
+//! spaces and channels, and changing a space's members; a refused command changes nothing, on the
+//! device or on the server.
 //!
 //! Against a `skald-server` with GitHub sign-in through the GitHub stand-in, on PostgreSQL, behind
 //! the recording relay, with no limit on the spaces an account owns; a test plays the person on the
@@ -23,7 +24,9 @@
 //!   just as a space the device is not in;
 //! - `skald --agent <name> folder <folder>`: never shows another space than the agent's own;
 //! - `skald --agent <name> add-rule|rules|remove-rule|approve-binding|create-space|create-channel
-//!   ...`: fails and changes nothing; the refusal of `rules` lists no rule.
+//!   ...`: fails and changes nothing; the refusal of `rules` lists no rule;
+//! - `skald --agent <name> remove-member|exclude-device|add-to-channel|remove-from-channel ...`,
+//!   the admin commands of the tests of removing members, likewise.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -50,8 +53,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use cloud::Cloud;
-use machine::Finished;
-use skald_proto::{ChannelId, Name, Role, SpaceId};
+use machine::{Finished, YES};
+use skald_proto::{ChannelId, DeviceId, Name, Role, SpaceId};
 use world::{
     ADD_RULE, ADMIN, AGENT, APPROVE, CHANNELS, CLIENT_A, CLIENT_B, CREATE_CHANNEL, CREATE_SPACE,
     Desk, FOLDER, HOST, MEMBERS, PERSONAL_REQUEST, Person, REMOVE_RULE, RULES, SPACES, World,
@@ -64,6 +67,14 @@ const GLOBEX: &str = "globex";
 
 /// The requests that create a space, issue a channel ID and store a revision, as their lines start.
 const SPACE_WRITES: &str = "POST /spaces";
+
+/// The admin commands, and the option of `add-to-channel` that says whether the member reads the
+/// channel's history.
+const REMOVE_MEMBER: &str = "remove-member";
+const EXCLUDE_DEVICE: &str = "exclude-device";
+const ADD_TO_CHANNEL: &str = "add-to-channel";
+const REMOVE_FROM_CHANNEL: &str = "remove-from-channel";
+const HISTORY: &str = "--history";
 
 /// A space of Ada's device: its ID, its name and the IDs of its channels.
 struct Space {
@@ -86,6 +97,7 @@ impl Space {
 struct Office {
     desk: Desk,
     bob: Name,
+    bob_device: DeviceId,
     personal: Space,
     client_a: Space,
     client_b: Space,
@@ -109,6 +121,7 @@ impl Office {
             client_a: space_of(cloud, ada, CLIENT_A),
             client_b: space_of(cloud, ada, CLIENT_B),
             bob: bob.handle,
+            bob_device: bob.device,
             desk,
         }
     }
@@ -158,6 +171,21 @@ impl Office {
     fn add_rule(&self, dir: &Path, space: &str) {
         let home = self.folder("");
         self.person(&home, &[ADD_RULE, path(dir), space]);
+    }
+
+    /// The admin commands on clientb, each one that the person's run would make: removing Bob,
+    /// barring his device, adding him to clientb's channel with Ada alone, and removing Ada from it.
+    fn admin_commands(&self) -> [Vec<String>; 4] {
+        let channel = self.client_b.channels.last().expect("a channel");
+        let (channel, device) = (channel.to_string(), self.bob_device.to_string());
+        let (bob, ada) = (self.bob.as_str(), self.desk.ada.handle.as_str());
+        [
+            vec![REMOVE_MEMBER, CLIENT_B, bob],
+            vec![EXCLUDE_DEVICE, CLIENT_B, &device],
+            vec![ADD_TO_CHANNEL, CLIENT_B, &channel, bob, HISTORY, YES],
+            vec![REMOVE_FROM_CHANNEL, CLIENT_B, &channel, ada],
+        ]
+        .map(|args| args.into_iter().map(str::to_owned).collect())
     }
 
     /// The three spaces.
@@ -343,9 +371,10 @@ fn agent_in_a_folder_in_no_space_sees_nothing() {
 
 /// As an agent, each of the person's commands is refused and changes nothing: adding a rule that
 /// would move a subfolder of clientA to clientb, listing and removing rules, approving a
-/// `.skald.toml` of the agent's own folder, creating a space and a channel, while the same agent's
-/// commands of its own space work. The rules, the folders' spaces, the device's spaces and their
-/// channels stay as they were, and the server gets no new space, channel or revision.
+/// `.skald.toml` of the agent's own folder, creating a space and a channel, and each admin command
+/// on clientb, whose refusal names no space but clientA, while the same agent's commands of its own
+/// space work. The rules, the folders' spaces, the device's spaces and their channels stay as they
+/// were, and the server gets no new space, channel or revision.
 #[test]
 fn person_commands_are_refused_to_an_agent_and_change_nothing() {
     let office = Office::open(
@@ -397,6 +426,11 @@ fn person_commands_are_refused_to_an_agent_and_change_nothing() {
     office.agent_refused(&repo, agent, &[APPROVE, path(&repo)]);
     office.agent_refused(&a, agent, &[CREATE_SPACE, GLOBEX]);
     office.agent_refused(&a, agent, &[CREATE_CHANNEL, CLIENT_A]);
+    for args in office.admin_commands() {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let refused = office.agent_refused(&a, agent, &args);
+        office.assert_sees_no_other(&refused, Some(&office.client_a), "a refusal");
+    }
 
     assert_eq!(
         cloud.count_sent(since, SPACE_WRITES),
@@ -423,15 +457,23 @@ fn refusal_of_a_persons_command_names_it_as_the_persons() {
     let a = office.folder("work/clientA");
     office.add_rule(&a, CLIENT_A);
     let agent = "claude-r3fus3";
-    let commands: [&[&str]; 6] = [
-        &[ADD_RULE, path(&a), CLIENT_B],
+    let admin = office.admin_commands();
+    let admin = admin
+        .iter()
+        .map(|args| args.iter().map(String::as_str).collect());
+    let commands: Vec<Vec<&str>> = [
+        &[ADD_RULE, path(&a), CLIENT_B][..],
         &[RULES],
         &[REMOVE_RULE, path(&a)],
         &[APPROVE, path(&a)],
         &[CREATE_SPACE, GLOBEX],
         &[CREATE_CHANNEL, CLIENT_A],
-    ];
-    for args in commands {
+    ]
+    .map(<[&str]>::to_vec)
+    .into_iter()
+    .chain(admin)
+    .collect();
+    for args in &commands {
         let refused = office.agent_refused(&a, agent, args);
         let said = refused.stderr.to_lowercase();
         assert!(

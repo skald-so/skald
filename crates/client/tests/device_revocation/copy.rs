@@ -117,10 +117,8 @@ fn what_a_copy_of_a_revoked_device_s_disk_sends_is_dropped_with_a_warning() {
     let bob: DeviceId = copy.device();
     talk.front.inject(talk.ada.device, vec![envelope]);
 
-    let ran = received(&talk.ada.machine);
+    let ran = talk.ada_drops(FROM_THE_COPY);
 
-    assert_eq!(talk.front.injected(), 1, "not put into catch-up: {ran:?}");
-    assert!(!ran.shown().contains(FROM_THE_COPY), "{ran:?}");
     assert!(
         !warnings_naming(&ran, bob).is_empty() || warns_naming(&ran, &at.1.to_string()),
         "no warning of the dropped message: {ran:?}"
