@@ -118,7 +118,7 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
 - The idempotency key of an envelope is its sending device, its `msg_id` and, under `hpke`, its recipient device. It has no field of its own: `msg_id` is unique per sending device, and the server knows the sending device from the authenticated connection.
 - The server stores at most one envelope per idempotency key and keeps the key for at least its mailbox retention. It answers a retry as it answered the first send, whatever the retry's bytes.
-- `stored` is sent only after the envelope and its mailbox entries are committed. In the cloud, after the replica has the write: [infrastructure.md, "Cloud"](../dev/infrastructure.md#cloud).
+- `stored` is sent only after the envelope and its mailbox entries are committed.
 - `send-refused` names one of these problems. A client treats a problem it does not know as a refusal too.
 
 | Problem | The envelope |
