@@ -4,9 +4,10 @@ name: Release
 # builds it on a runner of each OS and architecture (dist-workspace.toml), each runner installs it
 # with its installer from the release's files, then one job attests every file of the release and
 # creates the release with all of them, the web app's archive that a job builds at the tag's commit
-# included, with the bundle of its attestation as a file of its own. Each runner also runs skald from those files through the npm
-# package skald-so, which a job then publishes to npm. Another job builds the skald-server image at
-# the tag's commit, pushes it to GHCR under its version, signs its digest with cosign and attests it.
+# included, with the bundle of its attestation as a file of its own. Each runner also runs skald
+# from those files through the npm package skald-so, which a job then publishes to npm. Another job
+# builds the skald-server image at the tag's commit, pushes it to GHCR under its version, signs its
+# digest with cosign and attests it.
 # Once all three are published, the release check runs on every OS and architecture
 # (release-check.yml); once it passes, a stable release, vX.Y.Z, moves main to the tag with the
 # deploy key.

@@ -128,7 +128,7 @@ earlier=$(awk -v tag="$tag" '$0 == tag { print previous; exit } { previous = $0 
 
 # The web app's archive, from the first release published after the last one without it.
 web=skald-web.tar.gz
-web_last=v0.1.0
+web_last=v0.1.1
 # version_key <tag>: a key that sorts release tags by version, a beta before its release.
 version_key() {
   [[ $1 =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-beta\.([0-9]+))?$ ]]

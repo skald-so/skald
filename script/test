@@ -280,8 +280,8 @@ if checks repository; then
 fi
 
 # Web UI: lint, tests (including the check that the API client is generated from the spec and the
-# kit page screenshots against web/kit-references/) and build. A failed screenshot saves a diff image
-# to web/kit-diff/.
+# kit page screenshots against web/kit-references/) and build, and the web app's archive of a
+# release, script/release-web. A failed screenshot saves a diff image to web/kit-diff/.
 if checks web; then
   script/duplicates web
   web_packages
@@ -291,6 +291,7 @@ if checks web; then
     npm test
     npm run build
   )
+  script/release-web-test
 fi
 
 # The release tags: the tagging workflow, and the tags on fixture repositories.
@@ -306,8 +307,8 @@ fi
 # its publishing step, the release notes, the attestations of the release files and how to verify
 # them, the release image and how to verify it, the npm package and how to verify it, the move of
 # main to a stable release, on fixture repositories too, and the installers and the npm package
-# against a stand-in release; the release check's jobs, and the release check against stand-ins for
-# a release and the verification commands.
+# against a stand-in release; how it builds and publishes the web app's archive; the release check's
+# jobs, and the release check against stand-ins for a release and the verification commands.
 if checks tooling; then
   script/release-workflow-test
   script/release-jobs-test
@@ -319,6 +320,7 @@ if checks tooling; then
   script/npm-package-test
   script/release-npm-workflow-test
   script/move-main-workflow-test
+  script/release-web-workflow-test
   script/move-main-test
   script/release-check-workflow-test
   script/release-check-steps-test
@@ -330,13 +332,4 @@ fi
 if checks site; then
   (cd site && npm ci --no-audit --no-fund)
   script/site-test
-fi
-
-# The web app's archive of a release: script/release-web on web/ as installed above, and how the
-# release workflow builds and publishes it.
-if checks web; then
-  script/release-web-test
-fi
-if checks tooling; then
-  script/release-web-workflow-test
 fi
