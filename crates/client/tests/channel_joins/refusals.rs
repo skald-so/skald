@@ -13,7 +13,7 @@ use crate::kit::{
 };
 use crate::played::{mls_envelope, stranger, take_key_package, welcome_from};
 use crate::talk::{Talk, commit_sent};
-use crate::world::{ACME, now, stale_once, warnings};
+use crate::world::{ACME, now, stale_once};
 
 /// Bob's device commits an empty Commit after the GroupInfo of epoch 1, which the relay keeps
 /// giving. Ada's `skald recv` sends an external Commit of epoch 1, which the server refuses with
@@ -44,9 +44,8 @@ fn external_commit_refused_with_epoch_mismatch_leaves_no_group_and_the_device_jo
         commit_sent(&talk.front, channel, before),
         "no external Commit sent: {refused:?}"
     );
-    let id = channel.to_string();
     assert!(
-        warnings(&refused).iter().all(|line| !line.contains(&id)),
+        warnings_naming(&refused, channel).is_empty(),
         "a warning about the channel: {refused:?}"
     );
     assert_listed_not_in(&channels(&talk.ada.machine, ACME), channel, &[]);
