@@ -14,6 +14,7 @@ mod groups;
 mod key_packages;
 mod lock;
 mod plain_path;
+mod proxy;
 mod recv;
 mod revocations;
 mod secrets;
