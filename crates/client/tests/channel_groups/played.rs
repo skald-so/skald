@@ -13,7 +13,7 @@ use skald_proto::{
 use crate::answers::handed_of;
 use crate::cloud::Cloud;
 use crate::fixtures::cert_of;
-use crate::kit::upload_group_info;
+use crate::kit::{b64, upload_group_info};
 use crate::peer::Peer;
 use crate::world::{Person, now, post_as};
 
@@ -49,19 +49,15 @@ impl Played {
     /// `person`'s machine's device, whose KeyPackages on the server the test replaces by ones the
     /// played device made, and a last-resort one.
     pub fn new(cloud: &Cloud, person: Person) -> Self {
-        cloud.execute(&format!(
-            "DELETE FROM key_packages WHERE device_id = '{}'::uuid",
-            person.device
-        ));
+        without_key_packages(cloud, person.device);
         let mut mls = MlsDevice::new(&person.key, &StateKey::generate());
-        let encode = |bytes: &[u8]| base64_url(bytes);
         let made: Vec<String> = (0..KEY_PACKAGES)
-            .map(|_| encode(mls.key_package(now()).expect("a KeyPackage").as_ref()))
+            .map(|_| b64(mls.key_package(now()).expect("a KeyPackage").as_ref()))
             .collect();
         let last = mls
             .last_resort_key_package(now())
             .expect("a last-resort KeyPackage");
-        let request = json!({ "key_packages": made, "last_resort": encode(last.as_ref()) });
+        let request = json!({ "key_packages": made, "last_resort": b64(last.as_ref()) });
         let path = format!("/devices/{}/key-packages", person.device);
         let (status, body) = post_as(cloud, &person.token, &path, Some(&request));
         assert_eq!(status, 200, "POST {path}: {body}");
@@ -359,7 +355,9 @@ pub fn welcome_from(
         .expect("a Welcome")
 }
 
-fn base64_url(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+/// Removes every KeyPackage of `device` from the server, so no device can add it to a group.
+pub fn without_key_packages(cloud: &Cloud, device: DeviceId) {
+    cloud.execute(&format!(
+        "DELETE FROM key_packages WHERE device_id = '{device}'::uuid"
+    ));
 }

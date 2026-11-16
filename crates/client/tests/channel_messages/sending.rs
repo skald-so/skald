@@ -9,9 +9,10 @@ use crate::fixtures::{database, fronted, hex, kill_once, send, send_args, sent_a
 use crate::front::{Answers, Sent};
 use crate::keys;
 use crate::kit::{Change, assert_members, create_space, latest, received, revise, with_channel};
+use crate::played::without_key_packages;
 use crate::talk::{
     ADA_HOST, BOB_HOST, NO_DEVICE, Talk, assert_read, commit_sent, delivered, messages_sent,
-    one_message_sent, received_until, without_key_packages,
+    one_message_sent, received_until,
 };
 use crate::world::{ACME, post_as};
 
