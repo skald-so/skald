@@ -70,9 +70,10 @@ impl Machine {
     pub fn new() -> Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
+        remove_abandoned();
         // Removed on drop from here on: also when making the machine fails, before it exists.
         let root = TestDir::named(&format!(
-            "skald-client-sign-in-{}-{}",
+            "{PREFIX}{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -216,6 +217,32 @@ impl Machine {
             })
         });
         all
+    }
+}
+
+/// The prefix of a machine's directory in the temporary directory.
+pub const PREFIX: &str = "skald-client-sign-in-";
+/// How old a machine's directory is once no test uses it: a run of `skald` takes up to
+/// [`RUN_LIMIT`], a test a few of them.
+pub const ABANDONED: Duration = Duration::from_secs(60 * 60);
+
+/// Removes the machines' directories that no test has used for [`ABANDONED`]: a test process that
+/// is killed, as `cargo mutants` kills one past its timeout, never drops its machines.
+fn remove_abandoned() {
+    let Ok(entries) = fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(PREFIX) {
+            continue;
+        }
+        let abandoned = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > ABANDONED));
+        if abandoned {
+            let _ = fs::remove_dir_all(entry.path());
+        }
     }
 }
 

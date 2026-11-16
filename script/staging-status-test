@@ -55,6 +55,15 @@ done
 }
 url=http://127.0.0.1:$(cat "$tmp/port")
 
+# The stand-in ends each answer with its connection, so curl never closes first: the closed
+# connections hold none of the machine's ephemeral ports (closing() in script/lib/release-check-stub.mjs).
+mkdir "$serve"
+echo '{"status":"ok"}' >"$serve/health.json"
+headers=$(curl --disable --silent --output /dev/null --dump-header - "$url/health" | tr -d '\r' | tr 'A-Z' 'a-z')
+[[ $headers == *$'\nconnection: close'* && $headers != *$'\ncontent-length:'* &&
+  $headers != *$'\ntransfer-encoding:'* ]] ||
+  fail "the stand-in's answer does not end with its connection: $headers"
+
 # A curl config that would send a token, and tokens in the environment: the command uses none.
 mkdir "$tmp/home"
 echo 'header = "Authorization: Bearer recorded-test-token"' >"$tmp/home/.curlrc"

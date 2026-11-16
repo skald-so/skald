@@ -7,11 +7,15 @@
 #   deny.toml: repository
 #   prototypes/mls/, prototypes/agents/, prototypes/edits/: mls, agents and edits, each with
 #     repository; prototypes/mls/Cargo.lock also wasm: the crates' WASM tests take its wasm-bindgen
-#   any other path in prototypes/: every part of the Rust code, all but tooling and web
+#   any other path in prototypes/: every part of the Rust code, all but tooling, web and site
 #   web/: web; its package.json and package-lock.json also workspace, whose sign-in tests drive
 #     Chrome with its playwright-core, and self-host
-#   docker-compose.yml, Caddyfile, docs/self-host.md (the self-host stack and its guide): self-host
-#   other paths in docs/, Markdown files in the root: none
+#   docker-compose.yml, Caddyfile: self-host
+#   site/, docs/, Markdown files in the root: site; docs/self-host.md (the self-host stack's guide)
+#     also self-host
+#   also site, on top of the above: the paths whose change can break a link of docs/, any Markdown
+#     file (its headings) and a removed path that docs/ links to or that lies in a directory it
+#     links to
 #   any other path: all; the OpenAPI spec, script/, .github/, renovate.json, new top-level paths
 # The changes count from where HEAD branched off <base>, their merge base: commits <base> got later
 # do not count. Usage, in the repository to check:
@@ -22,9 +26,11 @@ set -euo pipefail
 
 # --no-renames lists both paths of a moved file. Unusual names stay quoted and check everything.
 if [[ $# -eq 1 && $1 != -* ]]; then
+  since=false
   fork=$(git merge-base "$1" HEAD)
   paths=$(git -c core.quotePath=false diff --name-only --no-renames "$fork" HEAD)
 elif [[ $# -eq 2 && $1 == --since ]]; then
+  since=true
   fork=$(git merge-base "$2" HEAD)
   paths=$(git -c core.quotePath=false diff --name-only --no-renames "$fork")
   untracked=$(git -c core.quotePath=false ls-files --others --exclude-standard --full-name :/)
@@ -34,11 +40,48 @@ else
   exit 2
 fi
 
-parts='workspace wasm image self-host mls agents edits repository tooling web'
+parts='workspace wasm image self-host mls agents edits repository tooling web site'
 # Each part's flag is a variable of its name, - as _.
 for part in $parts; do printf -v "${part//-/_}" false; done
 # mark <part>...: the changes touch these parts.
 mark() { for part in "$@"; do printf -v "${part//-/_}" true; done; }
+
+top=$(git rev-parse --show-toplevel)
+# removed <path>: <path> is gone from HEAD, or with --since from the working tree.
+removed() {
+  if [[ $since == true ]]; then
+    [[ ! -e $top/$1 ]]
+  else
+    ! git cat-file -e "HEAD:$1" 2>/dev/null
+  fi
+}
+# linked <path>: a file of docs/, in HEAD or with --since in the working tree, has a link that
+# leaves docs/ for <path> or a directory it lies in: `../<path>` ends the link. Fails the script
+# when it cannot tell.
+linked() {
+  local name='' candidates='' char pattern status=0 i
+  # The path and each of its directories, as one alternation of extended regular expressions.
+  for ((i = 0; i < ${#1}; i++)); do
+    char=${1:i:1}
+    case $char in '\' | . | '[' | ']' | '*' | '^' | '$' | + | '?' | '(' | ')' | '{' | '}' | '|') name+='\' ;; esac
+    name+=$char
+  done
+  while :; do
+    candidates+=${candidates:+|}$name
+    [[ $name == */* ]] || break
+    name=${name%/*}
+  done
+  pattern="\\.\\./($candidates)/?([]>)#?\"'[:space:]]|$)"
+  if [[ $since == false ]]; then
+    git -C "$top" grep -qE -e "$pattern" HEAD -- docs || status=$?
+  elif [[ -d $top/docs ]]; then
+    grep -rqE -- "$pattern" "$top/docs" || status=$?
+  else
+    status=1
+  fi
+  ((status <= 1)) || exit "$status"
+  return "$status"
+}
 
 while IFS= read -r path; do
   if [[ -z $path ]]; then
@@ -61,13 +104,18 @@ while IFS= read -r path; do
     mark edits repository
   elif [[ $path == prototypes/* ]]; then
     mark workspace wasm image self-host mls agents edits repository
-  elif [[ $path == docker-compose.yml || $path == Caddyfile || $path == docs/self-host.md ]]; then
+  elif [[ $path == docker-compose.yml || $path == Caddyfile ]]; then
     mark self-host
-  elif [[ $path == docs/* || ($path == *.md && $path != */*) ]]; then
-    continue
+  elif [[ $path == docs/self-host.md ]]; then
+    mark self-host site
+  elif [[ $path == site/* || $path == docs/* || ($path == *.md && $path != */*) ]]; then
+    mark site
   else
     # $parts unquoted: one word per part.
     mark $parts
+  fi
+  if [[ $site == false ]] && { [[ $path == *.md ]] || { removed "$path" && linked "$path"; }; }; then
+    mark site
   fi
 done <<<"$paths"
 

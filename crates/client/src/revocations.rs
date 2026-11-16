@@ -41,7 +41,7 @@ pub fn run(
     let target: DeviceId = device
         .parse()
         .map_err(|_| format!("\"{}\" is not a device ID", connection::printable(device)))?;
-    let (state, server, token, stored) = signed_in_with_secrets(dir, storage)?;
+    let (state, server, token, stored, _) = signed_in_with_secrets(dir, storage)?;
     let device = state.device().map_err(text)?;
     let Some(state::Device {
         id: this,

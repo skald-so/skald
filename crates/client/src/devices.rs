@@ -18,7 +18,7 @@ use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, Revocation, VersionRang
 use crate::connection::{self, Connection, printable};
 use crate::follow::SpaceDevices;
 use crate::revocations;
-use crate::secrets;
+use crate::secrets::{self, Secrets};
 use crate::sign_in;
 use crate::state::{self, Link, State};
 
@@ -193,14 +193,14 @@ pub fn fetch(
 /// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the
 /// server of its session and the session token; [`NOT_SIGNED_IN`] if it has no session.
 pub fn signed_in(dir: &Path, storage: secrets::Storage) -> Result<(State, String, String), String> {
-    signed_in_with_secrets(dir, storage).map(|(state, server, token, _)| (state, server, token))
+    signed_in_with_secrets(dir, storage).map(|(state, server, token, _, _)| (state, server, token))
 }
 
-/// As [`signed_in`], with the secrets too.
+/// As [`signed_in`], with the secrets too: as stored, and where.
 pub fn signed_in_with_secrets(
     dir: &Path,
     storage: secrets::Storage,
-) -> Result<(State, String, String, secrets::Map), String> {
+) -> Result<(State, String, String, secrets::Map, Secrets), String> {
     if !dir.is_dir() {
         return Err(NOT_SIGNED_IN.to_owned());
     }
@@ -213,7 +213,7 @@ pub fn signed_in_with_secrets(
     let token = sign_in::token_for(&stored, &session.server)
         .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
         .clone();
-    Ok((state, session.server, token, stored))
+    Ok((state, session.server, token, stored, secrets))
 }
 
 /// A connection to `server`, the server of the machine's stored session, as [`Connection::new`]

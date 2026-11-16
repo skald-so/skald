@@ -1,4 +1,5 @@
-//! Runs `skald-server` against PostgreSQL: connection and migrations at start.
+//! Runs `skald-server` against PostgreSQL: connection and migrations at start. And the tests' own
+//! connections to a test database.
 
 mod common;
 
@@ -13,6 +14,28 @@ fn embedded_migrations() -> Vec<(i64, Vec<u8>)> {
         .iter()
         .map(|migration| (migration.version, migration.checksum.to_vec()))
         .collect()
+}
+
+/// The tests' own queries on a test database share a connection that stays open; one that
+/// PostgreSQL ended is replaced.
+#[test]
+fn the_tests_queries_keep_their_connection_until_postgres_ends_it() {
+    let db = TestDb::create();
+    let backend = || {
+        db.query(async |conn| {
+            sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
+                .fetch_one(conn)
+                .await
+        })
+        .expect("ask for the connection's backend")
+    };
+
+    let first = backend();
+    assert_eq!(backend(), first, "another connection");
+
+    db.set_reachable(false);
+    db.set_reachable(true);
+    assert_ne!(backend(), first, "the ended connection");
 }
 
 #[test]

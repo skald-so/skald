@@ -376,7 +376,7 @@ impl Follower {
         speaks: VersionRange,
         timeout: Duration,
     ) -> Result<Option<Self>, String> {
-        let (state, server, token, stored) = signed_in_with_secrets(dir, storage)?;
+        let (state, server, token, stored, secrets) = signed_in_with_secrets(dir, storage)?;
         let Some((device, master, cert)) = certified(&state)? else {
             return Ok(None);
         };
@@ -387,7 +387,7 @@ impl Follower {
             connection,
             token,
             stored,
-            secrets: secrets::Secrets::new(dir, storage),
+            secrets,
             own: Own {
                 account: cert.body().account,
                 master,
@@ -1496,6 +1496,61 @@ pub(crate) mod tests {
         secrets::Secrets::new(dir, secrets::Storage::File)
             .save(&stored)
             .unwrap();
+    }
+
+    /// A certified device's follower keeps its secrets where sign-in does: in the key storage entry
+    /// and the file of the state directory's canonical path, also from a path that is not.
+    #[test]
+    fn follower_keeps_its_secrets_where_sign_in_does() {
+        let dir = crate::test_dir::TestDir::new("follow-secrets");
+        let keys = device::Keys::generate();
+        let body = skald_proto::CertBody {
+            account: AccountId::generate(),
+            device: keys.id(),
+            kind: skald_proto::DeviceKind::Client,
+            signing: keys.signing().public_key(),
+            hpke: keys.hpke().public_key(),
+            issuer: None,
+            issued: 0,
+            ssh: None,
+            name: "Laptop".to_owned(),
+            unknown: skald_proto::Unknown::default(),
+        };
+        let master = skald_crypto::SigningKey::generate();
+        let cert = skald_crypto::issue(&body, &master, keys.signing()).unwrap();
+        let state = State::open(&dir).unwrap();
+        state.start_session("http://127.0.0.1:9").unwrap();
+        state.add_device(keys.id(), "Laptop", "account-1").unwrap();
+        state
+            .set_link(&Link::Certified {
+                master: master.public_key(),
+                cert: cert.to_cbor(),
+            })
+            .unwrap();
+        let mut stored = secrets::Map::from([
+            (sign_in::SESSION_TOKEN.to_owned(), "token-1".to_owned()),
+            (
+                sign_in::SESSION_SERVER.to_owned(),
+                "http://127.0.0.1:9".to_owned(),
+            ),
+        ]);
+        keys.store(&mut stored);
+        secrets::Secrets::new(&dir, secrets::Storage::File)
+            .save(&stored)
+            .unwrap();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+
+        let follower = Follower::open(
+            &dir.join("sub").join(".."),
+            secrets::Storage::File,
+            VersionRange::default(),
+            Duration::from_secs(10),
+        )
+        .unwrap()
+        .expect("a certified device");
+
+        let canonical = std::fs::canonicalize(&*dir).unwrap();
+        assert_eq!(follower.secrets.file(), canonical.join(secrets::FILE));
     }
 
     /// A device without a certificate follows no space and says it is not linked yet, reaching no

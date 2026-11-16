@@ -11,7 +11,7 @@ test_stand_ins() {
   root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
   mkdir -p "$1"
   dir=$(cd "$1" && pwd -P)
-  mkdir -p "$dir/script/lib" "$dir/bin" "$dir/web" "$dir/prototypes/mls" \
+  mkdir -p "$dir/script/lib" "$dir/bin" "$dir/web" "$dir/site" "$dir/prototypes/mls" \
     "$dir/sysroot/lib/rustlib/wasm32-unknown-unknown"
   cp "$root/script/test" "$root/script/changed-parts" "$dir/script/"
   echo 'postgres_start() { :; }; postgres_wait() { :; }; postgres_stop() { :; }' \
