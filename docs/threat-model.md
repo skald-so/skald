@@ -85,6 +85,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - Sign in as a user, as can each provider linked to the user's account, and do what the server allows without the user's keys: register devices no linked device certifies, see the web UI's non-secret sections, and revoke the user's invites, sessions and tokens.
 - Sign in before the user's first device, as can whoever holds the user's sign-in: its device creates the account's master key and holds the account's root of trust for good, so the account stays unusable for its user. Members of a space it creates or joins as the account trust its devices as the account's, with no warning ([membership.md](protocol/membership.md#security-considerations)).
 - Take the KeyPackages of the account's devices, and upload again those that were used, so that Adds with them fail: a session uploads only KeyPackages the device signed ([KeyPackages](protocol/membership.md#keypackages)).
+- Remove the account's other sign-in methods after its own recent sign-in, as can each provider linked to the account, and keep the account. Removing a method ends the web sessions it signed in; device sessions approved through it stay until ended in the web UI's Access section.
 - GitHub: sign up as a listed GitHub login on a server whose sign-up is closed ([self-host.md, "Sign-up"](self-host.md#sign-up)).
 - Persuade the user to enter a link code its own device shows, which links that device with the `name` and kind it chose ([membership.md](protocol/membership.md#security-considerations)).
 - GitHub: list an SSH key of its choice as the user's, so a device key signed with it passes the SSH signature check, or a genuine one fails it as a key change ([Device certificate](protocol/membership.md#device-certificate)).
@@ -92,13 +93,13 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([architecture.md, "Components"](dev/architecture.md#components)).
 
 **Defenses:**
-- A session alone reads and acks no mailbox: a WebSocket takes a proof by the key of a `client` device with a certificate ([Connecting](protocol/delivery.md#connecting)).
+- A session alone reads, acks and sends nothing: a WebSocket and each HTTPS mailbox request take a proof by the key of a `client` device with a certificate ([Connecting](protocol/delivery.md#connecting)).
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
 - The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
 - The attacker links none of the user's devices: a new device takes a certificate only through the link code its user enters on the issuing device ([Link code](protocol/membership.md#link-code)). The issuing device tells its user to enter only a code shown on their own device.
 - The web UI's non-secret sections list the account's devices and sign-in sessions, the attacker's included ([roadmap.md, "MVP"](dev/roadmap.md#mvp)).
-- Sign-in methods are linked explicitly, by a web session from a sign-in of the last few minutes (the server setting `--link-sign-in-age`); a method of another account is refused, and accounts are never merged by email.
+- Sign-in methods are linked and removed explicitly, by a web session from a sign-in of the last few minutes (the server setting `--link-sign-in-age`); a method of another account is refused, accounts are never merged by email, and the account's last method is never removed.
 - A task from a comment runs at the `service` trust level: only where a device's user turned on `service` tasks, within the policy's ceiling unless that user approves it ([Trust levels](protocol/membership.md#trust-levels), [Running a task](protocol/queues.md#running-a-task)).
 
 ### A stolen device
@@ -250,7 +251,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
-- IP addresses and times of connections;
+- IP addresses and times of connections and requests;
 - queue names and settings, task templates;
 - when presence changes, and its size in steps of 4 KB, not its value;
 - notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question; for an invalid result, which task's result failed the check, as it follows that task's `done` and its result;
@@ -260,7 +261,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - when each device takes its messages;
 - which envelopes ask for delivery statuses, so which are likely receipts, and which hold MLS handshake messages;
 - attachment sizes, uploads and downloads;
-- task scheduling fields and states, the addressee's device included; what each claim asks for: trust levels, templates, tasks without one; and which device enqueues, claims and completes each task;
+- task scheduling fields and states, the addressee's device, a claimed task's progress and a dead one's reason included; what each claim asks for: trust levels, templates, tasks without one; and which device enqueues, claims and completes each task;
 - quota counters.
 
 With attachments in a bucket, its provider sees the sizes and times of their uploads.

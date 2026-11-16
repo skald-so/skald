@@ -30,6 +30,9 @@ pub const CONTINUE: &str = r#"role=button[name="Continue"s]"#;
 /// The menu button of the cabinet's account footer.
 pub const ACCOUNT_MENU: &str = r#"role=button[name="Account"s]"#;
 
+/// The server's session cookie: its value is a session token.
+const SESSION_COOKIE: &str = "skald_session";
+
 /// How long the web app may take to show what a test waits for.
 pub const SHOW_WAIT: Duration = Duration::from_secs(30);
 
@@ -181,14 +184,15 @@ pub fn assert_no_secrets(answers: &[Answer], tokens: &[String]) {
     }
 }
 
-/// The answers `page`'s browser recorded, checked by [`assert_no_secrets`] with its cookies' values
-/// as its session tokens.
+/// The answers `page`'s browser recorded, checked by [`assert_no_secrets`] with the values of its
+/// session cookies as its session tokens.
 #[track_caller]
 pub fn answers_without_secrets(page: &Page) -> Vec<Answer> {
     let answers = page.answers();
     let tokens: Vec<String> = page
         .cookies()
         .into_iter()
+        .filter(|cookie| cookie.name == SESSION_COOKIE)
         .map(|cookie| cookie.value)
         .collect();
     assert_no_secrets(&answers, &tokens);

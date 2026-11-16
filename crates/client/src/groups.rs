@@ -8,7 +8,9 @@
 //!   if its signer is admitted, and processes another device's Commit, warning of each device it
 //!   adds that is not admitted once it accepted the space's latest revisions.
 //! - It commits the Remove of each member that is not admitted, and, when it signed the space's
-//!   last accepted revision, the Adds of the admitted devices the group lacks. A Commit with the
+//!   last accepted revision, the Adds of the admitted devices the group lacks; with neither, an
+//!   empty Commit once its current epoch is older than the `history` of the space's policy,
+//!   counted from when the device entered it ("History key"). A Commit with the
 //!   Remove of a revoked device carries the revocations by which this device holds it revoked; of
 //!   those another device's Commit carries, it keeps the ones that count, and warns of the devices
 //!   they revoke, before it judges the new epoch.
@@ -52,6 +54,7 @@ use skald_proto::{
     NonEmpty, Push, RawEnvelope, Roster, Scheme, SpaceId, Unknown,
 };
 
+use crate::clock;
 use crate::connection::{Method, WebSocket};
 use crate::device::Keys;
 use crate::devices::text;
@@ -215,6 +218,17 @@ fn admits(admitted: &BTreeMap<DeviceId, Cert>, member: &MemberDevice) -> bool {
         .is_some_and(|cert| cert.body().signing == member.signing)
 }
 
+/// The devices of `members`, leaves of a group, that are not of `admitted`, as [`admits`] says.
+fn unadmitted<'m>(
+    admitted: &BTreeMap<DeviceId, Cert>,
+    members: impl IntoIterator<Item = &'m MemberDevice>,
+) -> Vec<DeviceId> {
+    (members.into_iter())
+        .filter(|member| !admits(admitted, member))
+        .map(|member| member.device)
+        .collect()
+}
+
 /// Sends the device's own Commits and Welcomes that wait in the outbox within `scope`, in order,
 /// and acts on each answer; stops at the first the server has not answered in time.
 pub fn flush(follower: &mut Follower, link: &mut Link, scope: Scope) -> Result<(), String> {
@@ -342,9 +356,13 @@ fn committed(
         changes.rejoined.push(channel);
         let welcome = match device.commit_stored(channel) {
             Ok(welcome) => welcome,
-            Err(MlsError::NoCommitPending(_)) => return Ok(None),
+            Err(MlsError::NoCommitPending(_)) => {
+                entered(device, channel, changes);
+                return Ok(None);
+            }
             Err(err) => return Err(failed(channel, err)),
         };
+        entered(device, channel, changes);
         let added = (devices(device)
             .map_err(|err| failed(channel, err))?
             .into_iter())
@@ -365,15 +383,47 @@ fn committed(
     }
 }
 
+/// Records that the device entered its current epoch of `channel`'s group now, by the clock of
+/// epochs' ages, unless it recorded that epoch already.
+fn entered(device: &MlsDevice, channel: ChannelId, changes: &mut MlsChanges) {
+    if let Ok(epoch) = device.epoch(channel) {
+        changes.entered.push((channel, epoch, clock::epoch_now()));
+    }
+}
+
 /// A new envelope of `channel` in `space`, of protocol version `version`, with `payload`, an MLS
 /// message, to `recipients`, none for the channel, as it goes into the outbox.
 fn outgoing(
-    version: std::num::NonZeroU64,
+    version: NonZeroU64,
     (space, channel): (SpaceId, ChannelId),
     payload: &[u8],
     recipients: Option<NonEmpty<DeviceId>>,
 ) -> MlsOutgoing {
     let msg_id = MessageId::generate();
+    let envelope = mls_envelope(
+        version,
+        (space, channel),
+        msg_id,
+        payload.to_vec(),
+        recipients,
+    );
+    MlsOutgoing {
+        msg_id,
+        space,
+        channel,
+        envelope,
+    }
+}
+
+/// The bytes of the `mls` envelope `msg_id` of `channel` in `space`, of protocol version `version`,
+/// with `payload`, to `recipients`, none for the channel.
+fn mls_envelope(
+    version: NonZeroU64,
+    (space, channel): (SpaceId, ChannelId),
+    msg_id: MessageId,
+    payload: Vec<u8>,
+    recipients: Option<NonEmpty<DeviceId>>,
+) -> Vec<u8> {
     let header = Header {
         v: version,
         space,
@@ -384,16 +434,7 @@ fn outgoing(
         ttl: None,
         unknown: Unknown::default(),
     };
-    MlsOutgoing {
-        msg_id,
-        space,
-        channel,
-        envelope: Envelope {
-            header,
-            payload: payload.to_vec(),
-        }
-        .to_cbor(),
-    }
+    Envelope { header, payload }.to_cbor()
 }
 
 /// Why an MLS step in `channel` failed, by `err`.
@@ -692,8 +733,7 @@ fn behind(
     (space, channel): (SpaceId, ChannelId),
     others: &BTreeMap<DeviceId, Cert>,
 ) -> Result<(), String> {
-    let epoch = read(follower, &link.keys, |device| device.epoch(channel))?
-        .map_err(|err| failed(channel, err))?;
+    let epoch = held_epoch(follower, link, channel)?;
     let Some(group_info) = group_on_server(follower, space, channel)?.1 else {
         return Ok(());
     };
@@ -717,6 +757,11 @@ fn behind(
     )
 }
 
+/// The epoch of `channel`'s group, which the device holds.
+fn held_epoch(follower: &Follower, link: &Link, channel: ChannelId) -> Result<u64, String> {
+    read(follower, &link.keys, |device| device.epoch(channel))?.map_err(|err| failed(channel, err))
+}
+
 /// `channel`'s GroupInfo `group_info`, the server's, as seen from outside the group.
 fn observe(channel: ChannelId, group_info: &[u8]) -> Result<ChannelView, String> {
     ChannelView::observe_joinable(channel, group_info).map_err(|err| {
@@ -731,13 +776,9 @@ fn not_admitted(
     others: &BTreeMap<DeviceId, Cert>,
     (signer, members): (&MemberDevice, &[MemberDevice]),
 ) -> BTreeSet<DeviceId> {
-    (members.iter().chain([signer]))
-        .filter(|member| {
-            let own = member.device == this && member.signing == *signing;
-            !own && !admits(others, member)
-        })
-        .map(|member| member.device)
-        .collect()
+    let own = |member: &&MemberDevice| member.device == this && member.signing == *signing;
+    let listed = members.iter().chain([signer]).filter(|member| !own(member));
+    unadmitted(others, listed).into_iter().collect()
 }
 
 /// Joins `channel` of `space` by itself from `group_info`, seen as `view`, if its signer and every
@@ -802,7 +843,9 @@ fn create(
 
 /// Commits the Remove of each of `members`, the group of `channel`, that is not admitted, carrying
 /// the revocations of `devices` by which those revoked are; with none, and if this device signed
-/// `roster`, the Adds of the devices of `others`, the other admitted devices, that the group lacks.
+/// `roster`, the Adds of the devices of `others`, the other admitted devices, that the group lacks;
+/// with neither, an empty Commit if the epoch is older than the period of `roster`'s policy
+/// ([`rotate_if_aged`]).
 fn keep_in_line(
     follower: &mut Follower,
     link: &mut Link,
@@ -811,11 +854,10 @@ fn keep_in_line(
     members: &[MemberDevice],
 ) -> Result<(), String> {
     let this = follower.this;
-    let strangers: Vec<DeviceId> = members
-        .iter()
-        .filter(|member| member.device != this && !admits(others, member))
-        .map(|member| member.device)
-        .collect();
+    let strangers = unadmitted(
+        others,
+        members.iter().filter(|member| member.device != this),
+    );
     if !strangers.is_empty() {
         let own = &follower.own;
         let carried = revocations::carried(
@@ -827,21 +869,53 @@ fn keep_in_line(
             device.remove_devices(channel, &strangers, &carried, now())
         });
     }
-    if roster.body().signer != this {
-        return Ok(());
+    if roster.body().signer == this {
+        let lacking: BTreeMap<DeviceId, Cert> = others
+            .iter()
+            .filter(|(device, _)| !members.iter().any(|member| member.device == **device))
+            .map(|(device, cert)| (*device, cert.clone()))
+            .collect();
+        let packages = key_packages(follower, &lacking)?;
+        if !packages.is_empty() {
+            let certs: Vec<Cert> = lacking.into_values().collect();
+            return commit(follower, link, (space, channel), |device, _| {
+                device.add_devices(channel, &packages, &certs, now())
+            });
+        }
     }
-    let lacking: BTreeMap<DeviceId, Cert> = others
-        .iter()
-        .filter(|(device, _)| !members.iter().any(|member| member.device == **device))
-        .map(|(device, cert)| (*device, cert.clone()))
-        .collect();
-    let packages = key_packages(follower, &lacking)?;
-    if packages.is_empty() {
-        return Ok(());
+    let period = roster.body().policy.history;
+    rotate_if_aged(follower, link, (space, channel), period)
+}
+
+/// Commits an empty Commit in `channel` of `space` if the device entered its current epoch more
+/// than `period` seconds ago, by the clock of epochs' ages ("History key"). An epoch it has no
+/// record of entering counts from now: the device records it.
+fn rotate_if_aged(
+    follower: &mut Follower,
+    link: &mut Link,
+    (space, channel): (SpaceId, ChannelId),
+    period: u64,
+) -> Result<(), String> {
+    let epoch = held_epoch(follower, link, channel)?;
+    let at = clock::epoch_now();
+    match follower.state.epoch_entered(channel).map_err(text)? {
+        Some((held, entered)) if held == epoch => {
+            if at.saturating_sub(entered) <= period {
+                return Ok(());
+            }
+        }
+        _ => {
+            return change(
+                follower,
+                MlsChanges {
+                    entered: vec![(channel, epoch, at)],
+                    ..MlsChanges::default()
+                },
+            );
+        }
     }
-    let certs: Vec<Cert> = lacking.into_values().collect();
     commit(follower, link, (space, channel), |device, _| {
-        device.add_devices(channel, &packages, &certs, now())
+        device.commit_empty(channel, &[], now())
     })
 }
 
@@ -853,11 +927,7 @@ fn strangers(
     channel: ChannelId,
     added: &[MemberDevice],
 ) -> Vec<DeviceId> {
-    let admitted = admitted(follower, roster, devices, channel);
-    (added.iter())
-        .filter(|member| !admits(&admitted, member))
-        .map(|member| member.device)
-        .collect()
+    unadmitted(&admitted(follower, roster, devices, channel), added)
 }
 
 /// A Welcome, Commit or application message in the mailbox.
@@ -1029,10 +1099,7 @@ fn welcomed(
         }
     };
     let strangers = |admitted: &BTreeMap<DeviceId, Cert>| -> Vec<DeviceId> {
-        let members = seen.iter().flat_map(|joining| &joining.members);
-        (members.filter(|member| !admits(admitted, member)))
-            .map(|member| member.device)
-            .collect()
+        unadmitted(admitted, seen.iter().flat_map(|joining| &joining.members))
     };
     if joined.is_ok() && !synced && !strangers(&admitted).is_empty() {
         sync_again(follower, space, rosters);
@@ -1104,7 +1171,10 @@ fn join(
             ..MlsChanges::default()
         };
         match joined {
-            Ok(_) => taken.rejoined.push(channel),
+            Ok(_) => {
+                taken.rejoined.push(channel);
+                entered(&device, channel, &mut taken);
+            }
             // A refused Welcome leaves a leaf in the group that the device cannot use: it joins by
             // itself even though the GroupInfo lists it.
             Err(MlsError::GroupExists(_)) => {}
@@ -1161,10 +1231,14 @@ fn processed(
             seen = Some(change.clone());
             true
         });
-        if processed.is_err() {
-            changes.rejoin.push(channel);
-        } else {
-            changes.revocations = learned.iter().map(skald_proto::Cbor::to_cbor).collect();
+        match processed {
+            Err(_) => changes.rejoin.push(channel),
+            Ok(entered) => {
+                changes.revocations = learned.iter().map(skald_proto::Cbor::to_cbor).collect();
+                if let Processed::Entered { epoch } = entered {
+                    changes.entered.push((channel, epoch, clock::epoch_now()));
+                }
+            }
         }
         Ok(Some(processed))
     })?;
@@ -1363,9 +1437,8 @@ pub fn encrypt(
             }
             err => failed(channel, err),
         })?;
-        let strangers: Vec<String> = (members.iter())
-            .filter(|member| !admits(&admitted, member))
-            .map(|member| member.device.to_string())
+        let strangers: Vec<String> = (unadmitted(&admitted, &members).iter())
+            .map(ToString::to_string)
             .collect();
         if !strangers.is_empty() {
             return Err(format!(
@@ -1397,22 +1470,12 @@ pub fn encrypt(
         let payload = device
             .encrypt(channel, &plaintext)
             .map_err(|err| failed(channel, err))?;
-        let header = Header {
-            v: version,
-            space,
-            channel,
-            msg_id,
-            scheme: Scheme::Mls,
-            recipients: None,
-            ttl: None,
-            unknown: Unknown::default(),
-        };
         let message = Counted {
             outgoing: Outgoing {
                 msg_id,
                 recipient: None,
                 space,
-                envelope: Envelope { header, payload }.to_cbor(),
+                envelope: mls_envelope(version, (space, channel), msg_id, payload, None),
             },
             channel,
             counter: counter.get(),

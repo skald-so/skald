@@ -193,6 +193,12 @@ impl Session {
         id.parse().expect("a channel ID")
     }
 
+    /// The session's token, for requests whose bodies are not JSON. The spaces tests make none.
+    #[allow(dead_code)]
+    pub fn token(&self) -> &str {
+        self.token.as_deref().expect("a session")
+    }
+
     /// `DELETE /session`: signs this session out. The spaces tests sign out no session.
     #[allow(dead_code)]
     pub fn sign_out(&self) -> Response {

@@ -110,6 +110,54 @@ export interface StoredRevocation {
 }
 
 /**
+ * A session's ID: random, it reveals nothing of the session's token.
+ */
+export type SessionId = string;
+
+/**
+ * `web` for a web session, `device` for a device session.
+ */
+export type ListedSessionKind =
+  (typeof ListedSessionKind)[keyof typeof ListedSessionKind];
+
+export const ListedSessionKind = {
+  web: "web",
+  device: "device",
+} as const;
+
+/**
+ * A session of the account: a web session, from a sign-in in the browser, or a device session, from the device flow. No IP address or location.
+ */
+export interface ListedSession {
+  session: SessionId;
+  /** `web` for a web session, `device` for a device session. */
+  kind: ListedSessionKind;
+  /** A web session's browser, as the `User-Agent` of its sign-in names it, such as `Chrome`; only when it names a known one. */
+  browser?: string;
+  /** A web session's operating system, as the `User-Agent` of its sign-in names it, such as `macOS`; only when it names a known one. */
+  os?: string;
+  /** The name of the device a device session last registered or connected as; only once it has. */
+  device_name?: string;
+  /** The session's sign-in. */
+  started_at: string;
+  /** The session's last request, to the minute: a request records its use only when the last one is a minute old or more. */
+  last_used_at: string;
+  /** When a web session expires: 30 days after its sign-in, its cookie with it. The server then refuses it as an ended one and lists it no more. Only for a web session: a device session lasts until it ends. */
+  expires_at?: string;
+  /** Whether it is the request's own session. */
+  current: boolean;
+}
+
+export interface Sessions {
+  sessions: ListedSession[];
+}
+
+/**
+ * A sign-in method's ID: random, it reveals nothing of the method's subject.
+ */
+export type SignInMethodId = string;
+
+/**
  * `github`, or `google` for the server's OIDC provider.
  */
 export type SignInMethodProvider =
@@ -124,6 +172,7 @@ export const SignInMethodProvider = {
  * A sign-in method: a provider and the subject it gives the person, which the server does not show.
  */
 export interface SignInMethod {
+  method: SignInMethodId;
   /** `github`, or `google` for the server's OIDC provider. */
   provider: SignInMethodProvider;
   /** When the method was linked, or the account created with it. */
@@ -147,6 +196,35 @@ export type Username = string;
 
 export interface UsernameRequest {
   username: Username;
+}
+
+/**
+ * `open`: a first sign-in creates an account. `closed`: only for the people the server lists.
+ */
+export type SignInProvidersSignUp =
+  (typeof SignInProvidersSignUp)[keyof typeof SignInProvidersSignUp];
+
+export const SignInProvidersSignUp = {
+  open: "open",
+  closed: "closed",
+} as const;
+
+/**
+ * A sign-in provider: `github`, or `google` for the server's OIDC provider.
+ */
+export type SignInProvider =
+  (typeof SignInProvider)[keyof typeof SignInProvider];
+
+export const SignInProvider = {
+  github: "github",
+  google: "google",
+} as const;
+
+export interface SignInProviders {
+  /** The providers the server has settings for, each once. */
+  providers: SignInProvider[];
+  /** `open`: a first sign-in creates an account. `closed`: only for the people the server lists. */
+  sign_up: SignInProvidersSignUp;
 }
 
 /**
@@ -274,10 +352,22 @@ export interface Session {
   username: Username;
   /** The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one. */
   github_login?: string;
+  /** The provider a web session signed in with; only for a web session. */
+  sign_in_method?: SignInProvider;
+}
+
+/**
+ * A space of the account's spaces list.
+ */
+export interface ListedSpace {
+  space: SpaceId;
+  name: SpaceName;
+  /** Whether it is the personal space of the session's account; another account's personal space is not. */
+  personal: boolean;
 }
 
 export interface Spaces {
-  spaces: Space[];
+  spaces: ListedSpace[];
 }
 
 export interface SpaceRequest {
