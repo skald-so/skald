@@ -566,16 +566,37 @@ fn key_packages(
     Ok(taken.into_values().collect())
 }
 
+/// Brings in line the groups of the channels of each space the run accepted the revisions of
+/// ([`Follower::accepted`]), as [`align`] does; warns of what fails.
+pub fn align_accepted(follower: &mut Follower) {
+    match Link::new(follower) {
+        Ok(mut link) => align_with(follower, &mut link),
+        Err(err) => eprintln!("skald: warning: {err}"),
+    }
+}
+
+/// As [`align_accepted`], sending over `link`.
+pub fn align_with(follower: &mut Follower, link: &mut Link) {
+    let accepted: Vec<(SpaceId, (Roster, SpaceDevices))> = (follower.accepted.iter())
+        .map(|(space, synced)| (*space, synced.clone()))
+        .collect();
+    for (space, (roster, devices)) in accepted {
+        if let Err(err) = align(follower, link, space, (&roster, &devices)) {
+            eprintln!("skald: warning: {err}");
+        }
+    }
+}
+
 /// Brings in line the group of each channel of `roster`, the last accepted revision of the space
-/// `space`, with `devices`, its accounts' devices, that this device is admitted to; only `only`, if
-/// given. A channel whose Commit of this device waits for the server is left as it is. Warns of a
-/// group it fails to bring in line.
-pub fn align(
+/// `space`, with `devices`, its accounts' devices, that this device is admitted to. Of a group it
+/// holds and does not rejoin, it uploads the GroupInfo first if the server has none of its epoch. A
+/// channel whose Commit of this device waits for the server is left as it is. Warns of a group it
+/// fails to bring in line.
+fn align(
     follower: &mut Follower,
     link: &mut Link,
     space: SpaceId,
     (roster, devices): (&Roster, &SpaceDevices),
-    only: Option<ChannelId>,
 ) -> Result<(), String> {
     let body = roster.body();
     let waiting = follower.state.mls_outbox().map_err(text)?;
@@ -585,8 +606,7 @@ pub fn align(
     for channel in &body.channels {
         let id = channel.id;
         let mut admitted = admitted(follower, roster, devices, id);
-        if only.is_some_and(|only| only != id)
-            || waiting.iter().any(|outgoing| outgoing.channel == id)
+        if waiting.iter().any(|outgoing| outgoing.channel == id)
             || admitted.remove(&follower.this).is_none()
         {
             continue;
@@ -597,7 +617,8 @@ pub fn align(
             None if welcomes.contains(&id) => Ok(()),
             None => outside(follower, link, at, &admitted, rejoining.contains(&id)),
             Some(_) if rejoining.contains(&id) => behind(follower, link, at, &admitted),
-            Some(members) => keep_in_line(follower, link, at, (roster, &admitted), members),
+            Some(members) => keep_group_info(follower, link, space, id)
+                .and_then(|()| keep_in_line(follower, link, at, (roster, &admitted), members)),
         };
         if let Err(err) = aligned {
             eprintln!(

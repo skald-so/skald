@@ -413,6 +413,9 @@ fn person_commands_are_refused_to_an_agent_and_change_nothing() {
     };
     let agent = "claude-p3rs0n";
     office.assert_sees_only(&a, agent, &office.client_a);
+    // The person's first runs bring the spaces' channel groups in line: they try the Commits once,
+    // which the server refuses here, and warn; later runs leave them waiting.
+    snapshot();
     let before = snapshot();
     let since = Instant::now();
 

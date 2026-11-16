@@ -2,7 +2,8 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Skald API",
-    "version": "0.1.0"
+    "version": "0.1.0",
+    "description": "A server has two addresses. `<public URL>`, the server setting `--public-url`, is where the CLI and devices reach it. `<web URL>`, the setting `--web-url`, by default the public URL, is where browsers sign in: the providers' callbacks, the pages a sign-in returns to, its cookies, the `Origin` its browser forms are taken from and the verification page."
   },
   "paths": {
     "/account/master": {
@@ -714,7 +715,7 @@
             "name": "return_to",
             "in": "query",
             "required": false,
-            "description": "The page of this server to return to once signed in: a path such as `/settings?tab=devices`. Anything else, such as another site's address, returns to `/`.",
+            "description": "The page of the web URL to return to once signed in: a path such as `/settings?tab=devices`, or its full address. Anything else, such as another site's address or the public URL's, returns to `/` of the web URL.",
             "schema": {
               "type": "string"
             }
@@ -725,14 +726,14 @@
             "description": "To GitHub's authorization page.",
             "headers": {
               "Location": {
-                "description": "GitHub's authorization page with the app's client ID, the callback `<public URL>/auth/github/callback`, `state`, `code_challenge` and `code_challenge_method=S256`.",
+                "description": "GitHub's authorization page with the app's client ID, the callback `<web URL>/auth/github/callback`, `state`, `code_challenge` and `code_challenge_method=S256`.",
                 "required": true,
                 "schema": {
                   "type": "string"
                 }
               },
               "Set-Cookie": {
-                "description": "The cookie that binds `state` to this browser: `HttpOnly`, `SameSite=Lax`, `Secure` under an https public URL, for the callback's path only.",
+                "description": "The cookie that binds `state` to this browser: `HttpOnly`, `SameSite=Lax`, `Secure` under an https web URL, for the callback's path only.",
                 "required": true,
                 "schema": {
                   "type": "string"
@@ -807,7 +808,7 @@
             "description": "Signed in or linked: a page that sends the browser to the return page. For a link whose request lacks the cookie of the web session that started it, as one from another site lacks the `SameSite=Strict` cookie, first, once, a page that opens this callback again from this server.",
             "headers": {
               "Set-Cookie": {
-                "description": "Signed in: the session cookie `skald_session`, `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; signed in or linked: the removal of the cookie that bound `state`.",
+                "description": "Signed in: the session cookie `skald_session`, `HttpOnly`, `SameSite=Strict`, `Secure` under an https web URL; signed in or linked: the removal of the cookie that bound `state`.",
                 "required": false,
                 "schema": {
                   "type": "string"
@@ -917,7 +918,7 @@
       "post": {
         "operationId": "startGitHubLink",
         "summary": "Start a link of a GitHub sign-in method",
-        "description": "Submitted by the form of `GET /sign-in-methods`, with the web session's cookie, from a page of this server: a request whose `Origin` is another site's, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to GitHub as `GET /auth/github` does, with a `state` that also binds the link to this web session; GitHub comes back through `GET /auth/github/callback`. The link works only while the session lasts.",
+        "description": "Submitted by the form of `GET /sign-in-methods`, with the web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to GitHub as `GET /auth/github` does, with a `state` that also binds the link to this web session; GitHub comes back through `GET /auth/github/callback`. The link works only while the session lasts.",
         "security": [
           {
             "session": []
@@ -996,7 +997,7 @@
             "name": "return_to",
             "in": "query",
             "required": false,
-            "description": "The page of this server to return to once signed in: a path such as `/settings?tab=devices`. Anything else, such as another site's address, returns to `/`.",
+            "description": "The page of the web URL to return to once signed in: a path such as `/settings?tab=devices`, or its full address. Anything else, such as another site's address or the public URL's, returns to `/` of the web URL.",
             "schema": {
               "type": "string"
             }
@@ -1007,14 +1008,14 @@
             "description": "To Google's authorization endpoint.",
             "headers": {
               "Location": {
-                "description": "Google's authorization endpoint with the client ID, the redirect URI `<public URL>/auth/google/callback`, `response_type=code`, the scopes `openid email`, `state`, `nonce`, `code_challenge` and `code_challenge_method=S256`.",
+                "description": "Google's authorization endpoint with the client ID, the redirect URI `<web URL>/auth/google/callback`, `response_type=code`, the scopes `openid email`, `state`, `nonce`, `code_challenge` and `code_challenge_method=S256`.",
                 "required": true,
                 "schema": {
                   "type": "string"
                 }
               },
               "Set-Cookie": {
-                "description": "The cookie that binds `state` to this browser: `HttpOnly`, `SameSite=Lax`, `Secure` under an https public URL, for the callback's path only.",
+                "description": "The cookie that binds `state` to this browser: `HttpOnly`, `SameSite=Lax`, `Secure` under an https web URL, for the callback's path only.",
                 "required": true,
                 "schema": {
                   "type": "string"
@@ -1104,7 +1105,7 @@
             "description": "Signed in or linked: a page that sends the browser to the return page. For a link whose request lacks the cookie of the web session that started it, as one from another site lacks the `SameSite=Strict` cookie, first, once, a page that opens this callback again from this server.",
             "headers": {
               "Set-Cookie": {
-                "description": "Signed in: the session cookie `skald_session`, `HttpOnly`, `SameSite=Strict`, `Secure` under an https public URL; signed in or linked: the removal of the cookie that bound `state`.",
+                "description": "Signed in: the session cookie `skald_session`, `HttpOnly`, `SameSite=Strict`, `Secure` under an https web URL; signed in or linked: the removal of the cookie that bound `state`.",
                 "required": false,
                 "schema": {
                   "type": "string"
@@ -1452,7 +1453,7 @@
       "post": {
         "operationId": "decideDeviceCode",
         "summary": "Approve or deny a user code",
-        "description": "Submitted by the verification page's form, with the web session's cookie, from a page of this server: a request whose `Origin` is another site's, or that has none, decides nothing. Approving binds the code to the session's account; a user code works once, for one account. After 10 wrong, used or expired codes within 15 minutes, the account's codes, right ones included, are refused until fewer remain in that window.",
+        "description": "Submitted by the verification page's form, with the web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, decides nothing. Approving binds the code to the session's account; a user code works once, for one account. After 10 wrong, used or expired codes within 15 minutes, the account's codes, right ones included, are refused until fewer remain in that window.",
         "requestBody": {
           "required": true,
           "content": {
@@ -3700,12 +3701,12 @@
             "pattern": "^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$"
           },
           "verification_uri": {
-            "description": "The verification page: `<public URL>/device`.",
+            "description": "The verification page: `<web URL>/device`.",
             "type": "string",
             "format": "uri"
           },
           "verification_uri_complete": {
-            "description": "The verification page with the user code filled in: `<public URL>/device?user_code=<user code>`.",
+            "description": "The verification page with the user code filled in: `<web URL>/device?user_code=<user code>`.",
             "type": "string",
             "format": "uri"
           },
