@@ -116,9 +116,13 @@ export function AccountScreen({
       <PageHeader
         title="Account"
         subtitle={
-          session.github_login
-            ? `${session.username} · GitHub ${session.github_login}`
-            : session.username
+          <>
+            {session.github_login
+              ? `${session.username} · GitHub ${session.github_login}`
+              : session.username}
+            . Removing a method signs out its browsers; machines signed in with{" "}
+            <code>skald</code> stay.
+          </>
         }
         actions={providers.map((provider) => (
           <form
