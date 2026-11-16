@@ -260,7 +260,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - when each device takes its messages;
 - which envelopes ask for delivery statuses, so which are likely receipts, and which hold MLS handshake messages;
 - attachment sizes, uploads and downloads;
-- task scheduling fields and states, the addressee's device included; what each claim asks for: trust levels, templates, tasks without one; and which device enqueues, claims and completes each task;
+- task scheduling fields and states, the addressee's device, a claimed task's progress and a dead one's reason included; what each claim asks for: trust levels, templates, tasks without one; and which device enqueues, claims and completes each task;
 - quota counters.
 
 With attachments in a bucket, its provider sees the sizes and times of their uploads.

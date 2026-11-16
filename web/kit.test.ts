@@ -1629,7 +1629,8 @@ test("the screenshot command saves every view of the kit page, as the references
     await promisify(execFile)(process.execPath, ["kit-screenshots.ts", dir], {
       cwd: import.meta.dirname,
     });
-    // The kit page and the cabinet in full, the open side menu at phone width in the window.
+    // The kit page and the cabinet in full, the open side menu at phone width in the window; the
+    // sign-in page and the cabinet of an account with no space fill the window.
     const expected = [
       ["kit-light-1440.png", 1440, "Background", "light"],
       ["kit-light-360.png", 360, "Background", "light"],
@@ -1641,6 +1642,14 @@ test("the screenshot command saves every view of the kit page, as the references
       ["cabinet-dark-360.png", 360, "Side panel", "dark"],
       ["cabinet-menu-light-360.png", 360, "Side panel", "light", 900],
       ["cabinet-menu-dark-360.png", 360, "Side panel", "dark", 900],
+      ["sign-in-light-1440.png", 1440, "Side panel", "light", 900],
+      ["sign-in-light-360.png", 360, "Side panel", "light", 900],
+      ["sign-in-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["sign-in-dark-360.png", 360, "Side panel", "dark", 900],
+      ["account-light-1440.png", 1440, "Side panel", "light", 900],
+      ["account-light-360.png", 360, "Side panel", "light", 900],
+      ["account-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["account-dark-360.png", 360, "Side panel", "dark", 900],
     ] as const;
     expect(readdirSync(dir).sort()).toEqual(
       expected.map(([file]) => file).sort(),

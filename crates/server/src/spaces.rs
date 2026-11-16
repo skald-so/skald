@@ -33,10 +33,18 @@ struct Space {
     name: String,
 }
 
+/// `ListedSpace` in the spec.
+#[derive(Serialize)]
+struct ListedSpace {
+    space: String,
+    name: String,
+    personal: bool,
+}
+
 /// `Spaces` in the spec.
 #[derive(Serialize)]
 struct Spaces {
-    spaces: Vec<Space>,
+    spaces: Vec<ListedSpace>,
 }
 
 /// `RosterRevisionRequest` in the spec.
@@ -233,10 +241,12 @@ pub(crate) async fn personal(State(state): State<AppState>, SignedIn(account): S
     }
 }
 
-/// `GET /spaces`: the spaces the session's account gets.
+/// `GET /spaces`: the spaces the session's account gets, its own personal space marked. It creates
+/// none.
 pub(crate) async fn list(State(state): State<AppState>, SignedIn(account): SignedIn) -> Answer {
-    let found: Vec<(String, String)> = sqlx::query_as(
-        "SELECT s.id::text, s.name FROM space_access a JOIN spaces s ON s.id = a.space_id
+    let found: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT s.id::text, s.name, s.personal AND s.creator_id = a.account_id
+         FROM space_access a JOIN spaces s ON s.id = a.space_id
          WHERE a.account_id = $1::uuid ORDER BY s.created_at, s.id",
     )
     .bind(&account)
@@ -245,7 +255,11 @@ pub(crate) async fn list(State(state): State<AppState>, SignedIn(account): Signe
     .map_err(|err| Refusal::Database("read the spaces", err))?;
     let spaces = found
         .into_iter()
-        .map(|(space, name)| Space { space, name })
+        .map(|(space, name, personal)| ListedSpace {
+            space,
+            name,
+            personal,
+        })
         .collect();
     Ok(Json(Spaces { spaces }).into_response())
 }

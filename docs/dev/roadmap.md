@@ -28,7 +28,8 @@
 - Running tasks from other people.
 - Browser linking and content sections in the web UI (WASM): history and search, messages from the person to their own agents, queue panel, delivery trace, loop analysis.
 - Every web UI screen works on a phone; voice input there is the keyboard's dictation.
-- One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code, Codex and the agents of [agents.md](agents.md#setup-by-skald-connect), new device confirmation, invite by link, Claude Code plugin.
+- One-command connect with a code (`install.sh`, `install.ps1`, `npx`), auto-setup of Claude Code, Codex, Gemini, Cursor, OpenCode and Copilot, new device confirmation, invite by link, Claude Code plugin.
+- The client's default server is the cloud, `https://api.skald.so`.
 - Admin rights transfer, "only one admin" warning, account deletion.
 - Load testing before launch.
 - Documentation: quick start, CLI reference.

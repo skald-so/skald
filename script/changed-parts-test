@@ -106,7 +106,13 @@ rust='workspace wasm image self-host mls agents edits repository'
 crates='workspace wasm image self-host repository'
 all="$rust tooling web site"
 
-expect web web/src/App.tsx
+# The browser tests of the workspace run the web app's build.
+expect 'workspace web' web/src/App.tsx
+expect 'workspace web' web/public/robots.txt
+expect 'workspace web' web/index.html
+expect 'workspace web' web/vite.config.ts
+expect 'workspace web' web/tsconfig.app.json
+expect web web/kit.test.ts
 # Any Markdown file: a link of docs/ can name its headings.
 expect 'web site' web/README.md
 # The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
@@ -114,7 +120,7 @@ expect 'web site' web/README.md
 expect 'workspace self-host web' web/package.json
 expect 'workspace self-host web' web/package-lock.json
 expect 'workspace self-host web' -web/package.json
-expect 'web site' web/src/App.tsx docs/dev/roadmap.md task.md
+expect 'workspace web site' web/src/App.tsx docs/dev/roadmap.md task.md
 
 expect "$crates" crates/server/src/lib.rs
 expect "$crates site" crates/server/README.md
@@ -169,7 +175,7 @@ expect web web/logo.svg
 expect 'web site' -web/logo.svg
 expect 'web site' 'web/logo.svg->web/logo-old.svg'
 expect web -web/logo.svg.bak
-expect web -web/src/App.tsx
+expect 'workspace web' -web/src/App.tsx
 expect 'mls repository' prototypes/mls/benchmarks/src/main.rs
 expect 'mls repository site' -prototypes/mls/benchmarks/src/main.rs
 expect 'edits repository site' -prototypes/edits/overlap/dictionary/names.txt
@@ -192,7 +198,7 @@ expect none
 # compose file, Caddy's config and the part's tests.
 expect 'self-host site' docs/self-host.md
 expect 'self-host site' docs/self-host.md docs/dev/infrastructure.md README.md
-expect 'self-host web site' docs/self-host.md web/src/App.tsx
+expect 'workspace self-host web site' docs/self-host.md web/src/App.tsx
 expect site docs/dev/infrastructure.md
 expect site docs/self-hosting.md
 expect site docs/self-host/notes.md
@@ -218,7 +224,7 @@ apply crates/server/src/lib.rs
 git commit --quiet --all --message dev
 git merge --quiet --no-edit "$pr"
 got=$(parts HEAD^1)
-[[ $got == web ]] || fail "merged PR: got '$got', want 'web'"
+[[ $got == 'workspace web' ]] || fail "merged PR: got '$got', want 'workspace web'"
 
 # The exact output, for $GITHUB_OUTPUT.
 git checkout --quiet --detach "$base"

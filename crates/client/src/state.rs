@@ -195,6 +195,13 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE rejoin (
         channel TEXT PRIMARY KEY
     ) STRICT",
+    // The epoch of each channel's group the device is in, with when it entered it, by the clock of
+    // epochs' ages ([`crate::clock`]).
+    "CREATE TABLE channel_epoch (
+        channel TEXT PRIMARY KEY,
+        epoch INTEGER NOT NULL CHECK (epoch >= 0),
+        entered INTEGER NOT NULL CHECK (entered >= 0)
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -360,6 +367,9 @@ pub struct MlsChanges {
     pub rejoin: Vec<ChannelId>,
     /// Channels of [`MlsChanges::rejoin`] the device is back in.
     pub rejoined: Vec<ChannelId>,
+    /// Each channel whose group it is in at an epoch, with when it entered that epoch; an epoch
+    /// recorded already keeps its time.
+    pub entered: Vec<(ChannelId, u64, u64)>,
 }
 
 impl MlsChanges {
@@ -373,6 +383,7 @@ impl MlsChanges {
             && self.joined.is_empty()
             && self.rejoin.is_empty()
             && self.rejoined.is_empty()
+            && self.entered.is_empty()
     }
 }
 
@@ -664,6 +675,15 @@ impl State {
                     params![channel.to_string()],
                 )?;
             }
+            for (channel, epoch, entered) in &changes.entered {
+                tx.execute(
+                    "INSERT INTO channel_epoch (channel, epoch, entered) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (channel) DO UPDATE
+                     SET epoch = excluded.epoch, entered = excluded.entered
+                     WHERE epoch != excluded.epoch",
+                    params![channel.to_string(), sql_u64(*epoch)?, sql_u64(*entered)?],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -682,6 +702,27 @@ impl State {
             .prepare("SELECT channel FROM rejoin ORDER BY channel")?;
         let rows = query.query_map([], |row| row.get::<_, String>(0))?;
         rows.map(|channel| id("channel ID", &channel?)).collect()
+    }
+
+    /// The epoch of `channel`'s group the device last recorded it entered, with when
+    /// ([`MlsChanges::entered`]).
+    pub fn epoch_entered(&self, channel: ChannelId) -> Result<Option<(u64, u64)>, Error> {
+        let held: Option<(i64, i64)> = self
+            .db
+            .query_row(
+                "SELECT epoch, entered FROM channel_epoch WHERE channel = ?1",
+                params![channel.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        held.map(|(epoch, entered)| {
+            let read = |value: i64| {
+                u64::try_from(value)
+                    .map_err(|_| Error::Malformed(format!("the epoch of the channel {channel}")))
+            };
+            Ok((read(epoch)?, read(entered)?))
+        })
+        .transpose()
     }
 
     /// The device's own Commits and Welcomes in the outbox, in the order they go out.
@@ -1244,6 +1285,11 @@ impl State {
 /// `seq` as SQLite holds it.
 fn sql_seq(seq: u64) -> Result<i64, Error> {
     i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))
+}
+
+/// `value` as SQLite stores it; fails past `i64`.
+fn sql_u64(value: u64) -> Result<i64, Error> {
+    i64::try_from(value).map_err(|_| Error::Malformed(format!("the number {value}")))
 }
 
 /// Adds `message` to the outbox, after those in it, records its counter as its channel's last and
@@ -2051,6 +2097,30 @@ pub(crate) mod tests {
         })
         .unwrap();
         assert_eq!(State::open(&dir).unwrap().rejoining().unwrap(), [second]);
+    }
+
+    /// The epoch the device entered in each channel is kept across opens with when it entered it;
+    /// the same epoch again keeps its first time, a later one replaces it.
+    #[test]
+    fn entered_epochs_keep_their_first_time() {
+        let dir = TestDir::new("state-epochs");
+        let state = State::open(&dir).unwrap();
+        let (first, second) = (ChannelId::generate(), ChannelId::generate());
+        let enter = |entered: Vec<(ChannelId, u64, u64)>| {
+            let changes = MlsChanges {
+                entered,
+                ..MlsChanges::default()
+            };
+            state.mls_change(|_| Ok((None, changes, ()))).unwrap();
+        };
+        assert_eq!(state.epoch_entered(first).unwrap(), None);
+        enter(vec![(first, 1, 100), (second, 3, 150)]);
+        enter(vec![(first, 1, 200)]);
+        let reopened = State::open(&dir).unwrap();
+        assert_eq!(reopened.epoch_entered(first).unwrap(), Some((1, 100)));
+        enter(vec![(first, 2, 300)]);
+        assert_eq!(state.epoch_entered(first).unwrap(), Some((2, 300)));
+        assert_eq!(state.epoch_entered(second).unwrap(), Some((3, 150)));
     }
 
     #[test]

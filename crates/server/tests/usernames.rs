@@ -256,12 +256,12 @@ fn two_sign_ups_with_one_login_at_once_get_different_usernames() {
     }
 }
 
-/// An account as a server before usernames made it: a GitHub method and a web session.
+/// An account as a server before usernames made it: a GitHub method and a device session.
 struct OldAccount {
     id: String,
     user: User,
-    /// The `Cookie` header of its web session.
-    cookie: String,
+    /// Its device session's token: the web sessions from before end at a later migration.
+    token: String,
 }
 
 impl OldAccount {
@@ -274,12 +274,12 @@ impl OldAccount {
              INSERT INTO sign_in_methods (provider, subject, account_id, login)
              VALUES ('github', '{id}', '{account}', '{login}');
              INSERT INTO sessions (token_hash, account_id, kind)
-             VALUES (sha256(convert_to('{token}', 'UTF8')), '{account}', 'web');"
+             VALUES (sha256(convert_to('{token}', 'UTF8')), '{account}', 'device');"
         ));
         OldAccount {
             id: account,
             user: User::new(id, login),
-            cookie: format!("skald_session={token}"),
+            token,
         }
     }
 }
@@ -305,7 +305,7 @@ fn migration_gives_existing_accounts_their_logins_numbered_when_two_share_one() 
     let flow = DeviceFlow::of(SignIn::on(db));
 
     let username = |old: &OldAccount| {
-        let who = of_cookie(&flow, &old.cookie);
+        let who = of_token(&flow, &old.token);
         assert_eq!(who.account, old.id);
         assert_eq!(who.github_login.as_deref(), Some(old.user.login.as_str()));
         who.username
