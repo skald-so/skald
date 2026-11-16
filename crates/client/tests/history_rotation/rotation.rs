@@ -1,12 +1,13 @@
 //! Rotation on schedule: an epoch older than the policy's `history` gets an empty Commit at Ada's
 //! next run, and Ada and Bob talk in the new epoch; a younger epoch gets none; an epoch that ages
-//! past the period before `skald send` is rotated before the message goes out.
+//! past the period before `skald send` is rotated before the message goes out; an epoch the local
+//! state holds no entry time of counts from the run that finds it so.
 
 use skald_proto::Envelope;
 
 use crate::aged::{
     DAY, HOUR, ahead, assert_no_commit, assert_one_commit, assert_one_commit_each,
-    assert_rotated_once, epoch_of, epochs, with_period,
+    assert_rotated_once, epoch_of, epochs, forget_entered, received_ahead, with_period,
 };
 use crate::fixtures::sent_after;
 use crate::kit::received;
@@ -61,6 +62,28 @@ fn an_epoch_younger_than_the_period_is_not_rotated_until_it_is_older() {
     talk.ada = ahead(talk.ada, 25 * HOUR);
     received(&talk.ada.machine);
     assert_one_commit_each(&talk, before, from);
+}
+
+/// Ada's local state holds no time her device entered the epochs, as a client from before it kept
+/// one leaves it. With a period of a day, her `skald recv` two days on counts the epochs from then
+/// and sends no Commit; two days later still, her next run commits one empty Commit in each
+/// channel.
+#[test]
+fn an_epoch_without_an_entry_time_in_the_local_state_is_rotated_once_the_period_passes() {
+    let mut talk = Talk::new(
+        &[4_162_211_001, 4_162_211_002],
+        &["ada-older-state", "bob-older-state"],
+        false,
+    );
+    with_period(&talk, DAY);
+    forget_entered(&talk.ada);
+    let (before, from) = (epochs(&talk), talk.front.sent().len());
+    talk = received_ahead(talk, 2 * DAY);
+    assert_no_commit(&talk, before, from);
+
+    talk = received_ahead(talk, 4 * DAY);
+
+    assert_rotated_once(&mut talk, (before, from), (ADA_SAYS, BOB_SAYS));
 }
 
 /// With a period of a day, Ada's `skald send` two days after the channel's epoch began commits an

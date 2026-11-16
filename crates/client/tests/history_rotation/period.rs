@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use skald_crypto::accept_next;
-use skald_proto::{Role, Roster, SpaceId};
+use skald_proto::{ChannelMember, Mode, Role, Roster, SpaceId};
 
 use crate::aged::{
     DAY, HOUR, ahead, assert_bob_entered_by_empty_commits, assert_no_commit,
@@ -19,7 +19,7 @@ use crate::edits::{
 };
 use crate::fixtures::fronted;
 use crate::front::Front;
-use crate::kit::{channels, create_space, latest, received, rosters};
+use crate::kit::{channels, create_space, latest, received, rosters, stale_once};
 use crate::machine::{Finished, Machine};
 use crate::relay::Lose;
 use crate::talk::{ADA_HOST, BOB_HOST, Talk};
@@ -160,6 +160,54 @@ fn the_device_of_a_member_that_is_no_admin_refuses_and_sends_nothing() {
 
     assert_refused_as_no_admin(&refused);
     assert_nothing_sent((cloud, &front), marks, (space, &bob.token, &held), &refused);
+}
+
+/// Bob, an admin too, stores a revision that changes the policy's ceilings while Ada's device sees
+/// the revisions as they were before it. Ada's `skald set-history-period acme 2d` signs a revision
+/// that the server refuses, accepts Bob's and signs the period on top of it: the server holds Bob's
+/// revision, then Ada's with the period alone.
+#[test]
+fn a_period_set_after_another_admins_revision_came_first_is_kept() {
+    let (world, _front) = fronted();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_162_210_001, "ada-period-on-top", ADA_HOST);
+    let bob = world.sign_up(4_162_210_002, "bob-period-first", BOB_HOST);
+    let space = create_space(cloud, &ada, ACME).id;
+    let with_bob = next_with(
+        &latest(cloud, &ada.token, space),
+        (ada.device, &ada.key),
+        |body| {
+            body.members.push(bob.member(Role::Admin));
+            body.channels[0].members.push(ChannelMember {
+                account: bob.account,
+                history: true,
+            });
+        },
+    );
+    store(cloud, &ada.token, &with_bob);
+    received(&ada.machine);
+    let held = rosters(cloud, &ada.token, space).len();
+    let bobs = next_with(
+        &latest(cloud, &bob.token, space),
+        (bob.device, &bob.key),
+        |body| {
+            body.policy.ceilings.member = Mode::Full;
+        },
+    );
+    store(cloud, &bob.token, &bobs);
+    stale_once(cloud, space, held);
+
+    let set = set_period(&ada.machine, ACME, "2d");
+
+    assert!(set.success, "{set:?}");
+    let all = rosters(cloud, &ada.token, space);
+    assert_eq!(
+        all.len(),
+        held + 2,
+        "not Bob's revision and one more: {all:?}"
+    );
+    assert_eq!(all[held], bobs, "Bob's revision is not kept");
+    assert_period(cloud, (&all[held], &all[held + 1]), &ada, 2 * DAY);
 }
 
 /// The relay loses the server's answer to the revision of Ada's `skald set-history-period acme 2d`

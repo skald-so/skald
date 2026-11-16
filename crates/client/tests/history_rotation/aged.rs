@@ -18,6 +18,16 @@ use crate::world::{Person, next_with, store};
 pub const DAY: u64 = 86_400;
 pub const HOUR: u64 = 3_600;
 
+/// Drops from `person`'s local state when its device entered each epoch, as a client from before it
+/// kept that leaves the state.
+pub fn forget_entered(person: &Person) {
+    let state = rusqlite::Connection::open(person.machine.state_dir().join("state.sqlite3"))
+        .expect("the machine's local state");
+    state
+        .execute("DELETE FROM channel_epoch", [])
+        .expect("forget the epochs' entry times");
+}
+
 /// The setting of the seconds the CLI adds to the system's clock.
 pub const CLOCK_OFFSET: &str = "SKALD_CLOCK_OFFSET";
 
@@ -26,6 +36,13 @@ pub const CLOCK_OFFSET: &str = "SKALD_CLOCK_OFFSET";
 pub fn ahead(mut person: Person, by: u64) -> Person {
     person.machine = person.machine.with_env(CLOCK_OFFSET, by.to_string());
     person
+}
+
+/// `talk` after Ada's `skald recv` with her clock `by` seconds ahead of the system's.
+pub fn received_ahead(mut talk: Talk, by: u64) -> Talk {
+    talk.ada = ahead(talk.ada, by);
+    received(&talk.ada.machine);
+    talk
 }
 
 /// Ada's device signs the revision after the latest of the talk's space, with the policy's

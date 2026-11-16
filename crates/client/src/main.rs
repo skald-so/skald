@@ -700,3 +700,36 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A period is whole days or hours from a day on; under a day, or of another form, it is
+    /// refused.
+    #[test]
+    fn history_period_is_whole_days_or_hours_from_a_day_on() {
+        for (given, seconds) in [
+            ("1d", 86_400),
+            ("24h", 86_400),
+            ("36h", 129_600),
+            ("7d", 604_800),
+        ] {
+            assert_eq!(history_period(given), Ok(seconds), "{given}");
+        }
+        for given in [
+            "23h",
+            "0d",
+            "",
+            "d",
+            "7",
+            "7w",
+            "1.5d",
+            "-1d",
+            "99999999999999999d",
+        ] {
+            assert!(history_period(given).is_err(), "{given}");
+        }
+        assert!(history_period("23h").unwrap_err().contains("day"));
+    }
+}
