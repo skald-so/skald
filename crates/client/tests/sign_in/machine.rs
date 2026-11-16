@@ -1,6 +1,7 @@
 //! A machine without a browser: `skald` runs with an empty environment ([`bare_skald`]), a `PATH`
 //! with nothing on it and a home, a state directory and a temporary directory of its own, all under
-//! one directory that is removed on drop. Several machines run on one this way.
+//! one directory that is removed on drop, in one-shot mode ([`ONE_SHOT`]). Several machines run on
+//! one this way.
 
 #[allow(dead_code)]
 #[path = "../../src/test_dir.rs"]
@@ -38,6 +39,9 @@ pub const SIGN_OUT: &str = "sign-out";
 pub const DEVICES: &str = "devices";
 pub const THIS_DEVICE: &str = "this device";
 pub const NOT_LINKED: &str = "not linked";
+/// The setting that runs `skald` in one-shot mode: a run starts no helper, so killing it kills the
+/// process that writes. The machine's runs set it; the tests of the helper run without it.
+pub const ONE_SHOT: &str = "SKALD_ONE_SHOT";
 /// The setting of the host name the client reads, which names its device unless the user gives a
 /// name; set to an empty value, the host name is empty.
 pub const HOST_NAME: &str = "SKALD_HOST_NAME";
@@ -136,28 +140,7 @@ impl Machine {
     }
 
     fn spawn(&self, args: &[&str], stdin: Stdio, dir: Option<&Path>) -> Run {
-        let mut child = self
-            .command(args, dir)
-            .stdin(stdin)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("run skald");
-        let input = child.stdin.take();
-        let stdout = Arc::new(Mutex::new(Vec::new()));
-        let stderr = Arc::new(Mutex::new(Vec::new()));
-        let readers = vec![
-            collect(child.stdout.take().expect("stdout is piped"), &stdout),
-            collect(child.stderr.take().expect("stderr is piped"), &stderr),
-        ];
-        Run {
-            child,
-            input,
-            started: Instant::now(),
-            stdout,
-            stderr,
-            readers,
-        }
+        Run::spawn(self.command(args, dir).stdin(stdin))
     }
 
     /// `skald` with `args`, in the working directory `dir` if any, set up as the machine's runs
@@ -177,7 +160,8 @@ impl Machine {
             .env("TMP", self.root.join("tmp"))
             .env("TEMP", self.root.join("tmp"))
             .env(STATE_DIR, self.state_dir())
-            .env(KEY_STORAGE, "file");
+            .env(KEY_STORAGE, "file")
+            .env(ONE_SHOT, "1");
         if let Some(name) = &self.host_name {
             command.env(HOST_NAME, name);
         }
@@ -318,6 +302,30 @@ impl Finished {
 }
 
 impl Run {
+    /// Starts `command` with its outputs piped; its input as `command` sets it.
+    pub fn spawn(command: &mut Command) -> Self {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run skald");
+        let input = child.stdin.take();
+        let stdout = Arc::new(Mutex::new(Vec::new()));
+        let stderr = Arc::new(Mutex::new(Vec::new()));
+        let readers = vec![
+            collect(child.stdout.take().expect("stdout is piped"), &stdout),
+            collect(child.stderr.take().expect("stderr is piped"), &stderr),
+        ];
+        Run {
+            child,
+            input,
+            started: Instant::now(),
+            stdout,
+            stderr,
+            readers,
+        }
+    }
+
     /// What it printed so far, stdout and stderr both.
     pub fn shown(&self) -> String {
         let stdout = self.stdout.lock().expect("a run's output");

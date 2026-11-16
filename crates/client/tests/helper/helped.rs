@@ -1,0 +1,374 @@
+//! What the tests of the helper share: runs of a copy of `skald` of Ada's machine's own, which may
+//! go through a helper, and the processes of that copy, found by their executable. The copy is
+//! `bin/skald` under the machine's directory, whose name no other machine has, so a process whose
+//! executable's path ends so is one these tests started, directly or through a command. Each one
+//! left is killed on drop, before the machine's directory is removed.
+
+use std::ffi::OsString;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use skald_proto::MessageId;
+
+use crate::cloud::WAIT;
+use crate::common::CLIENT;
+use crate::fixtures::{SEND, TIMEOUT_SETTING, msg_id};
+use crate::kit::RECV;
+use crate::machine::{Finished, Machine, Run};
+use crate::talk::{Talk, messages_sent};
+
+/// The command that runs the helper.
+pub const HELPER: &str = "helper";
+/// The flag of one-shot mode.
+pub const ONE_SHOT: &str = "--one-shot";
+/// The setting of one-shot mode.
+pub use crate::machine::ONE_SHOT as ONE_SHOT_SETTING;
+/// The setting of the helper's idle time, in seconds.
+pub const IDLE_SETTING: &str = "SKALD_HELPER_IDLE";
+/// The setting of the version a run acts as, for tests.
+pub const VERSION_SETTING: &str = "SKALD_VERSION";
+/// The flag of a run's request timeout, in seconds.
+pub const TIMEOUT_FLAG: &str = "--timeout";
+/// The version of the `skald` these tests build, and of its copy on disk.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The helper's idle time in every run of these tests unless a test sets its own: longer than any
+/// test waits between two commands, and short enough that a helper a test leaves exits soon.
+pub const IDLE: Duration = Duration::from_secs(30);
+/// The request that opens a WebSocket, as its line starts.
+pub const WEBSOCKET: &str = "GET /ws ";
+
+/// How long a test waits for a helper to exit.
+pub const EXIT_LIMIT: Duration = Duration::from_secs(30);
+
+/// The runs of Ada's machine's copy of `skald`, and its processes.
+pub struct Helped {
+    /// The copy.
+    exe: PathBuf,
+    /// The end of the copy's path that no other machine's executable has: the machine's directory,
+    /// `bin` and the file.
+    tail: PathBuf,
+    /// The machine's home: the working directory of a run that names none.
+    home: PathBuf,
+    /// The settings of the machine's runs.
+    env: Vec<(OsString, OsString)>,
+}
+
+impl Helped {
+    /// Copies `skald` to `machine`'s `bin/`; its runs from then on have `machine`'s settings, but
+    /// not the one-shot setting.
+    pub fn new(machine: &Machine) -> Self {
+        let root = machine.root();
+        let file = format!("skald{}", std::env::consts::EXE_SUFFIX);
+        let exe = root.join("bin").join(&file);
+        fs::copy(CLIENT, &exe).expect("copy skald to the machine");
+        let tail: PathBuf = [
+            root.file_name()
+                .expect("the machine's directory has a name"),
+            "bin".as_ref(),
+            file.as_ref(),
+        ]
+        .iter()
+        .collect();
+        let home = root.join("home");
+        let env = machine
+            .command_in(&home, &[])
+            .get_envs()
+            .filter_map(|(name, value)| Some((name.to_owned(), value?.to_owned())))
+            .collect();
+        Helped {
+            exe,
+            tail,
+            home,
+            env,
+        }
+    }
+
+    /// Starts the copy with `args` in `dir`, with `settings` beside the machine's.
+    pub fn start_in(&self, dir: &Path, settings: &[(&str, &str)], args: &[&str]) -> Run {
+        let mut command = Command::new(&self.exe);
+        command
+            .env_clear()
+            .current_dir(dir)
+            .args(args)
+            .envs(self.env.iter().map(|(name, value)| (name, value)))
+            .env_remove(ONE_SHOT_SETTING)
+            .env(IDLE_SETTING, IDLE.as_secs().to_string())
+            .envs(settings.iter().copied());
+        Run::spawn(&mut command)
+    }
+
+    /// As [`Helped::start_in`], in the machine's home.
+    pub fn start(&self, settings: &[(&str, &str)], args: &[&str]) -> Run {
+        self.start_in(&self.home, settings, args)
+    }
+
+    /// Runs the copy with `args` in the machine's home; gives how it finished.
+    pub fn run(&self, args: &[&str]) -> Finished {
+        self.start(&[], args).finish()
+    }
+
+    /// As [`Helped::run`], with `settings`.
+    pub fn run_with(&self, settings: &[(&str, &str)], args: &[&str]) -> Finished {
+        self.start(settings, args).finish()
+    }
+
+    /// As [`Helped::run`], in `dir`.
+    pub fn run_in(&self, dir: &Path, args: &[&str]) -> Finished {
+        self.start_in(dir, &[], args).finish()
+    }
+
+    /// Runs `skald send` of `text` to the talk's channel, with `settings`.
+    pub fn send_with(&self, talk: &Talk, settings: &[(&str, &str)], text: &str) -> Finished {
+        let channel = talk.channel.to_string();
+        self.run_with(settings, &[SEND, &channel, text])
+    }
+
+    /// As [`Helped::send_with`], without settings; fails unless it succeeds.
+    #[track_caller]
+    pub fn sent(&self, talk: &Talk, text: &str) -> Finished {
+        let finished = self.send_with(talk, &[], text);
+        assert!(finished.success, "{text:?} not sent: {finished:?}");
+        finished
+    }
+
+    /// Runs `skald recv`; fails unless it succeeds.
+    #[track_caller]
+    pub fn received(&self) -> Finished {
+        let finished = self.run(&[RECV]);
+        assert!(finished.success, "{finished:?}");
+        finished
+    }
+
+    /// The processes of the copy running now: with no run of a test going, its helpers.
+    pub fn helpers(&self) -> Vec<u32> {
+        let mut found = running(&self.tail);
+        found.sort_unstable();
+        found
+    }
+
+    /// The one helper running now; fails unless there is one.
+    #[track_caller]
+    pub fn one_helper(&self) -> u32 {
+        match self.helpers().as_slice() {
+            [one] => *one,
+            other => panic!("not one helper running: {other:?}"),
+        }
+    }
+
+    /// Fails unless no helper runs now.
+    #[track_caller]
+    pub fn assert_none(&self) {
+        let running = self.helpers();
+        assert!(running.is_empty(), "a helper runs: {running:?}");
+    }
+
+    /// Waits for up to `limit` until `pid` no longer runs; fails if it still does.
+    #[track_caller]
+    pub fn await_exit(&self, pid: u32, limit: Duration) {
+        let deadline = Instant::now() + limit;
+        while self.helpers().contains(&pid) {
+            assert!(
+                Instant::now() < deadline,
+                "the helper {pid} still runs after {limit:?}"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Waits for up to [`WAIT`] until exactly one helper has run for `steady` on end; gives it.
+    #[track_caller]
+    pub fn await_one_steady(&self, steady: Duration) -> u32 {
+        let deadline = Instant::now() + WAIT;
+        let mut since: Option<(u32, Instant)> = None;
+        loop {
+            let running = self.helpers();
+            since = match (running.as_slice(), since) {
+                ([one], Some((pid, from))) if *one == pid => {
+                    if from.elapsed() >= steady {
+                        return pid;
+                    }
+                    Some((pid, from))
+                }
+                ([one], _) => Some((*one, Instant::now())),
+                _ => None,
+            };
+            assert!(
+                Instant::now() < deadline,
+                "not one helper for {steady:?} on end: {running:?}"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Kills the process `pid` of the copy and waits until it no longer runs.
+    pub fn kill(&self, pid: u32) {
+        kill(pid);
+        self.await_exit(pid, EXIT_LIMIT);
+    }
+}
+
+/// Kills every process of the copy still running.
+impl Drop for Helped {
+    fn drop(&mut self) {
+        let deadline = Instant::now() + EXIT_LIMIT;
+        loop {
+            let left = running(&self.tail);
+            if left.is_empty() {
+                return;
+            }
+            if Instant::now() > deadline {
+                let failed = format!("the processes {left:?} of {:?} still run", self.exe);
+                if thread::panicking() {
+                    eprintln!("{failed}");
+                    return;
+                }
+                panic!("{failed}");
+            }
+            for pid in left {
+                kill(pid);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// The settings of a run with a request timeout of `seconds`.
+pub fn timeout_of(seconds: &str) -> [(&'static str, &str); 1] {
+    [(TIMEOUT_SETTING, seconds)]
+}
+
+/// Fails unless Bob's device reads the messages Ada's machine sent to the talk's channel, each
+/// once: `texts`, in order, with the counters from 1.
+#[track_caller]
+pub fn bob_reads(talk: &mut Talk, texts: &[&str]) {
+    let sent: Vec<MessageId> = messages_sent(&talk.front, talk.channel, 0)
+        .iter()
+        .map(msg_id)
+        .collect();
+    assert_eq!(sent.len(), texts.len(), "message envelopes sent: {sent:?}");
+    let read: Vec<(MessageId, u64, &str)> = (sent.into_iter().zip(1..).zip(texts))
+        .map(|((id, counter), text)| (id, counter, *text))
+        .collect();
+    talk.bob_reads_from_ada(&read);
+}
+
+/// How many times `shown` holds `text`.
+pub fn times(shown: &str, text: &str) -> usize {
+    shown.matches(text).count()
+}
+
+/// A version older than [`VERSION`].
+pub fn older() -> String {
+    let mut version = semver::Version::parse(VERSION).expect("a semantic version");
+    version.pre = semver::Prerelease::EMPTY;
+    if version.patch > 0 {
+        version.patch -= 1;
+    } else if version.minor > 0 {
+        version.minor -= 1;
+    } else {
+        version.major = version.major.checked_sub(1).expect("an older version");
+    }
+    version.to_string()
+}
+
+/// A version newer than [`VERSION`]: its next minor version.
+pub fn newer() -> String {
+    let version = semver::Version::parse(VERSION).expect("a semantic version");
+    semver::Version::new(version.major, version.minor + 1, 0).to_string()
+}
+
+/// The processes whose executable's path ends with `tail`.
+#[cfg(target_os = "linux")]
+fn running(tail: &Path) -> Vec<u32> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            // A process that has exited has no executable, a zombie included.
+            let exe = fs::read_link(entry.path().join("exe")).ok()?;
+            exe.ends_with(tail).then_some(pid)
+        })
+        .collect()
+}
+
+/// The processes whose executable's path ends with `tail`.
+#[cfg(target_os = "macos")]
+fn running(tail: &Path) -> Vec<u32> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // SAFETY: with no buffer, it only counts the processes.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let Ok(count) = usize::try_from(count) else {
+        return Vec::new();
+    };
+    // Room for processes started meanwhile.
+    let mut pids: Vec<libc::c_int> = vec![0; count + 256];
+    let size = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice()))
+        .expect("the size of the process list");
+    // SAFETY: the buffer holds `size` bytes.
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), size) };
+    let listed = usize::try_from(listed).unwrap_or(0).min(pids.len());
+    pids[..listed]
+        .iter()
+        .filter_map(|&pid| {
+            let mut path = vec![0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+            let capacity = u32::try_from(path.len()).expect("the size of a path");
+            // SAFETY: the buffer holds `capacity` bytes.
+            let length = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), capacity) };
+            let length = usize::try_from(length).ok().filter(|length| *length > 0)?;
+            let exe = Path::new(OsStr::from_bytes(&path[..length]));
+            if exe.ends_with(tail) {
+                u32::try_from(pid).ok()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The processes whose executable's path ends with `tail`.
+#[cfg(windows)]
+fn running(tail: &Path) -> Vec<u32> {
+    let script = format!(
+        "Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -like '*\\{}' }} \
+         | ForEach-Object {{ $_.ProcessId }}",
+        tail.display()
+    );
+    let listed = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .expect("list the processes");
+    assert!(
+        listed.status.success(),
+        "listing the processes failed: {listed:?}"
+    );
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse().ok())
+        .collect()
+}
+
+#[cfg(unix)]
+fn kill(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    // SAFETY: a signal to a process of the copy, which these tests started.
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn kill(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output();
+}
