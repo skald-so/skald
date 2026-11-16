@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use skald_proto::{Cbor as _, Frame, PROOF_HEADER, Push, REQUEST_LABEL, RequestProof};
+use skald_proto::{Cbor as _, DeviceId, Frame, PROOF_HEADER, Push, REQUEST_LABEL, RequestProof};
 use sqlx::PgPool;
 
 use crate::connections::{self, Closing, LISTEN_WAIT, Proof, Proved, Unproved};
@@ -113,14 +113,8 @@ pub(crate) async fn poll(
     )
     .after(cursor);
     let notices = state.notices.listen(proved.account);
-    if tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
-        .await
-        .is_err()
-    {
-        return server_error("The server does not listen to its other instances yet.");
-    }
-    if let Err(err) = delivery::ack(&state.db, &state.wakers, proved.device, cursor).await {
-        return database_failed("ack a mailbox", err);
+    if let Err(failed) = ack_listening(&state, proved.device, cursor).await {
+        return *failed;
     }
     let ends = tokio::time::sleep(wait);
     tokio::pin!(ends);
@@ -143,6 +137,27 @@ pub(crate) async fn poll(
             () = &mut ends => return frame(&Frame::Batch(Vec::new())),
         }
     }
+}
+
+/// Acks `device`'s mailbox up to `cursor` once the instance listens to the others, so that a
+/// long-poll or a stream listening to its mailbox misses nothing they tell; the answer if either
+/// fails.
+pub(crate) async fn ack_listening(
+    state: &AppState,
+    device: DeviceId,
+    cursor: u64,
+) -> Result<(), Box<Response>> {
+    if tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
+        .await
+        .is_err()
+    {
+        return Err(Box::new(server_error(
+            "The server does not listen to its other instances yet.",
+        )));
+    }
+    delivery::ack(&state.db, &state.wakers, device, cursor)
+        .await
+        .map_err(|err| Box::new(database_failed("ack a mailbox", err)))
 }
 
 /// What a long-poll of `proved`'s device answers now: the next entries of `reader`, then a
@@ -277,7 +292,7 @@ fn refusal(closing: Closing) -> Response {
 }
 
 /// The answer to an invalid request, for the reason `detail`.
-fn invalid(detail: &str) -> Response {
+pub(crate) fn invalid(detail: &str) -> Response {
     problem(
         StatusCode::BAD_REQUEST,
         "invalid-request",
@@ -287,7 +302,7 @@ fn invalid(detail: &str) -> Response {
 }
 
 /// The answer when the server fails, for the reason `detail`.
-fn server_error(detail: &str) -> Response {
+pub(crate) fn server_error(detail: &str) -> Response {
     problem(
         StatusCode::INTERNAL_SERVER_ERROR,
         "server-error",

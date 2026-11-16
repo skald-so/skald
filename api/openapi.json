@@ -2241,6 +2241,105 @@
         }
       }
     },
+    "/mailbox/events": {
+      "get": {
+        "operationId": "streamMailbox",
+        "summary": "Stream the mailbox",
+        "description": "Server-sent events (docs/protocol/delivery.md, \"Frames\" and \"Mailbox\"). Acks the device's mailbox up to the cursor in `Last-Event-ID`, then sends the entries after it in `seq` order, then an empty `batch` once it has sent every entry the mailbox held at the opening, then each new entry and `space-notice`, through any instance. Each event's `data` is one frame, its CBOR in base64url without padding; the `id` of a `message` or `status` event is its `seq`. While idle, the stream sends a comment line at the interval of the server setting `--sse-keep-alive`. It ends when its session ends or its device is revoked. The device sends and acks with `POST /mailbox/send` and `POST /mailbox/ack`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The device's cursor; 0 without it.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stream.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a `Last-Event-ID` that is not a `seq`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The stream is not proved, and the server reads and acks nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mailbox/poll": {
       "post": {
         "operationId": "pollMailbox",
