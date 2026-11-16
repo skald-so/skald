@@ -256,15 +256,15 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route(
             "/spaces/{space}/channels/{channel}/history/entries",
-            get(history::entries).layer(checked(Statement::Header)),
+            get(history::given::<{ history::ENTRIES }>).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/channels/{channel}/history/links",
-            get(history::links).layer(checked(Statement::Header)),
+            get(history::given::<{ history::LINKS }>).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/channels/{channel}/history/wraps",
-            get(history::wraps).layer(checked(Statement::Header)),
+            get(history::given::<{ history::WRAPS }>).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/devices",

@@ -309,21 +309,19 @@ async fn channel_of(
 }
 
 /// The channel `channel` of the space `space`, path parameters, for a session of `account`, which
-/// the latest revision lists as one of the channel's members; otherwise refused, as one that does
-/// not get its `what`.
+/// the latest revision lists as one of the channel's members; otherwise refused.
 pub(crate) async fn members_channel(
     state: &AppState,
     account: &str,
     space: &str,
     channel: &str,
-    what: &str,
 ) -> Result<ChannelId, Refusal> {
     let (channel, members) = channel_of(state, account, space, channel).await?;
     let id: AccountId = account.parse().expect("a stored account ID");
     if !members.contains(&id) {
-        return Err(Refusal::NotAllowed(format!(
-            "only the channel's members in the latest revision get its {what}"
-        )));
+        return Err(Refusal::NotAllowed(
+            "only the channel's members in the latest revision get it".to_owned(),
+        ));
     }
     Ok(channel)
 }
@@ -336,7 +334,7 @@ pub(crate) async fn latest(
     SignedIn(account): SignedIn,
     Path((space, channel)): Path<(String, String)>,
 ) -> Answer {
-    let channel = members_channel(&state, &account, &space, &channel, "GroupInfo").await?;
+    let channel = members_channel(&state, &account, &space, &channel).await?;
     let found: Option<(Option<Vec<u8>>,)> =
         sqlx::query_as("SELECT group_info FROM channel_groups WHERE channel_id = $1::uuid")
             .bind(channel.to_string())

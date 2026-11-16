@@ -231,32 +231,34 @@ fn epoch(epoch: u64) -> i64 {
     i64::try_from(epoch).expect("an epoch below 2^63")
 }
 
-/// What a channel's history holds: links, wraps or entries.
-#[derive(Clone, Copy)]
-enum Kind {
-    Links,
-    Wraps,
-    Entries,
-}
+/// What a channel's history holds, each a path's last segment.
+pub(crate) const LINKS: u8 = 0;
+pub(crate) const WRAPS: u8 = 1;
+pub(crate) const ENTRIES: u8 = 2;
 
-/// The items of `kind` of `space`'s channel `channel`, base64url without padding, in a JSON object
-/// under the kind's name; for sessions of the channel's members in the latest revision.
-async fn given(state: &AppState, account: &str, space: &str, channel: &str, kind: Kind) -> Answer {
-    let channel = members_channel(state, account, space, channel, "history").await?;
-    let (name, query) = match kind {
-        Kind::Links => (
+/// `GET /spaces/<space>/channels/<channel>/history/<links|wraps|entries>`: the channel's items of
+/// `KIND`, base64url without padding, in a JSON object under the kind's name; for sessions of the
+/// channel's members in the latest revision.
+pub(crate) async fn given<const KIND: u8>(
+    State(state): State<AppState>,
+    SignedIn(account): SignedIn,
+    Path(path): Path<(String, String)>,
+) -> Answer {
+    let (name, query) = match KIND {
+        LINKS => (
             "links",
             "SELECT link FROM history_links WHERE channel_id = $1::uuid ORDER BY epoch, prev",
         ),
-        Kind::Wraps => (
+        WRAPS => (
             "wraps",
             "SELECT wrap FROM history_wraps WHERE channel_id = $1::uuid ORDER BY epoch",
         ),
-        Kind::Entries => (
+        _ => (
             "entries",
             "SELECT entry FROM history_entries WHERE channel_id = $1::uuid",
         ),
     };
+    let channel = members_channel(&state, &account, &path.0, &path.1).await?;
     let items: Vec<(Vec<u8>,)> = sqlx::query_as(query)
         .bind(channel.to_string())
         .fetch_all(&state.db)
@@ -264,33 +266,6 @@ async fn given(state: &AppState, account: &str, space: &str, channel: &str, kind
         .map_err(|err| Refusal::Database("read a channel's history", err))?;
     let items: Vec<String> = items.iter().map(|(bytes,)| base64(bytes)).collect();
     Ok(Json(serde_json::json!({ name: items })).into_response())
-}
-
-/// `GET /spaces/<space>/channels/<channel>/history/links`.
-pub(crate) async fn links(
-    State(state): State<AppState>,
-    SignedIn(account): SignedIn,
-    Path((space, channel)): Path<(String, String)>,
-) -> Answer {
-    given(&state, &account, &space, &channel, Kind::Links).await
-}
-
-/// `GET /spaces/<space>/channels/<channel>/history/wraps`.
-pub(crate) async fn wraps(
-    State(state): State<AppState>,
-    SignedIn(account): SignedIn,
-    Path((space, channel)): Path<(String, String)>,
-) -> Answer {
-    given(&state, &account, &space, &channel, Kind::Wraps).await
-}
-
-/// `GET /spaces/<space>/channels/<channel>/history/entries`.
-pub(crate) async fn entries(
-    State(state): State<AppState>,
-    SignedIn(account): SignedIn,
-    Path((space, channel)): Path<(String, String)>,
-) -> Answer {
-    given(&state, &account, &space, &channel, Kind::Entries).await
 }
 
 #[cfg(test)]
