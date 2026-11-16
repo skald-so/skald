@@ -61,7 +61,7 @@
 - Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
-- Push over WebSocket; SSE and long-poll are fallbacks.
+- Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
   - a notification names a mailbox with new entries, a stored roster revision, an ended session or a revoked device, never an envelope;
   - an instance takes no device connection before it first listens;
