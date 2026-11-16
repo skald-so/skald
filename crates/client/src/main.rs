@@ -12,6 +12,7 @@ mod gaps;
 mod groups;
 mod key_packages;
 mod plain_path;
+mod proxy;
 mod recv;
 mod revocations;
 mod secrets;
