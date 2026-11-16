@@ -6,9 +6,9 @@ use skald_proto::{ChannelId, DeviceId, MessageId};
 
 use crate::edits::{Removal, ada_makes, assert_group_is, devices, envelopes_sent};
 use crate::fixtures::send;
+use crate::kit::warnings_naming;
 use crate::played::Took;
 use crate::talk::{Line, Talk, assert_read, encrypted, is_message, one_message_sent};
-use crate::world::warnings;
 
 /// What Ada says after the change, one line per channel Bob is out of; neither text is anywhere
 /// else.
@@ -107,11 +107,8 @@ fn copy_reads_nothing_sent_after(change: Removal, ids: &[u64; 3], logins: &[&str
 
     let ran = talk.ada_drops(FROM_THE_COPY);
 
-    let named = [bob.to_string(), channel.to_string()];
     assert!(
-        warnings(&ran)
-            .iter()
-            .any(|line| named.iter().any(|id| line.contains(id))),
+        !warnings_naming(&ran, bob).is_empty() || !warnings_naming(&ran, channel).is_empty(),
         "no warning of the dropped message: {ran:?}"
     );
 }

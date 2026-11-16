@@ -3,9 +3,11 @@
 
 use skald_proto::MessageId;
 
-use crate::kit::{RECV, create_space, received, warnings_naming};
+use crate::kit::{
+    assert_names_none, bind_client_a, create_space, received, received_as_agent, warnings_naming,
+};
 use crate::talk::{Line, Talk, encrypted};
-use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
+use crate::world::{CLIENT_A, CLIENT_B};
 
 /// The agent the tests run as.
 const CLAUDE: &str = "claude-v6j1pt";
@@ -26,11 +28,8 @@ fn agent_names_no_drop_in_another_space_s_channel_and_the_person_s_next_run_warn
         &["ada-desk-messages", "bob-client-messages"],
         false,
     );
-    let folder = dir_of(&talk.ada.machine, "work/clientA");
     create_space(&talk.world.cloud, &talk.ada, CLIENT_A);
-    let binding = [ADD_RULE, path(&folder), CLIENT_A];
-    let bound = run(&talk.ada.machine, &binding);
-    assert!(bound.success, "not bound: {bound:?}");
+    let folder = bind_client_a(&talk.ada.machine);
     let mut line = Line::new(&talk.address(&talk.played[0].person), 1, DROPPED);
     line.message_id = Some(MessageId::generate());
     let (at, ada_device) = (talk.at(), talk.ada.device);
@@ -48,21 +47,10 @@ fn agent_names_no_drop_in_another_space_s_channel_and_the_person_s_next_run_warn
         DROPPED.to_owned(),
     ];
 
-    let agent = (talk.ada.machine)
-        .start_in(&folder, &[AGENT, CLAUDE, RECV])
-        .finish();
+    let agent = received_as_agent(&talk.ada.machine, &folder, CLAUDE);
 
-    assert!(agent.success, "{agent:?}");
     assert_eq!(talk.front.injected(), 1, "not put into catch-up: {agent:?}");
-    let shown = agent.shown().to_lowercase();
-    let named: Vec<&String> = names
-        .iter()
-        .filter(|name| shown.contains(&name.to_lowercase()))
-        .collect();
-    assert!(
-        named.is_empty(),
-        "the agent's output names {named:?}: {agent:?}"
-    );
+    assert_names_none(&agent, &names);
 
     let person = received(&talk.ada.machine);
 

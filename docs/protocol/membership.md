@@ -469,7 +469,6 @@ A member device:
 - A device's Adds skip devices already in the group, such as one that joined by itself meanwhile.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
 - A device refuses a Welcome whose signer is not admitted, and a GroupInfo whose signer or a member it lists is not; it stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it. A device that joins from a Welcome listing a member that is not admitted warns its user and removes that member.
-- The joiner uploads the GroupInfo of the new epoch.
 
 ### Rejoining
 - **After missing Commits:** a device that cannot process a channel's next handshake message, or that a Commit removed while it is admitted, rejoins with an external Commit that also removes its old leaf. It MUST warn its user if a Commit removed it while it was admitted. A Commit of an epoch the device has passed is a replay: it is dropped.
