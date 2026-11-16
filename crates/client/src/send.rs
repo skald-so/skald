@@ -34,7 +34,7 @@ use tungstenite::stream::MaybeTlsStream;
 use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{WebSocket, printable};
 use crate::devices::{self, text};
-use crate::follow::{Own, SpaceDevices};
+use crate::follow::{self, Own, SpaceDevices};
 use crate::groups::{self, Link, Rosters};
 use crate::recv;
 use crate::secrets;
@@ -227,10 +227,8 @@ pub fn admitted<'d>(
         let Some(member) = body.member(entry.account) else {
             continue;
         };
-        let master = if member.account == own.account {
-            own.master
-        } else {
-            member.master
+        let Some(master) = follow::master_of(roster, own, member.account) else {
+            continue;
         };
         let excluded: Vec<DeviceId> = member
             .excluded

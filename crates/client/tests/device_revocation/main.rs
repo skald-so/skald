@@ -37,8 +37,8 @@
 //!   `name` and says `revoked`; no other device's line says so;
 //! - a warning of a change of an account's device set is a line saying `warning` that holds the
 //!   device's ID;
-//! - on a revoked device, `skald send` and `skald recv` say `revoked`, and `skald send` fails and
-//!   sends nothing;
+//! - on a revoked device, `skald send`, `skald recv` and `skald create-channel` say `revoked`, and
+//!   `skald send` and `skald create-channel` fail and send nothing;
 //! - a message it cannot open is dropped with a warning line holding the channel's ID, or the
 //!   sending device's ID when the payload authenticates it, and never its text.
 //!

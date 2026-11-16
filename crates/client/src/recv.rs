@@ -30,7 +30,7 @@ use tungstenite::Message;
 use crate::agents::server_name;
 use crate::connection::{WebSocket, printable};
 use crate::devices::text;
-use crate::follow::{Own, SpaceDevices};
+use crate::follow::{self, Own, SpaceDevices};
 use crate::groups::{self, Link, Opened, Rosters};
 use crate::secrets;
 use crate::send::{self, broke, closed, set_read_timeout};
@@ -48,7 +48,6 @@ pub fn run(
 ) -> Result<(), String> {
     let scope = Scope::of_run(dir, agent)?;
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
-    follower.refuse_if_revoked()?;
     let mut link = Link::new(&follower)?;
     if let Err(err) = groups::flush(&mut follower, &mut link, scope) {
         eprintln!("skald: warning: {err}");
@@ -530,11 +529,7 @@ fn valid_cert<'c>(context: &Context<'c>, device: DeviceId) -> Option<&'c Cert> {
         {
             return None;
         }
-        let master = if member.account == own.account {
-            own.master
-        } else {
-            member.master
-        };
+        let master = follow::master_of(context.roster, own, member.account)?;
         let devices = context.devices;
         let checked = crate::devices::check(&master, devices);
         checked.linked.into_iter().find(|cert| {

@@ -18,7 +18,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{RosterError, accept_next, check_device, check_valid_device};
-use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Revocation, Roster, RosterBody, SpaceId};
+use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Revocation, Roster, SpaceId};
 
 use crate::connection::Connection;
 use crate::devices::{self, text};
@@ -231,7 +231,7 @@ pub fn follow(
     let name = last.body().name.as_str();
     let accepts = |previous: &Roster, next: &Roster| {
         accept_next(previous, next, &devices.certs, own.account, &own.master)?;
-        signer_unrevoked(previous.body(), next.body().signer, devices, own)
+        signer_unrevoked(previous, next.body().signer, devices, own)
     };
     let mut known = hashes.clone();
     known.insert(last.body().revision, last.hash());
@@ -302,20 +302,13 @@ pub fn follow(
 /// `previous`, whose certificate passes checks 1 and 2 against the master key of an admin's account
 /// in `previous`, is not revoked.
 fn signer_unrevoked(
-    previous: &RosterBody,
+    previous: &Roster,
     signer: DeviceId,
     devices: &SpaceDevices,
     own: &Own,
 ) -> Result<(), RosterError> {
-    let master = |account: AccountId| {
-        if account == own.account {
-            Some(own.master)
-        } else {
-            previous.member(account).map(|member| member.master)
-        }
-    };
-    let revoked = previous.members.iter().any(|admin| {
-        master(admin.account).is_some_and(|master| {
+    let revoked = previous.body().members.iter().any(|admin| {
+        master_of(previous, own, admin.account).is_some_and(|master| {
             check_device(&master, &devices.certs, signer)
                 .is_ok_and(|cert| cert.body().account == admin.account)
                 && check_valid_device(&master, &devices.certs, &devices.revocations, signer)

@@ -1,6 +1,6 @@
 //! A revoked device and a full copy of its disk: the copy opens no message sent after the device's
 //! removal, even from a compromised server that hides the revocation, and what the copy sends is
-//! dropped; the device itself says it is revoked and sends nothing.
+//! dropped; the device itself says it is revoked and signs and sends nothing.
 
 use serde_json::json;
 use skald_proto::{DeviceId, RawEnvelope};
@@ -11,7 +11,7 @@ use crate::revocations::{
     serve_as_not_revoked, space_revocations,
 };
 use crate::talk::{ADA_HOST, Line, Talk, assert_read, encrypted, stored};
-use crate::world::{now, run, warnings};
+use crate::world::{ACME, CREATE_CHANNEL, now, run, warnings};
 
 /// What Bob says after Ada's device is removed; neither text is anywhere else.
 const AFTER: [&str; 2] = [
@@ -152,4 +152,26 @@ fn revoked_device_says_so_and_sends_nothing() {
         ran.shown().to_lowercase().contains(REVOKED),
         "does not say revoked: {ran:?}"
     );
+}
+
+/// Ada's machine, whose account is the admin of `acme`, revokes its own device. Its
+/// `skald create-channel acme` fails, says the device is revoked and sends the server nothing.
+#[test]
+fn revoked_admin_device_creates_no_channel() {
+    let talk = Talk::new(
+        &[4_139_093_301, 4_139_093_302],
+        &["ada-admin-revoked", "bob-sees-no-channel"],
+        false,
+    );
+    revoked_by_cli(&talk.ada.machine, talk.ada.device);
+    let mark = talk.cloud().relay.mark();
+
+    let said = run(&talk.ada.machine, &[CREATE_CHANNEL, ACME]);
+
+    assert!(!said.success, "{said:?}");
+    assert!(
+        said.shown().to_lowercase().contains(REVOKED),
+        "does not say revoked: {said:?}"
+    );
+    assert_eq!(talk.cloud().count_sent(mark, "POST "), 0, "sent: {said:?}");
 }

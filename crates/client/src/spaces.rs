@@ -369,8 +369,29 @@ impl Follower {
         Ok(follower)
     }
 
-    /// As [`Follower::new`], without taking the personal space.
+    /// As [`Follower::new`], without taking the personal space. Once the revocations the device
+    /// signed are sent, it fails if the device is revoked ([`revocations::refuse_if_revoked`]), so
+    /// a revoked device signs and sends nothing.
     fn open(
+        dir: &Path,
+        storage: secrets::Storage,
+        speaks: VersionRange,
+        timeout: Duration,
+    ) -> Result<Option<Self>, String> {
+        let mut follower = Self::unchecked(dir, storage, speaks, timeout)?;
+        if let Some(follower) = follower.as_mut() {
+            revocations::refuse_if_revoked(
+                &mut follower.connection,
+                &follower.token,
+                &follower.state,
+                (&follower.own.master, &follower.cert),
+            )?;
+        }
+        Ok(follower)
+    }
+
+    /// As [`Follower::open`], without checking whether the device is revoked.
+    fn unchecked(
         dir: &Path,
         storage: secrets::Storage,
         speaks: VersionRange,
@@ -415,16 +436,6 @@ impl Follower {
         self.connection
             .open_websocket_as("/ws", &self.token, keys.id(), keys.signing())
             .map_err(text)
-    }
-
-    /// Fails, saying so, if this device is revoked ([`revocations::refuse_if_revoked`]).
-    pub fn refuse_if_revoked(&mut self) -> Result<(), String> {
-        revocations::refuse_if_revoked(
-            &mut self.connection,
-            &self.token,
-            &self.state,
-            (&self.own.master, &self.cert),
-        )
     }
 
     /// The device's keys.
@@ -892,7 +903,6 @@ pub fn synced(
 /// The space of the channel `channel` that the device of the machine whose state is in `dir`, its
 /// secrets in `storage`, follows, synced ([`Follower::sync`]); within `scope`. The spaces whose
 /// last accepted revision has the channel are synced first, then, while none has it, the others.
-/// Fails first if the device is revoked ([`Follower::refuse_if_revoked`]).
 pub fn of_channel(
     dir: &Path,
     storage: secrets::Storage,
@@ -902,7 +912,6 @@ pub fn of_channel(
     scope: Scope,
 ) -> Result<Synced, String> {
     let mut follower = following(dir, storage, speaks, timeout, scope)?;
-    follower.refuse_if_revoked()?;
     let mut spaces: Vec<state::Space> = follower
         .state
         .spaces()
@@ -1061,10 +1070,8 @@ fn members_listing(
             member.handle.as_str(),
             role(member.role)
         ));
-        let master = if member.account == own.account {
-            own.master
-        } else {
-            member.master
+        let Some(master) = follow::master_of(roster, own, member.account) else {
+            continue;
         };
         let checked = devices::check(&master, devices);
         for warning in devices::two_bodies_warnings(&checked) {
@@ -1540,7 +1547,7 @@ pub(crate) mod tests {
             .unwrap();
         std::fs::create_dir(dir.join("sub")).unwrap();
 
-        let follower = Follower::open(
+        let follower = Follower::unchecked(
             &dir.join("sub").join(".."),
             secrets::Storage::File,
             VersionRange::default(),
