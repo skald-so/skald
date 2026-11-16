@@ -49,5 +49,6 @@ mod counts;
 mod joined;
 mod logins;
 mod nothing;
+mod rejoined;
 mod revisions;
 mod spec;

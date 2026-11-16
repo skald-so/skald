@@ -5,11 +5,13 @@ import {
   getListAccountDevicesResponseMock,
   getListSessionsResponseMock,
   getListSignInMethodsResponseMock,
+  getListSpaceMembersResponseMock,
 } from "../api/skald.msw.ts";
 import { AccessScreen } from "../app/Access.tsx";
 import { AccountScreen } from "../app/Account.tsx";
 import { Cabinet } from "../app/Cabinet.tsx";
 import { MachinesScreen } from "../app/Machines.tsx";
+import { MembersScreen } from "../app/Members.tsx";
 import { accountPath } from "../app/names.ts";
 import { SignInPage } from "../app/SignInPage.tsx";
 
@@ -31,6 +33,13 @@ const personal = {
   space: "01968a2e-0000-7000-8000-000000000101",
   name: "ana",
   personal: true,
+};
+
+/** The team space of 09-members.png. */
+const team = {
+  space: "01968a2e-0000-7000-8000-000000000102",
+  name: "team-a",
+  personal: false,
 };
 
 /** The time the fixture sessions count from, so the screenshots stay the same. */
@@ -139,6 +148,32 @@ const { devices } = getListAccountDevicesResponseMock({
   ],
 });
 
+/** The members of 09-members.png: an admin and two members, one of them without a GitHub login. */
+const { members } = getListSpaceMembersResponseMock({
+  members: [
+    {
+      handle: "ana",
+      role: "admin",
+      github_login: "ana",
+      linked_devices: 4,
+      joined_at: before(39 * day),
+    },
+    {
+      handle: "lee-park",
+      role: "member",
+      linked_devices: 2,
+      joined_at: before(6 * day),
+    },
+    {
+      handle: "sam-ortiz",
+      role: "member",
+      github_login: "sortiz",
+      linked_devices: 1,
+      joined_at: before(day),
+    },
+  ],
+});
+
 /** The sign-in page of 03-sign-in.png, on a server with both providers and open sign-up. */
 export function KitSignIn() {
   return <SignInPage providers={providers} returnTo="/" />;
@@ -168,6 +203,22 @@ export function KitMachines() {
           devices={devices}
           now={now}
         />
+      </Cabinet>
+    </MemoryRouter>
+  );
+}
+
+/** The Members section of 09-members.png in the cabinet, for the team space the switcher chose. */
+export function KitMembers() {
+  return (
+    <MemoryRouter initialEntries={["/members"]}>
+      <Cabinet
+        session={session}
+        spaces={[personal, team]}
+        defaultSpace={team.space}
+        onSignedOut={() => {}}
+      >
+        <MembersScreen space={team.name} members={members} now={now} />
       </Cabinet>
     </MemoryRouter>
   );

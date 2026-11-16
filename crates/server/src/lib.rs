@@ -302,6 +302,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(spaces::devices).layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/members",
+            get(spaces::members).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/revisions",
             get(spaces::revisions)
                 .post(spaces::store)
