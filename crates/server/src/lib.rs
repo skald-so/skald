@@ -21,6 +21,7 @@ mod connections;
 mod delivery;
 mod device_flow;
 mod devices;
+mod error_reports;
 mod expiry;
 mod github;
 mod google;
@@ -40,6 +41,7 @@ mod sign_up;
 mod spaces;
 
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
+pub use error_reports::{SentryDsn, report_errors_to};
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 use google::Google;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
@@ -265,6 +267,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             "/ws",
             get(connections::open).layer(checked(Statement::Subprotocol)),
         )
+        .route_layer(middleware::from_fn(error_reports::report_failures))
         .with_state(AppState {
             db,
             versions,
@@ -312,14 +315,17 @@ fn problem_details(status: StatusCode, body: impl Serialize) -> Response {
 }
 
 /// The answer when the database fails at `doing`, such as `read a session`; the failure also goes
-/// to the server's output.
-fn database_failed(doing: &str, err: impl std::fmt::Display) -> Response {
-    eprintln!("skald-server: cannot {doing}: {err}");
-    problem(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "server-error",
-        "The server failed",
-        "The database failed.",
+/// to the server's output and its error reports.
+fn database_failed(doing: &str, err: impl error_reports::Cause) -> Response {
+    let cause = error_reports::logged(doing, &err);
+    error_reports::with_cause(
+        problem(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server-error",
+            "The server failed",
+            "The database failed.",
+        ),
+        cause,
     )
 }
 

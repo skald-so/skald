@@ -53,6 +53,8 @@ EOF
 
 `docker compose up` refuses to start without any of them, naming it.
 
+The server sends no error reports: the stack leaves `SKALD_SENTRY_DSN` unset.
+
 ### Attachments in a bucket
 
 Attachments stay in the volume `skald_attachments` unless an S3-compatible bucket replaces it. The bucket's endpoint is `https`; the server addresses the bucket in the path. The secret key is read without echo:

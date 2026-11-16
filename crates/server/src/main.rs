@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 use skald_proto::ServerName;
 use skald_server::{
     AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret, GitHubApp, GitHubUrl, Listed,
-    OidcSettings, PublicUrl, Settings, SignInSettings, SignUp,
+    OidcSettings, PublicUrl, SentryDsn, Settings, SignInSettings, SignUp,
 };
 use tokio::net::TcpListener;
 
@@ -259,6 +259,16 @@ struct Cli {
         value_name = "ID"
     )]
     attachments_bucket_access_key_id: Option<String>,
+
+    /// The Sentry DSN the server reports its errors to, https or http on a loopback address
+    /// [default: no error reports].
+    #[arg(
+        long,
+        env = "SKALD_SENTRY_DSN",
+        value_name = "DSN",
+        hide_env_values = true
+    )]
+    sentry_dsn: Option<SentryDsn>,
 }
 
 /// The secret in the environment variable `name`; `None` if it is unset or empty.
@@ -457,6 +467,9 @@ async fn main() -> ExitCode {
 /// Connects to PostgreSQL, applies pending migrations, checks the attachment storage, then serves
 /// the API.
 async fn run(mut cli: Cli) -> Result<(), String> {
+    if let Some(dsn) = cli.sentry_dsn.take() {
+        skald_server::report_errors_to(dsn);
+    }
     let listen = cli.listen;
     let database_url = cli.database_url.clone();
     let attachments = cli.attachment_storage(secret(BUCKET_SECRET_ENV)?)?;

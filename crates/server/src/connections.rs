@@ -24,6 +24,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 
 use crate::delivery::{self, Reader};
+use crate::error_reports;
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in};
@@ -239,6 +240,7 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
                 .await
                 .is_err()
             {
+                report_closing("the instance does not listen to the others");
                 return close(socket, Closing::ServerError).await;
             }
             let sender = Sender {
@@ -513,10 +515,20 @@ async fn client_key(
     Ok(found.and_then(|(signing,)| signing.try_into().ok()))
 }
 
-/// The closing when the database fails at `doing`; the failure goes to the server's output.
+/// The closing when the database fails at `doing`; the failure goes to the server's output and its
+/// error reports.
 fn failed(doing: &str, err: sqlx::Error) -> Closing {
-    eprintln!("skald-server: cannot {doing}: {err}");
+    let cause = error_reports::logged(doing, &err);
+    report_closing(&cause);
     Closing::ServerError
+}
+
+/// Reports that a connection closes with `server-error` for `cause`.
+fn report_closing(cause: &str) {
+    error_reports::report(
+        &format!("a connection closed with server-error: {cause}"),
+        Some("GET /ws"),
+    );
 }
 
 /// Answers the client's close of `socket`: the next read sends the closing handshake's answer.

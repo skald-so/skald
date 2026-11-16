@@ -15,6 +15,7 @@ use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
 
 use crate::delivery::{Wakers, remove, removing};
+use crate::error_reports;
 
 /// How often the server looks for expired entries.
 const SWEEP: Duration = Duration::from_secs(5);
@@ -36,14 +37,14 @@ pub(crate) fn deliverable(v: NonZeroU64, version: NonZeroU64) -> bool {
 
 /// Looks for expired entries every [`SWEEP`], for good, on a server with the mailbox retention
 /// `retention`; wakes the sending devices' connections in `wakers`. A failure goes to the server's
-/// output, and the next look tries again.
+/// output and its error reports, and the next look tries again.
 pub(crate) async fn run(db: PgPool, wakers: Arc<Wakers>, retention: Option<Duration>) {
     let mut looks = tokio::time::interval(SWEEP);
     looks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         looks.tick().await;
         if let Err(err) = sweep(&db, &wakers, seconds(retention)).await {
-            eprintln!("skald-server: cannot expire mailbox entries: {err}");
+            error_reports::background_failed("expire mailbox entries", &err);
         }
     }
 }

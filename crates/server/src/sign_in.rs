@@ -18,6 +18,7 @@ use sqlx::PgPool;
 use url::{Host, Url};
 
 use crate::accounts::{self, GITHUB, Method};
+use crate::error_reports::{self, Cause as _};
 use crate::github::{GitHubApp, Refusal, http_url};
 use crate::google::Google;
 use crate::instances::Event;
@@ -703,10 +704,12 @@ pub(crate) enum Failure {
 
 impl Failure {
     /// The page that says the sign-in of `flow`, or its link if `link`, failed; failures of the
-    /// provider or the database also go to the server's output.
+    /// provider or the database also go to the server's output, the database's to its error
+    /// reports.
     pub(crate) fn page(self, flow: &Flow, link: bool) -> Response {
         let name = flow.name;
         let what = if link { "link" } else { "sign-in" };
+        let mut cause = None;
         let (status, message) = match self {
             Failure::Refused(message) => (StatusCode::BAD_REQUEST, message.to_owned()),
             Failure::ProviderRefused(message) => {
@@ -736,6 +739,7 @@ impl Failure {
             }
             Failure::Database(err) => {
                 eprintln!("skald-server: {name} {what} failed: the database failed: {err}");
+                cause = Some(format!("{name} {what} failed: {}", err.reported()));
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "The server failed.".to_owned(),
@@ -753,7 +757,11 @@ impl Failure {
                 flow.start
             )
         };
-        page(status, "Sign-in failed", &body)
+        let page = page(status, "Sign-in failed", &body);
+        match cause {
+            Some(cause) => error_reports::with_cause(page, cause),
+            None => page,
+        }
     }
 }
 
@@ -798,15 +806,17 @@ pub(crate) fn form_page(
 }
 
 /// The answer of a form page under `policy`, as [`form_page`] serves it, when the database fails at
-/// `doing`, such as `read a session`; the failure also goes to the server's output.
+/// `doing`, such as `read a session`; the failure also goes to the server's output and its error
+/// reports.
 pub(crate) fn form_page_failed(doing: &str, err: sqlx::Error, policy: &'static str) -> Response {
-    eprintln!("skald-server: cannot {doing}: {err}");
-    form_page(
+    let cause = error_reports::logged(doing, &err);
+    let page = form_page(
         StatusCode::INTERNAL_SERVER_ERROR,
         "Failed",
         "<p>The server failed. Try again later.</p>",
         policy,
-    )
+    );
+    error_reports::with_cause(page, cause)
 }
 
 /// Whether the request comes from a page of this server's web address, as its `Origin` says:

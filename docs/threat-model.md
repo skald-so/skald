@@ -265,6 +265,8 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 
 With attachments in a bucket, its provider sees the sizes and times of their uploads.
 
+With error reporting on (`--sentry-dsn`), Sentry sees the server's errors: what failed; a database error by its kind, SQLSTATE code and the constraint it names; a panic by its place in the code and its message if that is a literal; a failed request's method and route; the server's version and IP address. A report never holds a request's headers, query or body, a token, a secret or envelope content.
+
 ## The server does not see
 Message texts, agent and session names other than service agents, threads, files, repositories, presence values, task payloads and code.
 
