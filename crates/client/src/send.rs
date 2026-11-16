@@ -1,5 +1,8 @@
 //! `skald send`: the device sends a text to a channel of a space it follows; as an agent, only in
-//! the space of its folder. It first accepts the space's latest revisions, then seals one `hpke`
+//! the space of its folder. It first accepts the space's latest revisions and goes through the
+//! mailbox as `skald recv` does, showing none of it: it sends its Commits and Welcomes that wait,
+//! writes each entry, goes through the Welcomes and Commits and brings the channel's group in line
+//! ([`crate::groups`]); a later `skald recv` shows the other entries. It then seals one `hpke`
 //! envelope, with `report` true, to each admitted `client` device of the channel but itself
 //! (`docs/protocol/membership.md`, "Admitted devices"), with the HPKE key of its certificate. The
 //! content is from the person address or the agent's, with `hops` 0, a `counter` per recipient
@@ -21,16 +24,20 @@ use std::time::{Duration, Instant};
 use skald_crypto::seal_message;
 use skald_proto::{
     Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Envelope, Frame,
-    Header, MessageId, Name, NonEmpty, RawEnvelope, Roster, Scheme, SendKey, Unknown, VersionRange,
+    Header, MessageId, Name, NonEmpty, RawEnvelope, Roster, Scheme, SendKey, SpaceId, Unknown,
+    VersionRange,
 };
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
+use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 
 use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{WebSocket, printable};
 use crate::devices::{self, text};
 use crate::follow::{ATTEMPTS, Own, SpaceDevices};
+use crate::groups::{self, Link, Rosters};
+use crate::recv;
 use crate::secrets;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{Outgoing, State};
@@ -41,9 +48,21 @@ const LONGEST_PAUSE: Duration = Duration::from_secs(8);
 
 /// What the server answered to an envelope.
 #[derive(Debug, Clone, PartialEq)]
-enum Answer {
+pub enum Answer {
     Stored,
     Refused(String),
+}
+
+/// What the server answers an envelope by: its `msg_id` and, under `hpke`, its recipient device.
+pub type Key = (MessageId, Option<DeviceId>);
+
+/// An envelope as it goes out.
+pub trait Wire {
+    fn key(&self) -> Key;
+    /// Its `send` frame.
+    fn frame(&self) -> &[u8];
+    /// Takes it out of the outbox of `state`, once the server answered it.
+    fn answered(&self, state: &State);
 }
 
 /// An envelope of the outbox, as it goes out.
@@ -54,18 +73,44 @@ pub struct Queued {
     frame: Vec<u8>,
 }
 
-impl Queued {
-    fn key(&self) -> (MessageId, DeviceId) {
-        (self.outgoing.msg_id, self.outgoing.recipient)
+impl Wire for Queued {
+    fn key(&self) -> Key {
+        (self.outgoing.msg_id, Some(self.outgoing.recipient))
+    }
+
+    fn frame(&self) -> &[u8] {
+        &self.frame
+    }
+
+    fn answered(&self, state: &State) {
+        let (msg_id, recipient) = (self.outgoing.msg_id, self.outgoing.recipient);
+        if let Err(err) = state.remove_outgoing(msg_id, recipient) {
+            eprintln!(
+                "skald: warning: the outbox keeps the message {msg_id} to device {recipient}, \
+                 which the server answered, so a later run sends it again: {err}"
+            );
+        }
     }
 }
 
 /// What sending the outbox gave: the server's answers, why the last attempt failed, if it did, and
 /// the connection, if it is still open.
 pub struct Delivered {
-    answers: BTreeMap<(MessageId, DeviceId), Answer>,
+    answers: BTreeMap<Key, Answer>,
     failed: Option<String>,
     pub socket: Option<WebSocket>,
+}
+
+impl Delivered {
+    /// The server's answer to the envelope with `key`, if it answered.
+    pub fn answer(&self, key: &Key) -> Option<&Answer> {
+        self.answers.get(key)
+    }
+
+    /// Why the last attempt failed, if it did.
+    pub fn failed(&self) -> Option<&str> {
+        self.failed.as_deref()
+    }
 }
 
 /// Sends `text` to the channel whose ID is `channel`, by the state in `dir`, its secrets in
@@ -85,11 +130,12 @@ pub fn run(
     let scope = Scope::of_run(dir, agent.is_some())?;
     let Synced {
         mut follower,
+        space,
         roster,
         devices,
-        ..
     } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
         .map_err(|err| with_waiting(dir, scope, err))?;
+    let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
     let recipients: BTreeMap<DeviceId, [u8; 32]> =
         admitted(&follower.own, follower.this, &roster, &devices, channel)
             .into_iter()
@@ -108,8 +154,39 @@ pub fn run(
     let from = sender(&mut follower, &roster, agent)?;
     enqueue(&follower, &roster, channel, &recipients, &from, text)?;
     let queued = queued(&follower.state, scope)?;
-    let delivered = deliver(&mut follower, &queued, timeout);
+    let delivered = deliver(&mut follower, &queued, timeout, None);
     report(&queued, &delivered, timeout)
+}
+
+/// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the
+/// device's Commits and Welcomes that wait, writes each entry after the cursor, goes through the
+/// Welcomes and Commits and brings in line the groups of the channels of each space the run accepted
+/// the revisions of. Gives the last accepted revision of `space` and its accounts' devices, `synced`
+/// as the run synced them first, as they are then. Warns of what fails.
+fn through_mailbox(
+    follower: &mut Follower,
+    scope: Scope,
+    space: SpaceId,
+    synced: (Roster, SpaceDevices),
+) -> Result<(Roster, SpaceDevices), String> {
+    let mut link = Link::new(follower)?;
+    if let Err(err) = groups::flush(follower, &mut link, scope) {
+        eprintln!("skald: warning: {err}");
+    }
+    let timeout = follower.timeout;
+    match recv::catch_up(follower, None, timeout) {
+        Ok(mut socket) => {
+            let _ = socket.close(None);
+            let _ = socket.flush();
+        }
+        Err(err) => eprintln!("skald: warning: {err}"),
+    }
+    let mut rosters = Rosters::from([(space, synced)]);
+    if let Err(err) = groups::take_in(follower, &mut link, scope, &mut rosters) {
+        eprintln!("skald: warning: {err}");
+    }
+    groups::align_with(follower, &mut link);
+    Ok(rosters.remove(&space).expect("the channel's space"))
 }
 
 /// `err`, the reason a run sends nothing, saying how many envelopes earlier runs left in the
@@ -295,10 +372,16 @@ pub fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
         .collect()
 }
 
-/// Sends each envelope of `queued` that the server has not answered, in order, over a connection
-/// as the device, again with backoff while some are unanswered, for `timeout`; takes each answered
-/// one out of the outbox.
-pub fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) -> Delivered {
+/// Sends each envelope of `queued` that the server has not answered, in order, over `socket` or a
+/// connection as the device, again with backoff while some are unanswered, for `timeout`, unless
+/// the server closes the connection for a policy violation, such as a refused proof, which another
+/// attempt does not change; takes each answered one out of the outbox.
+pub fn deliver<W: Wire>(
+    follower: &mut Follower,
+    queued: &[W],
+    timeout: Duration,
+    mut socket: Option<WebSocket>,
+) -> Delivered {
     let deadline = Instant::now() + timeout;
     let mut delivered = Delivered {
         answers: BTreeMap::new(),
@@ -312,10 +395,9 @@ pub fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) ->
             return delivered;
         }
     };
-    let mut socket: Option<WebSocket> = None;
     let mut pause = FIRST_PAUSE;
     loop {
-        let unanswered: Vec<&Queued> = queued
+        let unanswered: Vec<&W> = queued
             .iter()
             .filter(|queued| !delivered.answers.contains_key(&queued.key()))
             .collect();
@@ -330,11 +412,11 @@ pub fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) ->
             Some(socket) => Ok(socket),
             None => follower.connect(&keys),
         };
-        let attempt = opened.and_then(|mut opened| {
+        let attempt = opened.map_err(|err| (err, false)).and_then(|mut opened| {
             for queued in &unanswered {
                 opened
-                    .send(Message::Binary(queued.frame.clone().into()))
-                    .map_err(broke)?;
+                    .send(Message::Binary(queued.frame().to_vec().into()))
+                    .map_err(|err| (broke(err), false))?;
             }
             answers(&mut opened, follower, queued, &mut delivered.answers, until)?;
             Ok(opened)
@@ -344,8 +426,11 @@ pub fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) ->
                 socket = Some(opened);
                 delivered.failed = None;
             }
-            Err(err) => {
+            Err((err, refused)) => {
                 delivered.failed = Some(err);
+                if refused {
+                    return delivered;
+                }
                 thread::sleep(until.saturating_duration_since(Instant::now()));
             }
         }
@@ -353,14 +438,15 @@ pub fn deliver(follower: &mut Follower, queued: &[Queued], timeout: Duration) ->
 }
 
 /// Reads the server's answers to `queued` on `socket` into `answers` until each one is answered or
-/// `until`, taking each answered envelope out of the outbox; fails if the connection ends.
-fn answers(
+/// `until`, taking each answered envelope out of the outbox; fails if the connection ends, saying
+/// whether the server closed it for a policy violation.
+fn answers<W: Wire>(
     socket: &mut WebSocket,
     follower: &Follower,
-    queued: &[Queued],
-    answers: &mut BTreeMap<(MessageId, DeviceId), Answer>,
+    queued: &[W],
+    answers: &mut BTreeMap<Key, Answer>,
     until: Instant,
-) -> Result<(), String> {
+) -> Result<(), (String, bool)> {
     while queued
         .iter()
         .any(|queued| !answers.contains_key(&queued.key()))
@@ -369,7 +455,7 @@ fn answers(
         if wait.is_zero() {
             return Ok(());
         }
-        set_read_timeout(socket, wait).map_err(|err| broke(err.into()))?;
+        set_read_timeout(socket, wait).map_err(|err| (broke(err.into()), false))?;
         let (send_key, answer) = match socket.read() {
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::Stored(stored)) => (stored.send_key, Answer::Stored),
@@ -379,7 +465,12 @@ fn answers(
                 // A frame it does not know or that does not decode, ignored.
                 _ => continue,
             },
-            Ok(Message::Close(frame)) => return Err(closed(frame.as_ref())),
+            Ok(Message::Close(frame)) => {
+                let refused = frame
+                    .as_ref()
+                    .is_some_and(|frame| frame.code == CloseCode::Policy);
+                return Err((closed(frame.as_ref()), refused));
+            }
             Ok(_) => continue,
             Err(tungstenite::Error::Io(err))
                 if matches!(
@@ -389,25 +480,17 @@ fn answers(
             {
                 return Ok(());
             }
-            Err(err) => return Err(broke(err)),
+            Err(err) => return Err((broke(err), false)),
         };
-        let SendKey {
-            msg_id,
-            recipient: Some(recipient),
-        } = send_key
-        else {
-            continue;
-        };
+        let SendKey { msg_id, recipient } = send_key;
         let key = (msg_id, recipient);
-        if answers.contains_key(&key) || !queued.iter().any(|queued| queued.key() == key) {
+        if answers.contains_key(&key) {
             continue;
         }
-        if let Err(err) = follower.state.remove_outgoing(msg_id, recipient) {
-            eprintln!(
-                "skald: warning: the outbox keeps the message {msg_id} to device {recipient}, \
-                 which the server answered, so a later run sends it again: {err}"
-            );
-        }
+        let Some(answered) = queued.iter().find(|queued| queued.key() == key) else {
+            continue;
+        };
+        answered.answered(&follower.state);
         answers.insert(key, answer);
     }
     Ok(())

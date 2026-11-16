@@ -22,8 +22,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
-    AccountId, Cbor as _, Cert, Channel, ChannelId, DeviceId, Name, Role, Roster, RosterBody,
-    SpaceId, VersionRange,
+    AccountId, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, Name, Role, Roster,
+    RosterBody, SpaceId, Unknown, VersionRange,
 };
 
 use crate::connection::{self, Connection, Method, WebSocket, printable};
@@ -31,6 +31,7 @@ use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
+use crate::groups;
 use crate::key_packages;
 use crate::secrets;
 use crate::sign_in;
@@ -107,6 +108,7 @@ pub fn create(
     if let Some(space) = existing {
         let roster = follow::decode(&space.anchor, &space.name)?;
         println!("{}", created(&roster, !space.first_waits()));
+        finish(&mut follower, &space.name);
         return Ok(());
     }
 
@@ -124,7 +126,17 @@ pub fn create(
         .map_err(text)?;
     follower.send_first((space, name.as_str()), &bytes, &again)?;
     println!("{}", created(&roster, false));
+    finish(&mut follower, name.as_str());
     Ok(())
+}
+
+/// Accepts the revisions of the space named `name`, which signs its default channel, and brings
+/// the groups of its channels in line ([`crate::groups`]); warns of what fails.
+fn finish(follower: &mut Follower, name: &str) {
+    match follower.space(name).and_then(|space| follower.sync(&space)) {
+        Ok(_) => groups::align_accepted(follower),
+        Err(err) => eprintln!("skald: warning: {err}"),
+    }
 }
 
 /// After `skald sign-in` on the machine whose state is in `dir`, its secrets in `storage`: takes
@@ -323,12 +335,16 @@ pub struct Follower {
     pub connection: Connection,
     pub token: String,
     stored: secrets::Map,
-    secrets: secrets::Secrets,
+    pub secrets: secrets::Secrets,
     pub own: Own,
     device: state::Device,
     pub this: DeviceId,
     /// The device's certificate.
-    cert: Cert,
+    pub cert: Cert,
+    /// How long a run sends an envelope again while the server has not answered it.
+    pub timeout: Duration,
+    /// Each space the run accepted the revisions of, as it last did ([`Follower::sync`]).
+    pub accepted: groups::Rosters,
 }
 
 impl Follower {
@@ -375,6 +391,8 @@ impl Follower {
             this: device.id,
             device,
             cert,
+            timeout,
+            accepted: groups::Rosters::new(),
         }))
     }
 
@@ -509,6 +527,13 @@ impl Follower {
     /// after revision 1 that the device signed is sent first, warning if it is not stored; while it
     /// waits, the space stays at its last accepted revision.
     pub fn sync(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
+        let synced = self.sync_once(space)?;
+        self.accepted.insert(space.id, synced.clone());
+        Ok(synced)
+    }
+
+    /// As [`Follower::sync`], recording nothing in [`Follower::accepted`].
+    fn sync_once(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
         let waiting = space.pending.as_ref().filter(|_| !space.first_waits());
         if let Some(pending) = waiting
             && let Err(unsent) = self.store(space, pending.clone())
@@ -520,8 +545,50 @@ impl Follower {
                 return Ok((follow::decode(&held.last, &space.name)?, devices));
             }
         }
-        self.follow(space)
-            .map(|(roster, devices, _)| (roster, devices))
+        let (roster, devices, _) = self.follow(space)?;
+        match self.add_default(space, &roster) {
+            Ok(true) => self
+                .follow(space)
+                .map(|(roster, devices, _)| (roster, devices)),
+            Ok(false) => Ok((roster, devices)),
+            Err(why) => {
+                eprintln!("skald: warning: {why}");
+                Ok((roster, devices))
+            }
+        }
+    }
+
+    /// On a device of an admin, signs and stores the revision after `latest`, the last accepted
+    /// revision of `space`, with a new default channel first, if `latest` needs one
+    /// ([`needs_default`]) and no other revision of this device waits; gives whether the server
+    /// took it.
+    fn add_default(&mut self, space: &state::Space, latest: &Roster) -> Result<bool, String> {
+        if !admin_device(latest, self.own.account, self.this) || !needs_default(latest) {
+            return Ok(false);
+        }
+        let waits = self
+            .state
+            .spaces()
+            .map_err(text)?
+            .into_iter()
+            .any(|held| held.id == space.id && held.pending.is_some());
+        if waits {
+            return Ok(false);
+        }
+        let name = &space.name;
+        let id = issue_channel(&mut self.connection, &self.token, space.id)
+            .map_err(|err| format!("the space {name} gets no default channel yet: {err}"))?;
+        let default = default_channel(id, latest.body());
+        let next = self.next_with(latest, Some(default), &[])?.to_cbor();
+        if !self
+            .state
+            .set_pending(space.id, &latest.to_cbor(), None, &next)
+            .map_err(text)?
+        {
+            return Err(CHANGED_MEANWHILE.to_owned());
+        }
+        self.store(space, next).map_err(|unsent| unsent.why)?;
+        Ok(true)
     }
 
     /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
@@ -541,9 +608,11 @@ impl Follower {
 
     /// Sends `pending`, in CBOR, the pending revision of `space` after revision 1, until the server
     /// takes it; gives the revision it took. When another revision came first, it accepts the new
-    /// revisions and signs the channels `pending` adds into the latest, as the next pending one. It
-    /// drops the pending revision when the server refuses it, when it accepts no revision that came
-    /// first, or when the latest makes this device no admin's.
+    /// revisions and signs the channels `pending` adds into the latest, as the next pending one: a
+    /// default channel it put first only while the latest needs one ([`needs_default`]), with
+    /// every member of the latest. It drops the pending revision when the server refuses it, when
+    /// it accepts no revision that came first, or when the latest makes this device no admin's;
+    /// and, giving the latest, when nothing of it is left to add.
     pub fn store(&mut self, space: &state::Space, mut pending: Vec<u8>) -> Result<Roster, Unsent> {
         let (id, name) = (space.id, space.name.as_str());
         for _ in 0..follow::ATTEMPTS {
@@ -585,14 +654,29 @@ impl Follower {
                     } else if !admin_device(&latest, self.own.account, self.this) {
                         no_admin(&latest)
                     } else {
-                        let added: Vec<Channel> = roster
-                            .body()
-                            .channels
+                        let channels = &roster.body().channels;
+                        let mut added: Vec<Channel> = channels
                             .iter()
                             .filter(|new| !base.body().channels.iter().any(|old| old.id == new.id))
                             .cloned()
                             .collect();
-                        let next = self.next_with(&latest, &added).map_err(waits)?.to_cbor();
+                        let first = channels.first().map(|channel| channel.id);
+                        let default = (added.first().map(|channel| channel.id) == first
+                            && first.is_some())
+                        .then(|| added.remove(0))
+                        .filter(|_| needs_default(&latest))
+                        .map(|default| default_channel(default.id, latest.body()));
+                        if default.is_none() && added.is_empty() {
+                            self.state
+                                .clear_pending(id, &pending)
+                                .map_err(text)
+                                .map_err(waits)?;
+                            return Ok(latest);
+                        }
+                        let next = self
+                            .next_with(&latest, default, &added)
+                            .map_err(waits)?
+                            .to_cbor();
                         let set = self
                             .state
                             .set_pending(id, &latest.to_cbor(), Some(&pending), &next)
@@ -626,8 +710,14 @@ impl Follower {
         })
     }
 
-    /// The revision after `latest`, with `channels` added, signed by this device.
-    pub fn next_with(&self, latest: &Roster, channels: &[Channel]) -> Result<Roster, String> {
+    /// The revision after `latest`, with `first` added before its channels and `channels` after
+    /// them, signed by this device.
+    pub fn next_with(
+        &self,
+        latest: &Roster,
+        first: Option<Channel>,
+        channels: &[Channel],
+    ) -> Result<Roster, String> {
         let keys = self.keys()?;
         let mut body = latest.body().clone();
         body.revision = body
@@ -637,14 +727,67 @@ impl Follower {
         body.prev = Some(latest.hash());
         body.signer = self.this;
         body.timestamp = now();
+        body.channels.splice(0..0, first);
         body.channels.extend_from_slice(channels);
         skald_crypto::sign_roster(&body, keys.signing())
             .map_err(|err| format!("revision {} of the space fails: {err}", body.revision))
     }
 }
 
+/// Whether `roster` needs a default channel (`architecture.md`, "Membership"), the first channel
+/// it lists: it has no channel, or its first channel lacks a member of the space.
+pub fn needs_default(roster: &Roster) -> bool {
+    let body = roster.body();
+    body.channels.first().is_none_or(|first| {
+        body.members.iter().any(|member| {
+            !first
+                .members
+                .iter()
+                .any(|entry| entry.account == member.account)
+        })
+    })
+}
+
+/// The default channel `id` of the revision `body`: every member of the space, with `history`
+/// true.
+fn default_channel(id: ChannelId, body: &RosterBody) -> Channel {
+    Channel {
+        id,
+        members: body
+            .members
+            .iter()
+            .map(|member| ChannelMember {
+                account: member.account,
+                history: true,
+            })
+            .collect(),
+        services: Vec::new(),
+        unknown: Unknown::default(),
+    }
+}
+
+/// `NewChannel` in the API spec.
+#[derive(Deserialize)]
+struct NewChannel {
+    channel: String,
+}
+
+/// `POST /spaces/<id>/channels`: a channel ID the server issues for the space `id` to the session
+/// `token`.
+pub fn issue_channel(
+    connection: &mut Connection,
+    token: &str,
+    id: SpaceId,
+) -> Result<ChannelId, String> {
+    let path = format!("/spaces/{id}/channels");
+    let body = connection.post_as(&path, token).map_err(text)?;
+    let unexpected = || "unexpected answer from the server: a channel without its ID".to_owned();
+    let issued: NewChannel = serde_json::from_slice(&body).map_err(|_| unexpected())?;
+    issued.channel.parse().map_err(|_| unexpected())
+}
+
 /// Seconds since the Unix epoch, a revision's `timestamp`; 0 with a clock before it.
-fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs())
@@ -712,7 +855,8 @@ pub fn following(
 }
 
 /// The space named `name` that the device of the machine whose state is in `dir`, its secrets in
-/// `storage`, follows, synced ([`Follower::sync`]); within `scope`.
+/// `storage`, follows, synced ([`Follower::sync`]), the groups of its channels brought in line
+/// ([`groups::align_accepted`]); within `scope`.
 pub fn synced(
     dir: &Path,
     storage: secrets::Storage,
@@ -727,6 +871,7 @@ pub fn synced(
         return Err(OUT_OF_SCOPE.to_owned());
     }
     let (roster, devices) = follower.sync(&space)?;
+    groups::align_accepted(&mut follower);
     Ok(Synced {
         follower,
         space,
@@ -804,8 +949,9 @@ pub fn no_admin(roster: &Roster) -> String {
 
 /// Lists the spaces the device of the machine whose state is in `dir`, its secrets in `storage`,
 /// follows, each at its last accepted revision. A signed-in machine with a certified device first
-/// accepts the revisions the server has of each; a space it fails to follow shows as the local
-/// state holds it, saying why. Only the spaces within `scope`.
+/// accepts the revisions the server has of each, and brings the groups of their channels in line
+/// ([`groups::align_accepted`]); a space it fails to follow shows as the local state holds it,
+/// saying why. Only the spaces within `scope`.
 pub fn list(
     dir: &Path,
     storage: secrets::Storage,
@@ -839,6 +985,9 @@ pub fn list(
                 None => follow::decode(&space.accepted, &space.name)?,
             };
             lines.push(line(&roster, account, space.first_waits(), space.personal));
+        }
+        if let Some(follower) = follower.as_mut() {
+            groups::align_accepted(follower);
         }
         lines
     } else {
@@ -1193,6 +1342,44 @@ pub(crate) mod tests {
                 ),
             ]
         );
+    }
+
+    /// A space needs a default channel while it has no channel or its first channel lacks a
+    /// member; a later channel with every member does not count. A default channel holds every
+    /// member with `history` true.
+    #[test]
+    fn space_needs_a_default_channel_until_its_first_channel_has_every_member() {
+        let (ada, bob) = (AccountId::generate(), AccountId::generate());
+        let mut body = first(ada).body().clone();
+        let sign = |body: &RosterBody| {
+            skald_crypto::sign_roster(body, &SigningKey::generate()).expect("a revision")
+        };
+        assert!(needs_default(&sign(&body)), "no channel");
+        body.channels = vec![default_channel(ChannelId::generate(), &body)];
+        let ada_in = ChannelMember {
+            account: ada,
+            history: true,
+        };
+        assert_eq!(body.channels[0].members, [ada_in]);
+        assert!(!needs_default(&sign(&body)));
+
+        body.members.push(member(bob, "bob", [4; 32]));
+        assert!(needs_default(&sign(&body)), "bob outside the first channel");
+        body.channels
+            .push(default_channel(ChannelId::generate(), &body));
+        assert!(
+            needs_default(&sign(&body)),
+            "every member in a later channel"
+        );
+        body.channels
+            .insert(0, default_channel(ChannelId::generate(), &body));
+        let bob_in = ChannelMember {
+            account: bob,
+            history: true,
+        };
+        assert_eq!(body.channels[0].members, [ada_in, bob_in]);
+        assert!(body.channels[0].services.is_empty());
+        assert!(!needs_default(&sign(&body)));
     }
 
     #[test]

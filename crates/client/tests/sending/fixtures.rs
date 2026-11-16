@@ -164,9 +164,10 @@ pub struct Channel {
     pub id: ChannelId,
 }
 
-/// Ada's machine creates `acme`, whose revision 2 adds `members`, and a channel in it; revision 4,
-/// which Ada's device signs and the server stores while the machine has not accepted it yet, adds
-/// `joining` to the channel and has each member's account of `excluded` bar its device.
+/// Ada's machine creates `acme`, with its default channel in revision 2, whose revision 3 adds
+/// `members`, and a channel in it; revision 5, which Ada's device signs and the server stores while
+/// the machine has not accepted it yet, adds `joining` to the channel and has each member's account
+/// of `excluded` bar its device.
 pub fn acme(
     cloud: &Cloud,
     ada: &Person,
@@ -174,31 +175,31 @@ pub fn acme(
     joining: &[&Person],
     excluded: &[(AccountId, DeviceId)],
 ) -> Channel {
-    let first = create(cloud, ada, ACME);
-    channel_in(cloud, ada, &first, members, joining, excluded)
+    let created = create(cloud, ada, ACME);
+    channel_in(cloud, ada, &created, members, joining, excluded)
 }
 
-/// As [`acme`], in the space named `first.body().name` that Ada's machine created, whose revision 1
-/// is `first`.
+/// As [`acme`], in the space named `created.body().name` that Ada's machine created, whose
+/// revision with its default channel is `created`.
 pub fn channel_in(
     cloud: &Cloud,
     ada: &Person,
-    first: &Roster,
+    created: &Roster,
     members: &[&Person],
     joining: &[&Person],
     excluded: &[(AccountId, DeviceId)],
 ) -> Channel {
-    let space = first.body().space;
-    let second = next_by(first, ada, |list| {
+    let space = created.body().space;
+    let with_members = next_by(created, ada, |list| {
         list.extend(members.iter().map(|person| person.member(Role::Member)));
     });
-    store(cloud, &ada.token, &second);
-    let name = first.body().name.to_string();
-    let created = run(&ada.machine, &[CREATE_CHANNEL, &name]);
-    assert!(created.success, "a channel: {created:?}");
-    let (third, id) = last_channel(cloud, ada, space);
+    store(cloud, &ada.token, &with_members);
+    let name = created.body().name.to_string();
+    let made = run(&ada.machine, &[CREATE_CHANNEL, &name]);
+    assert!(made.success, "a channel: {made:?}");
+    let (with_channel, id) = last_channel(cloud, ada, space);
     if !joining.is_empty() || !excluded.is_empty() {
-        let fourth = next_with(&third, (ada.device, &ada.key), |body| {
+        let joined = next_with(&with_channel, (ada.device, &ada.key), |body| {
             let channel = body
                 .channels
                 .iter_mut()
@@ -220,7 +221,7 @@ pub fn channel_in(
             }
             body.members = NonEmpty::from_vec(members).expect("a member");
         });
-        store(cloud, &ada.token, &fourth);
+        store(cloud, &ada.token, &joined);
     }
     Channel { space, id }
 }
@@ -272,6 +273,29 @@ pub fn killed_once(mut run: Run, what: &str, done: impl Fn() -> bool) -> Finishe
 /// The `send` frames the front saw after its first `from`.
 pub fn sent_after(front: &Front, from: usize) -> Vec<Sent> {
     front.sent().split_off(from)
+}
+
+/// The `send` frames of envelopes under `hpke`, the messages, the front saw, in order: the
+/// devices' Commits and Welcomes left out.
+pub fn hpke_sent(front: &Front) -> Vec<Sent> {
+    front
+        .sent()
+        .into_iter()
+        .filter(|sent| sent.envelope.envelope().header.scheme == skald_proto::Scheme::Hpke)
+        .collect()
+}
+
+/// Whether the server answered `stored` to an envelope under `hpke` to `device`, as the front saw
+/// it, lost or not.
+pub fn stored_to(front: &Front, device: DeviceId) -> bool {
+    front.answered().iter().any(|answer| {
+        matches!(answer, skald_proto::Frame::Stored(stored) if stored.send_key.recipient == Some(device))
+    })
+}
+
+/// The frames of [`hpke_sent`] after its first `from`.
+pub fn hpke_sent_after(front: &Front, from: usize) -> Vec<Sent> {
+    hpke_sent(front).split_off(from)
 }
 
 /// Waits for up to [`WAIT`] until `done` holds while `run` goes on; fails if `run` exits first.

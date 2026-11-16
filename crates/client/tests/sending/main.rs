@@ -57,8 +57,8 @@ use std::time::{Duration, Instant};
 use cloud::Cloud;
 use fixtures::{
     Channel, Issuer, Keyed, TIMEOUT, acme, ada_and_bob, add_device, cert_of, database, fronted,
-    hex, keyed, kill_once, last_channel, msg_id, person_address, recipient, send, send_args,
-    sent_after, strs,
+    hex, hpke_sent, hpke_sent_after, keyed, kill_once, last_channel, msg_id, person_address,
+    recipient, send, send_args, stored_to, strs,
 };
 use front::{Answers, Front, Sent};
 use machine::Finished;
@@ -285,19 +285,23 @@ impl Pair {
     /// Bob's device for each, with the counters 1 and 2, and the run says the new one is stored.
     fn assert_sends_what_is_left_first(&self, first: &Sent) {
         let bob = self.bob.device;
-        let from = self.front.sent().len();
+        let from = hpke_sent(&self.front).len();
 
         let second = self.send(SECOND);
 
         assert!(second.success, "{second:?}");
-        let next = left_then_new(&sent_after(&self.front, from), bob, first.envelope.bytes());
+        let next = left_then_new(
+            &hpke_sent_after(&self.front, from),
+            bob,
+            first.envelope.bytes(),
+        );
         let (first_id, next_id) = (msg_id(first), msg_id(&next));
         assert_ne!(first_id, next_id, "the new message has the left one's ID");
         self.assert_from_ada(&self.open(first), 1, first_id, FIRST);
         self.assert_from_ada(&self.open(&next), 2, next_id, SECOND);
         assert_says_stored(&second, next_id, &[bob]);
         assert_held(self.cloud(), &[first, &next]);
-        let all = envelopes_to(&self.front.sent(), bob);
+        let all = envelopes_to(&hpke_sent(&self.front), bob);
         assert_eq!(all.len(), 2, "envelopes to Bob's device: {all:?}");
     }
 }
@@ -340,12 +344,12 @@ fn message_is_sealed_once_for_each_admitted_device_of_the_channel() {
         &unlinked,
     ];
     let ada_cert = cert_of(cloud, &ada);
-    let from = front.sent().len();
+    let from = hpke_sent(&front).len();
 
     let finished = send(&ada.machine, channel.id, FIRST);
 
     assert!(finished.success, "{finished:?}");
-    let sent = sent_after(&front, from);
+    let sent = hpke_sent_after(&front, from);
     let recipients: BTreeSet<DeviceId> = sent.iter().map(recipient).collect();
     assert_eq!(
         recipients,
@@ -385,8 +389,11 @@ fn envelope_whose_stored_was_lost_is_sent_again_with_the_same_bytes() {
 
     let first = pair.send(FIRST);
 
-    assert!(pair.front.lost() > 0, "no stored was lost: {first:?}");
-    let left = only_envelope_to(&pair.front.sent(), pair.bob.device);
+    assert!(
+        stored_to(&pair.front, pair.bob.device),
+        "the message's stored was not lost: {first:?}"
+    );
+    let left = only_envelope_to(&hpke_sent(&pair.front), pair.bob.device);
     assert_left_with(&first, msg_id(&left), &[pair.bob.device]);
     assert_held(pair.cloud(), &[&left]);
     pair.front.answer(Answers::Forward);
@@ -407,9 +414,12 @@ fn envelope_of_a_cli_killed_before_stored_is_sent_again_with_the_same_bytes() {
         .ada
         .machine
         .start(&strs(&send_args(pair.channel.id, FIRST)));
-    kill_once(run, "lost stored", || pair.front.lost() > 0);
+    // Ada's Commits go out before the message, and their `stored` is lost too.
+    kill_once(run, "lost stored of the message", || {
+        stored_to(&pair.front, pair.bob.device)
+    });
 
-    let left = only_envelope_to(&pair.front.sent(), pair.bob.device);
+    let left = only_envelope_to(&hpke_sent(&pair.front), pair.bob.device);
     pair.front.answer(Answers::Forward);
     pair.assert_sends_what_is_left_first(&left);
 }
@@ -427,9 +437,12 @@ fn envelope_of_a_cli_killed_before_the_server_got_it_is_sent_from_the_outbox() {
         .ada
         .machine
         .start(&strs(&send_args(pair.channel.id, FIRST)));
-    kill_once(run, "swallowed send", || pair.front.swallowed() > 0);
+    // Ada's Commits go out before the message, and are swallowed too.
+    kill_once(run, "swallowed send of the message", || {
+        !hpke_sent(&pair.front).is_empty()
+    });
 
-    let left = only_envelope_to(&pair.front.sent(), pair.bob.device);
+    let left = only_envelope_to(&hpke_sent(&pair.front), pair.bob.device);
     assert!(
         !database(pair.cloud()).contains(&hex(left.envelope.bytes())),
         "the server got the swallowed envelope"
@@ -467,12 +480,12 @@ fn run_with_the_server_down_fails_after_the_timeout_naming_what_is_left() {
         "tried {} times: {first:?}",
         pair.front.refused()
     );
-    assert!(pair.front.sent().is_empty(), "a send got through");
+    assert!(hpke_sent(&pair.front).is_empty(), "a send got through");
     pair.front.down(false);
-    let from = pair.front.sent().len();
+    let from = hpke_sent(&pair.front).len();
     let second = pair.send(SECOND);
     assert!(second.success, "{second:?}");
-    let sent = sent_after(&pair.front, from);
+    let sent = hpke_sent_after(&pair.front, from);
     let envelopes = envelopes_to(&sent, pair.bob.device);
     assert_eq!(
         envelopes.len(),
@@ -506,12 +519,12 @@ fn counters_go_up_by_one_per_recipient_device_across_runs() {
                 &issuer,
             ));
         }
-        let from = pair.front.sent().len();
+        let from = hpke_sent(&pair.front).len();
 
         let finished = pair.send(text);
 
         assert!(finished.success, "{finished:?}");
-        let sent = sent_after(&pair.front, from);
+        let sent = hpke_sent_after(&pair.front, from);
         let to_bob = only_envelope_to(&sent, pair.bob.device);
         let id = msg_id(&to_bob);
         pair.assert_from_ada(&pair.open(&to_bob), bob_counter, id, text);
@@ -546,9 +559,9 @@ fn channel_without_another_admitted_device_sends_nothing() {
         "does not say no device can receive it: {finished:?}"
     );
     assert!(
-        front.sent().is_empty(),
+        hpke_sent(&front).is_empty(),
         "sent {} envelopes",
-        front.sent().len()
+        hpke_sent(&front).len()
     );
 }
 
@@ -563,11 +576,11 @@ fn refused_envelope_is_not_sent_again_and_its_problem_is_shown() {
     let mut refused = Vec::new();
     for (problem, text) in [("not-a-member", FIRST), ("made-up-problem", SECOND)] {
         pair.front.answer(Answers::Refuse(problem.to_owned()));
-        let from = pair.front.sent().len();
+        let from = hpke_sent(&pair.front).len();
 
         let finished = pair.send(text);
 
-        let sent = sent_after(&pair.front, from);
+        let sent = hpke_sent_after(&pair.front, from);
         assert!(!sent.is_empty(), "nothing sent: {finished:?}");
         assert!(
             sent.iter().all(|sent| !refused.contains(&msg_id(sent))),
@@ -581,11 +594,11 @@ fn refused_envelope_is_not_sent_again_and_its_problem_is_shown() {
         refused.push(id);
     }
     pair.front.answer(Answers::Forward);
-    let from = pair.front.sent().len();
+    let from = hpke_sent(&pair.front).len();
 
     let finished = pair.send(THIRD);
 
-    let sent = sent_after(&pair.front, from);
+    let sent = hpke_sent_after(&pair.front, from);
     assert!(
         sent.iter().all(|sent| !refused.contains(&msg_id(sent))),
         "a refused envelope is sent again"
@@ -621,12 +634,12 @@ fn agent_sends_only_in_the_space_of_its_folder() {
         args.extend(send_args(channel, text));
         ada.machine.start_in(dir, &strs(&args)).finish()
     };
-    let from = front.sent().len();
+    let from = hpke_sent(&front).len();
 
     let own = as_agent(&folder, channels[0].id, FIRST);
 
     assert!(own.success, "{own:?}");
-    let sent = sent_after(&front, from);
+    let sent = hpke_sent_after(&front, from);
     let envelope = only_envelope_to(&sent, laptop.id);
     assert_eq!(
         sent.iter().map(recipient).collect::<BTreeSet<_>>(),
@@ -638,12 +651,12 @@ fn agent_sends_only_in_the_space_of_its_folder() {
     assert_content(&content, &address, 1, msg_id(&envelope), FIRST);
     assert_says_stored(&own, msg_id(&envelope), &[laptop.id]);
 
-    let from = front.sent().len();
+    let from = hpke_sent(&front).len();
     let other = as_agent(&folder, channels[1].id, SECOND);
 
     assert!(!other.success, "{other:?}");
     assert!(
-        sent_after(&front, from).is_empty(),
+        hpke_sent_after(&front, from).is_empty(),
         "sent to clientb's channel"
     );
     let shown = other.shown();
@@ -651,4 +664,37 @@ fn agent_sends_only_in_the_space_of_its_folder() {
         !shown.contains(CLIENT_B) && !shown.contains(&channels[1].space.to_string()),
         "the refusal names clientb: {other:?}"
     );
+}
+
+/// A server that closes each connection for a policy violation: without a front, a machine reaches
+/// the server through the relay, at another origin than the server's public address, so the server
+/// refuses each proof (`signature-refused`, 1008). Ada's `skald send`, with a timeout of 20 s, tries
+/// each envelope once and fails, saying why, well before the timeout.
+#[test]
+fn send_whose_connection_the_server_closes_for_a_policy_violation_stops_before_the_timeout() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let timeout = Duration::from_secs(20);
+    let mut ada = world.sign_up(4_122_062_001, "ada-refused-standin", "ada-workstation");
+    ada.machine = ada
+        .machine
+        .with_env(fixtures::TIMEOUT_SETTING, timeout.as_secs().to_string());
+    let bob = world.sign_up(4_122_062_002, "bob-unreached-standin", "bob-workstation");
+    let second = world::create(cloud, &ada, ACME);
+    let default = second.body().channels[0].id;
+    let with_bob = world::next_by(&second, &ada, |members| {
+        members.push(bob.member(skald_proto::Role::Member));
+    });
+    world::store(cloud, &ada.token, &with_bob);
+
+    let started = Instant::now();
+    let refused = send(&ada.machine, default, FIRST);
+
+    let took = started.elapsed();
+    assert!(!refused.success, "{refused:?}");
+    assert!(
+        refused.shown().contains("signature-refused"),
+        "it does not say why: {refused:?}"
+    );
+    assert!(took < timeout / 2, "it ran for {took:?}: {refused:?}");
 }

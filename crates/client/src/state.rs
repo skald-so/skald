@@ -126,6 +126,15 @@ const MIGRATIONS: &[&str] = &[
         name BLOB PRIMARY KEY,
         sealed BLOB NOT NULL
     ) STRICT",
+    // The device's own Commits and Welcomes the server has not answered yet, in the order they go
+    // out, by message ID, with their space and channel and the envelope's bytes.
+    "CREATE TABLE mls_outbox (
+        position INTEGER PRIMARY KEY,
+        msg_id TEXT NOT NULL UNIQUE,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        envelope BLOB NOT NULL
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -235,6 +244,33 @@ pub struct Outgoing {
     pub space: SpaceId,
     /// Its bytes, as they are sent every time.
     pub envelope: Vec<u8>,
+}
+
+/// A Commit or Welcome of the device's own in the outbox.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MlsOutgoing {
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    /// Its bytes, as they are sent every time.
+    pub envelope: Vec<u8>,
+}
+
+/// What a step on the MLS state writes with the state it saves, in the same transaction.
+#[derive(Debug, Default)]
+pub struct MlsChanges {
+    /// Envelopes it puts in the outbox, in order.
+    pub queued: Vec<MlsOutgoing>,
+    /// The message IDs of the envelopes it takes out of the outbox: the server answered them.
+    pub answered: Vec<MessageId>,
+    /// The `seq` of the mailbox entries it took in.
+    pub taken: Vec<u64>,
+}
+
+impl MlsChanges {
+    fn is_empty(&self) -> bool {
+        self.queued.is_empty() && self.answered.is_empty() && self.taken.is_empty()
+    }
 }
 
 /// Why the state cannot be used.
@@ -437,6 +473,18 @@ impl State {
         &self,
         step: impl FnOnce(&SealedState) -> Result<(Option<SealedState>, T), String>,
     ) -> Result<T, String> {
+        self.mls_change(|sealed| {
+            let (saved, done) = step(sealed)?;
+            Ok((saved, MlsChanges::default(), done))
+        })
+    }
+
+    /// As [`State::mls_step`], `step` also giving the changes to the outbox and the inbox that go
+    /// with the state it saves: all of them are written at once, or none.
+    pub fn mls_change<T>(
+        &self,
+        step: impl FnOnce(&SealedState) -> Result<(Option<SealedState>, MlsChanges, T), String>,
+    ) -> Result<T, String> {
         let failed = |err: Error| err.to_string();
         let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)
             .map_err(|err| failed(err.into()))?;
@@ -448,22 +496,77 @@ impl State {
                     .and_then(Iterator::collect::<Result<Vec<(Vec<u8>, Vec<u8>)>, _>>)
             })
             .map_err(|err| failed(err.into()))?;
-        let (saved, done) = step(&SealedState::from_items(items))?;
-        let Some(saved) = saved else {
+        let (saved, changes, done) = step(&SealedState::from_items(items))?;
+        if saved.is_none() && changes.is_empty() {
             return Ok(done);
-        };
-        let save = || -> Result<(), rusqlite::Error> {
-            tx.execute("DELETE FROM mls_state", [])?;
-            let mut insert = tx.prepare("INSERT INTO mls_state (name, sealed) VALUES (?1, ?2)")?;
-            for (name, sealed) in saved.items() {
-                insert.execute(params![name, sealed])?;
+        }
+        let save = || -> Result<(), Error> {
+            if let Some(saved) = &saved {
+                tx.execute("DELETE FROM mls_state", [])?;
+                let mut insert =
+                    tx.prepare("INSERT INTO mls_state (name, sealed) VALUES (?1, ?2)")?;
+                for (name, sealed) in saved.items() {
+                    insert.execute(params![name, sealed])?;
+                }
             }
-            drop(insert);
-            tx.commit()
+            for queued in &changes.queued {
+                tx.execute(
+                    "INSERT INTO mls_outbox (msg_id, space, channel, envelope)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        queued.msg_id.to_string(),
+                        queued.space.to_string(),
+                        queued.channel.to_string(),
+                        queued.envelope
+                    ],
+                )?;
+            }
+            for msg_id in &changes.answered {
+                tx.execute(
+                    "DELETE FROM mls_outbox WHERE msg_id = ?1",
+                    params![msg_id.to_string()],
+                )?;
+            }
+            for &seq in &changes.taken {
+                let seq =
+                    i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+                tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
+            }
+            Ok(())
         };
-        save().map_err(|err| failed(err.into()))?;
-        self.truncate_wal().map_err(failed)?;
+        save().map_err(failed)?;
+        tx.commit().map_err(|err| failed(err.into()))?;
+        if saved.is_some() {
+            self.truncate_wal().map_err(failed)?;
+        }
         Ok(done)
+    }
+
+    /// The device's own Commits and Welcomes in the outbox, in the order they go out.
+    pub fn mls_outbox(&self) -> Result<Vec<MlsOutgoing>, Error> {
+        let rows = self.envelopes(
+            "SELECT msg_id, space, channel, envelope FROM mls_outbox ORDER BY position",
+        )?;
+        rows.into_iter()
+            .map(|([msg_id, space, channel], envelope)| {
+                Ok(MlsOutgoing {
+                    msg_id: id("message ID", &msg_id)?,
+                    space: id("space ID", &space)?,
+                    channel: id("channel ID", &channel)?,
+                    envelope,
+                })
+            })
+            .collect()
+    }
+
+    /// The rows `sql` selects, each as its first three columns, as text, and its fourth, an
+    /// envelope's bytes.
+    fn envelopes(&self, sql: &str) -> Result<Vec<EnvelopeRow>, Error> {
+        let mut query = self.db.prepare(sql)?;
+        let rows = query.query_map([], |row| {
+            Ok(([row.get(0)?, row.get(1)?, row.get(2)?], row.get(3)?))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     /// Copies the WAL into the database file and truncates it; fails if another run keeps it from
@@ -884,32 +987,18 @@ impl State {
 
     /// The envelopes in the outbox, in the order they go out.
     pub fn outbox(&self) -> Result<Vec<Outgoing>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT msg_id, recipient, space, envelope FROM outbox ORDER BY position")?;
-        let rows = query.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get(3)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (msg_id, recipient, space, envelope) = row?;
-            let malformed = |what: &str, id: &str| Error::Malformed(format!("the {what} {id:?}"));
-            Ok(Outgoing {
-                msg_id: msg_id
-                    .parse()
-                    .map_err(|_| malformed("message ID", &msg_id))?,
-                recipient: recipient
-                    .parse()
-                    .map_err(|_| malformed("device ID", &recipient))?,
-                space: space.parse().map_err(|_| malformed("space ID", &space))?,
-                envelope,
+        let rows = self
+            .envelopes("SELECT msg_id, recipient, space, envelope FROM outbox ORDER BY position")?;
+        rows.into_iter()
+            .map(|([msg_id, recipient, space], envelope)| {
+                Ok(Outgoing {
+                    msg_id: id("message ID", &msg_id)?,
+                    recipient: id("device ID", &recipient)?,
+                    space: id("space ID", &space)?,
+                    envelope,
+                })
             })
-        })
-        .collect()
+            .collect()
     }
 
     /// Takes the envelope of `msg_id` to `recipient` out of the outbox: the server answered it.
@@ -920,6 +1009,15 @@ impl State {
         )?;
         Ok(())
     }
+}
+
+/// A row of an outbox: three IDs, as text, and an envelope's bytes.
+type EnvelopeRow = ([String; 3], Vec<u8>);
+
+/// `text`, the `what` the state holds, parsed.
+fn id<T: std::str::FromStr>(what: &str, text: &str) -> Result<T, Error> {
+    text.parse()
+        .map_err(|_| Error::Malformed(format!("the {what} {text:?}")))
 }
 
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
@@ -1617,6 +1715,75 @@ mod tests {
         let second = sealed(&[(b"c", &[3; 40])]);
         state.mls_step(|_| Ok((Some(second.clone()), ()))).unwrap();
         assert_eq!(read(&State::open(&dir).unwrap()), second);
+    }
+
+    /// A step's changes to the outbox and the inbox are written with the state it saves: the
+    /// envelopes it queues go out after those queued before, those answered and the entries taken
+    /// in leave; a change that fails writes none of them, nor the state.
+    #[test]
+    fn mls_changes_are_written_with_the_state_or_not_at_all() {
+        let dir = TestDir::new("state-mls-changes");
+        let state = State::open(&dir).unwrap();
+        let read = |state: &State| state.mls_step(|old| Ok((None, old.clone()))).unwrap();
+        let seqs = |state: &State| -> Vec<u64> {
+            state
+                .inbox()
+                .unwrap()
+                .into_iter()
+                .map(|(seq, _)| seq)
+                .collect()
+        };
+        let device = DeviceId::from_signing_key(&[7; 32]);
+        state.add_device(device, "ada-laptop", "0190").unwrap();
+        state
+            .write_entries(&[(1, vec![1]), (2, vec![2]), (3, vec![3])])
+            .unwrap();
+        let outgoing = |byte| MlsOutgoing {
+            msg_id: MessageId::generate(),
+            space: SpaceId::generate(),
+            channel: ChannelId::generate(),
+            envelope: vec![byte],
+        };
+        let (first, second, third) = (outgoing(1), outgoing(2), outgoing(3));
+        let changes =
+            |queued: &[&MlsOutgoing], answered: &[&MlsOutgoing], taken: &[u64]| MlsChanges {
+                queued: queued.iter().map(|&queued| queued.clone()).collect(),
+                answered: answered.iter().map(|answered| answered.msg_id).collect(),
+                taken: taken.to_vec(),
+            };
+        let saved = sealed(&[(b"a", &[1; 40])]);
+
+        state
+            .mls_change(|_| {
+                Ok((
+                    Some(saved.clone()),
+                    changes(&[&first, &second], &[], &[2]),
+                    (),
+                ))
+            })
+            .unwrap();
+        state
+            .mls_change(|_| Ok((None, changes(&[&third], &[&first], &[1]), ())))
+            .unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.mls_outbox().unwrap(), [second.clone(), third.clone()]);
+        assert_eq!(seqs(&state), [3]);
+        assert_eq!(read(&state), saved);
+
+        // The same message ID again fails the change: nothing of it is written.
+        let other = sealed(&[(b"b", &[2; 40])]);
+        let failed = state.mls_change(|_| {
+            Ok((
+                Some(other.clone()),
+                changes(&[&second], &[&third], &[3]),
+                (),
+            ))
+        });
+        assert!(failed.is_err(), "{failed:?}");
+        assert_eq!(state.mls_outbox().unwrap(), [second, third]);
+        assert_eq!(seqs(&state), [3]);
+        assert_eq!(read(&state), saved);
     }
 
     /// Once a save returns, the state it replaced is in neither the database file nor its journal
