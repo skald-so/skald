@@ -30,7 +30,8 @@
 #              repositories too, and of the installers in installers/ and the npm package on this
 #              machine; of the release check and its jobs, against stand-ins for a release and the
 #              verification commands; of the Pages workflow; of how the release workflow builds and
-#              publishes the web app's archive; Renovate config validation
+#              publishes the web app's archive; of the production deploy job; Renovate config
+#              validation
 #   web        copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #              references) and build; the web app's archive of a release (script/release-web-test)
 #   site       the website and docs built from docs/, which fails on a broken internal link
@@ -266,6 +267,7 @@ if checks tooling; then
   script/mutants-test
   script/tag-edge-test
   script/deploy-staging-test
+  script/deploy-production-test
   script/staging-status-test
   script/ci-workflow-test
   script/edge-workflow-test
@@ -327,6 +329,7 @@ if checks tooling; then
   script/release-check-steps-test
   script/pages-workflow-test
   script/release-check-test
+  script/production-deploy-workflow-test
 fi
 
 # The website and docs: the build of docs/ and its link check, and the build's tests.
