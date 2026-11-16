@@ -10,14 +10,24 @@
 // The browser resolves every *.test host to 127.0.0.1, so a test reaches a local server under a name
 // of its choice: another name is another site, and a name other than localhost is not a secure
 // context over plain HTTP.
+// The web app's production build, made once by the first `spaFront`, lives in a temporary
+// directory until the driver exits.
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import { createRequire } from "node:module";
+import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
@@ -97,6 +107,8 @@ if (process.platform !== "win32") {
 const pages = new Map();
 /** The requests each echo server got, by its port. */
 const echoes = new Map();
+/** Where each web app front passes the API, by its port: `{ target }`, `null` until set. */
+const fronts = new Map();
 /** What each session opened, by its ID: browser contexts and servers, closed with it. */
 const sessions = new Map();
 let nextPage = 1;
@@ -268,6 +280,124 @@ function click(tab, selector, settle = false) {
   });
 }
 
+/** The web UI's directory: the web app's sources and node_modules. */
+const webDir = process.argv[2];
+
+let spaBuild;
+/**
+ * The web app's production build, as `npm run build` makes it, built once into a temporary
+ * directory that goes when the driver exits; resolves to that directory.
+ */
+function spaDir() {
+  spaBuild ??= (async () => {
+    const dir = mkdtempSync(join(tmpdir(), "skald-spa-"));
+    process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+    const vite = createRequire(join(webDir, "package.json")).resolve("vite");
+    const { build } = await import(pathToFileURL(vite).href);
+    await build({
+      root: webDir,
+      logLevel: "error",
+      build: { outDir: dir, emptyOutDir: true },
+    });
+    return dir;
+  })();
+  return spaBuild;
+}
+
+/**
+ * The first segment of each path of the spec, as `/session`: a request whose path starts with one
+ * goes to the API, as the dev server sends it (web/vite.config.ts).
+ */
+function apiPrefixes() {
+  const spec = JSON.parse(
+    readFileSync(join(webDir, "../api/openapi.json"), "utf8"),
+  );
+  return [
+    ...new Set(Object.keys(spec.paths).map((path) => `/${path.split("/")[1]}`)),
+  ];
+}
+
+/** Content types of the build's files, by extension. */
+const contentTypes = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".txt": "text/plain; charset=utf-8",
+};
+
+/**
+ * Answers `request` from the build in `dir`: the file at its path, or the index page for any other
+ * path, so that a link to any page of the app opens.
+ */
+function serveSpa(dir, request, response) {
+  let found = join(dir, "index.html");
+  try {
+    const path = decodeURIComponent(
+      new URL(request.url, "http://front").pathname,
+    );
+    const file = normalize(join(dir, path));
+    if (file.startsWith(dir + sep) && statSync(file).isFile()) found = file;
+  } catch {
+    // A path that is no file of the build gets the index page.
+  }
+  response.writeHead(200, {
+    "content-type": contentTypes[extname(found)] ?? "application/octet-stream",
+  });
+  response.end(readFileSync(found));
+}
+
+/** Sends `request` as it is to the plain HTTP `target`, and its answer back as `response`. */
+function forward(target, request, response) {
+  const upstream = http.request(
+    new URL(request.url, target),
+    { method: request.method, headers: request.headers },
+    (answer) => {
+      response.writeHead(answer.statusCode, answer.rawHeaders);
+      answer.pipe(response);
+    },
+  );
+  upstream.on("error", (error) => {
+    response.writeHead(502, { "content-type": "text/plain" });
+    response.end(String(error));
+  });
+  request.pipe(upstream);
+}
+
+/**
+ * Sends the upgrade `request`, such as a WebSocket opening, as it is to the plain HTTP `target`,
+ * then joins its connection `socket` to the target's; adds both to `upgraded` while open.
+ */
+function forwardUpgrade(target, request, socket, head, upgraded) {
+  const { hostname, port } = new URL(target);
+  const upstream = net.connect(Number(port), hostname, () => {
+    const lines = [
+      `${request.method} ${request.url} HTTP/${request.httpVersion}`,
+    ];
+    for (let at = 0; at < request.rawHeaders.length; at += 2)
+      lines.push(`${request.rawHeaders[at]}: ${request.rawHeaders[at + 1]}`);
+    upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
+    upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  for (const end of [socket, upstream]) {
+    upgraded.add(end);
+    const both = () => {
+      socket.destroy();
+      upstream.destroy();
+      upgraded.delete(end);
+    };
+    end.on("error", both);
+    end.on("close", both);
+  }
+}
+
 const ops = {
   /** Opens a page in a new browser context: a browser with no cookies and no storage. */
   async newPage({ session }) {
@@ -286,8 +416,10 @@ const ops = {
       if (found.session === session) pages.delete(id);
     for (const server of servers) {
       echoes.delete(server.address()?.port);
+      fronts.delete(server.address()?.port);
       server.close();
       server.closeAllConnections();
+      server.closeUpgraded?.();
     }
     await Promise.all(contexts.map((context) => context.close()));
     return null;
@@ -455,22 +587,93 @@ const ops = {
 
   /** Starts an HTTPS server that forwards every request to the plain HTTP `target` as it is. */
   async tlsProxy({ session, target }) {
-    const server = https.createServer(tlsOptions(), (request, response) => {
-      const upstream = http.request(
-        new URL(request.url, target),
-        { method: request.method, headers: request.headers },
-        (answer) => {
-          response.writeHead(answer.statusCode, answer.rawHeaders);
-          answer.pipe(response);
-        },
-      );
-      upstream.on("error", (error) => {
-        response.writeHead(502, { "content-type": "text/plain" });
-        response.end(String(error));
-      });
-      request.pipe(upstream);
-    });
+    const server = https.createServer(tlsOptions(), (request, response) =>
+      forward(target, request, response),
+    );
     return listen(session, server);
+  },
+
+  /**
+   * Starts a front of the web app: its production build and an API on one origin, as a server
+   * serves both. A request whose path starts with the first segment of a path of the spec, such as
+   * `/session`, WebSocket openings included, goes as it is to the plain HTTP target that
+   * `spaTarget` sets, as the dev server sends it; any other gets the build's file at its path, or
+   * the build's index page. Gives its port.
+   */
+  async spaFront({ session }) {
+    const dir = await spaDir();
+    const prefixes = apiPrefixes();
+    const front = { target: null };
+    const api = (request) =>
+      prefixes.some((prefix) => request.url.startsWith(prefix));
+    const server = http.createServer((request, response) => {
+      if (!api(request)) return serveSpa(dir, request, response);
+      if (!front.target) {
+        response.writeHead(503, { "content-type": "text/plain" });
+        response.end("no API yet");
+        return;
+      }
+      forward(front.target, request, response);
+    });
+    const upgraded = new Set();
+    server.on("upgrade", (request, socket, head) => {
+      if (api(request) && front.target)
+        forwardUpgrade(front.target, request, socket, head, upgraded);
+      else socket.destroy();
+    });
+    server.closeUpgraded = () => {
+      for (const socket of upgraded) socket.destroy();
+    };
+    const port = await listen(session, server);
+    fronts.set(port, front);
+    return port;
+  },
+
+  /**
+   * Sets where the front of the web app on `port` sends the API: a plain HTTP address, such as
+   * `http://127.0.0.1:41234`.
+   */
+  async spaTarget({ port, target }) {
+    fronts.get(port).target = target;
+    return null;
+  },
+
+  /**
+   * From now on records each answer to a `fetch` or XHR request of the page's browser, in any of its
+   * tabs: its request's method, its URL, status, headers and body.
+   */
+  async recordAnswers({ page: id }) {
+    const found = page(id);
+    if (found.answers) return null;
+    found.answers = [];
+    found.reading = [];
+    found.context.on("response", (response) => {
+      const request = response.request();
+      if (!["fetch", "xhr"].includes(request.resourceType())) return;
+      const answer = {
+        method: request.method(),
+        url: response.url(),
+        status: response.status(),
+        headers: {},
+        body: "",
+      };
+      found.answers.push(answer);
+      found.reading.push(
+        Promise.all([response.allHeaders(), response.text()])
+          .then(([headers, body]) => {
+            Object.assign(answer, { headers, body });
+          })
+          .catch(() => {}),
+      );
+    });
+    return null;
+  },
+
+  /** The answers recorded so far, each with its body once read. */
+  async answers({ page: id }) {
+    const found = page(id);
+    await Promise.all(found.reading ?? []);
+    return found.answers ?? [];
   },
 };
 

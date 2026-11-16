@@ -14,6 +14,7 @@ mod groups;
 mod key_packages;
 mod lock;
 mod plain_path;
+mod proxy;
 mod recv;
 mod revocations;
 mod secrets;
@@ -294,8 +295,11 @@ enum Command {
     /// than the space's history period. Shows each
     /// message that passes the protocol's checks, once, and each delivered and expired of this
     /// device's messages; warns of each message it drops, and of the messages missing from a
-    /// sending device once a later one arrives, which it marks. As an agent, only those of the
-    /// space of the agent's folder: the rest wait for a later run.
+    /// sending device once a later one arrives, which it marks. As an agent, it checks only the
+    /// space of the agent's folder, the rest waiting for a later run, and shows the messages handed
+    /// over to the agent: those there to it or to no one in particular that came since this device
+    /// first ran as it there, each once; one waits for the agent until it expires, at most 7
+    /// days. The person's run shows every message once, whether or not an agent got it.
     Recv,
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
@@ -612,7 +616,7 @@ fn main() -> ExitCode {
         })),
         Command::Recv => exit(
             state::dir(cli.state_dir)
-                .and_then(|dir| recv::run(&dir, cli.key_storage, speaks, timeout, agent.is_some())),
+                .and_then(|dir| recv::run(&dir, cli.key_storage, speaks, timeout, agent.as_ref())),
         ),
         Command::AddRule { folder, space } => {
             exit(state::dir(cli.state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space)))

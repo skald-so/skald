@@ -60,11 +60,16 @@ pub(crate) async fn sign_in(
         sign_up(&mut tx, &account, source).await?;
     }
     let session = random_token();
-    sqlx::query("INSERT INTO sessions (token_hash, account_id, kind) VALUES ($1, $2::uuid, 'web')")
-        .bind(digest(&session))
-        .bind(&account)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, account_id, kind, method_provider, method_subject)
+         VALUES ($1, $2::uuid, 'web', $3, $4)",
+    )
+    .bind(digest(&session))
+    .bind(&account)
+    .bind(method.provider)
+    .bind(&method.subject)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Some(session))
 }

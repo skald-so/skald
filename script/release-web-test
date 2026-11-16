@@ -1,0 +1,134 @@
+#!/usr/bin/env node
+// Tests script/release-web, which makes the web app's archive of a release, on web/ as script/test
+// installs it:
+//   script/release-web <dir>: builds web/ with the packages installed there, from its lockfile, and
+//     writes into <dir>, an empty directory, two files and no other: skald-web.tar.gz, the build's
+//     files at the archive's root, and skald-web.tar.gz.sha256, its checksum as sha256sum writes it.
+// Its archive:
+//   - matches its checksum, one line `<SHA-256>  skald-web.tar.gz`, as `sha256sum -c` checks it in
+//     <dir>;
+//   - has index.html at its root, and every file of the archive that index.html loads by a path of
+//     its own; no entry leaves the root;
+//   - holds the licenses of the packages and fonts the build bundles: for each package that
+//     web/package-lock.json installs other than for development, a file of the archive holds the text
+//     of the package's license file and names the package, in its path or its text.
+// It leaves the working tree as it was.
+import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { reporter } from './lib/report.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const web = path.join(root, 'web');
+const { fail, done } = reporter('release-web-test');
+const WEB = 'skald-web.tar.gz';
+
+if (!fs.existsSync(path.join(web, 'node_modules'))) {
+  console.error('release-web-test: web/node_modules is missing; script/test installs it: cd web && npm ci');
+  process.exit(1);
+}
+const script = path.join(root, 'script/release-web');
+if (!fs.statSync(script, { throwIfNoEntry: false })?.isFile()) {
+  fail('script/release-web is missing');
+  done();
+}
+const sh = (command, args, options = {}) => spawnSync(command, args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, ...options });
+const status = () => sh('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: root }).stdout;
+const normal = (text) => text.replace(/\s+/g, ' ').trim();
+
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-web-test-')));
+try {
+  const out = path.join(tmp, 'out');
+  fs.mkdirSync(out);
+  const before = status();
+  const made = sh(script, [out], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (made.status !== 0) {
+    fail(`script/release-web exits ${made.status}: ${(made.stderr || made.stdout).trim().split('\n').slice(-5).join(' | ')}`);
+    done();
+  }
+  if (status() !== before) fail(`script/release-web leaves the working tree as it was, but it changed: ${status().trim().split('\n').join(', ')}`);
+  const written = fs.readdirSync(out).sort();
+  if (JSON.stringify(written) !== JSON.stringify([WEB, `${WEB}.sha256`])) {
+    fail(`script/release-web writes ${WEB} and ${WEB}.sha256 and no other file, not: ${written.join(', ') || 'none'}`);
+  }
+  if (!written.includes(WEB)) done();
+
+  // The checksum: its one line, `<SHA-256> *?skald-web.tar.gz`, and the check of macOS's or Linux's
+  // tool, which on macOS passes a file with no well-formed line.
+  const sum = fs.existsSync(path.join(out, `${WEB}.sha256`)) ? fs.readFileSync(path.join(out, `${WEB}.sha256`), 'utf8') : '';
+  const digest = crypto.createHash('sha256').update(fs.readFileSync(path.join(out, WEB))).digest('hex');
+  if (!new RegExp(`^${digest} [ *]${WEB.replace(/\./g, '\\.')}\n?$`).test(sum)) {
+    fail(`${WEB}.sha256 is the line '${digest}  ${WEB}', as sha256sum writes it, not: ${JSON.stringify(sum)}`);
+  }
+  const shasum = sh('sh', ['-c', 'command -v sha256sum']).stdout.trim();
+  const checked = shasum ? sh(shasum, ['-c', `${WEB}.sha256`], { cwd: out }) : sh('shasum', ['-a', '256', '-c', `${WEB}.sha256`], { cwd: out });
+  if (checked.status !== 0) fail(`${WEB} does not match its checksum: ${(checked.stdout + checked.stderr).trim()}`);
+
+  // The archive's files.
+  const archive = path.join(out, WEB);
+  const listed = sh('tar', ['-tzf', archive]);
+  if (listed.status !== 0) {
+    fail(`${WEB} is no gzipped tar archive: ${listed.stderr.trim()}`);
+    done();
+  }
+  const entries = listed.stdout.split('\n').filter(Boolean).map((e) => e.replace(/^(\.\/)+/, '')).filter(Boolean);
+  const outside = entries.filter((e) => e.startsWith('/') || e.split('/').includes('..'));
+  if (outside.length > 0) fail(`no entry of ${WEB} leaves its root, but these do: ${outside.join(', ')}`);
+  const files = path.join(tmp, 'files');
+  fs.mkdirSync(files);
+  const unpacked = sh('tar', ['-xzf', archive, '-C', files]);
+  if (unpacked.status !== 0) fail(`${WEB} does not unpack: ${unpacked.stderr.trim()}`);
+  const index = path.join(files, 'index.html');
+  if (!fs.existsSync(index)) {
+    fail(`${WEB} has no index.html at its root; it has: ${entries.slice(0, 10).join(', ')}`);
+  } else {
+    const html = fs.readFileSync(index, 'utf8');
+    const loaded = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/g)]
+      .map((m) => m[1])
+      .filter((u) => !/^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(u))
+      .map((u) => u.replace(/[?#].*$/, '').replace(/^\.?\//, ''));
+    if (loaded.length === 0) fail('index.html of the archive loads no file of it: no script or style');
+    for (const file of loaded) {
+      if (!fs.statSync(path.join(files, file), { throwIfNoEntry: false })?.isFile()) fail(`index.html loads ${file}, which ${WEB} does not have`);
+    }
+  }
+
+  // The licenses.
+  const texts = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(file);
+      else if (entry.isFile()) texts.push({ name: path.relative(files, file), text: normal(fs.readFileSync(file, 'utf8')) });
+    }
+  };
+  walk(files);
+  const lock = JSON.parse(fs.readFileSync(path.join(web, 'package-lock.json'), 'utf8'));
+  const bundled = Object.entries(lock.packages ?? {}).filter(
+    ([key, p]) => key.startsWith('node_modules/') && !p.dev && !p.devOptional && !p.optional && !p.link,
+  );
+  if (bundled.length === 0) fail('web/package-lock.json installs no package other than for development');
+  for (const [key] of bundled) {
+    const name = key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    const dir = path.join(web, key);
+    const licenses = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^(licen[cs]e|copying)(\.(md|txt))?$/i.test(f)) : [];
+    if (licenses.length === 0) {
+      fail(`${key} has no license file, LICENSE or COPYING, in web/`);
+      continue;
+    }
+    for (const license of licenses) {
+      const text = normal(fs.readFileSync(path.join(dir, license), 'utf8'));
+      const holds = texts.filter((t) => t.text.includes(text));
+      if (holds.length === 0) fail(`${WEB} does not hold the license of ${name}, the text of its ${license}`);
+      else if (!holds.some((t) => t.name.includes(name) || t.text.includes(name))) {
+        fail(`${WEB} holds the license of ${name}, but the file with it does not name the package: ${holds.map((t) => t.name).join(', ')}`);
+      }
+    }
+  }
+} finally {
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+done();

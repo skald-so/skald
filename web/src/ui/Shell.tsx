@@ -50,6 +50,8 @@ export interface ShellProps {
   /** A click on a section or a sub-item, before the browser follows its link. */
   onNavigate?: (key: string) => void;
   spaces: readonly DropdownOption<string>[];
+  /** Shown in place of the space switcher while there are no spaces. */
+  noSpaces?: ReactNode;
   space: string;
   /** A choice of another space. */
   onSpaceChange: (space: string) => void;
@@ -77,6 +79,7 @@ export function Shell({
   current,
   onNavigate,
   spaces,
+  noSpaces,
   space,
   onSpaceChange,
   account,
@@ -171,13 +174,17 @@ export function Shell({
           className={styles.panel}
           data-open={menuOpen || undefined}
         >
-          <Dropdown
-            stacked
-            label="Space"
-            options={spaces}
-            value={space}
-            onChange={onSpaceChange}
-          />
+          {spaces.length === 0 && noSpaces ? (
+            <div className={styles.noSpaces}>{noSpaces}</div>
+          ) : (
+            <Dropdown
+              stacked
+              label="Space"
+              options={spaces}
+              value={space}
+              onChange={onSpaceChange}
+            />
+          )}
           <nav aria-label="Sections">
             <ul className={styles.sections}>
               {sections.map((section) => (

@@ -21,7 +21,7 @@ CDDL rules not defined here, such as `envelope` and `id`, are in [README.md](REA
 A message reaches an agent in three hops: the sending device → the server → each recipient device → the agent.
 
 - Every hop is at-least-once with deduplication. There is no end-to-end exactly-once.
-- Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store.
+- Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store, for an agent until the message expires there: [Device to agent](#device-to-agent).
 - Every message ends in a status the sender sees: [Receipts](#receipts).
 - `read` means handed to the agent: it shows neither that the agent acted on the message nor that it did not. Work that must be done goes through the [queue](queues.md#tasks).
 
@@ -179,6 +179,7 @@ A recipient device drops, without a receipt:
   - An [`ask_user` answer](agents.md#ask_user) wakes the session at once in every mode; a task's [signal](queues.md#running-a-task) follows the mode as a message from its sender does.
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
+- The device keeps a message for an agent until it hands it over, or until the envelope's `ttl` ends, counted from when the device wrote the entry, at most the cloud's mailbox retention ([architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)); then it drops the message for that agent.
 - Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
 - After marking a message with `to` handed over, the device issues `read`.
 - Only `a2a`, [`task-result`](queues.md#results) and [`ask-answer`](agents.md#ask_user) bodies are handed over as messages; receipts are not.

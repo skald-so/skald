@@ -371,3 +371,24 @@ test("without a default value no value is highlighted", async () => {
   expect(onChange.mock.calls).toEqual([["anyone"]]);
   expect(button().hasAttribute("data-set")).toBe(false);
 });
+
+test("an option's mark follows its label in the list and its name, not on the button", async () => {
+  const user = userEvent.setup();
+  render(
+    <Dropdown
+      label="Space"
+      options={[
+        { value: "team-a", label: "team-a" },
+        { value: "ana", label: "ana", mark: "personal" },
+      ]}
+      value="ana"
+      onChange={() => {}}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "Space ana" });
+  await user.click(button);
+  expect(
+    screen.getAllByRole("option").map((option) => option.textContent),
+  ).toEqual(["team-a", "ana personal"]);
+  expect(screen.getByRole("option", { name: "ana personal" })).toBeTruthy();
+});

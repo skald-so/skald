@@ -10,6 +10,7 @@ import type {
   RequestHandlerOptions,
 } from "msw";
 
+import { SignInProvider } from "./skald.schemas";
 import type {
   ChannelGroup,
   Device,
@@ -38,6 +39,7 @@ import type {
   Server,
   Session,
   SignInMethods,
+  SignInProviders,
   Space,
   SpaceRequest,
   Spaces,
@@ -514,6 +516,40 @@ export const getPutUsernameResponseMock500 = (
   title: faker.string.alpha({ length: { min: 10, max: 20 } }),
   status: faker.number.int({ min: 400, max: 599 }),
   detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetSignInProvidersResponseMock = (
+  overrideResponse: Partial<Extract<SignInProviders, object>> = {},
+): SignInProviders => ({
+  providers: faker.helpers.arrayElements(Object.values(SignInProvider)),
+  sign_up: faker.helpers.arrayElement(["open", "closed"] as const),
+  ...overrideResponse,
+});
+
+export const getGetSignInProvidersResponseMock200 = (
+  overrideResponse: Partial<Extract<SignInProviders, object>> = {},
+): SignInProviders => ({
+  providers: faker.helpers.arrayElements(Object.values(SignInProvider)),
+  sign_up: faker.helpers.arrayElement(["open", "closed"] as const),
+  ...overrideResponse,
+});
+
+export const getGetSignInProvidersResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
   ...overrideResponse,
 });
 
@@ -1093,6 +1129,10 @@ export const getGetSessionResponseMock = (
     faker.string.alpha({ length: { min: 10, max: 20 } }),
     undefined,
   ]),
+  sign_in_method: faker.helpers.arrayElement([
+    faker.helpers.arrayElement(Object.values(SignInProvider)),
+    undefined,
+  ]),
   ...overrideResponse,
 });
 
@@ -1105,6 +1145,10 @@ export const getGetSessionResponseMock200 = (
   username: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"),
   github_login: faker.helpers.arrayElement([
     faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  sign_in_method: faker.helpers.arrayElement([
+    faker.helpers.arrayElement(Object.values(SignInProvider)),
     undefined,
   ]),
   ...overrideResponse,
@@ -1159,6 +1203,7 @@ export const getGetSpacesResponseMock = (
       "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     ),
     name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    personal: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
@@ -1174,6 +1219,7 @@ export const getGetSpacesResponseMock200 = (
       "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     ),
     name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    personal: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
@@ -3035,6 +3081,81 @@ export const getPutUsernameMockHandler500 = (
           : getPutUsernameResponseMock500(),
         {
           status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSignInProvidersMockHandler = (
+  overrideResponse?:
+    | SignInProviders
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<SignInProviders> | SignInProviders),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/auth/providers",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSignInProvidersResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSignInProvidersMockHandler200 = (
+  overrideResponse?:
+    | SignInProviders
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<SignInProviders> | SignInProviders),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/auth/providers",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSignInProvidersResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSignInProvidersMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/auth/providers",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSignInProvidersResponseMock400(),
+        {
+          status: 400,
           headers: { "Content-Type": "application/problem+json" },
         },
       );
@@ -6675,6 +6796,7 @@ export const getSkaldAPIMock = () => [
   getStoreRevocationMockHandler(),
   getListSignInMethodsMockHandler(),
   getPutUsernameMockHandler(),
+  getGetSignInProvidersMockHandler(),
   getGetDevicesMockHandler(),
   getRegisterDeviceMockHandler(),
   getGetKeyPackageCountMockHandler(),
