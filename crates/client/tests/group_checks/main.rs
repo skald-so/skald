@@ -79,6 +79,20 @@ fn acme_with_channel(
     (space, channel, third)
 }
 
+/// Fails unless the server's GroupInfo of `channel` in `space` is of `epoch`, its members `devices`,
+/// and Ada's device signed it.
+#[track_caller]
+fn assert_ada_signs(
+    cloud: &cloud::Cloud,
+    ada: &world::Person,
+    (space, channel): (skald_proto::SpaceId, skald_proto::ChannelId),
+    (epoch, devices): (u64, &[skald_proto::DeviceId]),
+) {
+    let held = group(cloud, &ada.token, space, channel);
+    held.assert_is(epoch, devices);
+    assert_eq!(held.signer, ada.device, "the GroupInfo's signer");
+}
+
 /// Ada's machine creates `acme`, whose revision 3, by Ada's device, adds Bob as an admin, Carol as a
 /// member and a channel of Ada and Bob, whose group Ada's device forms with Bob's; revision 4, by
 /// Bob's device, adds Carol to the channel, and, if `leaves`, revision 5 takes her out again. Bob's
@@ -140,9 +154,12 @@ fn device_a_commit_adds_that_a_revision_the_run_did_not_see_admits_stays() {
         warnings_naming(&ran, carol.device()).is_empty(),
         "Carol's device is held not admitted: {ran:?}"
     );
-    let held = group(cloud, &ada.token, space.id, channel);
-    held.assert_is(2, &[ada.device, bob.device(), carol.device()]);
-    assert_eq!(held.signer, ada.device, "the GroupInfo's signer");
+    assert_ada_signs(
+        cloud,
+        &ada,
+        (space.id, channel),
+        (2, &[ada.device, bob.device(), carol.device()]),
+    );
 }
 
 /// Bob's device commits the Add of Carol's in the channel, which revision 5 takes her out of. Ada's
@@ -170,9 +187,12 @@ fn send_to_one_channel_removes_a_device_another_channels_commit_added_that_is_no
         !warnings_naming(&sent, carol.device()).is_empty(),
         "no warning naming Carol's device: {sent:?}"
     );
-    let held = group(cloud, &ada.token, space.id, channel);
-    held.assert_is(3, &[ada.device, bob.device()]);
-    assert_eq!(held.signer, ada.device, "the GroupInfo's signer");
+    assert_ada_signs(
+        cloud,
+        &ada,
+        (space.id, channel),
+        (3, &[ada.device, bob.device()]),
+    );
 }
 
 /// The request that uploads a channel's GroupInfo, as its line starts.
@@ -197,9 +217,7 @@ fn group_info_whose_upload_failed_is_uploaded_by_the_next_run() {
 
     channels(&ada.machine, ACME);
 
-    let held = group(cloud, &ada.token, space.id, space.default);
-    held.assert_is(1, &[ada.device]);
-    assert_eq!(held.signer, ada.device, "the GroupInfo's signer");
+    assert_ada_signs(cloud, &ada, (space.id, space.default), (1, &[ada.device]));
 }
 
 /// Revision 3, by Ada's device, adds Bob as a member and a channel of Ada and Bob, which Bob's
