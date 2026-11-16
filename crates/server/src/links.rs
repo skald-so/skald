@@ -267,10 +267,10 @@ pub(crate) async fn start<P: Provider>(
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
+    let return_to = param(query.as_deref(), "return_to");
     let Some((settings, provider)) = P::of(&state) else {
         return provider_off(P::NAME);
     };
-    let return_to = param(query.as_deref(), "return_to");
     let return_to = return_to.as_deref().unwrap_or(PAGE_PATH);
     let (state, headers) = (&state, &headers);
     let back = format!("<a href=\"{PAGE_PATH}\">Your sign-in methods</a>");
