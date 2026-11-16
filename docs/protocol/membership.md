@@ -582,7 +582,7 @@ A reader MUST drop an entry unless:
 
 ### Access
 - A member's device reads the history through its keys: from its first epoch back along the key chain.
-- A channel member whose `history` is false in the latest revision reads only epochs from the one whose Commit last added its account. The server gives its sessions only the links whose `prev` is that epoch or a later one, and no wrap or entry of an earlier epoch; while no device of the account is a member of the current epoch, none. A device of the account that joins later reads from that epoch too.
+- A channel member whose `history` is false in the latest revision reads only epochs from its join: the first epoch with a device of its account after the revision that last added the account to the channel. The server gives its sessions only the links whose `prev` is that epoch or a later one, and no wrap or entry of an earlier epoch; before the join, none. A Commit that removes the account's devices does not move its join: its devices that join later read from that epoch too.
 - The recovery key reads every epoch wrapped to it: a device linked with it reads the account's history before it rejoins the channels.
 
 ## Security considerations

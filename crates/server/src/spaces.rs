@@ -17,7 +17,7 @@ use sqlx::PgPool;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
-use crate::{AppState, revocations};
+use crate::{AppState, history, revocations};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -384,7 +384,7 @@ pub(crate) async fn store(
         return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
-    insert(&state, found.id, &roster, &sent).await
+    insert(&state, found.id, &roster, previous.as_ref(), &sent).await
 }
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after
@@ -526,9 +526,16 @@ pub(crate) async fn certs(
 }
 
 /// Stores `roster`, received as `sent`, as the next revision of `space`, with its members, and
-/// gives their accounts' connections a notice of `space`, on each instance. Of two revisions with
-/// one number at once, the first is stored and the other refused.
-async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) -> Answer {
+/// gives their accounts' connections a notice of `space`, on each instance; with the accounts it
+/// adds to channels after `previous`. Of two revisions with one number at once, the first is stored
+/// and the other refused.
+async fn insert(
+    state: &AppState,
+    space: SpaceId,
+    roster: &Roster,
+    previous: Option<&Roster>,
+    sent: &[u8],
+) -> Answer {
     let db = &state.db;
     let body = roster.body();
     let number = body.revision;
@@ -573,6 +580,9 @@ async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) 
     .execute(&mut *tx)
     .await
     .map_err(|err| Refusal::Database("store a revision's members", err))?;
+    history::added(&mut tx, roster, previous)
+        .await
+        .map_err(|err| Refusal::Database("store a revision's channel additions", err))?;
     state
         .instance
         .tell(&mut tx, &[Event::Revision(space, revision)])

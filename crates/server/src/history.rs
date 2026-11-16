@@ -11,8 +11,8 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use skald_proto::{
-    Cbor as _, ChannelId, Frame, HistoryEntry, HistoryItem, HistoryLink, HistoryWrap, SpaceId,
-    WrapRecipient,
+    Cbor as _, ChannelId, Frame, HistoryEntry, HistoryItem, HistoryLink, HistoryWrap, Roster,
+    SpaceId, WrapRecipient,
 };
 use sqlx::{PgConnection, PgPool};
 
@@ -289,29 +289,64 @@ pub(crate) async fn given<const KIND: u8>(
     Ok(Json(serde_json::json!({ name: items })).into_response())
 }
 
-/// The epoch whose Commit added `account` to `channel`: the first of the epochs, up to the current
-/// one, that each have a device of the account among their members. `None` if the current epoch
-/// has none.
+/// The epoch whose Commit added `account` to `channel`: the first epoch with a device of the
+/// account among its members after the revision that last added the account to the channel.
+/// `None` if none has one yet.
 async fn joined(
     db: &PgPool,
     channel: ChannelId,
     account: &str,
 ) -> Result<Option<i64>, sqlx::Error> {
     let (joined,): (Option<i64>,) = sqlx::query_as(
-        "WITH epochs AS (
-             SELECT e.epoch, EXISTS (
-                 SELECT 1 FROM devices d WHERE d.id = ANY(e.members) AND d.account_id = $2::uuid
-             ) AS has
-             FROM channel_epochs e WHERE e.channel_id = $1::uuid
-         )
-         SELECT min(epoch) FROM epochs
-         WHERE epoch > (SELECT coalesce(max(epoch), 0) FROM epochs WHERE NOT has)",
+        "SELECT min(e.epoch) FROM channel_epochs e
+         WHERE e.channel_id = $1::uuid
+           AND e.epoch > coalesce((
+               SELECT a.epoch FROM channel_additions a
+               WHERE a.channel_id = $1::uuid AND a.account_id = $2::uuid
+           ), 0)
+           AND EXISTS (
+               SELECT 1 FROM devices d WHERE d.id = ANY(e.members) AND d.account_id = $2::uuid
+           )",
     )
     .bind(channel.to_string())
     .bind(account)
     .fetch_one(db)
     .await?;
     Ok(joined)
+}
+
+/// Keeps, on `tx`, the current epoch of each channel of `roster` for each account it lists among
+/// the channel's members that `previous` does not: the account's join comes after it ("Access").
+pub(crate) async fn added(
+    tx: &mut PgConnection,
+    roster: &Roster,
+    previous: Option<&Roster>,
+) -> Result<(), sqlx::Error> {
+    let (mut channels, mut accounts) = (Vec::new(), Vec::new());
+    for channel in &roster.body().channels {
+        let before = previous.and_then(|previous| {
+            (previous.body().channels.iter()).find(|before| before.id == channel.id)
+        });
+        let listed = |account| {
+            before.is_some_and(|before| before.members.iter().any(|m| m.account == account))
+        };
+        for member in channel.members.iter().filter(|m| !listed(m.account)) {
+            channels.push(channel.id.to_string());
+            accounts.push(member.account.to_string());
+        }
+    }
+    sqlx::query(
+        "INSERT INTO channel_additions (channel_id, account_id, epoch)
+         SELECT a.channel::uuid, a.account::uuid, coalesce(g.epoch, 0)
+         FROM unnest($1::text[], $2::text[]) AS a (channel, account)
+         LEFT JOIN channel_groups g ON g.channel_id = a.channel::uuid
+         ON CONFLICT (channel_id, account_id) DO UPDATE SET epoch = excluded.epoch",
+    )
+    .bind(&channels)
+    .bind(&accounts)
+    .execute(tx)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
