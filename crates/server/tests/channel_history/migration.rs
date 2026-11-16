@@ -9,7 +9,7 @@ const CHANNEL_HISTORY: i64 = 20261215000000;
 
 #[test]
 fn migration_keeps_the_member_devices_of_each_followed_groups_current_epoch() {
-    let (mut s, _) = formed(3_160_110_301);
+    let (mut s, _) = formed(3_160_110_401);
     bob_rotates(&mut s);
     let f = &s.fixture;
     // The database as the server before history left it, with the group followed at epoch 2 of

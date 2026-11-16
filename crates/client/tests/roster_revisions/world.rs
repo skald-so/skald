@@ -399,6 +399,31 @@ pub fn revisions_request(space: SpaceId) -> String {
     format!("GET /spaces/{space}/revisions")
 }
 
+/// The request that stores a revision of `space`, and the one that issues a channel ID for it, as
+/// their lines start.
+pub fn store_request(space: SpaceId) -> String {
+    format!("POST /spaces/{space}/revisions")
+}
+pub fn channel_request(space: SpaceId) -> String {
+    format!("POST /spaces/{space}/channels")
+}
+
+/// From now on, the first answer the relay gives to a request for `space`'s revisions holds only
+/// its first `keep`, as a device that fetched them before the others were stored sees them; every
+/// later answer holds them all.
+pub fn stale_once(cloud: &Cloud, space: SpaceId, keep: usize) {
+    cloud
+        .relay
+        .rewrite_once(&revisions_request(space), move |answer| {
+            let mut held: Value = serde_json::from_str(answer).expect("the server's revisions");
+            held["revisions"]
+                .as_array_mut()
+                .expect("a list of revisions")
+                .truncate(keep);
+            held.to_string()
+        });
+}
+
 /// The request for the devices of `space`'s accounts, as its line starts.
 pub fn devices_request(space: SpaceId) -> String {
     format!("GET /spaces/{space}/devices")
@@ -509,6 +534,14 @@ pub fn plain_lines(finished: &Finished) -> Vec<String> {
         .lines()
         .filter(|line| !line.to_lowercase().contains(WARNING))
         .map(str::to_owned)
+        .collect()
+}
+
+/// The lines of `finished` that are no warnings and hold `name` as a word.
+pub fn lines_naming(finished: &Finished, name: &str) -> Vec<String> {
+    plain_lines(finished)
+        .into_iter()
+        .filter(|line| words(line).contains(&name))
         .collect()
 }
 

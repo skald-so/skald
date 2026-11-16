@@ -7,9 +7,11 @@ use crate::joins::{
     bob_adds_channel, forked_group_info, intruder, intruder_joins, kept, removal_warnings,
     serve_group_info,
 };
-use crate::kit::{RECV, create_space, received, warnings_naming};
+use crate::kit::{
+    assert_names_none, bind_client_a, create_space, received, received_as_agent, warnings_naming,
+};
 use crate::talk::Talk;
-use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, now, path, run};
+use crate::world::{CLIENT_A, CLIENT_B, now};
 
 /// The agent the tests run as.
 const CLAUDE: &str = "claude-j8w3kp";
@@ -35,9 +37,7 @@ fn agent_names_no_warning_of_another_space_s_channels_and_the_person_s_next_run_
     let cloud = &talk.world.cloud;
     let machine = &talk.ada.machine;
     create_space(cloud, &talk.ada, CLIENT_A);
-    let work = dir_of(machine, "work/clientA");
-    let rule = run(machine, &[ADD_RULE, path(&work), CLIENT_A]);
-    assert!(rule.success, "{rule:?}");
+    let work = bind_client_a(machine);
     let bob = &mut talk.played[0];
     let removal = (bob.mls)
         .remove_devices(channel, &[ada], b"", now())
@@ -60,16 +60,9 @@ fn agent_names_no_warning_of_another_space_s_channels_and_the_person_s_next_run_
         stranger.id().to_string(),
     ];
 
-    let agent = machine.start_in(&work, &[AGENT, CLAUDE, RECV]).finish();
+    let agent = received_as_agent(machine, &work, CLAUDE);
 
-    assert!(agent.success, "{agent:?}");
-    let output = agent.shown().to_lowercase();
-    for name in &names {
-        assert!(
-            !output.contains(&name.to_lowercase()),
-            "the agent's output names {name}: {agent:?}"
-        );
-    }
+    assert_names_none(&agent, &names);
 
     let person = received(machine);
 

@@ -8,13 +8,13 @@ use skald_proto::{ChannelId, RawEnvelope, SpaceId};
 use crate::cloud::Cloud;
 use crate::gaps::{bob_in, bob_sends};
 use crate::joins::{assert_joined, drop_entry, kept, read_from, removal_warnings};
-use crate::kit::{assert_members, group, received};
+use crate::kit::{assert_members, group, received, warnings_naming};
 use crate::machine::Finished;
 use crate::played::Played;
 use crate::talk::{
     BOB_HOST, CAROL_HOST, Line, Talk, assert_shows_once, commit_sent, encrypted, stored,
 };
-use crate::world::{now, warnings};
+use crate::world::now;
 
 /// `played` commits `make`'s Commit in `at`'s channel, which the server stores; gives its envelope.
 fn commits(
@@ -141,9 +141,8 @@ fn device_that_missed_a_commit_rejoins_and_drops_a_commit_of_an_epoch_it_passed(
         !commit_sent(&talk.front, channel, from),
         "Ada's device commits on a Commit of an epoch it passed: {again:?}"
     );
-    let id = channel.to_string();
     assert!(
-        warnings(&again).iter().all(|line| !line.contains(&id)),
+        warnings_naming(&again, channel).is_empty(),
         "a warning about the channel on a Commit of an epoch it passed: {again:?}"
     );
     let still = group(&talk.world.cloud, &talk.ada.token, at.0, channel);

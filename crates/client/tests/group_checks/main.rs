@@ -49,10 +49,10 @@ use skald_proto::Role;
 use fixtures::{cert_of, fronted, send};
 use kit::{
     Change, assert_listed_with, channels, create_space, group, group_on_server, issue_channel,
-    latest, received, revise, stale_once, warnings_naming,
+    latest, received, revise, warnings_naming,
 };
 use played::{Played, take_key_package};
-use world::{ACME, now, spaces};
+use world::{ACME, now, spaces, stale_once};
 
 /// The host names of the people's machines, their certificates' `name`.
 const ADA_HOST: &str = "ada-workstation";

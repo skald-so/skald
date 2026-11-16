@@ -11,12 +11,12 @@ use crate::fixtures::fronted;
 use crate::kit::{
     Change, assert_adds_default, assert_listed_with, assert_with_every_member, channels,
     create_older_space, create_space, group, issue_channel, latest, received, revise, rosters,
-    stale_once,
 };
 use crate::machine::Finished;
 use crate::relay::{Lose, strings_named};
 use crate::world::{
-    ACME, CREATE_CHANNEL, Person, World, next_with, run, space_id, store, warnings,
+    ACME, CREATE_CHANNEL, Person, World, channel_request, next_with, run, space_id, stale_once,
+    store, store_request, warnings,
 };
 
 /// The revision after `previous`, signed by `signer`'s device and stored as a fixture, that adds
@@ -227,15 +227,6 @@ fn channel_created_later_goes_after_the_default_channel_with_its_group_formed_at
     let listed = channels(&ada.machine, ACME);
     assert_listed_with(&listed, space.default, &[ADA_HOST], &[]);
     assert_listed_with(&listed, added, &[ADA_HOST], &[]);
-}
-
-/// The request that stores a revision of `space`, and the one that issues a channel ID for it, as
-/// their lines start.
-fn store_request(space: SpaceId) -> String {
-    format!("POST /spaces/{space}/revisions")
-}
-fn channel_request(space: SpaceId) -> String {
-    format!("POST /spaces/{space}/channels")
 }
 
 /// Fails unless `space` has revision 1 and one revision 2 with one channel, the default one with
