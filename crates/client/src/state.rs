@@ -136,9 +136,9 @@ const MIGRATIONS: &[&str] = &[
         envelope BLOB NOT NULL
     ) STRICT",
     // Channel messages under `mls`: the outbox holds them without a recipient device; the last
-    // `counter` the device gave its content in each channel; and what decrypting each `mls`
-    // application message of the inbox in its channel's group gave, sealed under the state key,
-    // until a run shows it.
+    // `counter` the device gave its content in each channel, in place of one per recipient device;
+    // and what decrypting each `mls` application message of the inbox in its channel's group gave,
+    // sealed under the state key, until a run shows it.
     "CREATE TABLE outbox_next (
         position INTEGER PRIMARY KEY,
         msg_id TEXT NOT NULL,
@@ -151,6 +151,7 @@ const MIGRATIONS: &[&str] = &[
         SELECT position, msg_id, recipient, space, envelope FROM outbox;
     DROP TABLE outbox;
     ALTER TABLE outbox_next RENAME TO outbox;
+    DROP TABLE send_counter;
     CREATE TABLE channel_counter (
         channel TEXT PRIMARY KEY,
         last INTEGER NOT NULL CHECK (last >= 1)
@@ -1623,7 +1624,7 @@ pub(crate) mod tests {
     }
 
     /// An `hpke` envelope an older client left in the outbox keeps its place and its recipient
-    /// device, and leaves once the server answered it.
+    /// device, and leaves once the server answered it; the counters per recipient device go.
     #[test]
     fn hpke_envelopes_of_an_older_client_keep_their_recipient() {
         let dir = TestDir::new("state-outbox-hpke");
@@ -1658,6 +1659,14 @@ pub(crate) mod tests {
         let state = State::open(&dir).unwrap();
 
         assert_eq!(state.outbox().unwrap(), [left]);
+        let counters: i64 = (state.db)
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name = 'send_counter'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(counters, 0, "the counters per recipient device are dropped");
         state.remove_outgoing(msg_id, None).unwrap();
         assert_eq!(state.outbox().unwrap().len(), 1, "taken out as an mls one");
         state.remove_outgoing(msg_id, Some(bob)).unwrap();

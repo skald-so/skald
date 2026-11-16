@@ -520,26 +520,9 @@ struct Received {
 /// member's `excluded` does not list, checked against the master key the device pinned for its own
 /// account and the revision's for any other.
 fn valid_cert<'c>(context: &Context<'c>, device: DeviceId) -> Option<&'c Cert> {
-    let own = context.own;
     context.roster.body().members.iter().find_map(|member| {
-        if member
-            .excluded
-            .as_ref()
-            .is_some_and(|excluded| excluded.contains(&device))
-        {
-            return None;
-        }
-        let master = if member.account == own.account {
-            own.master
-        } else {
-            member.master
-        };
-        let devices = context.devices;
-        let checked = crate::devices::check(&master, &devices.ids, &devices.certs);
-        checked.linked.into_iter().find(|cert| {
-            let body = cert.body();
-            body.device == device && body.account == member.account
-        })
+        (context.devices.of(context.own, member).into_iter())
+            .find(|cert| cert.body().device == device)
     })
 }
 
@@ -577,6 +560,14 @@ fn check(
         )
     })?;
     let content = content(cert)?;
+    // Under `hpke`, only the revision binds the channel to the space.
+    if matches!(context.group, Group::Held(_))
+        && !body.channels.iter().any(|it| it.id == header.channel)
+    {
+        return Err(format!(
+            "revision {revision} of the space {name} has no such channel"
+        ));
+    }
     let from = &content.from;
     let handle = body
         .member(cert.body().account)
@@ -802,7 +793,8 @@ mod tests {
 
     /// A device of an account the revision does not list, or one its member's `excluded` lists,
     /// fails; so does one whose account has no `client` device in the channel's group as this
-    /// device holds it: a group without it, or with it under another key, and no group.
+    /// device holds it: a group without it, or with it under another key, and no group; and any
+    /// device in a channel the revision does not have.
     #[test]
     fn device_without_a_client_device_of_its_account_in_the_group_fails() {
         let world = World::new();
@@ -861,6 +853,14 @@ mod tests {
             );
         }
         assert!(check_in(&world.roster, in_group).is_ok());
+
+        let mut elsewhere = world.roster.body().clone();
+        elsewhere.channels[0].id = ChannelId::generate();
+        let roster = skald_crypto::sign_roster(&elsewhere, &SigningKey::generate()).unwrap();
+        assert_eq!(
+            check_in(&roster, in_group),
+            Err("revision 1 of the space acme has no such channel".to_owned())
+        );
     }
 
     /// Under `mls`, the sending device is in the group: one of a `client` device passes, one of
