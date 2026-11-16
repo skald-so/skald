@@ -313,13 +313,20 @@ fn exits_with_error_on_a_google_issuer_neither_https_nor_http_on_loopback() {
     }
 }
 
+/// A case of a provider's settings: the arguments, the environment variables and the refusal.
+type ProviderHalf = (
+    &'static [&'static str],
+    &'static [(&'static str, &'static str)],
+    &'static str,
+);
+
 /// A sign-in provider's client ID and its secret go together: with only one of them, the server
 /// exits naming the other.
 #[test]
 fn exits_with_error_on_a_provider_s_client_id_or_secret_alone() {
     // A closed port: a server that took the settings would fail at the database instead.
     let url = "postgres://postgres@127.0.0.1:1/postgres";
-    let cases: [(&[&str], &[(&str, &str)], &str); 4] = [
+    let cases: [ProviderHalf; 4] = [
         (
             &["--github-client-id", "stand-in-github-client"],
             &[],
