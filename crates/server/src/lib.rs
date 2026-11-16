@@ -118,7 +118,7 @@ pub struct Settings {
     /// [`LONG_POLL_MAX_WAIT`] without it.
     pub long_poll_max_wait: Option<Duration>,
     /// How often an idle mailbox stream sends a keep-alive (`docs/protocol/delivery.md`,
-    /// "Mailbox"); [`SSE_KEEP_ALIVE`] without it.
+    /// "Frames"); [`SSE_KEEP_ALIVE`] without it.
     pub sse_keep_alive: Option<Duration>,
 }
 

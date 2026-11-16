@@ -76,12 +76,15 @@ pub(crate) async fn events(
         .into_response()
 }
 
-/// The cursor in the request's only `Last-Event-ID`, 0 without one; `None` if it is not a number.
+/// The cursor in the request's only `Last-Event-ID`, 0 without one; `None` if it is not digits.
 fn cursor(headers: &HeaderMap) -> Option<u64> {
     let mut values = headers.get_all(LAST_EVENT_ID).iter();
     match (values.next(), values.next()) {
         (None, _) => Some(0),
-        (Some(value), None) => value.to_str().ok()?.parse().ok(),
+        (Some(value), None) if value.as_bytes().iter().all(u8::is_ascii_digit) => {
+            value.to_str().ok()?.parse().ok()
+        }
+        (Some(_), None) => None,
         (Some(_), Some(_)) => None,
     }
 }
@@ -183,7 +186,7 @@ mod tests {
     fn the_cursor_is_the_only_last_event_id_or_0_without_one() {
         assert_eq!(cursor(&headers(&[])), Some(0));
         assert_eq!(cursor(&headers(&["7"])), Some(7));
-        for values in [&["7", "8"][..], &["-1"], &["seven"], &[""]] {
+        for values in [&["7", "8"][..], &["-1"], &["+7"], &["seven"], &[""]] {
             assert_eq!(cursor(&headers(values)), None, "{values:?}");
         }
     }

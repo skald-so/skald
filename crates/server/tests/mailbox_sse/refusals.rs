@@ -1,6 +1,7 @@
 //! Refused streams ("Connecting"): a stream without a proof, or with one the requests over HTTPS
-//! refuse, opens nothing, reads nothing and acks nothing, with the requests' refusals. A challenge
-//! works once, whether a stream or a request used it.
+//! refuse, opens nothing, reads nothing and acks nothing, with the requests' refusals; so does a
+//! stream whose `Last-Event-ID` is not a `seq`. A challenge works once, whether a stream or a
+//! request used it.
 
 use std::thread;
 use std::time::Duration;
@@ -17,6 +18,9 @@ use crate::https::{
 use crate::kit::by_bobs_laptop;
 use crate::link::{bytes, messages, seqs};
 use crate::sse::{Sse, sent_by_alice};
+
+/// The refusal of an invalid request, a problem `https://skald.so/problems/<name>`.
+const INVALID_REQUEST: &str = "invalid-request";
 
 /// Past the lifetime of a challenge: a minute.
 const PAST_LIFETIME: Duration = Duration::from_secs(62);
@@ -88,6 +92,27 @@ fn a_stream_that_states_no_version_opens_nothing() {
         "https://skald.so/problems/protocol-version-invalid"
     );
     assert_eq!(seqs(s.f.db(), s.f.team.bob.laptop.id), [1, 2]);
+    s.assert_untouched();
+}
+
+/// A proved stream whose cursor is not one `Last-Event-ID` of digits, or that states two, is refused
+/// with `invalid-request`.
+#[test]
+fn a_stream_whose_last_event_id_is_not_a_seq_opens_nothing() {
+    let s = Scene::new(3_141_420_271);
+
+    for cursor in [&["two"][..], &["-1"], &["+2"], &["1.5"], &["1", "2"]] {
+        let cursor: Vec<String> = cursor.iter().map(|value| (*value).to_owned()).collect();
+        let proof = s.bob.https().proof();
+        let Err(refused) = s.bob.request_from(&cursor, Some(&proof), true) else {
+            panic!("a stream opened from {cursor:?}");
+        };
+
+        assert_problem(&refused, 400, Some(INVALID_REQUEST));
+        let left = seqs(s.f.db(), s.f.team.bob.laptop.id);
+        assert_eq!(left, [1, 2], "{cursor:?}: acked");
+    }
+
     s.assert_untouched();
 }
 

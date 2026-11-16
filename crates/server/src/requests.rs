@@ -305,7 +305,7 @@ pub(crate) fn invalid(detail: &str) -> Response {
 }
 
 /// The answer when the server fails, for the reason `detail`.
-pub(crate) fn server_error(detail: &str) -> Response {
+fn server_error(detail: &str) -> Response {
     problem(
         StatusCode::INTERNAL_SERVER_ERROR,
         "server-error",

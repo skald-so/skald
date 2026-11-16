@@ -102,9 +102,20 @@ impl Sse {
         proof: Option<&str>,
         stated: bool,
     ) -> Result<Stream, Response> {
+        let cursor: Vec<String> = cursor.iter().map(u64::to_string).collect();
+        self.request_from(&cursor, proof, stated)
+    }
+
+    /// Opens a stream with a `Last-Event-ID` header of each of `cursor`, stating the version if
+    /// `stated`, with `proof` if given: the stream, or the response that refuses it.
+    pub fn request_from(
+        &self,
+        cursor: &[String],
+        proof: Option<&str>,
+        stated: bool,
+    ) -> Result<Stream, Response> {
         let version = PROTOCOL_VERSION.to_string();
         let bearer = format!("Bearer {}", self.token);
-        let cursor = cursor.map(|cursor| cursor.to_string());
         let response = get(|| {
             let mut request = agent()
                 .get(&self.url)
@@ -113,7 +124,7 @@ impl Sse {
             if stated {
                 request = request.header(VERSION_HEADER, &version);
             }
-            if let Some(cursor) = &cursor {
+            for cursor in cursor {
                 request = request.header(LAST_EVENT_ID, cursor);
             }
             if let Some(proof) = proof {

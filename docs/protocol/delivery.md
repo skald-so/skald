@@ -70,7 +70,7 @@ timestamp = uint       ; seconds since the Unix epoch
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: each request proves its device ([Connecting](#connecting)). `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request's body is a `sync` with the cursor; its answer is a `batch` ([Mailbox](#mailbox)).
-  - SSE: a stream that proves its device as an HTTPS request does. One frame per event, its CBOR in base64url without padding: a `message`, `status` or `space-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
+  - SSE: a stream that proves its device as an HTTPS request does. Its events ([Encoding](README.md#encoding)): a `message`, `status` or `space-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
 
 ## Connecting
