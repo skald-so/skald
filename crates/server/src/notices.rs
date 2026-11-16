@@ -1,14 +1,16 @@
 //! Notices of new roster revisions: `docs/protocol/delivery.md`, "Frames". Once the server has
 //! stored a revision, each connection of a device of an account that gets the space, on this
 //! instance, sends a `space-notice`. A notice is no mailbox entry: a connection that is not open
-//! when the revision is stored gets none.
+//! when the revision is stored gets none. A long-poll answers a notice of each revision stored
+//! since its device's previous long-poll answer ([`since_last_answer`]).
 
 use std::collections::HashMap;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use skald_proto::{AccountId, SpaceId};
+use skald_proto::{AccountId, DeviceId, SpaceId};
+use sqlx::PgPool;
 use tokio::sync::Notify;
 
 /// The connections of this instance that get notices, by their device's account.
@@ -102,6 +104,37 @@ impl Drop for Listening {
             }
         }
     }
+}
+
+/// The spaces of `account` with a revision that lists it stored since the previous call for
+/// `device`, each space of `account` at the first call; records their latest such revisions, so
+/// that the next call gives only later ones.
+pub(crate) async fn since_last_answer(
+    db: &PgPool,
+    device: DeviceId,
+    account: AccountId,
+) -> Result<Vec<SpaceId>, sqlx::Error> {
+    let found: Vec<(String,)> = sqlx::query_as(
+        "WITH latest AS (
+             SELECT space_id, max(revision) AS revision FROM roster_members
+             WHERE account_id = $2::uuid GROUP BY space_id
+         )
+         INSERT INTO long_poll_revisions (device_id, space_id, revision)
+         SELECT $1::uuid, space_id, revision FROM latest
+         ON CONFLICT (device_id, space_id) DO UPDATE SET revision = EXCLUDED.revision
+         WHERE long_poll_revisions.revision < EXCLUDED.revision
+         RETURNING space_id::text",
+    )
+    .bind(device.to_string())
+    .bind(account.to_string())
+    .fetch_all(db)
+    .await?;
+    let mut spaces: Vec<SpaceId> = found
+        .into_iter()
+        .map(|(space,)| space.parse().expect("a stored space ID"))
+        .collect();
+    spaces.sort();
+    Ok(spaces)
 }
 
 #[cfg(test)]
