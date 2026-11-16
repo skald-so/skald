@@ -3,8 +3,8 @@
 # every `run` step of the job that creates the release up to the one that creates it, in order, as
 # GitHub runs them with `shell: bash`, with a stand-in gh, on the files the dry run builds and a
 # CHANGELOG.md:
-#   - it creates one release of the tag with all its files: the archives, their checksums and the
-#     installers of the tag, made by script/release-installers;
+#   - it creates one release of the tag with all its files: the archives, their checksums, the
+#     installers of the tag, made by script/release-installers, and the web app's attestation file;
 #   - the release's notes are the version's CHANGELOG section, script/release-notes;
 #   - a beta's release, vX.Y.Z-beta.N, is a prerelease, and a stable release's is not;
 #   - without a CHANGELOG section for the version, or when gh fails, a step fails, and in the
@@ -76,7 +76,11 @@ for archive in skald-client-aarch64-apple-darwin.tar.gz skald-client-x86_64-pc-w
   echo "checksum of $archive" >"$tmp/work/release/$archive.sha256"
   files+=("$archive" "$archive.sha256")
 done
-files+=(install.ps1 install.sh)
+# The web job's archive and checksum, and the bundle of the attest step, which the steps read from
+# $BUNDLE, its output bundle-path.
+for file in skald-web.tar.gz skald-web.tar.gz.sha256; do echo "$file" >"$tmp/work/release/$file"; done
+echo 'attestation bundle' >"$tmp/bundle.jsonl"
+files+=(install.ps1 install.sh skald-web.tar.gz skald-web.tar.gz.sha256 skald-web.tar.gz.sigstore.json)
 files=$(printf '%s\n' "${files[@]}" | sort | paste -sd ' ' -)
 
 # gh logs its arguments, a line each, and keeps the notes file and the installers it was given;
@@ -97,10 +101,10 @@ chmod +x "$tmp/bin/gh"
 # run <tag> <gh exit>: runs the steps for <tag>, each in a shell of its own, until one fails; the
 # exit code of the last one run.
 run() {
-  rm -f "$tmp"/gh.* "$tmp/work/release"/install.*
+  rm -f "$tmp"/gh.* "$tmp/work/release"/install.* "$tmp/work/release"/*.sigstore.json
   local status=0 i
   for ((i = 0; i < steps && status == 0; i++)); do
-    (cd "$tmp/work" && TAG=$1 GH=$2 RUNNER_TEMP=$tmp/runner PATH="$tmp/bin:$PATH" \
+    (cd "$tmp/work" && TAG=$1 GH=$2 BUNDLE=$tmp/bundle.jsonl RUNNER_TEMP=$tmp/runner PATH="$tmp/bin:$PATH" \
       bash --noprofile --norc -eo pipefail "$tmp/step-$i.sh") >/dev/null 2>&1 || status=$?
   done
   echo "$status"

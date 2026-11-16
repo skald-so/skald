@@ -153,8 +153,9 @@ impl Checked {
 }
 
 /// `POST /devices`: registers a device of the session's account, which a device session then lists;
-/// the same registration again is taken as stored. With the devices limit, a new device of an account that has as many devices
-/// with a certificate, `service` and revoked devices aside, is refused.
+/// the same registration again is taken as stored. With the devices limit, a new device of an
+/// account that has as many devices with a certificate, `service` and revoked devices aside, is
+/// refused.
 pub(crate) async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,

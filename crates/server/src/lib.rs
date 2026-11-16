@@ -26,6 +26,7 @@ mod expiry;
 mod github;
 mod google;
 mod groups;
+mod history;
 mod http_client;
 mod instances;
 mod key_packages;
@@ -292,6 +293,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(groups::latest)
                 .put(groups::upload)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/history/entries",
+            get(history::given::<{ history::ENTRIES }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/history/links",
+            get(history::given::<{ history::LINKS }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/history/wraps",
+            get(history::given::<{ history::WRAPS }>).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/devices",

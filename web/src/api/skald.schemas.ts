@@ -401,6 +401,21 @@ export interface GroupInfoRequest {
   group_info: GroupInfo;
 }
 
+export interface HistoryEntries {
+  /** @items.pattern ^[A-Za-z0-9_-]+$ */
+  entries: string[];
+}
+
+export interface HistoryLinks {
+  /** @items.pattern ^[A-Za-z0-9_-]+$ */
+  links: string[];
+}
+
+export interface HistoryWraps {
+  /** @items.pattern ^[A-Za-z0-9_-]+$ */
+  wraps: string[];
+}
+
 /**
  * A roster revision's CBOR bytes (docs/protocol/membership.md, "Roster") in base64url without padding (RFC 4648, §5).
  * @pattern ^[A-Za-z0-9_-]+$
