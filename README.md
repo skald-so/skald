@@ -58,10 +58,11 @@ To run the server, see [Self-hosting](#self-hosting).
 
 ```sh
 skald devices              # the account's devices, their certificates checked
+skald revoke-device <device>  # revoke a device of the account; member devices remove it from every channel
 skald set-username <name>  # change the account's username
 skald create-space <name>  # create a team space, with the account as its first admin
 skald spaces               # the device's spaces, its personal space marked, and the account's role in each
-skald members <space>      # a space's members, their roles and their devices with a valid certificate
+skald members <space>      # a space's members, their roles and their devices with a valid certificate or revoked
 skald create-channel <space>  # add a channel to a space, as its admin
 skald channels <space>     # a space's channels and their members
 skald send <channel> <text>  # send a text to a channel, encrypted in its MLS group for its other devices

@@ -108,6 +108,9 @@ pub enum Issuer<'a> {
     Device(&'a Person),
     /// A key of no device, in place of the account's master key, as only a server could sign it.
     Server,
+    /// This key in place of the account's master key: a valid certificate when it is the account's
+    /// master key, which the test holds.
+    Master(&'a SigningKey),
     /// Nobody: the device has no certificate.
     Nobody,
 }
@@ -133,6 +136,7 @@ pub fn add_device(cloud: &Cloud, account: AccountId, name: &str, issuer: &Issuer
     let cert = match issuer {
         Issuer::Device(person) => Some(issue(&body(Some(person.device)), &person.key, &signing)),
         Issuer::Server => Some(issue(&body(None), &SigningKey::generate(), &signing)),
+        Issuer::Master(master) => Some(issue(&body(None), master, &signing)),
         Issuer::Nobody => None,
     }
     .map(|cert| cert.expect("a certificate").to_cbor());
