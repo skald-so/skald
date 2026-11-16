@@ -26,6 +26,7 @@ import type {
   Server,
   Session,
   SignInMethods,
+  SignInProviders,
   Space,
   SpaceRequest,
   Spaces,
@@ -502,6 +503,53 @@ export const putUsername = async (
     status: res.status,
     headers: res.headers,
   } as putUsernameResponse;
+};
+
+export type getSignInProvidersResponse200 = {
+  data: SignInProviders;
+  status: 200;
+};
+
+export type getSignInProvidersResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getSignInProvidersResponseSuccess =
+  getSignInProvidersResponse200 & {
+    headers: Headers;
+  };
+export type getSignInProvidersResponseError = getSignInProvidersResponse400 & {
+  headers: Headers;
+};
+
+export type getSignInProvidersResponse =
+  getSignInProvidersResponseSuccess | getSignInProvidersResponseError;
+
+export const getGetSignInProvidersUrl = () => {
+  return `/auth/providers`;
+};
+
+/**
+ * Needs no session. Names the providers the server has settings for and whether its sign-up is open, and nothing of the lists of who may sign up while it is closed.
+ * @summary The sign-in providers and sign-up
+ */
+export const getSignInProviders = async (
+  options?: RequestInit,
+): Promise<getSignInProvidersResponse> => {
+  const res = await fetch(getGetSignInProvidersUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getSignInProvidersResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getSignInProvidersResponse;
 };
 
 export type getDevicesResponse200 = {

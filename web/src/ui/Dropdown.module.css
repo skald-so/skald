@@ -87,6 +87,13 @@
   }
 }
 
+/* A word after an option's label, as "personal". */
+.mark {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
 /* The option the arrows or the pointer are on. */
 .active {
   background: var(--color-hover);

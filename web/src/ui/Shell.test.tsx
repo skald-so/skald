@@ -348,3 +348,23 @@ test("a heading without a subtitle or actions shows only the heading", () => {
   expect(header.textContent).toBe("Members");
   expect(within(header).queryByRole("button")).toBeNull();
 });
+
+test("without spaces, the side menu shows what it is given in place of the switcher", () => {
+  render(
+    <Shell
+      sections={sections}
+      current="machines"
+      spaces={[]}
+      noSpaces={<p>No space yet.</p>}
+      space=""
+      onSpaceChange={() => {}}
+      account={{ name: "Ana", initials: "A", signIn: "Google", actions: [] }}
+    >
+      <PageHeader title="Ana" />
+    </Shell>,
+  );
+  expect(screen.queryByRole("button", { name: /^Space/ })).toBeNull();
+  expect(
+    within(screen.getByRole("banner")).getByText("No space yet."),
+  ).toBeTruthy();
+});

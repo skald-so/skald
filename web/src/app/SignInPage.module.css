@@ -1,0 +1,129 @@
+/* The sign-in page of 03-sign-in.png: the logo and cards in the middle of the side panel color. */
+.page {
+  display: flex;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 48px 16px;
+  background: var(--color-side);
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  max-width: 384px;
+  margin: auto 0;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 30px;
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  background: var(--color-bg);
+
+  h1 {
+    margin: 0 0 6px;
+    font-family: var(--font-heading);
+    font-size: 24px;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+}
+
+.provider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  box-sizing: border-box;
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+
+  svg {
+    flex: none;
+  }
+}
+
+.provider:hover {
+  background: var(--color-hover);
+}
+
+/* GitHub's button is filled with the text color, as on the design. */
+.github {
+  border-color: var(--color-text);
+  background: var(--color-text);
+  color: var(--color-bg);
+}
+
+.github:hover {
+  background: color-mix(in srgb, var(--color-text) 86%, var(--color-bg));
+}
+
+.note,
+.hint {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.note {
+  text-align: center;
+}
+
+.code {
+  display: flex;
+  gap: 8px;
+
+  input {
+    flex: auto;
+    min-width: 0;
+    min-height: 42px;
+    box-sizing: border-box;
+    padding: 0 12px;
+    border: 1px solid var(--color-line);
+    border-radius: 8px;
+    background: var(--color-side);
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    font-size: 15px;
+    letter-spacing: 0.06em;
+  }
+
+  input::placeholder {
+    color: var(--color-muted);
+  }
+
+  button {
+    min-height: 42px;
+    padding: 0 18px;
+  }
+}

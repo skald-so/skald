@@ -6,8 +6,9 @@
 # that cannot tell, it checks every part.
 #   workspace  build, fmt, clippy and tests of the crates in crates/, with PostgreSQL and a local
 #              S3-compatible server, those of script/check-github-sign-in and
-#              script/check-google-sign-in among them, and, for the server's GitHub sign-in and the
-#              client's sign-in, Chrome Headless Shell
+#              script/check-google-sign-in among them, and, for the server's GitHub sign-in, the
+#              client's sign-in and the web app on the server, Chrome Headless Shell and the web
+#              app's production build
 #   wasm       clippy of skald-proto and skald-crypto in WASM, the tests of skald-crypto and
 #              skald-proto's of ID generation there (script/wasm-test)
 #   image      the skald-server image, built and tested with PostgreSQL in containers
@@ -165,7 +166,7 @@ fi
 
 # web_packages: installs the packages of web/ from its lockfile, once per run, and the Chrome Headless
 # Shell of its playwright-core, unless SKALD_CHROME names another browser: CONTRIBUTING.md. The web UI
-# needs them, and so do the server's and the client's sign-in tests.
+# needs them, and so do the server's and the client's sign-in and web app tests.
 web_packages() {
   if [[ -z ${web_installed:-} ]]; then
     (cd web && npm ci --no-audit --no-fund)
