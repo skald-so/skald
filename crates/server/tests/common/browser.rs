@@ -328,6 +328,32 @@ impl Browser {
     pub fn tls_proxy(&self, target: &str) -> u16 {
         serde_json::from_value(self.call("tlsProxy", json!({ "target": target }))).expect("a port")
     }
+
+    /// Starts a front of the web app on a local port, built once by the first front of the test
+    /// binary: the app's production build and the API on one origin. A request whose path starts
+    /// with the first segment of a path of the spec goes to the API, as the dev server sends it,
+    /// once [`Browser::spa_target`] names where; any other gets the build's file at its path or its
+    /// index page. Gives its port.
+    pub fn spa_front(&self) -> u16 {
+        serde_json::from_value(self.call("spaFront", json!({}))).expect("a port")
+    }
+
+    /// Sends the API requests of the front on `port` to `target`, e.g. `http://127.0.0.1:41234`.
+    pub fn spa_target(&self, port: u16, target: &str) {
+        self.call("spaTarget", json!({ "port": port, "target": target }));
+    }
+}
+
+/// An answer to a `fetch` or XHR request of a page, as [`Page::record_answers`] recorded it.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Answer {
+    /// The request's method, such as `GET`.
+    pub method: String,
+    pub url: String,
+    pub status: u16,
+    /// Lowercase names and their values.
+    pub headers: HashMap<String, String>,
+    pub body: String,
 }
 
 impl Drop for Browser {
@@ -451,5 +477,17 @@ impl Page<'_> {
     pub fn add_cookies(&self, cookies: &[Cookie]) {
         self.browser
             .call("addCookies", json!({ "page": self.id, "cookies": cookies }));
+    }
+
+    /// From now on records the answers to the `fetch` and XHR requests of this browser.
+    pub fn record_answers(&self) {
+        self.browser
+            .call("recordAnswers", json!({ "page": self.id }));
+    }
+
+    /// The answers recorded since [`Page::record_answers`], in the order they came.
+    pub fn answers(&self) -> Vec<Answer> {
+        serde_json::from_value(self.browser.call("answers", json!({ "page": self.id })))
+            .expect("answers")
     }
 }

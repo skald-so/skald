@@ -12,6 +12,7 @@ pub mod device_flow;
 pub mod devices;
 pub mod google;
 pub mod sign_in;
+pub mod spa;
 pub mod spec;
 pub mod times;
 

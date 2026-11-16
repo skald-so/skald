@@ -52,7 +52,7 @@ const sections: ShellSection[] = [
 const spaces: DropdownOption<string>[] = [
   { value: "team-a", label: "team-a" },
   { value: "team-b", label: "team-b" },
-  { value: "ana", label: "ana" },
+  { value: "ana", label: "ana", mark: "personal" },
 ];
 
 const actions: MenuAction[] = [

@@ -23,6 +23,7 @@ use crate::github::{GitHubApp, Refusal, http_url};
 use crate::google::Google;
 use crate::instances::Event;
 use crate::oidc::OidcSettings;
+use crate::sign_up::SignUp;
 use crate::{AppState, database_failed, device_flow, links, problem};
 
 /// GitHub sign-in's start's path under the web address.
@@ -174,6 +175,37 @@ pub(crate) fn flows(state: &AppState) -> Vec<Flow<'_>> {
         flows.push(google.flow());
     }
     flows
+}
+
+/// The name of `provider`, a sign-in method's, in the spec: `github` or, for the server's one OIDC
+/// provider, `google`.
+fn provider_name(provider: &str) -> &'static str {
+    if provider == GITHUB {
+        "github"
+    } else {
+        "google"
+    }
+}
+
+/// `SignInProviders` in the spec.
+#[derive(Serialize)]
+struct Providers {
+    providers: Vec<&'static str>,
+    sign_up: &'static str,
+}
+
+/// `GET /auth/providers`: the providers the server has settings for and whether its sign-up is
+/// open, without its lists.
+pub(crate) async fn providers(State(state): State<AppState>) -> Response {
+    let providers = flows(&state)
+        .iter()
+        .map(|flow| provider_name(flow.provider))
+        .collect();
+    let sign_up = match *state.sign_up {
+        SignUp::Open => "open",
+        SignUp::Closed(_) => "closed",
+    };
+    axum::Json(Providers { providers, sign_up }).into_response()
 }
 
 /// Links that sign in with each of `flows` and return to `return_to`, a page of this server.
@@ -845,6 +877,9 @@ pub(crate) struct Session {
     /// The login of the account's GitHub method, while it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_login: Option<String>,
+    /// The provider a web session signed in with, `github` or `google`; `None` for a device session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_in_method: Option<&'static str>,
 }
 
 /// The account of the session of `kind`, `web` or `device`, whose token has one of `hashes`.
@@ -853,8 +888,8 @@ async fn find(
     kind: &str,
     hashes: Vec<Vec<u8>>,
 ) -> Result<Option<Session>, sqlx::Error> {
-    let found: Option<(String, String, Option<String>)> = sqlx::query_as(
-        "SELECT a.id::text, a.username, m.login FROM sessions s
+    let found: Option<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT a.id::text, a.username, m.login, s.method_provider FROM sessions s
          JOIN accounts a ON a.id = s.account_id
          LEFT JOIN LATERAL (
              SELECT login FROM sign_in_methods
@@ -867,11 +902,14 @@ async fn find(
     .bind(GITHUB)
     .fetch_optional(db)
     .await?;
-    Ok(found.map(|(account, username, github_login)| Session {
-        account,
-        username,
-        github_login,
-    }))
+    Ok(
+        found.map(|(account, username, github_login, method)| Session {
+            account,
+            username,
+            github_login,
+            sign_in_method: method.as_deref().map(provider_name),
+        }),
+    )
 }
 
 /// The account of the web session in the request's cookie.

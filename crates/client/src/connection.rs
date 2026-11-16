@@ -1,10 +1,10 @@
 //! The client's connection to a Skald server: it states the protocol version on every request and
 //! WebSocket opening request and acts on the answers as `docs/protocol/README.md`, "Server answers",
-//! says. It goes over HTTPS and WSS, or in plain HTTP and WS to this machine only:
-//! `docs/dev/architecture.md`, "Network".
+//! says. It goes over HTTPS and WSS, through the proxy `HTTPS_PROXY` names if any, or in plain
+//! HTTP and WS to this machine only: `docs/dev/architecture.md`, "Network".
 
 use std::fmt;
-use std::io;
+use std::io::{self, Read as _, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -26,8 +26,11 @@ use tungstenite::handshake::HandshakeError;
 use tungstenite::http::{HeaderMap, HeaderValue, Uri, header};
 use tungstenite::stream::MaybeTlsStream;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
-use ureq::unversioned::transport::NextTimeout;
+use ureq::unversioned::transport::{
+    Buffers, ConnectionDetails, Connector, LazyBuffers, NextTimeout, RustlsConnector, Transport,
+};
 
+use crate::proxy::Proxy;
 use crate::tls::Roots;
 
 /// How long a request to the server may take by default.
@@ -52,6 +55,10 @@ pub enum Error {
     Unreachable(String),
     /// No answer from the server within the timeout.
     Timeout(Duration),
+    /// `HTTPS_PROXY` holds no URL of an HTTP proxy.
+    ProxyUrl,
+    /// The proxy at `proxy`, its host and port, gave no tunnel to the server: `problem` says why.
+    Proxy { proxy: String, problem: String },
     /// The server no longer accepts any version the client speaks: `protocol-too-old`.
     TooOld {
         supported: Vec<u64>,
@@ -80,7 +87,12 @@ impl Error {
     pub fn reached(&self) -> bool {
         !matches!(
             self,
-            Error::Url(_) | Error::Cleartext(_) | Error::Unreachable(_) | Error::Timeout(_)
+            Error::Url(_)
+                | Error::Cleartext(_)
+                | Error::Unreachable(_)
+                | Error::Timeout(_)
+                | Error::ProxyUrl
+                | Error::Proxy { .. }
         )
     }
 
@@ -109,6 +121,15 @@ impl fmt::Display for Error {
                 f,
                 "cannot reach the server: no answer within {} s",
                 timeout.as_secs()
+            ),
+            Error::ProxyUrl => write!(
+                f,
+                "HTTPS_PROXY is not the URL of an HTTP proxy: use http://[user:password@]host[:port]"
+            ),
+            Error::Proxy { proxy, problem } => write!(
+                f,
+                "cannot reach the server through the proxy {proxy}: {}",
+                printable(problem)
             ),
             Error::TooOld { supported, speaks } => write!(
                 f,
@@ -143,6 +164,8 @@ impl fmt::Display for Error {
     }
 }
 
+impl std::error::Error for Error {}
+
 /// `text` with its control characters escaped, such as `\u{1b}` for ESC: the server's text must not
 /// drive the terminal.
 pub fn printable(text: &str) -> String {
@@ -157,10 +180,15 @@ pub fn printable(text: &str) -> String {
         .collect()
 }
 
-/// The error of an HTTP request that got no answer.
+/// The error of an HTTP request that got no answer: its connection's own, from [`Dial`], if it
+/// failed.
 fn unanswered(err: ureq::Error, timeout: Duration) -> Error {
     match err {
         ureq::Error::Timeout(_) => Error::Timeout(timeout),
+        ureq::Error::Io(err) if err.get_ref().is_some_and(|inner| inner.is::<Error>()) => *err
+            .into_inner()
+            .and_then(|inner| inner.downcast().ok())
+            .expect("an error of the connection"),
         err => Error::Unreachable(err.to_string()),
     }
 }
@@ -321,6 +349,215 @@ fn over_tls(
     Ok(StreamOwned::new(client, stream))
 }
 
+/// The longest answer head a proxy may give to `CONNECT`.
+const PROXY_HEAD_LIMIT: usize = 64 << 10;
+
+/// A TCP connection to the host and port of `uri`, directly or, if given, through a tunnel of
+/// `proxy`; as [`connect`] says, with `timeout`, `resolver` and `config`. A failing proxy fails it:
+/// it never falls back to a direct connection.
+fn dial(
+    proxy: Option<&Proxy>,
+    uri: &Uri,
+    timeout: Duration,
+    resolver: &Pinned,
+    config: &ureq::config::Config,
+) -> Result<TcpStream, Error> {
+    let Some(proxy) = proxy else {
+        return connect(uri, timeout, resolver, config);
+    };
+    let failed = |problem: String| Error::Proxy {
+        proxy: proxy.address(),
+        problem,
+    };
+    let unreachable = |err: Error| {
+        failed(match err {
+            Error::Timeout(_) => format!("no answer within {} s", timeout.as_secs()),
+            Error::Unreachable(cause) => cause,
+            err => err.to_string(),
+        })
+    };
+    let broken = |err: io::Error| unreachable(io_error(err, timeout));
+    let address = format!("http://{}", proxy.address())
+        .parse()
+        .map_err(|_| Error::ProxyUrl)?;
+    let mut stream = connect(&address, timeout, resolver, config).map_err(unreachable)?;
+    let authority = format!("{}:{}", uri.host().unwrap_or_default(), port(uri));
+    stream
+        .write_all(proxy.connect_request(&authority).as_bytes())
+        .map_err(broken)?;
+    let head = proxy_head(&mut stream).map_err(broken)?;
+    let line = head.lines().next().unwrap_or_default();
+    let mut words = line.splitn(3, ' ');
+    let (version, status, reason) = (words.next(), words.next(), words.next());
+    let status = status
+        .filter(|_| version.is_some_and(|version| version.starts_with("HTTP/1.")))
+        .and_then(|status| status.parse::<u16>().ok())
+        .ok_or_else(|| failed("its answer is not HTTP".to_owned()))?;
+    if (200..300).contains(&status) {
+        return Ok(stream);
+    }
+    let mut problem = format!(
+        "it refused the tunnel with {status} {}",
+        reason.unwrap_or_default()
+    );
+    if status == 407 {
+        problem.push_str("; the client answers it only by Basic, with the credentials of its URL");
+    }
+    Err(failed(problem.trim_end().to_owned()))
+}
+
+/// The head of a proxy's answer on `stream`, up to its empty line, read a byte at a time so that
+/// nothing after it is taken from the tunnel.
+fn proxy_head(stream: &mut TcpStream) -> io::Result<String> {
+    let mut head = Vec::new();
+    let mut byte = [0];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() >= PROXY_HEAD_LIMIT || stream.read(&mut byte)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "its answer ended early",
+            ));
+        }
+        head.extend_from_slice(&byte);
+    }
+    Ok(String::from_utf8_lossy(&head).into_owned())
+}
+
+/// The connector of the connection's HTTP requests: it dials as [`dial`] says, directly or through
+/// the proxy, and fails with the connection's error inside [`ureq::Error::Io`].
+#[derive(Debug)]
+struct Dial {
+    proxy: Option<Proxy>,
+    resolver: Pinned,
+    timeout: Duration,
+}
+
+impl Connector for Dial {
+    type Out = Socket;
+
+    fn connect(
+        &self,
+        details: &ConnectionDetails,
+        _: Option<()>,
+    ) -> Result<Option<Socket>, ureq::Error> {
+        self.socket(details.uri, details.config)
+            .map(Some)
+            .map_err(|err| ureq::Error::Io(io::Error::other(err)))
+    }
+}
+
+impl Dial {
+    /// A connection to the host and port of `uri`, with `config`'s buffers and `TCP_NODELAY`.
+    fn socket(&self, uri: &Uri, config: &ureq::config::Config) -> Result<Socket, Error> {
+        let stream = dial(
+            self.proxy.as_ref(),
+            uri,
+            self.timeout,
+            &self.resolver,
+            config,
+        )?;
+        stream
+            .set_nodelay(config.no_delay())
+            .map_err(|err| Error::Unreachable(err.to_string()))?;
+        let buffers = LazyBuffers::new(config.input_buffer_size(), config.output_buffer_size());
+        Ok(Socket { stream, buffers })
+    }
+}
+
+/// A TCP connection that [`Dial`] made, as a ureq transport.
+#[derive(Debug)]
+struct Socket {
+    stream: TcpStream,
+    buffers: LazyBuffers,
+}
+
+impl Socket {
+    /// What a read or write within `timeout` may take: `None` for no limit.
+    fn limit(timeout: NextTimeout) -> Result<Option<Duration>, ureq::Error> {
+        if timeout.after.is_not_happening() {
+            return Ok(None);
+        }
+        let after = *timeout.after;
+        if after.is_zero() {
+            return Err(ureq::Error::Timeout(timeout.reason));
+        }
+        Ok(Some(after))
+    }
+
+    /// The error of a read or write within `timeout` that failed with `err`.
+    fn failed(err: io::Error, timeout: NextTimeout) -> ureq::Error {
+        match err.kind() {
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
+                ureq::Error::Timeout(timeout.reason)
+            }
+            _ => ureq::Error::Io(err),
+        }
+    }
+}
+
+impl Transport for Socket {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        &mut self.buffers
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        let timeout = timeout.for_write();
+        self.stream.set_write_timeout(Self::limit(timeout)?)?;
+        let output = &self.buffers.output()[..amount];
+        (&self.stream)
+            .write_all(output)
+            .map_err(|err| Self::failed(err, timeout))
+    }
+
+    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        let timeout = timeout.for_read();
+        self.stream.set_read_timeout(Self::limit(timeout)?)?;
+        let input = self.buffers.input_append_buf();
+        let amount = uninterrupted(|| (&self.stream).read(input))
+            .map_err(|err| Self::failed(err, timeout))?;
+        self.buffers.input_appended(amount);
+        Ok(amount > 0)
+    }
+
+    /// Whether the connection is still open, so that the agent may send another request on it: no
+    /// byte waits on it, and it is not closed.
+    fn is_open(&mut self) -> bool {
+        if self.stream.set_nonblocking(true).is_err() {
+            return false;
+        }
+        let idle = matches!(
+            (&self.stream).read(&mut [0]),
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock
+        );
+        self.stream.set_nonblocking(false).is_ok() && idle
+    }
+}
+
+/// What `read` gives, read again while a signal interrupts it.
+fn uninterrupted<T>(mut read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match read() {
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            read => return read,
+        }
+    }
+}
+
+/// The resolver of the connection's HTTP agent: it resolves nothing, as [`Dial`] does it.
+#[derive(Debug)]
+struct Deferred;
+
+impl Resolver for Deferred {
+    fn resolve(
+        &self,
+        _: &Uri,
+        _: &ureq::config::Config,
+        _: NextTimeout,
+    ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        Ok(self.empty())
+    }
+}
+
 /// A connection to the server at one base URL.
 pub struct Connection {
     base: String,
@@ -328,6 +565,8 @@ pub struct Connection {
     tls: Option<Arc<ClientConfig>>,
     /// The resolver of its WebSockets; its HTTP requests' is in `agent`.
     resolver: Pinned,
+    /// The proxy of its WebSockets, if any; its HTTP requests' is in `agent`.
+    proxy: Option<Proxy>,
     speaks: VersionRange,
     timeout: Duration,
     agent: ureq::Agent,
@@ -427,10 +666,25 @@ impl Connection {
         timeout: Duration,
         system: Arc<dyn Resolver>,
     ) -> Result<Self, Error> {
-        let roots = match scheme(server)? {
-            Scheme::Https => Some(Roots::load()),
+        let proxy = match scheme(server)? {
+            Scheme::Https => {
+                let uri: Uri = server.parse().map_err(|_| Error::Url(server.to_owned()))?;
+                Proxy::for_host(uri.host().unwrap_or_default()).map_err(|_| Error::ProxyUrl)?
+            }
             Scheme::Loopback => None,
         };
+        Self::proxied(server, speaks, timeout, system, proxy)
+    }
+
+    /// As [`Connection::resolving`], through `proxy` if given.
+    fn proxied(
+        server: &str,
+        speaks: VersionRange,
+        timeout: Duration,
+        system: Arc<dyn Resolver>,
+        proxy: Option<Proxy>,
+    ) -> Result<Self, Error> {
+        let roots = (scheme(server)? == Scheme::Https).then(Roots::load);
         let mut config = ureq::Agent::config_builder()
             .proxy(None)
             .http_status_as_error(false)
@@ -441,15 +695,21 @@ impl Connection {
             config = config.tls_config(roots.ureq());
         }
         let resolver = Pinned { system };
+        let dial = Dial {
+            proxy: proxy.clone(),
+            resolver: resolver.clone(),
+            timeout,
+        };
         let agent = ureq::Agent::with_parts(
             config.build(),
-            ureq::unversioned::transport::DefaultConnector::new(),
-            resolver.clone(),
+            ().chain(dial).chain(RustlsConnector::default()),
+            Deferred,
         );
         Ok(Connection {
             base: server.trim_end_matches('/').to_owned(),
             tls: roots.map(|roots| roots.rustls()),
             resolver,
+            proxy,
             speaks,
             timeout,
             agent,
@@ -560,6 +820,7 @@ impl Connection {
         let timeout = self.timeout;
         let tls = self.tls.clone();
         let resolver = self.resolver.clone();
+        let proxy = self.proxy.clone();
         let agent = self.agent.clone();
         self.exchange(|version| {
             let mut request = url
@@ -571,7 +832,13 @@ impl Connection {
             request
                 .headers_mut()
                 .insert(header::SEC_WEBSOCKET_PROTOCOL, offer);
-            let stream = connect(request.uri(), timeout, &resolver, agent.config())?;
+            let stream = dial(
+                proxy.as_ref(),
+                request.uri(),
+                timeout,
+                &resolver,
+                agent.config(),
+            )?;
             let stream = match &tls {
                 Some(config) => MaybeTlsStream::Rustls(over_tls(config, request.uri(), stream)?),
                 None => MaybeTlsStream::Plain(stream),
@@ -729,7 +996,7 @@ fn content(headers: &HeaderMap) -> Content {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener};
     use std::thread;
 
@@ -1099,5 +1366,223 @@ mod tests {
             &signature,
         )
         .expect("signed over the challenge and the origin");
+    }
+
+    /// A connection over this machine: the client's end and its peer's.
+    fn pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).expect("connect");
+        let (peer, _) = listener.accept().expect("accept");
+        stream.set_read_timeout(Some(5 * SECOND)).unwrap();
+        (stream, peer)
+    }
+
+    /// A [`Socket`] on `stream`.
+    fn socket(stream: TcpStream) -> Socket {
+        Socket {
+            stream,
+            buffers: LazyBuffers::new(1024, 1024),
+        }
+    }
+
+    /// Waits until a byte or the end of `stream` has come, taking nothing from it.
+    fn arrived(stream: &TcpStream) {
+        stream.peek(&mut [0]).expect("a byte or the end");
+    }
+
+    /// The connections of HTTP requests send each segment at once, as `TCP_NODELAY` says, unless
+    /// the agent's config turns it off.
+    #[test]
+    fn requests_go_without_delay_unless_the_config_says_otherwise() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let uri: Uri = format!("http://{}/status", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let dial = Dial {
+            proxy: None,
+            resolver: system(),
+            timeout: SECOND,
+        };
+        let delayed = ureq::Agent::config_builder().no_delay(false).build();
+
+        let default = dial
+            .socket(&uri, &ureq::config::Config::default())
+            .expect("a socket");
+        let off = dial.socket(&uri, &delayed).expect("a socket");
+
+        assert!(default.stream.nodelay().unwrap());
+        assert!(!off.stream.nodelay().unwrap());
+    }
+
+    /// A connection takes another request only while idle: not once its peer closed it or sent
+    /// bytes nobody asked for.
+    #[test]
+    fn socket_is_open_only_while_idle() {
+        let (stream, _peer) = pair();
+        let mut idle = socket(stream);
+        assert!(idle.is_open());
+        assert!(idle.is_open());
+
+        let (stream, mut peer) = pair();
+        let mut stray = socket(stream);
+        peer.write_all(b"x").unwrap();
+        arrived(&stray.stream);
+        assert!(!stray.is_open());
+
+        let (stream, peer) = pair();
+        let mut closed = socket(stream);
+        drop(peer);
+        arrived(&closed.stream);
+        assert!(!closed.is_open());
+    }
+
+    /// Each read appends what has come to what came before; at the end of the connection it makes
+    /// no progress.
+    #[test]
+    fn socket_takes_a_head_in_two_reads() {
+        const LINE: &[u8] = b"HTTP/1.1 200 OK\r\n";
+        let (stream, mut peer) = pair();
+        let mut socket = socket(stream);
+        let within = NextTimeout {
+            after: (5 * SECOND).into(),
+            reason: ureq::Timeout::PerRead,
+            ..NextTimeout::default()
+        };
+
+        peer.write_all(LINE).unwrap();
+        assert!(socket.await_input(within).expect("the first read"));
+        assert_eq!(socket.buffers.input(), LINE);
+        peer.write_all(b"\r\n").unwrap();
+        assert!(socket.await_input(within).expect("the second read"));
+        assert_eq!(socket.buffers.input(), b"HTTP/1.1 200 OK\r\n\r\n");
+        drop(peer);
+        assert!(!socket.await_input(within).expect("the end"));
+        assert_eq!(socket.buffers.input(), b"HTTP/1.1 200 OK\r\n\r\n");
+    }
+
+    /// A read a signal interrupts is read again; any other error ends it.
+    #[test]
+    fn interrupted_reads_are_read_again() {
+        let mut reads = vec![Ok(3), Err(io::Error::from(io::ErrorKind::Interrupted))];
+        let read = uninterrupted(|| reads.pop().expect("one read too many"));
+        assert_eq!(read.expect("the second read"), 3);
+
+        let mut reads: Vec<io::Result<usize>> =
+            vec![Err(io::Error::from(io::ErrorKind::ConnectionReset))];
+        let read = uninterrupted(|| reads.pop().expect("one read too many"));
+        assert_eq!(
+            read.expect_err("a reset").kind(),
+            io::ErrorKind::ConnectionReset
+        );
+    }
+
+    /// A proxy's answer head of [`PROXY_HEAD_LIMIT`] bytes is read, and what follows it stays in
+    /// the tunnel; a longer one is refused.
+    #[test]
+    fn proxy_head_is_read_up_to_its_limit_and_no_further() {
+        let head = |length: usize| {
+            let (start, end) = ("HTTP/1.1 200 OK\r\nPadding: ", "\r\n\r\n");
+            let padding = "a".repeat(length - start.len() - end.len());
+            format!("{start}{padding}{end}")
+        };
+        let sent = |mut peer: TcpStream, bytes: String| {
+            thread::spawn(move || {
+                // The client stops reading a head that is too long.
+                let _ = peer.write_all(bytes.as_bytes());
+                peer
+            })
+        };
+
+        let (mut stream, peer) = pair();
+        let longest = head(PROXY_HEAD_LIMIT);
+        let writer = sent(peer, format!("{longest}tunnel"));
+        assert_eq!(proxy_head(&mut stream).expect("the head"), longest);
+        let mut after = [0; 6];
+        stream.read_exact(&mut after).expect("the tunnel");
+        assert_eq!(&after, b"tunnel");
+        writer.join().unwrap();
+
+        let (mut stream, peer) = pair();
+        let writer = sent(peer, head(PROXY_HEAD_LIMIT + 1));
+        let error = proxy_head(&mut stream).expect_err("too long");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        writer.join().unwrap();
+    }
+
+    /// A stand-in proxy that answers one `CONNECT` with the head `answer`.
+    fn answering(answer: &'static str) -> (Proxy, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let proxy = Proxy::parse(&url).expect("a proxy URL");
+        let served = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the CONNECT");
+            let mut reader = BufReader::new(&stream);
+            let mut line = String::new();
+            while reader.read_line(&mut line).expect("a request line") > 0 && line != "\r\n" {
+                line.clear();
+            }
+            (&stream).write_all(answer.as_bytes()).expect("answer");
+        });
+        (proxy, served)
+    }
+
+    /// The error of an HTTP request through `proxy` to a server that only the proxy could reach.
+    fn through(proxy: Proxy) -> Error {
+        let mut connection = Connection::proxied(
+            "https://skald.test:8443",
+            VersionRange::default(),
+            10 * SECOND,
+            Arc::new(DefaultResolver::default()),
+            Some(proxy),
+        )
+        .expect("a connection");
+        let error = connection.get("/status").expect_err("no tunnel");
+        assert!(!error.reached(), "{error:?}");
+        error
+    }
+
+    /// A proxy that refuses the tunnel, asks for credentials or is down fails an HTTP request with
+    /// a message naming it.
+    #[test]
+    fn proxy_that_gives_no_tunnel_fails_a_request_naming_it() {
+        let failed =
+            |address: &str| format!("cannot reach the server through the proxy {address}: ");
+
+        let (proxy, served) = answering("HTTP/1.1 403 Forbidden\r\n\r\n");
+        let address = proxy.address();
+        let error = through(proxy);
+        served.join().unwrap();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}it refused the tunnel with 403 Forbidden",
+                failed(&address)
+            )
+        );
+
+        let (proxy, served) = answering(
+            "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Negotiate\r\n\r\n",
+        );
+        let address = proxy.address();
+        let error = through(proxy);
+        served.join().unwrap();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "{}it refused the tunnel with 407 Proxy Authentication Required; the client \
+                 answers it only by Basic, with the credentials of its URL",
+                failed(&address)
+            )
+        );
+
+        let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let address = closed.local_addr().unwrap().to_string();
+        drop(closed);
+        let error = through(Proxy::parse(&format!("http://{address}")).expect("a proxy URL"));
+        assert!(
+            matches!(&error, Error::Proxy { proxy, .. } if *proxy == address),
+            "{error:?}"
+        );
+        assert!(error.to_string().starts_with(&failed(&address)), "{error}");
     }
 }

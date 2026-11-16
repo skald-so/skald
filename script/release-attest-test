@@ -13,7 +13,7 @@
 //   - every file of the release is attested: the job that creates the release, run as GitHub runs it
 //     on a push of a stable and of a beta tag, with a stand-in gh and the files the build jobs make,
 //     attests a subject of the same SHA-256 as each file gh publishes, the installers and checksums
-//     included;
+//     included, but for the bundle of such an attestation, which it publishes as a file of its own;
 //   - "Trust in builds" in docs/dev/infrastructure.md has the command that verifies a release file's
 //     checksum, and the gh attestation verify command that pins the repository skald-so/skald, the
 //     release workflow and the release tag's ref, refs/tags/vX.Y.Z, and names gh 2.97.0.
@@ -169,8 +169,9 @@ fi
       { mode: 0o755 },
     );
 
-    // The digests attested by the steps before the release is created.
+    // The digests attested by the steps before the release is created, and the bundles they write.
     const attested = new Map();
+    const bundles = new Set();
     const action = ({ step, kind, index, input }) => {
       if (kind === 'actions/download-artifact') {
         const into = path.resolve(work, input('path') || '.');
@@ -200,6 +201,11 @@ fi
         const digest = input('subject-digest').match(/^sha256:([0-9a-fA-F]{64})$/);
         if (digest) subjects.push([digest[1].toLowerCase(), input('subject-name')]);
         if (index < publishAt) for (const [d, n] of subjects) attested.set(d, n);
+        // The attestation's Sigstore bundle, as the action writes it.
+        const bundle = path.join(runner, `attestation-${bundles.size + 1}.jsonl`);
+        fs.writeFileSync(bundle, `${JSON.stringify({ standin: { subjects: subjects.map(([d]) => d), index } })}\n`);
+        bundles.add(sha256(bundle));
+        return { outputs: { 'bundle-path': bundle } };
       }
       return {};
     };
@@ -227,7 +233,10 @@ fi
     }
     const files = fs.readdirSync(published).sort();
     if (files.length === 0) fail(`${tag}: gh release create publishes no file`);
-    const unattested = files.filter((f) => !attested.has(sha256(path.join(published, f)))).map((f) => f.replace(/^\d+-/, ''));
+    // A published attestation bundle is the attestation itself.
+    const unattested = files
+      .filter((f) => !attested.has(sha256(path.join(published, f))) && !bundles.has(sha256(path.join(published, f))))
+      .map((f) => f.replace(/^\d+-/, ''));
     if (unattested.length > 0) {
       fail(`${tag}: every published file is attested before the release is created; not: ${unattested.join(', ')}`);
     }

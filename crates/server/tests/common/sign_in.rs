@@ -120,6 +120,11 @@ impl SignIn {
         Self::new(|_| public.to_owned(), args, CLIENT_SECRET)
     }
 
+    /// As [`SignIn::behind`], on `db`, such as a database that holds what an earlier server made.
+    pub fn behind_on(db: TestDb, public: &str, args: &[&str]) -> Self {
+        Self::new_on(db, |_| public.to_owned(), args, CLIENT_SECRET)
+    }
+
     /// As [`SignIn::start`], on `db`, such as a database that holds what an earlier server made.
     pub fn on(db: TestDb) -> Self {
         Self::new_on(
