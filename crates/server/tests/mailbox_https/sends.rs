@@ -85,8 +85,8 @@ fn a_refused_send_gets_its_problem_and_stores_nothing() {
 
 /// On a server that accepts versions 1 and 2, a send of an envelope of version 1 in a request
 /// that states 2 is refused with `version-mismatch`; a send, an ack and a long-poll that state no
-/// version are refused with the problem `protocol-version-invalid`. Neither stores anything; the
-/// send stating 1 is stored.
+/// version are refused with the problem `protocol-version-invalid`. Neither stores anything; a send
+/// of another envelope stating 1 is stored, as a retry of the refused one gets its refusal.
 #[test]
 fn requests_follow_the_protocol_version() {
     let f = Fixture::with(3_141_410_021, &[VERSIONS, "1-2"]);
@@ -120,8 +120,10 @@ fn requests_follow_the_protocol_version() {
     }
     assert_nowhere(f.db(), &sent);
 
-    alice.store(&header, &sent);
-    assert_eq!(envelopes_of(f.db(), bob), [sent]);
+    let next = f.to(bob);
+    let stored = envelope(&next);
+    alice.store(&next, &stored);
+    assert_eq!(envelopes_of(f.db(), bob), [stored]);
 }
 
 /// Sends over HTTPS, each after the previous one is answered, are stored and delivered in that

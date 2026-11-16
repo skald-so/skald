@@ -92,7 +92,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([architecture.md, "Components"](dev/architecture.md#components)).
 
 **Defenses:**
-- A session alone reads and acks no mailbox: a WebSocket takes a proof by the key of a `client` device with a certificate ([Connecting](protocol/delivery.md#connecting)).
+- A session alone reads, acks and sends nothing: a WebSocket and each HTTPS mailbox request take a proof by the key of a `client` device with a certificate ([Connecting](protocol/delivery.md#connecting)).
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
 - The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
@@ -250,7 +250,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
-- IP addresses and times of connections;
+- IP addresses and times of connections and requests;
 - queue names and settings, task templates;
 - when presence changes, and its size in steps of 4 KB, not its value;
 - notifications: the address, and the class of each event a device triggers; for `ask_user`, so which envelopes likely carry the question; for an invalid result, which task's result failed the check, as it follows that task's `done` and its result;
