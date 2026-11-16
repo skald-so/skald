@@ -50,7 +50,8 @@
 #   proxy-host-site      the site block of a Caddy on the machine (Caddyfile)
 #   proxy-join           the proxy variant's .env for a proxy in a container that joins the stack's
 #                        network
-#   proxy-join-connect   connects the proxy's container to the stack's network, after `up`
+#   proxy-join-connect   connects the proxy's container to the stack's network, after `up`; the
+#                        proxy's default route stays on its own network
 #   proxy-network        the proxy variant's .env for a proxy in a container on a network .env names
 #   proxy-container-site the site block of a Caddy in a container (Caddyfile)
 # The part substitutes only these, in every block: SKALD_VERSION, SKALD_DIGEST and SKALD_FILES, to
@@ -98,7 +99,8 @@
 #     not show the secret key.
 #   proxy-host, proxy-join, proxy-network: the proxy variant behind a stand-in for the admin's proxy,
 #     Caddy with the guide's site block and a certificate from the ACME server: on the machine for the
-#     loopback form; in a container that the guide's command joins to the stack's network; in a
+#     loopback form; in a container on a network of its own, sorting after `skald`, that the guide's
+#     command joins to the stack's network, its default route staying on its own network; in a
 #     container on a network that exists before the stack. The stack starts no Caddy; the server's
 #     port is published only on loopback in the first form and not at all in the others, and does not
 #     answer on the machine's address; /health and skald status answer through the proxy.
@@ -1185,9 +1187,22 @@ fi
 check_env proxy-host
 stack_down proxy-host
 
+# check_proxy_route <scenario>: the proxy's default route goes through its own network's gateway.
+# Its network's name sorts after the stack's `skald`, which would otherwise take the route.
+check_proxy_route() {
+  local gateway route
+  gateway=$(m docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' "$proxy_network")
+  route=$(m docker exec "$proxy_container" ip route | grep '^default ' || true)
+  [[ -n $gateway && $route == "default via $gateway "* ]] ||
+    fail "$1: the proxy's default route left its own network ($gateway): '$route'"
+}
+
 scenario proxy-join release files env proxy-join :before_up up proxy-container-site \
-  :proxy_in_container proxy-join-connect :wait_https :trust_acme status :trust_system
-if run_scenario proxy-join </dev/null; then check_proxied proxy-join none; fi
+  ":proxy_in_container network" proxy-join-connect :wait_https :trust_acme status :trust_system
+if run_scenario proxy-join </dev/null; then
+  check_proxied proxy-join none
+  check_proxy_route proxy-join
+fi
 stack_down proxy-join
 
 scenario proxy-network release files env proxy-network :before_up proxy-container-site \

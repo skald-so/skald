@@ -73,7 +73,7 @@ At start, the server writes, reads back and deletes an object of its own there, 
 
 ### Sign-in
 
-People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Who gets an account: [Sign-up](#sign-up). Browsers and machines both use your domain: leave the server setting `SKALD_WEB_URL` unset.
+People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret; with only one of them, the server does not start and names the other. Who gets an account: [Sign-up](#sign-up). Browsers and machines both use your domain: leave the server setting `SKALD_WEB_URL` unset.
 
 A GitHub OAuth App, in GitHub's Settings, Developer settings, OAuth Apps, New OAuth App:
 
@@ -203,18 +203,21 @@ EOF
 echo COMPOSE_FILE=docker-compose.yml:compose.proxy.yaml >>.env
 ```
 
-After `docker compose up`, the proxy's container `<proxy container>` joins it:
+After `docker compose up`, the proxy's container `<proxy container>` joins it. `--gw-priority -1`, from Docker Engine 28, keeps the proxy's default route and published ports on its own networks: without it, a network whose name sorts first, such as `skald`, takes them.
 
 ```sh self-host=proxy-join-connect
-docker network connect skald '<proxy container>'
+docker network connect --gw-priority -1 skald '<proxy container>'
 ```
 
-Recreating the proxy's container loses that connection. For a permanent install, the proxy's compose file lists the network `skald` as external and puts the proxy on it:
+Recreating the proxy's container loses that connection. For a permanent install, the proxy's compose file lists the network `skald` as external and puts the proxy on it, with the same priority, next to its networks so far:
 
 ```yaml
 services:
   proxy:
-    networks: [skald]
+    networks:
+      default: {}
+      skald:
+        gw_priority: -1
 networks:
   skald:
     external: true
