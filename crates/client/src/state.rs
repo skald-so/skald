@@ -160,7 +160,8 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE inbox ADD COLUMN opened BLOB;",
     // Gap detection: per channel, sending device and scheme (1 `mls`, 2 `hpke`), the counters the
     // device accepted, as `gaps::Counters` encodes them, with the `seq` of the entry it last
-    // accepted; and the `seq` of the Welcome by which the device last joined each channel's group.
+    // accepted; and, for the device's last join of each channel's group, the `seq` of the Welcome's
+    // entry, or, joining by itself, the `seq` after its cursor.
     // From now on `received` holds only messages without `counter`.
     "CREATE TABLE received_counter (
         channel TEXT NOT NULL,

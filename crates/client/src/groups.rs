@@ -11,9 +11,10 @@
 //!   last accepted revision, the Adds of the admitted devices the group lacks.
 //! - Outside a group the server has, it joins by itself from the GroupInfo of the current epoch
 //!   once its signer and members are admitted, unless it lists the device and a Welcome comes. A
-//!   device whose Welcome it refused or whose Commit it could not process rejoins from a GroupInfo
-//!   of a later epoch, removing its old leaf; one a Commit removed while admitted warns and rejoins.
-//!   A Commit of an epoch it has passed is a replay, dropped.
+//!   device whose Welcome it refused joins by itself from that GroupInfo also if it lists the
+//!   device, and one whose Commit it could not process rejoins from a GroupInfo of a later epoch
+//!   than its own; either removes the leaf of its own the GroupInfo lists. One a Commit removed
+//!   while admitted warns and rejoins. A Commit of an epoch it has passed is a replay, dropped.
 //! - Its own Commit goes into the outbox with the state that holds it pending, all at once, before
 //!   it is sent, and is sent again with the same bytes until the server answers. After `stored` it
 //!   merges the Commit, uploads the new epoch's GroupInfo, then sends the Welcome to the devices it

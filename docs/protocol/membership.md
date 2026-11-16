@@ -468,7 +468,7 @@ A member device:
 - A device joins by itself only while no device has added it: once its mailbox catch-up is done, with no Welcome for the channel in it, and when the latest GroupInfo does not list it. Without a GroupInfo of the current epoch it waits. This is the table's "Otherwise": a device that should add it but has not yet, or got no KeyPackage for it, does not block it.
 - A device's Adds skip devices already in the group, such as one that joined by itself meanwhile.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
-- A device that refuses a Welcome or a GroupInfo, as its signer or a member it lists is not admitted, stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it.
+- A device refuses a Welcome whose signer is not admitted, and a GroupInfo whose signer or a member it lists is not; it stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it. A device that joins from a Welcome listing a member that is not admitted warns its user and removes that member.
 - The joiner uploads the GroupInfo of the new epoch.
 
 ### Rejoining
