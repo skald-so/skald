@@ -5521,7 +5521,7 @@
       "SignInMethod": {
         "description": "A sign-in method: a provider and the subject it gives the person, which the server does not show.",
         "type": "object",
-        "required": ["method", "provider", "linked_at"],
+        "required": ["method", "provider", "linked_at", "current"],
         "properties": {
           "method": {
             "$ref": "#/components/schemas/SignInMethodId"
@@ -5539,6 +5539,10 @@
           "github_login": {
             "description": "A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub.",
             "type": "string"
+          },
+          "current": {
+            "description": "Whether the request's web session signed in with this method; `false` for a device session.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false

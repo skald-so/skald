@@ -36,6 +36,7 @@ use common::{browser, spa};
 
 mod account;
 
+mod current;
 mod ending;
 mod pages;
 mod refusals;

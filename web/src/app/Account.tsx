@@ -177,7 +177,7 @@ export function AccountScreen({
             with it are signed out. Machines signed in with <code>skald</code>{" "}
             stay.
           </p>
-          {asking.provider === session.sign_in_method && (
+          {asking.current && (
             <p>You signed in with it here: this signs this browser out too.</p>
           )}
         </ConfirmDialog>
@@ -191,8 +191,9 @@ const signInTooOld = "https://skald.so/problems/sign-in-too-old";
 
 /**
  * The Account page of the session's account with its methods and the server's providers from the
- * API, listed again after each removal. A removal calls `onChanged`, which loads the session again;
- * when the API refuses the session, `onSignedOut` shows the sign-in page.
+ * API. A removal calls `onChanged`, which loads the session again: the page lists the methods again
+ * once the new session comes, or the sign-in page shows once it has ended. One load at a time, so
+ * none is aborted in flight. When the API refuses the session, `onSignedOut` shows the sign-in page.
  */
 export function Account({
   session,
@@ -210,8 +211,6 @@ export function Account({
   const [providers, setProviders] = useState<SignInProvider[]>([]);
   const [failed, setFailed] = useState<string>();
   const [signInAgain, setSignInAgain] = useState(false);
-  /** Counts the removals, each of which lists the methods again. */
-  const [changes, setChanges] = useState(0);
 
   useEffect(() => {
     const request = new AbortController();
@@ -230,7 +229,8 @@ export function Account({
       },
     );
     return () => request.abort();
-  }, [changes, onSignedOut]);
+    // A new `session` after a removal lists the methods again.
+  }, [session, onSignedOut]);
 
   async function remove(method: SignInMethod) {
     setFailed(undefined);
@@ -246,7 +246,6 @@ export function Account({
     } catch {
       setFailed("Removing the sign-in method failed.");
     }
-    setChanges((changes) => changes + 1);
     onChanged();
   }
 

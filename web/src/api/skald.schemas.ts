@@ -179,6 +179,8 @@ export interface SignInMethod {
   linked_at: string;
   /** A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub. */
   github_login?: string;
+  /** Whether the request's web session signed in with this method; `false` for a device session. */
+  current: boolean;
 }
 
 export interface SignInMethods {

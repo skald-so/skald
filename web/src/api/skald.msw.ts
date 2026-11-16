@@ -612,6 +612,7 @@ export const getListSignInMethodsResponseMock = (
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
     ]),
+    current: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
@@ -630,6 +631,7 @@ export const getListSignInMethodsResponseMock200 = (
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
     ]),
+    current: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
