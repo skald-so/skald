@@ -1,7 +1,9 @@
-//! What a device holds admitted when it checks its channels' Welcomes and Commits
-//! (`docs/protocol/membership.md`, "Admitted devices" and "Group changes"): before it holds a
-//! device a Commit adds, or a Welcome's signer, not admitted, it accepts the space's latest
-//! revisions, so a device that a revision its run did not see yet admits is taken as admitted.
+//! What a device does with its channels' groups beyond the tests of channel groups
+//! (`docs/protocol/membership.md`, "Admitted devices", "Group changes" and "MLS profile"): before it
+//! holds a device a Commit adds, or a Welcome's signer, not admitted, it accepts the space's latest
+//! revisions, so a device that a revision its run did not see yet admits is taken as admitted; a
+//! run brings in line every channel whose Commits it processes, not only the one it sends to; and a
+//! run uploads the GroupInfo of a group it holds when the server has none of its epoch.
 //!
 //! As the tests of channel groups (`channel_groups/main.rs`): the CLI under test runs on Ada's
 //! machine, the other people's devices are played by the tests, and the first answer the relay
@@ -44,13 +46,13 @@ mod keys;
 
 use skald_proto::Role;
 
-use fixtures::{cert_of, fronted};
+use fixtures::{cert_of, fronted, send};
 use kit::{
-    Change, assert_listed_with, channels, create_space, group, issue_channel, latest, received,
-    revise, stale_once, warnings_naming,
+    Change, assert_listed_with, channels, create_space, group, group_on_server, issue_channel,
+    latest, received, revise, stale_once, warnings_naming,
 };
 use played::{Played, take_key_package};
-use world::{ACME, now};
+use world::{ACME, now, spaces};
 
 /// The host names of the people's machines, their certificates' `name`.
 const ADA_HOST: &str = "ada-workstation";
@@ -77,11 +79,59 @@ fn acme_with_channel(
     (space, channel, third)
 }
 
-/// Revision 3, by Ada's device, adds Bob as an admin, Carol as a member and a channel of Ada and
-/// Bob, whose group Ada's device forms with Bob's; revision 4, by Bob's device, adds Carol to the
-/// channel, and Bob's device commits the Add of Carol's. Ada's run first sees the revisions up to
-/// 3: it accepts revision 4 before it holds Carol's device not admitted, so it warns of none and
-/// keeps it, and uploads the new epoch's GroupInfo.
+/// Fails unless the server's GroupInfo of `channel` in `space` is of `epoch`, its members `devices`,
+/// and Ada's device signed it.
+#[track_caller]
+fn assert_ada_signs(
+    cloud: &cloud::Cloud,
+    ada: &world::Person,
+    (space, channel): (skald_proto::SpaceId, skald_proto::ChannelId),
+    (epoch, devices): (u64, &[skald_proto::DeviceId]),
+) {
+    let held = group(cloud, &ada.token, space, channel);
+    held.assert_is(epoch, devices);
+    assert_eq!(held.signer, ada.device, "the GroupInfo's signer");
+}
+
+/// Ada's machine creates `acme`, whose revision 3, by Ada's device, adds Bob as an admin, Carol as a
+/// member and a channel of Ada and Bob, whose group Ada's device forms with Bob's; revision 4, by
+/// Bob's device, adds Carol to the channel, and, if `leaves`, revision 5 takes her out again. Bob's
+/// device then commits the Add of Carol's in the channel. Gives the space and the channel.
+fn bob_adds_carol(
+    world: &world::World,
+    ada: &world::Person,
+    (bob, carol): (&mut Played, &Played),
+    leaves: bool,
+) -> (kit::Space, skald_proto::ChannelId) {
+    let cloud = &world.cloud;
+    let added = [(&bob.person, Role::Admin), (&carol.person, Role::Member)];
+    let (space, channel, third) = acme_with_channel(world, ada, &added);
+    received(&ada.machine);
+    bob.take_in(cloud);
+    let joins = Change {
+        join: vec![(channel, &carol.person)],
+        ..Change::default()
+    };
+    let fourth = revise(cloud, &third, &bob.person, &joins);
+    if leaves {
+        let leave = Change {
+            leave: vec![(channel, &carol.person)],
+            ..Change::default()
+        };
+        revise(cloud, &fourth, &bob.person, &leave);
+    }
+    let package = take_key_package(cloud, &bob.person.token, carol.device());
+    let carol_cert = cert_of(cloud, &carol.person);
+    let commit = (bob.mls)
+        .add_devices(channel, &[package], &[carol_cert], now())
+        .expect("a Commit");
+    bob.commits(cloud, (space.id, channel), &commit);
+    (space, channel)
+}
+
+/// Bob's device commits the Add of Carol's, whom revision 4 adds to the channel. Ada's run first
+/// sees the revisions up to 3: it accepts revision 4 before it holds Carol's device not admitted, so
+/// it warns of none and keeps it, and uploads the new epoch's GroupInfo.
 #[test]
 fn device_a_commit_adds_that_a_revision_the_run_did_not_see_admits_stays() {
     let (world, _front) = fronted();
@@ -95,25 +145,7 @@ fn device_a_commit_adds_that_a_revision_the_run_did_not_see_admits_stays() {
         cloud,
         world.sign_up(4_135_056_003, "carol-admitted-late", CAROL_HOST),
     );
-    let added = [(&bob.person, Role::Admin), (&carol.person, Role::Member)];
-    let (space, channel, third) = acme_with_channel(&world, &ada, &added);
-    received(&ada.machine);
-    bob.take_in(cloud);
-    revise(
-        cloud,
-        &third,
-        &bob.person,
-        &Change {
-            join: vec![(channel, &carol.person)],
-            ..Change::default()
-        },
-    );
-    let package = take_key_package(cloud, &bob.person.token, carol.device());
-    let carol_cert = cert_of(cloud, &carol.person);
-    let commit = (bob.mls)
-        .add_devices(channel, &[package], &[carol_cert], now())
-        .expect("a Commit");
-    bob.commits(cloud, (space.id, channel), &commit);
+    let (space, channel) = bob_adds_carol(&world, &ada, (&mut bob, &carol), false);
     stale_once(cloud, space.id, 3);
 
     let ran = received(&ada.machine);
@@ -122,9 +154,87 @@ fn device_a_commit_adds_that_a_revision_the_run_did_not_see_admits_stays() {
         warnings_naming(&ran, carol.device()).is_empty(),
         "Carol's device is held not admitted: {ran:?}"
     );
-    let held = group(cloud, &ada.token, space.id, channel);
-    held.assert_is(2, &[ada.device, bob.device(), carol.device()]);
-    assert_eq!(held.signer, ada.device, "the GroupInfo's signer");
+    assert_ada_signs(
+        cloud,
+        &ada,
+        (space.id, channel),
+        (2, &[ada.device, bob.device(), carol.device()]),
+    );
+}
+
+/// Bob's device commits the Add of Carol's in the channel, which revision 5 takes her out of. Ada's
+/// `skald send` to the default channel goes through that Commit too: it warns of Carol's device,
+/// commits its Remove from the channel's group and uploads the new epoch's GroupInfo.
+#[test]
+fn send_to_one_channel_removes_a_device_another_channels_commit_added_that_is_not_admitted() {
+    let (world, _front) = fronted();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_135_056_201, "ada-sends-elsewhere", ADA_HOST);
+    let mut bob = Played::new(
+        cloud,
+        world.sign_up(4_135_056_202, "bob-lets-carol-in", BOB_HOST),
+    );
+    let carol = Played::new(
+        cloud,
+        world.sign_up(4_135_056_203, "carol-let-in-late", CAROL_HOST),
+    );
+    let (space, channel) = bob_adds_carol(&world, &ada, (&mut bob, &carol), true);
+
+    let sent = send(&ada.machine, space.default, "the standup moves to ten");
+
+    assert!(sent.success, "{sent:?}");
+    assert!(
+        !warnings_naming(&sent, carol.device()).is_empty(),
+        "no warning naming Carol's device: {sent:?}"
+    );
+    assert_ada_signs(
+        cloud,
+        &ada,
+        (space.id, channel),
+        (3, &[ada.device, bob.device()]),
+    );
+}
+
+/// The request that uploads a channel's GroupInfo, as its line starts.
+const UPLOAD: &str = "PUT /spaces/";
+
+/// The server refuses the GroupInfo that Ada's `skald create-space` uploads for the default
+/// channel's group, which it formed alone; then Ada's machine runs `next`. Fails unless that run
+/// uploads the GroupInfo of epoch 1, since the server has none.
+#[track_caller]
+fn assert_next_run_uploads_group_info(seed: u64, login: &str, next: fn(&machine::Machine)) {
+    let (world, _front) = fronted();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(seed, login, ADA_HOST);
+    cloud.relay.refuse(UPLOAD, "503 Service Unavailable");
+    let space = create_space(cloud, &ada, ACME);
+    cloud.relay.stop_refusing();
+    let before = group_on_server(cloud, &ada.token, space.id, space.default);
+    assert!(
+        matches!(before, (true, None)),
+        "not a group without GroupInfo: {before:?}"
+    );
+
+    next(&ada.machine);
+
+    assert_ada_signs(cloud, &ada, (space.id, space.default), (1, &[ada.device]));
+}
+
+/// Ada's `skald channels` uploads the GroupInfo whose upload failed.
+#[test]
+fn group_info_whose_upload_failed_is_uploaded_by_the_next_run() {
+    assert_next_run_uploads_group_info(4_135_056_301, "ada-uploads-again", |machine| {
+        channels(machine, ACME);
+    });
+}
+
+/// Ada's `skald spaces` brings the space's groups in line too: it uploads the GroupInfo whose
+/// upload failed.
+#[test]
+fn group_info_whose_upload_failed_is_uploaded_by_skald_spaces() {
+    assert_next_run_uploads_group_info(4_135_056_302, "ada-lists-spaces", |machine| {
+        spaces(machine);
+    });
 }
 
 /// Revision 3, by Ada's device, adds Bob as a member and a channel of Ada and Bob, which Bob's
