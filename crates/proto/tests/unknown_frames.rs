@@ -42,7 +42,7 @@ fn a_batch_keeps_its_entries_of_unknown_types_as_they_came_in() {
 
 #[test]
 fn a_batch_holds_no_frame_of_another_known_type() {
-    for frame_type in [1, 2, 3, 4, 7, 8, 10] {
+    for frame_type in [1, 2, 3, 4, 7, 8, 10, 11, 12, 13] {
         assert_field_problem(
             Frame::from_cbor(&hex(&format!("82 08 81 81 {frame_type:02x}"))),
             &FieldProblem::Value(frame_type),

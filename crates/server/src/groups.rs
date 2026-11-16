@@ -6,7 +6,8 @@
 //! device of its sender leaf, or its joiner. It routes the channel's `mls` envelopes to the member
 //! devices of the group ("Envelope"; `docs/protocol/delivery.md`, "Send"), one at a time under the
 //! group's row lock, so every mailbox holds them in one order ("Order"). It keeps the latest
-//! GroupInfo of the current epoch and gives it to the channel's members.
+//! GroupInfo of the current epoch and gives it to the channel's members, and the member devices of
+//! each epoch, which may upload its history ([`history`](crate::history)).
 
 use axum::Json;
 use axum::body::Bytes;
@@ -15,7 +16,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use skald_crypto::{ChannelView, MlsContent, MlsFraming};
-use skald_proto::{AccountId, ChannelId, DeviceId, Header, Roster};
+use skald_proto::{AccountId, ChannelId, ChannelMember, DeviceId, Header, Roster};
 use sqlx::PgConnection;
 
 use crate::AppState;
@@ -193,6 +194,7 @@ async fn commit(
     .bind(texts(&next.members))
     .execute(&mut *tx)
     .await?;
+    keep_epoch(tx, channel, &next).await?;
     Ok(Ok(others(&group.members, sender.device)))
 }
 
@@ -218,6 +220,24 @@ async fn create(
     } else {
         Err(Problem::EpochMismatch)
     })
+}
+
+/// Keeps the member devices of `view`'s epoch of `channel` on `tx`.
+async fn keep_epoch(
+    tx: &mut PgConnection,
+    channel: ChannelId,
+    view: &Saved,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO channel_epochs (channel_id, epoch, members)
+         VALUES ($1::uuid, $2, $3::text[]::uuid[]) ON CONFLICT DO NOTHING",
+    )
+    .bind(channel.to_string())
+    .bind(i64::try_from(view.epoch).expect("an epoch below 2^63"))
+    .bind(texts(&view.members))
+    .execute(tx)
+    .await?;
+    Ok(())
 }
 
 /// A view as the database keeps it: saved, with its epoch and member devices.
@@ -265,13 +285,13 @@ struct ChannelGroup {
 }
 
 /// The channel `channel` of the space `space`, path parameters, that the latest revision lists,
-/// for a session of `account`, which gets the space; with the channel's member accounts.
+/// for a session of `account`, which gets the space; with the channel's members.
 async fn channel_of(
     state: &AppState,
     account: &str,
     space: &str,
     channel: &str,
-) -> Result<(ChannelId, Vec<AccountId>), Refusal> {
+) -> Result<(ChannelId, Vec<ChannelMember>), Refusal> {
     let found = find(&state.db, space, account).await?;
     if !found.gets {
         return Err(Refusal::NoSpace);
@@ -283,9 +303,28 @@ async fn channel_of(
     let listed = roster.and_then(|roster| {
         let body = roster.body();
         let listed = body.channels.iter().find(|listed| listed.id == channel)?;
-        Some(listed.members.iter().map(|member| member.account).collect())
+        Some(listed.members.clone())
     });
     Ok((channel, listed.ok_or(Refusal::NoChannel)?))
+}
+
+/// The channel `channel` of the space `space`, path parameters, for a session of `account`, which
+/// the latest revision lists as one of the channel's members, with whether it lists the account
+/// with `history`; otherwise refused.
+pub(crate) async fn members_channel(
+    state: &AppState,
+    account: &str,
+    space: &str,
+    channel: &str,
+) -> Result<(ChannelId, bool), Refusal> {
+    let (channel, members) = channel_of(state, account, space, channel).await?;
+    let id: AccountId = account.parse().expect("a stored account ID");
+    let Some(member) = members.iter().find(|member| member.account == id) else {
+        return Err(Refusal::NotAllowed(
+            "only the channel's members in the latest revision get it".to_owned(),
+        ));
+    };
+    Ok((channel, member.history))
 }
 
 /// `GET /spaces/<space>/channels/<channel>/group-info`: whether the channel has a group, and its
@@ -296,13 +335,7 @@ pub(crate) async fn latest(
     SignedIn(account): SignedIn,
     Path((space, channel)): Path<(String, String)>,
 ) -> Answer {
-    let (channel, members) = channel_of(&state, &account, &space, &channel).await?;
-    let id: AccountId = account.parse().expect("a stored account ID");
-    if !members.contains(&id) {
-        return Err(Refusal::NotAllowed(
-            "only the channel's members in the latest revision get its GroupInfo".to_owned(),
-        ));
-    }
+    let (channel, _) = members_channel(&state, &account, &space, &channel).await?;
     let found: Option<(Option<Vec<u8>>,)> =
         sqlx::query_as("SELECT group_info FROM channel_groups WHERE channel_id = $1::uuid")
             .bind(channel.to_string())
@@ -403,6 +436,11 @@ pub(crate) async fn upload(
     .execute(&mut *tx)
     .await
     .map_err(failed)?;
+    if starts {
+        keep_epoch(&mut tx, channel, &uploaded)
+            .await
+            .map_err(failed)?;
+    }
     tx.commit().await.map_err(failed)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
