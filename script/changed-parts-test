@@ -4,8 +4,9 @@
 # Markdown files and site/ check the website, and so do any Markdown file and a removed path that
 # docs/ links to.
 # With --since, the changes from where HEAD branched off the base to the working tree count.
-# The self-host stack's part: the paths of the server image, the browser's packages, the compose file,
-# Caddy's config and the self-host guide, the one path in docs/ that marks another part than site.
+# The self-host stack's part: the paths of the server image, the browser's packages, the web app's
+# build, the compose file, Caddy's config and the self-host guide, the one path in docs/ that marks
+# another part than site.
 # Also tests that script/test rejects an unknown part instead of skipping it, and that with
 # SKALD_TEST_SINCE it checks the parts the changes since that base touch, on a copy that runs no
 # check (script/lib/test-stand-ins.sh): every part when none or when that cannot be told; a change
@@ -106,12 +107,12 @@ rust='workspace wasm image self-host mls agents edits repository'
 crates='workspace wasm image self-host repository'
 all="$rust tooling web site"
 
-# The browser tests of the workspace run the web app's build.
-expect 'workspace web' web/src/App.tsx
-expect 'workspace web' web/public/robots.txt
-expect 'workspace web' web/index.html
-expect 'workspace web' web/vite.config.ts
-expect 'workspace web' web/tsconfig.app.json
+# The browser tests of the workspace run the web app's build, and the self-host stack serves it.
+expect 'workspace self-host web' web/src/App.tsx
+expect 'workspace self-host web' web/public/robots.txt
+expect 'workspace self-host web' web/index.html
+expect 'workspace self-host web' web/vite.config.ts
+expect 'workspace self-host web' web/tsconfig.app.json
 expect web web/kit.test.ts
 # Any Markdown file: a link of docs/ can name its headings.
 expect 'web site' web/README.md
@@ -120,7 +121,7 @@ expect 'web site' web/README.md
 expect 'workspace self-host web' web/package.json
 expect 'workspace self-host web' web/package-lock.json
 expect 'workspace self-host web' -web/package.json
-expect 'workspace web site' web/src/App.tsx docs/dev/roadmap.md task.md
+expect 'workspace self-host web site' web/src/App.tsx docs/dev/roadmap.md task.md
 
 expect "$crates" crates/server/src/lib.rs
 expect "$crates site" crates/server/README.md
@@ -175,7 +176,7 @@ expect web web/logo.svg
 expect 'web site' -web/logo.svg
 expect 'web site' 'web/logo.svg->web/logo-old.svg'
 expect web -web/logo.svg.bak
-expect 'workspace web' -web/src/App.tsx
+expect 'workspace self-host web' -web/src/App.tsx
 expect 'mls repository' prototypes/mls/benchmarks/src/main.rs
 expect 'mls repository site' -prototypes/mls/benchmarks/src/main.rs
 expect 'edits repository site' -prototypes/edits/overlap/dictionary/names.txt
@@ -224,7 +225,7 @@ apply crates/server/src/lib.rs
 git commit --quiet --all --message dev
 git merge --quiet --no-edit "$pr"
 got=$(parts HEAD^1)
-[[ $got == 'workspace web' ]] || fail "merged PR: got '$got', want 'workspace web'"
+[[ $got == 'workspace self-host web' ]] || fail "merged PR: got '$got', want 'workspace self-host web'"
 
 # The exact output, for $GITHUB_OUTPUT.
 git checkout --quiet --detach "$base"
@@ -446,6 +447,8 @@ done
 # self-host stack's part runs for its packages too.
 reads web/package.json 'cargo test --workspace --locked' script/self-host-test 'web: npm run lint' \
   'web: npm test' 'web: npm run build'
+# The self-host stack serves the web app's build.
+reads web/src/App.tsx script/self-host-test 'web: npm run build'
 
 if [[ $failures -ne 0 ]]; then
   echo "changed-parts-test: $failures case(s) failed" >&2

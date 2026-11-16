@@ -9,12 +9,24 @@
 # The guide's commands are in marked code blocks, fenced with the info string `<language>
 # self-host=<step>`. The part extracts them and runs each scenario's steps in its order, in one bash
 # with errexit and pipefail, in root's home directory; a step's blocks run in the guide's order. A
-# marked block of a step no scenario runs, or a step without a block, fails it. The steps:
+# marked block of a step no scenario runs fails it; so does a step without a block, whose scenarios
+# still run without it. The steps:
 #   release              the release values, in one place: SKALD_VERSION (X.Y.Z), SKALD_DIGEST
-#                        (sha256:<hex>, the image's) and SKALD_FILES (the address of the directory
-#                        with the release's compose file and Caddy config); the part sets them after it
+#                        (sha256:<hex>, the image's), SKALD_FILES (the address of the directory
+#                        with the release's compose file and Caddy config) and SKALD_WEB (the address
+#                        of the directory with the web app's archive skald-web.tar.gz, its
+#                        skald-web.tar.gz.sha256 and skald-web.tar.gz.sigstore.json: for X.Y.Z,
+#                        https://github.com/skald-so/skald/releases/download/vX.Y.Z); the part sets
+#                        them after it
 #   files                gets the compose file and Caddy config from $SKALD_FILES into the stack's
 #                        directory, with curl
+#   web-files            gets the web app's archive, its checksum and its attestation from $SKALD_WEB
+#                        into the stack's directory
+#   web-check            checks the archive against its checksum and its attestation, in a container,
+#                        pinned to the release workflow .github/workflows/release.yml at the tag
+#                        v$SKALD_VERSION; fails for any other archive
+#   web                  puts the checked archive's web app in place in the stack's directory, which
+#                        keeps it and from which the stack serves it
 #   image-check          checks the image ghcr.io/skald-so/skald-server@$SKALD_DIGEST of the release
 #                        $SKALD_VERSION, with the commands of infrastructure.md, "Trust in builds"
 #   env                  writes .env, naming the image ghcr.io/skald-so/skald-server@$SKALD_DIGEST
@@ -38,14 +50,15 @@
 #   upgrade              upgrades the stack, in its directory, to the release of the values of
 #                        `release`, which runs before it: gets its compose file and Caddy config from
 #                        $SKALD_FILES, names its image ghcr.io/skald-so/skald-server@$SKALD_DIGEST in
-#                        .env and restarts the stack's Caddy, if it runs; after image-check and
-#                        backup, then up
+#                        .env and restarts the stack's Caddy, if it runs; after image-check,
+#                        web-files, backup and web, then up
 #   rollback             rolls the upgraded stack back, in its directory, to the release of the values
 #                        of `release`, which runs before it: puts its compose file and Caddy config from
 #                        $SKALD_FILES and its image ghcr.io/skald-so/skald-server@$SKALD_DIGEST in place
 #                        and leaves the stack ready for `restore` of the backup from the upgrade, or
 #                        stops, changing nothing, unless that backup is a gzip tar archive holding
-#                        database.sql; then restore and up
+#                        database.sql; then, for a release with the web app's archive, web-files,
+#                        web-check and web, then restore and up
 #   proxy-host           the proxy variant's .env for a proxy on the machine
 #   proxy-host-site      the site block of a Caddy on the machine (Caddyfile)
 #   proxy-join           the proxy variant's .env for a proxy in a container that joins the stack's
@@ -55,7 +68,9 @@
 #   proxy-container-site the site block of a Caddy in a container (Caddyfile)
 # The part substitutes only these, in every block: SKALD_VERSION, SKALD_DIGEST and SKALD_FILES, to
 # the last release's version and image digest and this commit's files at the repository root, with
-# the sign-in checks at their paths in script/; in .env, this commit's image for
+# the sign-in checks at their paths in script/; SKALD_WEB, to this commit's web app built by
+# script/release-web, with an attestation of nothing, `{}`, so its stacks skip web-check, and for the
+# last release's stack to its GitHub Release; in .env, this commit's image for
 # ghcr.io/skald-so/skald-server@$SKALD_DIGEST; for the last release's stack and its rollback,
 # SKALD_FILES, the last release's compose file and Caddy config from its tag, or this commit's with a
 # comment line added when the tag has none, and in .env that release's image, pulled by its digest for linux/amd64, under a
@@ -99,9 +114,10 @@
 #   proxy-host, proxy-join, proxy-network: the proxy variant behind a stand-in for the admin's proxy,
 #     Caddy with the guide's site block and a certificate from the ACME server: on the machine for the
 #     loopback form; in a container that the guide's command joins to the stack's network; in a
-#     container on a network that exists before the stack. The stack starts no Caddy; the server's
-#     port is published only on loopback in the first form and not at all in the others, and does not
-#     answer on the machine's address; /health and skald status answer through the proxy.
+#     container on a network that exists before the stack. The stack publishes ports only on
+#     loopback in the first form and not at all in the others, and port 8080 does not answer on the
+#     machine's address; /health and skald status answer through the proxy. The stack's own Caddy
+#     may run, to serve the web app behind the proxy.
 #   backup: release, files, env, github, google, up. Machines sign in by device flow, one's person
 #     with GitHub and another's with Google, and create spaces; files go into the attachments volume.
 #     The guide's backup, the part's path for `<backup file>`, writes one file readable only by its
@@ -184,6 +200,36 @@
 # README's "Self-hosting" and infrastructure.md's "Self-host" link to the guide. The guide names the
 # GitHub and Google callbacks on the domain.
 #
+# The web app: every stack of this commit runs web-files and web after files. Where the part checks
+# it, the domain serves this commit's web app over HTTPS, its index page at its pages and at an
+# unknown path, and its files, each with a Content-Security-Policy that admits only its own origin
+# and no framing; GET of every path of the OpenAPI spec answers as the server does, never with the
+# web app.
+#   spa: release, files, web-files, web, env, github, up. The stack's directory keeps the web app;
+#     the person, in headless Chrome, opens its pages without a session and gets the sign-in page,
+#     breaking no rule of the policy; signs up in one click with GitHub; a machine signs in by device
+#     flow; the cabinet's Machines shows it linked, Members the person as the personal space's
+#     admin, Usage no limit; Revoke on the machine's CLI session in Access, and skald devices there
+#     fails.
+#   proxy-host, proxy-join, proxy-network: also web-files, web and github; through the proxy, the
+#     web app and the spec's paths as above, and the person signs in to the web app. The guide's site
+#     blocks serve no file.
+#   web-mismatch, web-unattested: release, files, web-files, web-check, web with this commit's
+#     archive and a checksum of other bytes, or its checksum and the attestation of nothing: the steps
+#     fail before web, the latter at web-check, and the stack's directory holds no file of the
+#     archive. Once the last release has the archive, web-release: these steps pass for it and unpack
+#     it; web-other-release, web-other-workflow: they fail at web-check for it checked as v0.0.1's,
+#     or against .github/workflows/edge.yml, unpacking nothing. Until then, the part names the check
+#     skipped.
+#   The upgrade tests also: after upgrade, the stack serves this commit's web app; after rollback, /
+#     and /machines answer as before the upgrade. proxy-last-release: the last release's stack in
+#     the proxy variant's loopback form, with its guide's proxy-host and proxy-host-site; proxy-upgrade:
+#     the guide's upgrade, after which the API answers through the proxy; proxy-upgrade-web: this
+#     commit's proxy-host and proxy-host-site, after which the web app and the API do.
+#   The guide's sections of the steps upgrade and rollback link to the heading above the block of
+#     the step web; that of upgrade also to a heading of the proxy variant's section.
+#   architecture.md's "Components": its Frontend item says a self-hosted server serves the web app.
+#
 # The image check reaches ghcr.io and Sigstore; the upgrades, ghcr.io and GitHub Releases. Removes the containers, images and files it creates.
 set -euo pipefail
 
@@ -193,6 +239,8 @@ cd "$root"
 source script/lib/s3.sh
 
 guide=docs/self-host.md
+# The web app's archive in a release.
+web_archive=skald-web.tar.gz
 domain=skald.self-host.test
 bucket_endpoint=https://s3.self-host.test
 bucket_region=us-east-1
@@ -249,6 +297,11 @@ finish() {
   exit 0
 }
 
+# sha256: the SHA-256 of standard input, in hex.
+sha256() {
+  if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi | cut -d ' ' -f 1
+}
+
 # section <file> <heading>: the lines of <file> from the level-2 heading <heading> to the next one.
 section() {
   awk -v heading="## $2" '
@@ -270,8 +323,41 @@ deployment=$(awk '/^- \*\*Deployment:\*\*/ { inside = 1; print; next } inside &&
   fail "infrastructure.md's \"Deployment\" still says migrations are backward compatible only"
 grep -qiE 'roll ?back' <<<"$deployment" || fail "infrastructure.md's \"Deployment\" does not say how a rollback goes"
 
-# The guide's marked blocks: $work/blocks/<n>, in the guide's order, and their steps, `<n> <step>`
-# lines in $work/blocks/list. A block in a list item drops its fence's indentation.
+# extract_blocks <guide> <dir>: the guide's marked blocks: <dir>/<n>, in the guide's order, and
+# their steps, `<n> <step>` lines in <dir>/list. A block in a list item drops its fence's indentation.
+extract_blocks() {
+  mkdir -p "$2"
+  awk -v dir="$2" '
+    !inside && /^ *(```|~~~)/ && /self-host/ {
+      match($0, /^ */)
+      indent = RLENGTH
+      fence = substr($0, indent + 1, 3)
+      step = ""
+      words = split(substr($0, indent + 4), word, /[ \t]+/)
+      for (i = 1; i <= words; i++) {
+        if (word[i] ~ /^self-host=/) { step = substr(word[i], 11) }
+      }
+      n++
+      file = sprintf("%s/%03d", dir, n)
+      printf "" >file
+      printf "%03d %s\n", n, (step == "" ? "?" : step) >(dir "/list")
+      inside = 1
+      next
+    }
+    inside && index($0, fence) && $0 ~ ("^ *" (fence == "```" ? "```" : "~~~") "[`~]* *$") {
+      inside = 0
+      close(file)
+      next
+    }
+    inside {
+      line = $0
+      for (k = 0; k < indent && substr(line, 1, 1) == " "; k++) { line = substr(line, 2) }
+      print line >>file
+    }
+  ' "$1"
+  touch "$2/list"
+}
+
 if [[ ! -f $guide ]]; then
   fail "no self-host guide: $guide"
   finish
@@ -280,39 +366,11 @@ for provider in github google; do
   grep -qF "https://skald.example.com/auth/$provider/callback" "$guide" ||
     fail "$guide does not name the callback https://skald.example.com/auth/$provider/callback"
 done
-mkdir -p "$work/blocks"
-awk -v dir="$work/blocks" '
-  !inside && /^ *(```|~~~)/ && /self-host/ {
-    match($0, /^ */)
-    indent = RLENGTH
-    fence = substr($0, indent + 1, 3)
-    step = ""
-    words = split(substr($0, indent + 4), word, /[ \t]+/)
-    for (i = 1; i <= words; i++) {
-      if (word[i] ~ /^self-host=/) { step = substr(word[i], 11) }
-    }
-    n++
-    file = sprintf("%s/%03d", dir, n)
-    printf "" >file
-    printf "%03d %s\n", n, (step == "" ? "?" : step) >(dir "/list")
-    inside = 1
-    next
-  }
-  inside && index($0, fence) && $0 ~ ("^ *" (fence == "```" ? "```" : "~~~") "[`~]* *$") {
-    inside = 0
-    close(file)
-    next
-  }
-  inside {
-    line = $0
-    for (k = 0; k < indent && substr(line, 1, 1) == " "; k++) { line = substr(line, 2) }
-    print line >>file
-  }
-' "$guide"
-touch "$work/blocks/list"
+extract_blocks "$guide" "$work/blocks"
 before=$failures
-steps='release files image-check env bucket github google sign-up up status github-check google-check
-  proxy-host proxy-host-site proxy-join proxy-join-connect proxy-network proxy-container-site'
+steps='release files web-files web-check web image-check env bucket github google sign-up up status
+  github-check google-check'
+steps+=' proxy-host proxy-host-site proxy-join proxy-join-connect proxy-network proxy-container-site'
 steps+=' backup restore'
 steps+=' upgrade rollback'
 while read -r n step; do
@@ -322,21 +380,23 @@ while read -r n step; do
     fail "$guide: a marked block of the step '$step', which the part does not run:"$'\n'"$(cat "$work/blocks/$n")"
   fi
 done <"$work/blocks/list"
+if [[ $failures -ne $before ]]; then
+  finish
+fi
+# A step without a block fails the part; its scenarios still run, without it.
 for step in $steps; do
   if ! grep -q " $step\$" "$work/blocks/list"; then
     fail "$guide: no block of the step $step"
   fi
 done
-if [[ $failures -ne $before ]]; then
-  finish
-fi
 
-# block_text <step>: the guide's blocks of <step>, with the part's substitutions.
+# block_text <step> [<blocks>]: the guide's blocks of <step>, those of extract_blocks in <blocks>,
+# this commit's guide's by default, with the part's substitutions.
 block_text() {
-  local n step text
+  local n step text blocks=${2:-$work/blocks}
   while read -r n step; do
     if [[ $step == "$1" ]]; then
-      text=$(cat "$work/blocks/$n")
+      text=$(cat "$blocks/$n")
       text=${text//skald.example.com/$domain}
       text=${text//"<bucket endpoint>"/$bucket_endpoint}
       text=${text//"<bucket region>"/$bucket_region}
@@ -351,8 +411,27 @@ block_text() {
       text=${text//"<Google domains>"/no-account.self-host.test}
       printf '%s\n' "$text"
     fi
-  done <"$work/blocks/list"
+  done <"$blocks/list"
 }
+
+# The web app's release value: SKALD_WEB, the address of the directory with the release's archive,
+# its checksum and its attestation, its GitHub Release's.
+said=$(block_text release | sed "s|<version>|9.8.7|g" |
+  bash -c 'eval "$(cat)" >/dev/null 2>&1; printf %s "${SKALD_WEB:-}"' 2>/dev/null || true)
+[[ $said == https://github.com/skald-so/skald/releases/download/v9.8.7 ]] ||
+  fail "$guide: the step release sets SKALD_WEB to '$said' for the release 9.8.7, not" \
+    "https://github.com/skald-so/skald/releases/download/v9.8.7"
+# The admin's proxy only passes requests to the stack: its site blocks serve no file.
+for step in proxy-host-site proxy-container-site; do
+  if block_text "$step" | grep -qE '^[[:space:]]*(root|file_server|try_files|templates)([[:space:]]|$)'; then
+    fail "$guide: the proxy's site block of the step $step serves files:"$'\n'"$(block_text "$step")"
+  fi
+done
+# architecture.md, "Components": the frontend's item says a self-hosted server serves it.
+frontend=$(section docs/dev/architecture.md Components |
+  awk '/^- \*\*Frontend\*\*/ { inside = 1; print; next } inside && /^- / { exit } inside { print }')
+grep -qiE 'self-host' <<<"$frontend" ||
+  fail "architecture.md's \"Components\" does not say a self-hosted server serves the web app on its domain"
 
 # The last release, the image check's: the newest vX.Y.Z tag, its image's digest; and :edge's.
 version=$(git tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
@@ -369,6 +448,19 @@ if ! release_digest=$(digest "$version") || ! edge_digest=$(digest edge); then
   fail "cannot read the digests of ghcr.io/skald-so/skald-server:$version and :edge"
   finish
 fi
+# The last release's web app: release_web, the address of its archive, checksum and attestation in
+# its GitHub Release, when it has the archive; empty when it has none.
+release_web=https://github.com/skald-so/skald/releases/download/v$version
+status=$(curl --silent --location --retry 3 --output /dev/null --write-out '%{http_code}' --head \
+  "$release_web/$web_archive" || true)
+case $status in
+  200) ;;
+  404) release_web= ;;
+  *)
+    fail "cannot tell whether v$version has $web_archive: $release_web/$web_archive answers '$status'"
+    finish
+    ;;
+esac
 
 # This commit's server image and skald for Linux, the machine and the stand-ins.
 docker build --quiet --file crates/server/Dockerfile --build-arg "REVISION=$(git rev-parse HEAD)" \
@@ -420,6 +512,31 @@ if [[ ! -f web/node_modules/playwright-core/package.json ]]; then
 fi
 cp script/lib/self-host/person.mjs "$work/machine/person/"
 cp -R web/node_modules/playwright-core "$work/machine/person/node_modules/"
+
+# This commit's web app, as a release holds it: its archive and checksum by script/release-web, in
+# $work/machine/web/build, with an attestation that attests nothing, `{}`; in
+# $work/machine/web/mismatch, the same with a checksum of other bytes. The archive's files, unpacked,
+# in $work/web/files; the SHA-256 of each that is not empty, `<SHA-256> <path>` lines in
+# $work/web/hashes.
+mkdir -p "$work/machine/web/build" "$work/machine/web/mismatch" "$work/web/files"
+if ! said=$(script/release-web "$work/machine/web/build" 2>&1); then
+  echo "self-host-test: script/release-web cannot build this commit's web app:"$'\n'"$said" >&2
+  exit 1
+fi
+echo '{}' >"$work/machine/web/build/$web_archive.sigstore.json"
+cp "$work/machine/web/build/$web_archive" "$work/machine/web/build/$web_archive.sigstore.json" \
+  "$work/machine/web/mismatch/"
+echo "$(printf 'other bytes' | sha256)  $web_archive" >"$work/machine/web/mismatch/$web_archive.sha256"
+tar -xzf "$work/machine/web/build/$web_archive" -C "$work/web/files"
+(cd "$work/web/files" && find . -type f -size +0 | sort | while read -r file; do
+  echo "$(sha256 <"$file") ${file#./}"
+done) >"$work/web/hashes"
+web_index=$(sed -n 's/ index\.html$//p' "$work/web/hashes")
+web_asset=$(grep -m 1 ' assets/' "$work/web/hashes" || true)
+if [[ -z $web_index || -z $web_asset ]]; then
+  echo "self-host-test: this commit's web app has no index.html or no file in assets/:"$'\n'"$(cat "$work/web/hashes")" >&2
+  exit 1
+fi
 cat >"$work/machine/params" <<EOF
 self_host_domain=$domain
 self_host_image=skald-server:self-host-test
@@ -434,6 +551,7 @@ self_host_proxy_container=$proxy_container
 self_host_proxy_network=$proxy_network
 self_host_github_url=https://$github_host
 self_host_google_issuer=https://$google_host
+self_host_web=file:///self-host/web/build
 EOF
 cat >"$work/machine/pebble/config.json" <<'EOF'
 {
@@ -587,7 +705,8 @@ m docker run --detach --quiet --name self-host-bucket --restart unless-stopped \
     --port :443 --cert /self-host/ca/bucket.pem --key /self-host/ca/bucket-key.pem posix /data" >/dev/null
 
 # scenario <name> <item>...: writes the scenario's script, its items the guide's steps and, as
-# `:<hook>`, the part's own; a step `<step>-site` goes to the hooks as the proxy's site block.
+# `:<hook>`, the part's own; a step `<step>-site` goes to the hooks as the proxy's site block. A step
+# `<step>@last` is the last release's guide's, from its tag.
 scenario() {
   local name=$1 item script
   shift
@@ -598,7 +717,12 @@ scenario() {
   for item in "$@"; do
     case $item in
       :*) echo "self_host_${item#:}" >>"$script" ;;
+      *-site@last) block_text "${item%@last}" "$work/release-blocks" >"$work/run/$name/site.caddy" ;;
       *-site) block_text "$item" >"$work/run/$name/site.caddy" ;;
+      *@last)
+        echo "self_host_step ${item%@last}" >>"$script"
+        block_text "${item%@last}" "$work/release-blocks" >>"$script"
+        ;;
       *)
         echo "self_host_step $item" >>"$script"
         block_text "$item" >>"$script"
@@ -731,7 +855,7 @@ stack_down() {
     in_stack "$1" docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
   if m test -f "/self-host/run/$1/proxy/pid"; then
-    m sh -c "kill \$(cat /self-host/run/$1/proxy/pid)" || true
+    m sh -c "kill \$(cat /self-host/run/$1/proxy/pid) 2>/dev/null" || true
   fi
   m sh -c "docker rm --force --volumes $proxy_container >/dev/null 2>&1; docker network rm $proxy_network >/dev/null 2>&1" || true
   if m test -f "/self-host/run/$1/dir"; then
@@ -739,8 +863,167 @@ stack_down() {
   fi
 }
 
+# --- The web app: this commit's, in $work/web, and its answers on the domain.
+# spa_get <path>: GET https://<domain><path> on the machine, trusting the ACME server's root: prints
+# `<status> <SHA-256 of the body>`, the status 000 without an answer; the answer's headers go to
+# /tmp/self-host-spa-headers on the machine.
+spa_get() {
+  m sh -c ': >/tmp/self-host-spa-body
+    code=$(curl --silent --cacert /self-host/acme-root.pem --max-time 30 --dump-header /tmp/self-host-spa-headers \
+      --output /tmp/self-host-spa-body --write-out "%{http_code}" "$1") || code=000
+    echo "$code $(sha256sum </tmp/self-host-spa-body | cut -d " " -f 1)"' sh "https://$domain$1"
+}
+
+# policy_flaws <header lines>: why the Content-Security-Policy header lines do not admit only the
+# page's own origin and no framing, a line each; nothing when they do.
+policy_flaws() {
+  local line directive name sources source defaults='' framing=''
+  local -a directives list
+  if [[ -z $1 ]]; then
+    echo "no Content-Security-Policy"
+    return
+  fi
+  while IFS= read -r line; do
+    line=${line#*:}
+    line=${line%$'\r'}
+    IFS=';' read -ra directives <<<"$line"
+    for directive in ${directives[@]+"${directives[@]}"}; do
+      read -r name sources <<<"$directive"
+      name=$(tr '[:upper:]' '[:lower:]' <<<"$name")
+      read -ra list <<<"$sources"
+      case $name in
+        '') continue ;;
+        default-src | *-src | *-src-elem | *-src-attr | base-uri | form-action)
+          for source in ${list[@]+"${list[@]}"}; do
+            [[ $source == "'self'" || $source == "'none'" ]] || echo "$name admits $source"
+          done
+          ;;
+        frame-ancestors)
+          if [[ ${list[*]-} == "'none'" ]]; then framing=1; else echo "frame-ancestors is '${list[*]-}', not 'none'"; fi
+          ;;
+      esac
+      if [[ $name == default-src ]]; then defaults=1; fi
+    done
+  done <<<"$1"
+  [[ -n $defaults ]] || echo "no default-src"
+  [[ -n $framing ]] || echo "no frame-ancestors 'none'"
+}
+
+# spa_served <scenario> <when>: after <when>, the domain serves this commit's web app over HTTPS: its
+# index page at pages of it and at an unknown path, and a file of it, each with a
+# Content-Security-Policy that admits only its own origin and no framing.
+spa_served() {
+  local scenario=$1 when=$2 path want got flaws
+  for path in / /machines /access "/self-host-test/no-such-page-$(openssl rand -hex 4)" "/${web_asset#* }"; do
+    want="200 $web_index"
+    if [[ $path == "/${web_asset#* }" ]]; then want="200 ${web_asset%% *}"; fi
+    got=$(spa_get "$path")
+    if [[ $got != "$want" ]]; then
+      fail "$scenario: after $when, GET https://$domain$path answers '${got%% *}', not this commit's web app's" \
+        "$([[ $want == *" $web_index" ]] && echo index.html || echo "${web_asset#* }")"
+      continue
+    fi
+    flaws=$(policy_flaws "$(m sh -c "grep -i '^content-security-policy:' /tmp/self-host-spa-headers" || true)")
+    [[ -z $flaws ]] ||
+      fail "$scenario: after $when, the policy of https://$domain$path admits more than its own origin or framing:"$'\n'"$flaws"
+  done
+}
+
+# routes_to_server <scenario> <when>: after <when>, GET of each path of the OpenAPI spec, its
+# parameters `self-host-test`, answers through the domain with the status the stack's server gives it
+# directly, and never with the web app's index page.
+routes_to_server() {
+  local scenario=$1 when=$2 server ip direct='' path url got want
+  if ! server=$(container "$scenario" "$server_image"); then
+    fail "$scenario: after $when, the server does not run"
+    return
+  fi
+  for ip in $(m docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$server"); do
+    if [[ $(m curl --silent --output /dev/null --max-time 5 --write-out '%{http_code}' "http://$ip:8080/health" || true) == 200 ]]; then
+      direct=$ip
+      break
+    fi
+  done
+  if [[ -z $direct ]]; then
+    fail "$scenario: the machine does not reach the server's container directly"
+    return
+  fi
+  while read -r path; do
+    url=$(sed -E 's/\{[^}]+\}/self-host-test/g' <<<"$path")
+    got=$(spa_get "$url")
+    want=$(m curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "http://$direct:8080$url" || true)
+    if [[ ${got#* } == "$web_index" ]]; then
+      fail "$scenario: after $when, GET https://$domain$url, a path of the spec, answers with the web app"
+    elif [[ ${got%% *} != "$want" || $want == 000 ]]; then
+      fail "$scenario: after $when, GET https://$domain$url, a path of the spec, answers ${got%% *}; the server itself, $want"
+    fi
+  done < <(jq -r '.paths | keys[]' api/openapi.json)
+}
+
+# spa_pages <scenario> <when> <path>...: after <when>, the person opens each page of the web app
+# without a session: it shows the sign-in page and breaks no rule of its policy.
+spa_pages() {
+  local scenario=$1 when=$2 path said
+  shift 2
+  for path in "$@"; do
+    said=$(person page "https://$domain$path" 2>&1) ||
+      fail "$scenario: after $when, the web app at https://$domain$path:"$'\n'"$said"
+  done
+}
+
+# spa_sign_in <scenario> <when> [<section>...]: after <when>, the person of the GitHub stand-in's user
+# $github_user signs in to the web app in one click and lands in the cabinet; sets sections to what
+# each <section> of its side menu shows, `{"section", "text", "bars"}` lines.
+spa_sign_in() {
+  local scenario=$1 when=$2
+  shift 2
+  if ! sections=$(person cabinet GitHub "https://$github_host/_stand-in/sign-in?user=$github_user" \
+    "https://$domain/" "$@" 2>"$work/person-errors"); then
+    fail "$scenario: after $when, the person cannot sign in to the web app with GitHub${1:+ and open $*}:"$'\n'"$sections"$'\n'"$(cat "$work/person-errors")"
+    return 1
+  fi
+}
+
+# section_shows <section> <field>: the field of what spa_sign_in read of the section.
+section_shows() {
+  jq -R -r --arg section "$1" --arg field "$2" 'fromjson? | select(.section == $section) | .[$field]' <<<"$sections"
+}
+
+# spa_through <scenario> <when>: after <when>, the stack serves the web app and the API on the domain
+# by spa_served and routes_to_server, and the person signs in to the web app there.
+spa_through() {
+  spa_served "$1" "$2"
+  routes_to_server "$1" "$2"
+  spa_sign_in "$1" "$2" || true
+}
+
+# web_unpacked <scenario> <hashes>: the files of an archive, those with their SHA-256 in <hashes>
+# (`<SHA-256> <path>` lines), that the scenario's stack directory holds, one per line.
+web_unpacked() {
+  local dir
+  dir=$(m cat "/self-host/run/$1/dir" 2>/dev/null) || return 0
+  awk 'NR == FNR { held[$1] = 1; next } held[$1] { print $2 }' \
+    <(m sh -c 'find "$1" -type f -size +0 -exec sha256sum {} +' sh "$dir" | cut -d ' ' -f 1) "$2"
+}
+
+# refused_before <scenario> <step>|- <step>: runs the scenario's script on the machine, as run_script
+# does; fails unless it exits non-zero, reaching the guide's first <step>, unless `-`, and never the
+# second.
+refused_before() {
+  local status=0 output=$work/run/$1/output
+  run_script "$1" 900 </dev/null || status=$?
+  if [[ $status -eq 0 ]]; then
+    fail "$1: the guide's steps succeed; its output's end:"$'\n'"$(tail -n 20 "$output")"
+  elif [[ $2 != - ]] && ! grep -qx "self-host-test: step $2" "$output"; then
+    fail "$1: the script does not reach the guide's $2; its output's end:"$'\n'"$(tail -n 40 "$output")"
+  fi
+  if grep -qx "self-host-test: step $3" "$output"; then
+    fail "$1: the script reaches the guide's $3; its output's end:"$'\n'"$(tail -n 20 "$output")"
+  fi
+}
+
 # --- main: the clean machine's path, from the first start.
-scenario main release files image-check env :before_up up :wait_https :trust_acme status :trust_system
+scenario main release files web-files web image-check env :before_up up :wait_https :trust_acme status :trust_system
 # check_env <scenario>: the .env the guide wrote has mode 0600, and its output shows none of its
 # secret values: all but the local images, those with the domain, the client IDs and the sign-up
 # settings.
@@ -891,7 +1174,7 @@ fi
 stack_down main
 
 # --- bucket: attachments in the bucket.
-scenario bucket release files env bucket :before_up up :wait_https :trust_acme status :trust_system
+scenario bucket release files web-files web env bucket :before_up up :wait_https :trust_acme status :trust_system
 bucket_ok=
 if run_scenario bucket <<<"$bucket_secret"; then bucket_ok=1; fi
 [[ $(cat "$work/run/bucket/output") != *"$bucket_secret"* ]] || fail "bucket: the guide's commands print the bucket's secret key"
@@ -1110,7 +1393,7 @@ internet_hosts
 providers=$github_secret$'\n'$google_secret
 
 # sign-in: both providers; a machine signs in with each and creates spaces.
-scenario sign-in release files env github google :before_up up :wait_https :trust_checks github-check \
+scenario sign-in release files web-files web env github google :before_up up :wait_https :trust_checks github-check \
   google-check :trust_system
 if run_scenario sign-in <<<"$providers"; then
   if sign_in sign-in ada-machine GitHub; then creates_spaces sign-in ada-machine apple birch cedar; fi
@@ -1123,7 +1406,7 @@ check_env sign-in
 stack_down sign-in
 
 # sign-up: closed, the stand-in's GitHub login listed; another GitHub user is refused.
-scenario sign-up release files env github sign-up :before_up up :wait_https :trust_checks github-check \
+scenario sign-up release files web-files web env github sign-up :before_up up :wait_https :trust_checks github-check \
   :trust_system
 if run_scenario sign-up <<<"$github_secret"; then
   sign_in sign-up ada-machine GitHub || true
@@ -1136,7 +1419,7 @@ check_env sign-up
 stack_down sign-up
 
 # github, google: one provider's values only.
-scenario github release files env github :before_up up :wait_https :trust_checks github-check :trust_system
+scenario github release files web-files web env github :before_up up :wait_https :trust_checks github-check :trust_system
 if run_scenario github <<<"$github_secret"; then
   offered github
   [[ $offers == GitHub ]] ||
@@ -1144,7 +1427,7 @@ if run_scenario github <<<"$github_secret"; then
 fi
 check_env github
 stack_down github
-scenario google release files env google :before_up up :wait_https :trust_checks google-check :trust_system
+scenario google release files web-files web env google :before_up up :wait_https :trust_checks google-check :trust_system
 if run_scenario google <<<"$google_secret"; then
   offered google
   [[ $offers == Google ]] ||
@@ -1153,13 +1436,52 @@ fi
 check_env google
 stack_down google
 
+# --- spa: the web app on the domain. The stack's directory keeps it; the domain serves it at any of
+# its pages and the spec's paths to the server. A new person signs up there in one click, a machine
+# signs in by device flow, and the person sees the machine linked, the personal space with themselves
+# as its admin, and no limits; the machine's CLI session, ended in Access, loses access at once.
+scenario spa release files web-files web env github :before_up up :wait_https
+if run_scenario spa <<<"$github_secret"; then
+  [[ -n $(web_unpacked spa "$work/web/hashes" | grep -x index.html) ]] ||
+    fail "spa: the stack's directory does not keep this commit's web app, unpacked"
+  spa_served spa "the guide's install"
+  routes_to_server spa "the guide's install"
+  spa_pages spa "the guide's install" / /machines "/self-host-test/no-such-page"
+  if spa_sign_in spa "the guide's install" && sign_in spa ada-machine GitHub; then
+    creates_spaces spa ada-machine
+    if spa_sign_in spa "the machine's sign-in" Machines Members Usage; then
+      shown=$(section_shows Machines text)
+      [[ $shown == *ada-machine* && $shown == *Linked* ]] ||
+        fail "spa: Machines does not show ada-machine as linked:"$'\n'"$shown"
+      shown=$(section_shows Members text)
+      [[ $shown == *"$github_login"* && $shown == *Admin* ]] ||
+        fail "spa: Members does not show $github_login as the personal space's admin:"$'\n'"$shown"
+      shown=$(section_shows Usage text)
+      shown=$(tr '[:upper:]' '[:lower:]' <<<"$shown")
+      [[ $shown == *"no limit"* || $shown == *unlimited* ]] ||
+        fail "spa: on a self-hosted server, Usage does not say no limit applies:"$'\n'"$shown"
+      bars=$(section_shows Usage bars)
+      [[ $bars == 0 ]] || fail "spa: on a self-hosted server, Usage shows ${bars:-no count of} limit bars"
+    fi
+    if said=$(person revoke GitHub "https://$github_host/_stand-in/sign-in?user=$github_user" \
+      "https://$domain/" ada-machine 2>&1); then
+      if said=$(m /self-host/run/spa/ada-machine/skald devices 2>&1); then
+        fail "spa: ada-machine's CLI session, ended in Access, still lists devices:"$'\n'"$said"
+      fi
+    else
+      fail "spa: the person cannot end ada-machine's CLI session in Access:"$'\n'"$said"
+    fi
+  fi
+fi
+check_env spa
+stack_down spa
+
 # --- The proxy variant, in its three forms.
-# check_proxied <scenario> <loopback|none>: no Caddy of the stack runs; the server's port is
-# published only on loopback, or not at all, and does not answer on the machine's address; /health
-# and skald status answer through the proxy.
+# check_proxied <scenario> <loopback|none>: the stack's ports are published only on loopback, or not
+# at all, and do not answer on the machine's address; /health and skald status answer through the
+# proxy.
 check_proxied() {
   local ports id port ip host_port
-  if container "$1" "$caddy_image" >/dev/null; then fail "$1: the stack runs Caddy"; fi
   ports=$(published "$1")
   if [[ $2 == loopback ]]; then
     [[ -n $ports ]] || fail "$1: the stack publishes no port for the proxy on the machine"
@@ -1176,23 +1498,31 @@ check_proxied() {
 }
 
 # The loopback form also signs in with both providers: their checks pass through the proxy.
-scenario proxy-host release files env github google proxy-host :before_up up proxy-host-site \
+# Each form serves the web app through the proxy, and a person signs in to it there.
+scenario proxy-host release files web-files web env github google proxy-host :before_up up proxy-host-site \
   :proxy_on_host :wait_https :trust_acme status :trust_checks github-check google-check :trust_system
 if run_scenario proxy-host <<<"$providers"; then
   check_proxied proxy-host loopback
   no_secret_in_logs proxy-host
+  spa_through proxy-host "the guide's install"
 fi
 check_env proxy-host
 stack_down proxy-host
 
-scenario proxy-join release files env proxy-join :before_up up proxy-container-site \
+scenario proxy-join release files web-files web env github proxy-join :before_up up proxy-container-site \
   :proxy_in_container proxy-join-connect :wait_https :trust_acme status :trust_system
-if run_scenario proxy-join </dev/null; then check_proxied proxy-join none; fi
+if run_scenario proxy-join <<<"$github_secret"; then
+  check_proxied proxy-join none
+  spa_through proxy-join "the guide's install"
+fi
 stack_down proxy-join
 
-scenario proxy-network release files env proxy-network :before_up proxy-container-site \
+scenario proxy-network release files web-files web env github proxy-network :before_up proxy-container-site \
   ":proxy_in_container network" up :wait_https :trust_acme status :trust_system
-if run_scenario proxy-network </dev/null; then check_proxied proxy-network none; fi
+if run_scenario proxy-network <<<"$github_secret"; then
+  check_proxied proxy-network none
+  spa_through proxy-network "the guide's install"
+fi
 stack_down proxy-network
 
 # --- image: the guide's image check refuses :edge, which has no signature.
@@ -1204,6 +1534,56 @@ if [[ $status -eq 0 ]]; then
   fail "image: the guide's image check passes :edge, $edge_digest"
 elif ! grep -qiE 'no (matching )?signatures' "$work/run/image/output"; then
   fail "image: the guide's image check refuses :edge for another reason than its missing signature:"$'\n'"$(tail -n 20 "$work/run/image/output")"
+fi
+
+# --- The guide's archive check refuses, unpacking nothing: an archive that does not match its
+# checksum; this commit's archive with its checksum and an attestation of nothing. Once the last
+# release has the web app's archive, it passes that archive, and refuses it checked as another
+# release's or against another workflow; until then, the part names it skipped.
+scenario web-mismatch release ":web mismatch" files :here web-files web-check web
+refused_before web-mismatch - web
+unpacked=$(web_unpacked web-mismatch "$work/web/hashes")
+[[ -z $unpacked ]] || fail "web-mismatch: the refused archive is unpacked:"$'\n'"$unpacked"
+stack_down web-mismatch
+scenario web-unattested release files :here web-files web-check web
+refused_before web-unattested web-check web
+unpacked=$(web_unpacked web-unattested "$work/web/hashes")
+[[ -z $unpacked ]] || fail "web-unattested: the refused archive is unpacked:"$'\n'"$unpacked"
+stack_down web-unattested
+if [[ -n $release_web ]]; then
+  mkdir -p "$work/release-web/files"
+  if curl --fail --silent --show-error --location --retry 3 --output "$work/release-web/$web_archive" \
+    "$release_web/$web_archive" && tar -xzf "$work/release-web/$web_archive" -C "$work/release-web/files"; then
+    (cd "$work/release-web/files" && find . -type f -size +0 | sort | while read -r file; do
+      echo "$(sha256 <"$file") ${file#./}"
+    done) >"$work/release-web/hashes"
+    scenario web-release release :last_release files :here web-files web-check web
+    if run_scenario web-release </dev/null; then
+      [[ -n $(web_unpacked web-release "$work/release-web/hashes") ]] ||
+        fail "web-release: the guide's steps leave v$version's web app packed"
+    fi
+    stack_down web-release
+    scenario web-other-release release :last_release files :here web-files web-check web
+    edit_script web-other-release 's|^self_host_last_release$|self_host_last_release; SKALD_VERSION=0.0.1|'
+    refused_before web-other-release web-check web
+    unpacked=$(web_unpacked web-other-release "$work/release-web/hashes")
+    [[ -z $unpacked ]] || fail "web-other-release: the refused archive is unpacked:"$'\n'"$unpacked"
+    stack_down web-other-release
+    scenario web-other-workflow release :last_release files :here web-files web-check web
+    edit_script web-other-workflow 's|/\.github/workflows/release\.yml@|/.github/workflows/edge.yml@|g'
+    if grep -qF '/.github/workflows/edge.yml@' "$work/run/web-other-workflow/script.sh"; then
+      refused_before web-other-workflow web-check web
+      unpacked=$(web_unpacked web-other-workflow "$work/release-web/hashes")
+      [[ -z $unpacked ]] || fail "web-other-workflow: the refused archive is unpacked:"$'\n'"$unpacked"
+    else
+      fail "$guide: the step web-check does not pin the release workflow, .github/workflows/release.yml@"
+    fi
+    stack_down web-other-workflow
+  else
+    fail "web-release: cannot get $release_web/$web_archive"
+  fi
+else
+  echo "self-host-test: skipped the guide's archive check of the last release: v$version has no $web_archive"
 fi
 
 # --- Backup and restore, of the stack of a machine that signed in and created spaces.
@@ -1343,7 +1723,7 @@ marker=self-host-test-attachment-$(openssl rand -hex 8)
 backup_file=$backups/skald-backup
 
 # backup: the stack of two signed-in machines with spaces and files in the attachments volume.
-scenario backup release files env github google :before_up up :wait_https
+scenario backup release files web-files web env github google :before_up up :wait_https
 backup_ok=
 if run_scenario backup <<<"$providers"; then
   backup_ok=1
@@ -1408,7 +1788,7 @@ stack_down backup
 
 # restore-files: a new stack whose attachments volume holds files, its database none.
 if [[ -n $backup_ok ]]; then
-  scenario restore-files release files env github google :before_up
+  scenario restore-files release files web-files web env github google :before_up
   if run_scenario restore-files <<<"$providers"; then
     in_stack restore-files docker compose create >/dev/null 2>&1 || fail "restore-files: docker compose create fails"
     put_attachments restore-files kept "self-host-test-kept-$(openssl rand -hex 8)"
@@ -1428,7 +1808,7 @@ fi
 
 # restored: the backup in a new stack with new volumes.
 if [[ -n $backup_ok ]]; then
-  scenario restored release files env github google :before_up restore up :wait_https
+  scenario restored release files web-files web env github google :before_up restore up :wait_https
   with_backup restored "$backup_file"
   if run_scenario restored <<<"$providers"; then
     lists_as_before restored backup/ada-machine "the restore into a new stack" "$ada_before"
@@ -1446,7 +1826,7 @@ fi
 bucket_marker=self-host-test-bucket-$(openssl rand -hex 8)
 volume_marker=self-host-test-volume-$(openssl rand -hex 8)
 bucket_backup=$backups/skald-bucket-backup
-scenario bucket-backup release files env bucket github :before_up up :wait_https
+scenario bucket-backup release files web-files web env bucket github :before_up up :wait_https
 bucket_backup_ok=
 if run_scenario bucket-backup <<<"$bucket_secret"$'\n'"$github_secret"; then
   if sign_in bucket-backup ada-machine GitHub; then
@@ -1477,7 +1857,7 @@ if [[ -n $bucket_backup_ok ]]; then
 fi
 stack_down bucket-backup
 if [[ -n $bucket_backup_ok ]]; then
-  scenario bucket-restored release files env bucket github :before_up restore up :wait_https
+  scenario bucket-restored release files web-files web env bucket github :before_up restore up :wait_https
   with_backup bucket-restored "$bucket_backup"
   if run_scenario bucket-restored <<<"$bucket_secret"$'\n'"$github_secret"; then
     lists_as_before bucket-restored bucket-backup/ada-machine "the restore into a new stack" "$bucket_ada_before"
@@ -1494,8 +1874,20 @@ release_skald=/self-host/release/skald
 release_image=skald-server:last-release
 upgrade_backup=$backups/skald-upgrade-backup
 upgrade_tests='last-release upgrade upgrade-client rollback-refused rollback-missing rollback-broken'
-upgrade_tests+=' rollback-no-database rollback upgrade-restored'
+upgrade_tests+=' rollback-no-database rollback upgrade-restored proxy-last-release proxy-upgrade'
+upgrade_tests+=' proxy-upgrade-web'
 ran=
+# The web app's steps for the last release's stack: none while it has no archive.
+last_web_steps=
+if [[ -n $release_web ]]; then last_web_steps='web-files web-check web'; fi
+# The last release's guide's blocks, from its tag: $work/release-blocks, by extract_blocks.
+if git show "$release_tag:$guide" >"$work/release-guide.md" 2>/dev/null; then
+  extract_blocks "$work/release-guide.md" "$work/release-blocks"
+else
+  fail "upgrade: $release_tag has no $guide"
+  mkdir -p "$work/release-blocks"
+  touch "$work/release-blocks/list"
+fi
 
 # guide_section <step>: the lines of the guide's level-2 section that holds the block of <step>.
 guide_section() {
@@ -1536,6 +1928,24 @@ order=$(guide_section upgrade | awk '
 ')
 [[ $order == ok ]] ||
   fail "$guide: the section of the step upgrade does not name the backup, then its block, then Start"
+# The guide's upgrade and rollback put their release's web app in place: they link to the heading
+# above the block of the step web. The upgrade says what to replace in the override and site block
+# of the proxy variant: it links to a heading of its section.
+web_heading=
+if grep -qE '^ *(```|~~~).*self-host=web([[:space:]]|$)' "$guide"; then
+  web_heading=$(awk '/^ *(```|~~~)/ && /self-host=web([ \t]|$)/ { exit } { print }' "$guide" | section_anchors |
+    tail -n 1)
+fi
+for step in upgrade rollback; do
+  [[ -n $web_heading ]] && guide_section "$step" | grep -qF "](#$web_heading)" ||
+    fail "$guide: the section of the step $step does not link to the web app's step, #${web_heading:-none}"
+done
+proxy_linked=
+for anchor in $(guide_section proxy-host | section_anchors); do
+  if guide_section upgrade | grep -qF "](#$anchor)"; then proxy_linked=1; fi
+done
+[[ -n $proxy_linked ]] ||
+  fail "$guide: the section of the step upgrade does not link to the proxy variant's, for its override and site block"
 
 # The last release's compose file and Caddy config, from its tag, or this commit's when it has none;
 # this commit's compose file on the PostgreSQL release candidate that it first pinned.
@@ -1565,6 +1975,7 @@ release_attachments=prepare
 if [[ $release_dockerfile == *var/lib/skald/attachments* ]]; then release_attachments=image; fi
 mi sh -c 'cat >>/self-host/params' <<EOF
 self_host_release_files=file:///self-host/release-files
+self_host_release_web=$release_web
 self_host_release_image=$release_image
 self_host_release_platform=linux/amd64
 self_host_release_attachments=$release_attachments
@@ -1665,7 +2076,7 @@ boundaries_crossed() {
 # new_stack <label>: what the part does across an upgrade boundary: a new stack of this commit,
 # the scenario <label>-new-stack.
 new_stack() {
-  scenario "$1-new-stack" release files env github :before_up up :wait_https :trust_acme status :trust_system
+  scenario "$1-new-stack" release files web-files web env github :before_up up :wait_https :trust_acme status :trust_system
   if run_scenario "$1-new-stack" <<<"$github_secret"; then check_https "$1-new-stack"; fi
   check_env "$1-new-stack"
   stack_down "$1-new-stack"
@@ -1679,15 +2090,17 @@ upgrade_down() {
 
 # upgrade_from_last_release: the upgrade tests.
 upgrade_from_last_release() {
-  local ok=1 ada kai files database database_upgraded files_upgraded status said bad
-  scenario last-release release :last_release files env github :before_up_release :prepare_attachments \
-    up :wait_https
+  local ok=1 ada kai files database database_upgraded files_upgraded status said bad pages
+  scenario last-release release :last_release files $last_web_steps env github :before_up_release \
+    :prepare_attachments up :wait_https
   ran+=' last-release'
   run_scenario last-release <<<"$github_secret" || ok=
   check_env last-release
   [[ -n $ok ]] || return 0
   runs_server last-release "$release_image" "its first up"
   has_files last-release /self-host/release-files "its first up"
+  # What the last release's stack answers at the web app's pages.
+  pages=$(spa_get /; spa_get /machines)
   if client_bin=$release_skald sign_in last-release ada-machine GitHub; then
     creates_spaces last-release ada-machine oak pine
   else
@@ -1709,7 +2122,8 @@ upgrade_from_last_release() {
   database=$(database_print last-release) || fail "last-release: cannot read the database"
 
   # The guide's upgrade to this commit.
-  scenario upgrade ":resume last-release" release image-check backup upgrade :before_up up :wait_https
+  scenario upgrade ":resume last-release" release image-check web-files backup web upgrade :before_up up \
+    :wait_https
   with_backup upgrade "$upgrade_backup"
   ran+=' upgrade'
   ok=1
@@ -1719,6 +2133,7 @@ upgrade_from_last_release() {
   runs_server upgrade "$server_image" "the guide's upgrade"
   has_files upgrade /self-host/files "the guide's upgrade"
   caddy_restarted upgrade "the guide's upgrade"
+  spa_served upgrade "the guide's upgrade"
   backup_private upgrade "$upgrade_backup" || true
   [[ $(attachment_files upgrade) == "$files" ]] ||
     fail "upgrade: after the guide's upgrade, the attachments volume holds other files:"$'\n'"$(attachment_files upgrade)"
@@ -1776,7 +2191,8 @@ upgrade_from_last_release() {
   done
 
   # The guide's rollback to the last release, with the backup from the upgrade.
-  scenario rollback ":resume upgrade" release :last_release rollback :before_up_release restore
+  scenario rollback ":resume upgrade" release :last_release rollback $last_web_steps :before_up_release \
+    restore
   with_backup rollback "$upgrade_backup"
   ran+=' rollback'
   ok=1
@@ -1791,13 +2207,15 @@ upgrade_from_last_release() {
   scenario rollback-up ":resume rollback" up :wait_https
   run_scenario rollback-up </dev/null || return 0
   runs_server rollback "$release_image" "the guide's rollback"
+  [[ $(spa_get /; spa_get /machines) == "$pages" ]] ||
+    fail "rollback: after the guide's rollback, the web app's pages answer otherwise than before the upgrade"
   lists_as_before rollback last-release/ada-machine "the guide's rollback" "$ada"
   creates_spaces last-release ada-machine umber
   upgrade_down
 
   # upgrade-restored: the backup from the upgrade, of the last release's stack, in a new stack of this
   # commit.
-  scenario upgrade-restored release files env github :before_up restore up :wait_https
+  scenario upgrade-restored release files web-files web env github :before_up restore up :wait_https
   with_backup upgrade-restored "$upgrade_backup"
   ran+=' upgrade-restored'
   if run_scenario upgrade-restored <<<"$github_secret"; then
@@ -1814,10 +2232,47 @@ upgrade_from_last_release() {
   stack_down upgrade-restored
 }
 
+# proxy_upgrade_from_last_release: the last release's stack behind the admin's proxy on the machine,
+# with the override and site block of that release's guide, upgraded by the guide to this commit,
+# serves the API through the proxy; with this commit's override and site block, also the web app.
+proxy_upgrade_from_last_release() {
+  scenario proxy-last-release release :last_release files $last_web_steps env github proxy-host@last \
+    :before_up_release :prepare_attachments up proxy-host-site@last :proxy_on_host :wait_https
+  ran+=' proxy-last-release'
+  run_scenario proxy-last-release <<<"$github_secret" || return 0
+  check_env proxy-last-release
+  runs_server proxy-last-release "$release_image" "its first up"
+
+  scenario proxy-upgrade ":resume proxy-last-release" release image-check web-files backup web upgrade \
+    :before_up up :wait_https
+  with_backup proxy-upgrade "$backups/skald-proxy-upgrade-backup"
+  ran+=' proxy-upgrade'
+  run_scenario proxy-upgrade </dev/null || return 0
+  check_env proxy-upgrade
+  runs_server proxy-upgrade "$server_image" "the guide's upgrade"
+  check_https proxy-upgrade
+
+  # This commit's override and site block, as the guide's upgrade section says; the proxy restarted
+  # with that site block.
+  m sh -c 'kill "$(cat /self-host/run/proxy-last-release/proxy/pid)"' || true
+  for _ in $(seq 20); do
+    if ! answers 127.0.0.1 443; then break; fi
+    sleep 0.5
+  done
+  scenario proxy-upgrade-web ":resume proxy-upgrade" :here proxy-host :override up proxy-host-site \
+    :proxy_on_host :wait_https
+  ran+=' proxy-upgrade-web'
+  run_scenario proxy-upgrade-web </dev/null || return 0
+  runs_server proxy-upgrade-web "$server_image" "this commit's override and site block"
+  check_https proxy-upgrade-web
+  spa_served proxy-upgrade-web "this commit's override and site block"
+  routes_to_server proxy-upgrade-web "this commit's override and site block"
+}
+
 # upgrades <list> <label>: the upgrade tests, unless the list of upgrade boundaries <list> has an
 # entry whose condition holds: then a new stack, and a line naming the upgrade tests it skips.
 upgrades() {
-  local links
+  local links name
   links=$(boundaries_crossed "$1")
   if [[ -n $links ]]; then
     new_stack "$2"
@@ -1827,6 +2282,8 @@ upgrades() {
   fi
   upgrade_from_last_release
   upgrade_down
+  proxy_upgrade_from_last_release
+  for name in proxy-upgrade-web proxy-upgrade proxy-last-release; do stack_down "$name"; done
 }
 
 # The list of upgrade boundaries: each entry's link is to a heading of the guide's upgrade section.
@@ -1885,7 +2342,7 @@ postgres_runs() {
   image=$(m docker inspect --format '{{.Config.Image}}' "$id")
   [[ $image == "$2" ]] || fail "$1: after $3, PostgreSQL runs from $image, not $2"
 }
-scenario postgres-rc release :rc_files files env github :before_up up :wait_https
+scenario postgres-rc release :rc_files files web-files web env github :before_up up :wait_https
 rc_ok=
 if run_scenario postgres-rc <<<"$github_secret"; then
   postgres_runs postgres-rc "$postgres_rc" "its first up"
@@ -1899,7 +2356,7 @@ if [[ -n $rc_ok ]]; then
   put_attachments postgres-rc notes "self-host-test-rc-$(openssl rand -hex 8)"
   rc_files=$(attachment_files postgres-rc)
   rc_listing=$(listing postgres-rc/ada-machine)
-  scenario postgres-rc-upgrade ":resume postgres-rc" release image-check backup upgrade :before_up up \
+  scenario postgres-rc-upgrade ":resume postgres-rc" release image-check web-files backup web upgrade :before_up up \
     :wait_https
   with_backup postgres-rc-upgrade "$backups/skald-rc-backup"
   if run_scenario postgres-rc-upgrade </dev/null; then
