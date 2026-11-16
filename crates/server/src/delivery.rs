@@ -388,6 +388,12 @@ pub(crate) async fn remove_on<'q>(
         .iter()
         .filter_map(|(_, envelope, ..)| *envelope)
         .collect();
+    // An envelope's row lock makes removals of its entries at once check for the others one after
+    // another, so the last one sees none left, as its check runs once the others committed.
+    sqlx::query("SELECT 1 FROM envelopes WHERE id = ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&envelopes)
+        .execute(&mut *conn)
+        .await?;
     sqlx::query(
         "DELETE FROM envelopes v WHERE v.id = ANY($1)
          AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.envelope_id = v.id)",

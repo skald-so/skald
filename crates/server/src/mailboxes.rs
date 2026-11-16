@@ -359,7 +359,7 @@ async fn store(
             groups::route(&mut tx, sender, header, framing, envelope.payload).await?
         }
     };
-    let mut recipients = match routed {
+    let recipients = match routed {
         Ok(devices) => devices,
         Err(problem) => return Ok(Kept::Refused(problem)),
     };
@@ -388,9 +388,8 @@ async fn store(
     let ttl = (envelope.ttl)
         .filter(|_| !lasting)
         .map(|ttl| ttl.min(MAILBOX_LONGEST) as f64);
-    // Mailboxes locked in one order, so stores to the same ones at once never wait for each other.
-    recipients.sort_by_key(|device| *device.as_bytes());
-    recipients.dedup();
+    // `receiving` gives each recipient once, in the order of their IDs: stores to the same
+    // mailboxes at once lock them in one order.
     for recipient in &recipients {
         // The mailbox's row lock makes stores to it wait for each other, so its entries are
         // numbered in the order they are committed.

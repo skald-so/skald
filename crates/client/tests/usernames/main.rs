@@ -112,13 +112,8 @@ fn username_of(cloud: &Cloud, token: &str) -> String {
 /// `PUT /account/username` with `username`, sent by the test itself with the session `token`:
 /// the status and the body.
 fn put_username(cloud: &Cloud, token: &str, username: &str) -> (u16, Value) {
-    let agent = ureq::Agent::config_builder()
-        .proxy(None)
-        .http_status_as_error(false)
-        .build()
-        .new_agent();
     let body = json!({ "username": username }).to_string();
-    let mut response = agent
+    let mut response = cloud::agent()
         .put(format!("{}/account/username", cloud.url))
         .header(
             skald_proto::VERSION_HEADER,

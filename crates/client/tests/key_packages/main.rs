@@ -33,6 +33,7 @@
 mod kit;
 mod replenish;
 mod sealed;
+mod warning;
 
 // The server's tests' readers of the KeyPackages API's answers, and the person's browser.
 #[path = "../../../server/tests/key_packages/answers.rs"]
