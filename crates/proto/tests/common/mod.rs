@@ -9,9 +9,9 @@ use std::num::NonZeroU64;
 use skald_proto::{
     AccountId, Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
     DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
-    Header, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push, RawEnvelope, Receipt,
-    ReceiptStatus, Revocation, RevocationBody, Scheme, SendKey, ServerStatus, SpaceId, Stored,
-    Unknown,
+    Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push,
+    RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey,
+    ServerStatus, SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -426,6 +426,41 @@ pub fn vectors() -> Vec<Vector> {
         vector(
             "Frame `auth`",
             Frame::Auth {
+                challenge: (0..32).collect(),
+                device: alice_device(),
+                signature: SIGNATURE,
+            },
+        ),
+        vector(
+            "Frame `history`",
+            Frame::History {
+                upload: 5,
+                space: space(),
+                channel: channel(),
+                item: HistoryItem::Entry {
+                    msg_id: msg(1),
+                    entry: HistoryEntry {
+                        channel: channel(),
+                        epoch: 2,
+                        nonce: [0x0e; 12],
+                        ciphertext: hex("c0c1c2c3c4c5c6c7c8c9cacbcccdcecf"),
+                        unknown: Unknown::default(),
+                    }
+                    .to_cbor(),
+                },
+            },
+        ),
+        vector("Frame `history-stored`", Frame::HistoryStored { upload: 5 }),
+        vector(
+            "Frame `history-refused`",
+            Frame::HistoryRefused {
+                upload: 6,
+                problem: "epoch-mismatch".to_owned(),
+            },
+        ),
+        vector(
+            "HTTPS proof",
+            RequestProof {
                 challenge: (0..32).collect(),
                 device: alice_device(),
                 signature: SIGNATURE,

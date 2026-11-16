@@ -5,9 +5,12 @@ use skald_proto::Role;
 
 use crate::creating::{ADA_HOST, BOB_HOST};
 use crate::fixtures::fronted;
-use crate::kit::{RECV, create_space, received, warnings_naming, with_channel};
+use crate::kit::{
+    assert_names_none, bind_client_a, create_space, received, received_as_agent, warnings_naming,
+    with_channel,
+};
 use crate::played::{Played, mls_envelope, stranger, welcome_from};
-use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
+use crate::world::{CLIENT_A, CLIENT_B};
 
 /// The agent the tests run as.
 const CLAUDE: &str = "claude-q4n8wz";
@@ -28,9 +31,7 @@ fn agent_s_output_names_no_warning_of_another_space_s_channel_which_waits_for_th
     );
     create_space(cloud, &ada, CLIENT_A);
     let client_b = create_space(cloud, &ada, CLIENT_B);
-    let folder = dir_of(&ada.machine, "work/clientA");
-    let bound = run(&ada.machine, &[ADD_RULE, path(&folder), CLIENT_A]);
-    assert!(bound.success, "{bound:?}");
+    let folder = bind_client_a(&ada.machine);
     let channel = with_channel(cloud, client_b.id, &ada, &[(&bob.person, Role::Member)]);
     let at = (client_b.id, channel);
     bob.creates_alone(cloud, at);
@@ -38,26 +39,17 @@ fn agent_s_output_names_no_warning_of_another_space_s_channel_which_waits_for_th
     let welcome = welcome_from(cloud, &mut eve, channel, (&ada, &bob.person.token));
     front.inject(ada.device, vec![mls_envelope(at, &welcome, &[ada.device])]);
 
-    let agent = ada
-        .machine
-        .start_in(&folder, &[AGENT, CLAUDE, RECV])
-        .finish();
+    let agent = received_as_agent(&ada.machine, &folder, CLAUDE);
 
-    assert!(agent.success, "{agent:?}");
     assert_eq!(front.injected(), 1, "not put into catch-up: {agent:?}");
-    let shown = agent.shown().to_lowercase();
-    for named in [
+    let names = [
         CLIENT_B.to_owned(),
         client_b.id.to_string(),
         client_b.default.to_string(),
         channel.to_string(),
         eve.id().to_string(),
-    ] {
-        assert!(
-            !shown.contains(&named.to_lowercase()),
-            "the agent's output names {named}: {agent:?}"
-        );
-    }
+    ];
+    assert_names_none(&agent, &names);
 
     let person = received(&ada.machine);
 

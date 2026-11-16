@@ -2,18 +2,35 @@
 
 [![npm](https://img.shields.io/npm/v/skald-so)](https://www.npmjs.com/package/skald-so)
 
-Skald is a message broker and task queue for AI agents across machines, accounts and vendors. Messages and tasks are end-to-end encrypted with MLS.
+Skald is a message broker and task queue for AI agents across machines, accounts and vendors. Messages are end-to-end encrypted: MLS in a channel's group, HPKE to a device outside it ([protocol](docs/protocol/README.md#envelope)). Accounts, devices, spaces, channels and agents: [data model](docs/dev/architecture.md#data-model).
 
-You host the server yourself: [Self-hosting](#self-hosting).
+## When you don't need Skald
+
+- All your agents are Claude Code on one Claude account: Claude Code's built-in [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging) and [Remote Control](https://code.claude.com/docs/en/remote-control) are enough.
+- One command on a server: SSH is enough.
+- A Codex review inside Claude Code on one machine: [codex-plugin-cc](https://github.com/openai/codex-plugin-cc) is enough.
 
 ## Status
 
-- [The latest release](https://github.com/skald-so/skald/releases/latest). No external audit has been done.
-- The release signs machines in, keeps each device's keys and certificate, and creates and lists spaces and their members. It does not send messages or tasks or link a second device yet.
+- [The latest release](https://github.com/skald-so/skald/releases/latest).
+- Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel, agent addresses, folders bound to spaces.
+- The client cannot add a person to a space or link a second device yet, so `skald send` has no other device to send to.
+- A lost first device cannot be recovered yet: the account's master private key is not kept, and the client has no recovery key.
+- What comes next: [roadmap](docs/dev/roadmap.md).
+
+## Self-hosting
+
+You host the server yourself; run it before you connect a machine.
+
+- A server for your domain with HTTPS, by Docker Compose: [docs/self-host.md](docs/self-host.md).
+- Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally).
 
 ## Getting started
 
 ### 1. Install the client
+
+Platforms and requirements: [infrastructure.md, "Release"](docs/dev/infrastructure.md#release).
 
 #### macOS and Linux
 
@@ -29,17 +46,13 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/skald-so/skald/rel
 
 #### npm
 
-Requires Node.js 22.11 or later.
-
 ```sh
 npm install -g skald-so
 ```
 
 ### 2. Connect a machine
 
-To run the server, see [Self-hosting](#self-hosting).
-
-1. Check that the server is reachable and speaks a compatible protocol version:
+1. Check that your server is reachable and speaks a compatible protocol version:
 
    ```sh
    skald status --server https://skald.example.com
@@ -51,35 +64,21 @@ To run the server, see [Self-hosting](#self-hosting).
    skald sign-in --server https://skald.example.com
    ```
 
-   - The command prints a URL and a code. Approve the code in a browser after signing in with GitHub or Google. On a machine without a browser, such as a server over SSH, use a browser on another device.
-   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices) and signs the account's personal space as its admin. `no`: the device waits to be linked by a device already connected, which the client cannot do yet. `--first-device yes|no` gives the answer without asking.
+   - The command prints a URL and a code. Approve the code in a browser after signing in with a provider the server's operator turned on: [self-host.md, "Sign-in"](docs/self-host.md#sign-in). On a machine without a browser, such as a server over SSH, use a browser on another device.
+   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices) and signs the account's personal space as its admin. `no`: the device waits to be linked by a device already connected. `--first-device yes|no` gives the answer without asking.
 
-### 3. Client commands
+### 3. Spaces, channels and messages
 
 ```sh
-skald devices              # the account's devices, their certificates checked
-skald revoke-device <device>  # revoke a device of the account; member devices remove it from every channel
-skald set-username <name>  # change the account's username
-skald create-space <name>  # create a team space, with the account as its first admin
-skald spaces               # the device's spaces, its personal space marked, and the account's role in each
-skald members <space>      # a space's members, their roles and their devices with a valid certificate or revoked
-skald create-channel <space>  # add a channel to a space, as its admin
-skald channels <space>     # a space's channels and their members
-skald add-to-channel <space> <channel> <handle> --history yes|no  # add a member to a channel, as an admin
-skald remove-from-channel <space> <channel> <handle>  # remove a member from a channel other than the default one, as an admin
-skald remove-member <space> <handle>  # remove a member from the space and its channels, as an admin
-skald exclude-device <space> <device>  # bar a member's device from the space and its channels, as an admin
-skald send <channel> <text>  # send a text to a channel, encrypted in its MLS group for its other devices
-skald recv                 # receive the device's messages, checked, and the statuses of the messages it sent
-skald --agent <name> address  # the agent's address in the space of the working directory
-skald add-rule <folder> <space>  # bind a folder and everything below it to a space
-skald rules                # the folders' rules
-skald remove-rule <folder>  # remove a folder's rule
-skald approve-binding <folder>  # let the folder's .skald.toml, space = "<name>", bind it as it is now
-skald folder [<folder>]    # a folder's space and what binds it; a session's folder is its working directory
-skald sign-out             # sign out; the device's keys and certificate stay on the machine
-skald update               # update to the latest stable release, never a beta; npm installs update through npm
+skald create-space <name>    # create a team space, with the account as its first admin
+skald spaces                 # the device's spaces and the account's role in each
+skald channels <space>       # a space's channels: each one's ID and members
+skald send <channel> <text>  # send a text to the channel's other member devices
+skald recv                   # receive the device's messages
+skald --agent <name> recv    # the messages handed over to the agent in the working directory's space
 ```
+
+`<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
 
 ## Keys and devices
 
@@ -94,25 +93,10 @@ skald update               # update to the latest stable release, never a beta; 
 - Verifying the release files, the npm package and the server image: [infrastructure.md, "Trust in builds"](docs/dev/infrastructure.md#trust-in-builds).
 - Report vulnerabilities privately: [SECURITY.md](SECURITY.md).
 
-## When you don't need Skald
-
-- All your agents are Claude Code on one Claude account: Claude Code's built-in [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging) and [Remote Control](https://code.claude.com/docs/en/remote-control) are enough.
-- One command on a server: SSH is enough.
-- A Codex review inside Claude Code on one machine: [codex-plugin-cc](https://github.com/openai/codex-plugin-cc) is enough.
-
-## Self-hosting
-
-- A server for your domain with HTTPS, by Docker Compose: [docs/self-host.md](docs/self-host.md).
-- Running it from source on one machine: [CONTRIBUTING.md, "Running locally"](CONTRIBUTING.md#running-locally). `skald-server --help` lists its settings.
-
 ## Contributing
 
 Building, tests, PRs and the CLA: [CONTRIBUTING.md](CONTRIBUTING.md). Project rules: [rules.md](rules.md).
 
 ## License
 
-- `crates/server/`: AGPL-3.0-only.
-- `ee/`: Skald Enterprise License, commercial.
-- Everything else: MIT or Apache-2.0, at your option.
-
-Details: [LICENSE.md](LICENSE.md). The name and logo: [TRADEMARKS.md](TRADEMARKS.md).
+[LICENSE.md](LICENSE.md). The name and logo: [TRADEMARKS.md](TRADEMARKS.md).

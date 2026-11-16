@@ -469,7 +469,6 @@ A member device:
 - A device's Adds skip devices already in the group, such as one that joined by itself meanwhile.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
 - A device refuses a Welcome whose signer is not admitted, and a GroupInfo whose signer or a member it lists is not; it stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it. A device that joins from a Welcome listing a member that is not admitted warns its user and removes that member.
-- The joiner uploads the GroupInfo of the new epoch.
 
 ### Rejoining
 - **After missing Commits:** a device that cannot process a channel's next handshake message, or that a Commit removed while it is admitted, rejoins with an external Commit that also removes its old leaf. It MUST warn its user if a Commit removed it while it was admitted. A Commit of an epoch the device has passed is a replay: it is dropped.
@@ -484,6 +483,7 @@ The server keeps a copy of each channel message under the channel's history key,
 - The key rotates with every epoch:
   - **revocation:** a Remove of a revoked device starts an epoch; when a browser of a channel member's account is revoked, a member device commits an empty Commit before it next sends in the channel;
   - **schedule:** when the current epoch is older than the policy's `history`, the first member device to notice commits an empty Commit.
+- A device counts an epoch's age by its own clock from when it entered the epoch: by creating the group, a Welcome, a Commit, its own or another's, or a join or rejoin. Never from the server's `stored` time.
 - An empty Commit has an UpdatePath and no proposals.
 
 ### Clean epochs
@@ -536,7 +536,17 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 ### Uploads
 - The sender of each Commit uploads the new epoch's link and wraps. Any member device of an epoch uploads those it finds missing and can make.
 - Devices can judge an epoch differently, for example when only one has seen a revocation, so each uploads the link its own judgment gives.
-- The server keeps the first link per channel, epoch and `prev` and the first wrap per recipient, and takes uploads only from member devices of the epoch.
+- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session alone uploads none.
+- The server keeps the first link per channel, epoch and `prev` and the first wrap per channel, epoch and recipient, each only from a member device of its epoch. A later one changes nothing.
+- It answers `history-stored` when it keeps the item or keeps one in its place already, and otherwise `history-refused`, keeping nothing, with one of these problems. A client treats a problem it does not know as a refusal too.
+
+| Problem | The item |
+|---|---|
+| `malformed` | Does not decode as its kind, names another channel than its upload, or is a link whose `prev` is not below its epoch |
+| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows |
+| `epoch-mismatch` | Is of an epoch the channel has not had; an entry, of an epoch other than the channel's current or previous one |
+
+- The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members: [api/openapi.json](../../api/openapi.json).
 
 ### History entry
 The sending device writes a copy of each message with an `a2a` or [`task-result`](queues.md#results) body it sends in the channel, under the key of its current epoch; a browser as [Wraps](#wraps) says. A device without a history key, such as a stateless `service` device, writes none.
@@ -563,7 +573,7 @@ history-body = {
 ```
 
 - AES-128-GCM with the epoch's key, a random `nonce` and associated data the encoded `["skald history entry", channel, epoch]`.
-- The server keeps one entry per sending device and `msg_id`. It takes an entry only for the channel's current or previous epoch, and only from a member device of the current epoch or a browser with a wrap of the current epoch.
+- The server keeps one entry per sending device and `msg_id`, which the upload names, as the server cannot read it. It takes an entry only for the channel's current or previous epoch, and only from a member device of the current epoch or a browser with a wrap of the current epoch.
 
 A reader MUST drop an entry unless:
 1. it decrypts with the epoch's key;

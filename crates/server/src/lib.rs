@@ -26,6 +26,7 @@ mod expiry;
 mod github;
 mod google;
 mod groups;
+mod history;
 mod http_client;
 mod instances;
 mod key_packages;
@@ -35,6 +36,7 @@ mod notices;
 mod oidc;
 mod protocol;
 mod refusal;
+mod requests;
 mod revocations;
 mod sign_in;
 mod sign_up;
@@ -47,6 +49,7 @@ use google::Google;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
 use protocol::Statement;
 pub use protocol::Versions;
+pub use requests::LONG_POLL_MAX_WAIT;
 pub use sign_in::{CALLBACK_PATH, PublicUrl, SignInSettings};
 pub use sign_up::{Listed, SignUp};
 
@@ -110,6 +113,9 @@ pub struct Settings {
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
+    /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
+    /// [`LONG_POLL_MAX_WAIT`] without it.
+    pub long_poll_max_wait: Option<Duration>,
 }
 
 /// The state the handlers share.
@@ -125,6 +131,7 @@ struct AppState {
     mailbox_retention: Option<Duration>,
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
+    long_poll_max_wait: Duration,
     instance: instances::Instance,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
@@ -189,6 +196,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             "/auth/device",
             post(device_flow::authorize).layer(checked(Statement::Header)),
         )
+        .route(
+            "/auth/providers",
+            get(sign_in::providers).layer(checked(Statement::Header)),
+        )
         .route(sign_in::START_PATH, get(sign_in::start::<GitHubApp>))
         .route(CALLBACK_PATH, get(sign_in::callback::<GitHubApp>))
         .route(links::GITHUB_PATH, post(links::start::<GitHubApp>))
@@ -219,6 +230,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/key-packages",
             post(key_packages::hand_out).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/mailbox/ack",
+            post(requests::ack).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/mailbox/poll",
+            post(requests::poll).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/mailbox/send",
+            post(requests::send).layer(checked(Statement::Header)),
         )
         .route("/openapi.json", get(openapi_spec))
         .route(
@@ -254,6 +277,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/channels/{channel}/history/entries",
+            get(history::given::<{ history::ENTRIES }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/history/links",
+            get(history::given::<{ history::LINKS }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/history/wraps",
+            get(history::given::<{ history::WRAPS }>).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/devices",
             get(spaces::devices).layer(checked(Statement::Header)),
         )
@@ -279,6 +314,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 monthly_messages: settings.monthly_messages_limit,
             },
             devices_limit: settings.devices_limit,
+            long_poll_max_wait: settings.long_poll_max_wait.unwrap_or(LONG_POLL_MAX_WAIT),
             instance,
             connections,
             wakers,

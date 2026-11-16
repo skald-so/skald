@@ -148,6 +148,13 @@ impl Reader {
         self.device
     }
 
+    /// Reads after `cursor`, as a long-poll that states it: the entries up to it are acked.
+    pub(crate) fn after(mut self, cursor: u64) -> Self {
+        self.synced = true;
+        self.sent = i64::try_from(cursor).unwrap_or(i64::MAX);
+        self
+    }
+
     /// Starts catch-up at the connection's first `sync`, once the `sync` acked: gives the highest
     /// `seq` the mailbox has held so far; `None` at a later `sync`.
     pub(crate) async fn start(&mut self, db: &PgPool) -> Result<Option<i64>, sqlx::Error> {

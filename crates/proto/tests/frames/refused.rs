@@ -5,8 +5,8 @@ use skald_proto::{Cbor, DecodeError, EncodingProblem, FieldProblem, Frame};
 
 use crate::common::{assert_field_problem, hex, to_hex};
 use crate::fixtures::{
-    BOB, MSG_1, SPACE, delivered_hex, envelope_bstr, frame, frames, mls_envelope, send_hex,
-    space_notice_hex, stored_bytes,
+    BOB, CHANNEL, MSG_1, SPACE, delivered_hex, envelope_bstr, frame, frames, mls_envelope,
+    send_hex, space_notice_hex, stored_bytes,
 };
 
 #[test]
@@ -221,6 +221,27 @@ fn malformed_frames_are_refused() {
         format!("83 09 50{SPACE} 00"),
         // stored
         format!("82 02 81 50{MSG_1}"),
+        // history
+        format!("84 0b 05 50{SPACE} 50{CHANNEL}"),
+        format!("85 0b 20 50{SPACE} 50{CHANNEL} 82 01 41a0"),
+        format!("85 0b 05 50{CHANNEL} 6178 82 01 41a0"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 04 41a0"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 80"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 41a0"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 01 6178"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 83 01 41a0 00"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 02 a0"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 03 50{MSG_1}"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 83 03 41a0 41a0"),
+        format!("86 0b 05 50{SPACE} 50{CHANNEL} 82 01 41a0 00"),
+        // history-stored
+        "81 0c".to_owned(),
+        "82 0c 20".to_owned(),
+        "83 0c 05 05".to_owned(),
+        // history-refused
+        "82 0d 05".to_owned(),
+        "83 0d 05 05".to_owned(),
+        "83 0d 6178 6178".to_owned(),
     ] {
         let result = frame(&text);
         assert!(

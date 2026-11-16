@@ -26,7 +26,8 @@
 //! - `skald --agent <name> add-rule|rules|remove-rule|approve-binding|create-space|create-channel
 //!   ...`: fails and changes nothing; the refusal of `rules` lists no rule;
 //! - `skald --agent <name> remove-member|exclude-device|add-to-channel|remove-from-channel ...`,
-//!   the admin commands of the tests of removing members, likewise.
+//!   the admin commands of the tests of removing members, and `skald --agent <name>
+//!   set-history-period ...`, likewise.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -74,6 +75,7 @@ const REMOVE_MEMBER: &str = "remove-member";
 const EXCLUDE_DEVICE: &str = "exclude-device";
 const ADD_TO_CHANNEL: &str = "add-to-channel";
 const REMOVE_FROM_CHANNEL: &str = "remove-from-channel";
+const SET_HISTORY_PERIOD: &str = "set-history-period";
 const HISTORY: &str = "--history";
 
 /// A space of Ada's device: its ID, its name and the IDs of its channels.
@@ -174,8 +176,9 @@ impl Office {
     }
 
     /// The admin commands on clientb, each one that the person's run would make: removing Bob,
-    /// barring his device, adding him to clientb's channel with Ada alone, and removing Ada from it.
-    fn admin_commands(&self) -> [Vec<String>; 4] {
+    /// barring his device, adding him to clientb's channel with Ada alone, removing Ada from it, and
+    /// setting clientb's history period.
+    fn admin_commands(&self) -> [Vec<String>; 5] {
         let channel = self.client_b.channels.last().expect("a channel");
         let (channel, device) = (channel.to_string(), self.bob_device.to_string());
         let (bob, ada) = (self.bob.as_str(), self.desk.ada.handle.as_str());
@@ -184,6 +187,7 @@ impl Office {
             vec![EXCLUDE_DEVICE, CLIENT_B, &device],
             vec![ADD_TO_CHANNEL, CLIENT_B, &channel, bob, HISTORY, YES],
             vec![REMOVE_FROM_CHANNEL, CLIENT_B, &channel, ada],
+            vec![SET_HISTORY_PERIOD, CLIENT_B, "2d"],
         ]
         .map(|args| args.into_iter().map(str::to_owned).collect())
     }

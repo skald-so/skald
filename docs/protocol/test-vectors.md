@@ -6,7 +6,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation and in a revocation's `keep` or `also` from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), and a [revocation](membership.md#revocation) by a device and by the master key. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), and a [revocation](membership.md#revocation) by a device and by the master key. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -30,6 +30,10 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Frame `batch`](#frame-batch)
 - [Frame `space-notice`](#frame-space-notice)
 - [Frame `auth`](#frame-auth)
+- [Frame `history`](#frame-history)
+- [Frame `history-stored`](#frame-history-stored)
+- [Frame `history-refused`](#frame-history-refused)
+- [HTTPS proof](#https-proof)
 - [Revocation by a device](#revocation-by-a-device)
 - [Revocation by the master key](#revocation-by-the-master-key)
 
@@ -527,6 +531,78 @@ b1e1583b84bd49c70301041a69127c80
 1c1d1e1f5019ac5f784938823586a6c5809a18f6dd58405a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Frame `history`
+
+```cbor-diag
+[
+  11,
+  5,
+  h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+  h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+  [
+    3,
+    h'019a6f201a007c008a00000000000001',
+    <<{
+      1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+      2: 2,
+      3: h'0e0e0e0e0e0e0e0e0e0e0e0e',
+      4: h'c0c1c2c3c4c5c6c7c8c9cacbcccdcecf'
+    }>>
+  ]
+]
+```
+
+```hex
+850b0550019a6f1e2b3c7d4e8f5061a2b3c4d5e650019a6f1e2b3c7d4e8f5061
+a2b3c4d5e7830350019a6f201a007c008a000000000000015835a40150019a6f
+1e2b3c7d4e8f5061a2b3c4d5e70202034c0e0e0e0e0e0e0e0e0e0e0e0e0450c0
+c1c2c3c4c5c6c7c8c9cacbcccdcecf
+```
+
+## Frame `history-stored`
+
+```cbor-diag
+[
+  12,
+  5
+]
+```
+
+```hex
+820c05
+```
+
+## Frame `history-refused`
+
+```cbor-diag
+[
+  13,
+  6,
+  "epoch-mismatch"
+]
+```
+
+```hex
+830d066e65706f63682d6d69736d61746368
+```
+
+## HTTPS proof
+
+```cbor-diag
+[
+  h'000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f',
+  h'19ac5f784938823586a6c5809a18f6dd',
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+835820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c
+1d1e1f5019ac5f784938823586a6c5809a18f6dd58405a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 ```
 
 ## Revocation by a device

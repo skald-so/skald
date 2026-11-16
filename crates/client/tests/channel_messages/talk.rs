@@ -2,7 +2,6 @@
 //! the people the tests play, the messages those devices write and read, and what the front saw
 //! Ada's machine send and the CLI show.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -145,23 +144,7 @@ impl Talk {
 /// From now on, the relay answers the first request for `space`'s revisions with no revisions in
 /// the form the API gives them, as a request that fails once.
 pub fn revisions_fail_once(cloud: &Cloud, space: SpaceId) {
-    let first = AtomicBool::new(true);
-    cloud
-        .relay
-        .rewrite(&revisions_request(space), move |answer| {
-            if first.swap(false, Ordering::SeqCst) {
-                "{}".to_owned()
-            } else {
-                answer.to_owned()
-            }
-        });
-}
-
-/// Removes every KeyPackage of `device` from the server, so no device can add it to a group.
-pub fn without_key_packages(cloud: &Cloud, device: DeviceId) {
-    cloud.execute(&format!(
-        "DELETE FROM key_packages WHERE device_id = '{device}'::uuid"
-    ));
+    (cloud.relay).rewrite_once(&revisions_request(space), |_| "{}".to_owned());
 }
 
 /// A line of text a person's device says in a channel.
@@ -172,6 +155,10 @@ pub struct Line<'a> {
     /// The A2A `messageId`; `None`, the envelope's `msg_id`.
     pub message_id: Option<MessageId>,
     pub text: &'a str,
+    /// `to`, in text form; `None`, none.
+    pub to: Option<String>,
+    /// The body; `None`, an A2A message of the text.
+    pub body: Option<Body>,
 }
 
 impl<'a> Line<'a> {
@@ -181,6 +168,8 @@ impl<'a> Line<'a> {
             counter,
             message_id: None,
             text,
+            to: None,
+            body: None,
         }
     }
 
@@ -192,11 +181,11 @@ impl<'a> Line<'a> {
             "parts": [{ "text": self.text }],
         });
         Content {
-            body: Some(Body::A2a(message.to_string())),
+            body: Some(self.body.clone().unwrap_or(Body::A2a(message.to_string()))),
             counter: std::num::NonZeroU64::new(self.counter),
             from: self.from.parse::<Address>().expect("an address"),
             hops: 0,
-            to: None,
+            to: (self.to.as_ref()).map(|to| to.parse::<Address>().expect("an address")),
             reply_to: None,
             attachments: None,
             delegation: None,
@@ -278,23 +267,25 @@ pub fn is_commit(envelope: &Envelope) -> bool {
     )
 }
 
-/// The distinct envelopes of messages in `channel` the front saw sent after its first `from`
-/// sends, in the order each was first sent: a retry with the same bytes is no other one.
-pub fn messages_sent(front: &Front, channel: ChannelId, from: usize) -> Vec<Sent> {
+/// The distinct envelopes of `channel` the front saw sent after its first `from` sends, in the
+/// order each was first sent: a retry with the same bytes is no other one.
+pub fn sent_in(front: &Front, channel: ChannelId, from: usize) -> Vec<Sent> {
     let mut distinct: Vec<Sent> = Vec::new();
     for sent in sent_after(front, from) {
-        let envelope = sent.envelope.envelope();
-        if envelope.header.channel != channel || !is_message(envelope) {
-            continue;
-        }
-        if distinct
-            .iter()
-            .all(|seen| seen.envelope.bytes() != sent.envelope.bytes())
+        if sent.envelope.envelope().header.channel == channel
+            && (distinct.iter()).all(|seen| seen.envelope.bytes() != sent.envelope.bytes())
         {
             distinct.push(sent);
         }
     }
     distinct
+}
+
+/// Of [`sent_in`], the envelopes of messages.
+pub fn messages_sent(front: &Front, channel: ChannelId, from: usize) -> Vec<Sent> {
+    (sent_in(front, channel, from).into_iter())
+        .filter(|sent| is_message(sent.envelope.envelope()))
+        .collect()
 }
 
 /// The `msg_id` of the one message envelope in `channel` the front saw sent after its first `from`
