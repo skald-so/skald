@@ -1625,7 +1625,7 @@ export const getGetHistoryEntriesUrl = (space: string, channel: string) => {
 };
 
 /**
- * The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, "History entry"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, "History entry"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
  * @summary The channel's history entries
  */
 export const getHistoryEntries = async (
@@ -1699,7 +1699,7 @@ export const getGetHistoryLinksUrl = (space: string, channel: string) => {
 };
 
 /**
- * The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, "Key chain"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, "Key chain"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, "Access").
  * @summary The channel's history links
  */
 export const getHistoryLinks = async (
@@ -1773,7 +1773,7 @@ export const getGetHistoryWrapsUrl = (space: string, channel: string) => {
 };
 
 /**
- * The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, "Wraps"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members.
+ * The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, "Wraps"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
  * @summary The channel's history wraps
  */
 export const getHistoryWraps = async (
