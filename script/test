@@ -28,16 +28,18 @@
 #              files and its image, its npm package, the move of main to a stable release, on fixture
 #              repositories too, and of the installers in installers/ and the npm package on this
 #              machine; of the release check and its jobs, against stand-ins for a release and the
-#              verification commands; Renovate config validation
+#              verification commands; of the Pages workflow; Renovate config validation
 #   web        copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #              references) and build
+#   site       the website and docs built from docs/, which fails on a broken internal link
+#              (script/site-test)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source script/lib/postgres.sh
 source script/lib/s3.sh
 
-all='workspace wasm image self-host mls agents edits repository tooling web'
+all='workspace wasm image self-host mls agents edits repository tooling web site'
 rust='workspace wasm image self-host mls agents edits repository'
 selected=${SKALD_TEST_PARTS:-}
 if [[ -n ${SKALD_TEST_SINCE:-} ]]; then
@@ -149,7 +151,7 @@ if checks_any $rust tooling web && ! command -v docker >/dev/null; then
   exit 1
 fi
 if ! command -v npm >/dev/null; then
-  echo "script/test: npm is missing; the copied code check, the web UI and the Renovate config check need Node.js: https://nodejs.org" >&2
+  echo "script/test: npm is missing; the copied code check, the web UI, the website and the Renovate config check need Node.js: https://nodejs.org" >&2
   exit 1
 fi
 if checks_any $rust && ! command -v openssl >/dev/null; then
@@ -320,4 +322,11 @@ if checks tooling; then
   script/release-check-workflow-test
   script/release-check-test
   script/release-check-steps-test
+  script/pages-workflow-test
+fi
+
+# The website and docs: the build of docs/ and its link check, and the build's tests.
+if checks site; then
+  (cd site && npm ci --no-audit --no-fund)
+  script/site-test
 fi

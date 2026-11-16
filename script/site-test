@@ -1,0 +1,109 @@
+#!/usr/bin/env node
+// Tests the build of the website and docs, site/build.mjs, after npm ci in site/:
+//   - docs/ builds, with a page for each of its Markdown files and a main page;
+//   - on a scratch repository: a README.md is its directory's page; the main page links to every
+//     page; a heading gets GitHub's ID, which a link to it from another page resolves to; a link to a
+//     file outside docs/ goes to it on GitHub at SKALD_SITE_REF, main by default, a directory as a
+//     tree; a file git ignores is not built;
+//   - the build fails, naming the link, on a link to a missing page, to a missing heading of a page,
+//     to a missing file outside docs/ or a missing heading of one, and to a path outside the
+//     repository.
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { reporter } from './lib/report.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const { fail, done } = reporter('site-test');
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'site-test.')));
+process.on('exit', () => fs.rmSync(tmp, { recursive: true, force: true }));
+let builds = 0;
+
+// build <docs> [<env>]: builds <docs> into a new directory; {status, output, out}.
+const build = (docs, env = {}) => {
+  const out = path.join(tmp, `out-${++builds}`);
+  const run = spawnSync('node', [path.join(root, 'site/build.mjs'), out, ...(docs ? [docs] : [])], {
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: tmp, ...env },
+  });
+  return { status: run.status, output: `${run.stdout}${run.stderr}`, out };
+};
+const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '');
+
+// docs/ itself.
+{
+  const { status, output, out } = build();
+  if (status !== 0) fail(`docs/ does not build: ${output.trim().split('\n').slice(-5).join(' | ')}`);
+  else {
+    const listed = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '--', 'docs/*.md'], { cwd: root, encoding: 'utf8' });
+    for (const file of listed.stdout.split('\n').filter(Boolean)) {
+      const page = file.replace(/^docs\//, '').replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html');
+      if (!fs.existsSync(path.join(out, page))) fail(`the site has no page ${page} for ${file}`);
+    }
+    if (!fs.existsSync(path.join(out, 'index.html'))) fail('the site has no main page, index.html');
+  }
+}
+
+// A scratch repository.
+const repo = path.join(tmp, 'repo');
+const write = (file, text) => {
+  fs.mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+  fs.writeFileSync(path.join(repo, file), text);
+};
+write('NOTES.md', '# Notes\n\n## Second part\n');
+write('tools/run.sh', 'echo\n');
+write('docs/.gitignore', 'private.md\n');
+write('docs/private.md', '# Private\n');
+write('docs/guide.md', '# Guide\n\n## 1. Install the `client`\n\nText.\n');
+write('docs/sub/README.md', '# Sub\n\n[Guide step](../guide.md#1-install-the-client)\n');
+const page = (links) => `# Start\n\n${links.map((link) => `- [link](${link})`).join('\n')}\n`;
+const good = ['guide.md', 'sub/README.md', 'sub/README.md#sub', '../NOTES.md#second-part', '../tools', '../tools/run.sh', '#start'];
+write('docs/start.md', page(good));
+spawnSync('git', ['init', '--quiet'], { cwd: repo });
+const docs = path.join(repo, 'docs');
+
+{
+  const { status, output, out } = build(docs);
+  if (status !== 0) fail(`the scratch docs do not build: ${output.trim().split('\n').slice(-5).join(' | ')}`);
+  else {
+    const start = read(path.join(out, 'start.html'));
+    const main = read(path.join(out, 'index.html'));
+    for (const want of ['href="./guide"', 'href="./sub/"', 'href="./sub/#sub"']) {
+      if (!start.includes(want)) fail(`start.html has no link ${want} to a page`);
+    }
+    for (const want of [
+      'href="https://github.com/skald-so/skald/blob/main/NOTES.md#second-part"',
+      'href="https://github.com/skald-so/skald/tree/main/tools"',
+      'href="https://github.com/skald-so/skald/blob/main/tools/run.sh"',
+    ]) {
+      if (!start.includes(want)) fail(`start.html has no link ${want} to a file outside docs/ on GitHub`);
+    }
+    if (!fs.existsSync(path.join(out, 'sub/index.html'))) fail('sub/README.md is not the page sub/index.html');
+    if (!read(path.join(out, 'guide.html')).includes('id="1-install-the-client"')) {
+      fail("a heading of guide.html has no GitHub ID, 1-install-the-client");
+    }
+    for (const want of ['href="./guide"', 'href="./start"', 'href="./sub/"']) {
+      if (!main.includes(want)) fail(`the main page has no link ${want}`);
+    }
+    if (fs.existsSync(path.join(out, 'private.html'))) fail('a file git ignores, private.md, is built');
+  }
+}
+{
+  const { status, output, out } = build(docs, { SKALD_SITE_REF: 'v1.2.3' });
+  const want = 'href="https://github.com/skald-so/skald/blob/v1.2.3/NOTES.md#second-part"';
+  if (status !== 0) fail(`the scratch docs do not build with SKALD_SITE_REF: ${output.trim().split('\n').slice(-3).join(' | ')}`);
+  else if (!read(path.join(out, 'start.html')).includes(want)) fail(`with SKALD_SITE_REF=v1.2.3, start.html has no link ${want}`);
+}
+
+// Broken links.
+for (const link of ['missing.md', 'guide.md#missing', '#missing', 'sub/missing/README.md', '../MISSING.md', '../NOTES.md#missing', '../../outside.md']) {
+  write('docs/start.md', page([...good, link]));
+  const { status, output } = build(docs);
+  if (status === 0) fail(`a link to ${link} builds`);
+  else if (![link, link.replace(/\.md(?=#|$)/, ''), link.replace(/README\.md$/, '')].some((name) => output.includes(name))) {
+    fail(`the build fails on a link to ${link} without naming it: ${output.trim().split('\n').slice(-3).join(' | ')}`);
+  }
+}
+
+done();

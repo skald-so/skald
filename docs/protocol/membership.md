@@ -417,7 +417,8 @@ A channel is an MLS group [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)] w
 - Members: `client` devices and `service` devices that keep state. A `browser` and a stateless `service` device are never members.
 - Application messages are PrivateMessages. Proposals and Commits are PublicMessages, so the server knows each epoch's member devices.
 - Forward secrecy: a device deletes a message's key once it decrypts the message. It keeps the secrets of the 3 epochs before its current one, for messages stored after a Commit their sender had not processed yet ([Order](delivery.md#order)), and deletes older ones. Within an epoch it keeps the keys of skipped messages up to 1024 generations ahead, until it deletes that epoch's secrets.
-- Each Commit's sender uploads the GroupInfo of the new epoch, with the `ratchet_tree` and `external_pub` extensions, over HTTPS. Any member device of the current epoch uploads one if the server has none. The server keeps the latest.
+- Each Commit's sender uploads the GroupInfo of the new epoch, with the `ratchet_tree` and `external_pub` extensions, over HTTPS. Any member device of the current epoch uploads one if the server has none.
+- The server keeps an upload of the current epoch from a session of an account with a member device that the GroupInfo lists, with both extensions, whose signature verifies and whose GroupContext is that of the group it follows ([Commit ordering](#commit-ordering)). It gives the latest only while it is of the current epoch, so after a Commit it has none until one of the new epoch is uploaded, and only to sessions of accounts the latest revision lists as the channel's members; without one, it says whether the channel has a group yet.
 
 ### Admitted devices
 A device is admitted to a channel when its certificate is valid and it is one of:
@@ -434,6 +435,7 @@ A member device:
 1. An admin's device gets a channel ID from the server and signs a revision with the channel.
 2. The first admitted device to accept the revision creates the channel's group at epoch 0, adds every admitted device it has a KeyPackage for and commits: epoch 1.
 3. The server keeps the first Commit of epoch 0 it receives for the channel and refuses later ones with `epoch-mismatch` ([Send](delivery.md#send)). A device whose group is refused drops it and joins the kept one.
+4. Once the server stores its Commit, the creator uploads the GroupInfo of epoch 1, then sends the Welcome ([Commit ordering](#commit-ordering)).
 
 ### KeyPackages
 - Every device that can be a member keeps unused KeyPackages on the server: when fewer than 10 remain, it uploads enough to have 20. Their `lifetime` is at most 60 days; a device replaces a KeyPackage 7 days before it expires.
@@ -442,9 +444,11 @@ A member device:
 - A device MUST NOT add a KeyPackage unless its MLS signature verifies, its `lifetime` holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` match an admitted device's valid certificate.
 
 ### Commit ordering
-- The server keeps a channel's current epoch from the Commits it accepts. It accepts a Commit only if:
+- The server follows each channel's group from outside it, without group secrets. It keeps the channel's first Commit of epoch 0 without checking it, as it has no state of epoch 0. It takes the GroupInfo of epoch 1 only from a session of the account of that Commit's sending device, listing that device, and follows the group from it. Until then it refuses the channel's other `mls` envelopes with `not-a-member`.
+- It keeps a channel's current epoch from the Commits it accepts. It accepts a later Commit only if:
   1. its `epoch` is the channel's current epoch; otherwise it refuses it with `epoch-mismatch`;
   2. its sender is a member of that epoch whose `identity` is the device sending it, or, for an external Commit, the joining device is the one sending it; otherwise `not-a-member`.
+- A Commit it cannot process, such as one whose signature does not verify, and a proposal get `not-a-member`.
 - So of Commits sent at once, the first stored wins. The others' senders process it, then commit again if their change is still needed.
 - A Commit and its Welcome travel in envelopes: the Commit to the channel, the Welcome with `recipients` the added devices ([Envelope](README.md#envelope)). Their mailbox entries do not expire by time ([Mailbox](delivery.md#mailbox)).
 - Member devices process a channel's handshake messages in its [order](delivery.md#order).

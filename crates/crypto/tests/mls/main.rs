@@ -35,6 +35,7 @@ mod profile;
 mod removing;
 mod sealed;
 mod secrecy;
+mod server_reads;
 mod steps;
 mod welcome;
 mod wire;
