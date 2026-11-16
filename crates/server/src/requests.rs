@@ -141,8 +141,7 @@ pub(crate) async fn poll(
 }
 
 /// Acks `device`'s mailbox up to `cursor`, once the instance listens to the others if `listen`, so
-/// that a long-poll or a stream waiting on its mailbox misses nothing they tell; the answer if
-/// either fails.
+/// that a long-poll waiting on its mailbox misses nothing they tell; the answer if either fails.
 pub(crate) async fn ack_listening(
     state: &AppState,
     device: DeviceId,
