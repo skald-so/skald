@@ -121,6 +121,16 @@ impl Talk {
         person_address(&self.space.name, person)
     }
 
+    /// Runs `skald recv` on Ada's machine after the proxy put one envelope into her catch-up; fails
+    /// if it shows `text`.
+    #[track_caller]
+    pub fn ada_drops(&self, text: &str) -> Finished {
+        let ran = received(&self.ada.machine);
+        assert_eq!(self.front.injected(), 1, "not put into catch-up: {ran:?}");
+        assert!(!ran.shown().contains(text), "{ran:?}");
+        ran
+    }
+
     /// Bob's device takes in its mailbox; fails unless the messages of the channel it read are
     /// Ada's `expected`, as [`assert_read`] says.
     #[track_caller]

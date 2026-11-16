@@ -6,7 +6,6 @@ use skald_proto::{ChannelId, DeviceId, MessageId};
 
 use crate::edits::{Removal, ada_makes, assert_group_is, devices, envelopes_sent};
 use crate::fixtures::send;
-use crate::kit::received;
 use crate::played::Took;
 use crate::talk::{Line, Talk, assert_read, encrypted, is_message, one_message_sent};
 use crate::world::warnings;
@@ -106,10 +105,8 @@ fn copy_reads_nothing_sent_after(change: Removal, ids: &[u64; 3], logins: &[&str
     }
     talk.front.inject(ada, vec![from_the_copy]);
 
-    let ran = received(&talk.ada.machine);
+    let ran = talk.ada_drops(FROM_THE_COPY);
 
-    assert_eq!(talk.front.injected(), 1, "not put into catch-up: {ran:?}");
-    assert!(!ran.shown().contains(FROM_THE_COPY), "{ran:?}");
     let named = [bob.to_string(), channel.to_string()];
     assert!(
         warnings(&ran)
