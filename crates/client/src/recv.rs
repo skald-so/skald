@@ -8,10 +8,12 @@
 //! other entries it wrote: a `message` only if it passes the checks of `docs/protocol/README.md`,
 //! "Envelope", "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
 //! first, the sending device's certificate valid and the channel's members taken from its group:
-//! the sending device under `mls`, the group as this device holds it under `hpke`; once per
-//! sending device and `msg_id`; a replay without a word; a warning for any other; and each
-//! `delivered` and `expired` of the device's messages. As an agent, only those of its folder's
-//! space: the rest wait in the local state.
+//! the sending device under `mls`, the group as this device holds it under `hpke`; only if
+//! [`crate::gaps`] accepts its `counter`, warning first of the counters it makes missing and
+//! marking it as following missing ones, or, without `counter`, once per sending device and
+//! `msg_id`; a duplicate or a replay without a word; a warning for any other; and each `delivered`
+//! and `expired` of the device's messages. As an agent, only those of its folder's space: the rest
+//! wait in the local state.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +33,7 @@ use crate::agents::server_name;
 use crate::connection::{WebSocket, printable};
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
+use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
 use crate::secrets;
 use crate::send::{self, broke, closed, set_read_timeout};
@@ -310,26 +313,40 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
                     let Some(opened) = groups::opened(follower, key, &entry) else {
                         continue;
                     };
-                    decrypted(follower, &mut checks, envelope, opened)?
+                    decrypted(follower, &mut checks, (seq, envelope), opened)?
                 } else {
-                    verdict(follower, &mut checks, envelope)?
+                    verdict(follower, &mut checks, (seq, envelope))?
                 };
                 let header = &envelope.header;
                 match verdict {
-                    Verdict::Show(sender, message) => {
+                    Verdict::Show(sender, message, counted) => {
+                        let gap = counted.as_ref().and_then(|(_, accepted)| accepted.gap);
+                        if let Some(gap) = gap {
+                            eprintln!("skald: warning: {}", missing(header.channel, sender, gap));
+                        }
+                        let after = if gap.is_some() {
+                            ", following missing messages"
+                        } else {
+                            ""
+                        };
                         println!(
                             "The message {} in the channel {} from {}, by the device {} \
-                             ({sender}):\n  {}",
+                             ({sender}){after}:\n  {}",
                             header.msg_id,
                             header.channel,
                             message.from,
                             printable(&message.device),
                             printable(&message.text)
                         );
-                        follower
-                            .state
-                            .shown(seq, sender, header.msg_id)
-                            .map_err(text)?;
+                        match counted {
+                            Some((source, accepted)) => {
+                                follower
+                                    .state
+                                    .shown_counted(seq, &source, &accepted.counters)
+                            }
+                            None => follower.state.shown(seq, sender, header.msg_id),
+                        }
+                        .map_err(text)?;
                     }
                     Verdict::Repeat => follower.state.remove_entry(seq).map_err(text)?,
                     Verdict::Drop(sender, why) => {
@@ -364,20 +381,21 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
 
 /// What a run does with a `message` entry.
 enum Verdict {
-    /// Shows the message from the sending device: it passed every check.
-    Show(DeviceId, Received),
-    /// Drops it without a word: the device showed it already, or it is a replay.
+    /// Shows the message from the sending device: it passed every check. With `counter`, what
+    /// accepting it gave.
+    Show(DeviceId, Box<Received>, Option<(Source, Accepted)>),
+    /// Drops it without a word: a duplicate or a replay.
     Repeat,
     /// Drops it with a warning that names the sending device, if the payload names one, and why.
     Drop(Option<DeviceId>, String),
 }
 
-/// What `envelope`, an `hpke` `message` entry of a space within the run's scope, gives, by the
-/// checks of the run: the space is synced at the first message of it.
+/// What `envelope`, the `hpke` `message` entry `seq` of a space within the run's scope, gives, by
+/// the checks of the run: the space is synced at the first message of it.
 fn verdict(
     follower: &mut Follower,
     checks: &mut Checks,
-    envelope: &Envelope,
+    (seq, envelope): (u64, &Envelope),
 ) -> Result<Verdict, String> {
     let header = &envelope.header;
     let opened = match open_message(header, &envelope.payload, follower.this, checks.keys.hpke()) {
@@ -400,7 +418,7 @@ fn verdict(
     judge(
         follower,
         checks,
-        (header, sender, Group::Held(held.as_deref())),
+        (seq, header, sender, Group::Held(held.as_deref())),
         signed(opened),
     )
 }
@@ -415,12 +433,12 @@ fn signed(opened: HpkeMessage) -> impl FnOnce(&Cert) -> Result<Content, String> 
     }
 }
 
-/// What `envelope`, an `mls` application message of a space within the run's scope, gives, by
-/// what decrypting it in its channel's group gave, `opened`, and the checks of the run.
+/// What `envelope`, the `mls` application message entry `seq` of a space within the run's scope,
+/// gives, by what decrypting it in its channel's group gave, `opened`, and the checks of the run.
 fn decrypted(
     follower: &mut Follower,
     checks: &mut Checks,
-    envelope: &Envelope,
+    (seq, envelope): (u64, &Envelope),
     opened: Opened,
 ) -> Result<Verdict, String> {
     match opened {
@@ -429,7 +447,7 @@ fn decrypted(
         Opened::Read(sender, plaintext) => judge(
             follower,
             checks,
-            (&envelope.header, sender, Group::Sender),
+            (seq, &envelope.header, sender, Group::Sender),
             |_| {
                 Content::from_cbor(&plaintext)
                     .map_err(|err| format!("its content breaks the protocol: {err}"))
@@ -438,13 +456,14 @@ fn decrypted(
     }
 }
 
-/// What a message with `header` from the device `sender`, whose content `content` gives with the
-/// sending device's certificate, gives, by the checks of the run, the channel's members taken from
-/// `group`: the space is synced at its first message.
+/// What a message of the entry `seq` with `header` from the device `sender`, whose content
+/// `content` gives with the sending device's certificate, gives, by the checks of the run, the
+/// channel's members taken from `group`, and its `counter`: the space is synced at its first
+/// message.
 fn judge(
     follower: &mut Follower,
     checks: &mut Checks,
-    (header, sender, group): (&Header, DeviceId, Group),
+    (seq, header, sender, group): (u64, &Header, DeviceId, Group),
     content: impl FnOnce(&Cert) -> Result<Content, String>,
 ) -> Result<Verdict, String> {
     let Some(space) = checks
@@ -471,18 +490,48 @@ fn judge(
         server: checks.server.as_ref().and_then(Option::as_ref),
         group,
     };
-    Ok(match check(sender, content, header, &context) {
-        Err(why) => Verdict::Drop(Some(sender), why),
-        Ok(_)
-            if follower
-                .state
-                .received(sender, header.msg_id)
-                .map_err(text)? =>
-        {
+    let message = match check(sender, content, header, &context) {
+        Err(why) => return Ok(Verdict::Drop(Some(sender), why)),
+        Ok(message) => message,
+    };
+    let Some(counter) = message.counter else {
+        // Content without `counter`: once per sending device and `msg_id`.
+        let repeat = (follower.state)
+            .received(sender, header.msg_id)
+            .map_err(text)?;
+        return Ok(if repeat {
             Verdict::Repeat
-        }
-        Ok(message) => Verdict::Show(sender, message),
+        } else {
+            Verdict::Show(sender, Box::new(message), None)
+        });
+    };
+    let source = Source {
+        channel: header.channel,
+        device: sender,
+        scheme: header.scheme,
+    };
+    let previous = follower.state.counters(&source, seq).map_err(text)?;
+    Ok(match gaps::accept(source.scheme, previous, counter) {
+        Some(accepted) => Verdict::Show(sender, Box::new(message), Some((source, accepted))),
+        None => Verdict::Repeat,
     })
+}
+
+/// The warning of the counters `first..=last` missing from the device `sender` in `channel`.
+fn missing(channel: ChannelId, sender: DeviceId, (first, last): (u64, u64)) -> String {
+    let from = format!("from the device {sender} in the channel {channel}");
+    if first == last {
+        format!(
+            "the message with the counter {first} {from} is missing: the server refused, expired \
+             or dropped it"
+        )
+    } else {
+        format!(
+            "{} messages with the counters {first} to {last} {from} are missing: the server \
+             refused, expired or dropped them",
+            last - first + 1
+        )
+    }
 }
 
 /// Where a check takes the members of a message's channel from: its MLS group.
@@ -513,6 +562,7 @@ struct Received {
     /// The sending device's certificate `name`.
     device: String,
     text: String,
+    counter: Option<NonZeroU64>,
 }
 
 /// The valid certificate of `device` of an account of the space in `context`'s revision that its
@@ -608,6 +658,7 @@ fn check(
         from: content.from,
         device: cert.body().name.clone(),
         text,
+        counter: content.counter,
     })
 }
 
@@ -787,6 +838,7 @@ mod tests {
                 from: content.from.clone(),
                 device: "laptop".to_owned(),
                 text: "first\nsecond".to_owned(),
+                counter: NonZeroU64::new(1),
             })
         );
     }
@@ -1139,6 +1191,28 @@ mod tests {
         assert!(
             failed(io(io::ErrorKind::ConnectionReset), timeout)
                 .starts_with("the connection to the server broke: "),
+        );
+    }
+
+    /// The warning of missing messages names how many, their counters, the sending device and the
+    /// channel.
+    #[test]
+    fn missing_messages_are_named_by_their_counters() {
+        let channel: ChannelId = "01a1dcab-ee8a-7872-9adc-6efd0851e3ee".parse().unwrap();
+        let sender: DeviceId = "a90f5ea9-75e5-899a-90ec-3a09f33aebdf".parse().unwrap();
+
+        assert_eq!(
+            missing(channel, sender, (2, 2)),
+            "the message with the counter 2 from the device a90f5ea9-75e5-899a-90ec-3a09f33aebdf \
+             in the channel 01a1dcab-ee8a-7872-9adc-6efd0851e3ee is missing: the server refused, \
+             expired or dropped it"
+        );
+        assert_eq!(
+            missing(channel, sender, (4, 6)),
+            "3 messages with the counters 4 to 6 from the device \
+             a90f5ea9-75e5-899a-90ec-3a09f33aebdf in the channel \
+             01a1dcab-ee8a-7872-9adc-6efd0851e3ee are missing: the server refused, expired or \
+             dropped them"
         );
     }
 
