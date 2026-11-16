@@ -71,6 +71,7 @@ skald remove-member <space> <handle>  # remove a member from the space and its c
 skald exclude-device <space> <device>  # bar a member's device from the space and its channels, as an admin
 skald send <channel> <text>  # send a text to a channel, encrypted in its MLS group for its other devices
 skald recv                 # receive the device's messages, checked, and the statuses of the messages it sent
+skald --agent <name> recv  # the messages handed over to the agent in the space of the working directory
 skald --agent <name> address  # the agent's address in the space of the working directory
 skald add-rule <folder> <space>  # bind a folder and everything below it to a space
 skald rules                # the folders' rules

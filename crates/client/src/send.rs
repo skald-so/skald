@@ -135,6 +135,12 @@ pub fn run(
         devices,
     } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
         .map_err(|err| with_waiting(dir, scope, err))?;
+    if let Some(agent) = agent {
+        // Messages that come from now on are also for this agent.
+        (follower.state)
+            .add_agent(space.id, agent.as_str())
+            .map_err(|err| err.to_string())?;
+    }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
     let from = sender(&mut follower, &roster, agent)?;
     groups::encrypt(
