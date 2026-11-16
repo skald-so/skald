@@ -4,7 +4,9 @@
 //     stand-in npm registry, on 127.0.0.1 over HTTP, in the test's own process;
 //   - as a command, `node release-check-stub.mjs <state> <tool> <args...>`: stand-ins of gh (its
 //     release and api commands through the stand-in GitHub, and attestation verify), cosign
-//     (verify), docker (buildx imagetools inspect) and crane (digest) against a stand-in GHCR, and
+//     (verify, and verify-blob-attestation of a file against an attestation file, a stand-in
+//     Sigstore bundle), docker (buildx imagetools inspect) and crane (digest) against a stand-in
+//     GHCR, and
 //     curl, which reaches registry.npmjs.org at the stand-in npm registry and nothing but 127.0.0.1
 //     otherwise, and wget, which downloads nothing: the test has no network; standInTools(<bin>,
 //     <state>) writes them into <bin>;
@@ -22,6 +24,9 @@
 // each tag of the image to its digest; signatures, cosign's: {digest, identity, issuer};
 // attestations, GitHub Artifact Attestations of the release files and the image: {digest, repo,
 // workflow, ref, predicateType}, <digest> a file's SHA-256 in hex or the image's sha256:<hex>.
+// An attestation file, one that gh attestation verify --bundle and cosign verify-blob-attestation
+// --bundle read, holds stand-in Sigstore bundles, a JSON value or JSON lines, each
+// {standin: {subject: {name, sha256 or sha512}, repo, workflow, ref, predicateType}}.
 import { spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -317,6 +322,7 @@ async function command(stateFile, tool, args) {
     cosign() {
       const [verb, ...rest] = args;
       if (verb === 'version') return say('GitVersion:    v3.1.4'), 0;
+      if (verb === 'verify-blob-attestation') return verifyBlobAttestation(rest);
       if (verb !== 'verify') return unsupported();
       const parsed = split(rest, ['--certificate-identity', '--certificate-identity-regexp', '--certificate-oidc-issuer',
         '--certificate-oidc-issuer-regexp', '--certificate-github-workflow-repository', '--certificate-github-workflow-ref',
@@ -429,16 +435,8 @@ async function command(stateFile, tool, args) {
     const bundle = one(parsed, '-b', '--bundle');
     let candidates;
     if (bundle !== undefined) {
-      const text = fs.readFileSync(String(bundle), 'utf8');
-      let entries;
-      try {
-        entries = [].concat(JSON.parse(text));
-      } catch {
-        entries = text.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
-      }
-      candidates = entries
-        .map((e) => e?.standin ?? e?.bundle?.standin)
-        .filter((s) => s && !s.npm && (s.subject?.sha512 === digest || s.subject?.sha256 === digest));
+      candidates = bundled(String(bundle), digest);
+      if (candidates === null) return complain(`Error: failed to read the bundle ${bundle}`), 1;
     } else candidates = state.attestations.filter((a) => a.digest === digest);
     const signerWorkflow = one(parsed, '--signer-workflow');
     const signerRepo = one(parsed, '--signer-repo');
@@ -470,6 +468,77 @@ async function command(stateFile, tool, args) {
       return 1;
     }
     say('✓ Verification succeeded!');
+    return 0;
+  }
+
+  // bundled <file> <digest>: the stand-in attestations of the attestation file <file> whose subject
+  // is <digest>, or null when it cannot be read.
+  function bundled(file, digest) {
+    let text;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch {
+      return null;
+    }
+    let entries;
+    try {
+      entries = [].concat(JSON.parse(text));
+    } catch {
+      try {
+        entries = text.split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+      } catch {
+        return null;
+      }
+    }
+    return entries
+      .map((e) => e?.standin ?? e?.bundle?.standin)
+      .filter((s) => s && !s.npm && (s.subject?.sha512 === digest || s.subject?.sha256 === digest));
+  }
+
+  // verifyBlobAttestation <args>: `cosign verify-blob-attestation --bundle <file> <blob>`, keyless,
+  // with the policy its flags set: the certificate's identity and issuer, and the predicate type of
+  // --type, if given.
+  function verifyBlobAttestation(rest) {
+    const parsed = split(rest, ['--bundle', '--certificate-identity', '--certificate-identity-regexp', '--certificate-oidc-issuer',
+      '--certificate-oidc-issuer-regexp', '--certificate-github-workflow-repository', '--certificate-github-workflow-ref',
+      '--type', '--trusted-root', '--key', '--signature', '--digest', '--digestAlg', '--timeout']);
+    const blob = parsed.plain[0];
+    const bundle = one(parsed, '--bundle');
+    const identity = one(parsed, '--certificate-identity');
+    const identityPattern = one(parsed, '--certificate-identity-regexp');
+    const issuer = one(parsed, '--certificate-oidc-issuer');
+    const issuerPattern = one(parsed, '--certificate-oidc-issuer-regexp');
+    if (blob === undefined || bundle === undefined || one(parsed, '--key') !== undefined) return unsupported();
+    if (identity === undefined && identityPattern === undefined) {
+      return complain('Error: --certificate-identity or --certificate-identity-regexp is required for verification in keyless mode'), 1;
+    }
+    if (issuer === undefined && issuerPattern === undefined) {
+      return complain('Error: --certificate-oidc-issuer or --certificate-oidc-issuer-regexp is required for verification in keyless mode'), 1;
+    }
+    if (!fs.statSync(blob, { throwIfNoEntry: false })?.isFile()) return complain(`Error: open ${blob}: no such file or directory`), 1;
+    const digest = digestOf('sha256', fs.readFileSync(blob));
+    subjects.push(digest);
+    const candidates = bundled(String(bundle), digest);
+    if (candidates === null) return complain(`Error: failed to read the bundle ${bundle}`), 1;
+    const types = { slsaprovenance1: provenanceType, slsaprovenance02: 'https://slsa.dev/provenance/v0.2', slsaprovenance: 'https://slsa.dev/provenance/v0.2' };
+    const type = one(parsed, '--type');
+    const repoPin = one(parsed, '--certificate-github-workflow-repository');
+    const refPin = one(parsed, '--certificate-github-workflow-ref');
+    const matched = candidates.filter((a) => {
+      const cert = certificateIdentity(a.workflow, a.ref);
+      if (identity !== undefined && identity !== cert) return false;
+      if (identityPattern !== undefined && !new RegExp(identityPattern).test(cert)) return false;
+      if (issuer !== undefined && issuer !== oidcIssuer) return false;
+      if (issuerPattern !== undefined && !new RegExp(issuerPattern).test(oidcIssuer)) return false;
+      if (repoPin !== undefined && String(repoPin).toLowerCase() !== a.repo.toLowerCase()) return false;
+      if (refPin !== undefined && refPin !== a.ref) return false;
+      return type === undefined || (types[type] ?? type) === a.predicateType;
+    });
+    if (matched.length === 0) {
+      complain('Error: none of the attestations matched the predicate type, or the expected identities matched what was in the certificate');
+      return 1;
+    }
+    complain('Verified OK');
     return 0;
   }
 
