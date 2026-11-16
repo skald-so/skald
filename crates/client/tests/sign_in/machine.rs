@@ -129,27 +129,15 @@ impl Machine {
         self.spawn(args, Stdio::piped(), None)
     }
 
+    /// `skald` with `args` in the working directory `dir`, set up as the machine's runs are, for a
+    /// test that runs it its own way.
+    pub fn command_in(&self, dir: &Path, args: &[&str]) -> Command {
+        self.command(args, Some(dir))
+    }
+
     fn spawn(&self, args: &[&str], stdin: Stdio, dir: Option<&Path>) -> Run {
-        let mut command = bare_skald();
-        if let Some(dir) = dir {
-            command.current_dir(dir);
-        }
-        command
-            .args(args)
-            .env("PATH", self.root.join("bin"))
-            // The home and the temporary directory, as Unix and Windows name them.
-            .env("HOME", self.root.join("home"))
-            .env("USERPROFILE", self.root.join("home"))
-            .env("TMPDIR", self.root.join("tmp"))
-            .env("TMP", self.root.join("tmp"))
-            .env("TEMP", self.root.join("tmp"))
-            .env(STATE_DIR, self.state_dir())
-            .env(KEY_STORAGE, "file");
-        if let Some(name) = &self.host_name {
-            command.env(HOST_NAME, name);
-        }
-        command.envs(self.env.iter().map(|(name, value)| (name, value)));
-        let mut child = command
+        let mut child = self
+            .command(args, dir)
             .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -170,6 +158,31 @@ impl Machine {
             stderr,
             readers,
         }
+    }
+
+    /// `skald` with `args`, in the working directory `dir` if any, set up as the machine's runs
+    /// are.
+    fn command(&self, args: &[&str], dir: Option<&Path>) -> Command {
+        let mut command = bare_skald();
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        command
+            .args(args)
+            .env("PATH", self.root.join("bin"))
+            // The home and the temporary directory, as Unix and Windows name them.
+            .env("HOME", self.root.join("home"))
+            .env("USERPROFILE", self.root.join("home"))
+            .env("TMPDIR", self.root.join("tmp"))
+            .env("TMP", self.root.join("tmp"))
+            .env("TEMP", self.root.join("tmp"))
+            .env(STATE_DIR, self.state_dir())
+            .env(KEY_STORAGE, "file");
+        if let Some(name) = &self.host_name {
+            command.env(HOST_NAME, name);
+        }
+        command.envs(self.env.iter().map(|(name, value)| (name, value)));
+        command
     }
 
     /// Every file under [`Machine::root`].
