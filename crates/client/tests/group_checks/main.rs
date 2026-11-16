@@ -252,15 +252,8 @@ fn welcome_from_a_device_that_a_revision_the_run_did_not_see_admits_is_joined() 
     );
     let (space, channel, _) = acme_with_channel(&world, &ada, &[(&bob.person, Role::Member)]);
     let at = (space.id, channel);
-    let package = take_key_package(cloud, &bob.person.token, ada.device);
-    let ada_cert = cert_of(cloud, &ada);
     bob.mls.create_group(channel, now()).expect("a group");
-    let commit = (bob.mls)
-        .add_devices(channel, &[package], &[ada_cert], now())
-        .expect("a Commit");
-    let welcome = bob.commits(cloud, at, &commit).expect("a Welcome");
-    bob.uploads_group_info(cloud, at);
-    bob.stores(cloud, at, &welcome, &[ada.device]);
+    bob.welcomes(cloud, at, &ada);
     stale_once(cloud, space.id, 2);
 
     let ran = received(&ada.machine);

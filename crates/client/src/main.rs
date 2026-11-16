@@ -7,6 +7,7 @@ mod device;
 mod devices;
 mod folders;
 mod follow;
+mod gaps;
 mod groups;
 mod key_packages;
 mod plain_path;
@@ -208,8 +209,9 @@ enum Command {
     /// device follows. It joins and follows its channels' groups and keeps them to the devices each
     /// channel admits, warning of the devices another device added that it does not. Shows each
     /// message that passes the protocol's checks, once, and each delivered and expired of this
-    /// device's messages; warns of each message it drops. As an agent, only those of the space of
-    /// the agent's folder: the rest wait for a later run.
+    /// device's messages; warns of each message it drops, and of the messages missing from a
+    /// sending device once a later one arrives, which it marks. As an agent, only those of the
+    /// space of the agent's folder: the rest wait for a later run.
     Recv,
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,

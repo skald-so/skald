@@ -908,8 +908,10 @@ fn join(
         if !last && matches!(joined, Err(MlsError::Refused)) {
             return Ok((None, MlsChanges::default(), None));
         }
+        // Gap detection counts the channel's `mls` messages from their baseline again.
         let taken = MlsChanges {
             taken: vec![seq],
+            joined: joined.iter().map(|&channel| (channel, seq)).collect(),
             ..MlsChanges::default()
         };
         Ok((Some(device.seal()), taken, Some(joined)))
