@@ -52,7 +52,7 @@ use kit::{
     latest, received, revise, stale_once, warnings_naming,
 };
 use played::{Played, take_key_package};
-use world::{ACME, now};
+use world::{ACME, now, spaces};
 
 /// The host names of the people's machines, their certificates' `name`.
 const ADA_HOST: &str = "ada-workstation";
@@ -199,13 +199,13 @@ fn send_to_one_channel_removes_a_device_another_channels_commit_added_that_is_no
 const UPLOAD: &str = "PUT /spaces/";
 
 /// The server refuses the GroupInfo that Ada's `skald create-space` uploads for the default
-/// channel's group, which it formed alone. Ada's next run, `skald channels`, uploads the GroupInfo
-/// of epoch 1, since the server has none.
-#[test]
-fn group_info_whose_upload_failed_is_uploaded_by_the_next_run() {
+/// channel's group, which it formed alone; then Ada's machine runs `next`. Fails unless that run
+/// uploads the GroupInfo of epoch 1, since the server has none.
+#[track_caller]
+fn assert_next_run_uploads_group_info(seed: u64, login: &str, next: fn(&machine::Machine)) {
     let (world, _front) = fronted();
     let cloud = &world.cloud;
-    let ada = world.sign_up(4_135_056_301, "ada-uploads-again", ADA_HOST);
+    let ada = world.sign_up(seed, login, ADA_HOST);
     cloud.relay.refuse(UPLOAD, "503 Service Unavailable");
     let space = create_space(cloud, &ada, ACME);
     cloud.relay.stop_refusing();
@@ -215,9 +215,26 @@ fn group_info_whose_upload_failed_is_uploaded_by_the_next_run() {
         "not a group without GroupInfo: {before:?}"
     );
 
-    channels(&ada.machine, ACME);
+    next(&ada.machine);
 
     assert_ada_signs(cloud, &ada, (space.id, space.default), (1, &[ada.device]));
+}
+
+/// Ada's `skald channels` uploads the GroupInfo whose upload failed.
+#[test]
+fn group_info_whose_upload_failed_is_uploaded_by_the_next_run() {
+    assert_next_run_uploads_group_info(4_135_056_301, "ada-uploads-again", |machine| {
+        channels(machine, ACME);
+    });
+}
+
+/// Ada's `skald spaces` brings the space's groups in line too: it uploads the GroupInfo whose
+/// upload failed.
+#[test]
+fn group_info_whose_upload_failed_is_uploaded_by_skald_spaces() {
+    assert_next_run_uploads_group_info(4_135_056_302, "ada-lists-spaces", |machine| {
+        spaces(machine);
+    });
 }
 
 /// Revision 3, by Ada's device, adds Bob as a member and a channel of Ada and Bob, which Bob's
