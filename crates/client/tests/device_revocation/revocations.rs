@@ -13,8 +13,9 @@ use skald_proto::{
 };
 
 use crate::browser::Browser;
-use crate::cloud::{Cloud, b64, unb64};
+use crate::cloud::{Cloud, unb64};
 use crate::fixtures::{Issuer, Keyed, add_device, hex};
+use crate::kit::b64;
 use crate::machine::{FIRST_DEVICE, Finished, Machine, NO};
 use crate::world::{Person, devices_request, handle_of, lines_naming, now, post_as, run};
 

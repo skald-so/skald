@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 use skald_crypto::{ChannelView, accept_next};
 use skald_proto::{
@@ -13,7 +15,7 @@ use skald_proto::{
     Unknown,
 };
 
-use crate::cloud::{Cloud, b64, unb64};
+use crate::cloud::{Cloud, unb64};
 use crate::machine::{Finished, Machine};
 use crate::world::{
     ADD_RULE, AGENT, CHANNELS, CLIENT_A, CREATE_SPACE, Person, dir_of, lines_naming, next_with,
@@ -363,6 +365,11 @@ pub fn assert_members(members: &[DeviceId], devices: &[DeviceId]) {
     let mut expected = devices.to_vec();
     expected.sort();
     assert_eq!(held, expected, "the group's member devices");
+}
+
+/// `bytes` in base64url without padding.
+pub fn b64(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// The path of `channel`'s GroupInfo in `space`.

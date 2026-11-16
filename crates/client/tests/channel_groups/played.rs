@@ -11,9 +11,9 @@ use skald_proto::{
 };
 
 use crate::answers::handed_of;
-use crate::cloud::{Cloud, b64};
+use crate::cloud::Cloud;
 use crate::fixtures::cert_of;
-use crate::kit::upload_group_info;
+use crate::kit::{b64, upload_group_info};
 use crate::peer::Peer;
 use crate::world::{Person, now, post_as};
 

@@ -17,10 +17,10 @@ use skald_crypto::{MlsDevice, StateKey};
 use skald_github_stand_in::User;
 use skald_proto::{Cert, ChannelId, DeviceId, RawEnvelope, Role, SpaceId};
 
-use crate::cloud::{Cloud, b64};
+use crate::cloud::Cloud;
 use crate::fixtures::{Issuer, Keyed, add_device, hex};
 use crate::kit::{
-    Change, group_info_on_server, group_info_request, issue_channel, latest, revise,
+    Change, b64, group_info_on_server, group_info_request, issue_channel, latest, revise,
     warnings_naming,
 };
 use crate::machine::{Finished, Machine};
