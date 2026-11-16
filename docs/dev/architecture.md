@@ -60,7 +60,11 @@
 - Without a linked browser, the web UI only shows the roster, the policy and invites, and revokes invites.
 
 ## Network
-- Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
+- Outbound HTTPS on 443 only.
+- The client reaches its server through the proxy `HTTPS_PROXY` (or `https_proxy`) names, by an HTTP `CONNECT` tunnel; TLS stays end to end:
+  - a server whose host `NO_PROXY` (or `no_proxy`) lists, as curl reads it, and plain HTTP to this machine take no proxy;
+  - credentials in the proxy's URL go as `Proxy-Authorization: Basic`; no other scheme;
+  - a proxy that fails fails the command, named by its host and port only; the client never connects directly instead.
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default.
@@ -114,6 +118,7 @@
 - Queues, tasks, claims, leases, fencing and modes: [protocol spec](../protocol/queues.md).
 - Claim: `SELECT … FOR UPDATE SKIP LOCKED`.
 - `skald send` sends a message and `skald enqueue` a task; the MCP server has both as tools, with `claim` and `complete` for tasks.
+- `skald tasks` lists tasks with their [state](../protocol/queues.md#task-states); the MCP tool `task_status` gives one task's.
 - `skald connect` asks only whether the machine takes its own account's tasks. What it takes from others, [per queue](../protocol/queues.md#running-a-task), the user turns on and changes at any time with `skald serve`, only in the CLI on the machine:
   - `skald serve`: each queue's settings;
   - `skald serve <queue> --dir <folder> --peer read-only`, and `--service` for service agents;
@@ -131,7 +136,7 @@ For users, per surface, with what reaches a session from whom: [Delivery to agen
 | Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI, desktop app, VS Code extension | `UserPromptSubmit` hook, MCP `inbox`: CLI, desktop app, VS Code extension. Scheduled task: desktop app |
 | Codex threads a program starts | App-server: CLI | — |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
-| Agents of [agents.md](agents.md#setup-by-skald-connect) | — | MCP `inbox` |
+| Any agent with MCP | — | MCP `inbox` |
 | Any agent with a shell | — | `skald recv --wait` |
 | CI | — | One-shot mode |
 

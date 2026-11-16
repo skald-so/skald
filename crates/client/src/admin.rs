@@ -1,9 +1,11 @@
-//! `skald remove-member`, `skald exclude-device`, `skald add-to-channel` and `skald
-//! remove-from-channel`: an admin's device changes a space's members by the next roster revision,
-//! which it signs, checks as its members accept it, and writes and sends as [`crate::spaces`]
-//! says (`docs/protocol/membership.md`, "Roster"). It then brings the groups of the space's
-//! channels in line with it ([`crate::groups`]): it removes the devices no longer admitted, and
-//! adds a new channel member's devices where it is a member device.
+//! `skald remove-member`, `skald exclude-device`, `skald add-to-channel`, `skald
+//! remove-from-channel` and `skald set-history-period`: an admin's device changes a space's members
+//! or its policy's `history` by the next roster revision, which it signs, checks as its members
+//! accept it, and writes and sends as [`crate::spaces`] says (`docs/protocol/membership.md`,
+//! "Roster" and "Policy"). It then brings the groups of the space's channels in line with it
+//! ([`crate::groups`]): it removes the devices no longer admitted, adds a new channel member's
+//! devices where it is a member device, and rotates the history key of an epoch older than the
+//! period.
 
 use skald_crypto::check_device;
 use skald_proto::{Cert, ChannelId, ChannelMember, DeviceId, Member, NonEmpty, RosterBody};
@@ -27,6 +29,8 @@ pub enum Edit {
     },
     /// Removes the member of the handle from the channel, which is not the default one.
     RemoveFromChannel { channel: String, handle: String },
+    /// Sets the policy's `history` to these seconds, at least a day.
+    HistoryPeriod(u64),
 }
 
 /// Makes `edit` in `synced`, a space the device follows: by the next revision, signed by the
@@ -49,6 +53,7 @@ pub fn run(synced: Synced, edit: &Edit) -> Result<(), String> {
     let next = follower.next_by(&latest, |next| {
         next.members = body.members;
         next.channels = body.channels;
+        next.policy = body.policy;
     })?;
     follower
         .accepts(&latest, &next, &devices.certs)
@@ -149,7 +154,28 @@ fn make(
             }
             Ok(format!("Removed {handle} from the channel {}", channel.id))
         }
+        Edit::HistoryPeriod(seconds) => {
+            let period = period(*seconds);
+            if body.policy.history == *seconds {
+                return Err(format!(
+                    "the history period of the space {space} is {period} already"
+                ));
+            }
+            body.policy.history = *seconds;
+            Ok(format!("Set the history period to {period}"))
+        }
     }
+}
+
+/// `seconds` as whole days, or else as whole hours, or else as seconds.
+fn period(seconds: u64) -> String {
+    let (count, unit) = match seconds {
+        _ if seconds.is_multiple_of(86_400) => (seconds / 86_400, "day"),
+        _ if seconds.is_multiple_of(3_600) => (seconds / 3_600, "hour"),
+        _ => (seconds, "second"),
+    };
+    let plural = if count == 1 { "" } else { "s" };
+    format!("{count} {unit}{plural}")
 }
 
 /// The member of `body` whose handle is `handle`.
@@ -255,6 +281,20 @@ mod tests {
         make(&mut added, &edit, own, certs).unwrap();
         assert_eq!(added, body);
         assert_ne!(default, team);
+
+        let set = edited(Edit::HistoryPeriod(36 * 3_600));
+        let mut expected = body.clone();
+        expected.policy.history = 36 * 3_600;
+        assert_eq!(set, expected);
+    }
+
+    /// A period reads as whole days, hours or seconds.
+    #[test]
+    fn periods_read_in_their_largest_whole_unit() {
+        assert_eq!(period(86_400), "1 day");
+        assert_eq!(period(3 * 86_400), "3 days");
+        assert_eq!(period(36 * 3_600), "36 hours");
+        assert_eq!(period(90_001), "90001 seconds");
     }
 
     /// An edit that would change nothing, or that the space keeps from, is refused and changes
@@ -280,7 +320,9 @@ mod tests {
             channel: channel.to_owned(),
             handle: handle.to_owned(),
         };
-        let cases: [(&RosterBody, Edit, &str); 9] = [
+        let same = Edit::HistoryPeriod(body.policy.history);
+        let cases: [(&RosterBody, Edit, &str); 10] = [
+            (&body, same, "already"),
             (&body, Edit::RemoveMember("carol".to_owned()), "no member"),
             (&body, Edit::RemoveMember("ada".to_owned()), "own account"),
             (&body, Edit::Exclude("laptop".to_owned()), "no device id"),

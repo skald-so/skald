@@ -718,7 +718,7 @@ Live checks to add before the adapters take tasks and run executors ([delivery.m
 - Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder.
 - An executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment; [Session config](#session-config) lists what each CLI still loads with the flags checked so far.
 
-Vendor terms, as for [Subscription limits](#subscription-limits): whether the Anthropic and OpenAI subscriptions allow sessions without a person, other people's tasks included.
+Vendor terms are the user's business: Skald neither uses nor routes the user's Anthropic or OpenAI credentials, the user chooses how their agents sign in, and no task is refused by sign-in method.
 
 ## Manual check
 Steps that need a person, left to the owner's check by hand ([rules.md](../../rules.md), rule 6):
