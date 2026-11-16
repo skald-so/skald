@@ -153,6 +153,11 @@ export interface Sessions {
 }
 
 /**
+ * A sign-in method's ID: random, it reveals nothing of the method's subject.
+ */
+export type SignInMethodId = string;
+
+/**
  * `github`, or `google` for the server's OIDC provider.
  */
 export type SignInMethodProvider =
@@ -167,6 +172,7 @@ export const SignInMethodProvider = {
  * A sign-in method: a provider and the subject it gives the person, which the server does not show.
  */
 export interface SignInMethod {
+  method: SignInMethodId;
   /** `github`, or `google` for the server's OIDC provider. */
   provider: SignInMethodProvider;
   /** When the method was linked, or the account created with it. */

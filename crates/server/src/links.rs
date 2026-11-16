@@ -1,9 +1,10 @@
 //! Links of a sign-in method: a web session from a recent sign-in links another GitHub or Google
-//! method to its account, through the provider's sign-in callback; and the account's sign-in
-//! methods, on a page and in the API. Accounts never merge or move a method.
+//! method to its account, through the provider's sign-in callback, and removes one, never the last;
+//! and the account's sign-in methods, on a page and in the API. Accounts never merge or move a
+//! method: a removed one reaches no account until it signs up anew or another account links it.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -12,10 +13,11 @@ use sqlx::PgPool;
 use crate::AppState;
 use crate::accounts::{GITHUB, Method};
 use crate::refusal::{Refusal, account, answer};
-use crate::sessions::WEB_LIFETIME;
+use crate::sessions::{self, WEB_LIFETIME};
 use crate::sign_in::{
     self, Failure, Flow, Provider, SignInSettings, escape, flows, form_page, form_page_failed,
-    from_this_server, off, provider_off, refresh_page, session_hashes, sign_in_links, start_with,
+    from_this_server, off, param, provider_off, refresh_page, session_hashes, sign_in_links,
+    start_with,
 };
 
 /// The page of the account's sign-in methods.
@@ -39,6 +41,8 @@ fn failed(doing: &str, err: sqlx::Error) -> Response {
 
 /// A sign-in method of an account, as the database holds it.
 struct Stored {
+    /// Its ID, which reveals nothing of its subject.
+    id: String,
     provider: String,
     login: Option<String>,
     /// When it was linked, as an RFC 3339 date-time in UTC.
@@ -58,8 +62,8 @@ impl Stored {
 
 /// The sign-in methods of `account`, oldest first.
 async fn stored(db: &PgPool, account: &str) -> Result<Vec<Stored>, sqlx::Error> {
-    let rows: Vec<(String, Option<String>, String)> = sqlx::query_as(
-        "SELECT provider, login,
+    let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT id::text, provider, login,
                 to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')
          FROM sign_in_methods WHERE account_id = $1::uuid ORDER BY created_at, provider, subject",
     )
@@ -68,7 +72,8 @@ async fn stored(db: &PgPool, account: &str) -> Result<Vec<Stored>, sqlx::Error> 
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(provider, login, linked_at)| Stored {
+        .map(|(id, provider, login, linked_at)| Stored {
+            id,
             provider,
             login,
             linked_at,
@@ -145,6 +150,7 @@ struct SignInMethods {
 /// `SignInMethod` in the spec.
 #[derive(Serialize)]
 struct SignInMethod {
+    method: String,
     provider: &'static str,
     linked_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,6 +168,7 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
             .into_iter()
             .map(|method| SignInMethod {
                 provider: method.kind(),
+                method: method.id,
                 github_login: method.login.filter(|_| method.provider == GITHUB),
                 linked_at: method.linked_at,
             })
@@ -171,16 +178,100 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
     .await
 }
 
+/// `DELETE /account/sign-in-methods/{method}`: removes that sign-in method of the web session's
+/// account, from a page of this server and after a recent sign-in, unless it is the account's last.
+/// The web sessions it signed in end at once, as [`sessions`] ends one; device sessions stay.
+pub(crate) async fn remove(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    answer(async {
+        let session =
+            sessions::web_session_from_page(&state, &headers, "removes a sign-in method").await?;
+        let settings = state.sign_in.as_deref().expect("a web session signs in");
+        let failed = |err| Refusal::Database("remove a sign-in method", err);
+        let mut tx = state.db.begin().await.map_err(failed)?;
+        // Of removals on one account at once, each waits for the one before to commit, then counts
+        // the methods it left; a session that one ended removes nothing.
+        sqlx::query("SELECT 1 FROM accounts WHERE id = $1::uuid FOR UPDATE")
+            .bind(&session.account)
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        let recent: Option<(bool,)> = sqlx::query_as(
+            "SELECT created_at > now() - make_interval(secs => $2) FROM sessions
+             WHERE token_hash = $1",
+        )
+        .bind(&session.token_hash)
+        .bind(settings.link_age.as_secs_f64())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(failed)?;
+        match recent {
+            None => return Err(Refusal::NotSignedIn),
+            Some((false,)) => return Err(Refusal::SignInTooOld),
+            Some((true,)) => {}
+        }
+        // As text: an ID that is no UUID is no method.
+        let (found, count): (bool, i64) = sqlx::query_as(
+            "SELECT coalesce(bool_or(id::text = lower($2)), false), count(*) FROM sign_in_methods
+             WHERE account_id = $1::uuid",
+        )
+        .bind(&session.account)
+        .bind(&id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(failed)?;
+        if !found {
+            return Err(Refusal::NoSignInMethod);
+        }
+        if count < 2 {
+            return Err(Refusal::LastSignInMethod);
+        }
+        let ended: Vec<(Vec<u8>,)> = sqlx::query_as(
+            "DELETE FROM sessions s USING sign_in_methods m
+             WHERE m.account_id = $1::uuid AND m.id::text = lower($2)
+                 AND s.method_provider = m.provider AND s.method_subject = m.subject
+             RETURNING s.token_hash",
+        )
+        .bind(&session.account)
+        .bind(&id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(failed)?;
+        sqlx::query(
+            "DELETE FROM sign_in_methods WHERE account_id = $1::uuid AND id::text = lower($2)",
+        )
+        .bind(&session.account)
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .map_err(failed)?;
+        sessions::tell_ended(&state, &mut tx, &ended)
+            .await
+            .map_err(failed)?;
+        tx.commit().await.map_err(failed)?;
+        sessions::close_ended(&state, &ended);
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
+}
+
 /// `POST /auth/github/link` and `POST /auth/google/link`: starts a link of a method of the provider
 /// for the web session in the request's cookie, if the request comes from a page of this server and
-/// the session's sign-in is recent enough.
+/// the session's sign-in is recent enough. The link returns to the query's `return_to`, a page of
+/// this server, by default the page of the account's sign-in methods.
 pub(crate) async fn start<P: Provider>(
     State(state): State<AppState>,
     headers: HeaderMap,
+    RawQuery(query): RawQuery,
 ) -> Response {
     let Some((settings, provider)) = P::of(&state) else {
         return provider_off(P::NAME);
     };
+    let return_to = param(query.as_deref(), "return_to");
+    let return_to = return_to.as_deref().unwrap_or(PAGE_PATH);
     let (state, headers) = (&state, &headers);
     let back = format!("<a href=\"{PAGE_PATH}\">Your sign-in methods</a>");
     // The session cookie is `SameSite=Strict`, and browsers state the origin of every POST.
@@ -208,7 +299,7 @@ pub(crate) async fn start<P: Provider>(
                 &state.db,
                 settings,
                 provider,
-                Some(PAGE_PATH),
+                Some(return_to),
                 Some(&session),
             )
             .await
@@ -230,7 +321,7 @@ pub(crate) async fn start<P: Provider>(
                 "Sign in again",
                 &format!(
                     "<p>To link a sign-in method, sign in again first: your last sign-in is too old. {}</p>",
-                    sign_in_links(&flows, " again", PAGE_PATH)
+                    sign_in_links(&flows, " again", return_to)
                 ),
             )
         }

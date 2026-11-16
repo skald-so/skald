@@ -798,6 +798,132 @@
         }
       }
     },
+    "/account/sign-in-methods/{method}": {
+      "delete": {
+        "operationId": "removeSignInMethod",
+        "summary": "Remove a sign-in method of the account",
+        "description": "Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused while sign-up is closed, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "name": "method",
+            "in": "path",
+            "required": true,
+            "description": "The method's ID, as `GET /account/sign-in-methods` lists it.",
+            "schema": {
+              "$ref": "#/components/schemas/SignInMethodId"
+            }
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The method is removed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown, ended or expired one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Nothing is removed. The problem `https://skald.so/problems/not-allowed`: the request's session is a device session, or the request does not come from a page of the web URL. The problem `https://skald.so/problems/sign-in-too-old`: the web session's sign-in is older than `--link-sign-in-age`; the person signs in again first.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-sign-in-method`: the account has no such sign-in method.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The problem `https://skald.so/problems/last-sign-in-method`: it is the account's last sign-in method, which is never removed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/username": {
       "put": {
         "operationId": "putUsername",
@@ -1210,7 +1336,18 @@
       "post": {
         "operationId": "startGitHubLink",
         "summary": "Start a link of a GitHub sign-in method",
-        "description": "Submitted by the form of `GET /sign-in-methods`, with the web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to GitHub as `GET /auth/github` does, with a `state` that also binds the link to this web session; GitHub comes back through `GET /auth/github/callback`. The link works only while the session lasts.",
+        "description": "Submitted by a form of a page of the web URL, such as `GET /sign-in-methods`, with the web session's cookie: a request whose `Origin` is any other, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to GitHub as `GET /auth/github` does, with a `state` that also binds the link to this web session; GitHub comes back through `GET /auth/github/callback`. The link works only while the session lasts.",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "required": false,
+            "description": "The page of the web URL the link returns to, as `return_to` of `GET /auth/github` names it; by default `GET /sign-in-methods`. Anything else, such as another site's address, returns to `/` of the web URL.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "security": [
           {
             "session": []
@@ -1508,6 +1645,17 @@
         "operationId": "startGoogleLink",
         "summary": "Start a link of a Google sign-in method",
         "description": "Starts a link as `POST /auth/github/link` does, with Google: sends the browser to Google as `GET /auth/google` does, with `prompt=select_account`, so that the person chooses the Google account; Google comes back through `GET /auth/google/callback`.",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "required": false,
+            "description": "The page of the web URL the link returns to, as for `POST /auth/github/link`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "security": [
           {
             "session": []
@@ -4974,8 +5122,11 @@
       "SignInMethod": {
         "description": "A sign-in method: a provider and the subject it gives the person, which the server does not show.",
         "type": "object",
-        "required": ["provider", "linked_at"],
+        "required": ["method", "provider", "linked_at"],
         "properties": {
+          "method": {
+            "$ref": "#/components/schemas/SignInMethodId"
+          },
           "provider": {
             "description": "`github`, or `google` for the server's OIDC provider.",
             "type": "string",
@@ -4992,6 +5143,11 @@
           }
         },
         "additionalProperties": false
+      },
+      "SignInMethodId": {
+        "description": "A sign-in method's ID: random, it reveals nothing of the method's subject.",
+        "type": "string",
+        "format": "uuid"
       },
       "SignInMethods": {
         "type": "object",

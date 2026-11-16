@@ -32,6 +32,12 @@ pub(crate) enum Refusal {
     NoDevice,
     /// No such session of the session's account, or an ended one.
     NoSession,
+    /// No such sign-in method of the session's account.
+    NoSignInMethod,
+    /// The account's last sign-in method, which is never removed.
+    LastSignInMethod,
+    /// The web session's sign-in is older than the server allows for what it asks.
+    SignInTooOld,
     /// A KeyPackage that fails the checks, for the reason it holds.
     KeyPackage(String),
     /// No such channel in the space's latest revision.
@@ -111,6 +117,24 @@ impl IntoResponse for Refusal {
                 "no-session",
                 "No such session",
                 "The session's account has no such session, or it has ended.",
+            ),
+            Refusal::NoSignInMethod => problem(
+                StatusCode::NOT_FOUND,
+                "no-sign-in-method",
+                "No such sign-in method",
+                "The session's account has no such sign-in method.",
+            ),
+            Refusal::LastSignInMethod => problem(
+                conflict,
+                "last-sign-in-method",
+                "The account's last sign-in method",
+                "The account's last sign-in method is never removed: link another one first.",
+            ),
+            Refusal::SignInTooOld => problem(
+                StatusCode::FORBIDDEN,
+                "sign-in-too-old",
+                "Sign in again",
+                "The web session's sign-in is older than the server allows for this: sign in again first.",
             ),
             Refusal::KeyPackage(detail) => {
                 problem(bad, "invalid-key-package", "Invalid KeyPackage", &detail)

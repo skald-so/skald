@@ -153,7 +153,7 @@ async function openAccount(user: UserEvent) {
   render(<App />);
   await user.click(await screen.findByRole("button", { name: "Account" }));
   await user.click(await screen.findByRole("menuitem", { name: "Account" }));
-  await screen.findByRole("button", { name: /^link (github|google)$/i });
+  await screen.findAllByRole("button", { name: /^link (github|google)$/i });
   for (const method of methods)
     await waitFor(() =>
       expect(document.body.textContent).toMatch(linkedForms(method)),

@@ -3,10 +3,13 @@ import {
   getGetSessionResponseMock,
   getGetSignInProvidersResponseMock,
   getListSessionsResponseMock,
+  getListSignInMethodsResponseMock,
 } from "../api/skald.msw.ts";
 import { AccessScreen } from "../app/Access.tsx";
+import { AccountScreen } from "../app/Account.tsx";
 import { Cabinet } from "../app/Cabinet.tsx";
 import { Home } from "../app/Home.tsx";
+import { accountPath } from "../app/names.ts";
 import { SignInPage } from "../app/SignInPage.tsx";
 
 // The web app's screens with fixture answers of the generated mocks.
@@ -77,6 +80,23 @@ const { sessions } = getListSessionsResponseMock({
   ],
 });
 
+/** The account's sign-in methods: GitHub, which this session signed in with, and Google. */
+const { methods } = getListSignInMethodsResponseMock({
+  methods: [
+    {
+      method: "01968a2e-0000-7000-8000-0000000003a1",
+      provider: "github",
+      linked_at: before(39 * day),
+      github_login: "ana",
+    },
+    {
+      method: "01968a2e-0000-7000-8000-0000000003a2",
+      provider: "google",
+      linked_at: before(2 * day),
+    },
+  ],
+});
+
 /** The sign-in page of 03-sign-in.png, on a server with both providers and open sign-up. */
 export function KitSignIn() {
   return <SignInPage providers={providers} returnTo="/" />;
@@ -110,6 +130,27 @@ export function KitAccess({ asking = false }: { asking?: boolean }) {
           onRevoke={() => {}}
           onEndOthers={async () => {}}
           defaultAsking={asking}
+        />
+      </Cabinet>
+    </MemoryRouter>
+  );
+}
+
+/**
+ * The Account page in the cabinet, with both providers' links; `asking` opens the question of
+ * Remove of the method this session signed in with.
+ */
+export function KitAccountPage({ asking = false }: { asking?: boolean }) {
+  return (
+    <MemoryRouter initialEntries={[accountPath]}>
+      <Cabinet session={session} spaces={[personal]} onSignedOut={() => {}}>
+        <AccountScreen
+          session={session}
+          methods={methods}
+          providers={["github", "google"]}
+          now={now}
+          onRemove={async () => {}}
+          defaultAsking={asking ? methods[0] : undefined}
         />
       </Cabinet>
     </MemoryRouter>
