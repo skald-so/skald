@@ -149,18 +149,22 @@ pub(crate) async fn ack_listening(
     cursor: u64,
     listen: bool,
 ) -> Result<(), Box<Response>> {
-    if listen
-        && tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
-            .await
-            .is_err()
-    {
-        return Err(Box::new(server_error(
-            "The server does not listen to its other instances yet.",
-        )));
+    if listen {
+        listening(state).await?;
     }
     delivery::ack(&state.db, &state.wakers, device, cursor)
         .await
         .map_err(|err| Box::new(database_failed("ack a mailbox", err)))
+}
+
+/// Waits until the instance listens to the others; the answer if it does not in time.
+pub(crate) async fn listening(state: &AppState) -> Result<(), Box<Response>> {
+    match tokio::time::timeout(LISTEN_WAIT, state.instance.listening()).await {
+        Ok(()) => Ok(()),
+        Err(_) => Err(Box::new(server_error(
+            "The server does not listen to its other instances yet.",
+        ))),
+    }
 }
 
 /// What a long-poll of `proved`'s device answers now: the next entries of `reader`, then a

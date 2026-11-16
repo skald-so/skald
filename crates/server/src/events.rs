@@ -23,7 +23,7 @@ use crate::connections::Proved;
 use crate::delivery::Reader;
 use crate::notices::Listening;
 use crate::protocol::Stated;
-use crate::requests::{ack_listening, invalid, prove};
+use crate::requests::{ack_listening, invalid, listening, prove};
 use crate::{AppState, database_failed, error_reports};
 
 /// The keep-alive interval of a stream without the server setting.
@@ -46,6 +46,11 @@ pub(crate) async fn events(
     let Some(cursor) = cursor(&headers) else {
         return invalid("Last-Event-ID is not a seq.");
     };
+    // Until the instance listens to the others, a stream would miss what they tell, and get the
+    // notices of revisions stored before it opened, which the instance sends once it listens.
+    if let Err(failed) = listening(&state).await {
+        return *failed;
+    }
     // Listened to before reading, so that nothing added meanwhile is missed.
     let mut reader = Reader::new(
         &state.wakers,
@@ -54,7 +59,7 @@ pub(crate) async fn events(
         state.mailbox_retention,
     );
     let notices = state.notices.listen(proved.account);
-    if let Err(failed) = ack_listening(&state, proved.device, cursor, true).await {
+    if let Err(failed) = ack_listening(&state, proved.device, cursor, false).await {
         return *failed;
     }
     let held = match reader.start(&state.db).await {

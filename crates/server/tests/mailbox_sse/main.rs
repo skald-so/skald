@@ -18,6 +18,8 @@
 //! - While idle, the stream sends a comment line, a keep-alive, at the interval of the server
 //!   setting `--sse-keep-alive <SECONDS>`.
 //! - The stream closes when its session ends or its device is revoked, through any instance.
+//! - A stream gets no `space-notice` of a revision stored before it opened, also on an instance
+//!   that did not listen to the others yet.
 
 #[path = "../common/mod.rs"]
 mod common;
@@ -49,9 +51,15 @@ mod link;
 #[path = "../mailbox/wire.rs"]
 mod wire;
 
+// The proxy of the tests of server instances, which refuses an instance's listening.
+#[allow(dead_code)]
+#[path = "../server_instances/proxy.rs"]
+mod proxy;
+
 mod sse;
 
 mod closes;
 mod keep_alive;
+mod listening;
 mod refusals;
 mod streams;
