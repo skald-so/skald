@@ -135,8 +135,7 @@ pub fn run(
         devices,
     } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
         .map_err(|err| with_waiting(dir, scope, err))?;
-    let (roster, devices) =
-        through_mailbox(&mut follower, scope, (space.id, channel), (roster, devices))?;
+    let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
     let from = sender(&mut follower, &roster, agent)?;
     groups::encrypt(
         &follower,
@@ -152,13 +151,13 @@ pub fn run(
 
 /// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the
 /// device's Commits and Welcomes that wait, writes each entry after the cursor, goes through the
-/// Welcomes and Commits and brings the group of `channel` in `space` in line. Gives the space's last
-/// accepted revision and its accounts' devices, `synced` as the run synced them first, as they are
-/// then. Warns of what fails.
+/// Welcomes and Commits and brings in line the groups of the channels of each space the run accepted
+/// the revisions of. Gives the last accepted revision of `space` and its accounts' devices, `synced`
+/// as the run synced them first, as they are then. Warns of what fails.
 fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
-    (space, channel): (SpaceId, ChannelId),
+    space: SpaceId,
     synced: (Roster, SpaceDevices),
 ) -> Result<(Roster, SpaceDevices), String> {
     let mut link = Link::new(follower)?;
@@ -177,12 +176,8 @@ fn through_mailbox(
     if let Err(err) = groups::take_in(follower, &mut link, scope, &mut rosters) {
         eprintln!("skald: warning: {err}");
     }
-    let (roster, devices) = rosters.remove(&space).expect("the channel's space");
-    let only = Some(channel);
-    if let Err(err) = groups::align(follower, &mut link, space, (&roster, &devices), only) {
-        eprintln!("skald: warning: {err}");
-    }
-    Ok((roster, devices))
+    groups::align_with(follower, &mut link);
+    Ok(rosters.remove(&space).expect("the channel's space"))
 }
 
 /// `err`, the reason a run sends nothing, saying how many envelopes earlier runs left in the

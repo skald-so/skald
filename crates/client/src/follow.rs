@@ -44,6 +44,7 @@ pub struct Own {
 
 /// The devices of a list, such as of a space's accounts, as the server gives them: their IDs, the
 /// certificates that decode, and the revocations that decode with those the device holds.
+#[derive(Clone)]
 pub struct SpaceDevices {
     pub ids: Vec<DeviceId>,
     pub certs: Vec<Cert>,

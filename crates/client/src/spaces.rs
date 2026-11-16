@@ -134,13 +134,9 @@ pub fn create(
 /// Accepts the revisions of the space named `name`, which signs its default channel, and brings
 /// the groups of its channels in line ([`crate::groups`]); warns of what fails.
 fn finish(follower: &mut Follower, name: &str) {
-    let finished = follower.space(name).and_then(|space| {
-        let (roster, devices) = follower.sync(&space)?;
-        let mut link = groups::Link::new(follower)?;
-        groups::align(follower, &mut link, space.id, (&roster, &devices), None)
-    });
-    if let Err(err) = finished {
-        eprintln!("skald: warning: {err}");
+    match follower.space(name).and_then(|space| follower.sync(&space)) {
+        Ok(_) => groups::align_accepted(follower),
+        Err(err) => eprintln!("skald: warning: {err}"),
     }
 }
 
@@ -348,6 +344,8 @@ pub struct Follower {
     pub cert: Cert,
     /// How long a run sends an envelope again while the server has not answered it.
     pub timeout: Duration,
+    /// Each space the run accepted the revisions of, as it last did ([`Follower::sync`]).
+    pub accepted: groups::Rosters,
 }
 
 impl Follower {
@@ -417,6 +415,7 @@ impl Follower {
             device,
             cert,
             timeout,
+            accepted: groups::Rosters::new(),
         }))
     }
 
@@ -551,6 +550,13 @@ impl Follower {
     /// after revision 1 that the device signed is sent first, warning if it is not stored; while it
     /// waits, the space stays at its last accepted revision.
     pub fn sync(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
+        let synced = self.sync_once(space)?;
+        self.accepted.insert(space.id, synced.clone());
+        Ok(synced)
+    }
+
+    /// As [`Follower::sync`], recording nothing in [`Follower::accepted`].
+    fn sync_once(&mut self, space: &state::Space) -> Result<(Roster, SpaceDevices), String> {
         let waiting = space.pending.as_ref().filter(|_| !space.first_waits());
         if let Some(pending) = waiting
             && let Err(unsent) = self.store(space, pending.clone())
@@ -877,7 +883,8 @@ pub fn following(
 }
 
 /// The space named `name` that the device of the machine whose state is in `dir`, its secrets in
-/// `storage`, follows, synced ([`Follower::sync`]); within `scope`.
+/// `storage`, follows, synced ([`Follower::sync`]), the groups of its channels brought in line
+/// ([`groups::align_accepted`]); within `scope`.
 pub fn synced(
     dir: &Path,
     storage: secrets::Storage,
@@ -892,6 +899,7 @@ pub fn synced(
         return Err(OUT_OF_SCOPE.to_owned());
     }
     let (roster, devices) = follower.sync(&space)?;
+    groups::align_accepted(&mut follower);
     Ok(Synced {
         follower,
         space,
@@ -969,8 +977,9 @@ pub fn no_admin(roster: &Roster) -> String {
 
 /// Lists the spaces the device of the machine whose state is in `dir`, its secrets in `storage`,
 /// follows, each at its last accepted revision. A signed-in machine with a certified device first
-/// accepts the revisions the server has of each; a space it fails to follow shows as the local
-/// state holds it, saying why. Only the spaces within `scope`.
+/// accepts the revisions the server has of each, and brings the groups of their channels in line
+/// ([`groups::align_accepted`]); a space it fails to follow shows as the local state holds it,
+/// saying why. Only the spaces within `scope`.
 pub fn list(
     dir: &Path,
     storage: secrets::Storage,
@@ -1004,6 +1013,9 @@ pub fn list(
                 None => follow::decode(&space.accepted, &space.name)?,
             };
             lines.push(line(&roster, account, space.first_waits(), space.personal));
+        }
+        if let Some(follower) = follower.as_mut() {
+            groups::align_accepted(follower);
         }
         lines
     } else {
