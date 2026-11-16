@@ -3,8 +3,7 @@
 //! connections. It also notices a listening connection that goes silent, and takes no connection
 //! before it first listens.
 
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tungstenite::protocol::frame::coding::CloseCode;
 
@@ -110,14 +109,7 @@ fn an_instance_whose_first_listening_is_refused_takes_connections_once_it_listen
         .flow
         .stand
         .instance_at(&proxy.url(fixture.db()), &[], &[]);
-    let deadline = Instant::now() + RELISTEN;
-    while proxy.refused() == 0 {
-        assert!(
-            Instant::now() < deadline,
-            "no listening refused after {RELISTEN:?}"
-        );
-        thread::sleep(Duration::from_millis(50));
-    }
+    proxy.await_refused(RELISTEN);
 
     // Until it listens, it takes no connection.
     let mut early = Watch::on(&behind, &t.flow, &t.bob);
