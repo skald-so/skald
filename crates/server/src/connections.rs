@@ -423,7 +423,7 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
         .ok_or(Closing::ChallengeRefused)?;
     // Held before the challenge is used, so that once the use finds the session, its end closes
     // the connection; an end before the use deletes the challenge.
-    let held = state.connections.hold(device, session);
+    let held = state.connections.hold(device, session.clone());
     let account = take_challenge(state, &challenge)
         .await?
         .ok_or(Closing::ChallengeRefused)?;
@@ -442,6 +442,15 @@ async fn prove(state: &AppState, socket: &mut WebSocket) -> Result<Option<Proved
         &signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
+    // The session lists the device it connected as, and its use.
+    sqlx::query(
+        "UPDATE sessions SET device_id = $1::uuid, last_used_at = now() WHERE token_hash = $2",
+    )
+    .bind(device.to_string())
+    .bind(&session)
+    .execute(&state.db)
+    .await
+    .map_err(|err| failed("record a session's device", err))?;
     let (registration, ended) = held;
     Ok(Some(Proved {
         device,
