@@ -47,11 +47,18 @@ struct Cli {
     #[arg(long, env = "SKALD_PROTOCOL_VERSIONS", value_name = "VERSIONS")]
     protocol_versions: Option<skald_server::Versions>,
 
-    /// The server's public address, the origin browsers open, e.g. https://skald.example. GitHub's
-    /// callback is <URL>/auth/github/callback, Google's <URL>/auth/google/callback; under https,
-    /// cookies go over HTTPS only.
+    /// The server's public address, the origin the CLI and devices reach, e.g.
+    /// https://skald.example. Devices prove their keys over it; the server's name defaults to its
+    /// host.
     #[arg(long, env = "SKALD_PUBLIC_URL", value_name = "URL")]
     public_url: Option<PublicUrl>,
+
+    /// The origin browsers sign in at, e.g. https://app.skald.example [default: the public
+    /// address]. GitHub's callback is <URL>/auth/github/callback, Google's
+    /// <URL>/auth/google/callback; the verification page is <URL>/device; browser forms are taken
+    /// only from it; under https, cookies go over HTTPS only.
+    #[arg(long, env = "SKALD_WEB_URL", value_name = "URL")]
+    web_url: Option<PublicUrl>,
 
     /// The GitHub OAuth App's client ID. Its client secret comes only from the environment
     /// variable SKALD_GITHUB_CLIENT_SECRET. Without both, GitHub sign-in is off.
@@ -412,6 +419,7 @@ impl Cli {
         } else {
             Some(SignInSettings {
                 public_url: self.public_url.ok_or("sign-in needs --public-url")?,
+                web_url: self.web_url,
                 github,
                 google,
                 state_lifetime: Duration::from_secs(self.sign_in_state_lifetime),
@@ -666,6 +674,7 @@ mod tests {
         Settings {
             sign_in: (github || google).then(|| SignInSettings {
                 public_url: "https://skald.example".parse().expect("a public address"),
+                web_url: None,
                 github: github.then(|| GitHubApp {
                     client_id: "Ov23li0fake".to_owned(),
                     client_secret: secret(),
