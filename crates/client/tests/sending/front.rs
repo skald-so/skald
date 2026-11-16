@@ -12,6 +12,8 @@
 //! redelivery. It keeps each `space-notice` the server sent a device, and can hold back the `batch`
 //! that ends a catch-up until the server sends that connection a `space-notice`, which then comes
 //! first. It can hold back a device's `auth`, and what the machine sends after it, until released.
+//! It keeps each `history` frame a machine sent, and can close the connection, both ways, at the
+//! next one that carries a link of a channel, which the server never gets.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -21,7 +23,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use skald_proto::{Cbor as _, DeviceId, Frame, Push, RawEnvelope, SpaceId};
+use skald_proto::{Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, Push, RawEnvelope, SpaceId};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -58,9 +60,23 @@ pub struct Sent {
     pub report: bool,
 }
 
+/// A `history` frame a machine sent.
+#[derive(Debug, Clone)]
+pub struct Upload {
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub item: HistoryItem,
+    /// Whether the front forwarded it to the server.
+    pub forwarded: bool,
+}
+
 /// What came through so far, and the rules.
 struct State {
     sent: Vec<Sent>,
+    /// Every `history` frame the machines sent, in the order they came.
+    uploads: Vec<Upload>,
+    /// The channel at whose next link in a `history` frame it closes the connection.
+    cut_link_of: Option<ChannelId>,
     /// The server's `stored` and `send-refused` frames, as it sent them.
     answered: Vec<Frame>,
     answers: Answers,
@@ -163,6 +179,8 @@ impl Front {
             target: OnceLock::new(),
             state: Mutex::new(State {
                 sent: Vec::new(),
+                uploads: Vec::new(),
+                cut_link_of: None,
                 answered: Vec::new(),
                 answers: Answers::Forward,
                 lost: 0,
@@ -212,6 +230,17 @@ impl Front {
     /// Every `send` the machines sent so far, in the order they came, swallowed ones included.
     pub fn sent(&self) -> Vec<Sent> {
         self.shared.state().sent.clone()
+    }
+
+    /// Every `history` frame the machines sent so far, in the order they came, cut ones included.
+    pub fn uploads(&self) -> Vec<Upload> {
+        self.shared.state().uploads.clone()
+    }
+
+    /// Closes the connection, both ways, at the next `history` frame a machine sends that carries a
+    /// link of `channel`; the server never gets it.
+    pub fn cut_next_link(&self, channel: ChannelId) {
+        self.shared.state().cut_link_of = Some(channel);
     }
 
     /// The server's `stored` and `send-refused` frames so far, as it sent them.
@@ -406,6 +435,32 @@ fn to_server(
                     if state.swallow {
                         state.swallowed += 1;
                         continue;
+                    }
+                    false
+                }
+                Some(Frame::History {
+                    space,
+                    channel,
+                    item,
+                    ..
+                }) => {
+                    let mut state = shared.state();
+                    let cut =
+                        state.cut_link_of == Some(channel) && matches!(item, HistoryItem::Link(_));
+                    if cut {
+                        state.cut_link_of = None;
+                    }
+                    state.uploads.push(Upload {
+                        space,
+                        channel,
+                        item,
+                        forwarded: !cut,
+                    });
+                    if cut {
+                        drop(state);
+                        let _ = machine.shutdown(Shutdown::Both);
+                        let _ = server.shutdown(Shutdown::Both);
+                        return;
                     }
                     false
                 }
