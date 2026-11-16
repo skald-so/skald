@@ -12,9 +12,10 @@ use skald_proto::{
     Address, Body, Cbor as _, ChannelId, Content, DeviceId, Envelope, Header, MessageId,
     RawEnvelope, Role, Scheme, SpaceId, Unknown,
 };
+use skald_server::Settings;
 
 use crate::cloud::{Cloud, WAIT};
-use crate::fixtures::{fronted, person_address, retrying_for_the_timeout, send, sent_after};
+use crate::fixtures::{fronted_with, person_address, retrying_for_the_timeout, send, sent_after};
 use crate::front::{Front, Sent};
 use crate::kit::{Space, assert_members, create_space, received, with_channel};
 use crate::machine::{Finished, Machine};
@@ -53,7 +54,19 @@ impl Talk {
 
     /// As [`Talk::new`], in a space named `name` in place of `acme`.
     pub fn in_space(name: &str, ids: &[u64], logins: &[&str], retrying: bool) -> Self {
-        let (world, front) = fronted();
+        Self::with(name, ids, logins, retrying, (Role::Member, |_| {}))
+    }
+
+    /// As [`Talk::in_space`], revision 3 giving the people the tests play `role`, and the server's
+    /// settings changed by `change`.
+    pub fn with(
+        name: &str,
+        ids: &[u64],
+        logins: &[&str],
+        retrying: bool,
+        (role, change): (Role, impl FnOnce(&mut Settings)),
+    ) -> Self {
+        let (world, front) = fronted_with(change);
         let ada = world.sign_up(ids[0], logins[0], ADA_HOST);
         let ada = if retrying {
             retrying_for_the_timeout(ada)
@@ -68,10 +81,7 @@ impl Talk {
             .map(|((id, login), host)| Played::new(cloud, world.sign_up(*id, login, host)))
             .collect();
         let space = create_space(cloud, &ada, name);
-        let added: Vec<(&Person, Role)> = played
-            .iter()
-            .map(|one| (&one.person, Role::Member))
-            .collect();
+        let added: Vec<(&Person, Role)> = played.iter().map(|one| (&one.person, role)).collect();
         let channel = with_channel(cloud, space.id, &ada, &added);
         received(&ada.machine);
         let mut devices = vec![ada.device];

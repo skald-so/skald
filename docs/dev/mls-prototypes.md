@@ -307,7 +307,6 @@ Object sizes, the same on every run but OpenMLS's saved state ([OpenMLS](#openml
 
 ### Spec
 - [Envelope](../protocol/README.md#envelope) has a browser take the members from the latest GroupInfo, but names its checks of that GroupInfo's channel, epoch and members only in [Wraps](../protocol/membership.md#wraps), before the browser writes entries.
-- [Group changes](../protocol/membership.md#group-changes) says a joining device checks a GroupInfo's or a Welcome's members, but not what it does when one is not admitted. In the prototypes it refuses and joins by itself once a member has removed that device.
 
 ## Comparison
 OpenMLS 0.9.2 against mls-rs 0.57.0. Facts from outside this repository were checked on 2026-11-11 at the linked sources.

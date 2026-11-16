@@ -40,6 +40,9 @@ zip = { version = "9.5", default-features = false, features = ["deflate-flate2"]
 [dev-dependencies]
 axum = "0.8.9"
 curve25519-dalek = "5"
+# A device the members do not admit, which joins a channel's group by an external Commit.
+mls-rs = "0.57.1"
+mls-rs-crypto-rustcrypto = "0.23"
 # `trace` lets a state test run another connection in the middle of a read.
 rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
 skald-github-stand-in = { path = "../github-stand-in" }

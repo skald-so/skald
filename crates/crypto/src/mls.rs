@@ -307,6 +307,23 @@ impl MlsDevice {
         Ok(())
     }
 
+    /// The server refused the device's external Commit in `channel` ([`MlsDevice::join_by_itself`]):
+    /// the device drops the group it joined with it, and the history key of its epoch; it joins
+    /// again from the latest GroupInfo.
+    ///
+    /// # Errors
+    /// [`MlsError::NoGroup`] if the device holds no group for `channel`; [`MlsError::Mls`] if
+    /// mls-rs fails.
+    pub fn external_commit_refused(&mut self, channel: ChannelId) -> Result<(), MlsError> {
+        let epoch = self.epoch(channel)?;
+        self.store.remove_group(channel.as_bytes());
+        if let Some(keys) = self.history.get_mut(&channel) {
+            keys.remove(&epoch);
+        }
+        self.welcomes.remove(&channel);
+        Ok(())
+    }
+
     /// Commits the Remove of `devices` from `channel`'s group at `now`, such as every device of
     /// an account; gives the Commit, a PublicMessage that carries `authenticated_data`, such as
     /// the revocations of "Group changes". The Commit stays pending as one of
@@ -421,12 +438,17 @@ impl MlsDevice {
                 _ => {}
             }
         }
+        // An external Commit's committer is the joiner's new leaf, which only the new epoch has.
         let sender = group
             .member_at_index(description.committer)
             .ok_or(MlsError::Malformed)?;
+        let sender = member_device(&sender.signing_identity)?;
+        if description.is_external {
+            added.push(sender);
+        }
         let change = GroupChange {
             epoch: new_epoch.epoch,
-            sender: member_device(&sender.signing_identity)?.device,
+            sender: sender.device,
             added,
             removed: (before.into_iter())
                 .filter_map(|(index, member)| removed.contains(&index).then_some(member))
@@ -491,6 +513,77 @@ impl MlsDevice {
         }
         self.save(channel, &mut group)?;
         Ok(channel)
+    }
+
+    /// Joins `channel`'s group at `now` by an external Commit from `group_info`, its latest
+    /// GroupInfo in an `MLSMessage` with the `ratchet_tree` and `external_pub` extensions
+    /// ("Group changes"); gives the Commit, a PublicMessage. `check` gets the GroupInfo's signer
+    /// and members for the checks of "Group changes" before the group is saved; `false` refuses
+    /// the GroupInfo. If the GroupInfo lists a leaf with the device's signature key, the Commit
+    /// also removes it ("Rejoining"), and the new group replaces the device's old one. mls-rs
+    /// applies an external Commit at once: the device is in the new epoch, its history key kept,
+    /// with no Commit pending; if the server refuses the Commit, the device joins again from the
+    /// latest GroupInfo. The device's leaf has the lifetime of a KeyPackage made at `now`, and the
+    /// members' leaves have to hold an hour before `now`.
+    ///
+    /// # Errors
+    /// [`MlsError::Malformed`] if `group_info` is not a GroupInfo; [`MlsError::OtherChannel`] if
+    /// it is not of `channel`; [`MlsError::NotJoinable`] without `external_pub`;
+    /// [`MlsError::Lifetime`] if a leaf's lifetime spans more than 60 days; [`MlsError::Refused`]
+    /// if `check` refuses it; [`MlsError::Time`] as [`MlsDevice::key_package`];
+    /// [`MlsError::Mls`] if mls-rs refuses it, such as a tree or a signature that does not check
+    /// or a leaf that breaks the profile, or fails. A refused GroupInfo leaves the device as it
+    /// was: with no group of `channel`, or with its old one.
+    pub fn join_by_itself(
+        &mut self,
+        channel: ChannelId,
+        group_info: &[u8],
+        now: u64,
+        check: impl FnOnce(&Joining) -> bool,
+    ) -> Result<Vec<u8>, MlsError> {
+        self.store.delete_expired(now);
+        let view = ChannelView::observe_joinable(channel, group_info)?;
+        let joining = Joining {
+            channel,
+            epoch: view.epoch(),
+            signer: view.signer(),
+            members: view.members().to_vec(),
+        };
+        if !check(&joining) {
+            return Err(MlsError::Refused);
+        }
+        let start = key_package::lifetime_start(now)?;
+        let own = self.signing.public_key();
+        let mut builder = self
+            .client()
+            .external_commit_builder()?
+            .commit_time(MlsTime::from(start));
+        if let Some(index) = view.member_index(&own) {
+            builder = builder.with_removal(index);
+        }
+        // mls-rs gives the new group the prior epochs the store keeps of its ID and fails on the
+        // first one it adds after them: the old group goes first, and comes back if a step fails.
+        let old = self.store.remove_group(channel.as_bytes());
+        let joined = message(group_info, WireFormat::GroupInfo).and_then(|group_info| {
+            let (mut group, commit) = builder.build(group_info)?;
+            key_package::check_spans(&group.export_tree())?;
+            let commit = commit.to_bytes()?;
+            self.save(channel, &mut group)?;
+            Ok(commit)
+        });
+        match joined {
+            Ok(commit) => {
+                self.welcomes.remove(&channel);
+                Ok(commit)
+            }
+            Err(error) => {
+                self.store.remove_group(channel.as_bytes());
+                if let Some(old) = old {
+                    self.store.put_group(channel.as_bytes(), old);
+                }
+                Err(error)
+            }
+        }
     }
 
     /// `plaintext` encrypted in `channel`'s group: an application message, a PrivateMessage.
@@ -639,13 +732,14 @@ fn member_device(leaf: &SigningIdentity) -> Result<MemberDevice, MlsError> {
     Ok(MemberDevice { device, signing })
 }
 
-/// A channel's group a device joins from a Welcome, before the group is saved: what the caller
-/// checks as "Group changes" says.
+/// A channel's group a device joins from a Welcome or by itself from a GroupInfo, before the group
+/// is saved: what the caller checks as "Group changes" says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Joining {
     pub channel: ChannelId,
+    /// The GroupInfo's epoch: a device that joins by itself enters the next one.
     pub epoch: u64,
-    /// The member that signed the Welcome's GroupInfo.
+    /// The member that signed the Welcome's GroupInfo, or the GroupInfo.
     pub signer: MemberDevice,
     /// Every member, in leaf order.
     pub members: Vec<MemberDevice>,
@@ -1337,6 +1431,92 @@ mod tests {
             .add_devices(channel, &no_device, &admitted(), NOW)
             .unwrap();
         assert!(third.commit_stored(channel).unwrap().is_none());
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_refused_rejoin_leaves_the_device_in_its_old_group() {
+        let channel = ChannelId::from_bytes([18; 16]);
+        let [mut first, mut second] = <[_; 2]>::try_from(group_of(channel, &[21, 22]))
+            .ok()
+            .unwrap();
+        // The second device misses the first device's Commit.
+        first.commit_empty(channel, b"", NOW).unwrap();
+        first.commit_stored(channel).unwrap();
+        let latest = first.group_info(channel).unwrap();
+        let members = second.members(channel).unwrap();
+        let key = second.history_key(channel, 1).unwrap().to_bytes();
+
+        // The last fails in mls-rs, once the old group is out of the store: the members' leaves
+        // have expired by then.
+        let later = NOW + key_package::LIFETIME + 1;
+        for refused in [
+            second.join_by_itself(channel, &latest, NOW, |_| false),
+            second.join_by_itself(channel, b"not a GroupInfo", NOW, |_| true),
+            second.join_by_itself(channel, &latest, later, |_| true),
+        ] {
+            assert!(refused.is_err(), "{refused:?}");
+            second = reloaded(&second);
+            assert_eq!(second.epoch(channel).unwrap(), 1);
+            assert_eq!(second.members(channel).unwrap(), members);
+            assert_eq!(second.history_key(channel, 1).unwrap().to_bytes(), key);
+        }
+        second
+            .join_by_itself(channel, &latest, NOW, |_| true)
+            .unwrap();
+        assert_eq!(second.epoch(channel).unwrap(), 3);
+        assert_eq!(second.members(channel).unwrap().len(), 2);
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_refused_external_commit_drops_the_group_and_its_epochs_history_key() {
+        let channel = ChannelId::from_bytes([19; 16]);
+        let [mut first, mut second] = <[_; 2]>::try_from(group_of(channel, &[23, 24]))
+            .ok()
+            .unwrap();
+        let latest = first.group_info(channel).unwrap();
+        let commit = second
+            .join_by_itself(channel, &latest, NOW, |_| true)
+            .unwrap();
+        assert!(MlsFraming::is_external_commit(&commit));
+        assert!(second.history_key(channel, 2).is_some());
+
+        second = reloaded(&second);
+        second.external_commit_refused(channel).unwrap();
+        second = reloaded(&second);
+        assert!(matches!(second.epoch(channel), Err(MlsError::NoGroup(_))));
+        assert!(
+            second.history_key(channel, 2).is_none(),
+            "the refused epoch's key"
+        );
+        assert!(
+            second.history_key(channel, 1).is_some(),
+            "an earlier epoch's key"
+        );
+        assert!(matches!(
+            second.external_commit_refused(channel),
+            Err(MlsError::NoGroup(_))
+        ));
+
+        // It joins again from the latest GroupInfo, which still lists its old leaf.
+        let commit = first.commit_empty(channel, b"", NOW).unwrap();
+        assert!(
+            !MlsFraming::is_external_commit(&commit),
+            "a member's Commit"
+        );
+        first.commit_stored(channel).unwrap();
+        let latest = first.group_info(channel).unwrap();
+        let commit = second
+            .join_by_itself(channel, &latest, NOW, |_| true)
+            .unwrap();
+        let change = first.process_commit(channel, &commit, NOW, |_| true);
+        assert_eq!(change.unwrap(), Processed::Entered { epoch: 3 });
+        assert_eq!(first.members(channel).unwrap().len(), 2);
+        assert!(!MlsFraming::is_external_commit(&latest), "a GroupInfo");
+        assert!(!MlsFraming::is_external_commit(
+            &[commit.as_slice(), &[0]].concat()
+        ));
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]

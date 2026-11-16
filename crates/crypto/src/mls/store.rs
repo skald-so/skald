@@ -38,6 +38,9 @@ struct Group {
     epochs: BTreeMap<u64, Zeroizing<Vec<u8>>>,
 }
 
+/// A group the store dropped, with its prior epochs.
+pub(super) struct Taken(Group);
+
 /// What an item to seal holds: a group or a KeyPackage's private keys, by its ID.
 pub(super) enum Kept {
     Group(Vec<u8>),
@@ -55,9 +58,14 @@ impl Store {
         self.contents().groups.contains_key(id)
     }
 
-    /// Drops group `id` with its prior epochs.
-    pub(super) fn remove_group(&self, id: &[u8]) {
-        self.contents().groups.remove(id);
+    /// Drops group `id` with its prior epochs; gives them, for [`Store::put_group`] to put back.
+    pub(super) fn remove_group(&self, id: &[u8]) -> Option<Taken> {
+        self.contents().groups.remove(id).map(Taken)
+    }
+
+    /// Puts back group `id` as [`Store::remove_group`] gave it, in place of any group of `id`.
+    pub(super) fn put_group(&self, id: &[u8], taken: Taken) {
+        self.contents().groups.insert(id.to_vec(), taken.0);
     }
 
     /// Deletes the private keys of each KeyPackage whose lifetime ended before `now`.

@@ -12,6 +12,12 @@
 //!   Remove of a revoked device carries the revocations by which this device holds it revoked; of
 //!   those another device's Commit carries, it keeps the ones that count, and warns of the devices
 //!   they revoke, before it judges the new epoch.
+//! - Outside a group the server has, it joins by itself from the GroupInfo of the current epoch
+//!   once its signer and members are admitted, unless it lists the device and a Welcome comes. A
+//!   device whose Welcome it refused joins by itself from that GroupInfo also if it lists the
+//!   device, and one whose Commit it could not process rejoins from a GroupInfo of a later epoch
+//!   than its own; either removes the leaf of its own the GroupInfo lists. One a Commit removed
+//!   while admitted warns and rejoins. A Commit of an epoch it has passed is a replay, dropped.
 //! - Its own Commit goes into the outbox with the state that holds it pending, all at once, before
 //!   it is sent, and is sent again with the same bytes until the server answers. After `stored` it
 //!   merges the Commit, uploads the new epoch's GroupInfo, then sends the Welcome to the devices it
@@ -234,7 +240,9 @@ fn send_out(
 ) -> Result<bool, String> {
     let envelope = RawEnvelope::from_bytes(outgoing.envelope.clone())
         .map_err(|err| format!("the local state is malformed: an envelope in the outbox: {err}"))?;
-    let welcome = MlsFraming::read(&envelope.envelope().payload) == Some(MlsFraming::Welcome);
+    let payload = &envelope.envelope().payload;
+    let welcome = MlsFraming::read(payload) == Some(MlsFraming::Welcome);
+    let external = MlsFraming::is_external_commit(payload);
     let (space, channel) = (outgoing.space, outgoing.channel);
     if welcome && let Err(err) = keep_group_info(follower, link, space, channel) {
         eprintln!("skald: warning: {err}");
@@ -288,7 +296,13 @@ fn send_out(
         Answer::Refused(problem) => {
             step(follower, &link.keys, |device, changes| {
                 changes.answered.push(msg_id);
-                match device.commit_refused(channel) {
+                // A device's external Commit is applied at once: it drops the group it joined.
+                let refused = if external {
+                    device.external_commit_refused(channel)
+                } else {
+                    device.commit_refused(channel)
+                };
+                match refused {
                     Ok(()) | Err(MlsError::NoCommitPending(_) | MlsError::NoGroup(_)) => Ok(()),
                     Err(err) => Err(failed(channel, err)),
                 }
@@ -323,6 +337,9 @@ fn committed(
         let Ok(before) = devices(device) else {
             return Ok(None);
         };
+        // The device is in the group of the channel's current epoch: an external Commit of its own
+        // was applied at once, another one merges now.
+        changes.rejoined.push(channel);
         let welcome = match device.commit_stored(channel) {
             Ok(welcome) => welcome,
             Err(MlsError::NoCommitPending(_)) => return Ok(None),
@@ -384,16 +401,17 @@ fn failed(channel: ChannelId, err: impl Display) -> String {
     format!("the group of the channel {channel} fails: {err}")
 }
 
-/// Commits in `channel` of `space` what `make` makes in its group, and sends it.
+/// Commits in `channel` of `space` what `make` makes in its group, writing the changes it gives
+/// with it, and sends it.
 fn commit(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
-    make: impl FnOnce(&mut MlsDevice) -> Result<Vec<u8>, MlsError>,
+    make: impl FnOnce(&mut MlsDevice, &mut MlsChanges) -> Result<Vec<u8>, MlsError>,
 ) -> Result<(), String> {
     let version = follower.connection.version();
     let queued = step(follower, &link.keys, |device, changes| {
-        let commit = make(device).map_err(|err| failed(channel, err))?;
+        let commit = make(device, changes).map_err(|err| failed(channel, err))?;
         let queued = outgoing(version, (space, channel), &commit, None);
         changes.queued.push(queued.clone());
         Ok(queued)
@@ -413,6 +431,25 @@ fn group_info_path(space: SpaceId, channel: ChannelId) -> String {
     format!("/spaces/{space}/channels/{channel}/group-info")
 }
 
+/// Whether `channel` of `space` has a group on the server, and its GroupInfo of the current epoch,
+/// if the server has one.
+fn group_on_server(
+    follower: &mut Follower,
+    space: SpaceId,
+    channel: ChannelId,
+) -> Result<(bool, Option<Vec<u8>>), String> {
+    let body = follower
+        .connection
+        .get_as(&group_info_path(space, channel), &follower.token)
+        .map_err(text)?;
+    let unexpected = || "unexpected answer from the server: a channel's group".to_owned();
+    let given: ChannelGroup = serde_json::from_slice(&body).map_err(|_| unexpected())?;
+    let group_info = (given.group_info)
+        .map(|text| URL_SAFE_NO_PAD.decode(text).map_err(|_| unexpected()))
+        .transpose()?;
+    Ok((given.group, group_info))
+}
+
 /// Whether `channel` of `space` has a group on the server, and the epoch of its GroupInfo, if the
 /// server has one.
 fn on_server(
@@ -420,22 +457,13 @@ fn on_server(
     space: SpaceId,
     channel: ChannelId,
 ) -> Result<(bool, Option<u64>), String> {
-    let body = follower
-        .connection
-        .get_as(&group_info_path(space, channel), &follower.token)
-        .map_err(text)?;
-    let unexpected = || "unexpected answer from the server: a channel's group".to_owned();
-    let given: ChannelGroup = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let epoch = match given.group_info {
-        Some(text) => {
-            let bytes = URL_SAFE_NO_PAD.decode(text).map_err(|_| unexpected())?;
-            ChannelView::observe(channel, &bytes)
-                .ok()
-                .map(|view| view.epoch())
-        }
-        None => None,
-    };
-    Ok((given.group, epoch))
+    let (group, group_info) = group_on_server(follower, space, channel)?;
+    let epoch = group_info.and_then(|bytes| {
+        ChannelView::observe(channel, &bytes)
+            .ok()
+            .map(|view| view.epoch())
+    });
+    Ok((group, epoch))
 }
 
 /// Uploads the GroupInfo of `channel`'s group in the device's current epoch.
@@ -565,9 +593,9 @@ pub fn align_with(follower: &mut Follower, link: &mut Link) {
 
 /// Brings in line the group of each channel of `roster`, the last accepted revision of the space
 /// `space`, with `devices`, its accounts' devices, that this device is admitted to. Of a group it
-/// holds, it uploads the GroupInfo first if the server has none of its epoch. A channel whose
-/// Commit of this device waits for the server is left as it is. Warns of a group it fails to bring
-/// in line.
+/// holds and does not rejoin, it uploads the GroupInfo first if the server has none of its epoch. A
+/// channel whose Commit of this device waits for the server is left as it is. Warns of a group it
+/// fails to bring in line.
 fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -576,6 +604,8 @@ fn align(
 ) -> Result<(), String> {
     let body = roster.body();
     let waiting = follower.state.mls_outbox().map_err(text)?;
+    let rejoining = follower.state.rejoining().map_err(text)?;
+    let welcomes = welcomes_waiting(follower)?;
     let held = held(follower, &link.keys, &body.channels)?;
     for channel in &body.channels {
         let id = channel.id;
@@ -585,16 +615,14 @@ fn align(
         {
             continue;
         }
+        let at = (space, id);
         let aligned = match held.get(&id) {
-            None => create(follower, link, (space, id), &admitted),
+            // A Welcome in the mailbox comes first.
+            None if welcomes.contains(&id) => Ok(()),
+            None => outside(follower, link, at, &admitted, rejoining.contains(&id)),
+            Some(_) if rejoining.contains(&id) => behind(follower, link, at, &admitted),
             Some(members) => keep_group_info(follower, link, space, id).and_then(|()| {
-                keep_in_line(
-                    follower,
-                    link,
-                    (space, id),
-                    (roster, devices, &admitted),
-                    members,
-                )
+                keep_in_line(follower, link, at, (roster, devices, &admitted), members)
             }),
         };
         if let Err(err) = aligned {
@@ -608,20 +636,165 @@ fn align(
     Ok(())
 }
 
-/// Creates the group of `channel` in `space`, unless the server has one, whose Welcome the device
-/// waits for, with each of `others`, the other admitted devices, it gets a valid KeyPackage for.
+/// The channels of the Welcomes in the mailbox that no run has taken in yet.
+fn welcomes_waiting(follower: &Follower) -> Result<Vec<ChannelId>, String> {
+    let inbox = follower.state.inbox().map_err(text)?;
+    Ok((inbox.iter())
+        .filter_map(|entry| match classify(&entry.frame)? {
+            (envelope, Kind::Welcome) => Some(envelope.header.channel),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Brings this device, admitted to `channel` of `space` but outside its group, into it, with
+/// `others`, the other admitted devices: creates the group if the server has none; otherwise joins
+/// by itself from the GroupInfo of the current epoch, if the server has one, unless it lists this
+/// device, which another device added and whose Welcome comes, or `rejoining`.
+fn outside(
+    follower: &mut Follower,
+    link: &mut Link,
+    (space, channel): (SpaceId, ChannelId),
+    others: &BTreeMap<DeviceId, Cert>,
+    rejoining: bool,
+) -> Result<(), String> {
+    let (group, group_info) = group_on_server(follower, space, channel)?;
+    if !group {
+        return create(follower, link, (space, channel), others);
+    }
+    let Some(group_info) = group_info else {
+        return Ok(());
+    };
+    let view = observe(channel, &group_info)?;
+    if !rejoining
+        && view
+            .members()
+            .iter()
+            .any(|member| member.device == follower.this)
+    {
+        return Ok(());
+    }
+    join_by_itself(
+        follower,
+        link,
+        (space, channel),
+        (&view, &group_info),
+        others,
+    )
+}
+
+/// Rejoins `channel` of `space`, whose group this device holds but whose Commit it could not
+/// process or whose Welcome it refused, from the GroupInfo of the current epoch, if the server has
+/// one of an epoch past the device's; with `others`, the other admitted devices.
+fn behind(
+    follower: &mut Follower,
+    link: &mut Link,
+    (space, channel): (SpaceId, ChannelId),
+    others: &BTreeMap<DeviceId, Cert>,
+) -> Result<(), String> {
+    let epoch = read(follower, &link.keys, |device| device.epoch(channel))?
+        .map_err(|err| failed(channel, err))?;
+    let Some(group_info) = group_on_server(follower, space, channel)?.1 else {
+        return Ok(());
+    };
+    let view = observe(channel, &group_info)?;
+    if view.epoch() > epoch {
+        return join_by_itself(
+            follower,
+            link,
+            (space, channel),
+            (&view, &group_info),
+            others,
+        );
+    }
+    // The device is in the current epoch: what it could not process was not the channel's.
+    change(
+        follower,
+        MlsChanges {
+            rejoined: vec![channel],
+            ..MlsChanges::default()
+        },
+    )
+}
+
+/// `channel`'s GroupInfo `group_info`, the server's, as seen from outside the group.
+fn observe(channel: ChannelId, group_info: &[u8]) -> Result<ChannelView, String> {
+    ChannelView::observe_joinable(channel, group_info).map_err(|err| {
+        format!("the server gave a GroupInfo of the channel {channel} that does not check: {err}")
+    })
+}
+
+/// Of `signer` and `members`, a GroupInfo's, those that are not of `others`, the other admitted
+/// devices, nor this device, `this`, with its own key `signing`.
+fn not_admitted(
+    (this, signing): (DeviceId, &[u8; 32]),
+    others: &BTreeMap<DeviceId, Cert>,
+    (signer, members): (&MemberDevice, &[MemberDevice]),
+) -> BTreeSet<DeviceId> {
+    (members.iter().chain([signer]))
+        .filter(|member| {
+            let own = member.device == this && member.signing == *signing;
+            !own && !admits(others, member)
+        })
+        .map(|member| member.device)
+        .collect()
+}
+
+/// Joins `channel` of `space` by itself from `group_info`, seen as `view`, if its signer and every
+/// member it lists are admitted, with `others`, the other admitted devices, once the device accepted
+/// the space's latest revisions if one is not; warns naming those that are not. The external
+/// Commit goes through the outbox as the device's other Commits do.
+fn join_by_itself(
+    follower: &mut Follower,
+    link: &mut Link,
+    (space, channel): (SpaceId, ChannelId),
+    (view, group_info): (&ChannelView, &[u8]),
+    others: &BTreeMap<DeviceId, Cert>,
+) -> Result<(), String> {
+    let own = (follower.this, &link.keys.signing().public_key());
+    let listed = (&view.signer(), view.members());
+    let mut admitted = others.clone();
+    if !not_admitted(own, &admitted, listed).is_empty() {
+        // Before it holds them not admitted, the device accepts the space's latest revisions.
+        let synced = follower.state.spaces().map_err(text)?;
+        if let Some(held) = synced.iter().find(|held| held.id == space) {
+            let (roster, devices) = follower.sync(held)?;
+            admitted = self::admitted(follower, &roster, &devices, channel);
+            admitted.remove(&follower.this);
+        }
+    }
+    let strangers = not_admitted(own, &admitted, listed);
+    if !strangers.is_empty() {
+        let strangers: Vec<String> = strangers.iter().map(ToString::to_string).collect();
+        return Err(format!(
+            "this device does not join the channel's group by itself: the server's GroupInfo of \
+             the channel {channel} lists the devices {}, which are not admitted to the channel",
+            strangers.join(", ")
+        ));
+    }
+    // Gap detection counts the channel's `mls` messages from their baseline again: those after the
+    // cursor.
+    let cursor = follower.state.cursor().map_err(text)?;
+    commit(follower, link, (space, channel), |device, changes| {
+        changes.joined.push((channel, cursor + 1));
+        device.join_by_itself(channel, group_info, now(), |joining| {
+            let listed = (&joining.signer, joining.members.as_slice());
+            joining.channel == channel && not_admitted(own, &admitted, listed).is_empty()
+        })
+    })
+}
+
+/// Creates the group of `channel` in `space`, which has none on the server, with each of `others`,
+/// the other admitted devices, it gets a valid KeyPackage for.
 fn create(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
     others: &BTreeMap<DeviceId, Cert>,
 ) -> Result<(), String> {
-    if on_server(follower, space, channel)?.0 {
-        return Ok(());
-    }
     let packages = key_packages(follower, others)?;
     let certs: Vec<Cert> = others.values().cloned().collect();
-    commit(follower, link, (space, channel), |device| {
+    commit(follower, link, (space, channel), |device, _| {
         device.create_group(channel, now())?;
         device.add_devices(channel, &packages, &certs, now())
     })
@@ -650,7 +823,7 @@ fn keep_in_line(
             |account| follow::master_of(roster, own, account),
             &strangers,
         );
-        return commit(follower, link, (space, channel), |device| {
+        return commit(follower, link, (space, channel), |device, _| {
             device.remove_devices(channel, &strangers, &carried, now())
         });
     }
@@ -667,7 +840,7 @@ fn keep_in_line(
         return Ok(());
     }
     let certs: Vec<Cert> = lacking.into_values().collect();
-    commit(follower, link, (space, channel), |device| {
+    commit(follower, link, (space, channel), |device, _| {
         device.add_devices(channel, &packages, &certs, now())
     })
 }
@@ -925,11 +1098,18 @@ fn join(
             return Ok((None, MlsChanges::default(), None));
         }
         // Gap detection counts the channel's `mls` messages from their baseline again.
-        let taken = MlsChanges {
+        let mut taken = MlsChanges {
             taken: vec![seq],
             joined: joined.iter().map(|&channel| (channel, seq)).collect(),
             ..MlsChanges::default()
         };
+        match joined {
+            Ok(_) => taken.rejoined.push(channel),
+            // A refused Welcome leaves a leaf in the group that the device cannot use: it joins by
+            // itself even though the GroupInfo lists it.
+            Err(MlsError::GroupExists(_)) => {}
+            Err(_) => taken.rejoin.push(channel),
+        }
         Ok((Some(device.seal()), taken, Some(joined)))
     })?;
     Ok(joined.map(|joined| (joined, seen)))
@@ -957,6 +1137,10 @@ fn processed(
 ) -> Result<(), String> {
     let (seq, space, envelope) = (taking.seq, taking.space, taking.envelope);
     let channel = envelope.header.channel;
+    let of_epoch = match MlsFraming::read(&envelope.payload) {
+        Some(MlsFraming::Message { epoch, .. }) => epoch,
+        _ => 0,
+    };
     let mut seen = None;
     let mut learned = Vec::new();
     let (roster, devices) = &rosters[&space.id];
@@ -964,8 +1148,12 @@ fn processed(
     let master = |account| follow::master_of(roster, own, account);
     let result = step(follower, &link.keys, |device, changes| {
         changes.taken.push(seq);
-        if device.epoch(channel).is_err() {
+        let Ok(epoch) = device.epoch(channel) else {
             // A Commit of a group the device is not in.
+            return Ok(None);
+        };
+        // A Commit of an epoch the device has passed is a replay ("Rejoining").
+        if of_epoch < epoch {
             return Ok(None);
         }
         let processed = device.process_commit(channel, &envelope.payload, now(), |change| {
@@ -973,7 +1161,9 @@ fn processed(
             seen = Some(change.clone());
             true
         });
-        if processed.is_ok() {
+        if processed.is_err() {
+            changes.rejoin.push(channel);
+        } else {
             changes.revocations = learned.iter().map(skald_proto::Cbor::to_cbor).collect();
         }
         Ok(Some(processed))
@@ -981,10 +1171,14 @@ fn processed(
     let name = &space.name;
     let change = match (result, seen) {
         (Some(Ok(Processed::Entered { .. })), Some(change)) => change,
+        (Some(Ok(Processed::Removed)), _) => {
+            removed(follower, space, channel, rosters);
+            return Ok(());
+        }
         (Some(Err(err)), _) => {
             eprintln!(
                 "skald: warning: this device cannot process a Commit in the channel {channel} in \
-                 the space {name}: {err}"
+                 the space {name}: {err}; it rejoins the channel's group"
             );
             return Ok(());
         }
@@ -1005,17 +1199,42 @@ fn processed(
         added = strangers(follower, &rosters[&space.id], channel, &change.added);
     }
     for device in added {
-        eprintln!(
-            "skald: warning: a Commit of the device {} in the channel {channel} in the space \
-             {name} added the device {device}, which is not admitted to the channel; this device \
-             removes it",
-            change.sender
-        );
+        if device == change.sender {
+            eprintln!(
+                "skald: warning: the device {device} joined the channel {channel} in the space \
+                 {name} by itself, but it is not admitted to the channel; this device removes it"
+            );
+        } else {
+            eprintln!(
+                "skald: warning: a Commit of the device {} in the channel {channel} in the space \
+                 {name} added the device {device}, which is not admitted to the channel; this \
+                 device removes it",
+                change.sender
+            );
+        }
     }
     if let Err(err) = keep_group_info(follower, link, space.id, channel) {
         eprintln!("skald: warning: {err}");
     }
     Ok(())
+}
+
+/// A Commit removed this device from `channel`'s group: it warns if the device is admitted to the
+/// channel once it accepted the space's latest revisions, as it then rejoins ("Rejoining").
+fn removed(
+    follower: &mut Follower,
+    space: &state::Space,
+    channel: ChannelId,
+    rosters: &mut Rosters,
+) {
+    sync_again(follower, space, rosters);
+    if admitted_in(follower, rosters, (space.id, channel)).contains_key(&follower.this) {
+        eprintln!(
+            "skald: warning: a Commit removed this device from the channel {channel} in the space \
+             {}, which admits it; this device rejoins the channel's group",
+            space.name
+        );
+    }
 }
 
 /// What decrypting an application message of the mailbox in its channel's group gave, kept with

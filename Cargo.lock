@@ -2910,6 +2910,8 @@ dependencies = [
  "gethostname",
  "keyring-core",
  "libc",
+ "mls-rs",
+ "mls-rs-crypto-rustcrypto",
  "rusqlite",
  "rustls",
  "rustls-native-certs",

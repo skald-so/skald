@@ -3,7 +3,11 @@
 //! orders a channel's envelopes by it (`docs/protocol/membership.md`, "Commit ordering";
 //! `docs/protocol/delivery.md`, "Mailbox").
 
-use mls_rs::{MlsMessage, MlsMessageDescription, group::ContentType, mls_rs_codec::MlsDecode as _};
+use mls_rs::{
+    MlsMessage, MlsMessageDescription,
+    group::{ContentType, Sender},
+    mls_rs_codec::MlsDecode as _,
+};
 
 /// The framing of an `MLSMessage`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +68,24 @@ impl MlsFraming {
             public,
             content,
         })
+    }
+
+    /// Whether `payload`, one `MLSMessage`, is an external Commit: a Commit in a PublicMessage from
+    /// a new member, a device that joins by itself (RFC 9420, §12.4.3.2).
+    pub fn is_external_commit(payload: &[u8]) -> bool {
+        let mut rest = payload;
+        let Ok(message) = MlsMessage::mls_decode(&mut rest) else {
+            return false;
+        };
+        rest.is_empty()
+            && matches!(
+                message.description(),
+                MlsMessageDescription::PublicProtocolMessage {
+                    content_type: ContentType::Commit,
+                    sender: Sender::NewMemberCommit,
+                    ..
+                }
+            )
     }
 
     /// Whether it is a handshake message: a Welcome, or a proposal or a Commit (RFC 9420, §6).
