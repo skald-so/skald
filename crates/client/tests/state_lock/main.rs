@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 mod beside;
+mod commands;
 mod held;
 mod sends;
 
