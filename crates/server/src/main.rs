@@ -22,6 +22,8 @@ const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
 const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
 /// The least time between two reads of Google's keys.
 const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
+/// The longest `--long-poll-max-wait`, in seconds: a day.
+const LONG_POLL_LONGEST: u64 = 24 * 3_600;
 
 /// `--sign-up`.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -93,8 +95,8 @@ struct Cli {
     )]
     sign_in_state_lifetime: u64,
 
-    /// How recent a web session's sign-in has to be to link another sign-in method to its account;
-    /// with an older one, the person signs in again first.
+    /// How recent a web session's sign-in has to be to link another sign-in method to its account
+    /// or remove one; with an older one, the person signs in again first.
     #[arg(
         long,
         env = "SKALD_LINK_SIGN_IN_AGE",
@@ -228,6 +230,16 @@ struct Cli {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     devices_limit: Option<u32>,
+
+    /// The longest a long-poll waits for its device's mailbox, in seconds, at most a day; one that
+    /// asks for longer ends at it [default: 30].
+    #[arg(
+        long,
+        env = "SKALD_LONG_POLL_MAX_WAIT",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=LONG_POLL_LONGEST)
+    )]
+    long_poll_max_wait: Option<u64>,
 
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
@@ -448,6 +460,7 @@ impl Cli {
             message_size_limit: self.message_size_limit,
             monthly_messages_limit: self.monthly_messages_limit,
             devices_limit: self.devices_limit,
+            long_poll_max_wait: self.long_poll_max_wait.map(Duration::from_secs),
         })
     }
 }
@@ -560,6 +573,25 @@ mod tests {
         assert_eq!(retention(longest), Some(Some(longest)));
         assert_eq!(retention(0), None);
         assert_eq!(retention(longest + 1), None);
+    }
+
+    #[test]
+    fn the_longest_wait_of_a_long_poll_is_from_a_second_to_a_day() {
+        let wait = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--long-poll-max-wait",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.long_poll_max_wait)
+            .ok()
+        };
+        assert_eq!(wait(1), Some(Some(1)));
+        assert_eq!(wait(86_400), Some(Some(86_400)));
+        assert_eq!(wait(0), None);
+        assert_eq!(wait(86_401), None);
     }
 
     #[test]

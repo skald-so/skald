@@ -33,7 +33,12 @@ fn grace_with_both(
     assert_eq!(remove_count(page), 0, "no Remove on the only method");
     let here = location(page);
 
+    // Signing in to GitHub leaves the Account page: open it again.
     github_session(page, web.stand.github(), user);
+    page.goto(&here);
+    wait_until(page, "the Account page again", |page| {
+        page.count(LINK_GITHUB) == 1
+    });
     page.click_settled(LINK_GITHUB);
     wait_until(page, "the Account page with GitHub linked", |page| {
         location(page) == here && page.text().contains(&user.login) && remove_count(page) == 2

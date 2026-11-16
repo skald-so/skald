@@ -14,6 +14,8 @@ import type {
   KeyPackageCount,
   KeyPackageRequest,
   KeyPackageUpload,
+  ListedDevices,
+  ListedMembers,
   MasterKey,
   MasterKeyRequest,
   NewChannel,
@@ -25,7 +27,11 @@ import type {
   RosterRevisions,
   Server,
   Session,
+  SessionId,
+  Sessions,
+  SignInMethodId,
   SignInMethods,
+  SignInProviders,
   Space,
   SpaceRequest,
   Spaces,
@@ -33,6 +39,67 @@ import type {
   StoredRosterRevision,
   UsernameRequest,
 } from "./skald.schemas";
+
+export type listAccountDevicesResponse200 = {
+  data: ListedDevices;
+  status: 200;
+};
+
+export type listAccountDevicesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listAccountDevicesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listAccountDevicesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listAccountDevicesResponseSuccess =
+  listAccountDevicesResponse200 & {
+    headers: Headers;
+  };
+export type listAccountDevicesResponseError = (
+  | listAccountDevicesResponse400
+  | listAccountDevicesResponse401
+  | listAccountDevicesResponse500
+) & {
+  headers: Headers;
+};
+
+export type listAccountDevicesResponse =
+  listAccountDevicesResponseSuccess | listAccountDevicesResponseError;
+
+export const getListAccountDevicesUrl = () => {
+  return `/account/devices`;
+};
+
+/**
+ * Every device of the session's account, in the order they registered, each with its state by the server's checks (docs/protocol/membership.md, "Device checks"); no key or certificate. It is the server's word: `skald` checks devices against the account's pinned master key.
+ * @summary The account's devices as the web app shows them
+ */
+export const listAccountDevices = async (
+  options?: RequestInit,
+): Promise<listAccountDevicesResponse> => {
+  const res = await fetch(getListAccountDevicesUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listAccountDevicesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listAccountDevicesResponse;
+};
 
 export type getMasterKeyResponse200 = {
   data: MasterKey;
@@ -352,6 +419,215 @@ export const storeRevocation = async (
   } as storeRevocationResponse;
 };
 
+export type listSessionsResponse200 = {
+  data: Sessions;
+  status: 200;
+};
+
+export type listSessionsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listSessionsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listSessionsResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type listSessionsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listSessionsResponseSuccess = listSessionsResponse200 & {
+  headers: Headers;
+};
+export type listSessionsResponseError = (
+  | listSessionsResponse400
+  | listSessionsResponse401
+  | listSessionsResponse403
+  | listSessionsResponse500
+) & {
+  headers: Headers;
+};
+
+export type listSessionsResponse =
+  listSessionsResponseSuccess | listSessionsResponseError;
+
+export const getListSessionsUrl = () => {
+  return `/account/sessions`;
+};
+
+/**
+ * Every session of the web session's account that has not ended or expired, web and device sessions alike, newest first. A request with a device session lists nothing.
+ * @summary The account's sessions
+ */
+export const listSessions = async (
+  options?: RequestInit,
+): Promise<listSessionsResponse> => {
+  const res = await fetch(getListSessionsUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSessionsResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listSessionsResponse;
+};
+
+export type endOtherSessionsResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type endOtherSessionsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type endOtherSessionsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type endOtherSessionsResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type endOtherSessionsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type endOtherSessionsResponseSuccess = endOtherSessionsResponse204 & {
+  headers: Headers;
+};
+export type endOtherSessionsResponseError = (
+  | endOtherSessionsResponse400
+  | endOtherSessionsResponse401
+  | endOtherSessionsResponse403
+  | endOtherSessionsResponse500
+) & {
+  headers: Headers;
+};
+
+export type endOtherSessionsResponse =
+  endOtherSessionsResponseSuccess | endOtherSessionsResponseError;
+
+export const getEndOtherSessionsUrl = () => {
+  return `/account/sessions/end-others`;
+};
+
+/**
+ * Ends every session of the web session's account but itself at once, web and device sessions alike, as `DELETE /account/sessions/{session}` ends one. Only with a web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.
+ * @summary End every other session
+ */
+export const endOtherSessions = async (
+  options?: RequestInit,
+): Promise<endOtherSessionsResponse> => {
+  const res = await fetch(getEndOtherSessionsUrl(), {
+    ...options,
+    method: "POST",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: endOtherSessionsResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as endOtherSessionsResponse;
+};
+
+export type endAccountSessionResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type endAccountSessionResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type endAccountSessionResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type endAccountSessionResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type endAccountSessionResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type endAccountSessionResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type endAccountSessionResponseSuccess = endAccountSessionResponse204 & {
+  headers: Headers;
+};
+export type endAccountSessionResponseError = (
+  | endAccountSessionResponse400
+  | endAccountSessionResponse401
+  | endAccountSessionResponse403
+  | endAccountSessionResponse404
+  | endAccountSessionResponse500
+) & {
+  headers: Headers;
+};
+
+export type endAccountSessionResponse =
+  endAccountSessionResponseSuccess | endAccountSessionResponseError;
+
+export const getEndAccountSessionUrl = (session: SessionId) => {
+  return `/account/sessions/${session}`;
+};
+
+/**
+ * Ends a session of the web session's account at once: every later request with it is refused, and its WebSocket connections close with the reason `session-ended`, on every instance. A web session's links in progress end with it. A device session's device, its keys and its certificate stay, as at `DELETE /session`. Only with a web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.
+ * @summary End a session of the account
+ */
+export const endAccountSession = async (
+  session: SessionId,
+  options?: RequestInit,
+): Promise<endAccountSessionResponse> => {
+  const res = await fetch(getEndAccountSessionUrl(session), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: endAccountSessionResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as endAccountSessionResponse;
+};
+
 export type listSignInMethodsResponse200 = {
   data: SignInMethods;
   status: 200;
@@ -409,6 +685,88 @@ export const listSignInMethods = async (
     status: res.status,
     headers: res.headers,
   } as listSignInMethodsResponse;
+};
+
+export type removeSignInMethodResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type removeSignInMethodResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type removeSignInMethodResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type removeSignInMethodResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type removeSignInMethodResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type removeSignInMethodResponse409 = {
+  data: Problem;
+  status: 409;
+};
+
+export type removeSignInMethodResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type removeSignInMethodResponseSuccess =
+  removeSignInMethodResponse204 & {
+    headers: Headers;
+  };
+export type removeSignInMethodResponseError = (
+  | removeSignInMethodResponse400
+  | removeSignInMethodResponse401
+  | removeSignInMethodResponse403
+  | removeSignInMethodResponse404
+  | removeSignInMethodResponse409
+  | removeSignInMethodResponse500
+) & {
+  headers: Headers;
+};
+
+export type removeSignInMethodResponse =
+  removeSignInMethodResponseSuccess | removeSignInMethodResponseError;
+
+export const getRemoveSignInMethodUrl = (method: SignInMethodId) => {
+  return `/account/sign-in-methods/${method}`;
+};
+
+/**
+ * Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused while sign-up is closed, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.
+ * @summary Remove a sign-in method of the account
+ */
+export const removeSignInMethod = async (
+  method: SignInMethodId,
+  options?: RequestInit,
+): Promise<removeSignInMethodResponse> => {
+  const res = await fetch(getRemoveSignInMethodUrl(method), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: removeSignInMethodResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as removeSignInMethodResponse;
 };
 
 export type putUsernameResponse204 = {
@@ -502,6 +860,53 @@ export const putUsername = async (
     status: res.status,
     headers: res.headers,
   } as putUsernameResponse;
+};
+
+export type getSignInProvidersResponse200 = {
+  data: SignInProviders;
+  status: 200;
+};
+
+export type getSignInProvidersResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getSignInProvidersResponseSuccess =
+  getSignInProvidersResponse200 & {
+    headers: Headers;
+  };
+export type getSignInProvidersResponseError = getSignInProvidersResponse400 & {
+  headers: Headers;
+};
+
+export type getSignInProvidersResponse =
+  getSignInProvidersResponseSuccess | getSignInProvidersResponseError;
+
+export const getGetSignInProvidersUrl = () => {
+  return `/auth/providers`;
+};
+
+/**
+ * Needs no session. Names the providers the server has settings for and whether its sign-up is open, and nothing of the lists of who may sign up while it is closed.
+ * @summary The sign-in providers and sign-up
+ */
+export const getSignInProviders = async (
+  options?: RequestInit,
+): Promise<getSignInProvidersResponse> => {
+  const res = await fetch(getGetSignInProvidersUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getSignInProvidersResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getSignInProvidersResponse;
 };
 
 export type getDevicesResponse200 = {
@@ -1152,6 +1557,64 @@ export const getSession = async (
   } as getSessionResponse;
 };
 
+export type endSessionResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type endSessionResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type endSessionResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type endSessionResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type endSessionResponseSuccess = endSessionResponse204 & {
+  headers: Headers;
+};
+export type endSessionResponseError = (
+  endSessionResponse400 | endSessionResponse401 | endSessionResponse500
+) & {
+  headers: Headers;
+};
+
+export type endSessionResponse =
+  endSessionResponseSuccess | endSessionResponseError;
+
+export const getEndSessionUrl = () => {
+  return `/session`;
+};
+
+/**
+ * Ends the request's session at once, as `DELETE /account/sessions/{session}` ends one: the device session of its bearer token, which signs a machine out, or the web session of its cookie, only from a page of the web URL. The account's other sessions, its devices and its master key stay.
+ * @summary Sign the session out
+ */
+export const endSession = async (
+  options?: RequestInit,
+): Promise<endSessionResponse> => {
+  const res = await fetch(getEndSessionUrl(), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: endSessionResponse["data"] = body ? JSON.parse(body) : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as endSessionResponse;
+};
+
 export type getSpacesResponse200 = {
   data: Spaces;
   status: 200;
@@ -1635,6 +2098,73 @@ export const getSpaceDevices = async (
     status: res.status,
     headers: res.headers,
   } as getSpaceDevicesResponse;
+};
+
+export type listSpaceMembersResponse200 = {
+  data: ListedMembers;
+  status: 200;
+};
+
+export type listSpaceMembersResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listSpaceMembersResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listSpaceMembersResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type listSpaceMembersResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listSpaceMembersResponseSuccess = listSpaceMembersResponse200 & {
+  headers: Headers;
+};
+export type listSpaceMembersResponseError = (
+  | listSpaceMembersResponse400
+  | listSpaceMembersResponse401
+  | listSpaceMembersResponse404
+  | listSpaceMembersResponse500
+) & {
+  headers: Headers;
+};
+
+export type listSpaceMembersResponse =
+  listSpaceMembersResponseSuccess | listSpaceMembersResponseError;
+
+export const getListSpaceMembersUrl = (space: string) => {
+  return `/spaces/${space}/members`;
+};
+
+/**
+ * The members of the space's latest stored revision (docs/protocol/membership.md, "Roster"), in its order, each with its role; no revision or master key. It is the server's word: `skald` checks the space's revisions itself.
+ * @summary The space's members as the web app shows them
+ */
+export const listSpaceMembers = async (
+  space: string,
+  options?: RequestInit,
+): Promise<listSpaceMembersResponse> => {
+  const res = await fetch(getListSpaceMembersUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSpaceMembersResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listSpaceMembersResponse;
 };
 
 export type getRosterRevisionsResponse200 = {
