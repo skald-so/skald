@@ -192,8 +192,10 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Docker Compose + Caddy; Caddy obtains TLS automatically;
   - a server refuses a database that a newer server migrated, so a rollback restores the backup from before the upgrade; self-hosted: [Rollback](../self-host.md#rollback);
   - short downtime during a deploy is acceptable: clients reconnect and catch up from the cursor. Zero-downtime deploys (Kamal) later, if needed.
-- **Monitoring:** Prometheus, Grafana, Sentry, uptime checks, status page.
-  - The server reports its errors to Sentry only with the server setting `--sentry-dsn` (`SKALD_SENTRY_DSN`); what a report holds: [threat-model.md, "The server sees"](../threat-model.md#the-server-sees).
+- **Monitoring:** on the production server, seen in Grafana there; no external service.
+  - Prometheus scrapes the hosts, the containers, PostgreSQL, Caddy's metrics and the blackbox exporter's health checks; Loki keeps the containers' logs, shipped by Alloy.
+  - Alertmanager groups the alerts of Prometheus and Loki and sends them nowhere: Grafana shows them, with the dashboards, the logs and the server's errors.
+  - The server reports its errors to Sentry only with the server setting `--sentry-dsn` (`SKALD_SENTRY_DSN`), an option production does not set; what a report holds: [threat-model.md, "The server sees"](../threat-model.md#the-server-sees).
 - **Addresses:** `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation.
 
 ## Self-host
