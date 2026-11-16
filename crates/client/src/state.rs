@@ -3,7 +3,7 @@
 //! content is overwritten with zeros (`secure_delete`), and a save of the MLS state checkpoints
 //! the WAL with `TRUNCATE`, so no older sealed state stays in the database file or its WAL.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -228,6 +228,21 @@ const MIGRATIONS: &[&str] = &[
         agent TEXT NOT NULL,
         PRIMARY KEY (seq, agent)
     ) STRICT;",
+    // The key chain: whether the device judged each epoch of a channel it entered clean, and the
+    // links, by epoch and `prev`, it does not upload again: those the server took from it, listed
+    // to it or refused.
+    "CREATE TABLE epoch_judgment (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 0),
+        clean INTEGER NOT NULL CHECK (clean IN (0, 1)),
+        PRIMARY KEY (channel, epoch)
+    ) STRICT;
+    CREATE TABLE settled_link (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 0),
+        prev INTEGER NOT NULL CHECK (prev >= 0),
+        PRIMARY KEY (channel, epoch, prev)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -409,6 +424,9 @@ pub struct MlsChanges {
     /// Each channel whose group it is in at an epoch, with when it entered that epoch; an epoch
     /// recorded already keeps its time.
     pub entered: Vec<(ChannelId, u64, u64)>,
+    /// Each epoch of a channel it judged, and whether clean; an epoch judged already keeps its
+    /// judgment.
+    pub judged: Vec<(ChannelId, u64, bool)>,
 }
 
 impl MlsChanges {
@@ -423,6 +441,7 @@ impl MlsChanges {
             && self.rejoin.is_empty()
             && self.rejoined.is_empty()
             && self.entered.is_empty()
+            && self.judged.is_empty()
     }
 }
 
@@ -723,6 +742,13 @@ impl State {
                     params![channel.to_string(), sql_u64(*epoch)?, sql_u64(*entered)?],
                 )?;
             }
+            for (channel, epoch, clean) in &changes.judged {
+                tx.execute(
+                    "INSERT INTO epoch_judgment (channel, epoch, clean) VALUES (?1, ?2, ?3)
+                     ON CONFLICT DO NOTHING",
+                    params![channel.to_string(), sql_u64(*epoch)?, clean],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -762,6 +788,48 @@ impl State {
             Ok((read(epoch)?, read(entered)?))
         })
         .transpose()
+    }
+
+    /// Whether the device judged each epoch of `channel` it judged clean ([`MlsChanges::judged`]).
+    pub fn judgments(&self, channel: ChannelId) -> Result<BTreeMap<u64, bool>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT epoch, clean FROM epoch_judgment WHERE channel = ?1")?;
+        let rows = query.query_map(params![channel.to_string()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get(1)?))
+        })?;
+        rows.map(|row| {
+            let (epoch, clean) = row?;
+            Ok((read_epoch(channel, epoch)?, clean))
+        })
+        .collect()
+    }
+
+    /// The links of `channel`, by epoch and `prev`, the device does not upload again.
+    pub fn settled_links(&self, channel: ChannelId) -> Result<BTreeSet<(u64, u64)>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT epoch, prev FROM settled_link WHERE channel = ?1")?;
+        let rows = query.query_map(params![channel.to_string()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.map(|row| {
+            let (epoch, prev) = row?;
+            Ok((read_epoch(channel, epoch)?, read_epoch(channel, prev)?))
+        })
+        .collect()
+    }
+
+    /// Keeps `links` of `channel`, by epoch and `prev`, from being uploaded again.
+    pub fn settle_links(&self, channel: ChannelId, links: &[(u64, u64)]) -> Result<(), Error> {
+        for &(epoch, prev) in links {
+            self.db.execute(
+                "INSERT INTO settled_link (channel, epoch, prev) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING",
+                params![channel.to_string(), sql_u64(epoch)?, sql_u64(prev)?],
+            )?;
+        }
+        Ok(())
     }
 
     /// The device's own Commits and Welcomes in the outbox, in the order they go out.
@@ -1512,6 +1580,12 @@ fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
         params![msg_id, space, channel],
     )?;
     Ok(())
+}
+
+/// `epoch`, as SQLite keeps an epoch of `channel`.
+fn read_epoch(channel: ChannelId, epoch: i64) -> Result<u64, Error> {
+    u64::try_from(epoch)
+        .map_err(|_| Error::Malformed(format!("an epoch of the channel {channel}: {epoch}")))
 }
 
 /// A row of an outbox: three IDs, as text, and an envelope's bytes.
@@ -2710,6 +2784,43 @@ pub(crate) mod tests {
             state.device_statuses(&[(ada, false)]).unwrap(),
             vec![(ada, false)]
         );
+    }
+
+    #[test]
+    fn epoch_keeps_its_first_judgment_and_links_stay_settled_per_channel() {
+        let dir = TestDir::new("state-key-chain");
+        let state = State::open(&dir).unwrap();
+        let (one, other) = (ChannelId::generate(), ChannelId::generate());
+        let judge = |judged: Vec<(ChannelId, u64, bool)>| {
+            state
+                .mls_change(|_| {
+                    let changes = MlsChanges {
+                        judged,
+                        ..MlsChanges::default()
+                    };
+                    Ok((None, changes, ()))
+                })
+                .unwrap();
+        };
+
+        judge(vec![(one, 1, true), (one, 2, false), (other, 1, false)]);
+        judge(vec![(one, 1, false), (one, 2, true), (one, 3, true)]);
+        state.settle_links(one, &[(3, 1), (2, 1)]).unwrap();
+        state.settle_links(one, &[(3, 1)]).unwrap();
+
+        assert_eq!(
+            state.judgments(one).unwrap(),
+            BTreeMap::from([(1, true), (2, false), (3, true)])
+        );
+        assert_eq!(
+            state.judgments(other).unwrap(),
+            BTreeMap::from([(1, false)])
+        );
+        assert_eq!(
+            state.settled_links(one).unwrap(),
+            BTreeSet::from([(2, 1), (3, 1)])
+        );
+        assert_eq!(state.settled_links(other).unwrap(), BTreeSet::new());
     }
 
     #[test]
