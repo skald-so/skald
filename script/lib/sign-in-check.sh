@@ -163,7 +163,8 @@ device_authorization() {
 }
 
 # page_origin <url>: the origin of <url>, the verification page's, as origin prints it, if it has
-# only the characters of a host and port and none of the codes in $tmp/device.
+# only the characters of a host and port and none of the codes in $tmp/device, in any case, with or
+# without their hyphens.
 page_origin() {
   local scheme authority shown code
   [[ $1 =~ $url_parts ]] || return 1
@@ -173,7 +174,7 @@ page_origin() {
   for code in user_code device_code; do
     code=$(jq -r --arg name "$code" '.[$name] | strings' "$tmp/device" |
       tr '[:upper:]' '[:lower:]')
-    [[ -z $code || $shown != *"$code"* ]] || return 1
+    [[ -z $code || ${shown//-/} != *"${code//-/}"* ]] || return 1
   done
   put '%s' "$shown"
 }

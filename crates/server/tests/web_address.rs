@@ -31,7 +31,7 @@ use common::devices::{
 };
 use common::google::{self, Google, Setup};
 use common::sign_in::{
-    self, CLIENT_SECRET, SECRET_ENV, SignIn, cookie_set, github_args, github_stand_in, param,
+    self, CLIENT_SECRET, Jar, SECRET_ENV, SignIn, cookie_set, github_args, github_stand_in, param,
     set_cookie, start_url, to_callback,
 };
 use common::{
@@ -390,6 +390,36 @@ fn browser_forms_are_taken_only_from_the_web_address() {
         Some(format!("{}{}", stage.web, sign_in::CALLBACK)),
         "{to}"
     );
+}
+
+/// A link whose callback comes from GitHub without the session's cookie, as a redirect from another
+/// site does, opens the callback again on the web address.
+#[test]
+fn link_callback_from_another_site_reopens_on_the_web_address() {
+    let stage = Stage::start();
+    let stand = &stage.flow.stand;
+    let ada = stand.user(2_510_100_006, "ada-web-hop-standin");
+    let cookie = stage.flow.web_cookie(&ada);
+    let linking = stage.submit(GITHUB_LINK, &cookie, &stage.web, &[]);
+    assert_eq!(linking.status, 302, "{}", text(&linking));
+    let authorize = linking.header("location").expect("a redirect to GitHub");
+    let mut github = Jar::default();
+    github.take(&get_url(&stand.github.sign_in_url(ada.id), &[]));
+    let back = get_url(authorize, &[("cookie", &github.header())]);
+    let callback = back.header("location").expect("GitHub goes back");
+    assert!(
+        callback.starts_with(&format!("{}{}?", stage.web, sign_in::CALLBACK)),
+        "{callback}"
+    );
+
+    let state = cookie_set(&linking, "skald_sign_in");
+    let hop = get_url(
+        &callback.replacen(&stage.web, stage.base(), 1),
+        &[("cookie", &state)],
+    );
+
+    assert_eq!(hop.status, 200, "{}", text(&hop));
+    assert_eq!(refreshes_to(&hop), callback);
 }
 
 /// A device proves its key over the public address's origin, not the web address's.

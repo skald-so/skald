@@ -144,7 +144,7 @@ fn run_check(case: &str, address: &str, client_id: &str, github: &str) -> Run {
 }
 
 /// A tamper that changes the device authorization's answer by `change`.
-fn to_grant(change: fn(&mut Value)) -> Tamper {
+fn to_grant(change: impl Fn(&mut Value) + Send + Sync + 'static) -> Tamper {
     on("POST", DEVICE_AUTHORIZATION, move |answer| {
         let mut grant = json_of(&answer);
         change(&mut grant);
@@ -308,8 +308,24 @@ fn check_fails_at_the_verification_page_when_it_sends_the_browser_elsewhere() {
         grant["verification_uri_complete"] = json!(format!("{page}?user_code={code}"));
         grant["verification_uri"] = json!(page);
     });
+    let named = |code: fn(&str) -> String| {
+        to_grant(move |grant| {
+            let user_code = grant["user_code"].as_str().expect("a user code").to_owned();
+            let page = format!("http://{}.{ELSEWHERE}{VERIFICATION_PAGE}", code(&user_code));
+            grant["verification_uri_complete"] = json!(format!("{page}?user_code={user_code}"));
+            grant["verification_uri"] = json!(page);
+        })
+    };
     let cases = [
         ("a verification page on another server", elsewhere),
+        (
+            "a verification page on a host named after the user code",
+            named(|code| code.to_lowercase()),
+        ),
+        (
+            "a verification page on a host named after the user code without its hyphen",
+            named(|code| code.replace('-', "")),
+        ),
         (
             "the page fails",
             answer_with(
