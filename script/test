@@ -265,6 +265,7 @@ if checks tooling; then
   script/mutants-test
   script/tag-edge-test
   script/deploy-staging-test
+  script/deploy-production-test
   script/staging-status-test
   script/ci-workflow-test
   script/edge-workflow-test

@@ -223,7 +223,7 @@ for (const name of ['client', 'host']) {
 const privateKey = fs.readFileSync(path.join(keys, 'client'), 'utf8');
 const publicKey = fs.readFileSync(path.join(keys, 'client.pub'), 'utf8').split(' ').slice(0, 2).join(' ');
 const hostKey = fs.readFileSync(path.join(keys, 'host.pub'), 'utf8').split(' ').slice(0, 2).join(' ');
-const account = 'skald-deploy';
+const account = os.userInfo().username;
 const address = '203.0.113.71';
 const port = '2201';
 const secrets = {

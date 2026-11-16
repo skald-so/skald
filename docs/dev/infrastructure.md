@@ -184,7 +184,6 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Until `production` is set up, the job is skipped: a release deploys nothing and does not fail.
 - **Deployment:**
   - Docker Compose + Caddy; Caddy obtains TLS automatically;
-  - production rollout requires manual approval in GitHub Environments;
   - a server refuses a database that a newer server migrated, so a rollback restores the backup from before the upgrade; self-hosted: [Rollback](../self-host.md#rollback);
   - short downtime during a deploy is acceptable: clients reconnect and catch up from the cursor. Zero-downtime deploys (Kamal) later, if needed.
 - **Monitoring:** Prometheus, Grafana, Sentry, uptime checks, status page.
