@@ -16,10 +16,14 @@
 #   the verifications: the release is immutable; every file of the release matches its checksum, if
 #     it has one, and has an attestation of the release workflow at the tag; the image of the
 #     release's version is signed with cosign by that workflow at that tag and has its attestation;
-#     the npm package has its provenance and is under the dist-tag latest, or next for a beta.
+#     the npm package has its provenance and is under the dist-tag latest, or next for a beta;
+#     the web app's archive, skald-web.tar.gz, matches its checksum and its attestation file,
+#     skald-web.tar.gz.sigstore.json, the attestation's own bundle. Releases up to the last one
+#     without it, those published before it or, when GitHub does not list it, of a lower version,
+#     report it as skipped.
 # It runs every step and exits 0 only if all of them pass. A failed step prints a line
 # `release-check: <step>: failed: <why>`, <step> the installer, npx, skald update, immutable, the
-# file's name, the image, provenance or dist-tag.
+# file's name, skald-web.tar.gz for any of the web app's files, the image, provenance or dist-tag.
 # It needs bash, curl, jq, Node.js 22.11 or later with npm and npx, and gh signed in to GitHub; the
 # verifications also need gh 2.97.0 or later, cosign and docker with buildx.
 # Usage: script/release-check [<tag>]: the release <tag>, vX.Y.Z or vX.Y.Z-beta.N; with none, or an
@@ -121,6 +125,23 @@ beta=false
 [[ $tag != *-* ]] || beta=true
 # The release published before it, if any.
 earlier=$(awk -v tag="$tag" '$0 == tag { print previous; exit } { previous = $0 }' "$tmp/releases")
+
+# The web app's archive, from the first release published after the last one without it.
+web=skald-web.tar.gz
+web_last=v0.1.0
+# version_key <tag>: a key that sorts release tags by version, a beta before its release.
+version_key() {
+  [[ $1 =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-beta\.([0-9]+))?$ ]]
+  printf '%010d.%010d.%010d.%010d' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[5]:-9999999999}"
+}
+web_after=
+if grep -qxF "$web_last" "$tmp/releases"; then
+  web_after=$(awk -v tag="$tag" -v last="$web_last" '$0 == last { found = 1 } $0 == tag { print (found && $0 != last) ? "true" : "false"; exit }' "$tmp/releases")
+fi
+if [[ -z $web_after ]]; then
+  web_after=false
+  if [[ $(version_key "$tag") > $(version_key "$web_last") ]]; then web_after=true; fi
+fi
 
 # install <tag> <dir> <step>: the installer of the release <tag> installs skald into <dir>, which
 # then prints that release's version; <step> names a failure. On Windows the user's PATH in the
@@ -247,18 +268,30 @@ if $verify; then
   # Every file of the release, as a user downloads it.
   mkdir "$tmp/files"
   json '.assets[].name' "$tmp/release.json" >"$tmp/names"
+  if $web_after; then
+    for name in "$web" "$web.sha256" "$web.sigstore.json"; do
+      : >"$tmp/output"
+      grep -qxF "$name" "$tmp/names" || fail "$web" "the release has no $name"
+    done
+  else
+    echo "release-check: $web: skipped: $tag is no later than $web_last, the last release without it"
+  fi
   while IFS= read -r name; do
     file=$tmp/files/$name
+    step=$name
+    [[ $name != "$web"* ]] || step=$web
     : >"$tmp/output"
     if ! download "$releases_url/$tag/$name" "$file" 2>"$tmp/output"; then
-      fail "$name" "cannot download $releases_url/$tag/$name"
+      fail "$step" "cannot download $releases_url/$tag/$name"
       rm -f "$file"
       continue
     fi
+    # The attestation file is checked with the archive below.
+    [[ $name != "$web.sigstore.json" ]] || continue
     if [[ $name == *.sha256 ]]; then
       checked=$tmp/files/${name%.sha256}
       if ! grep -qxF "${name%.sha256}" "$tmp/names"; then
-        fail "$name" "the release has no ${name%.sha256}, the file it is the checksum of"
+        fail "$step" "the release has no ${name%.sha256}, the file it is the checksum of"
         continue
       fi
       # The checked file is downloaded first: it sorts before its checksum. One that failed to
@@ -276,9 +309,19 @@ if $verify; then
     if run gh attestation verify "$file" "${verified[@]}"; then
       passed "$name"
     else
-      fail "$name" "it has no attestation of $workflow at refs/tags/$tag"
+      fail "$step" "$name has no attestation of $workflow at refs/tags/$tag"
     fi
   done < <(sort "$tmp/names")
+
+  # The web app's archive against its attestation file.
+  if $web_after && [[ -f $tmp/files/$web && -f $tmp/files/$web.sigstore.json ]]; then
+    if run cosign verify-blob-attestation "$tmp/files/$web" --bundle "$tmp/files/$web.sigstore.json" --type slsaprovenance1 \
+      --certificate-identity "https://github.com/$workflow@refs/tags/$tag" --certificate-oidc-issuer "$issuer"; then
+      passed "$web.sigstore.json"
+    else
+      fail "$web" "$web.sigstore.json is no attestation of it by $workflow at refs/tags/$tag"
+    fi
+  fi
 
   # The image of the version, by its digest.
   if ! run docker buildx imagetools inspect "$image:$version" --format '{{json .Manifest}}'; then
