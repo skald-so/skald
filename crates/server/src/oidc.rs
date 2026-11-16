@@ -421,7 +421,7 @@ pub(crate) fn bare_url(text: &str, what: &str) -> Result<Url, String> {
 }
 
 /// `text` as a provider's URL: https, or http on a loopback address.
-fn provider_url(text: &str) -> Result<Url, String> {
+pub(crate) fn provider_url(text: &str) -> Result<Url, String> {
     let url = Url::parse(text).map_err(|err| format!("not a URL: {err}"))?;
     let loopback = match url.host() {
         Some(Host::Ipv4(ip)) => ip.is_loopback(),

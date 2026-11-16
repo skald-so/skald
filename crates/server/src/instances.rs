@@ -18,6 +18,7 @@ use tokio::sync::watch;
 use crate::DATABASE_TIMEOUT;
 use crate::connections::Connections;
 use crate::delivery::Wakers;
+use crate::error_reports;
 use crate::notices::Notices;
 
 /// The channel the instances notify each other on, and the statement that listens on it.
@@ -160,7 +161,8 @@ pub(crate) async fn listen(instance: Instance, local: Local) {
                 }
             }
             Err(err) => {
-                eprintln!("skald-server: cannot listen to the other instances: {err}");
+                let cause = error_reports::logged("listen to the other instances", &err);
+                error_reports::report(&cause, None);
                 tokio::time::sleep(RETRY).await;
             }
         }
@@ -231,7 +233,10 @@ async fn act(instance: &Instance, local: &Local, payload: &str) {
             instance.record(space, revision);
             match members(&local.db, space, revision).await {
                 Ok(accounts) => local.notices.notify(accounts, space),
-                Err(err) => eprintln!("skald-server: cannot read a revision's members: {err}"),
+                Err(err) => {
+                    let cause = error_reports::logged("read a revision's members", &err);
+                    error_reports::report(&cause, None);
+                }
             }
         }
         Event::SessionEnded(session) => local.connections.end_session(&session),
