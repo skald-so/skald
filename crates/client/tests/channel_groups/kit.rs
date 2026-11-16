@@ -3,9 +3,9 @@
 //! the warnings show.
 
 use std::collections::BTreeSet;
+use std::fmt::Display;
+use std::path::{Path, PathBuf};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 use skald_crypto::{ChannelView, accept_next};
 use skald_proto::{
@@ -13,11 +13,11 @@ use skald_proto::{
     Unknown,
 };
 
-use crate::cloud::Cloud;
+use crate::cloud::{Cloud, b64, unb64};
 use crate::machine::{Finished, Machine};
 use crate::world::{
-    CHANNELS, CREATE_SPACE, Person, next_with, plain_lines, post_as, run, space_certs, space_id,
-    store, warnings, words,
+    ADD_RULE, AGENT, CHANNELS, CLIENT_A, CREATE_SPACE, Person, dir_of, lines_naming, next_with,
+    path, post_as, run, space_certs, space_id, store, warnings, words,
 };
 
 /// The command of a run that connects and goes through the mailbox.
@@ -35,6 +35,37 @@ pub fn received(machine: &Machine) -> Finished {
     let finished = run(machine, &[RECV]);
     assert!(finished.success, "{finished:?}");
     finished
+}
+
+/// Binds `~/work/clientA` on `machine` to `clienta`; fails unless the binding succeeds. Gives the
+/// folder.
+#[track_caller]
+pub fn bind_client_a(machine: &Machine) -> PathBuf {
+    let folder = dir_of(machine, "work/clientA");
+    let bound = run(machine, &[ADD_RULE, path(&folder), CLIENT_A]);
+    assert!(bound.success, "not bound: {bound:?}");
+    folder
+}
+
+/// Runs `skald --agent <agent> recv` on `machine` in `folder`; fails unless it succeeds.
+#[track_caller]
+pub fn received_as_agent(machine: &Machine, folder: &Path, agent: &str) -> Finished {
+    let finished = machine.start_in(folder, &[AGENT, agent, RECV]).finish();
+    assert!(finished.success, "{finished:?}");
+    finished
+}
+
+/// Fails if the output of `agent`, a run as an agent, names one of `names`, in any case.
+#[track_caller]
+pub fn assert_names_none(agent: &Finished, names: &[String]) {
+    let shown = agent.shown().to_lowercase();
+    let named: Vec<&String> = (names.iter())
+        .filter(|name| shown.contains(&name.to_lowercase()))
+        .collect();
+    assert!(
+        named.is_empty(),
+        "the agent's output names {named:?}: {agent:?}"
+    );
 }
 
 /// Runs `skald channels <space>` on `machine`; fails unless it succeeds.
@@ -334,6 +365,28 @@ pub fn assert_members(members: &[DeviceId], devices: &[DeviceId]) {
     assert_eq!(held, expected, "the group's member devices");
 }
 
+/// The path of `channel`'s GroupInfo in `space`.
+pub fn group_info_path(space: SpaceId, channel: ChannelId) -> String {
+    format!("/spaces/{space}/channels/{channel}/group-info")
+}
+
+/// What the server gives the session `token` of `at`'s channel's group: whether the channel has
+/// one, and the bytes of its GroupInfo of the current epoch, if the server has one.
+#[track_caller]
+pub fn group_info_on_server(
+    cloud: &Cloud,
+    token: &str,
+    (space, channel): (SpaceId, ChannelId),
+) -> (bool, Option<Vec<u8>>) {
+    let path = group_info_path(space, channel);
+    let (status, body) = cloud.get_as(&path, token);
+    assert_eq!(status, 200, "GET {path}: {body}");
+    let has = body["group"]
+        .as_bool()
+        .unwrap_or_else(|| panic!("GET {path}: {body}"));
+    (has, body["group_info"].as_str().map(unb64))
+}
+
 /// What the server gives the session `token` of `channel`'s group: whether the channel has one, and
 /// its GroupInfo of the current epoch, if the server has one, as the group it shows.
 #[track_caller]
@@ -343,16 +396,8 @@ pub fn group_on_server(
     space: SpaceId,
     channel: ChannelId,
 ) -> (bool, Option<Group>) {
-    let path = format!("/spaces/{space}/channels/{channel}/group-info");
-    let (status, body) = cloud.get_as(&path, token);
-    assert_eq!(status, 200, "GET {path}: {body}");
-    let has = body["group"]
-        .as_bool()
-        .unwrap_or_else(|| panic!("GET {path}: {body}"));
-    let group = body["group_info"].as_str().map(|text| {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(text)
-            .unwrap_or_else(|err| panic!("a GroupInfo in base64url: {err}"));
+    let (has, group_info) = group_info_on_server(cloud, token, (space, channel));
+    let group = group_info.map(|bytes| {
         let view = ChannelView::observe(channel, &bytes)
             .unwrap_or_else(|err| panic!("a GroupInfo of the channel: {err:?}"));
         Group {
@@ -385,8 +430,8 @@ pub fn upload_group_info(
         .http_status_as_error(false)
         .proxy(None)
         .build();
-    let url = format!("{}/spaces/{space}/channels/{channel}/group-info", cloud.url);
-    let body = json!({ "group_info": URL_SAFE_NO_PAD.encode(group_info) }).to_string();
+    let url = format!("{}{}", cloud.url, group_info_path(space, channel));
+    let body = json!({ "group_info": b64(group_info) }).to_string();
     ureq::Agent::new_with_config(config)
         .put(&url)
         .header("authorization", format!("Bearer {token}"))
@@ -403,11 +448,7 @@ pub fn upload_group_info(
 
 /// The lines of `listed` but its warnings that hold `channel`'s ID as a word.
 pub fn lines_of(listed: &Finished, channel: ChannelId) -> Vec<String> {
-    let id = channel.to_string();
-    plain_lines(listed)
-        .into_iter()
-        .filter(|line| words(line).contains(&id.as_str()))
-        .collect()
+    lines_naming(listed, &channel.to_string())
 }
 
 /// `channel`'s one line in `listed`.
@@ -451,31 +492,13 @@ pub fn assert_listed_not_in(listed: &Finished, channel: ChannelId, without: &[&s
     }
 }
 
-/// The warning lines of `finished` that hold `device`'s ID.
-pub fn warnings_naming(finished: &Finished, device: DeviceId) -> Vec<String> {
-    let id = device.to_string();
+/// The warning lines of `finished` that hold `id`, such as a device's or a channel's ID.
+pub fn warnings_naming(finished: &Finished, id: impl Display) -> Vec<String> {
+    let id = id.to_string();
     warnings(finished)
         .into_iter()
         .filter(|line| line.contains(&id))
         .collect()
-}
-
-/// From now on, the first answer the relay gives to a request for `space`'s revisions holds only
-/// its first `keep`, as a device that fetched them before the others were stored sees them.
-pub fn stale_once(cloud: &Cloud, space: SpaceId, keep: usize) {
-    let first = std::sync::atomic::AtomicBool::new(true);
-    let request = crate::world::revisions_request(space);
-    cloud.relay.rewrite(&request, move |answer| {
-        if !first.swap(false, std::sync::atomic::Ordering::SeqCst) {
-            return answer.to_owned();
-        }
-        let mut held: serde_json::Value =
-            serde_json::from_str(answer).expect("the server's revisions");
-        if let Some(list) = held["revisions"].as_array_mut() {
-            list.truncate(keep);
-        }
-        held.to_string()
-    });
 }
 
 /// From now on, the relay says `channel` has no group yet to every request for its GroupInfo, as a
@@ -498,7 +521,7 @@ pub fn tell_groups(cloud: &Cloud, space: SpaceId, channel: ChannelId) {
 
 /// The request for `channel`'s GroupInfo, as its line starts.
 pub fn group_info_request(space: SpaceId, channel: ChannelId) -> String {
-    format!("GET /spaces/{space}/channels/{channel}/group-info")
+    format!("GET {}", group_info_path(space, channel))
 }
 
 /// The request that hands out KeyPackages, as its line starts.
@@ -507,7 +530,7 @@ pub const HAND_OUT: &str = "POST /key-packages ";
 /// From now on, the relay gives `swapped` in place of each KeyPackage of `device` the server hands
 /// out, as a compromised server would.
 pub fn swap_key_packages(cloud: &Cloud, device: DeviceId, swapped: &[u8]) {
-    let (device, swapped) = (device.to_string(), URL_SAFE_NO_PAD.encode(swapped));
+    let (device, swapped) = (device.to_string(), b64(swapped));
     cloud.relay.rewrite(HAND_OUT, move |answer| {
         let mut held: serde_json::Value =
             serde_json::from_str(answer).expect("the KeyPackages handed out");

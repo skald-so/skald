@@ -9,11 +9,11 @@ use crate::fixtures::cert_of;
 use crate::joins::{assert_joined, group_info_bytes, kept, outside, serve_group_info};
 use crate::kit::{
     Change, assert_listed_not_in, channels, group, issue_channel, latest, received, revise,
-    rosters, stale_once, tell_groups, warnings_naming,
+    rosters, tell_groups, warnings_naming,
 };
 use crate::played::{mls_envelope, stranger, take_key_package, welcome_from};
 use crate::talk::{Talk, commit_sent};
-use crate::world::{ACME, now, warnings};
+use crate::world::{ACME, now, stale_once, warnings};
 
 /// Bob's device commits an empty Commit after the GroupInfo of epoch 1, which the relay keeps
 /// giving. Ada's `skald recv` sends an external Commit of epoch 1, which the server refuses with

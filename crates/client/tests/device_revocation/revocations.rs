@@ -6,8 +6,6 @@
 use std::fs;
 use std::path::Path;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 use skald_crypto::{SigningKey, sign_revocation};
 use skald_proto::{
@@ -15,10 +13,10 @@ use skald_proto::{
 };
 
 use crate::browser::Browser;
-use crate::cloud::Cloud;
+use crate::cloud::{Cloud, b64, unb64};
 use crate::fixtures::{Issuer, Keyed, add_device, hex};
 use crate::machine::{FIRST_DEVICE, Finished, Machine, NO};
-use crate::world::{Person, devices_request, handle_of, now, plain_lines, post_as, run, words};
+use crate::world::{Person, devices_request, handle_of, lines_naming, now, post_as, run};
 
 /// The command that revokes a device, and what the CLI says of a revoked device.
 pub const REVOKE_DEVICE: &str = "revoke-device";
@@ -71,7 +69,7 @@ pub fn broken(revocation: &Revocation) -> Revocation {
 /// as new.
 #[track_caller]
 pub fn store_revocation(cloud: &Cloud, token: &str, revocation: &Revocation) {
-    let request = json!({ "revocation": URL_SAFE_NO_PAD.encode(revocation.to_cbor()) });
+    let request = json!({ "revocation": b64(&revocation.to_cbor()) });
     let (status, body) = post_as(cloud, token, "/account/revocations", Some(&request));
     assert_eq!(status, 201, "the revocation is not stored: {body}");
 }
@@ -95,9 +93,7 @@ fn revocations_in(answer: &Value) -> Vec<Revocation> {
         .unwrap_or_else(|| panic!("no revocations in {answer}"))
         .iter()
         .map(|text| {
-            let bytes = URL_SAFE_NO_PAD
-                .decode(text.as_str().expect("a revocation in base64url"))
-                .expect("a revocation in base64url");
+            let bytes = unb64(text.as_str().expect("a revocation in base64url"));
             Revocation::from_cbor(&bytes).expect("a revocation")
         })
         .collect()
@@ -233,7 +229,7 @@ pub fn hide_revocations(cloud: &Cloud, space: SpaceId) {
 pub fn add_revocations(cloud: &Cloud, space: SpaceId, added: &[Revocation]) {
     let added: Vec<Value> = added
         .iter()
-        .map(|revocation| json!(URL_SAFE_NO_PAD.encode(revocation.to_cbor())))
+        .map(|revocation| json!(b64(&revocation.to_cbor())))
         .collect();
     change_revocations(cloud, space, move |list| list.extend(added.iter().cloned()));
 }
@@ -264,14 +260,6 @@ fn copy_dir(from: &Path, to: &Path) {
             fs::copy(entry.path(), &target).expect("copy a machine's file");
         }
     }
-}
-
-/// The lines of `shown` but its warnings that hold `name` as a word.
-pub fn lines_naming(shown: &Finished, name: &str) -> Vec<String> {
-    plain_lines(shown)
-        .into_iter()
-        .filter(|line| words(line).contains(&name))
-        .collect()
 }
 
 /// Fails unless `shown`, what `skald devices` or `skald members` showed, lists the device named

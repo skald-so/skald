@@ -1409,7 +1409,12 @@ pub(crate) mod tests {
     }
 
     /// The certificate of the device of `key` on `account`, named `name`, signed by `master`.
-    fn cert(account: AccountId, master: &SigningKey, key: &SigningKey, name: &str) -> Cert {
+    pub(crate) fn cert(
+        account: AccountId,
+        master: &SigningKey,
+        key: &SigningKey,
+        name: &str,
+    ) -> Cert {
         let body = skald_proto::CertBody {
             account,
             device: DeviceId::from_signing_key(&key.public_key()),
@@ -1673,22 +1678,25 @@ pub(crate) mod tests {
             let handle = format!("m{}", &account.to_string()[24..]);
             body.members.push(member(*account, &handle, [4; 32]));
         }
-        body.channels = channels
-            .iter()
-            .map(|(id, accounts)| Channel {
-                id: *id,
-                members: accounts
-                    .iter()
-                    .map(|&account| ChannelMember {
-                        account,
-                        history: true,
-                    })
-                    .collect(),
-                services: Vec::new(),
-                unknown: Unknown::default(),
-            })
+        body.channels = (channels.iter())
+            .map(|(id, accounts)| channel(*id, accounts))
             .collect();
         body
+    }
+
+    /// The channel `id` with `accounts` as its members, each with `history` true.
+    pub(crate) fn channel(id: ChannelId, accounts: &[AccountId]) -> Channel {
+        Channel {
+            id,
+            members: (accounts.iter())
+                .map(|&account| ChannelMember {
+                    account,
+                    history: true,
+                })
+                .collect(),
+            services: Vec::new(),
+            unknown: Unknown::default(),
+        }
     }
 
     /// Bars `device` of `account` in `body`.

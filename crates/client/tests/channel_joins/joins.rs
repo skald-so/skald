@@ -17,13 +17,16 @@ use skald_crypto::{MlsDevice, StateKey};
 use skald_github_stand_in::User;
 use skald_proto::{Cert, ChannelId, DeviceId, RawEnvelope, Role, SpaceId};
 
-use crate::cloud::{Cloud, unb64};
+use crate::cloud::{Cloud, b64};
 use crate::fixtures::{Issuer, Keyed, add_device, hex};
-use crate::kit::{Change, group_info_request, issue_channel, latest, revise};
+use crate::kit::{
+    Change, group_info_on_server, group_info_request, issue_channel, latest, revise,
+    warnings_naming,
+};
 use crate::machine::{Finished, Machine};
-use crate::played::{Played, mls_envelope};
-use crate::talk::{Talk, without_key_packages};
-use crate::world::{Person, now, warnings};
+use crate::played::{Played, mls_envelope, without_key_packages};
+use crate::talk::Talk;
+use crate::world::{Person, now};
 
 /// What the CLI's warning says when a Commit removed the device from a channel's group while it
 /// was admitted.
@@ -149,16 +152,10 @@ pub fn intruder_joins(cloud: &Cloud, intruder: &Intruder, at: (SpaceId, ChannelI
 /// The bytes of the GroupInfo of `at`'s channel the server holds of its current epoch, for the
 /// session `token`; fails unless it holds one.
 #[track_caller]
-pub fn group_info_bytes(
-    cloud: &Cloud,
-    token: &str,
-    (space, channel): (SpaceId, ChannelId),
-) -> Vec<u8> {
-    let path = format!("/spaces/{space}/channels/{channel}/group-info");
-    let (status, body) = cloud.get_as(&path, token);
-    match (status, body["group_info"].as_str()) {
-        (200, Some(text)) => unb64(text),
-        _ => panic!("no GroupInfo of {channel}: {status} {body}"),
+pub fn group_info_bytes(cloud: &Cloud, token: &str, at: (SpaceId, ChannelId)) -> Vec<u8> {
+    match group_info_on_server(cloud, token, at) {
+        (_, Some(group_info)) => group_info,
+        other => panic!("no GroupInfo of {}: {other:?}", at.1),
     }
 }
 
@@ -187,15 +184,10 @@ pub fn forked_group_info(signer: &Person, channel: ChannelId, listed: &Intruder)
 pub fn serve_group_info(cloud: &Cloud, (space, channel): (SpaceId, ChannelId), group_info: &[u8]) {
     let answer = json!({
         "group": true,
-        "group_info": base64_url(group_info),
+        "group_info": b64(group_info),
     })
     .to_string();
     (cloud.relay).rewrite(&group_info_request(space, channel), move |_| answer.clone());
-}
-
-fn base64_url(bytes: &[u8]) -> String {
-    use base64::Engine as _;
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// `played` commits `commit`, which it made in `at`'s channel's group; once the server stores it,
@@ -226,10 +218,8 @@ pub fn drop_entry(cloud: &Cloud, device: DeviceId, envelope: &RawEnvelope) {
 
 /// The warning lines of `finished` that say a Commit removed the device from `channel`'s group.
 pub fn removal_warnings(finished: &Finished, channel: ChannelId) -> Vec<String> {
-    let channel = channel.to_string();
-    warnings(finished)
-        .into_iter()
-        .filter(|line| line.contains(REMOVED) && line.contains(&channel))
+    (warnings_naming(finished, channel).into_iter())
+        .filter(|line| line.contains(REMOVED))
         .collect()
 }
 
