@@ -160,7 +160,7 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE inbox ADD COLUMN opened BLOB;",
     // Gap detection: per channel, sending device and scheme (1 `mls`, 2 `hpke`), the counters the
     // device accepted, as `gaps::Counters` encodes them, with the `seq` of the entry it last
-    // accepted; and the `seq` of the Welcome by which the device last joined each channel's group.
+    // accepted; and the `seq` of each Welcome by which the device joined a channel's group.
     // From now on `received` holds only messages without `counter`.
     "CREATE TABLE received_counter (
         channel TEXT NOT NULL,
@@ -171,8 +171,9 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (channel, sender, scheme)
     ) STRICT;
     CREATE TABLE channel_joined (
-        channel TEXT PRIMARY KEY,
-        seq INTEGER NOT NULL CHECK (seq >= 1)
+        channel TEXT NOT NULL,
+        seq INTEGER NOT NULL CHECK (seq >= 1),
+        PRIMARY KEY (channel, seq)
     ) STRICT;",
 ];
 
@@ -614,7 +615,7 @@ impl State {
             for (channel, seq) in &changes.joined {
                 tx.execute(
                     "INSERT INTO channel_joined (channel, seq) VALUES (?1, ?2)
-                     ON CONFLICT DO UPDATE SET seq = excluded.seq",
+                     ON CONFLICT DO NOTHING",
                     params![channel.to_string(), sql_seq(*seq)?],
                 )?;
             }
@@ -1032,16 +1033,13 @@ impl State {
             return Ok(None);
         };
         if source.scheme == Scheme::Mls {
-            let joined: Option<i64> = self
-                .db
-                .query_row(
-                    "SELECT seq FROM channel_joined WHERE channel = ?1",
-                    params![channel],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let seq = sql_seq(seq)?;
-            if joined.is_some_and(|joined| accepted < joined && joined < seq) {
+            let joined: bool = self.db.query_row(
+                "SELECT EXISTS (SELECT 1 FROM channel_joined
+                 WHERE channel = ?1 AND seq > ?2 AND seq < ?3)",
+                params![channel, accepted, sql_seq(seq)?],
+                |row| row.get(0),
+            )?;
+            if joined {
                 return Ok(None);
             }
         }
@@ -1868,7 +1866,21 @@ pub(crate) mod tests {
         assert_eq!(state.counters(&mls, 6).unwrap(), None);
         assert_eq!(state.counters(&hpke, 6).unwrap(), Some(Counters::default()));
         state.shown_counted(6, &mls, &kept).unwrap();
+        assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept.clone()));
+
+        // Two Welcomes after the entry last accepted: an entry between them follows the first.
+        state
+            .mls_change(|_| {
+                let joined = MlsChanges {
+                    joined: vec![(channel, 8), (channel, 12)],
+                    ..MlsChanges::default()
+                };
+                Ok((None, joined, ()))
+            })
+            .unwrap();
         assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept));
+        assert_eq!(state.counters(&mls, 9).unwrap(), None);
+        assert_eq!(state.counters(&mls, 13).unwrap(), None);
     }
 
     #[test]
