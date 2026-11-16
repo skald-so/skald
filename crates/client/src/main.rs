@@ -11,6 +11,7 @@ mod follow;
 mod gaps;
 mod groups;
 mod key_packages;
+mod lock;
 mod plain_path;
 mod recv;
 mod revocations;
@@ -54,7 +55,8 @@ struct Cli {
     )]
     protocol_versions: Option<VersionRange>,
 
-    /// How long a request to the server may take, in seconds, for tests [default: 30].
+    /// How long a request to the server, and the wait for the local state's lock, may take, in
+    /// seconds, for tests [default: 30].
     #[arg(
         long,
         env = "SKALD_TIMEOUT",
@@ -345,6 +347,22 @@ impl Command {
             _ => None,
         }
     }
+
+    /// Whether the run takes the local state's lock before the command, for the whole run, as one
+    /// that may change the local state does: `None` if not; otherwise whether it creates a missing
+    /// state directory.
+    fn locks(&self) -> Option<bool> {
+        match self {
+            Command::Status { .. }
+            | Command::Rules
+            | Command::Folder { .. }
+            | Command::Update { .. } => None,
+            // It takes the lock once its server's URL passes: a refused one leaves no file.
+            Command::SignIn { .. } => None,
+            Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
+            _ => Some(false),
+        }
+    }
 }
 
 /// A member of a space in a channel of it, as a command names them.
@@ -393,6 +411,13 @@ fn main() -> ExitCode {
     {
         return exit(Err(agents::person_only(command)));
     }
+    // Held until the run exits.
+    let _lock = match cli.command.locks().map(|create| {
+        state::dir(cli.state_dir.clone()).and_then(|dir| lock::take(&dir, create, timeout))
+    }) {
+        Some(Err(err)) => return exit(Err(err)),
+        taken => taken,
+    };
     match cli.command {
         Command::Status { server } => status(&server, speaks, timeout),
         Command::SignIn {
@@ -416,6 +441,7 @@ fn main() -> ExitCode {
             let result = state::dir(cli.state_dir).and_then(|dir| {
                 let mut connection =
                     Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
+                let _lock = lock::take(&dir, true, timeout)?;
                 sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())?;
                 // An agent's run takes nothing of another space than its folder's.
                 if agent.is_none() {

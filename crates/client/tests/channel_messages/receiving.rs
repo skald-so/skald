@@ -7,10 +7,10 @@ use skald_proto::{ChannelId, DeviceId, MessageId, Role, SpaceId};
 use crate::fixtures::{cert_of, send};
 use crate::kit::{Change, create_space, issue_channel, latest, received, revise, warnings_naming};
 use crate::machine::Finished;
-use crate::played::take_key_package;
+use crate::played::{take_key_package, without_key_packages};
 use crate::talk::{
     BOB_HOST, CAROL_HOST, Line, Talk, assert_shows_once, encrypted, one_message_sent,
-    revisions_fail_once, sealed, stored, without_key_packages,
+    revisions_fail_once, sealed, stored,
 };
 use crate::world::{Person, now, warnings};
 
