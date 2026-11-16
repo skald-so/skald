@@ -178,26 +178,9 @@ fn channel_at(body: &RosterBody, channel: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spaces::tests::{first, member};
+    use crate::spaces::tests::{cert as certify, channel, first, member};
     use skald_crypto::SigningKey;
-    use skald_proto::{AccountId, CertBody, Channel, DeviceKind, Unknown};
-
-    /// The certificate of the device of `key` on `account`, signed by `issuer` as the master key.
-    fn certify(account: AccountId, issuer: &SigningKey, key: &SigningKey) -> Cert {
-        let body = CertBody {
-            account,
-            device: DeviceId::from_signing_key(&key.public_key()),
-            kind: DeviceKind::Client,
-            signing: key.public_key(),
-            hpke: [4; 32],
-            issuer: None,
-            issued: 1_800_000_000,
-            ssh: None,
-            name: "laptop".to_owned(),
-            unknown: Unknown::default(),
-        };
-        skald_crypto::issue(&body, issuer, key).unwrap()
-    }
+    use skald_proto::AccountId;
 
     /// Ada's `acme` with Bob a member, its default channel with both and a channel with Ada; the
     /// certificate of a device of Bob's, chained to Bob's master key, and that device's key; Ada's
@@ -208,20 +191,12 @@ mod tests {
         let mut body = first(ada).body().clone();
         body.members
             .push(member(bob, "bob", bob_master.public_key()));
-        let channel = |accounts: &[AccountId]| Channel {
-            id: ChannelId::generate(),
-            members: (accounts.iter())
-                .map(|&account| ChannelMember {
-                    account,
-                    history: true,
-                })
-                .collect(),
-            services: Vec::new(),
-            unknown: Unknown::default(),
-        };
-        body.channels = vec![channel(&[ada, bob]), channel(&[ada])];
+        body.channels = vec![
+            channel(ChannelId::generate(), &[ada, bob]),
+            channel(ChannelId::generate(), &[ada]),
+        ];
         let key = SigningKey::generate();
-        let cert = certify(bob, &bob_master, &key);
+        let cert = certify(bob, &bob_master, &key, "laptop");
         let own = Own {
             account: ada,
             master: SigningKey::generate().public_key(),
@@ -375,10 +350,12 @@ mod tests {
         };
         let made_up = SigningKey::generate();
         // The server holds the device's public key but not its private one.
-        let mut without_proof = certify(ada.account, &made_up, &made_up).body().clone();
+        let mut without_proof = certify(ada.account, &made_up, &made_up, "laptop")
+            .body()
+            .clone();
         (without_proof.device, without_proof.signing) = (device, key.public_key());
         let without_proof = skald_crypto::issue(&without_proof, &made_up, &made_up).unwrap();
-        let with_proof = certify(ada.account, &made_up, &key);
+        let with_proof = certify(ada.account, &made_up, &key, "laptop");
 
         let mut edited = body.clone();
         let certs = [without_proof, cert.clone()];
@@ -398,7 +375,7 @@ mod tests {
 
         let master = SigningKey::generate();
         ada.master = master.public_key();
-        let laptop = certify(ada.account, &master, &SigningKey::generate());
+        let laptop = certify(ada.account, &master, &SigningKey::generate(), "laptop");
         let mut edited = body.clone();
         let bar = Edit::Exclude(laptop.body().device.to_string());
         make(

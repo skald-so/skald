@@ -63,7 +63,7 @@
 - Outbound HTTPS on 443 only; `HTTPS_PROXY` is supported.
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
-- Push over WebSocket; SSE and long-poll are fallbacks.
+- Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default.
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
   - a notification names a mailbox with new entries, a stored roster revision, an ended session or a revoked device, never an envelope;
   - an instance takes no device connection before it first listens;
@@ -103,7 +103,7 @@
   - formats: [protocol spec](../protocol/membership.md#history).
 - **Signatures:** Ed25519.
 - **Key storage:** Keychain, the Secret Service or Windows Credential Manager; otherwise a file in the state directory, with 0600 permissions on Unix; on Windows it has the access rights it inherits from the directory.
-- **Local state:** SQLite with a file lock held by the helper.
+- **Local state:** SQLite with an OS file lock, freed when its holder dies. The helper holds it while it runs; without one, a run that may change the state holds it for the run, and another waits for it up to the request timeout.
 - **MLS state:** a device's groups, KeyPackages' private keys and history keys are stored only sealed, under a key in key storage; the store overwrites the previous sealed state and deletes it securely, so no older one is kept. A message the device decrypted waits sealed under the same key until a run shows it.
 - What the server sees: [threat model](../threat-model.md#the-server-sees); what it does not see: [threat model](../threat-model.md#the-server-does-not-see); trade-offs: [threat model](../threat-model.md#trade-offs).
 
