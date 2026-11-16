@@ -27,7 +27,7 @@
 //! - `skald remove-member <space> <handle>` removes the member from the space and from every
 //!   channel;
 //! - `skald exclude-device <space> <device>`, the device's ID, adds the device to its member's
-//!   `excluded`;
+//!   `excluded`, the member whose master key the device's certificate chains to;
 //! - `skald add-to-channel <space> <channel> <handle> --history yes|no`, the channel's ID, adds a
 //!   member of the space to the channel with `history` as given;
 //! - `skald remove-from-channel <space> <channel> <handle>` removes the member from the channel; for
@@ -43,6 +43,7 @@
 mod adding;
 mod copy;
 mod edits;
+mod forged;
 mod lost;
 mod refusals;
 

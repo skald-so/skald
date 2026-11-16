@@ -844,19 +844,14 @@ impl Change {
     /// removes no member from the default channel, the first one, which keeps every member; and
     /// it puts its default channel first, with every member, only if `needs_default`.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
+        // A change that would leave no member removes none.
+        let _ = remove_members(body, &self.removed);
         let mut members = body.members.clone().into_vec();
-        members.retain(|member| !self.removed.contains(&member.account));
         for member in &mut members {
-            let mut barred = member
-                .excluded
-                .clone()
-                .map_or_else(Vec::new, |e| e.into_vec());
-            for (_, device) in self.excluded.iter().filter(|(of, _)| *of == member.account) {
-                if !barred.contains(device) {
-                    barred.push(*device);
-                }
+            let account = member.account;
+            for (_, device) in self.excluded.iter().filter(|(of, _)| *of == account) {
+                exclude(member, *device);
             }
-            member.excluded = NonEmpty::from_vec(barred);
         }
         if let Some(members) = NonEmpty::from_vec(members) {
             body.members = members;
@@ -885,6 +880,36 @@ impl Change {
         }
         body.channels = channels;
     }
+}
+
+/// Removes the members of `accounts` from `body`, a revision's body, and from each of its channels;
+/// fails, changing nothing, if no member would be left.
+pub fn remove_members(body: &mut RosterBody, accounts: &[AccountId]) -> Result<(), String> {
+    let members: Vec<Member> = (body.members.iter())
+        .filter(|member| !accounts.contains(&member.account))
+        .cloned()
+        .collect();
+    body.members = NonEmpty::from_vec(members).ok_or("the space keeps a member")?;
+    for channel in &mut body.channels {
+        channel
+            .members
+            .retain(|entry| !accounts.contains(&entry.account));
+    }
+    Ok(())
+}
+
+/// Adds `device` to `member`'s `excluded`; false if it lists the device already.
+pub fn exclude(member: &mut Member, device: DeviceId) -> bool {
+    let mut barred = member
+        .excluded
+        .clone()
+        .map_or_else(Vec::new, NonEmpty::into_vec);
+    if barred.contains(&device) {
+        return false;
+    }
+    barred.push(device);
+    member.excluded = NonEmpty::from_vec(barred);
+    true
 }
 
 /// Whether `roster` needs a default channel (`architecture.md`, "Membership"), the first channel

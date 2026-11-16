@@ -5,12 +5,12 @@
 //! channels in line with it ([`crate::groups`]): it removes the devices no longer admitted, and
 //! adds a new channel member's devices where it is a member device.
 
-use skald_proto::{
-    AccountId, Cert, ChannelId, ChannelMember, DeviceId, Member, NonEmpty, RosterBody,
-};
+use skald_crypto::check_device;
+use skald_proto::{Cert, ChannelId, ChannelMember, DeviceId, Member, NonEmpty, RosterBody};
 
 use crate::connection::printable;
-use crate::spaces::{Synced, finish};
+use crate::follow::Own;
+use crate::spaces::{Synced, exclude, finish, remove_members};
 
 /// A change to a space's members, as its command names it.
 pub enum Edit {
@@ -40,8 +40,12 @@ pub fn run(synced: Synced, edit: &Edit) -> Result<(), String> {
     } = synced;
     follower.may_change(&space, &latest)?;
     let mut body = latest.body().clone();
-    let own = (follower.this, follower.own.account);
-    let done = make(&mut body, edit, own, &devices.certs)?;
+    let done = make(
+        &mut body,
+        edit,
+        (follower.this, &follower.own),
+        &devices.certs,
+    )?;
     let next = follower.next_by(&latest, |next| {
         next.members = body.members;
         next.channels = body.channels;
@@ -59,32 +63,27 @@ pub fn run(synced: Synced, edit: &Edit) -> Result<(), String> {
     Ok(())
 }
 
-/// Makes `edit` in `body`, a space's last accepted revision, on the device `this` of `account`,
-/// the devices of the space's accounts having `certs`; gives what it did, or why it does nothing.
+/// Makes `edit` in `body`, a space's last accepted revision, on the device `this` of `own`'s
+/// account, with `certs`, the certificates the server gave of the space's devices; gives what it
+/// did, or why it does nothing. A device is barred under the member whose master key its
+/// certificate chains to ([`check_device`]), the master key `own` pins for its own account.
 fn make(
     body: &mut RosterBody,
     edit: &Edit,
-    (this, own): (DeviceId, AccountId),
+    (this, own): (DeviceId, &Own),
     certs: &[Cert],
 ) -> Result<String, String> {
     let space = body.name.as_str().to_owned();
     match edit {
         Edit::RemoveMember(handle) => {
             let account = member(body, handle)?.account;
-            if account == own {
+            if account == own.account {
                 return Err(format!(
                     "{handle} is this device's own account; this device does not remove it from \
                      the space {space}"
                 ));
             }
-            let members: Vec<Member> = (body.members.iter())
-                .filter(|member| member.account != account)
-                .cloned()
-                .collect();
-            body.members = NonEmpty::from_vec(members).ok_or("the space keeps a member")?;
-            for channel in &mut body.channels {
-                channel.members.retain(|entry| entry.account != account);
-            }
+            remove_members(body, &[account])?;
             Ok(format!("Removed {handle} from the space"))
         }
         Edit::Exclude(device) => {
@@ -94,27 +93,23 @@ fn make(
             if id == this {
                 return Err("this device does not bar itself".to_owned());
             }
-            let account = certs
-                .iter()
-                .map(|cert| cert.body())
-                .find(|cert| cert.device == id && body.member(cert.account).is_some())
-                .map(|cert| cert.account)
-                .ok_or_else(|| format!("no member of the space {space} has the device {id}"))?;
             let mut members = body.members.clone().into_vec();
             let member = (members.iter_mut())
-                .find(|member| member.account == account)
-                .ok_or("the device's member is in the space")?;
-            let mut barred = member
-                .excluded
-                .clone()
-                .map_or_else(Vec::new, |e| e.into_vec());
-            if barred.contains(&id) {
+                .find(|member| {
+                    let master = if member.account == own.account {
+                        own.master
+                    } else {
+                        member.master
+                    };
+                    check_device(&master, certs, id)
+                        .is_ok_and(|cert| cert.body().account == member.account)
+                })
+                .ok_or_else(|| format!("no member of the space {space} has the device {id}"))?;
+            if !exclude(member, id) {
                 return Err(format!(
                     "the device {id} is barred from the space {space} already"
                 ));
             }
-            barred.push(id);
-            member.excluded = NonEmpty::from_vec(barred);
             let handle = member.handle.as_str().to_owned();
             body.members = NonEmpty::from_vec(members).ok_or("the space keeps a member")?;
             Ok(format!("Barred the device {id} of {handle}"))
@@ -185,14 +180,34 @@ mod tests {
     use super::*;
     use crate::spaces::tests::{first, member};
     use skald_crypto::SigningKey;
-    use skald_proto::{CertBody, Channel, DeviceKind, Unknown};
+    use skald_proto::{AccountId, CertBody, Channel, DeviceKind, Unknown};
+
+    /// The certificate of the device of `key` on `account`, signed by `issuer` as the master key.
+    fn certify(account: AccountId, issuer: &SigningKey, key: &SigningKey) -> Cert {
+        let body = CertBody {
+            account,
+            device: DeviceId::from_signing_key(&key.public_key()),
+            kind: DeviceKind::Client,
+            signing: key.public_key(),
+            hpke: [4; 32],
+            issuer: None,
+            issued: 1_800_000_000,
+            ssh: None,
+            name: "laptop".to_owned(),
+            unknown: Unknown::default(),
+        };
+        skald_crypto::issue(&body, issuer, key).unwrap()
+    }
 
     /// Ada's `acme` with Bob a member, its default channel with both and a channel with Ada; the
-    /// certificate of a device of Bob's; and the ID of Ada's device.
-    fn acme() -> (RosterBody, Cert, DeviceId) {
+    /// certificate of a device of Bob's, chained to Bob's master key, and that device's key; Ada's
+    /// account with the master key its device pinned; and the ID of Ada's device.
+    fn acme() -> (RosterBody, (Cert, SigningKey), Own, DeviceId) {
         let (ada, bob) = (AccountId::generate(), AccountId::generate());
+        let bob_master = SigningKey::generate();
         let mut body = first(ada).body().clone();
-        body.members.push(member(bob, "bob", [4; 32]));
+        body.members
+            .push(member(bob, "bob", bob_master.public_key()));
         let channel = |accounts: &[AccountId]| Channel {
             id: ChannelId::generate(),
             members: (accounts.iter())
@@ -206,29 +221,21 @@ mod tests {
         };
         body.channels = vec![channel(&[ada, bob]), channel(&[ada])];
         let key = SigningKey::generate();
-        let cert = CertBody {
-            account: bob,
-            device: DeviceId::from_signing_key(&key.public_key()),
-            kind: DeviceKind::Client,
-            signing: key.public_key(),
-            hpke: [4; 32],
-            issuer: None,
-            issued: 1_800_000_000,
-            ssh: None,
-            name: "bob-laptop".to_owned(),
-            unknown: Unknown::default(),
+        let cert = certify(bob, &bob_master, &key);
+        let own = Own {
+            account: ada,
+            master: SigningKey::generate().public_key(),
         };
-        let cert = skald_crypto::issue(&cert, &SigningKey::generate(), &key).unwrap();
-        (body, cert, DeviceId::from_signing_key(&[1; 32]))
+        (body, (cert, key), own, DeviceId::from_signing_key(&[1; 32]))
     }
 
     /// Each edit changes its member or device alone; adding to a channel keeps `history` as given.
     #[test]
     fn edits_change_their_member_alone() {
-        let (body, cert, this) = acme();
-        let (ada, bob) = (body.members[0].account, cert.body().account);
+        let (body, (cert, _), ada, this) = acme();
+        let bob = cert.body().account;
         let (default, team) = (body.channels[0].id, body.channels[1].id);
-        let own = (this, ada);
+        let own = (this, &ada);
         let certs = std::slice::from_ref(&cert);
         let edited = |edit: Edit| {
             let mut edited = body.clone();
@@ -280,8 +287,7 @@ mod tests {
     /// device.
     #[test]
     fn edits_that_do_not_apply_are_refused() {
-        let (body, cert, this) = acme();
-        let ada = body.members[0].account;
+        let (body, (cert, _), ada, this) = acme();
         let (default, team) = (
             body.channels[0].id.to_string(),
             body.channels[1].id.to_string(),
@@ -291,7 +297,7 @@ mod tests {
         make(
             &mut barred,
             &Edit::Exclude(device.to_string()),
-            (this, ada),
+            (this, &ada),
             std::slice::from_ref(&cert),
         )
         .unwrap();
@@ -324,7 +330,12 @@ mod tests {
         ];
         for (body, edit, why) in cases {
             let mut edited = body.clone();
-            let refused = make(&mut edited, &edit, (this, ada), std::slice::from_ref(&cert));
+            let refused = make(
+                &mut edited,
+                &edit,
+                (this, &ada),
+                std::slice::from_ref(&cert),
+            );
             assert!(
                 refused
                     .as_ref()
@@ -337,7 +348,7 @@ mod tests {
         let unknown = make(
             &mut edited,
             &Edit::Exclude(device.to_string()),
-            (this, ada),
+            (this, &ada),
             &[],
         );
         assert!(
@@ -345,5 +356,58 @@ mod tests {
             "{unknown:?}"
         );
         assert_eq!(edited, body);
+    }
+
+    /// A device is barred under the member its certificate chains to, Ada's own by the master key
+    /// her device pinned, whatever other certificates of it the server gives first: one on Ada's
+    /// account without the device's proof, as the server could make it, is passed over. With no
+    /// valid certificate of the device under any member, such as two of it with different bodies,
+    /// barring it is refused and changes nothing.
+    #[test]
+    fn device_is_barred_only_under_the_member_its_certificate_chains_to() {
+        let (body, (cert, key), mut ada, this) = acme();
+        let bob = cert.body().account;
+        let device = cert.body().device;
+        let bar = Edit::Exclude(device.to_string());
+        let barred_of = |body: &RosterBody, account| {
+            let member = body.member(account).unwrap();
+            member.excluded.as_deref().unwrap_or_default().to_vec()
+        };
+        let made_up = SigningKey::generate();
+        // The server holds the device's public key but not its private one.
+        let mut without_proof = certify(ada.account, &made_up, &made_up).body().clone();
+        (without_proof.device, without_proof.signing) = (device, key.public_key());
+        let without_proof = skald_crypto::issue(&without_proof, &made_up, &made_up).unwrap();
+        let with_proof = certify(ada.account, &made_up, &key);
+
+        let mut edited = body.clone();
+        let certs = [without_proof, cert.clone()];
+        make(&mut edited, &bar, (this, &ada), &certs).unwrap();
+        assert_eq!(barred_of(&edited, bob), [device]);
+        assert!(barred_of(&edited, ada.account).is_empty());
+
+        for certs in [vec![with_proof.clone()], vec![with_proof, cert]] {
+            let mut edited = body.clone();
+            let refused = make(&mut edited, &bar, (this, &ada), &certs);
+            assert!(
+                refused.as_ref().is_err_and(|err| err.contains("no member")),
+                "{refused:?}"
+            );
+            assert_eq!(edited, body);
+        }
+
+        let master = SigningKey::generate();
+        ada.master = master.public_key();
+        let laptop = certify(ada.account, &master, &SigningKey::generate());
+        let mut edited = body.clone();
+        let bar = Edit::Exclude(laptop.body().device.to_string());
+        make(
+            &mut edited,
+            &bar,
+            (this, &ada),
+            std::slice::from_ref(&laptop),
+        )
+        .unwrap();
+        assert_eq!(barred_of(&edited, ada.account), [laptop.body().device]);
     }
 }
