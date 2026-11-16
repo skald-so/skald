@@ -1629,9 +1629,9 @@ test("the screenshot command saves every view of the kit page, as the references
     await promisify(execFile)(process.execPath, ["kit-screenshots.ts", dir], {
       cwd: import.meta.dirname,
     });
-    // The kit page and the cabinet in full, the open side menu at phone width and the question over
-    // Access in the window; the sign-in page, the cabinet of an account with no space and Access
-    // fill the window.
+    // The kit page and the cabinet in full, the open side menu at phone width and the questions over
+    // Access and the Account page in the window; the sign-in page, the cabinet of an account with
+    // no space, Access and the Account page fill the window.
     const expected = [
       ["kit-light-1440.png", 1440, "Background", "light"],
       ["kit-light-360.png", 360, "Background", "light"],
@@ -1659,6 +1659,14 @@ test("the screenshot command saves every view of the kit page, as the references
       ["access-confirm-light-360.png", 360, null, "light", 900],
       ["access-confirm-dark-1440.png", 1440, null, "dark", 900],
       ["access-confirm-dark-360.png", 360, null, "dark", 900],
+      ["account-page-light-1440.png", 1440, "Side panel", "light", 900],
+      ["account-page-light-360.png", 360, "Side panel", "light", 900],
+      ["account-page-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["account-page-dark-360.png", 360, "Side panel", "dark", 900],
+      ["account-page-confirm-light-1440.png", 1440, null, "light", 900],
+      ["account-page-confirm-light-360.png", 360, null, "light", 900],
+      ["account-page-confirm-dark-1440.png", 1440, null, "dark", 900],
+      ["account-page-confirm-dark-360.png", 360, null, "dark", 900],
     ] as const;
     expect(readdirSync(dir).sort()).toEqual(
       expected.map(([file]) => file).sort(),

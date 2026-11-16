@@ -219,6 +219,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(links::list).layer(checked(Statement::Header)),
         )
         .route(
+            "/account/sign-in-methods/{method}",
+            delete(links::remove).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/username",
             put(accounts::set_username).layer(checked(Statement::Header)),
         )
