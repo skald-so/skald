@@ -43,6 +43,7 @@ mod refusals;
 mod removal;
 mod returns;
 mod reuse;
+mod signed_out;
 
 use serde_json::Value;
 use skald_github_stand_in::User;
