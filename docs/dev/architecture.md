@@ -64,6 +64,7 @@
   - an instance takes no device connection before it first listens;
   - an instance whose listening connection drops or goes silent listens again, then sends its connections what they missed;
   - each instance takes up to 11 PostgreSQL connections: 10 in its pool and 1 that listens; a replaced listening connection can stay open for a while after its replacement.
+- A server's addresses: the public address, the setting `--public-url` (`SKALD_PUBLIC_URL`), and the web address, `--web-url` (`SKALD_WEB_URL`), by default the public one. Browser sign-in is on the web address: `info` in the [OpenAPI spec](../../api/openapi.json). Devices prove their keys over the public address ([delivery](../protocol/delivery.md)), and the server's name defaults to its host. A self-hosted server leaves the web address unset.
 - Agent address: [protocol spec](../protocol/README.md#agent-address). Its `server` is the server setting `--server-name` (`SKALD_SERVER_NAME`): `getServer` in the [OpenAPI spec](../../api/openapi.json).
 
 ## Data model
