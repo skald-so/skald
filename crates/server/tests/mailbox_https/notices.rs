@@ -6,6 +6,8 @@
 
 use std::time::Instant;
 
+use skald_proto::SpaceId;
+
 use crate::fixture::Fixture;
 use crate::https::{Batch, Https, LONG, WAKE, answered_within};
 
@@ -45,13 +47,7 @@ fn a_long_poll_gets_a_notice_of_a_revision_stored_since_the_previous_answer() {
 
     f.revise(|_| {});
 
-    let notice = Batch {
-        entries: Vec::new(),
-        notices: vec![space],
-    };
-    assert_eq!(bob.poll_now(0), notice);
-    assert_eq!(bob.poll_now(0), Batch::default(), "the notice again");
-    assert_eq!(eve.poll_now(0), Batch::default(), "a notice outside acme");
+    assert_notice_once(&bob, &eve, space);
 }
 
 /// The first long-poll of bob's laptop answers a notice of `acme`, the space bob gets, and the next
@@ -66,6 +62,13 @@ fn a_devices_first_long_poll_gets_a_notice_of_each_of_its_spaces() {
     let gets: Vec<String> = t.bob.session.spaces().into_keys().collect();
     assert_eq!(gets, [space.to_string()], "the spaces bob gets");
 
+    assert_notice_once(&bob, &eve, space);
+}
+
+/// Checks that the next long-poll of `bob` answers a notice of `space` alone, the one after it
+/// none, and that the next long-poll of `eve` answers none.
+#[track_caller]
+fn assert_notice_once(bob: &Https, eve: &Https, space: SpaceId) {
     let notice = Batch {
         entries: Vec::new(),
         notices: vec![space],
