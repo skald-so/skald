@@ -545,8 +545,9 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 |---|---|
 | `malformed` | Does not decode as its kind, names another channel than its upload, or is a link whose `prev` is not below its epoch |
 | `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows |
-| `epoch-mismatch` | Is of an epoch the channel has not had; an entry, of an epoch other than the channel's current or previous one |
+| `epoch-mismatch` | Is of an epoch the channel has not had; a link or wrap, of an epoch before the channel's cutoff; an entry, of an epoch other than the channel's current or previous one |
 
+- With a history retention, the server deletes each entry stored longer ago than it. Once it has deleted an entry of an epoch, it deletes the links and wraps of every earlier epoch of the channel; that epoch becomes the channel's cutoff. Those of the cutoff and later epochs stay, whatever their age. Without a retention, it deletes none.
 - The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members: [api/openapi.json](../../api/openapi.json).
 
 ### History entry

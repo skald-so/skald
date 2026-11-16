@@ -203,6 +203,16 @@ struct Cli {
     )]
     mailbox_retention: Option<u64>,
 
+    /// How long the server keeps a channel's history entries, at most 100 years; it deletes the
+    /// links and wraps of epochs before those of the entries it deletes [default: kept for good].
+    #[arg(
+        long,
+        env = "SKALD_HISTORY_RETENTION",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=skald_server::HISTORY_LONGEST)
+    )]
+    history_retention: Option<u64>,
+
     /// The longest payload of an envelope a device sends, in bytes; a longer one is refused with
     /// too-large [default: no limit].
     #[arg(
@@ -469,6 +479,7 @@ impl Cli {
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
+            history_retention: self.history_retention.map(Duration::from_secs),
             message_size_limit: self.message_size_limit,
             monthly_messages_limit: self.monthly_messages_limit,
             devices_limit: self.devices_limit,
@@ -583,6 +594,26 @@ mod tests {
         };
         assert_eq!(retention(1), Some(Some(1)));
         let longest = skald_server::MAILBOX_LONGEST;
+        assert_eq!(retention(longest), Some(Some(longest)));
+        assert_eq!(retention(0), None);
+        assert_eq!(retention(longest + 1), None);
+    }
+
+    #[test]
+    fn the_history_retention_is_from_a_second_to_100_years() {
+        let retention = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--history-retention",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.history_retention)
+            .ok()
+        };
+        assert_eq!(retention(1), Some(Some(1)));
+        let longest = skald_server::HISTORY_LONGEST;
         assert_eq!(retention(longest), Some(Some(longest)));
         assert_eq!(retention(0), None);
         assert_eq!(retention(longest + 1), None);
