@@ -160,8 +160,9 @@ pub fn run(
 /// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the
 /// device's Commits and Welcomes that wait, writes each entry after the cursor, goes through the
 /// Welcomes and Commits, brings in line the groups of the channels of each space the run accepted
-/// the revisions of and uploads the links of their key chains the server lacks. Gives the last accepted revision of `space` and its accounts' devices, `synced`
-/// as the run synced them first, as they are then. Warns of what fails.
+/// the revisions of and uploads the links of their key chains the server lacks. Gives the last
+/// accepted revision of `space` and its accounts' devices, `synced` as the run synced them first,
+/// as they are then. Warns of what fails.
 fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
@@ -768,5 +769,16 @@ pub(crate) mod tests {
 
         assert_eq!(ids(Scope::All), messages);
         assert_eq!(ids(Scope::Only(own)), [messages[0], messages[2]]);
+    }
+
+    /// A read whose wait ran out times out, whichever way the system says it; a broken or closed
+    /// connection does not.
+    #[test]
+    fn only_a_read_whose_wait_ran_out_times_out() {
+        let io = |kind| tungstenite::Error::Io(io::Error::from(kind));
+        assert!(timed_out(&io(io::ErrorKind::WouldBlock)));
+        assert!(timed_out(&io(io::ErrorKind::TimedOut)));
+        assert!(!timed_out(&io(io::ErrorKind::ConnectionReset)));
+        assert!(!timed_out(&tungstenite::Error::ConnectionClosed));
     }
 }

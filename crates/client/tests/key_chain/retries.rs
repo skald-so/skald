@@ -1,13 +1,19 @@
 //! A link that did not reach the server: with Ada's upload cut by a proxy, or her CLI killed after
-//! sending its Commit, a later run uploads it, and only once.
+//! sending its Commit, a later run uploads it, and only once; unless her account has left the
+//! channel. A link whose answer is lost, the run warns of.
 
-use crate::chain::{assert_links, assert_opens, forwarded, joins_channel, joins_space, links_sent};
+use skald_proto::Role;
+
+use crate::chain::{
+    assert_links, assert_opens, bob_commits_empty, forwarded, joins_channel, joins_space,
+    links_sent, removes_from_channel,
+};
 use crate::fixtures::kill_once;
 use crate::front::Answers;
 use crate::kit::{RECV, received};
 use crate::played::Played;
 use crate::talk::{CAROL_HOST, Talk, commit_sent};
-use crate::world::run;
+use crate::world::{ACME, run};
 
 /// How Ada's run that adds Carol's device loses the link of the new epoch.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,5 +94,67 @@ fn link_of_a_cli_killed_after_its_commit_is_uploaded_once_by_a_later_run() {
             "bob-waits-killed",
             "carol-added-killed",
         ],
+    );
+}
+
+/// Bob's device, an admin's, commits an empty Commit: epoch 2. Ada's run uploads its link, which
+/// the front cuts. A revision Bob's device signs then removes Ada from the channel: Ada's next two
+/// runs succeed, send no link of the channel and warn of none.
+#[test]
+fn lost_link_of_a_channel_the_account_left_is_left_alone() {
+    let mut talk = Talk::with(
+        ACME,
+        &[4_164_008_201, 4_164_008_202],
+        &["ada-leaves-cut-link", "bob-removes-ada"],
+        true,
+        (Role::Admin, |_| {}),
+    );
+    let at = talk.at();
+    bob_commits_empty(&mut talk, 2);
+    let uploads = talk.front.uploads().len();
+    talk.front.cut_next_link(at.1);
+    // The run may fail, as its connection is closed.
+    let cut = run(&talk.ada.machine, &[RECV]);
+    let first = links_sent(&talk.front, at.1, uploads).first().copied();
+    let pair = first.filter(|one| !one.forwarded).map(|one| one.pair);
+    assert_eq!(pair, Some((2, 1)), "no link of epoch 2 cut: {cut:?}");
+    removes_from_channel(talk.cloud(), &talk.played[0].person, at, &talk.ada);
+    let later = talk.front.uploads().len();
+
+    for _ in 0..2 {
+        let ran = received(&talk.ada.machine);
+        let channel = at.1.to_string();
+        let warned: Vec<&str> = (ran.stderr.lines())
+            .filter(|line| line.contains("link") && line.contains(&channel))
+            .collect();
+        assert!(warned.is_empty(), "{ran:?}");
+    }
+
+    assert_eq!(links_sent(&talk.front, at.1, later), Vec::new());
+}
+
+/// Bob's device commits an empty Commit: epoch 2. Ada's run uploads its link, and the front loses
+/// the server's `history-stored`: the run waits out its timeout, then warns that the server has not
+/// answered it, and of no broken connection.
+#[test]
+fn link_whose_answer_is_lost_is_warned_of_once_the_wait_runs_out() {
+    let mut talk = Talk::new(
+        &[4_164_008_301, 4_164_008_302],
+        &["ada-waits-answer", "bob-commits-unanswered"],
+        true,
+    );
+    bob_commits_empty(&mut talk, 2);
+    talk.front.answer_history(Answers::Lose);
+
+    let ran = received(&talk.ada.machine);
+
+    assert!(
+        ran.stderr
+            .contains("has not answered this device's link of the epoch 2"),
+        "{ran:?}"
+    );
+    assert!(
+        !ran.stderr.contains("connection to the server broke"),
+        "{ran:?}"
     );
 }

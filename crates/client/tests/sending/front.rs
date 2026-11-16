@@ -13,7 +13,8 @@
 //! that ends a catch-up until the server sends that connection a `space-notice`, which then comes
 //! first. It can hold back a device's `auth`, and what the machine sends after it, until released.
 //! It keeps each `history` frame a machine sent, and can close the connection, both ways, at the
-//! next one that carries a link of a channel, which the server never gets.
+//! next one that carries a link of a channel, which the server never gets. It can lose the server's
+//! `history-stored` answers or turn them into `history-refused`.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -31,14 +32,15 @@ const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
 /// The WebSocket opcode of a binary message.
 const BINARY: u8 = 2;
 
-/// What the front does with the server's `stored` answers.
+/// What the front does with the server's `stored` answers, or with its `history-stored` ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answers {
     /// Forwards them.
     Forward,
     /// Loses them.
     Lose,
-    /// Gives the machine a `send-refused` with this problem instead, for the same envelope.
+    /// Gives the machine a `send-refused` with this problem instead, for the same envelope, or a
+    /// `history-refused`, for the same upload.
     Refuse(String),
 }
 
@@ -80,6 +82,7 @@ struct State {
     /// The server's `stored` and `send-refused` frames, as it sent them.
     answered: Vec<Frame>,
     answers: Answers,
+    history_answers: Answers,
     /// How many `stored` answers were lost.
     lost: usize,
     swallow: bool,
@@ -183,6 +186,7 @@ impl Front {
                 cut_link_of: None,
                 answered: Vec::new(),
                 answers: Answers::Forward,
+                history_answers: Answers::Forward,
                 lost: 0,
                 swallow: false,
                 swallowed: 0,
@@ -251,6 +255,11 @@ impl Front {
     /// From now on, does `answers` with the server's `stored` answers.
     pub fn answer(&self, answers: Answers) {
         self.shared.state().answers = answers;
+    }
+
+    /// From now on, does `answers` with the server's `history-stored` answers.
+    pub fn answer_history(&self, answers: Answers) {
+        self.shared.state().history_answers = answers;
     }
 
     /// How many `stored` answers it lost.
@@ -603,6 +612,13 @@ fn forward_answers(
                 shared.state().answered.push(refused);
                 Some(raw)
             }
+            Some(Frame::HistoryStored { upload }) => match shared.state().history_answers.clone() {
+                Answers::Forward => Some(raw),
+                Answers::Lose => None,
+                Answers::Refuse(problem) => Some(server_frame(
+                    &Frame::HistoryRefused { upload, problem }.to_cbor(),
+                )),
+            },
             Some(Frame::Push(Push::Message { seq, .. })) => {
                 link.saw(seq.get());
                 let mut state = shared.state();

@@ -1,6 +1,7 @@
 //! The links of clean epochs: the sender of each Commit uploads the new epoch's link once the
-//! Commit is stored, a member device uploads after its catch-up those of other devices' Commits,
-//! and they lead from the latest key back to epoch 1, which has none.
+//! Commit is stored, a member device uploads after the catch-up of `skald recv` or `skald send`
+//! those of other devices' Commits, and they lead from the latest key back to epoch 1, which has
+//! none.
 
 use crate::chain::{
     adds_to_channel, assert_chain, assert_opens, assert_reach, assert_talk_links,
@@ -110,4 +111,22 @@ fn device_that_joins_from_a_welcome_judges_its_epoch() {
     for pair in [(3, 1), (4, 3)] {
         assert_opens(&held, talk.channel, pair, (bob, bob));
     }
+}
+
+/// Bob's device commits an empty Commit: epoch 2. Ada's `skald send` in the channel uploads its
+/// link with `prev` 1 after its catch-up, which Bob's key of epoch 2 opens to his key of epoch 1.
+#[test]
+fn send_uploads_the_link_the_server_lacks() {
+    let mut talk = Talk::new(
+        &[4_164_012_001, 4_164_012_002],
+        &["ada-sends-links", "bob-commits-first"],
+        false,
+    );
+    bob_commits_empty(&mut talk, 2);
+
+    let sent = talk.send("after Bob's Commit");
+
+    assert!(sent.success, "{sent:?}");
+    let held = assert_talk_links(&talk, &[(2, 1)]);
+    bob_opens(&mut talk, &held, (2, 1));
 }

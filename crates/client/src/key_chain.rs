@@ -8,8 +8,9 @@
 //! - The link of a clean epoch holds the key of `prev`, the latest epoch from 1 on before it that
 //!   the device judged clean; with none, there is no link.
 //! - Once its Commit is stored, the device uploads the link of the new epoch. After its catch-up,
-//!   it uploads the links it can make that the server lacks. It does not upload again a link the
-//!   server took from it, listed to it or refused, so one retention deleted stays deleted.
+//!   it uploads the links it can make that the server lacks, of the channels whose latest revision
+//!   it accepted lists its account. It does not upload again a link the server took from it, listed
+//!   to it or refused, so one retention deleted stays deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -32,11 +33,9 @@ type Pair = (u64, u64);
 /// Whether an epoch whose member devices are `members` is clean: each is one of `admitted`, with
 /// its certificate's signing key.
 pub fn clean(admitted: &BTreeMap<DeviceId, Cert>, members: &[MemberDevice]) -> bool {
-    members.iter().all(|member| {
-        admitted
-            .get(&member.device)
-            .is_some_and(|cert| cert.body().signing == member.signing)
-    })
+    members
+        .iter()
+        .all(|member| groups::admits(admitted, member))
 }
 
 /// The `prev` of the link of `epoch` by `judgments`: the latest epoch from 1 on before it judged
@@ -104,13 +103,17 @@ pub fn upload_new(
 }
 
 /// After the catch-up of a run within `scope`: uploads the links of the channels of each space the
-/// run accepted the revisions of that the device can make and the server lacks, settling those the
-/// server lists; warns of what fails.
+/// run accepted the revisions of, those whose last accepted revision lists the device's account,
+/// that the device can make and the server lacks, settling those the server lists; warns of what
+/// fails.
 pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
+    let account = follower.own.account;
     let channels: Vec<(SpaceId, ChannelId)> = (follower.accepted.iter())
         .filter(|(space, _)| !scope.excludes(**space))
         .flat_map(|(space, (roster, _))| {
-            (roster.body().channels.iter()).map(|channel| (*space, channel.id))
+            (roster.body().channels.iter())
+                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
+                .map(|channel| (*space, channel.id))
         })
         .collect();
     let due: Vec<(SpaceId, ChannelId, Pair)> = (channels.into_iter())

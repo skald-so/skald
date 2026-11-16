@@ -219,7 +219,7 @@ pub fn admitted(
 }
 
 /// Whether `member`, a leaf of a group, is one of `admitted`, with its certificate's signing key.
-fn admits(admitted: &BTreeMap<DeviceId, Cert>, member: &MemberDevice) -> bool {
+pub fn admits(admitted: &BTreeMap<DeviceId, Cert>, member: &MemberDevice) -> bool {
     admitted
         .get(&member.device)
         .is_some_and(|cert| cert.body().signing == member.signing)
