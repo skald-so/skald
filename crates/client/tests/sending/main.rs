@@ -225,8 +225,9 @@ fn message_is_encrypted_once_for_the_group_of_the_channel() {
 }
 
 /// With every `stored` lost by the front, the run retries with the same bytes until its timeout,
-/// then fails naming the message, and no broken connection; the server stored the envelope. Ada's next `skald send` sends it
-/// first, with the same bytes, and the server holds one envelope for it.
+/// then fails naming the message, and no broken connection; the server stored the envelope.
+/// Ada's next `skald send` sends it first, with the same bytes, and the server holds one envelope
+/// for it.
 #[test]
 fn envelope_whose_stored_was_lost_is_sent_again_with_the_same_bytes() {
     let mut talk = Talk::new(
