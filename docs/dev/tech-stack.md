@@ -22,7 +22,7 @@ Versions as of 2026-11-09.
 | Server HTTP client | ureq 3 with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8), blocking, in tokio's blocking threads |
 | API | HTTPS + JSON, OpenAPI spec |
 | Envelopes | Deterministic CBOR (RFC 8949, §4.2) with a CDDL schema, over WebSocket, HTTPS and SSE: [protocol spec](../protocol/README.md#encoding). ciborium-ll 0.2 reads and writes CBOR heads; `proto` checks the spec's encoding rules on decoding |
-| Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |
+| Frontend | TypeScript 7, Vite 8, React 19, static SPA in `web/`; React Router 8 in declarative mode routes its pages; API client and MSW mocks generated from OpenAPI by Orval 8; Vitest, Testing Library, oxlint, Prettier |
 | Web styles | CSS Modules; theme tokens are CSS custom properties with `light-dark()`, following the system setting |
 | Web fonts | Fontsource 5 variable packages: Inter, Space Grotesk, JetBrains Mono; bundled with the build |
 | Browser tests | Chrome Headless Shell of playwright-core 1; in the crates' tests, one per test binary, a browser context per page |

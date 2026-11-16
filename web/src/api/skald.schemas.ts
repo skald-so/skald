@@ -150,6 +150,35 @@ export interface UsernameRequest {
 }
 
 /**
+ * `open`: a first sign-in creates an account. `closed`: only for the people the server lists.
+ */
+export type SignInProvidersSignUp =
+  (typeof SignInProvidersSignUp)[keyof typeof SignInProvidersSignUp];
+
+export const SignInProvidersSignUp = {
+  open: "open",
+  closed: "closed",
+} as const;
+
+/**
+ * A sign-in provider: `github`, or `google` for the server's OIDC provider.
+ */
+export type SignInProvider =
+  (typeof SignInProvider)[keyof typeof SignInProvider];
+
+export const SignInProvider = {
+  github: "github",
+  google: "google",
+} as const;
+
+export interface SignInProviders {
+  /** The providers the server has settings for, each once. */
+  providers: SignInProvider[];
+  /** `open`: a first sign-in creates an account. `closed`: only for the people the server lists. */
+  sign_up: SignInProvidersSignUp;
+}
+
+/**
  * A device's ID: a UUIDv8 derived from its signing key, in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
  * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
  */
@@ -274,10 +303,22 @@ export interface Session {
   username: Username;
   /** The GitHub login of the account's GitHub sign-in method as of its latest sign-in, for display; only while the account has one. */
   github_login?: string;
+  /** The provider a web session signed in with; only for a web session. */
+  sign_in_method?: SignInProvider;
+}
+
+/**
+ * A space of the account's spaces list.
+ */
+export interface ListedSpace {
+  space: SpaceId;
+  name: SpaceName;
+  /** Whether it is the personal space of the session's account; another account's personal space is not. */
+  personal: boolean;
 }
 
 export interface Spaces {
-  spaces: Space[];
+  spaces: ListedSpace[];
 }
 
 export interface SpaceRequest {

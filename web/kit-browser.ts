@@ -12,8 +12,11 @@ export const themes: Theme[] = ["light", "dark"];
 /** Check widths: the design screenshots and a phone. */
 export const widths = [1440, 360];
 
-/** The screens of the kit page: the kit itself, the cabinet, the cabinet with the phone side menu open. */
-export type Screen = "kit" | "cabinet" | "cabinet-menu";
+/**
+ * The screens of the kit page: the kit itself, the cabinet, the cabinet with the phone side menu
+ * open, and the web app's sign-in page and cabinet of an account with no space.
+ */
+export type Screen = "kit" | "cabinet" | "cabinet-menu" | "sign-in" | "account";
 
 export interface KitView {
   page: Page;
