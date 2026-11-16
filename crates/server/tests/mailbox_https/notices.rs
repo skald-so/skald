@@ -1,7 +1,8 @@
 //! `space-notice`s over HTTPS ("Frames"; `docs/protocol/membership.md`, "Roster"): a long-poll
 //! answers one for each roster revision stored since the device's previous long-poll answer, so
 //! that none is lost between requests, and a waiting long-poll gets one at once, through any
-//! instance. Only the devices of the accounts that get the space get them.
+//! instance. A device's first long-poll answers one for each space with a revision that lists its
+//! account. Only the devices of the accounts that get the space get them.
 
 use std::time::Instant;
 
@@ -43,6 +44,27 @@ fn a_long_poll_gets_a_notice_of_a_revision_stored_since_the_previous_answer() {
     eve.poll_now(0);
 
     f.revise(|_| {});
+
+    let notice = Batch {
+        entries: Vec::new(),
+        notices: vec![space],
+    };
+    assert_eq!(bob.poll_now(0), notice);
+    assert_eq!(bob.poll_now(0), Batch::default(), "the notice again");
+    assert_eq!(eve.poll_now(0), Batch::default(), "a notice outside acme");
+}
+
+/// The first long-poll of bob's laptop answers a notice of `acme`, the space bob gets, and the next
+/// one none; eve's laptop, outside `acme`, gets none at its first.
+#[test]
+fn a_devices_first_long_poll_gets_a_notice_of_each_of_its_spaces() {
+    let f = Fixture::new(3_141_410_221);
+    let t = &f.team;
+    let bob = Https::of(&t.flow, &t.bob);
+    let eve = Https::of(&t.flow, &f.eve);
+    let space = t.space;
+    let gets: Vec<String> = t.bob.session.spaces().into_keys().collect();
+    assert_eq!(gets, [space.to_string()], "the spaces bob gets");
 
     let notice = Batch {
         entries: Vec::new(),

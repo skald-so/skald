@@ -113,9 +113,11 @@ pub(crate) async fn poll(
     )
     .after(cursor);
     let notices = state.notices.listen(proved.account);
-    if tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
-        .await
-        .is_err()
+    // Only a long-poll that waits needs what other instances tell.
+    if !wait.is_zero()
+        && tokio::time::timeout(LISTEN_WAIT, state.instance.listening())
+            .await
+            .is_err()
     {
         return server_error("The server does not listen to its other instances yet.");
     }
