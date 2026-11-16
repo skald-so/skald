@@ -1,6 +1,12 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { KitAccess, KitAccount, KitAccountPage, KitSignIn } from "./KitApp.tsx";
+import {
+  KitAccess,
+  KitAccount,
+  KitAccountPage,
+  KitMachines,
+  KitSignIn,
+} from "./KitApp.tsx";
 import { KitCabinet } from "./KitCabinet.tsx";
 import { KitPage, type Theme } from "./KitPage.tsx";
 import "../theme/index.ts";
@@ -8,7 +14,8 @@ import "../theme/index.ts";
 // ?theme=light or ?theme=dark forces a theme; otherwise it follows the system setting.
 // ?screen=cabinet shows the cabinet around Machines; ?screen=cabinet-menu opens its side menu at
 // phone width; ?screen=sign-in shows the web app's sign-in page, ?screen=account the cabinet of an
-// account with no space, its side menu open at phone width, ?screen=access the Access section and
+// account with no space, its side menu open at phone width, ?screen=machines the Machines section,
+// ?screen=access the Access section and
 // ?screen=access-confirm its question before "Sign out everywhere else", ?screen=account-page the
 // Account page and ?screen=account-page-confirm its question before removing this session's sign-in
 // method. Without it, the kit page.
@@ -27,6 +34,8 @@ createRoot(document.getElementById("root")!).render(
       <KitSignIn />
     ) : screen === "account" ? (
       <KitAccount />
+    ) : screen === "machines" ? (
+      <KitMachines />
     ) : screen === "access" || screen === "access-confirm" ? (
       <KitAccess asking={screen === "access-confirm"} />
     ) : screen === "account-page" || screen === "account-page-confirm" ? (

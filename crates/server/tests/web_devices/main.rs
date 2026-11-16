@@ -39,6 +39,7 @@ mod sessions;
 
 mod shown;
 
+mod device_sessions;
 mod sessions_only;
 mod spec;
 mod states;
