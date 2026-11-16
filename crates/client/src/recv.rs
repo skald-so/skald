@@ -4,9 +4,10 @@
 //! every entry. It then accepts the revisions of each space it follows, and those of the space of
 //! each `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes, Commits
 //! and `mls` application messages it wrote, decrypting each message in its channel's group, and
-//! brings the group of each channel of those spaces in line ([`crate::groups`]). It then shows the
-//! other entries it wrote: a `message` only if it passes the checks of `docs/protocol/README.md`,
-//! "Envelope", "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
+//! brings the group of each channel of those spaces in line ([`crate::groups`]), uploading the links
+//! of their key chains the server lacks ([`crate::key_chain`]). It then shows the other entries it
+//! wrote: a `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope",
+//! "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
 //! first, the sending device's certificate valid and the channel's members taken from its group:
 //! the sending device under `mls`, the group as this device holds it under `hpke`; only if
 //! [`crate::gaps`] accepts its `counter`, warning first of the counters it makes missing and
@@ -43,6 +44,7 @@ use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
+use crate::key_chain;
 use crate::secrets;
 use crate::send::{self, broke, closed, set_read_timeout};
 use crate::spaces::{self, Follower, Scope};
@@ -103,7 +105,8 @@ pub fn run(
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
 /// then brings the groups of the channels of each space the run accepted the revisions of in line
-/// ([`crate::groups`]).
+/// ([`crate::groups`]) and uploads the links of their key chains the server lacks
+/// ([`crate::key_chain`]).
 pub fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -112,6 +115,7 @@ pub fn align(
 ) -> Result<(), String> {
     groups::take_in(follower, link, scope, synced)?;
     groups::align_with(follower, link);
+    key_chain::upload_missing(follower, link, scope);
     Ok(())
 }
 
