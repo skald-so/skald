@@ -2,9 +2,10 @@
 //! device's `send` with `stored` once the envelope and its mailbox entries are committed, or with
 //! `send-refused` and its problem, storing nothing of the envelope. An `hpke` envelope goes to its
 //! one recipient; the channel's group routes an `mls` one ([`groups`](crate::groups)). It stores
-//! at most one envelope per idempotency key and answers a retry as it answered the first send. With
-//! the server's cloud limits (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over
-//! the size limit, and a message past its space's number for the month.
+//! at most one envelope per idempotency key and answers a retry as it answered the first send. It
+//! counts each space's messages per month; with the server's cloud limits
+//! (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over the size limit, and a
+//! message past its space's number for the month.
 
 use std::num::NonZeroU64;
 
@@ -133,10 +134,9 @@ async fn answer(
     loop {
         let kept = match &outcome {
             Ok((route, envelope)) => {
-                // A handshake message is no message of the space's to count.
-                let counted = (limits.monthly_messages)
-                    .filter(|_| !route.lasting())
-                    .map(|limit| (header.space, limit));
+                // A handshake message is no message of the space's to count. The others count
+                // also without a limit, for the space's usage.
+                let counted = (!route.lasting()).then_some((header.space, limits.monthly_messages));
                 match store(db, wakers, sender, header, &key, route, *envelope, counted).await? {
                     Kept::Answer(answer) => answer,
                     Kept::OverQuota => refuse(db, sender, &key, Problem::QuotaExceeded).await?,
@@ -330,8 +330,8 @@ enum Kept {
 
 /// Stores `envelope`, the send of `sender` with `key` and `header`, with an entry in the mailbox of
 /// each device `route` gives, and gives its `stored`; tells the other instances in `wakers`, and
-/// wakes the recipients' connections on this one. With `counted`, a space and its monthly limit, a
-/// message not counted yet counts in the space's month, and is not stored past the limit. Nothing
+/// wakes the recipients' connections on this one. With `counted`, a space and its monthly limit if
+/// any, a message not counted yet counts in the space's month, and is not stored past the limit. Nothing
 /// is stored for a revoked `hpke` recipient, and no entry for a revoked device.
 #[allow(clippy::too_many_arguments)]
 async fn store(
@@ -342,7 +342,7 @@ async fn store(
     key: &SendKey,
     route: &Route,
     envelope: Outgoing<'_>,
-    counted: Option<(SpaceId, u64)>,
+    counted: Option<(SpaceId, Option<u64>)>,
 ) -> Result<Kept, sqlx::Error> {
     let mut tx = db.begin().await?;
     let routed = match route {
@@ -452,7 +452,7 @@ async fn count(
     sender: &Sender,
     key: &SendKey,
     space: SpaceId,
-    limit: u64,
+    limit: Option<u64>,
 ) -> Result<bool, sqlx::Error> {
     // Of the message's envelopes stored at once, the second waits for the first to commit, and
     // finds it counted.
@@ -473,11 +473,11 @@ async fn count(
         "INSERT INTO message_counts AS c (space_id, month, messages)
          VALUES ($1::uuid, date_trunc('month', now() AT TIME ZONE 'UTC')::date, 1)
          ON CONFLICT (space_id, month) DO UPDATE SET messages = c.messages + 1
-         WHERE c.messages < $2
+         WHERE $2::bigint IS NULL OR c.messages < $2
          RETURNING c.messages",
     )
     .bind(space.to_string())
-    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .bind(limit.map(|limit| i64::try_from(limit).unwrap_or(i64::MAX)))
     .fetch_optional(conn)
     .await?;
     Ok(counted.is_some())

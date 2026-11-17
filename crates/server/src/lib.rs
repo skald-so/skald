@@ -44,6 +44,7 @@ mod sessions;
 mod sign_in;
 mod sign_up;
 mod spaces;
+mod usage;
 mod user_agent;
 
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
@@ -143,6 +144,7 @@ struct AppState {
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
+    history_retention: Option<Duration>,
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
     long_poll_max_wait: Duration,
@@ -225,6 +227,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/account/sign-in-methods/{method}",
             delete(links::remove).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/usage",
+            get(usage::account).layer(checked(Statement::Header)),
         )
         .route(
             "/account/username",
@@ -345,6 +351,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/usage",
+            get(usage::space).layer(checked(Statement::Header)),
+        )
+        .route(
             "/ws",
             get(connections::open).layer(checked(Statement::Subprotocol)),
         )
@@ -355,6 +365,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             mailbox_retention: settings.mailbox_retention,
+            history_retention: settings.history_retention,
             limits: mailboxes::Limits {
                 message_size: settings.message_size_limit,
                 monthly_messages: settings.monthly_messages_limit,

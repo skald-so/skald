@@ -1,7 +1,9 @@
 import { MemoryRouter } from "react-router";
 import {
+  getGetAccountUsageResponseMock,
   getGetSessionResponseMock,
   getGetSignInProvidersResponseMock,
+  getGetSpaceUsageResponseMock,
   getListAccountDevicesResponseMock,
   getListSessionsResponseMock,
   getListSignInMethodsResponseMock,
@@ -14,6 +16,7 @@ import { MachinesScreen } from "../app/Machines.tsx";
 import { MembersScreen } from "../app/Members.tsx";
 import { accountPath } from "../app/names.ts";
 import { SignInPage } from "../app/SignInPage.tsx";
+import { UsageScreen } from "../app/Usage.tsx";
 
 // The web app's screens with fixture answers of the generated mocks.
 
@@ -176,6 +179,25 @@ const { members } = getListSpaceMembersResponseMock({
   ],
 });
 
+/** The usage of 11-usage.png on the cloud's limits: the account owns its personal space and team-a. */
+const accountUsage = getGetAccountUsageResponseMock({
+  owned_spaces: {
+    count: 2,
+    limit: 2,
+    spaces: [
+      { space: personal.space, name: personal.name },
+      { space: team.space, name: team.name },
+    ],
+  },
+  devices: { count: 4, limit: 50 },
+});
+const spaceUsage = getGetSpaceUsageResponseMock({
+  monthly_messages: { count: 12_480, limit: 10_000_000 },
+  message_size: { limit: 64 * 1024 },
+  mailbox_retention: { limit: 7 * 86_400 },
+  history_retention: { limit: 90 * 86_400 },
+});
+
 /** The sign-in page of 03-sign-in.png, on a server with both providers and open sign-up. */
 export function KitSignIn() {
   return <SignInPage providers={providers} returnTo="/" />;
@@ -221,6 +243,26 @@ export function KitMembers() {
         onSignedOut={() => {}}
       >
         <MembersScreen space={team.name} members={members} now={now} />
+      </Cabinet>
+    </MemoryRouter>
+  );
+}
+
+/** The Usage section of 11-usage.png in the cabinet, for the team space the switcher chose. */
+export function KitUsage() {
+  return (
+    <MemoryRouter initialEntries={["/usage"]}>
+      <Cabinet
+        session={session}
+        spaces={[personal, team]}
+        defaultSpace={team.space}
+        onSignedOut={() => {}}
+      >
+        <UsageScreen
+          space={team.name}
+          account={accountUsage}
+          usage={spaceUsage}
+        />
       </Cabinet>
     </MemoryRouter>
   );

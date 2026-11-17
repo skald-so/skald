@@ -238,6 +238,39 @@ export interface SignInMethods {
 }
 
 /**
+ * The spaces an account owns, as `--owned-spaces-limit` counts them: the ones it created, its personal space included also before it is created. `spaces` lists those that exist.
+ */
+export interface OwnedSpaces {
+  /** @minimum 1 */
+  count: number;
+  /**
+   * The value of `--owned-spaces-limit`; absent without it.
+   * @minimum 1
+   */
+  limit?: number;
+  spaces: Space[];
+}
+
+/**
+ * A count and its limit; `limit` is absent while no limit applies.
+ */
+export interface UsageCount {
+  /** @minimum 0 */
+  count: number;
+  /** @minimum 1 */
+  limit?: number;
+}
+
+/**
+ * The spaces an account owns and its devices, each with its limit while one applies.
+ */
+export interface AccountUsage {
+  owned_spaces: OwnedSpaces;
+  /** The account's devices with a certificate, `service` and revoked devices aside, as `--devices-limit` counts them; the limit is its value. */
+  devices: UsageCount;
+}
+
+/**
  * An account's username: a `name` of an agent address (docs/protocol/README.md, "Agent address"), unique on the server; `skald`, `admin`, `support` and `root` are reserved.
  * @minLength 1
  * @maxLength 63
@@ -516,6 +549,28 @@ export interface StoredRosterRevision {
    * @minimum 1
    */
   revision: number;
+}
+
+/**
+ * A limit; `limit` is absent while no limit applies.
+ */
+export interface UsageLimit {
+  /** @minimum 1 */
+  limit?: number;
+}
+
+/**
+ * A space's messages this month and the limits on its messages and history, each while one applies.
+ */
+export interface SpaceUsage {
+  /** The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`. */
+  monthly_messages: UsageCount;
+  /** The longest payload of an envelope, in bytes: the value of `--message-size-limit`. */
+  message_size: UsageLimit;
+  /** How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`. */
+  mailbox_retention: UsageLimit;
+  /** How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`. */
+  history_retention: UsageLimit;
 }
 
 /**

@@ -188,3 +188,5 @@ The public cloud applies these limits; a self-hosted server does not.
 | Attachment | 10 MB |
 | Undelivered messages kept | 7 days: the server setting `--mailbox-retention` (`SKALD_MAILBOX_RETENTION`), in seconds; unset, until delivered or the envelope's `ttl` ends |
 | History kept | 90 days: the server setting `--history-retention` (`SKALD_HISTORY_RETENTION`), in seconds, each entry from when the server stored it ([Uploads](../protocol/membership.md#uploads)); unset, kept for good |
+
+The web app's Usage section shows the owned spaces, devices and monthly messages with their limits, and the message text, undelivered messages and history limits, each limit while it is set: `getAccountUsage` and `getSpaceUsage` in the [OpenAPI spec](../../api/openapi.json). The server counts them also without the settings.
