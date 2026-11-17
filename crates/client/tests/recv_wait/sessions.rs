@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use crate::agents::CLAUDE;
+use crate::agents::{CLAUDE, CODEX};
 use crate::fixtures::person_address;
 use crate::helped::{Helped, WEBSOCKET, times, with_client_b};
 use crate::kit::{RECV, bind_client_a, received};
@@ -31,6 +31,7 @@ const WAITING: [&str; 2] = [
 ];
 const AFTER_QUIET: &str = "wait test: the backup finished overnight";
 const KEPT_FOR_CLAUDE: &str = "wait test: claude, the acme invoices are due";
+const FOR_ACME: &str = "wait test: acme's standup moved to ten";
 
 /// Ada's machine follows `clienta` and `clientb`, each with a channel that holds Bob's device;
 /// `~/work/clientA` is bound to `clienta` and `~/work/clientB` to `clientb`, and the device has
@@ -260,4 +261,34 @@ fn session_gets_the_messages_a_command_through_its_helper_makes_its_own() {
 
     assert!(bound.success, "not bound: {bound:?}");
     assert_got(&session.finish(), KEPT_FOR_CLAUDE, id);
+}
+
+/// The device has run as claude in `~/work/acme`. Through one helper, claude waits in
+/// `~/work/acme`, and codex in `~/work/other`, in the personal space. Bob's device sends a message
+/// to acme's channel: claude's session shows it once, with its `msg_id`, and exits; codex's keeps
+/// waiting, the server seeing no request meanwhile: the message woke no session of another space.
+#[test]
+fn message_wakes_no_session_of_another_space() {
+    let mut waits = Waits::new(
+        [4_148_093_001, 4_148_093_002],
+        ["ada-runs-two-agents", "bob-writes-to-acme-only"],
+    );
+    waits.agents.run_as(CLAUDE);
+    let other = dir_of(&waits.agents.talk.ada.machine, "work/other");
+    let mut claude = waits.session(CLAUDE);
+    let mut codex = (waits.helped).start_in(&other, &[], &[AGENT, CODEX, RECV, WAIT_FLAG]);
+    assert_idle(&waits.agents.talk, &mut [&mut claude, &mut codex]);
+    let bob = waits.agents.bob();
+
+    let id = waits.agents.bob_sends(&Line::new(&bob, 1, FOR_ACME));
+
+    assert_got(&claude.finish(), FOR_ACME, id);
+    let relay = &waits.agents.talk.cloud().relay;
+    let from = relay.mark();
+    assert_keeps_waiting(&mut codex);
+    let sent: Vec<String> = (relay.sent_since(from).iter())
+        .filter_map(|sent| sent.head.lines().next().map(str::to_owned))
+        .collect();
+    assert!(sent.is_empty(), "codex's session ran: {sent:?}");
+    assert!(!codex.shown().contains(FOR_ACME), "{}", codex.shown());
 }

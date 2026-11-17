@@ -3,8 +3,8 @@
 //! handed over to it; as the person, for anything the person's `skald recv` shows.
 //!
 //! - Through the helper, such a command is a session of it ([`Sessions`]): the helper runs
-//!   `skald recv` for it at once, and again whenever something comes or another command ran, until
-//!   a run shows what the session waits for. Each run writes to the session's command, so it marks
+//!   `skald recv` for it at once, and again whenever something comes that may concern it or another
+//!   command ran, until a run shows what the session waits for. Each run writes to the session's command, so it marks
 //!   a message handed over only once the command has written it out; the command exits after.
 //! - In one-shot mode it holds its own connection and takes the local state's lock only for each
 //!   run of `skald recv`, so a run beside it waits for none of its waits ([`here`]). Once a helper
@@ -22,10 +22,13 @@ use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use skald_proto::SpaceId;
+
 use crate::Operation;
 use crate::helper::{self, Route};
 use crate::lock::Lock;
-use crate::mailbox::{self, Transport, Watched};
+use crate::mailbox::{self, Came, Transport, Watched};
+use crate::recv;
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -86,7 +89,7 @@ pub fn here(
                 mailbox::close_kept();
                 break;
             }
-            if watch.came() {
+            if watch.came() != Came::Nothing {
                 break;
             }
         }
@@ -129,20 +132,24 @@ impl Watch {
         }
     }
 
-    /// Whether something came since, or the connection ended, or it is time to try WebSocket
-    /// again, closing the connection kept. Never waits.
-    pub fn came(&mut self) -> bool {
+    /// What came since: on the connection kept, or anything once the long-poll got something,
+    /// the connection ended or it is time to try WebSocket again, which closes the connection kept.
+    /// Never waits.
+    pub fn came(&mut self) -> Came {
         if self.retry_at.is_some_and(|at| Instant::now() >= at) {
             self.retry_at = None;
             self.stop_poll();
             mailbox::close_kept();
-            return true;
+            return Came::Anything;
         }
         if self.came.swap(false, Ordering::SeqCst) {
-            return true;
+            return Came::Anything;
+        }
+        if self.polling() {
+            return Came::Nothing;
         }
         // With neither, nothing watches: the next run sets the watch again.
-        !self.polling() && mailbox::kept_came()
+        mailbox::kept_came()
     }
 
     /// Whether a long-poll in the background watches.
@@ -188,10 +195,11 @@ pub struct Sessions {
     watch: Watch,
 }
 
-/// A waiting session, and whether a command ran since its last run: it may have written what the
-/// session waits for.
+/// A waiting session, the space its last run kept to, if any, and whether a command ran since:
+/// it may have written what the session waits for.
 struct Waiting {
     session: Session,
+    space: Option<SpaceId>,
     due: bool,
 }
 
@@ -216,12 +224,11 @@ impl Sessions {
     /// Runs `session`'s `skald recv` with the state in `dir`; it waits on unless the run showed what
     /// it waits for or failed. Whether the helper goes on.
     pub fn start(&mut self, session: Session, dir: &Path) -> bool {
-        self.ran();
         let panicked = match helper::run_session(session, dir) {
             Ran::Waits(session) => {
-                let session = *session;
                 self.waiting.push(Waiting {
-                    session,
+                    session: *session,
+                    space: recv::last_space(),
                     due: false,
                 });
                 false
@@ -241,7 +248,7 @@ impl Sessions {
     }
 
     /// Drops the sessions whose command went away, and runs `skald recv` again, with the state in
-    /// `dir`, for each other one if something came, or for each one a command ran since. Gives
+    /// `dir`, for each other one that what came may concern, or that a command ran since. Gives
     /// whether a session waits, `None` once a run panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
@@ -252,18 +259,20 @@ impl Sessions {
             return Some(false);
         }
         let came = self.watch.came();
-        if !came && !self.waiting.iter().any(|waiting| waiting.due) {
+        let runs = |waiting: &Waiting| waiting.due || came.concerns(waiting.space);
+        if !self.waiting.iter().any(runs) {
             return Some(true);
         }
         let mut panicked = false;
         for waiting in std::mem::take(&mut self.waiting) {
-            if !came && !waiting.due {
+            if !runs(&waiting) {
                 self.waiting.push(waiting);
                 continue;
             }
             match helper::run_session(waiting.session, dir) {
                 Ran::Waits(session) => self.waiting.push(Waiting {
                     session: *session,
+                    space: recv::last_space(),
                     due: false,
                 }),
                 Ran::Ended => {}
