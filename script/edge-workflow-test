@@ -12,7 +12,11 @@
 # only reads contents and which uses no secret, unless it is the publish job; it uploads the archive,
 # or the directory script/release-web writes it into, as an artifact, and the deploy job, after that job, downloads it and passes it with the digest:
 # `script/deploy-staging "$GITHUB_SHA" "$DIGEST" <path of skald-web.tar.gz>`. The deploy job installs
-# and builds nothing.
+# and builds nothing. The archive is built before the image: the image's build sets the label
+# so.skald.web.sha256 to the archive's SHA-256, through `labels` of docker/build-push-action, from
+# the output of a step of the web app's job, after script/release-web, that reads skald-web.tar.gz
+# and writes $GITHUB_OUTPUT; when that job is not publish, publish runs after it and takes it from
+# that job's outputs.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -177,6 +181,36 @@ else
       | (\$steps | map(.name) | index(\"Deploy\")) as \$deploy
       | \$name != null and \$deploy != null and ([\$steps[:\$deploy][]
         | select((.uses // \"\" | startswith(\"actions/download-artifact@\")) and .with.name == \$name)] | length == 1)"
+  # The archive's SHA-256 as the image's label so.skald.web.sha256.
+  label=$(jq -r "$build[0].with.labels // \"\"" <<<"$json" | sed -n 's/^[[:space:]]*so\.skald\.web\.sha256=//p')
+  [[ $(grep -c . <<<"$label") -eq 1 ]] ||
+    fail "the image's build sets the label so.skald.web.sha256 once, in its labels: '$label'"
+  label=$(head -n 1 <<<"$label" | sed 's/[[:space:]]*$//')
+  step_output=
+  if [[ $web_job == publish ]]; then
+    [[ $label =~ ^\$\{\{\ *steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\ *\}\}$ ]] &&
+      step_output="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+  else
+    expect "publish runs after the web app's job, so the archive is built before the image" \
+      ".jobs.publish.needs | if type == \"array\" then index(\"$web_job\") != null else . == \"$web_job\" end"
+    if [[ $label =~ ^\$\{\{\ *needs\.$web_job\.outputs\.([A-Za-z0-9_-]+)\ *\}\}$ ]]; then
+      output=$(jq -r "$job.outputs[\"${BASH_REMATCH[1]}\"] // \"\"" <<<"$json")
+      [[ $output =~ ^\$\{\{\ *steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\ *\}\}$ ]] &&
+        step_output="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+    fi
+  fi
+  if [[ -z $step_output ]]; then
+    fail "the label so.skald.web.sha256 is not the output of a step of the web app's job: '$label'"
+  else
+    read -r step_id step_key <<<"$step_output"
+    expect "the step '$step_id' that gives the label runs after script/release-web and before the image's build" \
+      "$job.steps | (map(.id) | index(\"$step_id\")) as \$i
+        | \$i != null and \$i > $web_index
+          and (\"$web_job\" != \"publish\" or \$i < (map(.id) | index(\"build\")))"
+    expect "the step '$step_id' reads the archive skald-web.tar.gz and writes $step_key to \$GITHUB_OUTPUT" \
+      "[$job.steps[] | select(.id == \"$step_id\") | .run // \"\"
+        | test(\"skald-web\\\\.tar\\\\.gz\") and test(\"GITHUB_OUTPUT\") and test(\"\\\\b$step_key=\")] == [true]"
+  fi
 fi
 expect "the deploy passes the web app's archive with the digest of the pushed commit" \
   '[.jobs.deploy.steps[] | select(.name == "Deploy") | .run
