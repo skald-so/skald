@@ -265,9 +265,11 @@ mod tests {
     #[test]
     fn reference_is_four_characters_unless_another_kept_message_shares_them() {
         // Two new IDs whose references share their first 4 characters, as the birthday bound
-        // gives them after about 1300 of 32^4.
+        // gives them after about 1300 of 32^4. Each search is bounded, so references that tell IDs
+        // apart badly fail it.
         let mut firsts = std::collections::HashMap::new();
         let (one, other) = std::iter::repeat_with(MessageId::generate)
+            .take(100_000)
             .find_map(|id| {
                 let first = firsts.insert(whole_reference(id)[..4].to_owned(), id)?;
                 Some((first, id))
@@ -279,6 +281,7 @@ mod tests {
         .take_while(|(a, b)| a == b)
         .count();
         let apart = std::iter::repeat_with(MessageId::generate)
+            .take(1000)
             .find(|id| whole_reference(*id)[..4] != whole_reference(one)[..4])
             .unwrap();
 

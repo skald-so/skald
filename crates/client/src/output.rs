@@ -147,4 +147,14 @@ mod tests {
         assert_eq!(warnings, ["skald: warning: one", "skald: warning: two"]);
         assert!(!held(Stream::Err, "skald: warning: after the run\n"));
     }
+
+    /// A run that panics holds nothing back after it, as the helper's next operation on its
+    /// thread shows.
+    #[test]
+    fn run_that_panics_holds_nothing_after_it() {
+        let panicked = std::panic::catch_unwind(|| holding_warnings(|| panic!("the run fails")));
+
+        assert!(panicked.is_err());
+        assert!(!held(Stream::Err, "skald: warning: after the run\n"));
+    }
 }
