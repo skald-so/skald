@@ -28,6 +28,7 @@ mod github;
 mod google;
 mod groups;
 mod history;
+mod history_retention;
 mod http_client;
 mod instances;
 mod key_packages;
@@ -66,6 +67,9 @@ pub static MIGRATOR: Migrator = sqlx::migrate!();
 /// The longest time the server keeps a mailbox entry, in seconds: 100 years. It bounds the mailbox
 /// retention and an envelope's `ttl`.
 pub const MAILBOX_LONGEST: u64 = 100 * 365 * 24 * 3_600;
+
+/// The longest history retention, in seconds: 100 years.
+pub const HISTORY_LONGEST: u64 = MAILBOX_LONGEST;
 
 /// How long to wait for a PostgreSQL connection, and for PostgreSQL to answer the health check.
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -108,6 +112,9 @@ pub struct Settings {
     /// it, entries wait for their device's ack, unless an envelope's `ttl` ends first, and keys are
     /// kept for good.
     pub mailbox_retention: Option<Duration>,
+    /// How long the server keeps a channel's history entries, up to 100 years
+    /// (`docs/protocol/membership.md`, "Uploads"); without it, the history is kept for good.
+    pub history_retention: Option<Duration>,
     /// The longest payload of an envelope, in bytes (`docs/dev/architecture.md`, "Cloud limits"); no
     /// limit without it.
     pub message_size_limit: Option<u64>,
@@ -147,8 +154,8 @@ struct AppState {
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries and listens to the other instances on that database in tasks on the Tokio runtime it is
-/// called on.
+/// entries, deletes history past its retention and listens to the other instances on that database
+/// in tasks on the Tokio runtime it is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
     let instance = instances::Instance::new();
@@ -160,6 +167,9 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         Arc::clone(&wakers),
         settings.mailbox_retention,
     ));
+    if let Some(retention) = settings.history_retention {
+        tokio::spawn(history_retention::run(db.clone(), retention));
+    }
     tokio::spawn(instances::listen(
         instance.clone(),
         instances::Local {
