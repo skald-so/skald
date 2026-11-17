@@ -3,6 +3,8 @@ import styles from "./FilterButtons.module.css";
 export interface FilterOption<Value extends string> {
   value: Value;
   label: string;
+  /** How many rows the choice shows, after the label, as "Admins 2". */
+  count?: number;
 }
 
 export interface FilterButtonsProps<Value extends string> {
@@ -47,6 +49,12 @@ export function FilterButtons<Value extends string>({
           }}
         >
           {option.label}
+          {option.count !== undefined && (
+            <>
+              {" "}
+              <span className={styles.count}>{option.count}</span>
+            </>
+          )}
         </button>
       ))}
     </div>

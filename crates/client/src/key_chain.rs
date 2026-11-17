@@ -26,6 +26,7 @@ use crate::devices::text;
 use crate::groups::{self, Link};
 use crate::send::{broke, closed, set_read_timeout, timed_out};
 use crate::spaces::{Follower, Scope};
+use crate::state::{self, State};
 
 /// An epoch of a link and its `prev`.
 type Pair = (u64, u64);
@@ -49,24 +50,32 @@ fn prev(judgments: &BTreeMap<u64, bool>, epoch: u64) -> Option<u64> {
 /// The links of `channel` the device's judgments give that it may upload, each of an epoch
 /// `wanted` holds: of each clean epoch with a `prev`, unless settled.
 fn due(follower: &Follower, channel: ChannelId, wanted: impl Fn(u64) -> bool) -> Vec<Pair> {
-    let read = || -> Result<_, crate::state::Error> {
-        Ok((
-            follower.state.judgments(channel)?,
-            follower.state.settled_links(channel)?,
-        ))
-    };
-    let (judgments, settled) = match read() {
-        Ok(read) => read,
-        Err(err) => {
-            eprintln!("skald: warning: {err}");
-            return Vec::new();
-        }
+    let Some((judgments, settled)) = judged(follower, channel, State::settled_links) else {
+        return Vec::new();
     };
     (judgments.iter())
         .filter(|&(&epoch, &clean)| clean && wanted(epoch))
         .filter_map(|(&epoch, _)| Some((epoch, prev(&judgments, epoch)?)))
         .filter(|pair| !settled.contains(pair))
         .collect()
+}
+
+/// The device's judgments of the epochs of `channel` and what `settled` reads of it in the state;
+/// none, with a warning, if the state fails.
+pub fn judged<T>(
+    follower: &Follower,
+    channel: ChannelId,
+    settled: impl FnOnce(&State, ChannelId) -> Result<T, state::Error>,
+) -> Option<(BTreeMap<u64, bool>, T)> {
+    let read = || {
+        Ok((
+            follower.state.judgments(channel)?,
+            settled(&follower.state, channel)?,
+        ))
+    };
+    read()
+        .map_err(|err: state::Error| eprintln!("skald: warning: {err}"))
+        .ok()
 }
 
 /// Each of `due`, as a link of its channel sealed with the keys `device` holds; those it lacks a
@@ -107,16 +116,7 @@ pub fn upload_new(
 /// that the device can make and the server lacks, settling those the server lists; warns of what
 /// fails.
 pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
-    let account = follower.own.account;
-    let channels: Vec<(SpaceId, ChannelId)> = (follower.accepted.iter())
-        .filter(|(space, _)| !scope.excludes(**space))
-        .flat_map(|(space, (roster, _))| {
-            (roster.body().channels.iter())
-                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
-                .map(|channel| (*space, channel.id))
-        })
-        .collect();
-    let due: Vec<(SpaceId, ChannelId, Pair)> = (channels.into_iter())
+    let due: Vec<(SpaceId, ChannelId, Pair)> = (own_channels(follower, scope).into_iter())
         .flat_map(|(space, channel)| {
             (due(follower, channel, |_| true).into_iter()).map(move |pair| (space, channel, pair))
         })
@@ -157,6 +157,20 @@ pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
     upload(follower, link, missing);
 }
 
+/// The channels within `scope` of each space the run accepted the revisions of, those whose last
+/// accepted revision lists the device's account.
+pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelId)> {
+    let account = follower.own.account;
+    (follower.accepted.iter())
+        .filter(|(space, _)| !scope.excludes(**space))
+        .flat_map(|(space, (roster, _))| {
+            (roster.body().channels.iter())
+                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
+                .map(|channel| (*space, channel.id))
+        })
+        .collect()
+}
+
 /// `HistoryLinks` in the API spec.
 #[derive(Deserialize)]
 struct HistoryLinks {
@@ -189,26 +203,30 @@ fn held_links(
 /// Uploads `links`, each of its space, in `history` frames on the device's connection, and settles
 /// each one the server stores or refuses; warns of a refusal and of what fails.
 fn upload(follower: &mut Follower, link: &mut Link, links: Vec<(SpaceId, HistoryLink)>) {
-    if links.is_empty() {
-        return;
-    }
-    let mut waiting: BTreeMap<u64, (ChannelId, Pair)> = BTreeMap::new();
-    let mut frames = Vec::new();
-    for (space, made) in links {
-        link.uploads += 1;
-        waiting.insert(link.uploads, (made.channel, (made.epoch, made.prev)));
-        let frame = Frame::History {
-            upload: link.uploads,
-            space,
-            channel: made.channel,
-            item: HistoryItem::Link(made.to_cbor()),
-        };
-        frames.push(frame.to_cbor());
-    }
-    if let Err(err) = answered(follower, link, &frames, &mut waiting) {
-        eprintln!("skald: warning: {err}");
-    }
-    for (channel, (epoch, _)) in waiting.values() {
+    let items = (links.into_iter())
+        .map(|(space, made)| {
+            let pair = (made.epoch, made.prev);
+            let item = HistoryItem::Link(made.to_cbor());
+            ((space, made.channel), item, (made.channel, pair))
+        })
+        .collect();
+    let unanswered = upload_items(
+        follower,
+        link,
+        items,
+        |follower, (channel, pair), refused| {
+            if let Some(problem) = refused {
+                eprintln!(
+                    "skald: warning: the server refused this device's link of the epoch {} in the \
+                 channel {channel}: {}",
+                    pair.0,
+                    crate::connection::printable(problem)
+                );
+            }
+            follower.state.settle_links(channel, &[pair]).map_err(text)
+        },
+    );
+    for (channel, (epoch, _)) in unanswered {
         eprintln!(
             "skald: warning: the server has not answered this device's link of the epoch {epoch} \
              in the channel {channel}; the next run uploads it again"
@@ -216,14 +234,48 @@ fn upload(follower: &mut Follower, link: &mut Link, links: Vec<(SpaceId, History
     }
 }
 
+/// Uploads `items`, each a history item of its space and channel with what the caller knows it by,
+/// in `history` frames on the device's connection, then reads the server's answers for the run's
+/// timeout, giving each answered one to `answered` with the problem of a refusal, if any. Gives
+/// those the server has not answered; warns of what fails.
+pub fn upload_items<T>(
+    follower: &mut Follower,
+    link: &mut Link,
+    items: Vec<((SpaceId, ChannelId), HistoryItem, T)>,
+    answered: impl FnMut(&Follower, T, Option<&str>) -> Result<(), String>,
+) -> Vec<T> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let mut waiting: BTreeMap<u64, T> = BTreeMap::new();
+    let mut frames = Vec::new();
+    for ((space, channel), item, known) in items {
+        link.uploads += 1;
+        waiting.insert(link.uploads, known);
+        let frame = Frame::History {
+            upload: link.uploads,
+            space,
+            channel,
+            item,
+        };
+        frames.push(frame.to_cbor());
+    }
+    if let Err(err) = answers(follower, link, &frames, &mut waiting, answered) {
+        eprintln!("skald: warning: {err}");
+    }
+    waiting.into_values().collect()
+}
+
 /// Sends `frames` on the device's connection, then reads the server's answers to the uploads of
-/// `waiting` for the run's timeout, taking each answered one out and settling it; fails if the
-/// connection ends, or is not a WebSocket, which alone carries them.
-fn answered(
+/// `waiting` for the run's timeout, taking each answered one out and giving it to `answered`;
+/// fails if the connection ends, or is not a WebSocket, which alone carries them, or `answered`
+/// fails.
+fn answers<T>(
     follower: &mut Follower,
     link: &mut Link,
     frames: &[Vec<u8>],
-    waiting: &mut BTreeMap<u64, (ChannelId, Pair)>,
+    waiting: &mut BTreeMap<u64, T>,
+    mut answered: impl FnMut(&Follower, T, Option<&str>) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut mailbox = match link.mailbox.take() {
         Some(mailbox) => mailbox,
@@ -232,7 +284,8 @@ fn answered(
     let Some(socket) = mailbox.websocket() else {
         link.mailbox = Some(mailbox);
         return Err(
-            "links go to the server over a WebSocket only, and this network lets none through"
+            "history items go to the server over a WebSocket only, and this network lets none \
+             through"
                 .to_owned(),
         );
     };
@@ -260,21 +313,10 @@ fn answered(
             Err(err) if timed_out(&err) => break,
             Err(err) => return Err(broke(err)),
         };
-        let Some((channel, pair)) = waiting.remove(&upload) else {
+        let Some(known) = waiting.remove(&upload) else {
             continue;
         };
-        if let Some(problem) = refused {
-            eprintln!(
-                "skald: warning: the server refused this device's link of the epoch {} in the \
-                 channel {channel}: {}",
-                pair.0,
-                crate::connection::printable(&problem)
-            );
-        }
-        follower
-            .state
-            .settle_links(channel, &[pair])
-            .map_err(text)?;
+        answered(follower, known, refused.as_deref())?;
     }
     link.mailbox = Some(mailbox);
     Ok(())

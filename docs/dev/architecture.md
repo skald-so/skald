@@ -187,4 +187,4 @@ The public cloud applies these limits; a self-hosted server does not.
 | Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), the payload in bytes; unset, no limit |
 | Attachment | 10 MB |
 | Undelivered messages kept | 7 days: the server setting `--mailbox-retention` (`SKALD_MAILBOX_RETENTION`), in seconds; unset, until delivered or the envelope's `ttl` ends |
-| History kept | 90 days |
+| History kept | 90 days: the server setting `--history-retention` (`SKALD_HISTORY_RETENTION`), in seconds, each entry from when the server stored it ([Uploads](../protocol/membership.md#uploads)); unset, kept for good |

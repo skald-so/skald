@@ -12,6 +12,7 @@ mod folders;
 mod follow;
 mod gaps;
 mod groups;
+mod history;
 mod key_chain;
 mod key_packages;
 mod lock;
@@ -33,6 +34,7 @@ mod test_dir;
 mod test_dir_tests;
 mod tls;
 mod update;
+mod wraps;
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;

@@ -25,6 +25,10 @@
   color: var(--color-text);
 }
 
+.count {
+  font-weight: 400;
+}
+
 .choice[aria-pressed="true"] {
   border-color: var(--color-accent-soft);
   background: var(--color-accent-soft);
