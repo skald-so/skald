@@ -85,7 +85,7 @@ use std::time::{Duration, Instant};
 use browser::{APPROVE, Browser};
 use cloud::{Cloud, WAIT, shown_grant};
 use filter::{EVENTS, Fate, Filter, POLL, SEND, Seen, Stream, WEBSOCKET};
-use fixtures::{TIMEOUT_SETTING, database, hex, send};
+use fixtures::{TIMEOUT_SETTING, database, hex, send, send_args};
 use kit::{RECV, Space, create_space, with_channel};
 use machine::{FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, YES};
 use played::{Played, Took};
@@ -665,4 +665,71 @@ fn outbox_left_with_the_server_down_is_stored_in_counter_order_over_long_poll() 
         .map(|(_, counter, text)| (*counter, text.as_str()))
         .collect();
     assert_eq!(got, [(1, texts[0]), (2, texts[1]), (3, texts[2])]);
+}
+
+/// Over SSE, with the proxy dropping Ada's first send unanswered and letting WebSocket upgrades
+/// through from then on, `skald send` reconnects in the transports' order: over a WebSocket, which
+/// stores the message, and Bob's device reads it once.
+#[test]
+fn dropped_connection_reconnects_from_websocket() {
+    let mut behind = Behind::start(
+        [4_144_041_601, 4_144_041_602],
+        ["ada-reconnects", "bob-reconnects"],
+    );
+    behind.leave(Transport::Sse);
+    behind.filter.drop_next_send();
+    let from = behind.filter.mark();
+    let text = "ada, again after a drop";
+    let args = send_args(behind.channel, text);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let sending = behind.ada.machine.start(&args);
+    let deadline = Instant::now() + WAIT;
+    while first(&behind.filter.seen_since(from), "POST", SEND).is_none() {
+        assert!(Instant::now() < deadline, "nothing sent over HTTPS");
+        thread::sleep(Duration::from_millis(10));
+    }
+    behind.leave(Transport::WebSocket);
+    let said = sending.finish();
+
+    assert!(said.success, "{said:?}");
+    let seen = behind.filter.seen_since(from);
+    let dropped = first(&seen, "POST", SEND).expect("the dropped send");
+    assert_eq!(seen[dropped].fate, Fate::Closed, "{seen:#?}");
+    assert!(
+        answered(&seen[dropped..], "GET", WEBSOCKET, 101),
+        "no WebSocket after the drop: {seen:#?}"
+    );
+    assert!(
+        !answered(&seen, "POST", SEND, 200),
+        "sent over HTTPS: {seen:#?}"
+    );
+    match behind.bob_reads().as_slice() {
+        [(_, 1, read)] => assert_eq!(read, text),
+        other => panic!("Bob's device read {other:?}"),
+    }
+}
+
+/// Over long-poll, with one of Bob's messages waiting, Ada's `skald send` asks again after the
+/// answer that gives the message, until an answer is empty, so the server deletes it once the run
+/// ends; her next `skald recv` shows it once.
+#[test]
+fn long_poll_catch_up_asks_until_an_answer_is_empty() {
+    let mut behind = Behind::start(
+        [4_144_041_701, 4_144_041_702],
+        ["ada-polls-to-the-end", "bob-polls-to-the-end"],
+    );
+    behind.leave(Transport::LongPoll);
+    let waiting = "bob, waiting for a long-poll";
+    let envelope = behind.bob_sends(waiting);
+
+    let (said, seen) = behind.ada_sends("ada over long-poll, after Bob");
+
+    assert!(said.success, "{said:?}");
+    assert_over(&seen, Transport::LongPoll, &said);
+    let polls = (seen.iter()).filter(|one| one.is("POST", POLL)).count();
+    assert!(polls >= 2, "one long-poll: {seen:#?}");
+    behind.assert_acked(&envelope);
+    let got = behind.ada_receives_over(Transport::LongPoll);
+    behind.assert_shows_bobs(&got.shown(), waiting);
 }

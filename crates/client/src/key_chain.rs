@@ -218,16 +218,23 @@ fn upload(follower: &mut Follower, link: &mut Link, links: Vec<(SpaceId, History
 
 /// Sends `frames` on the device's connection, then reads the server's answers to the uploads of
 /// `waiting` for the run's timeout, taking each answered one out and settling it; fails if the
-/// connection ends.
+/// connection ends, or is not a WebSocket, which alone carries them.
 fn answered(
     follower: &mut Follower,
     link: &mut Link,
     frames: &[Vec<u8>],
     waiting: &mut BTreeMap<u64, (ChannelId, Pair)>,
 ) -> Result<(), String> {
-    let mut socket = match link.socket.take() {
-        Some(socket) => socket,
+    let mut mailbox = match link.mailbox.take() {
+        Some(mailbox) => mailbox,
         None => follower.connect(&link.keys)?,
+    };
+    let Some(socket) = mailbox.websocket() else {
+        link.mailbox = Some(mailbox);
+        return Err(
+            "links go to the server over a WebSocket only, and this network lets none through"
+                .to_owned(),
+        );
     };
     for frame in frames {
         socket
@@ -240,7 +247,7 @@ fn answered(
         if wait.is_zero() {
             break;
         }
-        set_read_timeout(&mut socket, wait).map_err(|err| broke(err.into()))?;
+        set_read_timeout(socket, wait).map_err(|err| broke(err.into()))?;
         let (upload, refused) = match socket.read() {
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::HistoryStored { upload }) => (upload, None),
@@ -269,7 +276,7 @@ fn answered(
             .settle_links(channel, &[pair])
             .map_err(text)?;
     }
-    link.socket = Some(socket);
+    link.mailbox = Some(mailbox);
     Ok(())
 }
 

@@ -8,7 +8,7 @@
 //! mailbox's event stream with `403 Forbidden`, or hold the stream's answer back until it ends. As
 //! a network would, it can take the server down for delivery, closing each connection that asks
 //! for a challenge, a WebSocket or the mailbox, unanswered; hold the first envelope a device sends
-//! over HTTPS for a while before it goes on; and cut the machine off once the server has sent it a
+//! over HTTPS for a while before it goes on, or drop it unanswered; and cut the machine off once the server has sent it a
 //! given envelope: what the server sends on the connections open then still reaches the machine,
 //! but nothing the machine sends after it reaches the server, such as its ack.
 
@@ -95,6 +95,8 @@ struct State {
     down: bool,
     /// How long the next `POST /mailbox/send` waits before it goes on.
     delay_send: Option<Duration>,
+    /// Whether the next `POST /mailbox/send` is closed unanswered.
+    drop_send: bool,
     /// The envelope whose bytes, once the server has sent them, cut the machine off.
     cut_after: Option<Vec<u8>>,
     /// Whether the machine is cut off.
@@ -142,6 +144,7 @@ impl Filter {
                 stream: Stream::Forward,
                 down: false,
                 delay_send: None,
+                drop_send: false,
                 cut_after: None,
                 cut: false,
                 seen: Vec::new(),
@@ -182,6 +185,11 @@ impl Filter {
     /// Holds the next `POST /mailbox/send` for `delay` before it goes on.
     pub fn delay_next_send(&self, delay: Duration) {
         self.state().delay_send = Some(delay);
+    }
+
+    /// Closes the next `POST /mailbox/send` unanswered, as a dropped connection.
+    pub fn drop_next_send(&self) {
+        self.state().drop_send = true;
     }
 
     /// Cuts the machine off once the server has sent it `envelope`: from then on, nothing the
@@ -250,13 +258,13 @@ impl Filter {
             let mut state = self.state();
             let delivery = path == WEBSOCKET || DELIVERY.iter().any(|at| path.starts_with(at));
             let events = method == "GET" && path == EVENTS;
-            let delay = (method == "POST" && path == SEND)
-                .then(|| state.delay_send.take())
-                .flatten();
+            let sending = method == "POST" && path == SEND;
+            let delay = sending.then(|| state.delay_send.take()).flatten();
+            let dropped = sending && std::mem::take(&mut state.drop_send);
             (
                 (upgrade && state.refuse_websocket) || (events && state.stream == Stream::Refuse),
                 events && state.stream == Stream::Hold,
-                state.cut || (state.down && delivery),
+                state.cut || (state.down && delivery) || dropped,
                 delay,
             )
         };
