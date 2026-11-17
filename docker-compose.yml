@@ -1,5 +1,6 @@
-# The self-host stack: skald-server, PostgreSQL and Caddy for one domain. Setup, .env and the proxy
-# variant: docs/self-host.md. script/self-host-test tests it.
+# The self-host stack: skald-server, PostgreSQL and Caddy for one domain, Caddy also serving the web
+# app from ./web. Setup, .env and the proxy variant: docs/self-host.md. script/self-host-test tests
+# it.
 name: skald
 
 x-logging: &logging
@@ -14,14 +15,16 @@ services:
     restart: unless-stopped
     logging: *logging
     depends_on: [skald-server]
+    # Caddy's site, Caddyfile: the domain; the proxy variant's override makes it plain HTTP.
     environment:
-      - SKALD_DOMAIN=${SKALD_DOMAIN:?set SKALD_DOMAIN in .env}
+      - SKALD_SITE=${SKALD_DOMAIN:?set SKALD_DOMAIN in .env}
     ports:
       - 80:80
       - 443:443
       - 443:443/udp
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv/web:ro
       - caddy-data:/data
       - caddy-config:/config
     networks: [edge]

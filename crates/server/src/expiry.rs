@@ -12,17 +12,9 @@ use std::time::Duration;
 
 use skald_proto::{DeviceId, ServerStatus};
 use sqlx::PgPool;
-use tokio::time::MissedTickBehavior;
 
 use crate::delivery::{Wakers, remove, removing};
-use crate::error_reports;
-
-/// How often the server looks for expired entries.
-const SWEEP: Duration = Duration::from_secs(5);
-/// How many expired entries the server removes at a time.
-const PAGE: i64 = 100;
-/// How long the server waits between two pages of expired entries.
-const PAUSE: Duration = Duration::from_millis(10);
+use crate::sweeps::{self, PAGE, PAUSE};
 
 /// The mailbox retention `retention` in seconds, as the queries take it; `None` without one.
 pub(crate) fn seconds(retention: Option<Duration>) -> Option<f64> {
@@ -35,18 +27,15 @@ pub(crate) fn deliverable(v: NonZeroU64, version: NonZeroU64) -> bool {
     v.get().abs_diff(version.get()) <= 1
 }
 
-/// Looks for expired entries every [`SWEEP`], for good, on a server with the mailbox retention
-/// `retention`; wakes the sending devices' connections in `wakers`. A failure goes to the server's
-/// output and its error reports, and the next look tries again.
+/// Looks for expired entries, as [`sweeps::every`] says, on a server with the mailbox retention
+/// `retention`; wakes the sending devices' connections in `wakers`.
 pub(crate) async fn run(db: PgPool, wakers: Arc<Wakers>, retention: Option<Duration>) {
-    let mut looks = tokio::time::interval(SWEEP);
-    looks.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    loop {
-        looks.tick().await;
-        if let Err(err) = sweep(&db, &wakers, seconds(retention)).await {
-            error_reports::background_failed("expire mailbox entries", &err);
-        }
-    }
+    let retention = seconds(retention);
+    sweeps::every("expire mailbox entries", || {
+        let (db, wakers) = (db.clone(), Arc::clone(&wakers));
+        async move { sweep(&db, &wakers, retention).await }
+    })
+    .await;
 }
 
 /// Removes every entry expired by time, with the retention of `retention` seconds, then the
