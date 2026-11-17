@@ -44,6 +44,7 @@ mod sessions;
 mod sign_in;
 mod sign_up;
 mod spaces;
+mod sweeps;
 mod usage;
 mod user_agent;
 
