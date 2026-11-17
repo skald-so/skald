@@ -91,7 +91,7 @@ use machine::{FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, YES};
 use played::{Played, Took};
 use proxy::Proxy;
 use serde_json::Value;
-use skald_proto::{Body, Cbor as _, ChannelId, Content, MessageId, RawEnvelope, Role};
+use skald_proto::{Body, Cbor as _, ChannelId, Content, Frame, MessageId, Push, RawEnvelope, Role};
 use skald_server::Settings;
 use talk::{ADA_HOST, BOB_HOST, Line, assert_shows_once, delivered, encrypted, stored};
 use times::{MAILBOX, WEEK, moved_back};
@@ -758,14 +758,6 @@ fn long_poll_catch_up_asks_until_an_answer_is_empty() {
     behind.assert_shows_bobs(&got.shown(), waiting);
 }
 
-/// Sends `request`, such as `GET /spaces/<id>/devices`, to the relay, so that the one it holds
-/// until a second comes goes on.
-fn second_to_relay(cloud: &Cloud, request: &str) {
-    let path = request.strip_prefix("GET ").expect("a GET request");
-    // The relay answers it as the server does; only that it came counts.
-    let _ = ureq::get(format!("http://{}{path}", cloud.relay.address())).call();
-}
-
 /// Over SSE and over long-poll: once catch-up has ended, Ada's `skald recv` fetches the revisions
 /// of a space of hers, then the devices of its accounts, which the relay holds back; meanwhile a
 /// revision of the space is stored. The run fetched the revisions before that one, so it accepts it
@@ -797,9 +789,14 @@ fn revision_stored_after_the_fetch_is_accepted_by_its_notice_over_sse_and_long_p
         let fetching = || relay.held() > 0;
         await_running(&mut run, "the devices fetch held back", fetching);
         store(cloud, &ada.token, &late);
-        // Over SSE, the notice reaches the machine's stream while its request waits.
-        thread::sleep(Duration::from_millis(500));
-        second_to_relay(cloud, &fetch);
+        if transport == Transport::Sse {
+            let notice = Frame::Push(Push::SpaceNotice { space }).to_cbor();
+            let passed = || behind.filter.streamed().contains(&notice);
+            await_running(&mut run, "the notice passed to the machine", passed);
+            // The notice reaches the machine's stream while its request waits.
+            thread::sleep(Duration::from_millis(100));
+        }
+        relay.send_through(&fetch);
         let finished = run.finish();
 
         assert!(finished.success, "{transport:?}: {finished:?}");

@@ -102,6 +102,8 @@ struct State {
     /// Whether the machine is cut off.
     cut: bool,
     seen: Vec<Seen>,
+    /// What the server sent on the event streams and the filter passed to the machine.
+    streamed: Vec<u8>,
 }
 
 impl State {
@@ -112,16 +114,18 @@ impl State {
             return false;
         };
         let holds = |hay: &[u8]| hay.windows(needle.len()).any(|window| window == needle);
-        holds(sent)
-            || sent.split(|byte| *byte == b'\n').any(|line| {
-                let data = line.strip_prefix(b"data:").unwrap_or_default();
-                let data = data.strip_prefix(b" ").unwrap_or(data);
-                let data = data.strip_suffix(b"\r").unwrap_or(data);
-                URL_SAFE_NO_PAD
-                    .decode(data)
-                    .is_ok_and(|bytes| holds(&bytes))
-            })
+        holds(sent) || data_of(sent).any(|bytes| holds(&bytes))
     }
+}
+
+/// The bytes of each event's `data` in `sent`, from base64url.
+fn data_of(sent: &[u8]) -> impl Iterator<Item = Vec<u8>> + '_ {
+    sent.split(|byte| *byte == b'\n').filter_map(|line| {
+        let data = line.strip_prefix(b"data:")?;
+        let data = data.strip_prefix(b" ").unwrap_or(data);
+        let data = data.strip_suffix(b"\r").unwrap_or(data);
+        URL_SAFE_NO_PAD.decode(data).ok()
+    })
 }
 
 /// The filter, serving until the tests end.
@@ -148,6 +152,7 @@ impl Filter {
                 cut_after: None,
                 cut: false,
                 seen: Vec::new(),
+                streamed: Vec::new(),
             })),
         };
         let (serving, target) = (filter.clone(), target.to_owned());
@@ -211,6 +216,11 @@ impl Filter {
         let mut state = self.state();
         state.cut_after = None;
         state.cut = false;
+    }
+
+    /// The frames of the events the filter passed to the machine on its event streams.
+    pub fn streamed(&self) -> Vec<Vec<u8>> {
+        data_of(&self.state().streamed).collect()
     }
 
     /// How many requests it took so far: a mark for [`Filter::seen_since`].
@@ -345,6 +355,7 @@ impl Filter {
             if machine.write_all(&buffer[..count]).is_err() {
                 break;
             }
+            self.passed(index, &buffer[..count]);
         }
         let _ = server.shutdown(Shutdown::Both);
         close(machine);
@@ -363,6 +374,15 @@ impl Filter {
             seen.fate = Fate::Answered(status);
         }
         seen.answering.get_or_insert_with(Instant::now);
+    }
+
+    /// Keeps `bytes`, which the filter passed to the machine as the answer to the request at
+    /// `index`, if that is an event stream.
+    fn passed(&self, index: usize, bytes: &[u8]) {
+        let mut state = self.state();
+        if state.seen[index].is("GET", EVENTS) {
+            state.streamed.extend_from_slice(bytes);
+        }
     }
 
     fn cut_now(&self) -> bool {
