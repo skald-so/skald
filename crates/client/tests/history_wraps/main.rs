@@ -43,49 +43,10 @@ mod unclean;
 mod wrapped;
 mod wraps;
 
-// The modules of other test targets, by name: the server's tests' readers of the KeyPackages API's
-// answers and the person's browser; the links of the tests of the key chain; the server, relay and
-// machines of the tests of signing in; the helpers of every client test; the admin commands' kit of
-// the tests of removing members; the entries of the tests of history entries; the fixtures and
-// front of the tests of sending; the joins of the tests of joining channels; finding keys in bytes;
-// the kit and played devices of the tests of channel groups; the device the tests of receiving
-// play; the revocations of the tests of revoking devices; the talk of the tests of channel
-// messages; people in spaces, of the tests of roster revisions.
-#[path = "../../../server/tests/key_packages/answers.rs"]
-mod answers;
-#[path = "../../../server/tests/common/browser.rs"]
-mod browser;
-#[path = "../key_chain/chain.rs"]
-mod chain;
-#[path = "../sign_in/cloud.rs"]
-mod cloud;
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../member_removal/edits.rs"]
-mod edits;
+// The modules the tests of the channel history share (`history_common/mod.rs`), and the entries of
+// the tests of history entries.
+#[path = "../history_common/mod.rs"]
+mod history_common;
+use history_common::*;
 #[path = "../history_entries/entries.rs"]
 mod entries;
-#[path = "../sending/fixtures.rs"]
-mod fixtures;
-#[path = "../sending/front.rs"]
-mod front;
-#[path = "../channel_joins/joins.rs"]
-mod joins;
-#[path = "../device_keys/keys.rs"]
-mod keys;
-#[path = "../channel_groups/kit.rs"]
-mod kit;
-#[path = "../sign_in/machine.rs"]
-mod machine;
-#[path = "../receiving/peer.rs"]
-mod peer;
-#[path = "../channel_groups/played.rs"]
-mod played;
-#[path = "../sign_in/relay.rs"]
-mod relay;
-#[path = "../device_revocation/revocations.rs"]
-mod revocations;
-#[path = "../channel_messages/talk.rs"]
-mod talk;
-#[path = "../roster_revisions/world.rs"]
-mod world;

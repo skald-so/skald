@@ -1,0 +1,7 @@
+# cargo-nextest's settings for the workspace's tests: script/test and script/mutants.
+
+# Unit tests start first. They take milliseconds; a mutant they catch then ends its run in
+# script/mutants before a slower test starts, which nextest would let finish.
+[[profile.default.overrides]]
+filter = 'kind(lib) | kind(bin)'
+priority = 100

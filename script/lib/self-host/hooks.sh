@@ -11,16 +11,29 @@ self_host_path=$PATH
 # self_host_step <step>: marks the start of the guide's step in the scenario's output.
 self_host_step() { echo "self-host-test: step $1"; }
 
-# self_host_release: the release values the part sets after the guide's step `release`.
+# self_host_release: the release values the part sets after the guide's step `release`; SKALD_WEB,
+# the address of this commit's web app, its archive, checksum and an attestation of nothing.
 self_host_release() {
   SKALD_VERSION=$self_host_version
   SKALD_DIGEST=$self_host_digest
   SKALD_FILES=$self_host_files
+  SKALD_WEB=$self_host_web
 }
 
 # self_host_last_release: after the guide's step `release`, for the stack of the last release: the
-# address of its compose file and Caddy config, from its tag or, when the tag has none, this commit's.
-self_host_last_release() { SKALD_FILES=$self_host_release_files; }
+# address of its compose file and Caddy config, from its tag or, when the tag has none, this commit's;
+# that of its web app's archive, checksum and attestation in its GitHub Release, when it has one.
+self_host_last_release() {
+  SKALD_FILES=$self_host_release_files
+  SKALD_WEB=$self_host_release_web
+}
+
+# self_host_web <variant>: after the guide's step `release`, the address of a variant of this
+# commit's web app: /self-host/web/<variant>.
+self_host_web() { SKALD_WEB=file:///self-host/web/$1; }
+
+# self_host_here: records the stack's directory, the current one.
+self_host_here() { pwd >"$run/dir"; }
 
 # self_host_rc_files: after the guide's step `release`, for the stack on PostgreSQL's release
 # candidate: this commit's compose file with that PostgreSQL, and its Caddy config.

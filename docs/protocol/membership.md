@@ -579,7 +579,7 @@ history-body = {
 
 A reader MUST drop an entry unless:
 1. it decrypts with the epoch's key;
-2. `channel` matches the entry's, and `signature` verifies with the certificate of `sender`, revoked or not: a device of an account that an accepted revision lists among the channel's members, or one of its `services`, whose certificate passes checks 1 and 2 of [Device checks](#device-checks) with the `master` that revision gives for its account;
+2. `channel` matches the entry's, and `signature` verifies with the certificate of `sender`, revoked or not: a device of an account that an accepted revision lists among the channel's members, or one of its `services`, whose certificate passes checks 1 and 2 of [Device checks](#device-checks) with the `master` that revision gives for its account. A device that starts from an anchor after revision 1 also counts each earlier revision whose hash is the `prev` of one it counts, back to revision 1, as accepted, without a warning: it checks the entries of members removed before it was linked against those;
 3. its content passes checks 2 and 4 of [Envelope](README.md#envelope), with `sender` as the sending device.
 
 ### Access

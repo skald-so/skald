@@ -7,29 +7,18 @@ use std::time::Duration;
 
 use skald_proto::{Cbor as _, HistoryEntry};
 use sqlx::PgPool;
-use tokio::time::MissedTickBehavior;
 
-use crate::error_reports;
 use crate::history::epoch;
+use crate::sweeps::{self, PAGE, PAUSE};
 
-/// How often the server looks for entries past the retention.
-const SWEEP: Duration = Duration::from_secs(5);
-/// How many entries the server deletes at a time.
-const PAGE: i64 = 100;
-/// How long the server waits between two pages.
-const PAUSE: Duration = Duration::from_millis(10);
-
-/// Looks for entries past `retention` every [`SWEEP`], for good. A failure goes to the server's
-/// output and its error reports, and the next look tries again.
+/// Looks for entries past `retention`, as [`sweeps::every`] says.
 pub(crate) async fn run(db: PgPool, retention: Duration) {
-    let mut looks = tokio::time::interval(SWEEP);
-    looks.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    loop {
-        looks.tick().await;
-        if let Err(err) = sweep(&db, retention.as_secs_f64()).await {
-            error_reports::background_failed("delete history past the retention", &err);
-        }
-    }
+    let retention = retention.as_secs_f64();
+    sweeps::every("delete history past the retention", || {
+        let db = db.clone();
+        async move { sweep(&db, retention).await }
+    })
+    .await;
 }
 
 /// Deletes every entry stored longer ago than `retention` seconds, a page of one channel's at a

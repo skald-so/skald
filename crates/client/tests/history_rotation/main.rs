@@ -34,44 +34,7 @@ mod period;
 mod races;
 mod rotation;
 
-// The server and its relay, of the tests of signing in; the admin commands' kit of the tests of
-// removing members; the devices the tests of channel groups play.
-#[path = "../sign_in/cloud.rs"]
-mod cloud;
-#[path = "../member_removal/edits.rs"]
-mod edits;
-#[path = "../channel_groups/played.rs"]
-mod played;
-
-// The fixtures of the tests of sending; the kit of the tests of channel groups; the relay of the
-// tests of signing in; the talk of the tests of channel messages.
-#[path = "../sending/fixtures.rs"]
-mod fixtures;
-#[path = "../channel_groups/kit.rs"]
-mod kit;
-#[path = "../sign_in/relay.rs"]
-mod relay;
-#[path = "../channel_messages/talk.rs"]
-mod talk;
-
-// The server's tests' readers of the KeyPackages API's answers; the front of the tests of sending;
-// the machines of the tests of signing in; people in spaces, of the tests of roster revisions.
-#[path = "../../../server/tests/key_packages/answers.rs"]
-mod answers;
-#[path = "../sending/front.rs"]
-mod front;
-#[path = "../sign_in/machine.rs"]
-mod machine;
-#[path = "../roster_revisions/world.rs"]
-mod world;
-
-// The person's browser; the helpers of every client test; finding keys in bytes; the device the
-// tests of receiving play over the delivery protocol.
-#[path = "../../../server/tests/common/browser.rs"]
-mod browser;
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../device_keys/keys.rs"]
-mod keys;
-#[path = "../receiving/peer.rs"]
-mod peer;
+// The modules the tests of the channel history share (`history_common/mod.rs`).
+#[path = "../history_common/mod.rs"]
+mod history_common;
+use history_common::*;

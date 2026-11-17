@@ -20,6 +20,7 @@
 - **GitHub Action:** the client in one-shot mode and the GitHub bridge, which runs inside the Action, not on the server. A `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment. The trust level of such tasks: [threat model](../threat-model.md#the-idp-or-github).
 - **Frontend** — a single static SPA at `app.skald.so`:
   - its pages' paths start with none of the first segments of the OpenAPI spec's paths, such as `/device`, so one origin serves the SPA and the API;
+  - a self-hosted server serves its release's SPA on its own domain: [self-host.md](../self-host.md#the-web-app);
   - without a web session, every page shows the sign-in page;
   - gets the non-secret sections from the server API;
   - content sections are decrypted in the browser by a WASM build of the Rust core.
