@@ -326,6 +326,11 @@ impl Run {
         }
     }
 
+    /// Its process ID.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
     /// What it printed so far, stdout and stderr both.
     pub fn shown(&self) -> String {
         let stdout = self.stdout.lock().expect("a run's output");

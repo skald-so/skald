@@ -11,14 +11,15 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use skald_proto::MessageId;
+use skald_proto::{ChannelId, MessageId, Role};
 
 use crate::cloud::WAIT;
 use crate::common::CLIENT;
 use crate::fixtures::{SEND, TIMEOUT_SETTING, msg_id};
-use crate::kit::RECV;
+use crate::kit::{RECV, Space, create_space, received, with_channel};
 use crate::machine::{Finished, Machine, Run};
 use crate::talk::{Talk, messages_sent};
+use crate::world::CLIENT_B;
 
 /// The command that runs the helper.
 pub const HELPER: &str = "helper";
@@ -96,7 +97,7 @@ impl Helped {
     }
 
     /// The copy with `args` in `dir`, with `settings` beside the machine's.
-    fn command_in(&self, dir: &Path, settings: &[(&str, &str)], args: &[&str]) -> Command {
+    pub fn command_in(&self, dir: &Path, settings: &[(&str, &str)], args: &[&str]) -> Command {
         let mut command = Command::new(&self.exe);
         command
             .env_clear()
@@ -289,6 +290,18 @@ pub fn bob_reads(talk: &mut Talk, texts: &[&str]) {
         .map(|((id, counter), text)| (id, counter, *text))
         .collect();
     talk.bob_reads_from_ada(&read);
+}
+
+/// Ada creates `clientb`, with a channel that holds Bob's device; Ada's machine follows it, and
+/// Bob's device takes in its mailbox. Gives the space and the channel.
+pub fn with_client_b(talk: &mut Talk) -> (Space, ChannelId) {
+    let cloud = &talk.world.cloud;
+    let bob = &talk.played[0].person;
+    let space = create_space(cloud, &talk.ada, CLIENT_B);
+    let channel = with_channel(cloud, space.id, &talk.ada, &[(bob, Role::Member)]);
+    received(&talk.ada.machine);
+    talk.played[0].take_in(cloud);
+    (space, channel)
 }
 
 /// How many times `shown` holds `text`.
