@@ -265,14 +265,17 @@ const MIGRATIONS: &[&str] = &[
     ) STRICT",
     // Compact output for agents: the agent each message the device sent is from, none for the
     // person's; the `msg_id` of each kept message, none for one an older client kept; each status
-    // of the device's messages a run took out of the inbox, by its entry's `seq`, as JSON
-    // (`forms::Status`), with its message's space if known, whether the person's run has yet to
-    // show it and the agent that sent the message until the agent's run took it; and each warning
-    // an agent's run gave, as its full line, until the person's run shows it.
+    // of the device's messages, in order: one a run took out of the inbox, by its entry's `seq`,
+    // or the server's refusal of a message an agent sent, as JSON (`forms::Status`), with its
+    // message's ID and space, if known, whether the person's run has yet to show it and the agent
+    // that sent the message until the agent's run took it; and each warning an agent's run gave,
+    // as its full line, until the person's run shows it.
     "ALTER TABLE sent ADD COLUMN agent TEXT;
     ALTER TABLE kept ADD COLUMN msg_id TEXT;
     CREATE TABLE kept_status (
-        seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+        position INTEGER PRIMARY KEY,
+        seq INTEGER UNIQUE CHECK (seq >= 1),
+        msg_id TEXT NOT NULL,
         space TEXT,
         status TEXT NOT NULL,
         person INTEGER NOT NULL CHECK (person IN (0, 1)),
@@ -1273,62 +1276,80 @@ impl State {
         ids.map(|msg_id| id("message ID", &msg_id?)).collect()
     }
 
-    /// Keeps `status`, a status of a message of the device in `space`, if known, as JSON, from the
-    /// entry `seq`, for the person and for `agent`, the agent that sent the message, if any, and
-    /// takes the entry out of the inbox, at once.
+    /// Keeps `status`, a status of the device's message `msg_id` in `space`, if known, as JSON,
+    /// from the entry `seq`, for the person and for `agent`, the agent that sent the message, if
+    /// any, and takes the entry out of the inbox, at once.
     pub fn keep_status(
         &self,
         seq: u64,
-        (space, agent): (Option<SpaceId>, Option<&str>),
+        (msg_id, space, agent): (MessageId, Option<SpaceId>, Option<&str>),
         status: &str,
     ) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
-            "INSERT INTO kept_status (seq, space, status, person, agent) VALUES (?1, ?2, ?3, 1, ?4)
-             ON CONFLICT DO NOTHING",
-            params![seq, space.map(|space| space.to_string()), status, agent],
+            "INSERT INTO kept_status (seq, msg_id, space, status, person, agent)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5) ON CONFLICT DO NOTHING",
+            params![
+                seq,
+                msg_id.to_string(),
+                space.map(|space| space.to_string()),
+                status,
+                agent
+            ],
         )?;
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
         Ok(())
     }
 
-    /// The kept statuses the person's run has yet to show, by `seq`, each as JSON.
+    /// The kept statuses the person's run has yet to show, in order, by position, each as JSON.
     pub fn statuses_for_person(&self) -> Result<Vec<(u64, String)>, Error> {
         self.lines(
-            "SELECT seq, status FROM kept_status WHERE person = 1 ORDER BY seq",
+            "SELECT position, status FROM kept_status WHERE person = 1 ORDER BY position",
             params![],
         )
     }
 
-    /// Records that the person's run showed the kept status `seq`.
-    pub fn status_shown_to_person(&self, seq: u64) -> Result<(), Error> {
+    /// Records that the person's run showed the kept status at `position`.
+    pub fn status_shown_to_person(&self, position: u64) -> Result<(), Error> {
         self.db.execute(
-            "UPDATE kept_status SET person = 0 WHERE seq = ?1",
-            params![sql_seq(seq)?],
+            "UPDATE kept_status SET person = 0 WHERE position = ?1",
+            params![sql_seq(position)?],
         )?;
         self.drop_done_statuses()
     }
 
     /// The kept statuses of the messages the agent `agent` sent in the space `space` that its run
-    /// has yet to take, by `seq`, each as JSON.
+    /// has yet to take, in order, by position, each as JSON.
     pub fn statuses_for_agent(
         &self,
         space: SpaceId,
         agent: &str,
     ) -> Result<Vec<(u64, String)>, Error> {
         self.lines(
-            "SELECT seq, status FROM kept_status WHERE space = ?1 AND agent = ?2 ORDER BY seq",
+            "SELECT position, status FROM kept_status WHERE space = ?1 AND agent = ?2
+             ORDER BY position",
             params![space.to_string(), agent],
         )
     }
 
-    /// Records that the agent's run took the kept status `seq`.
-    pub fn status_taken_by_agent(&self, seq: u64) -> Result<(), Error> {
+    /// Records that the agent's run took the kept status at `position`.
+    pub fn status_taken_by_agent(&self, position: u64) -> Result<(), Error> {
         self.db.execute(
-            "UPDATE kept_status SET agent = NULL WHERE seq = ?1",
-            params![sql_seq(seq)?],
+            "UPDATE kept_status SET agent = NULL WHERE position = ?1",
+            params![sql_seq(position)?],
+        )?;
+        self.drop_done_statuses()
+    }
+
+    /// Records that the agent `agent` took the server's refusals of its message `msg_id`: its own
+    /// run reported them.
+    pub fn refusals_taken(&self, agent: &str, msg_id: MessageId) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE kept_status SET agent = NULL
+             WHERE seq IS NULL AND agent = ?1 AND msg_id = ?2",
+            params![agent, msg_id.to_string()],
         )?;
         self.drop_done_statuses()
     }
@@ -1702,13 +1723,14 @@ impl State {
     }
 
     /// Takes the envelope of `msg_id` to `recipient`, none under `mls`, out of the outbox: the
-    /// server answered it. If it `refused` the envelope, the message's history entry goes too,
-    /// all at once.
+    /// server answered it. If it refused the envelope, `refused` its refusal as a status, as JSON,
+    /// the message's history entry goes too, and the refusal is kept for the agent that sent the
+    /// message, if any, all at once.
     pub fn remove_outgoing(
         &self,
         msg_id: MessageId,
         recipient: Option<DeviceId>,
-        refused: bool,
+        refused: Option<&str>,
     ) -> Result<(), Error> {
         let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
         tx.execute(
@@ -1718,10 +1740,16 @@ impl State {
                 recipient.map(|device| device.to_string())
             ],
         )?;
-        if refused {
+        if let Some(refused) = refused {
             tx.execute(
                 "DELETE FROM history_outbox WHERE msg_id = ?1",
                 params![msg_id.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO kept_status (msg_id, space, status, person, agent)
+                 SELECT msg_id, space, ?2, 0, agent FROM sent
+                 WHERE msg_id = ?1 AND agent IS NOT NULL",
+                params![msg_id.to_string(), refused],
             )?;
         }
         tx.commit()?;
@@ -2410,7 +2438,7 @@ pub(crate) mod tests {
         assert_eq!(state.channel_counter(ChannelId::generate()).unwrap(), 0);
 
         state
-            .remove_outgoing(first.outgoing.msg_id, None, false)
+            .remove_outgoing(first.outgoing.msg_id, None, None)
             .unwrap();
         let state = State::open(&dir).unwrap();
         assert_eq!(
@@ -2462,9 +2490,11 @@ pub(crate) mod tests {
         assert_eq!(state.history_outbox().unwrap(), []);
 
         for entry in [&second, &first] {
-            state.remove_outgoing(entry.msg_id, None, false).unwrap();
+            state.remove_outgoing(entry.msg_id, None, None).unwrap();
         }
-        state.remove_outgoing(refused.msg_id, None, true).unwrap();
+        state
+            .remove_outgoing(refused.msg_id, None, Some("refused"))
+            .unwrap();
 
         let state = State::open(&dir).unwrap();
         assert_eq!(
@@ -2519,9 +2549,9 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(counters, 0, "the counters per recipient device are dropped");
-        state.remove_outgoing(msg_id, None, false).unwrap();
+        state.remove_outgoing(msg_id, None, None).unwrap();
         assert_eq!(state.outbox().unwrap().len(), 1, "taken out as an mls one");
-        state.remove_outgoing(msg_id, Some(bob), false).unwrap();
+        state.remove_outgoing(msg_id, Some(bob), None).unwrap();
         assert_eq!(state.outbox().unwrap(), []);
     }
 
@@ -2548,7 +2578,7 @@ pub(crate) mod tests {
         assert_eq!(state.sent(msg_id).unwrap(), None);
 
         put(&state, &[&message]).unwrap();
-        state.remove_outgoing(msg_id, None, false).unwrap();
+        state.remove_outgoing(msg_id, None, None).unwrap();
 
         let state = State::open(&dir).unwrap();
         let sent = Sent {
@@ -2685,8 +2715,9 @@ pub(crate) mod tests {
     }
 
     /// A kept status waits for the person's run, and for the run of the agent that sent its
-    /// message in its space, until each takes it; then the state drops it. A kept warning waits for
-    /// the person's run, in order.
+    /// message in its space, until each takes it; then the state drops it. A refusal of an agent's
+    /// message waits only for the agent, until it takes it or its own run reported it; one of the
+    /// person's is not kept. A kept warning waits for the person's run, in order.
     #[test]
     fn kept_statuses_and_warnings_wait_until_taken() {
         let dir = TestDir::new("state-statuses");
@@ -2696,14 +2727,40 @@ pub(crate) mod tests {
         let entries: Vec<(u64, Vec<u8>)> = (4..=6).map(|seq: u8| (seq.into(), vec![seq])).collect();
         state.write_entries(&entries).unwrap();
         let (space, other) = (SpaceId::generate(), SpaceId::generate());
+        let id = MessageId::generate;
         state
-            .keep_status(4, (Some(space), Some("claude")), "first")
+            .keep_status(4, (id(), Some(space), Some("claude")), "first")
             .unwrap();
-        state.keep_status(5, (Some(space), None), "second").unwrap();
-        state.keep_status(6, (None, None), "third").unwrap();
+        state
+            .keep_status(5, (id(), Some(space), None), "second")
+            .unwrap();
+        state.keep_status(6, (id(), None, None), "third").unwrap();
+        let channel = ChannelId::generate();
+        let sent = |counter, agent: Option<&str>| {
+            let message = Counted {
+                outgoing: Outgoing {
+                    msg_id: MessageId::generate(),
+                    recipient: None,
+                    space,
+                    envelope: vec![counter],
+                },
+                channel,
+                counter: counter.into(),
+                agent: agent.map(str::to_owned),
+            };
+            put(&state, &[&message]).unwrap();
+            message.outgoing.msg_id
+        };
+        let (of_claude, of_person) = (sent(1, Some("claude")), sent(2, None));
+        state
+            .remove_outgoing(of_claude, None, Some("refused"))
+            .unwrap();
+        state
+            .remove_outgoing(of_person, None, Some("refused too"))
+            .unwrap();
         let rows = |rows: &[(u64, &str)]| -> Vec<(u64, String)> {
             rows.iter()
-                .map(|&(seq, status)| (seq, status.to_owned()))
+                .map(|&(position, status)| (position, status.to_owned()))
                 .collect()
         };
 
@@ -2711,17 +2768,21 @@ pub(crate) mod tests {
         assert!(state.inbox().unwrap().is_empty());
         assert_eq!(
             state.statuses_for_person().unwrap(),
-            rows(&[(4, "first"), (5, "second"), (6, "third")])
+            rows(&[(1, "first"), (2, "second"), (3, "third")])
         );
         let claude = |space| state.statuses_for_agent(space, "claude").unwrap();
-        assert_eq!(claude(space), rows(&[(4, "first")]));
+        assert_eq!(claude(space), rows(&[(1, "first"), (4, "refused")]));
         assert!(claude(other).is_empty());
         assert!(state.statuses_for_agent(space, "codex").unwrap().is_empty());
-        state.status_shown_to_person(4).unwrap();
-        state.status_shown_to_person(5).unwrap();
-        assert_eq!(state.statuses_for_person().unwrap(), rows(&[(6, "third")]));
-        assert_eq!(claude(space), rows(&[(4, "first")]));
-        state.status_taken_by_agent(4).unwrap();
+        state.status_shown_to_person(1).unwrap();
+        state.status_shown_to_person(2).unwrap();
+        assert_eq!(state.statuses_for_person().unwrap(), rows(&[(3, "third")]));
+        assert_eq!(claude(space), rows(&[(1, "first"), (4, "refused")]));
+        state.status_taken_by_agent(1).unwrap();
+        assert_eq!(claude(space), rows(&[(4, "refused")]));
+        state.refusals_taken("codex", of_claude).unwrap();
+        assert_eq!(claude(space), rows(&[(4, "refused")]));
+        state.refusals_taken("claude", of_claude).unwrap();
         assert!(claude(space).is_empty());
         let count: i64 = (state.db)
             .query_row("SELECT count(*) FROM kept_status", [], |row| row.get(0))

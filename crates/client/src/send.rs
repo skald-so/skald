@@ -48,7 +48,7 @@ use crate::mailbox::{self, Mailbox, Transport};
 use crate::recv;
 use crate::secrets;
 use crate::spaces::{self, Follower, Scope, Synced};
-use crate::state::{Outgoing, State};
+use crate::state::{self, Outgoing, State};
 use crate::wraps;
 
 /// The first pause between attempts, and the longest.
@@ -93,8 +93,22 @@ impl Wire for Queued {
 
     fn answered(&self, state: &State, answer: &Answer) {
         let (msg_id, recipient) = (self.outgoing.msg_id, self.outgoing.recipient);
-        let refused = matches!(answer, Answer::Refused(_));
-        if let Err(err) = state.remove_outgoing(msg_id, recipient, refused) {
+        let refused = match answer {
+            Answer::Stored => None,
+            Answer::Refused(problem) => Some(forms::Status {
+                msg_id: msg_id.to_string(),
+                space: Some(self.outgoing.space.to_string()),
+                channel: Some(self.channel.to_string()),
+                status: forms::REFUSED.to_owned(),
+                device: recipient.map(|device| device.to_string()),
+                device_name: None,
+                problem: Some(explained(problem)),
+                timestamp: state::unix_now(),
+            }),
+        };
+        let refused =
+            refused.map(|status| serde_json::to_string(&status).expect("a status encodes"));
+        if let Err(err) = state.remove_outgoing(msg_id, recipient, refused.as_deref()) {
             eprintln!(
                 "skald: warning: the outbox keeps the message {msg_id}{}, which the server \
                  answered, so a later run sends it again: {err}",
@@ -194,7 +208,16 @@ fn sent(
         }
         Err(err) => eprintln!("skald: warning: {err}"),
     }
-    report(&follower.state, &queued, &delivered, timeout, reported)
+    let reported = report(&follower.state, &queued, &delivered, timeout, reported);
+    if let Some(agent) = agent {
+        // It showed them in full, or as JSON.
+        for (msg_id, _) in queued.iter().map(Wire::key) {
+            if let Err(err) = follower.state.refusals_taken(agent.as_str(), msg_id) {
+                eprintln!("skald: warning: {err}");
+            }
+        }
+    }
+    reported
 }
 
 /// The channel ID `given` names, as a command takes it.
@@ -592,8 +615,8 @@ pub enum Reported<'a> {
     /// `sent #<ref>` per message once every one is stored, otherwise each in full: an agent's
     /// `skald send`.
     Sent,
-    /// Only the envelopes the server refused of the agent's messages: an agent's `skald recv`.
-    Refusals(&'a str),
+    /// Nothing: an agent's `skald recv`, which shows the refusals of its messages as statuses.
+    Quiet,
 }
 
 /// A message of the outbox: its ID, its channel and its envelopes.
@@ -665,19 +688,7 @@ pub fn report(
                 println!("{}", forms::object("sent", fields));
             }
         }
-        Reported::Refusals(agent) => {
-            let references = references()?;
-            for (id, _, envelopes) in &messages {
-                for queued in envelopes {
-                    if let Some(Answer::Refused(problem)) = delivered.answers.get(&queued.key())
-                        && of(agent, *id)?
-                    {
-                        let problem = explained(problem);
-                        println!("skald: refused #{}: {problem}", references.of(*id));
-                    }
-                }
-            }
-        }
+        Reported::Quiet => {}
     }
     outcome
 }

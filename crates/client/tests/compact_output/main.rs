@@ -43,9 +43,11 @@
 mod json;
 mod lines;
 mod messages;
+mod person_json;
 mod said;
 mod sending;
 mod statuses;
+mod warnings;
 
 // Ada's agents, as the tests of handing messages over have them, in the channel of the tests of
 // channel messages, with the kit and the device of the tests of channel groups, the messages of the

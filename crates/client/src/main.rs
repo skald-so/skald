@@ -371,7 +371,7 @@ enum Command {
     /// before the colon after missing ones; the reference is the leading characters, at least 4,
     /// of the base32 of SHA-256 of the message's ID. Of statuses it shows only those of its own
     /// messages that expired, skald: #<ref> expired before the device <name> got it, or that the
-    /// server refused, skald: refused #<ref>: <problem>; each warning of a message as one line
+    /// server refused, skald: #<ref> refused: <problem>; each warning of a message as one line
     /// without IDs, such as skald: dropped #<ref> from <device>: <reason>. The device keeps every
     /// status and warning, and the person's next run shows each once, in full.
     Recv {

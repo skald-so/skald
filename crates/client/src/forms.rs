@@ -157,37 +157,43 @@ impl Message {
     }
 }
 
-/// A server status of a message the device sent, as the device keeps it until it is shown: each
-/// ID in its text form.
+/// A status of a message the device sent, the server's or its refusal, as the device keeps it
+/// until it is shown: each ID in its text form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub msg_id: String,
     /// The message's space and channel, if the device recorded them.
     pub space: Option<String>,
     pub channel: Option<String>,
-    /// `delivered` or `expired`.
+    /// `delivered`, `expired` or `refused`.
     pub status: String,
-    /// The recipient device's ID, and its certificate's `name` if the device knows it.
-    pub device: String,
+    /// The recipient device's ID, none for a refusal of an envelope to a channel, and its
+    /// certificate's `name` if the device knows it.
+    pub device: Option<String>,
     pub device_name: Option<String>,
+    /// Why the server refused it.
+    pub problem: Option<String>,
     pub timestamp: u64,
 }
 
 /// The status of a message the server expired before a recipient device got it.
 pub const EXPIRED: &str = "expired";
 
+/// The status of a message the server refused.
+pub const REFUSED: &str = "refused";
+
 impl Status {
     /// How `form` shows it, `reference` its message's reference: an agent's short form shows only
-    /// `expired`.
+    /// `expired` and `refused`.
     pub fn shown(&self, form: Form, reference: &str) -> Option<String> {
-        let device = &self.device;
-        let expired = self.status == EXPIRED;
-        Some(match form {
-            Form::Full => {
-                let what = if expired {
-                    format!("expired before the device {device} got it")
-                } else {
-                    format!("delivered to the device {device}")
+        let device = self.device.as_deref().unwrap_or("of the channel");
+        let problem = self.problem.as_deref().map(printable).unwrap_or_default();
+        Some(match (form, self.status.as_str()) {
+            (Form::Full, status) => {
+                let what = match status {
+                    EXPIRED => format!("expired before the device {device} got it"),
+                    REFUSED => format!("refused for the device {device}: {problem}"),
+                    _ => format!("delivered to the device {device}"),
                 };
                 match &self.channel {
                     Some(channel) => {
@@ -199,15 +205,16 @@ impl Status {
                     None => format!("The message {}: {what}", self.msg_id),
                 }
             }
-            Form::Short if expired => {
+            (Form::Short, EXPIRED) => {
                 let name = self.device_name.as_deref().map_or_else(
                     || "a device".to_owned(),
                     |name| format!("the device {}", printable(name)),
                 );
                 format!("skald: #{reference} expired before {name} got it")
             }
-            Form::Short => return None,
-            Form::Json => object(
+            (Form::Short, REFUSED) => format!("skald: #{reference} refused: {problem}"),
+            (Form::Short, _) => return None,
+            (Form::Json, _) => object(
                 "status",
                 json!({
                     "msg_id": self.msg_id,
@@ -217,6 +224,7 @@ impl Status {
                     "status": self.status,
                     "device": self.device,
                     "device_name": self.device_name,
+                    "problem": self.problem,
                     "timestamp": self.timestamp,
                 }),
             ),
@@ -244,7 +252,7 @@ mod tests {
     fn whole_reference_is_base32_of_sha256_of_the_msg_id() {
         let msg_id: MessageId = "01a1dcab-eecf-768d-821b-95f7a4a8bd19".parse().unwrap();
         let whole = whole_reference(msg_id);
-        // By `printf <the 16 bytes> | openssl dgst -sha256 -binary | base32`, in lowercase, without `=`.
+        // `printf <the 16 bytes> | openssl dgst -sha256 -binary | base32`, lowercase, without `=`.
         assert_eq!(
             whole,
             "4fd4bpdrwlevgtf76yr7aop7sd6psps6bink4745fqh6ymsio3ua"
@@ -347,19 +355,24 @@ mod tests {
             space: Some("01a1dcab-ee8a-7872-9adc-6efd0851e3e0".to_owned()),
             channel: Some("01a1dcab-ee8a-7872-9adc-6efd0851e3ee".to_owned()),
             status: status.to_owned(),
-            device: "a90f5ea9-75e5-899a-90ec-3a09f33aebdf".to_owned(),
+            device: Some("a90f5ea9-75e5-899a-90ec-3a09f33aebdf".to_owned()),
             device_name: Some("bob-box".to_owned()),
+            problem: None,
             timestamp: 1_800_000_000,
         }
     }
 
     /// A status line names the status, the message, its channel if known, and the recipient
-    /// device; an agent's names `expired` by the reference and the device's name, and no
-    /// `delivered`.
+    /// device; an agent's names `expired` by the reference and the device's name, and `refused`
+    /// with the problem, and no `delivered`.
     #[test]
     fn status_shows_in_full_short_and_as_json() {
         let delivered = status("delivered");
         let mut expired = status(EXPIRED);
+        let mut refused = status(REFUSED);
+        refused.device = None;
+        refused.device_name = None;
+        refused.problem = Some("not-a-member\u{7}".to_owned());
 
         assert_eq!(
             delivered.shown(Form::Full, "6bx7").unwrap(),
@@ -372,10 +385,21 @@ mod tests {
             expired.shown(Form::Short, "6bx7").unwrap(),
             "skald: #6bx7 expired before the device bob-box got it"
         );
-        let json: Value =
-            serde_json::from_str(&delivered.shown(Form::Json, "6bx7").unwrap()).unwrap();
         assert_eq!(
-            json,
+            refused.shown(Form::Full, "6bx7").unwrap(),
+            "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19 in the channel \
+             01a1dcab-ee8a-7872-9adc-6efd0851e3ee: refused for the device of the channel: \
+             not-a-member\\u{7}"
+        );
+        assert_eq!(
+            refused.shown(Form::Short, "6bx7").unwrap(),
+            "skald: #6bx7 refused: not-a-member\\u{7}"
+        );
+        let json = |status: &Status| -> Value {
+            serde_json::from_str(&status.shown(Form::Json, "6bx7").unwrap()).unwrap()
+        };
+        assert_eq!(
+            json(&delivered),
             json!({
                 "type": "status",
                 "msg_id": "01a1dcab-eecf-768d-821b-95f7a4a8bd19",
@@ -385,9 +409,11 @@ mod tests {
                 "status": "delivered",
                 "device": "a90f5ea9-75e5-899a-90ec-3a09f33aebdf",
                 "device_name": "bob-box",
+                "problem": null,
                 "timestamp": 1_800_000_000,
             })
         );
+        assert_eq!(json(&refused)["problem"], "not-a-member\u{7}");
 
         expired.channel = None;
         expired.device_name = None;

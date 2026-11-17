@@ -129,10 +129,10 @@ fn received(
     }
     let queued = send::queued(&follower.state, scope)?;
     let mut delivered = send::deliver(&mut follower, &queued, timeout, None);
-    let reported = match (form, agent) {
-        (Form::Json, agent) => Reported::Json(agent.map(Name::as_str)),
-        (_, Some(agent)) => Reported::Refusals(agent.as_str()),
-        (_, None) => Reported::Full,
+    let reported = match (agent, form) {
+        (Some(_), _) => Reported::Quiet,
+        (None, Form::Json) => Reported::Json(None),
+        (None, _) => Reported::Full,
     };
     if let Err(err) = send::report(&follower.state, &queued, &delivered, timeout, reported) {
         eprintln!("skald: warning: {err}");
@@ -419,14 +419,15 @@ fn show(
                         ServerStatus::Delivered => "delivered".to_owned(),
                         ServerStatus::Expired => forms::EXPIRED.to_owned(),
                     },
-                    device: status.device.to_string(),
+                    device: Some(status.device.to_string()),
                     device_name: space.and_then(|space| device_name(&checks, space, status.device)),
+                    problem: None,
                     timestamp: status.timestamp,
                 };
                 let json = serde_json::to_string(&kept).expect("a status encodes");
                 let agent = sent.as_ref().and_then(|sent| sent.agent.as_deref());
                 (follower.state)
-                    .keep_status(seq, (space, agent), &json)
+                    .keep_status(seq, (status.msg_id, space, agent), &json)
                     .map_err(text)?;
             }
             // This client wrote only entries it reads.
