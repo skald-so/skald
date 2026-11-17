@@ -21,7 +21,7 @@ CDDL rules not defined here, such as `envelope` and `id`, are in [README.md](REA
 A message reaches an agent in three hops: the sending device → the server → each recipient device → the agent.
 
 - Every hop is at-least-once with deduplication. There is no end-to-end exactly-once.
-- Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store.
+- Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store, for an agent until the message expires there: [Device to agent](#device-to-agent).
 - Every message ends in a status the sender sees: [Receipts](#receipts).
 - `read` means handed to the agent: it shows neither that the agent acted on the message nor that it did not. Work that must be done goes through the [queue](queues.md#tasks).
 
@@ -29,13 +29,15 @@ A message reaches an agent in three hops: the sending device → the server → 
 Client and server exchange envelopes, answers and statuses as frames: CBOR items carried as [Encoding](README.md#encoding) says.
 
 ```cddl
-frame = auth / send / stored / send-refused / sync / message / status / ack / batch / space-notice
+frame = auth / send / stored / send-refused / sync / message / status / ack / batch / space-notice /
+        history / history-stored / history-refused
 
 ; client → server
 auth = [10, challenge: bstr, device: id, signature: bstr .size 64]
 send = [1, envelope: bstr .cbor envelope, report: bool]
 sync = [4, cursor: uint]
 ack = [7, seq]
+history = [11, upload: uint, space: id, channel: id, history-item]
 
 ; server → client
 stored = [2, send-key, timestamp]
@@ -44,6 +46,12 @@ message = [5, seq, envelope: bstr .cbor envelope]
 status = [6, seq, delivery-status]
 batch = [8, [* (message / status / space-notice)]]
 space-notice = [9, space: id]
+history-stored = [12, upload: uint]
+history-refused = [13, upload: uint, problem: tstr]
+
+history-item = [1, link: bstr .cbor history-link] /
+               [2, wrap: bstr .cbor history-wrap] /
+               [3, msg_id: id, entry: bstr .cbor history-entry]
 
 send-key = [
   msg_id: id,
@@ -64,13 +72,14 @@ timestamp = uint       ; seconds since the Unix epoch
 ```
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
+- `history`: an item of the channel's history to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
 - `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
 - The client and the server each ignore a frame of a type they do not know.
 - The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: each request proves its device ([Connecting](#connecting)). `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request's body is a `sync` with the cursor; its answer is a `batch` ([Mailbox](#mailbox)).
-  - SSE: one `message`, `status` or `space-notice` per event, the event's `id` the `seq` of a `message` or `status`; `Last-Event-ID` states the cursor. The client sends `send` and `ack` over HTTPS.
+  - SSE: a stream that proves its device as an HTTPS request does. Its events ([Encoding](README.md#encoding)): a `message`, `status` or `space-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
 
 ## Connecting
@@ -103,13 +112,13 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 
 - `signature` signs, with the label `skald request`, `["skald request", challenge, origin]`, `origin` as in `auth`. A different label keeps a proof from serving as `auth` and the other way round.
 - The server checks it as `auth`, and also that the challenge is of the bearer token's session. A request it does not take reads, acks and stores nothing: `401` with the reason as its problem, `auth-required` for a missing or malformed proof, or `not-signed-in` for a token of no device session.
-- A waiting long-poll ends with the refusal a new request would get when its session ends or its device is revoked.
+- A waiting long-poll ends with the refusal a new request would get when its session ends or its device is revoked; an SSE stream ends.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
 - The idempotency key of an envelope is its sending device, its `msg_id` and, under `hpke`, its recipient device. It has no field of its own: `msg_id` is unique per sending device, and the server knows the sending device from the authenticated connection.
 - The server stores at most one envelope per idempotency key and keeps the key for at least its mailbox retention. It answers a retry as it answered the first send, whatever the retry's bytes.
-- `stored` is sent only after the envelope and its mailbox entries are committed. In the cloud, after the replica has the write: [infrastructure.md, "Cloud"](../dev/infrastructure.md#cloud).
+- `stored` is sent only after the envelope and its mailbox entries are committed.
 - `send-refused` names one of these problems. A client treats a problem it does not know as a refusal too.
 
 | Problem | The envelope |
@@ -133,7 +142,7 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
   - On WebSocket, the server sends no `message` or `status` on a connection before its first `sync`.
   - Every `sync` acks like `ack`. Only the first `sync` of a connection starts catch-up; a later one only acks.
 - **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
-  - On WebSocket, once catch-up has sent every entry the mailbox held at the first `sync`, the server sends an empty `batch`, so a client that runs once knows it has them all.
+  - On WebSocket and SSE, once catch-up has sent every entry the mailbox held at the first `sync` or the stream's opening, the server sends an empty `batch`, so a client that runs once knows it has them all.
   - On HTTPS, catch-up ends at the first empty answer to a long-poll with a wait of 0.
 - **Long-poll:** a request states its cursor and a wait in seconds, cut to the server's maximum. Its answer is a `batch`:
   - the entries after the cursor in `seq` order, up to a server limit per answer;
@@ -170,6 +179,7 @@ A recipient device drops, without a receipt:
   - An [`ask_user` answer](agents.md#ask_user) wakes the session at once in every mode; a task's [signal](queues.md#running-a-task) follows the mode as a message from its sender does.
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
+- The device keeps a message for an agent until it hands it over, or until the envelope's `ttl` ends, counted from when the device wrote the entry, at most the cloud's mailbox retention ([architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)); then it drops the message for that agent.
 - Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
 - After marking a message with `to` handed over, the device issues `read`.
 - Only `a2a`, [`task-result`](queues.md#results) and [`ask-answer`](agents.md#ask_user) bodies are handed over as messages; receipts are not.

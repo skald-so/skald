@@ -1,8 +1,9 @@
 //! `skald send`: the device sends a text to a channel of a space it follows; as an agent, only in
 //! the space of its folder. It first accepts the space's latest revisions and goes through the
 //! mailbox as `skald recv` does, showing none of it: it sends its Commits and Welcomes that wait,
-//! writes each entry, goes through the Welcomes, Commits and application messages and brings the
-//! channel's group in line ([`crate::groups`]); a later `skald recv` shows the messages. It then
+//! writes each entry, goes through the Welcomes, Commits and application messages, brings the
+//! channel's group in line ([`crate::groups`]) and uploads the links of the key chains the server
+//! lacks ([`crate::key_chain`]); a later `skald recv` shows the messages. It then
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
 //! there waits for the server or no other device is in the group (`docs/protocol/membership.md`,
@@ -36,6 +37,7 @@ use crate::connection::{WebSocket, printable};
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::groups::{self, Link, Rosters};
+use crate::key_chain;
 use crate::recv;
 use crate::secrets;
 use crate::spaces::{self, Follower, Scope, Synced};
@@ -135,6 +137,12 @@ pub fn run(
         devices,
     } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
         .map_err(|err| with_waiting(dir, scope, err))?;
+    if let Some(agent) = agent {
+        // Messages that come from now on are also for this agent.
+        (follower.state)
+            .add_agent(space.id, agent.as_str())
+            .map_err(|err| err.to_string())?;
+    }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
     let from = sender(&mut follower, &roster, agent)?;
     groups::encrypt(
@@ -151,9 +159,10 @@ pub fn run(
 
 /// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the
 /// device's Commits and Welcomes that wait, writes each entry after the cursor, goes through the
-/// Welcomes and Commits and brings in line the groups of the channels of each space the run accepted
-/// the revisions of. Gives the last accepted revision of `space` and its accounts' devices, `synced`
-/// as the run synced them first, as they are then. Warns of what fails.
+/// Welcomes and Commits, brings in line the groups of the channels of each space the run accepted
+/// the revisions of and uploads the links of their key chains the server lacks. Gives the last
+/// accepted revision of `space` and its accounts' devices, `synced` as the run synced them first,
+/// as they are then. Warns of what fails.
 fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
@@ -177,6 +186,7 @@ fn through_mailbox(
         eprintln!("skald: warning: {err}");
     }
     groups::align_with(follower, &mut link);
+    key_chain::upload_missing(follower, &mut link, scope);
     Ok(rosters.remove(&space).expect("the channel's space"))
 }
 
@@ -413,14 +423,7 @@ fn answers<W: Wire>(
                 return Err((closed(frame.as_ref()), refused));
             }
             Ok(_) => continue,
-            Err(tungstenite::Error::Io(err))
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Ok(());
-            }
+            Err(err) if timed_out(&err) => return Ok(()),
             Err(err) => return Err((broke(err), false)),
         };
         let SendKey { msg_id, recipient } = send_key;
@@ -435,6 +438,15 @@ fn answers<W: Wire>(
         answers.insert(key, answer);
     }
     Ok(())
+}
+
+/// Whether `err`, of a read of a connection, is that its wait ran out.
+pub fn timed_out(err: &tungstenite::Error) -> bool {
+    matches!(
+        err,
+        tungstenite::Error::Io(err)
+            if matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+    )
 }
 
 /// Sets how long a read of `socket` waits, at least a millisecond.
@@ -757,5 +769,16 @@ pub(crate) mod tests {
 
         assert_eq!(ids(Scope::All), messages);
         assert_eq!(ids(Scope::Only(own)), [messages[0], messages[2]]);
+    }
+
+    /// A read whose wait ran out times out, whichever way the system says it; a broken or closed
+    /// connection does not.
+    #[test]
+    fn only_a_read_whose_wait_ran_out_times_out() {
+        let io = |kind| tungstenite::Error::Io(io::Error::from(kind));
+        assert!(timed_out(&io(io::ErrorKind::WouldBlock)));
+        assert!(timed_out(&io(io::ErrorKind::TimedOut)));
+        assert!(!timed_out(&io(io::ErrorKind::ConnectionReset)));
+        assert!(!timed_out(&tungstenite::Error::ConnectionClosed));
     }
 }

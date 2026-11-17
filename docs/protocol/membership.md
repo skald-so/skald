@@ -536,7 +536,18 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 ### Uploads
 - The sender of each Commit uploads the new epoch's link and wraps. Any member device of an epoch uploads those it finds missing and can make.
 - Devices can judge an epoch differently, for example when only one has seen a revocation, so each uploads the link its own judgment gives.
-- The server keeps the first link per channel, epoch and `prev` and the first wrap per recipient, and takes uploads only from member devices of the epoch.
+- A device never uploads again a link the server has had, having taken it from the device or listed it to it, nor one the server refused: a link that retention deleted stays deleted.
+- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session alone uploads none.
+- The server keeps the first link per channel, epoch and `prev` and the first wrap per channel, epoch and recipient, each only from a member device of its epoch. A later one changes nothing.
+- It answers `history-stored` when it keeps the item or keeps one in its place already, and otherwise `history-refused`, keeping nothing, with one of these problems. A client treats a problem it does not know as a refusal too.
+
+| Problem | The item |
+|---|---|
+| `malformed` | Does not decode as its kind, names another channel than its upload, or is a link whose `prev` is not below its epoch |
+| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows |
+| `epoch-mismatch` | Is of an epoch the channel has not had; an entry, of an epoch other than the channel's current or previous one |
+
+- The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members: [api/openapi.json](../../api/openapi.json).
 
 ### History entry
 The sending device writes a copy of each message with an `a2a` or [`task-result`](queues.md#results) body it sends in the channel, under the key of its current epoch; a browser as [Wraps](#wraps) says. A device without a history key, such as a stateless `service` device, writes none.
@@ -563,7 +574,7 @@ history-body = {
 ```
 
 - AES-128-GCM with the epoch's key, a random `nonce` and associated data the encoded `["skald history entry", channel, epoch]`.
-- The server keeps one entry per sending device and `msg_id`. It takes an entry only for the channel's current or previous epoch, and only from a member device of the current epoch or a browser with a wrap of the current epoch.
+- The server keeps one entry per sending device and `msg_id`, which the upload names, as the server cannot read it. It takes an entry only for the channel's current or previous epoch, and only from a member device of the current epoch or a browser with a wrap of the current epoch.
 
 A reader MUST drop an entry unless:
 1. it decrypts with the epoch's key;
@@ -572,7 +583,7 @@ A reader MUST drop an entry unless:
 
 ### Access
 - A member's device reads the history through its keys: from its first epoch back along the key chain.
-- A channel member whose `history` is false reads only epochs from the one whose Commit added its account. The server gives its devices neither the links of that epoch nor any link, wrap or entry of an earlier one.
+- A channel member whose `history` is false in the latest revision reads only epochs from its join: the first epoch with a device of its account after the revision that last added the account to the channel. The server gives its sessions only the links whose `prev` is that epoch or a later one, and no wrap or entry of an earlier epoch; before the join, none. A Commit that removes the account's devices does not move its join: its devices that join later read from that epoch too.
 - The recovery key reads every epoch wrapped to it: a device linked with it reads the account's history before it rejoins the channels.
 
 ## Security considerations
@@ -589,7 +600,7 @@ A reader MUST drop an entry unless:
 - A server that reports no master key for an existing account stops a new device whose user says it is not the first. If its user says it is the first, the device creates a second master key, and the account splits into two sets of devices that do not trust each other: devices and members that pinned the first master key reject certificates chained to the second, and the device rejects those chained to the first. The server gains no signing power: the device deletes the second master private key, and only its user sees the second recovery key. No device set change warns of the device: the account's other devices do not count it as theirs.
 - A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
-- A channel member whose `history` is false holds its join epoch's key, which opens the links to the epochs before it: only the server withholding those links keeps it from earlier history.
+- A channel member whose `history` is false holds the key of every epoch from its join on, and each opens that epoch's link: the join epoch's link, or a later one whose uploader judged the epochs between unclean, gives a key from before the join. Only the server withholding those links keeps it from earlier history.
 - The server holds GroupInfo, so it can join a channel by an external Commit from its own device. Members remove the device, and its epoch is not clean: no link opens an earlier key with that epoch's key, and no member writes under it.
 - A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
 - A reader takes a wrap signed by any device of a member account, revoked or not. A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.

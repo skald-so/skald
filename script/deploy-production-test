@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Tests script/deploy-production's input, with a stand-in for ssh first on PATH: one stable release's
+# version, X.Y.Z, runs `deploy <X.Y.Z>` over SSH once; no version, an extra argument or a malformed
+# version exits with 2 and runs no ssh. The connection itself: script/deploy-staging-test, over the
+# same script/lib/ssh-deploy.sh.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "deploy-production-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+ssh-keygen -q -t ed25519 -N '' -C client -f "$tmp/client"
+mkdir "$tmp/bin" "$tmp/run"
+# ssh: records the command, the words after `--` and the destination, and passes.
+cat >"$tmp/bin/ssh" <<EOF
+#!/bin/sh
+while [ \$# -gt 0 ] && [ "\$1" != -- ]; do shift; done
+shift 2
+printf '%s\n' "\$*" >>"$tmp/calls"
+EOF
+chmod +x "$tmp/bin/ssh"
+
+# run <args...>: runs script/deploy-production with well-formed secrets; sets $status and $calls,
+# the commands ssh got, one per line.
+run() {
+  rm -f "$tmp/calls"
+  status=0
+  PATH="$tmp/bin:$PATH" TMPDIR=$tmp/run PRODUCTION_SSH_KEY=$(base64 <"$tmp/client" | tr -d '\n') \
+    PRODUCTION_SSH_HOST_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5" PRODUCTION_SSH_DESTINATION=ssh://deploy@localhost:22 \
+    "$root/script/deploy-production" "$@" >/dev/null 2>&1 || status=$?
+  calls=$(cat "$tmp/calls" 2>/dev/null || true)
+}
+
+for version in 0.10.0 1.2.3 0.0.0 10.200.3000; do
+  run "$version"
+  [[ $status -eq 0 ]] || fail "$version: exit code $status"
+  [[ $calls == "deploy $version" ]] || fail "$version: ssh got '$calls', not 'deploy $version'"
+done
+
+# refused <case> <args...>: exit code 2, no ssh.
+refused() {
+  run "${@:2}"
+  [[ $status -eq 2 ]] || fail "$1: exit code $status, not 2"
+  [[ -z $calls ]] || fail "$1: ssh ran: $calls"
+}
+refused "no version"
+refused "an extra argument" 0.10.0 x
+refused "two versions" 0.10.0 0.11.0
+refused "an empty version" ""
+refused "the tag" v0.10.0
+refused "a beta" 0.11.0-beta.1
+refused "two numbers" 0.10
+refused "four numbers" 0.10.0.1
+refused "a leading zero" 0.010.0
+refused "a letter" 0.10.x
+refused "a space" "0.10.0 x"
+refused "a newline" $'0.10.0\nid'
+refused "an option" --help
+
+if [[ $failures -ne 0 ]]; then
+  echo "deploy-production-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "deploy-production-test: all cases passed"

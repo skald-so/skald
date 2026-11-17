@@ -93,7 +93,11 @@ export function AccessScreen({
       label: "Where",
       width: "minmax(0, 2fr)",
       cell: (session) => (
-        <TwoLine detail={session.current && "this session"} detailTone="ok">
+        <TwoLine
+          regular
+          detail={session.current && "this session"}
+          detailTone="ok"
+        >
           {session.kind === "device" ? (
             <>
               <code>skald</code>

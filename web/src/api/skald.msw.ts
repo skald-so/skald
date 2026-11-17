@@ -22,6 +22,9 @@ import type {
   HandedOutKeyPackages,
   Health,
   HealthUnavailable,
+  HistoryEntries,
+  HistoryLinks,
+  HistoryWraps,
   KeyPackageCount,
   KeyPackageRequest,
   KeyPackageUpload,
@@ -695,6 +698,7 @@ export const getListSignInMethodsResponseMock = (
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
     ]),
+    current: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
@@ -713,6 +717,7 @@ export const getListSignInMethodsResponseMock200 = (
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
     ]),
+    current: faker.datatype.boolean(),
   })),
   ...overrideResponse,
 });
@@ -2122,6 +2127,240 @@ export const getUploadGroupInfoResponseMock409 = (
 });
 
 export const getUploadGroupInfoResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryEntriesResponseMock = (
+  overrideResponse: Partial<Extract<HistoryEntries, object>> = {},
+): HistoryEntries => ({
+  entries: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getGetHistoryEntriesResponseMock200 = (
+  overrideResponse: Partial<Extract<HistoryEntries, object>> = {},
+): HistoryEntries => ({
+  entries: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getGetHistoryEntriesResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetHistoryEntriesResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryEntriesResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryEntriesResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryEntriesResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryLinksResponseMock = (
+  overrideResponse: Partial<Extract<HistoryLinks, object>> = {},
+): HistoryLinks => ({
+  links: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getGetHistoryLinksResponseMock200 = (
+  overrideResponse: Partial<Extract<HistoryLinks, object>> = {},
+): HistoryLinks => ({
+  links: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getGetHistoryLinksResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetHistoryLinksResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryLinksResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryLinksResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryLinksResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryWrapsResponseMock = (
+  overrideResponse: Partial<Extract<HistoryWraps, object>> = {},
+): HistoryWraps => ({
+  wraps: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getGetHistoryWrapsResponseMock200 = (
+  overrideResponse: Partial<Extract<HistoryWraps, object>> = {},
+): HistoryWraps => ({
+  wraps: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getGetHistoryWrapsResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetHistoryWrapsResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryWrapsResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryWrapsResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetHistoryWrapsResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -7030,6 +7269,681 @@ export const getUploadGroupInfoMockHandler500 = (
   );
 };
 
+export const getGetHistoryEntriesMockHandler = (
+  overrideResponse?:
+    | HistoryEntries
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<HistoryEntries> | HistoryEntries),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/entries",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryEntriesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryEntriesMockHandler200 = (
+  overrideResponse?:
+    | HistoryEntries
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<HistoryEntries> | HistoryEntries),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/entries",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryEntriesResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryEntriesMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/entries",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryEntriesResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryEntriesMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/entries",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryEntriesResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryEntriesMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/entries",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryEntriesResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryEntriesMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/entries",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryEntriesResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryEntriesMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/entries",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryEntriesResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryLinksMockHandler = (
+  overrideResponse?:
+    | HistoryLinks
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<HistoryLinks> | HistoryLinks),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/links",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryLinksResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryLinksMockHandler200 = (
+  overrideResponse?:
+    | HistoryLinks
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<HistoryLinks> | HistoryLinks),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/links",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryLinksResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryLinksMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/links",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryLinksResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryLinksMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/links",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryLinksResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryLinksMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/links",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryLinksResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryLinksMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/links",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryLinksResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryLinksMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/links",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryLinksResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryWrapsMockHandler = (
+  overrideResponse?:
+    | HistoryWraps
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<HistoryWraps> | HistoryWraps),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/wraps",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryWrapsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryWrapsMockHandler200 = (
+  overrideResponse?:
+    | HistoryWraps
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<HistoryWraps> | HistoryWraps),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/wraps",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryWrapsResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryWrapsMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/wraps",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryWrapsResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryWrapsMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/wraps",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryWrapsResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryWrapsMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/wraps",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryWrapsResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryWrapsMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/wraps",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryWrapsResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetHistoryWrapsMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; channel: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string; channel: string }>(
+    "*/spaces/:space/channels/:channel/history/wraps",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; channel: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetHistoryWrapsResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetSpaceDevicesMockHandler = (
   overrideResponse?:
     | Devices
@@ -7972,6 +8886,9 @@ export const getSkaldAPIMock = () => [
   getCreateChannelMockHandler(),
   getGetGroupInfoMockHandler(),
   getUploadGroupInfoMockHandler(),
+  getGetHistoryEntriesMockHandler(),
+  getGetHistoryLinksMockHandler(),
+  getGetHistoryWrapsMockHandler(),
   getGetSpaceDevicesMockHandler(),
   getListSpaceMembersMockHandler(),
   getGetRosterRevisionsMockHandler(),

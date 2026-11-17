@@ -7,7 +7,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::common::TestDb;
 
@@ -82,6 +82,19 @@ impl Proxy {
     /// How many listening connections the proxy has closed so far.
     pub fn refused(&self) -> usize {
         self.shared.refused.load(Ordering::Relaxed)
+    }
+
+    /// Waits up to `within` until the proxy has closed a listening connection.
+    #[track_caller]
+    pub fn await_refused(&self, within: Duration) {
+        let deadline = Instant::now() + within;
+        while self.refused() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "no listening refused after {within:?}"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// Stops forwarding on each listening connection open now, keeping it open; gives how many

@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use skald_crypto::SigningKey;
 use skald_proto::{
-    AUTH_LABEL, Cbor as _, DeviceId, Frame, PROTOCOL_VERSION, Push, RawEnvelope, Scheme,
+    AUTH_LABEL, Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, PROTOCOL_VERSION, Push,
+    RawEnvelope, Scheme, SpaceId,
 };
 use tungstenite::client::IntoClientRequest as _;
 use tungstenite::http::HeaderValue;
@@ -100,6 +101,31 @@ impl Peer {
     pub fn stored(&mut self, envelope: &RawEnvelope) {
         let answer = self.send(envelope);
         assert!(matches!(answer, Frame::Stored(_)), "not stored: {answer:?}");
+    }
+
+    /// Uploads `item` of `channel` in `space` in a `history` frame numbered `upload`; gives the
+    /// server's answer to it, `history-stored` or `history-refused`.
+    pub fn upload(
+        &mut self,
+        upload: u64,
+        (space, channel): (SpaceId, ChannelId),
+        item: HistoryItem,
+    ) -> Frame {
+        self.write(&Frame::History {
+            upload,
+            space,
+            channel,
+            item,
+        });
+        loop {
+            let answer = self.read();
+            if let Frame::HistoryStored { upload: of } | Frame::HistoryRefused { upload: of, .. } =
+                answer
+                && of == upload
+            {
+                return answer;
+            }
+        }
     }
 
     /// States the cursor `cursor` in the connection's first `sync`; gives every entry of
