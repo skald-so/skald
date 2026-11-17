@@ -85,7 +85,7 @@ use std::time::{Duration, Instant};
 use browser::{APPROVE, Browser};
 use cloud::{Cloud, WAIT, shown_grant};
 use filter::{EVENTS, Fate, Filter, POLL, SEND, Seen, Stream, WEBSOCKET};
-use fixtures::{TIMEOUT_SETTING, database, hex, send, send_args};
+use fixtures::{TIMEOUT_SETTING, await_running, database, hex, send, send_args};
 use kit::{RECV, Space, create_space, with_channel};
 use machine::{FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, YES};
 use played::{Played, Took};
@@ -97,7 +97,10 @@ use talk::{ADA_HOST, BOB_HOST, Line, assert_shows_once, delivered, encrypted, st
 use times::{MAILBOX, WEEK, moved_back};
 use tls::Ca;
 use tls_front::Front;
-use world::{ACME, Person, World};
+use world::{
+    ACME, FORK, Person, World, create, devices_request, members, next_by, serve_revisions, store,
+    warnings,
+};
 
 /// The setting of the proxy, and that of the root certificates the client trusts instead of the
 /// platform's.
@@ -166,22 +169,23 @@ impl Behind {
     /// Ada and Bob, GitHub users `ids` with `logins`, on a server with a mailbox retention of 7
     /// days; at first the proxy blocks nothing.
     fn start(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        Self::start_with(ids, logins, (TIMEOUT, None))
+        Self::start_with(ids, logins, TIMEOUT, |_| {})
     }
 
     /// As [`Behind::start`], Ada's runs with the request timeout `timeout`, in seconds, and the
-    /// server's longest long-poll wait `long_poll`, if given.
+    /// server's settings changed by `change`.
     fn start_with(
         ids: [u64; 2],
         logins: [&str; 2],
-        (timeout, long_poll): (&str, Option<Duration>),
+        timeout: &str,
+        change: impl FnOnce(&mut Settings),
     ) -> Self {
         let keeper = Machine::new();
         let ca = Ca::new(&keeper.root().join("ca"));
         let front = Front::bind(vec![ca.issue(NAMES)]);
         let retained = |settings: &mut Settings| {
             settings.mailbox_retention = Some(Duration::from_secs(WEEK));
-            settings.long_poll_max_wait = long_poll;
+            change(settings);
         };
         let cloud = Cloud::fronted_over_tls_with(HOST, front.port(), (120, 1), retained);
         let filter = Filter::start(cloud.relay.address());
@@ -544,7 +548,8 @@ fn send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll() {
     let mut behind = Behind::start_with(
         [4_144_041_201, 4_144_041_202],
         ["ada-quick-exit", "bob-quick-exit"],
-        (LONG_TIMEOUT, Some(LONG_POLL_WAIT)),
+        LONG_TIMEOUT,
+        |settings| settings.long_poll_max_wait = Some(LONG_POLL_WAIT),
     );
     for transport in [Transport::Sse, Transport::LongPoll] {
         behind.leave(transport);
@@ -751,4 +756,126 @@ fn long_poll_catch_up_asks_until_an_answer_is_empty() {
     behind.assert_acked(&envelope);
     let got = behind.ada_receives_over(Transport::LongPoll);
     behind.assert_shows_bobs(&got.shown(), waiting);
+}
+
+/// Sends `request`, such as `GET /spaces/<id>/devices`, to the relay, so that the one it holds
+/// until a second comes goes on.
+fn second_to_relay(cloud: &Cloud, request: &str) {
+    let path = request.strip_prefix("GET ").expect("a GET request");
+    // The relay answers it as the server does; only that it came counts.
+    let _ = ureq::get(format!("http://{}{path}", cloud.relay.address())).call();
+}
+
+/// Over SSE and over long-poll: once catch-up has ended, Ada's `skald recv` fetches the revisions
+/// of a space of hers, then the devices of its accounts, which the relay holds back; meanwhile a
+/// revision of the space is stored. The run fetched the revisions before that one, so it accepts it
+/// only by its `space-notice`: once the relay gives another revision with its number,
+/// `skald members` warns of a fork.
+#[test]
+fn revision_stored_after_the_fetch_is_accepted_by_its_notice_over_sse_and_long_poll() {
+    let behind = Behind::start(
+        [4_144_041_801, 4_144_041_802],
+        ["ada-late-notice", "bob-late-notice"],
+    );
+    let (cloud, ada, bob) = (behind.cloud(), &behind.ada, &behind.bob.person);
+    for (transport, name) in [
+        (Transport::Sse, "notices-over-sse"),
+        (Transport::LongPoll, "notices-over-poll"),
+    ] {
+        let last = create(cloud, ada, name);
+        let space = last.body().space;
+        let kept: Vec<_> = (cloud.revisions(&ada.token, space).into_iter())
+            .map(|(_, roster)| roster)
+            .collect();
+        let late = next_by(&last, ada, |list| list.push(bob.member(Role::Member)));
+        let fork = next_by(&last, ada, |list| list.push(bob.member(Role::Admin)));
+        behind.leave(transport);
+        let (relay, fetch) = (&cloud.relay, devices_request(space));
+        relay.hold(&fetch, 2);
+
+        let mut run = ada.machine.start(&[RECV]);
+        let fetching = || relay.held() > 0;
+        await_running(&mut run, "the devices fetch held back", fetching);
+        store(cloud, &ada.token, &late);
+        // Over SSE, the notice reaches the machine's stream while its request waits.
+        thread::sleep(Duration::from_millis(500));
+        second_to_relay(cloud, &fetch);
+        let finished = run.finish();
+
+        assert!(finished.success, "{transport:?}: {finished:?}");
+        let mut given: Vec<&skald_proto::Roster> = kept.iter().collect();
+        given.push(&fork);
+        serve_revisions(cloud, space, &given);
+        let shown = members(&ada.machine, name);
+        assert!(
+            warnings(&shown).iter().any(|line| line.contains(FORK)),
+            "{transport:?}: the revision was not accepted by its notice: {shown:?}"
+        );
+    }
+}
+
+/// With a monthly limit of one message per space, over SSE Ada's first `skald send` is stored and
+/// her second refused as `quota-exceeded`, and over long-poll her third too: each refused run shows
+/// the refusal as over WebSocket, and her next run sends nothing again.
+#[test]
+fn refused_send_shows_its_refusal_over_sse_and_long_poll() {
+    let behind = Behind::start_with(
+        [4_144_041_901, 4_144_041_902],
+        ["ada-over-quota", "bob-over-quota"],
+        TIMEOUT,
+        |settings| settings.monthly_messages_limit = Some(1),
+    );
+    behind.leave(Transport::Sse);
+    let (under, seen) = behind.ada_sends("ada, under the limit");
+    assert!(under.success, "{under:?}");
+    assert_sent_over(&seen, Transport::Sse);
+    for transport in [Transport::Sse, Transport::LongPoll] {
+        behind.leave(transport);
+
+        let (over, seen) = behind.ada_sends(&format!("ada over {transport:?}, over the limit"));
+
+        assert!(!over.success, "{transport:?}: {over:?}");
+        assert_over(&seen, transport, &over);
+        assert_sent_over(&seen, transport);
+        assert!(
+            over.stdout.contains("refused: quota-exceeded"),
+            "{transport:?}: no refusal shown: {over:?}"
+        );
+        let (next, seen) = behind.ada_recv();
+        assert!(next.success, "{transport:?}: {next:?}");
+        assert_eq!(first(&seen, "POST", SEND), None, "sent again: {seen:#?}");
+    }
+}
+
+/// A problem details object the server answers in place of the WebSocket's opening, or of the
+/// event stream, fails `skald recv` with its detail, without trying the next transport.
+#[test]
+fn server_refusal_fails_without_trying_the_next_transport() {
+    const DETAIL: &str = "The server is shutting down.";
+    let behind = Behind::start(
+        [4_144_042_001, 4_144_042_002],
+        ["ada-refused-by-server", "bob-refused-by-server"],
+    );
+    let problem = format!(
+        r#"{{"type":"https://skald.so/problems/server-error","title":"Shutting down","status":503,"detail":"{DETAIL}"}}"#
+    );
+    let relay = &behind.cloud().relay;
+    for (transport, refused, next) in [
+        (Transport::WebSocket, "GET /ws", ("GET", EVENTS)),
+        (Transport::Sse, "GET /mailbox/events", ("POST", POLL)),
+    ] {
+        behind.leave(transport);
+        relay.refuse_with(refused, "503 Service Unavailable", &problem);
+
+        let (failed, seen) = behind.ada_recv();
+
+        relay.stop_refusing();
+        assert!(!failed.success, "{transport:?}: {failed:?}");
+        assert!(failed.stderr.contains(DETAIL), "{transport:?}: {failed:?}");
+        assert_eq!(
+            first(&seen, next.0, next.1),
+            None,
+            "{transport:?}: the next transport tried: {seen:#?}"
+        );
+    }
 }

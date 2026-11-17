@@ -334,4 +334,53 @@ mod tests {
         let reset = connection::Error::Unreachable("connection reset".to_owned());
         assert_eq!(failed(&reset), reset.to_string());
     }
+
+    /// Only what a proxy that blocks a transport gives lets the next one try: no answer of the
+    /// server's, none in time, or a broken connection; never an answer of the server's, a version
+    /// it refuses or a proxy that gives no tunnel at all.
+    #[test]
+    fn only_a_blocking_proxys_failure_tries_the_next_transport() {
+        let blocking = [
+            connection::Error::Unexpected("HTTP 403".to_owned()),
+            connection::Error::Timeout(Duration::from_secs(4)),
+            connection::Error::Unreachable("connection reset".to_owned()),
+        ];
+        assert!(blocking.iter().all(blocked));
+        let other = [
+            connection::Error::Refused {
+                status: 503,
+                kind: "https://skald.so/problems/server-error".to_owned(),
+                detail: "down".to_owned(),
+            },
+            connection::Error::TooOld {
+                supported: vec![9],
+                speaks: skald_proto::VersionRange::default(),
+            },
+            connection::Error::Proxy {
+                proxy: "proxy.test:3128".to_owned(),
+                problem: "it refused the tunnel with 403 Forbidden".to_owned(),
+            },
+        ];
+        assert!(!other.iter().any(blocked));
+    }
+
+    /// Closing a WebSocket sends its close frame.
+    #[test]
+    fn closing_a_websocket_sends_its_close_frame() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let address = listener.local_addr().unwrap();
+        let served = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the WebSocket");
+            let mut socket = tungstenite::accept(stream).expect("a WebSocket");
+            socket.read().expect("a message")
+        });
+        let stream = std::net::TcpStream::connect(address).expect("connect");
+        let url = format!("ws://{address}/ws");
+        let plain = tungstenite::stream::MaybeTlsStream::Plain(stream);
+        let (socket, _) = tungstenite::client(url.as_str(), plain).expect("a WebSocket");
+
+        Mailbox::WebSocket(socket).close();
+
+        assert!(matches!(served.join().unwrap(), Message::Close(_)));
+    }
 }

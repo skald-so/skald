@@ -394,4 +394,77 @@ mod tests {
         let error = events.head(SECOND).expect_err("not HTTP");
         assert!(matches!(error, Error::Unexpected(_)), "{error:?}");
     }
+
+    /// An event's `data` split across two chunks comes whole, also when a read ends right after a
+    /// chunk's data, before its line end.
+    #[test]
+    fn data_split_across_chunks_comes_whole() {
+        let mut events = answered(&[
+            b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n9\r\ndata: b25",
+            b"\r\n3\r\nl\n\n\r\n",
+            b"0\r\n\r\n",
+        ]);
+        events.head(SECOND).expect("the head");
+
+        assert_eq!(events.next(SECOND).unwrap(), Some(b"one".to_vec()));
+        let error = events.next(SECOND).expect_err("ended");
+        assert!(matches!(error, Error::Unreachable(_)), "{error:?}");
+    }
+
+    /// A refusal's body that comes after its head, in a later write, is read: by its length, or up
+    /// to the connection's end without one.
+    #[test]
+    fn refusal_body_after_its_head_is_read() {
+        let mut events = answered(&[
+            b"HTTP/1.1 403 Forbidden\r\ncontent-length: 7\r\n\r\n",
+            b"blocked",
+        ]);
+        events.head(SECOND).expect("the head");
+        assert_eq!(events.body(SECOND).expect("the body"), b"blocked");
+
+        let mut events = answered(&[b"HTTP/1.1 403 Forbidden\r\n\r\n", b"blocked"]);
+        events.head(SECOND).expect("the head");
+        assert_eq!(events.body(SECOND).expect("the body"), b"blocked");
+    }
+
+    /// A head longer than [`LIMIT`] fails; of a longer refusal body, a little over [`LIMIT`] is
+    /// read, without waiting for the rest.
+    #[test]
+    fn head_and_refusal_body_are_read_up_to_their_limit() {
+        let long = format!("HTTP/1.1 200 OK\r\nx: {}", "a".repeat(LIMIT + 1));
+        let mut events = answered(&[long.as_bytes()]);
+        let error = events.head(SECOND).expect_err("too long");
+        assert!(matches!(error, Error::Unexpected(_)), "{error:?}");
+
+        let (mut events, mut peer) = pair();
+        let head = format!(
+            "HTTP/1.1 403 Forbidden\r\ncontent-length: {}\r\n\r\n",
+            4 * LIMIT
+        );
+        peer.write_all(head.as_bytes()).unwrap();
+        peer.write_all(&vec![b'a'; LIMIT + 1]).unwrap();
+        events.head(SECOND).expect("the head");
+        let body = events.body(10 * SECOND).expect("the body up to its limit");
+        assert!(
+            (LIMIT + 1..4 * LIMIT).contains(&body.len()),
+            "{}",
+            body.len()
+        );
+    }
+
+    /// A read that fails other than by its wait fails at once: here a peer that does not speak TLS.
+    #[test]
+    fn failed_read_fails_at_once() {
+        let (stream, mut peer) = crate::connection::tests::pair();
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let tls = rustls::ClientConnection::new(crate::tls::Roots::load().rustls(), name).unwrap();
+        let mut events = Events::new(MaybeTlsStream::Rustls(rustls::StreamOwned::new(
+            tls, stream,
+        )));
+        peer.write_all(b"HTTP/1.1 200 OK\r\n\r\n").unwrap();
+
+        let error = events.head(10 * SECOND).expect_err("not TLS");
+
+        assert!(matches!(error, Error::Unreachable(_)), "{error:?}");
+    }
 }
