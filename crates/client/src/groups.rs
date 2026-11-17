@@ -26,6 +26,9 @@
 //!   added, which goes through the outbox too; after a refusal it drops the Commit, and a group
 //!   whose first Commit the server refused, as it kept another, waits for that one's Welcome. A
 //!   member uploads the GroupInfo when the server has none of its current epoch.
+//! - It judges each epoch it enters, by creating the group, a Welcome, a Commit, its own or
+//!   another's, or a join or rejoin, after applying the revocations the Commit carries; once its
+//!   Commit is stored, it uploads the new epoch's link ([`crate::key_chain`]).
 //! - It decrypts each application message of its mailbox in its channel's group in that order,
 //!   among the Welcomes and Commits, and keeps what that gave with the entry, sealed under the
 //!   state key, until a run shows it; a replay gives nothing to show. Once an entry of a channel
@@ -55,11 +58,13 @@ use skald_proto::{
 };
 
 use crate::clock;
-use crate::connection::{Method, WebSocket};
+use crate::connection::Method;
 use crate::device::Keys;
 use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
+use crate::key_chain;
 use crate::key_packages;
+use crate::mailbox::Mailbox;
 use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
@@ -71,17 +76,20 @@ const EPOCH_MISMATCH: &str = "epoch-mismatch";
 /// The spaces a run synced: each one's last accepted revision and its accounts' devices.
 pub type Rosters = BTreeMap<SpaceId, (Roster, SpaceDevices)>;
 
-/// What a run sends the device's Commits and Welcomes with: its keys, and its connection once open.
+/// What a run sends the device's Commits, Welcomes and links with: its keys, its connection once
+/// open, and the number of the last link it uploaded.
 pub struct Link {
-    keys: Keys,
-    socket: Option<WebSocket>,
+    pub keys: Keys,
+    pub mailbox: Option<Mailbox>,
+    pub uploads: u64,
 }
 
 impl Link {
     pub fn new(follower: &Follower) -> Result<Self, String> {
         Ok(Link {
             keys: follower.keys()?,
-            socket: None,
+            mailbox: None,
+            uploads: 0,
         })
     }
 }
@@ -126,7 +134,7 @@ fn change(follower: &Follower, changes: MlsChanges) -> Result<(), String> {
 }
 
 /// What `read` gives of the device's MLS state, which it leaves as it is.
-fn read<T>(
+pub fn read<T>(
     follower: &Follower,
     keys: &Keys,
     read: impl FnOnce(&MlsDevice) -> T,
@@ -212,7 +220,7 @@ pub fn admitted(
 }
 
 /// Whether `member`, a leaf of a group, is one of `admitted`, with its certificate's signing key.
-fn admits(admitted: &BTreeMap<DeviceId, Cert>, member: &MemberDevice) -> bool {
+pub fn admits(admitted: &BTreeMap<DeviceId, Cert>, member: &MemberDevice) -> bool {
     admitted
         .get(&member.device)
         .is_some_and(|cert| cert.body().signing == member.signing)
@@ -273,9 +281,9 @@ fn send_out(
         follower,
         std::slice::from_ref(&out),
         follower.timeout,
-        link.socket.take(),
+        link.mailbox.take(),
     );
-    link.socket = delivered.socket.take();
+    link.mailbox = delivered.mailbox.take();
     let what = if welcome { "Welcome" } else { "Commit" };
     let msg_id = out.outgoing.msg_id;
     let Some(answer) = delivered.answer(&out.key()).cloned() else {
@@ -332,8 +340,9 @@ fn send_out(
     }
 }
 
-/// The server stored the device's Commit `msg_id` in `channel`: the device merges it, uploads the
-/// new epoch's GroupInfo and sends the Commit's Welcome, if any, to the devices it added.
+/// The server stored the device's Commit `msg_id` in `channel`: the device merges it, judges the
+/// new epoch, uploads its GroupInfo and its link, and sends the Commit's Welcome, if any, to the
+/// devices it added.
 fn committed(
     follower: &mut Follower,
     link: &mut Link,
@@ -341,7 +350,8 @@ fn committed(
     msg_id: MessageId,
 ) -> Result<bool, String> {
     let version = follower.connection.version();
-    let welcome = step(follower, &link.keys, |device, changes| {
+    let admitted = admitted_now(follower, space, channel);
+    let (welcome, judgment) = step(follower, &link.keys, |device, changes| {
         changes.answered.push(msg_id);
         let devices = |device: &MlsDevice| -> Result<Vec<DeviceId>, MlsError> {
             let members = device.members(channel)?;
@@ -349,33 +359,40 @@ fn committed(
         };
         // A group the device dropped meanwhile has nothing to merge.
         let Ok(before) = devices(device) else {
-            return Ok(None);
+            return Ok((None, None));
         };
         // The device is in the group of the channel's current epoch: an external Commit of its own
         // was applied at once, another one merges now.
         changes.rejoined.push(channel);
         let welcome = match device.commit_stored(channel) {
             Ok(welcome) => welcome,
-            Err(MlsError::NoCommitPending(_)) => {
-                entered(device, channel, changes);
-                return Ok(None);
-            }
+            Err(MlsError::NoCommitPending(_)) => None,
             Err(err) => return Err(failed(channel, err)),
         };
         entered(device, channel, changes);
+        let judgment = admitted
+            .as_ref()
+            .map(|admitted| judged(device, channel, admitted))
+            .transpose()?;
+        changes.judged.extend(judgment);
+        let Some(welcome) = welcome else {
+            return Ok((None, judgment));
+        };
         let added = (devices(device)
             .map_err(|err| failed(channel, err))?
             .into_iter())
         .filter(|member| !before.contains(member))
         .collect();
-        let queued = welcome
-            .zip(NonEmpty::from_vec(added))
-            .map(|(welcome, added)| outgoing(version, (space, channel), &welcome, Some(added)));
+        let queued = NonEmpty::from_vec(added)
+            .map(|added| outgoing(version, (space, channel), &welcome, Some(added)));
         changes.queued.extend(queued.clone());
-        Ok(queued)
+        Ok((queued, judgment))
     })?;
     if let Err(err) = upload_group_info(follower, link, space, channel) {
         eprintln!("skald: warning: {err}");
+    }
+    if let Some((_, epoch, true)) = judgment {
+        key_chain::upload_new(follower, link, (space, channel), epoch);
     }
     match welcome {
         Some(welcome) => send_out(follower, link, welcome),
@@ -389,6 +406,57 @@ fn entered(device: &MlsDevice, channel: ChannelId, changes: &mut MlsChanges) {
     if let Ok(epoch) = device.epoch(channel) {
         changes.entered.push((channel, epoch, clock::epoch_now()));
     }
+}
+
+/// The judgment of the epoch of `channel`'s group the device is in, by `admitted`, the devices the
+/// space's last accepted revision admits to the channel ("Clean epochs").
+fn judged(
+    device: &MlsDevice,
+    channel: ChannelId,
+    admitted: &BTreeMap<DeviceId, Cert>,
+) -> Result<(ChannelId, u64, bool), String> {
+    let epoch = device.epoch(channel).map_err(|err| failed(channel, err))?;
+    let members = device
+        .members(channel)
+        .map_err(|err| failed(channel, err))?;
+    Ok((channel, epoch, key_chain::clean(admitted, &members)))
+}
+
+/// Judges the epoch of `channel`'s group the device entered, by `admitted`, as [`judged`] says,
+/// unless it judged it already.
+fn judge(
+    follower: &Follower,
+    keys: &Keys,
+    channel: ChannelId,
+    admitted: &BTreeMap<DeviceId, Cert>,
+) -> Result<(), String> {
+    let judged = read(follower, keys, |device| judged(device, channel, admitted))??;
+    change(
+        follower,
+        MlsChanges {
+            judged: vec![judged],
+            ..MlsChanges::default()
+        },
+    )
+}
+
+/// The devices admitted to `channel` of `space` by the last revision of the space the run accepted,
+/// accepting the space's latest revisions first if the run has not; none if it cannot.
+fn admitted_now(
+    follower: &mut Follower,
+    space: SpaceId,
+    channel: ChannelId,
+) -> Option<BTreeMap<DeviceId, Cert>> {
+    if !follower.accepted.contains_key(&space) {
+        let held = follower.state.spaces().ok()?;
+        let held = held.iter().find(|held| held.id == space)?;
+        if let Err(err) = follower.sync(held) {
+            eprintln!("skald: warning: {err}");
+            return None;
+        }
+    }
+    let (roster, devices) = follower.accepted.get(&space)?;
+    Some(admitted(follower, roster, devices, channel))
 }
 
 /// A new envelope of `channel` in `space`, of protocol version `version`, with `payload`, an MLS
@@ -1108,6 +1176,9 @@ fn welcomed(
     let name = &space.name;
     match (joined, &seen) {
         (Ok(_), _) => {
+            if let Err(err) = judge(follower, &link.keys, channel, &admitted) {
+                eprintln!("skald: warning: {err}");
+            }
             for device in strangers(&admitted) {
                 eprintln!(
                     "skald: warning: the group of the channel {channel} in the space {name} that \
@@ -1286,6 +1357,10 @@ fn processed(
                 change.sender
             );
         }
+    }
+    let admitted = admitted_in(follower, rosters, (space.id, channel));
+    if let Err(err) = judge(follower, &link.keys, channel, &admitted) {
+        eprintln!("skald: warning: {err}");
     }
     if let Err(err) = keep_group_info(follower, link, space.id, channel) {
         eprintln!("skald: warning: {err}");

@@ -26,13 +26,14 @@ use skald_proto::{
     NonEmpty, Role, Roster, RosterBody, SpaceId, Unknown, VersionRange,
 };
 
-use crate::connection::{self, Connection, Method, WebSocket, printable};
+use crate::connection::{self, Connection, Method, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
 use crate::groups;
 use crate::key_packages;
+use crate::mailbox::{Mailbox, Transport};
 use crate::revocations;
 use crate::secrets;
 use crate::sign_in;
@@ -346,6 +347,10 @@ pub struct Follower {
     pub timeout: Duration,
     /// Each space the run accepted the revisions of, as it last did ([`Follower::sync`]).
     pub accepted: groups::Rosters,
+    /// The transport the device's next connection tries first ([`crate::mailbox`]).
+    pub transport: Transport,
+    /// Whether the run has kept the device's KeyPackages on the server.
+    kept: bool,
 }
 
 impl Follower {
@@ -416,25 +421,28 @@ impl Follower {
             cert,
             timeout,
             accepted: groups::Rosters::new(),
+            transport: Transport::default(),
+            kept: false,
         }))
     }
 
-    /// A WebSocket at `/ws` to the server as the device, proving its `keys`, once the device kept
-    /// its KeyPackages on the server, warning if it cannot.
-    pub fn connect(&mut self, keys: &device::Keys) -> Result<WebSocket, String> {
-        let kept = key_packages::keep(
-            &mut self.connection,
-            &self.token,
-            &self.state,
-            keys,
-            &self.secrets,
-        );
-        if let Err(err) = kept {
-            key_packages::warn(&err);
+    /// A connection to the server as the device, proving its `keys` ([`Mailbox::open`]), once the
+    /// device kept its KeyPackages on the server, warning if it cannot; a run keeps them once.
+    pub fn connect(&mut self, keys: &device::Keys) -> Result<Mailbox, String> {
+        if !self.kept {
+            let kept = key_packages::keep(
+                &mut self.connection,
+                &self.token,
+                &self.state,
+                keys,
+                &self.secrets,
+            );
+            match kept {
+                Ok(()) => self.kept = true,
+                Err(err) => key_packages::warn(&err),
+            }
         }
-        self.connection
-            .open_websocket_as("/ws", &self.token, keys.id(), keys.signing())
-            .map_err(text)
+        Mailbox::open(self, keys)
     }
 
     /// The device's keys.
