@@ -53,6 +53,7 @@ mod wire;
 mod usage;
 
 mod devices;
+mod history;
 mod messages;
 mod nothing;
 mod owned;

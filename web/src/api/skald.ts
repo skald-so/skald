@@ -2681,7 +2681,7 @@ export const getGetSpaceUsageUrl = (space: string) => {
 };
 
 /**
- * The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, and the server's limits on the space's messages while it has their settings (docs/dev/architecture.md, "Cloud limits").
+ * The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, and the server's limits on the space's messages and history while it has their settings (docs/dev/architecture.md, "Cloud limits").
  * @summary The space's messages this month, with the limits on its messages
  */
 export const getSpaceUsage = async (

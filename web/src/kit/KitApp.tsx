@@ -195,6 +195,7 @@ const spaceUsage = getGetSpaceUsageResponseMock({
   monthly_messages: { count: 12_480, limit: 10_000_000 },
   message_size: { limit: 64 * 1024 },
   mailbox_retention: { limit: 7 * 86_400 },
+  history_retention: { limit: 90 * 86_400 },
 });
 
 /** The sign-in page of 03-sign-in.png, on a server with both providers and open sign-up. */

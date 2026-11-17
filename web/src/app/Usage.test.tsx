@@ -1,5 +1,5 @@
-// The Usage section when the switcher chooses another space before the answer for the space before
-// comes: only the chosen space's usage shows.
+// The Usage section: the limits on the chosen space's history, and, when the switcher chooses another
+// space before the answer for the space before comes, only the chosen space's usage.
 import { cleanup, render, screen } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
@@ -13,7 +13,7 @@ import {
 } from "vitest";
 import type { ListedSpace, SpaceUsage } from "../api/skald.schemas.ts";
 import { ChosenSpace } from "./space.ts";
-import { Usage } from "./Usage.tsx";
+import { Usage, UsageScreen } from "./Usage.tsx";
 
 const first: ListedSpace = {
   space: "01968a2e-0000-7000-8000-000000000701",
@@ -31,6 +31,7 @@ const usage = (messages: number): SpaceUsage => ({
   monthly_messages: { count: messages, limit: 1_000 },
   message_size: { limit: 65_536 },
   mailbox_retention: { limit: 604_800 },
+  history_retention: { limit: 7_776_000 },
 });
 
 /** How each space's usage is answered, by space ID: held until released, or failed. */
@@ -133,4 +134,30 @@ test("a failure for the space before does not show for the chosen space", async 
   release();
   await expect.poll(messages).toBe("222");
   expect(screen.queryByText("The usage did not load.")).toBeNull();
+});
+
+test("the history is kept for the setting's days, or for good without it", () => {
+  const account = {
+    owned_spaces: { count: 1, spaces: [first] },
+    devices: { count: 1 },
+  };
+  const text = (history: SpaceUsage["history_retention"]) => {
+    const { container, unmount } = render(
+      <UsageScreen
+        space={first.name}
+        account={account}
+        usage={{ ...usage(1), history_retention: history }}
+      />,
+    );
+    const shown = container.textContent;
+    unmount();
+    return shown;
+  };
+
+  expect(text({ limit: 7_776_000 })).toContain(
+    "Channel history is kept for 90 days.",
+  );
+  expect(text({ limit: 7_776_000 })).not.toContain("kept for good");
+  expect(text({})).toContain("Channel history is kept for good.");
+  expect(text({})).not.toMatch(/history is kept for \d/);
 });

@@ -48,6 +48,7 @@ struct SpaceUsage {
     monthly_messages: UsageCount,
     message_size: UsageLimit,
     mailbox_retention: UsageLimit,
+    history_retention: UsageLimit,
 }
 
 /// A count the database gives, never negative.
@@ -97,7 +98,7 @@ pub(crate) async fn account(State(state): State<AppState>, SignedIn(account): Si
 }
 
 /// `GET /spaces/<space>/usage`: the space's messages this calendar month in UTC, as the monthly
-/// limit counts them, and the limits on its messages.
+/// limit counts them, and the limits on its messages and history.
 pub(crate) async fn space(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     let messages: Option<(i64,)> = sqlx::query_as(
         "SELECT messages FROM message_counts
@@ -117,6 +118,9 @@ pub(crate) async fn space(State(state): State<AppState>, Gotten(found): Gotten) 
         },
         mailbox_retention: UsageLimit {
             limit: state.mailbox_retention.map(|retention| retention.as_secs()),
+        },
+        history_retention: UsageLimit {
+            limit: state.history_retention.map(|retention| retention.as_secs()),
         },
     })
     .into_response())

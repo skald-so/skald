@@ -5041,7 +5041,7 @@
       "get": {
         "operationId": "getSpaceUsage",
         "summary": "The space's messages this month, with the limits on its messages",
-        "description": "The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, and the server's limits on the space's messages while it has their settings (docs/dev/architecture.md, \"Cloud limits\").",
+        "description": "The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, and the server's limits on the space's messages and history while it has their settings (docs/dev/architecture.md, \"Cloud limits\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -6212,9 +6212,14 @@
         "additionalProperties": false
       },
       "SpaceUsage": {
-        "description": "A space's messages this month and the limits on its messages, each while one applies.",
+        "description": "A space's messages this month and the limits on its messages and history, each while one applies.",
         "type": "object",
-        "required": ["monthly_messages", "message_size", "mailbox_retention"],
+        "required": [
+          "monthly_messages",
+          "message_size",
+          "mailbox_retention",
+          "history_retention"
+        ],
         "properties": {
           "monthly_messages": {
             "description": "The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`.",
@@ -6226,6 +6231,10 @@
           },
           "mailbox_retention": {
             "description": "How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
+          "history_retention": {
+            "description": "How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`.",
             "$ref": "#/components/schemas/UsageLimit"
           }
         },

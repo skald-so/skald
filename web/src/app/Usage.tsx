@@ -25,7 +25,8 @@ export interface UsageScreenProps {
 /**
  * The Usage section of 11-usage.png: the account's owned spaces and devices and the chosen space's
  * messages this month, each of its limit with a bar, or with "No limit"; the spaces the account
- * owns by name; and the limits on a message's size and on how long an undelivered one is kept.
+ * owns by name; and the limits on a message's size, on how long an undelivered one is kept and on
+ * how long the channels' history is kept.
  */
 export function UsageScreen({
   space,
@@ -103,10 +104,15 @@ function OwnedSpaces({ owned }: { owned: AccountUsage["owned_spaces"] }) {
   );
 }
 
-/** The limits on the chosen space's messages: the largest one, and how long an undelivered one waits. */
+/**
+ * The limits on the chosen space's messages and history: the largest message, how long an
+ * undelivered one waits, and how long the server keeps the channels' history.
+ */
 function Messages({ usage }: { usage: SpaceUsage }) {
   const largest = usage.message_size.limit;
   const kept = usage.mailbox_retention.limit;
+  // Absent from an answer without the field: kept for good, as without the setting.
+  const history = usage.history_retention?.limit;
   return (
     <section aria-labelledby="usage-messages" className={styles.section}>
       <h2 id="usage-messages">Messages</h2>
@@ -116,7 +122,10 @@ function Messages({ usage }: { usage: SpaceUsage }) {
           : `A message holds up to ${size(largest)}.`}{" "}
         {kept === undefined
           ? "Undelivered messages are kept until delivered, with no limit."
-          : `Undelivered messages are kept for ${period(kept)}.`}
+          : `Undelivered messages are kept for ${period(kept)}.`}{" "}
+        {history === undefined
+          ? "Channel history is kept for good."
+          : `Channel history is kept for ${period(history)}.`}
       </p>
     </section>
   );

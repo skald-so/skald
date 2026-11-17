@@ -560,7 +560,7 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and the limits on its messages, each while one applies.
+ * A space's messages this month and the limits on its messages and history, each while one applies.
  */
 export interface SpaceUsage {
   /** The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`. */
@@ -569,6 +569,8 @@ export interface SpaceUsage {
   message_size: UsageLimit;
   /** How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`. */
   mailbox_retention: UsageLimit;
+  /** How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`. */
+  history_retention: UsageLimit;
 }
 
 /**

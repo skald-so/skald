@@ -144,6 +144,7 @@ struct AppState {
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
+    history_retention: Option<Duration>,
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
     long_poll_max_wait: Duration,
@@ -364,6 +365,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             mailbox_retention: settings.mailbox_retention,
+            history_retention: settings.history_retention,
             limits: mailboxes::Limits {
                 message_size: settings.message_size_limit,
                 monthly_messages: settings.monthly_messages_limit,

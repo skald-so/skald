@@ -2767,6 +2767,12 @@ export const getGetSpaceUsageResponseMock = (
       undefined,
     ]),
   },
+  history_retention: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
   ...overrideResponse,
 });
 
@@ -2787,6 +2793,12 @@ export const getGetSpaceUsageResponseMock200 = (
     ]),
   },
   mailbox_retention: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  history_retention: {
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),
       undefined,
