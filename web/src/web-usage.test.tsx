@@ -5,7 +5,8 @@
 // - `GET /account/usage`: `{"owned_spaces": {"count", "limit"?, "spaces": [{"space", "name"}]},
 //   "devices": {"count", "limit"?}}`;
 // - `GET /spaces/{space}/usage`: `{"monthly_messages": {"count", "limit"?}, "message_size":
-//   {"limit"?}, "mailbox_retention": {"limit"?}}`, the size in bytes and the retention in seconds.
+//   {"limit"?}, "mailbox_retention": {"limit"?}, "history_retention": {"limit"?}}`, the size in
+//   bytes and the retentions in seconds.
 // A `limit` is absent while no limit applies.
 //
 // The web app, as these tests use it: the side menu's link "Usage" opens the section, the page's
@@ -47,6 +48,7 @@ interface SpaceUsage {
   monthly_messages: Counted;
   message_size: { limit?: number };
   mailbox_retention: { limit?: number };
+  history_retention: { limit?: number };
 }
 
 const ownId = "01968a2e-0000-7000-8000-000000000601";
@@ -67,17 +69,19 @@ const counted = (count: number, limit?: number): Counted => ({
   ...limited(limit),
 });
 
-/** The cloud's message size and retention: 64 KB and 7 days. */
+/** The cloud's message size and retentions: 64 KB, 7 days and 90 days. */
 const kb64 = 64 * 1024;
 const days7 = 7 * 86_400;
+const days90 = 90 * 86_400;
 
-/** A space's usage: `messages` of `limit`, with the cloud's size and retention while it has one. */
+/** A space's usage: `messages` of `limit`, with the cloud's size and retentions while it has one. */
 function spaceUsage(messages: number, limit?: number): SpaceUsage {
   const cloud = limit !== undefined;
   return {
     monthly_messages: counted(messages, limit),
     message_size: limited(cloud ? kb64 : undefined),
     mailbox_retention: limited(cloud ? days7 : undefined),
+    history_retention: limited(cloud ? days90 : undefined),
   };
 }
 

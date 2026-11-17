@@ -111,8 +111,7 @@ function OwnedSpaces({ owned }: { owned: AccountUsage["owned_spaces"] }) {
 function Messages({ usage }: { usage: SpaceUsage }) {
   const largest = usage.message_size.limit;
   const kept = usage.mailbox_retention.limit;
-  // Absent from an answer without the field: kept for good, as without the setting.
-  const history = usage.history_retention?.limit;
+  const history = usage.history_retention.limit;
   return (
     <section aria-labelledby="usage-messages" className={styles.section}>
       <h2 id="usage-messages">Messages</h2>
