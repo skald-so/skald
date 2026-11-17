@@ -15,6 +15,7 @@
 //! until then the space stays at its last accepted revision. When another revision came first, the
 //! device accepts the new revisions, applies its change to the latest and signs again.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -351,6 +352,8 @@ pub struct Follower {
     pub transport: Transport,
     /// Whether the run has kept the device's KeyPackages on the server.
     kept: bool,
+    /// The revisions the server last gave of each space the run followed or synced.
+    pub given: BTreeMap<SpaceId, Vec<Roster>>,
 }
 
 impl Follower {
@@ -423,6 +426,7 @@ impl Follower {
             accepted: groups::Rosters::new(),
             transport: Transport::default(),
             kept: false,
+            given: BTreeMap::new(),
         }))
     }
 
@@ -578,6 +582,8 @@ impl Follower {
                     &self.state,
                     space.id,
                 )?;
+                let given = follow::given(&mut self.connection, &self.token, space.id)?;
+                self.given.insert(space.id, given);
                 return Ok((follow::decode(&held.last, &space.name)?, devices));
             }
         }
@@ -621,18 +627,20 @@ impl Follower {
     }
 
     /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
-    /// its accounts and the revisions the server gives.
+    /// its accounts and the revisions the server gives, which it records in [`Follower::given`].
     fn follow(
         &mut self,
         space: &state::Space,
     ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
-        follow::sync(
+        let followed = follow::sync(
             &mut self.connection,
             &self.state,
             &self.token,
             space,
             &self.own,
-        )
+        )?;
+        self.given.insert(space.id, followed.2.clone());
+        Ok(followed)
     }
 
     /// Sends `pending`, in CBOR, the pending revision of `space` after revision 1, until the server
@@ -1146,7 +1154,7 @@ pub fn of_channel(
         Scope::All => format!("no space this device follows has the channel {channel}"),
         // The agent's output names nothing of another space, not even the channel it gave.
         Scope::Only(_) => "the space of the agent's folder has no such channel: as an agent, \
-                           skald sends only to its channels"
+                           skald uses only its channels"
             .to_owned(),
     })
 }

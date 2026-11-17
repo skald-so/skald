@@ -151,7 +151,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Until the repository's Pages publishes from GitHub Actions, GitHub's API answering 404, the publish job is skipped and the run passes. Pages set up from a branch fails the run.
   - Only the publish job writes: `pages` and `id-token`, for the deployment.
 - GitHub Pages serves one custom domain per site, so there is one site: its custom domain is `skald.so`, HTTPS enforced.
-  - `docs.skald.so` answers every path with a permanent redirect to the same path on `skald.so`, over HTTPS; the DNS provider keeps it, as GitHub Pages serves no redirect.
+  - `docs.skald.so` answers every path with a permanent redirect to the same path on `skald.so`, over HTTPS; the cloud's Caddy keeps it, as GitHub Pages serves no redirect and the DNS provider's has no HTTPS.
 
 ## Trust in builds
 - Release files get **GitHub Artifact Attestations** (Sigstore build provenance) from the release workflow at the release tag ("Release").
@@ -193,8 +193,10 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Docker Compose + Caddy; Caddy obtains TLS automatically;
   - a server refuses a database that a newer server migrated, so a rollback restores the backup from before the upgrade; self-hosted: [Rollback](../self-host.md#rollback);
   - short downtime during a deploy is acceptable: clients reconnect and catch up from the cursor. Zero-downtime deploys (Kamal) later, if needed.
-- **Monitoring:** Prometheus, Grafana, Sentry, uptime checks, status page.
-  - The server reports its errors to Sentry only with the server setting `--sentry-dsn` (`SKALD_SENTRY_DSN`); what a report holds: [threat-model.md, "The server sees"](../threat-model.md#the-server-sees).
+- **Monitoring:** on the production server, seen in Grafana there; no external service.
+  - Prometheus scrapes the host, the containers, PostgreSQL, Caddy's metrics and the blackbox exporter's health checks; Loki keeps the containers' logs, shipped by Alloy.
+  - Alertmanager groups the alerts of Prometheus and Loki and sends them nowhere: Grafana shows them, with the dashboards, the logs and the server's errors.
+  - The server reports its errors to Sentry only with the server setting `--sentry-dsn` (`SKALD_SENTRY_DSN`), an option production does not set; what a report holds: [threat-model.md, "The server sees"](../threat-model.md#the-server-sees).
 - **Addresses:** `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation.
 
 ## Self-host

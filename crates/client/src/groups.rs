@@ -28,7 +28,8 @@
 //!   member uploads the GroupInfo when the server has none of its current epoch.
 //! - It judges each epoch it enters, by creating the group, a Welcome, a Commit, its own or
 //!   another's, or a join or rejoin, after applying the revocations the Commit carries; once its
-//!   Commit is stored, it uploads the new epoch's link ([`crate::key_chain`]).
+//!   Commit is stored, it uploads the new epoch's link ([`crate::key_chain`]) and wraps
+//!   ([`crate::wraps`]).
 //! - It decrypts each application message of its mailbox in its channel's group in that order,
 //!   among the Welcomes and Commits, and keeps what that gave with the entry, sealed under the
 //!   state key, until a run shows it; a replay gives nothing to show. Once an entry of a channel
@@ -37,8 +38,8 @@
 //!   the device.
 //! - It encrypts a channel message in the channel's group only while every member device is
 //!   admitted, no Commit of its own there waits for the server and another device is in it; the
-//!   message goes into the outbox with the state, and with its content's `counter`, the device's
-//!   next in the channel.
+//!   message goes into the outbox with the state, its history entry ([`crate::history`]) and its
+//!   content's `counter`, the device's next in the channel.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -62,6 +63,7 @@ use crate::connection::Method;
 use crate::device::Keys;
 use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
+use crate::history;
 use crate::key_chain;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
@@ -69,6 +71,7 @@ use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
 use crate::state::{self, Counted, MlsChanges, MlsOutgoing, Outgoing, State};
+use crate::wraps;
 
 /// The problem of a Commit of an epoch that is not the channel's current one.
 const EPOCH_MISMATCH: &str = "epoch-mismatch";
@@ -110,7 +113,7 @@ impl Wire for Out {
     }
 
     // The step that acts on the answer takes it out of the outbox.
-    fn answered(&self, _: &State) {}
+    fn answered(&self, _: &State, _: &Answer) {}
 }
 
 /// Runs `step` on the device's MLS state, then saves the state with the `MlsChanges` it gives, all
@@ -393,6 +396,7 @@ fn committed(
     }
     if let Some((_, epoch, true)) = judgment {
         key_chain::upload_new(follower, link, (space, channel), epoch);
+        wraps::upload_new(follower, link, (space, channel), epoch);
     }
     match welcome {
         Some(welcome) => send_out(follower, link, welcome),
@@ -1489,9 +1493,9 @@ pub fn opened(follower: &Follower, key: &StateKey, entry: &state::Entry) -> Opti
 /// Encrypts the content `content` gives for a new message ID and the device's next counter in
 /// `channel` of `roster`, the space's last accepted revision with `devices`, its accounts'
 /// devices, in the channel's group, and puts the `mls` envelope in the outbox with the state it
-/// leaves; gives its message ID. Sends nothing, and says why, while a member device of the group
-/// is not admitted, while a Commit of this device in the channel waits for the server, or when no
-/// other device is in the group.
+/// leaves and the message's history entry ([`crate::history`]); gives its message ID. Sends
+/// nothing, and says why, while a member device of the group is not admitted, while a Commit of
+/// this device in the channel waits for the server, or when no other device is in the group.
 pub fn encrypt(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
@@ -1541,9 +1545,18 @@ pub fn encrypt(
             .and_then(NonZeroU64::new)
             .ok_or_else(|| format!("the counter in the channel {channel} has no next"))?;
         let msg_id = MessageId::generate();
-        let plaintext = content(msg_id, counter).to_cbor();
+        let content = content(msg_id, counter);
+        let epoch = device.epoch(channel).map_err(|err| failed(channel, err))?;
+        let judgments = follower.state.judgments(channel).map_err(text)?;
+        let entry = history::entry(
+            (&device, &keys),
+            (space, channel, epoch),
+            &judgments,
+            msg_id,
+            &content,
+        );
         let payload = device
-            .encrypt(channel, &plaintext)
+            .encrypt(channel, &content.to_cbor())
             .map_err(|err| failed(channel, err))?;
         let message = Counted {
             outgoing: Outgoing {
@@ -1557,6 +1570,7 @@ pub fn encrypt(
         };
         let changes = MlsChanges {
             messages: vec![message],
+            entries: entry.into_iter().collect(),
             ..MlsChanges::default()
         };
         Ok((Some(device.seal()), changes, msg_id))

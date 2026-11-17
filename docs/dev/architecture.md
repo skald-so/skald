@@ -73,7 +73,7 @@
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default. An idle SSE stream sends a keep-alive every `--sse-keep-alive` (`SKALD_SSE_KEEP_ALIVE`), 15 seconds by default.
-- The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked and its connection, and the helper keeps it between commands; a catch-up on a connection after its first goes over long-poll. A dropped connection tries WebSocket first again. Key chain links wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
+- The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked and its connection, and the helper keeps it between commands; a catch-up on a connection after its first goes over long-poll. A dropped connection tries WebSocket first again. History items wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
   - a notification names a mailbox with new entries, a stored roster revision, an ended session or a revoked device, never an envelope;
   - an instance takes no device connection before it first listens;
@@ -192,4 +192,4 @@ The public cloud applies these limits; a self-hosted server does not.
 | Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), the payload in bytes; unset, no limit |
 | Attachment | 10 MB |
 | Undelivered messages kept | 7 days: the server setting `--mailbox-retention` (`SKALD_MAILBOX_RETENTION`), in seconds; unset, until delivered or the envelope's `ttl` ends |
-| History kept | 90 days |
+| History kept | 90 days: the server setting `--history-retention` (`SKALD_HISTORY_RETENTION`), in seconds, each entry from when the server stored it ([Uploads](../protocol/membership.md#uploads)); unset, kept for good |

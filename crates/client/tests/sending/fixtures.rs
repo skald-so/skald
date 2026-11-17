@@ -118,13 +118,23 @@ pub enum Issuer<'a> {
 /// Writes to the server's database a `client` device of `account` named `name`, its certificate
 /// issued as `issuer` says.
 pub fn add_device(cloud: &Cloud, account: AccountId, name: &str, issuer: &Issuer) -> Keyed {
+    add_device_of_kind(cloud, (account, DeviceKind::Client), name, issuer)
+}
+
+/// As [`add_device`], a device of `kind`.
+pub fn add_device_of_kind(
+    cloud: &Cloud,
+    (account, kind): (AccountId, DeviceKind),
+    name: &str,
+    issuer: &Issuer,
+) -> Keyed {
     let signing = SigningKey::generate();
     let hpke = HpkeKey::generate();
     let id = DeviceId::from_signing_key(&signing.public_key());
     let body = |issuer| CertBody {
         account,
         device: id,
-        kind: DeviceKind::Client,
+        kind,
         signing: signing.public_key(),
         hpke: hpke.public_key(),
         issuer,
@@ -144,7 +154,7 @@ pub fn add_device(cloud: &Cloud, account: AccountId, name: &str, issuer: &Issuer
     let columns = [
         format!("'{id}'::uuid"),
         format!("'{account}'::uuid"),
-        "'client'".to_owned(),
+        format!("'{}'", kind_name(kind)),
         bytes(&signing.public_key()),
         bytes(&hpke.public_key()),
         bytes(name.as_bytes()),
@@ -155,6 +165,15 @@ pub fn add_device(cloud: &Cloud, account: AccountId, name: &str, issuer: &Issuer
         columns.join(", ")
     ));
     Keyed { id, hpke, signing }
+}
+
+/// The name of `kind` in the server's database.
+fn kind_name(kind: DeviceKind) -> &'static str {
+    match kind {
+        DeviceKind::Client => "client",
+        DeviceKind::Browser => "browser",
+        DeviceKind::Service => "service",
+    }
 }
 
 /// `bytes` in lowercase hex.

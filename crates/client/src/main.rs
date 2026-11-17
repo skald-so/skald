@@ -40,6 +40,8 @@ mod follow;
 mod gaps;
 mod groups;
 mod helper;
+mod history;
+mod history_reading;
 mod key_chain;
 mod key_packages;
 mod lock;
@@ -62,6 +64,7 @@ mod test_dir;
 mod test_dir_tests;
 mod tls;
 mod update;
+mod wraps;
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -345,6 +348,22 @@ enum Command {
     /// first ran as it there, each once; one waits for the agent until it expires, at most 7
     /// days. The person's run shows every message once, whether or not an agent got it.
     Recv,
+    /// Shows the history of a channel of a space this device follows; as an agent, only of a
+    /// channel in the space of the agent's folder. It first accepts the space's latest roster
+    /// revisions, then reads the copies of the channel's messages the server keeps under its
+    /// history keys: with the keys this device holds, and with those it reaches back through every
+    /// link of the channel's key chain it can open. Shows each message once, oldest first, by its
+    /// time in UTC, channel, from, sending device and text, if its copy passes the protocol's
+    /// checks; warns of each copy it drops, and says how many it holds no key for.
+    History {
+        /// The channel's ID, as skald channels shows it.
+        #[arg(value_name = "CHANNEL")]
+        channel: String,
+        /// Shows only the messages whose text contains it. The search runs on this device: no
+        /// request carries it.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: Option<String>,
+    },
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
     /// the folder is in no space. At the same folder the rule wins over a .skald.toml.
@@ -725,6 +744,16 @@ fn perform(operation: Operation) -> Result<(), String> {
         }),
         Command::Recv => state::dir(state_dir)
             .and_then(|dir| recv::run(&dir, key_storage, speaks, timeout, agent.as_ref())),
+        Command::History { channel, text } => state::dir(state_dir).and_then(|dir| {
+            history_reading::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                &channel,
+                text.as_deref(),
+                agent.is_some(),
+            )
+        }),
         Command::AddRule { folder, space } => {
             state::dir(state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space))
         }

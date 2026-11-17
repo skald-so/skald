@@ -1,8 +1,9 @@
 //! `skald recv`: the device gets its mailbox (`docs/protocol/delivery.md`, "Mailbox"). It first
-//! sends what is left in the outbox, then states its cursor, writes each entry it gets after the
-//! cursor to the local state with the new cursor at once, acks, and stops once catch-up has sent
-//! every entry. It then accepts the revisions of each space it follows, and those of the space of
-//! each `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes, Commits
+//! sends what is left in the outbox and the history entries of the messages the server stored
+//! ([`crate::history`]), then states its cursor, writes each entry it gets after the cursor to the
+//! local state with the new cursor at once, acks, and stops once catch-up has sent every entry. It
+//! then accepts the revisions of each space it follows, and those of the space of each
+//! `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes, Commits
 //! and `mls` application messages it wrote, decrypting each message in its channel's group, and
 //! brings the group of each channel of those spaces in line ([`crate::groups`]), uploading the links
 //! of their key chains the server lacks ([`crate::key_chain`]). It then shows the other entries it
@@ -32,8 +33,9 @@ use std::time::Duration;
 
 use skald_crypto::{HpkeError, HpkeMessage, MemberDevice, StateKey, open_message};
 use skald_proto::{
-    Address, Body, Cbor as _, Cert, ChannelId, Content, DeliveryStatus, DeviceId, DeviceKind,
-    Envelope, Frame, Header, Name, Push, Roster, ServerName, ServerStatus, SpaceId, VersionRange,
+    AccountId, Address, Body, Cbor as _, Cert, ChannelId, Content, DeliveryStatus, DeviceId,
+    DeviceKind, Envelope, Frame, Header, MessageId, Name, Push, Roster, RosterBody, ServerName,
+    ServerStatus, SpaceId, VersionRange,
 };
 
 use crate::agents::server_name;
@@ -42,6 +44,7 @@ use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
+use crate::history;
 use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::output::{self, Stream};
@@ -49,6 +52,7 @@ use crate::secrets;
 use crate::send;
 use crate::spaces::{self, Follower, Scope};
 use crate::state::{self, Kept};
+use crate::wraps;
 
 /// How long a message waits for an agent at most: the cloud's mailbox retention
 /// (`architecture.md`, "Cloud limits").
@@ -84,13 +88,12 @@ pub fn run(
     if let Err(err) = send::report(&queued, &delivered, timeout) {
         eprintln!("skald: warning: {err}");
     }
+    // The entries go out on the outbox's connection, which then gets the mailbox.
+    let flushed = std::mem::replace(&mut link.mailbox, delivered.mailbox.take());
+    history::upload(&mut follower, &mut link, scope);
+    let mailbox = std::mem::replace(&mut link.mailbox, flushed);
     let mut synced = BTreeMap::new();
-    let received = receive(
-        &mut follower,
-        delivered.mailbox.take(),
-        (timeout, scope),
-        &mut synced,
-    );
+    let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
     let shown = show(&mut follower, scope, synced);
     let handed = match ran_as {
@@ -105,8 +108,8 @@ pub fn run(
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
 /// then brings the groups of the channels of each space the run accepted the revisions of in line
-/// ([`crate::groups`]) and uploads the links of their key chains the server lacks
-/// ([`crate::key_chain`]).
+/// ([`crate::groups`]) and uploads the links of their key chains ([`crate::key_chain`]) and the
+/// wraps of their current epochs ([`crate::wraps`]) the server lacks.
 pub fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -116,6 +119,7 @@ pub fn align(
     groups::take_in(follower, link, scope, synced)?;
     groups::align_with(follower, link);
     key_chain::upload_missing(follower, link, scope);
+    wraps::upload_missing(follower, link, scope);
     Ok(())
 }
 
@@ -702,14 +706,7 @@ fn check(
             "revision {revision} of the space {name} has no such channel"
         ));
     }
-    let from = &content.from;
-    let handle = body
-        .member(cert.body().account)
-        .map(|member| &member.handle);
-    if from.space() != &body.name
-        || Some(from.owner()) != handle
-        || Some(from.server()) != context.server
-    {
+    if !of_account(&content.from, body, cert.body().account, context.server) {
         return Err(format!(
             "its from is no address of the sending device's account in the space {name}"
         ));
@@ -724,21 +721,7 @@ fn check(
     if content.counter.is_none() {
         return Err("its content has no counter".to_owned());
     }
-    let Some(Body::A2a(json)) = &content.body else {
-        return Err("it holds no A2A message".to_owned());
-    };
-    let message: serde_json::Value =
-        serde_json::from_str(json).map_err(|_| "its A2A message is no JSON".to_owned())?;
-    if message["messageId"].as_str() != Some(header.msg_id.to_string().as_str()) {
-        return Err("its A2A messageId is not its msg_id".to_owned());
-    }
-    let text = message["parts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = a2a_text(&content, header.msg_id)?;
     Ok(Received {
         from: content.from,
         to: content.to,
@@ -746,6 +729,38 @@ fn check(
         text,
         counter: content.counter,
     })
+}
+
+/// Whether `from` is an address of `account` in the space of `body`, a revision of it, on
+/// `server`: check 2 of "Envelope" for a device other than a `service` one.
+pub fn of_account(
+    from: &Address,
+    body: &RosterBody,
+    account: AccountId,
+    server: Option<&ServerName>,
+) -> bool {
+    let handle = body.member(account).map(|member| &member.handle);
+    from.space() == &body.name && Some(from.owner()) == handle && Some(from.server()) == server
+}
+
+/// The text of `content`'s A2A message, its text parts each on a line, once its `messageId` is
+/// `msg_id` in text form: check 4 of "Envelope".
+pub fn a2a_text(content: &Content, msg_id: MessageId) -> Result<String, String> {
+    let Some(Body::A2a(json)) = &content.body else {
+        return Err("it holds no A2A message".to_owned());
+    };
+    let message: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| "its A2A message is no JSON".to_owned())?;
+    if message["messageId"].as_str() != Some(msg_id.to_string().as_str()) {
+        return Err("its A2A messageId is not its msg_id".to_owned());
+    }
+    Ok(message["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// The line of `status`, of a message of this device in `channel`, if the state recorded it.
