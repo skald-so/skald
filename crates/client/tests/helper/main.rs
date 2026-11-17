@@ -44,7 +44,9 @@ mod access;
 mod agents;
 mod crashes;
 mod helped;
+mod outputs;
 mod reuse;
+mod routes;
 mod versions;
 
 // The server, the machines and the relay of the tests of signing in.

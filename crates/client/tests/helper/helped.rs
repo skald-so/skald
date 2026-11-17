@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,10 @@ pub const WEBSOCKET: &str = "GET /ws ";
 
 /// How long a test waits for a helper to exit.
 pub const EXIT_LIMIT: Duration = Duration::from_secs(30);
+
+/// The idle time, in seconds, of a helper that must not exit idle while a test waits for it to
+/// exit otherwise: well above [`EXIT_LIMIT`].
+pub const LONG_IDLE: &str = "600";
 
 /// The runs of Ada's machine's copy of `skald`, and its processes.
 pub struct Helped {
@@ -88,6 +92,11 @@ impl Helped {
 
     /// Starts the copy with `args` in `dir`, with `settings` beside the machine's.
     pub fn start_in(&self, dir: &Path, settings: &[(&str, &str)], args: &[&str]) -> Run {
+        Run::spawn(&mut self.command_in(dir, settings, args))
+    }
+
+    /// The copy with `args` in `dir`, with `settings` beside the machine's.
+    fn command_in(&self, dir: &Path, settings: &[(&str, &str)], args: &[&str]) -> Command {
         let mut command = Command::new(&self.exe);
         command
             .env_clear()
@@ -97,7 +106,26 @@ impl Helped {
             .env_remove(ONE_SHOT_SETTING)
             .env(IDLE_SETTING, IDLE.as_secs().to_string())
             .envs(settings.iter().copied());
-        Run::spawn(&mut command)
+        command
+    }
+
+    /// Runs the copy with `args` in the machine's home, its standard output a pipe whose reading
+    /// end is closed, so each write to it fails; gives how it finished, its standard output empty.
+    pub fn run_with_closed_output(&self, args: &[&str]) -> Finished {
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        let output = self
+            .command_in(&self.home, &[], args)
+            .stdin(Stdio::null())
+            .stdout(writer)
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run skald");
+        Finished {
+            success: output.status.success(),
+            stdout: String::new(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
     }
 
     /// As [`Helped::start_in`], in the machine's home.

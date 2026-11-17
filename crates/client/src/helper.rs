@@ -10,7 +10,9 @@
 //!   command exits once it has closed its socket, and the command goes on as if none ran. A command
 //!   older than the helper fails, naming both versions, and leaves it running.
 //! - A command hands its operation and working directory over; the helper runs it there, and the
-//!   command shows its output and exits with its exit code.
+//!   command shows its output and exits with its exit code. A write of the operation's output
+//!   returns once the command has written it, or fails as the command's write did, so the
+//!   operation marks nothing shown that the command did not show.
 //! - The helper exits after an idle time, after sign-out and when a newer command or a sign-in asks
 //!   it to; a helper that is killed leaves its socket, which the next helper replaces.
 //! - The socket's directory is its owner's only; on Windows it has the access rights it inherits
@@ -69,13 +71,16 @@ enum Kind {
     Run = 2,
     /// Asks the helper to exit.
     Exit = 3,
-    /// Output of the operation, to standard output or standard error.
+    /// Output of the operation, to standard output or standard error, which the command answers
+    /// with `Written` once it has written it, or `Unwritten` with why it could not.
     Out = 4,
     Err = 5,
     /// The operation's exit code, its last message.
     Code = 6,
     /// The helper has closed its socket and exits.
     Bye = 7,
+    Written = 8,
+    Unwritten = 9,
 }
 
 impl Kind {
@@ -88,6 +93,8 @@ impl Kind {
             Kind::Err,
             Kind::Code,
             Kind::Bye,
+            Kind::Written,
+            Kind::Unwritten,
         ]
         .into_iter()
         .find(|kind| *kind as u8 == byte)
@@ -251,8 +258,8 @@ fn dismiss(mut stream: UnixStream, timeout: Duration) {
     }
 }
 
-/// Hands `operation` over on `stream` and shows what the helper's run of it shows; gives its exit
-/// code.
+/// Hands `operation` over on `stream` and shows what the helper's run of it shows, saying whether
+/// each write of it worked; gives its exit code.
 fn hand(mut stream: UnixStream, operation: &Operation) -> Result<ExitCode, String> {
     let cwd = std::env::current_dir()
         .map_err(|err| format!("cannot read the working directory: {err}"))?;
@@ -265,19 +272,22 @@ fn hand(mut stream: UnixStream, operation: &Operation) -> Result<ExitCode, Strin
         .and_then(|()| send(&mut stream, Kind::Run, &request))
         .map_err(|_| gone.to_owned())?;
     loop {
-        match receive(&mut stream) {
+        let written = match receive(&mut stream) {
             Ok(Some((Kind::Out, bytes))) => {
                 let mut out = io::stdout().lock();
-                let _ = out.write_all(&bytes).and_then(|()| out.flush());
+                out.write_all(&bytes).and_then(|()| out.flush())
             }
-            Ok(Some((Kind::Err, bytes))) => {
-                let _ = io::stderr().lock().write_all(&bytes);
-            }
+            Ok(Some((Kind::Err, bytes))) => io::stderr().lock().write_all(&bytes),
             Ok(Some((Kind::Code, code))) => {
                 return Ok(ExitCode::from(code.first().copied().unwrap_or(1)));
             }
             _ => return Err(gone.to_owned()),
-        }
+        };
+        // A helper gone meanwhile shows as the end of the stream.
+        let _ = match written {
+            Ok(()) => send(&mut stream, Kind::Written, &[]),
+            Err(err) => send(&mut stream, Kind::Unwritten, err.to_string().as_bytes()),
+        };
     }
 }
 
@@ -485,7 +495,11 @@ fn serve_one(mut stream: UnixStream, dir: &Path) -> Served {
 /// its output and then its exit code. The helper exits after sign-out, and after an operation that
 /// panicked.
 fn run(stream: UnixStream, dir: &Path, request: &[u8]) -> Served {
-    let Ok(mut answer) = stream.try_clone() else {
+    // The command answers each write once its own output takes it, however long that is.
+    let Ok(mut answer) = stream
+        .set_read_timeout(None)
+        .and_then(|()| stream.try_clone())
+    else {
         return Served::Nothing;
     };
     let mut sink = stream;
@@ -507,7 +521,17 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8]) -> Served {
                 Stream::Out => Kind::Out,
                 Stream::Err => Kind::Err,
             };
-            send(&mut sink, kind, bytes)
+            send(&mut sink, kind, bytes)?;
+            match receive(&mut sink)? {
+                Some((Kind::Written, _)) => Ok(()),
+                Some((Kind::Unwritten, why)) => {
+                    Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()))
+                }
+                _ => Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "the command went away",
+                )),
+            }
         },
         || {
             panic::catch_unwind(AssertUnwindSafe(|| {

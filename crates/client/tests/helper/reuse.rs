@@ -5,8 +5,8 @@ use std::fs;
 use std::time::Duration;
 
 use crate::helped::{
-    EXIT_LIMIT, Helped, IDLE_SETTING, ONE_SHOT, ONE_SHOT_SETTING, TIMEOUT_FLAG, WEBSOCKET,
-    bob_reads,
+    EXIT_LIMIT, Helped, IDLE_SETTING, LONG_IDLE, ONE_SHOT, ONE_SHOT_SETTING, TIMEOUT_FLAG,
+    WEBSOCKET, bob_reads,
 };
 use crate::kit::RECV;
 use crate::machine::SIGN_OUT;
@@ -88,7 +88,8 @@ fn helper_exits_when_idle_and_the_next_command_starts_a_new_one() {
     bob_reads(&mut talk, &[FIRST, SECOND]);
 }
 
-/// With a helper running, `skald sign-out` succeeds and the helper exits.
+/// With a helper running whose idle time is well above the test's wait for its exit,
+/// `skald sign-out` succeeds and the helper exits.
 #[test]
 fn helper_exits_on_sign_out() {
     let talk = Talk::new(
@@ -97,7 +98,8 @@ fn helper_exits_on_sign_out() {
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    helped.sent(&talk, FIRST);
+    let first = helped.send_with(&talk, &[(IDLE_SETTING, LONG_IDLE)], FIRST);
+    assert!(first.success, "{first:?}");
     let helper = helped.one_helper();
 
     let signed_out = helped.run(&[SIGN_OUT]);
