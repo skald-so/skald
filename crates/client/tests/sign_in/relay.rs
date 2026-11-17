@@ -308,6 +308,20 @@ impl Relay {
             .clear();
     }
 
+    /// Sends `request`, such as `GET /spaces/<id>/devices`, through the relay without a session,
+    /// so that a request it holds until a second one comes goes on.
+    pub fn send_through(&self, request: &str) {
+        let address = self.address();
+        let mut stream = TcpStream::connect(address).expect("reach the relay");
+        write!(
+            stream,
+            "{request} HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\n\r\n"
+        )
+        .expect("send a request to the relay");
+        let mut answer = Vec::new();
+        let _ = stream.read_to_end(&mut answer);
+    }
+
     /// How many requests came to the hold.
     pub fn held(&self) -> usize {
         let rules = self.shared.rules.lock().expect("the relay's rules");

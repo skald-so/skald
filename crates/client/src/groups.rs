@@ -59,13 +59,14 @@ use skald_proto::{
 };
 
 use crate::clock;
-use crate::connection::{Method, WebSocket};
+use crate::connection::Method;
 use crate::device::Keys;
 use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
 use crate::history;
 use crate::key_chain;
 use crate::key_packages;
+use crate::mailbox::Mailbox;
 use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
@@ -82,7 +83,7 @@ pub type Rosters = BTreeMap<SpaceId, (Roster, SpaceDevices)>;
 /// open, and the number of the last link it uploaded.
 pub struct Link {
     pub keys: Keys,
-    pub socket: Option<WebSocket>,
+    pub mailbox: Option<Mailbox>,
     pub uploads: u64,
 }
 
@@ -90,7 +91,7 @@ impl Link {
     pub fn new(follower: &Follower) -> Result<Self, String> {
         Ok(Link {
             keys: follower.keys()?,
-            socket: None,
+            mailbox: None,
             uploads: 0,
         })
     }
@@ -283,9 +284,9 @@ fn send_out(
         follower,
         std::slice::from_ref(&out),
         follower.timeout,
-        link.socket.take(),
+        link.mailbox.take(),
     );
-    link.socket = delivered.socket.take();
+    link.mailbox = delivered.mailbox.take();
     let what = if welcome { "Welcome" } else { "Commit" };
     let msg_id = out.outgoing.msg_id;
     let Some(answer) = delivered.answer(&out.key()).cloned() else {

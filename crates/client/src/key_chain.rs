@@ -171,33 +171,53 @@ pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelI
         .collect()
 }
 
-/// `HistoryLinks` in the API spec.
-#[derive(Deserialize)]
-struct HistoryLinks {
-    links: Vec<String>,
+/// The links of `channel` in `space` the server lists, by epoch and `prev`, each settled.
+fn held_links(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<BTreeSet<Pair>, String> {
+    let held: BTreeSet<Pair> = (links(follower, at)?.iter())
+        .map(|link| (link.epoch, link.prev))
+        .collect();
+    let pairs: Vec<Pair> = held.iter().copied().collect();
+    follower.state.settle_links(at.1, &pairs).map_err(text)?;
+    Ok(held)
 }
 
-/// The links of `channel` in `space` the server lists, by epoch and `prev`, each settled.
-fn held_links(
+/// The links of `channel` in `space` the server lists that decode as links of it.
+pub fn links(
     follower: &mut Follower,
     (space, channel): (SpaceId, ChannelId),
-) -> Result<BTreeSet<Pair>, String> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/links");
+) -> Result<Vec<HistoryLink>, String> {
+    Ok((listed(follower, (space, channel), LINKS)?.iter())
+        .filter_map(|bytes| HistoryLink::from_cbor(bytes).ok())
+        .filter(|link| link.channel == channel)
+        .collect())
+}
+
+/// The kinds of history items the server lists, as their paths and lists name them.
+pub const LINKS: &str = "links";
+pub const ENTRIES: &str = "entries";
+
+/// `HistoryLinks` and `HistoryEntries` in the API spec: the list named by its kind.
+#[derive(Deserialize)]
+struct Listed(BTreeMap<String, Vec<String>>);
+
+/// The items of `kind`, [`LINKS`] or [`ENTRIES`], of `channel` in `space` the server lists, each
+/// as its bytes; those that are no base64url are left out.
+pub fn listed(
+    follower: &mut Follower,
+    (space, channel): (SpaceId, ChannelId),
+    kind: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    let path = format!("/spaces/{space}/channels/{channel}/history/{kind}");
     let body = follower
         .connection
         .get_as(&path, &follower.token)
         .map_err(text)?;
-    let unexpected = || "unexpected answer from the server: a channel's links".to_owned();
-    let given: HistoryLinks = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let held: BTreeSet<Pair> = (given.links.iter())
-        .filter_map(|link| {
-            let link = HistoryLink::from_cbor(&URL_SAFE_NO_PAD.decode(link).ok()?).ok()?;
-            (link.channel == channel).then_some((link.epoch, link.prev))
-        })
-        .collect();
-    let pairs: Vec<Pair> = held.iter().copied().collect();
-    follower.state.settle_links(channel, &pairs).map_err(text)?;
-    Ok(held)
+    let unexpected = || format!("unexpected answer from the server: a channel's history {kind}");
+    let Listed(mut given) = serde_json::from_slice(&body).map_err(|_| unexpected())?;
+    let items = given.remove(kind).ok_or_else(unexpected)?;
+    Ok((items.iter())
+        .filter_map(|item| URL_SAFE_NO_PAD.decode(item).ok())
+        .collect())
 }
 
 /// Uploads `links`, each of its space, in `history` frames on the device's connection, and settles
@@ -268,7 +288,8 @@ pub fn upload_items<T>(
 
 /// Sends `frames` on the device's connection, then reads the server's answers to the uploads of
 /// `waiting` for the run's timeout, taking each answered one out and giving it to `answered`;
-/// fails if the connection ends or `answered` fails.
+/// fails if the connection ends, or is not a WebSocket, which alone carries them, or `answered`
+/// fails.
 fn answers<T>(
     follower: &mut Follower,
     link: &mut Link,
@@ -276,9 +297,17 @@ fn answers<T>(
     waiting: &mut BTreeMap<u64, T>,
     mut answered: impl FnMut(&Follower, T, Option<&str>) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut socket = match link.socket.take() {
-        Some(socket) => socket,
+    let mut mailbox = match link.mailbox.take() {
+        Some(mailbox) => mailbox,
         None => follower.connect(&link.keys)?,
+    };
+    let Some(socket) = mailbox.websocket() else {
+        link.mailbox = Some(mailbox);
+        return Err(
+            "history items go to the server over a WebSocket only, and this network lets none \
+             through"
+                .to_owned(),
+        );
     };
     for frame in frames {
         socket
@@ -291,7 +320,7 @@ fn answers<T>(
         if wait.is_zero() {
             break;
         }
-        set_read_timeout(&mut socket, wait).map_err(|err| broke(err.into()))?;
+        set_read_timeout(socket, wait).map_err(|err| broke(err.into()))?;
         let (upload, refused) = match socket.read() {
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::HistoryStored { upload }) => (upload, None),
@@ -309,7 +338,7 @@ fn answers<T>(
         };
         answered(follower, known, refused.as_deref())?;
     }
-    link.socket = Some(socket);
+    link.mailbox = Some(mailbox);
     Ok(())
 }
 
