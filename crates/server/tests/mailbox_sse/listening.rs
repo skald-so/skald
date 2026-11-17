@@ -12,6 +12,7 @@ use crate::fixture::Fixture;
 use crate::https::assert_problem;
 use crate::link::QUIET;
 use crate::proxy::Proxy;
+use crate::sentry::{Report, Sentry};
 use crate::sse::Sse;
 
 /// How soon an instance whose first listening was refused tries again: within a few seconds.
@@ -50,19 +51,37 @@ fn a_stream_opened_before_its_instance_listens_gets_no_notice_of_an_earlier_revi
 const NOT_LISTENING: &str = "skald-server: cannot answer a request: the instance does not listen \
                              to the others yet\n";
 
+/// What the error report of that answer says of it.
+const REPORTED: &str = "answered 500: cannot answer a request: the instance does not listen to the \
+                        others yet";
+/// How long a report may take to reach the stand-in for Sentry.
+const REPORT_WITHIN: Duration = Duration::from_secs(30);
+
 /// Checks that an instance of the server of the fixture of `seed`, whose listening the database
-/// refuses, answers what `request` sends as bob's laptop `500` and writes why to its output.
+/// refuses, answers what `request` sends as bob's laptop `500` and writes why to its output and its
+/// error report.
 fn assert_not_listening_answers_500(seed: u64, request: impl FnOnce(&Sse) -> Response) {
     let f = Fixture::new(seed);
     let t = &f.team;
+    let sentry = Sentry::start();
+    let dsn = sentry.dsn("key", 1);
     let proxy = Proxy::to(f.db());
     proxy.refuse_listening(true);
-    let mut behind = t.flow.stand.instance_at(&proxy.url(f.db()), &[], &[]);
+    let mut behind =
+        t.flow
+            .stand
+            .instance_at(&proxy.url(f.db()), &[], &[("SKALD_SENTRY_DSN", &dsn)]);
     proxy.await_refused(RELISTEN);
 
     let refused = request(&Sse::to(&behind, &t.flow, &t.bob, &t.bob.laptop));
 
     assert_problem(&refused, 500, Some("server-error"));
+    sentry.wait_until(REPORT_WITHIN, |reports| {
+        reports
+            .iter()
+            .flat_map(Report::events)
+            .any(|event| event.to_string().contains(REPORTED))
+    });
     let output = behind.stop();
     assert!(output.contains(NOT_LISTENING), "{output}");
 }

@@ -157,14 +157,15 @@ pub(crate) async fn ack_listening(
 }
 
 /// Waits until the instance listens to the others; the answer if it does not in time, which also
-/// goes to the server's output.
+/// goes to the server's output and its error reports.
 pub(crate) async fn listening(state: &AppState) -> Result<(), Box<Response>> {
     match tokio::time::timeout(LISTEN_WAIT, state.instance.listening()).await {
         Ok(()) => Ok(()),
         Err(_) => {
-            error_reports::logged("answer a request", &NOT_LISTENING);
-            Err(Box::new(server_error(
-                "The server does not listen to its other instances yet.",
+            let cause = error_reports::logged("answer a request", &NOT_LISTENING);
+            Err(Box::new(error_reports::with_cause(
+                server_error("The server does not listen to its other instances yet."),
+                cause,
             )))
         }
     }
