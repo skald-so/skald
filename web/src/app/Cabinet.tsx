@@ -9,6 +9,7 @@ import { versioned } from "./api.ts";
 
 /** The cabinet's sections, each on its page. */
 const sections: ShellSection[] = [
+  { key: "machines", label: "Machines", href: "/" },
   { key: "access", label: "Access", href: "/access" },
 ];
 
