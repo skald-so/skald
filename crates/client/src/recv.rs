@@ -46,7 +46,7 @@ use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
 use crate::history;
 use crate::key_chain;
-use crate::mailbox::Mailbox;
+use crate::mailbox::{self, Mailbox};
 use crate::output::{self, Stream};
 use crate::secrets;
 use crate::send;
@@ -59,14 +59,17 @@ use crate::wraps;
 pub const AGENT_WAIT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Receives the mailbox of the device of the state in `dir`, its secrets in `storage`, as `agent`
-/// if given; waits for each frame for `timeout`.
+/// if given; waits for each frame for `timeout`. Gives whether it showed what `skald recv --wait`
+/// waits for: as an agent, a message handed over to it; as the person, anything. For such a run,
+/// if `waits`, leaves its connection to watch ([`mailbox::leave_watched`]).
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
+    (speaks, timeout): (VersionRange, Duration),
     agent: Option<&Name>,
-) -> Result<(), String> {
+    waits: bool,
+) -> Result<bool, String> {
+    let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
     let ran_as = match (scope, agent) {
@@ -100,10 +103,17 @@ pub fn run(
         Some((space, agent)) => hand_over(&follower, space, agent),
         None => show_to_person(&follower),
     };
+    if waits {
+        mailbox::leave_watched(follower);
+    }
     received?;
     aligned?;
     shown?;
-    handed
+    let handed = handed?;
+    Ok(match ran_as {
+        Some(_) => handed > 0,
+        None => output::written() > written,
+    })
 }
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
@@ -424,15 +434,17 @@ fn kept_item(seq: u64) -> Vec<u8> {
     [b"kept:".as_slice(), &seq.to_be_bytes()].concat()
 }
 
-/// Shows each kept message the person's run has yet to show, in `seq` order, and marks it shown.
-fn show_to_person(follower: &Follower) -> Result<(), String> {
+/// Shows each kept message the person's run has yet to show, in `seq` order, and marks it shown;
+/// gives how many it showed.
+fn show_to_person(follower: &Follower) -> Result<usize, String> {
     let kept = follower.state.for_person().map_err(text)?;
     shown_kept(follower, kept, |seq| follower.state.shown_to_person(seq))
 }
 
 /// Hands each kept message that waits for `agent` in `space` over to it, in `seq` order: shows it,
-/// then marks it handed over. A message whose wait ended is dropped first.
-fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<(), String> {
+/// then marks it handed over. A message whose wait ended is dropped first. Gives how many it
+/// handed over.
+fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<usize, String> {
     let kept = (follower.state)
         .for_agent(space, agent.as_str(), state::unix_now())
         .map_err(text)?;
@@ -443,20 +455,23 @@ fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<(), St
 
 /// Writes the line of each of `kept`, kept messages by `seq` with their sealed lines, to the
 /// output, then calls `mark` with its `seq`; a line that does not open is warned of and marked.
+/// Gives how many lines it wrote.
 fn shown_kept(
     follower: &Follower,
     kept: Vec<(u64, Vec<u8>)>,
     mark: impl Fn(u64) -> Result<(), state::Error>,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if kept.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let key = groups::inbox_key(follower)?;
+    let mut shown = 0;
     for (seq, sealed) in kept {
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(line) => {
                 output::write(Stream::Out, &[line.as_slice(), b"\n"].concat())
                     .map_err(|err| format!("cannot write a message to the output: {err}"))?;
+                shown += 1;
             }
             None => eprintln!(
                 "skald: warning: a message this device kept does not open, so it is not shown"
@@ -464,7 +479,7 @@ fn shown_kept(
         }
         mark(seq).map_err(text)?;
     }
-    Ok(())
+    Ok(shown)
 }
 
 /// What a run does with a `message` entry.

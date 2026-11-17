@@ -1,5 +1,6 @@
 //! A helper or a session that dies during a handover: the message is handed over again, never lost,
-//! and never again once the session has written it out.
+//! and never again once the session has written it out. A session killed while it waits keeps its
+//! helper from exiting idle no longer.
 //!
 //! As in the tests of handing messages over (`agent_handover/held.rs`), the message's text is far
 //! longer than a pipe holds, so a session whose output the test stops reading waits in the middle
@@ -12,13 +13,20 @@ use skald_proto::MessageId;
 
 use crate::agents::CLAUDE;
 use crate::held::{FILL, HEAD, Held, long_text};
+use crate::helped::{EXIT_LIMIT, IDLE_SETTING};
 use crate::kit::RECV;
 use crate::talk::Line;
-use crate::waits::{AT_ONCE, WAIT_FLAG, Waits, assert_got};
+use crate::waits::{
+    AT_ONCE, WAIT_FLAG, Waits, assert_got, assert_keeps_waiting, await_helper_beside,
+};
 use crate::world::AGENT;
 
 /// What Bob's device says after the long message; it is nowhere else.
 const AFTER: &str = "crash test: the export was imported";
+
+/// The helper's idle time, in seconds, in the test of a session killed while it waits: under
+/// [`crate::waits::IDLE_WATCH`].
+const SHORT_IDLE: &str = "1";
 
 /// A handover in the middle: claude's session, through the helper, waits in the middle of writing
 /// a message with a long text.
@@ -113,4 +121,22 @@ fn session_killed_before_writing_its_message_leaves_it_to_the_next_wait() {
     assert_got(&next, &midway.text, midway.msg_id);
     assert!(took < AT_ONCE, "it took {took:?}: {next:?}");
     assert_eq!(helped.helpers(), [midway.helper], "not the same helper");
+}
+
+/// claude's `skald recv --wait` starts a helper with an idle time of [`SHORT_IDLE`] and waits
+/// through it while nothing comes, longer than that idle time. Once the session is killed, the
+/// helper exits within [`EXIT_LIMIT`].
+#[test]
+fn session_killed_while_it_waits_leaves_its_helper_to_exit_idle() {
+    let waits = Waits::new(
+        [4_148_032_001, 4_148_032_002],
+        ["ada-walks-away-mid-wait", "bob-stays-silent"],
+    );
+    let mut session = waits.session_with(&[(IDLE_SETTING, SHORT_IDLE)], CLAUDE);
+    let helper = await_helper_beside(&waits.helped, &[&session]);
+    assert_keeps_waiting(&mut session);
+
+    session.kill();
+
+    waits.helped.await_exit(helper, EXIT_LIMIT);
 }
