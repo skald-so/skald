@@ -37,6 +37,8 @@ const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
 const PROOF_WAIT: Duration = Duration::from_secs(5);
 /// How long a proved connection waits for the instance to listen to the others.
 pub(crate) const LISTEN_WAIT: Duration = Duration::from_secs(5);
+/// Why a connection or a request fails when the instance does not listen within [`LISTEN_WAIT`].
+pub(crate) const NOT_LISTENING: &str = "the instance does not listen to the others yet";
 
 /// Why the server closes a connection: the reasons of "Connecting".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,7 +266,7 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
                 .await
                 .is_err()
             {
-                report_closing("the instance does not listen to the others");
+                report_closing(&error_reports::logged("serve a connection", &NOT_LISTENING));
                 return close(socket, Closing::ServerError).await;
             }
             let sender = Sender {

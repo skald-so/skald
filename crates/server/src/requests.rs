@@ -17,12 +17,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_proto::{Cbor as _, DeviceId, Frame, PROOF_HEADER, Push, REQUEST_LABEL, RequestProof};
 use sqlx::PgPool;
 
-use crate::connections::{self, Closing, LISTEN_WAIT, Proof, Proved, Unproved};
+use crate::connections::{self, Closing, LISTEN_WAIT, NOT_LISTENING, Proof, Proved, Unproved};
 use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in, param};
-use crate::{AppState, database_failed, notices, problem};
+use crate::{AppState, database_failed, error_reports, notices, problem};
 
 /// The longest wait of a long-poll without the server setting.
 pub const LONG_POLL_MAX_WAIT: Duration = Duration::from_secs(30);
@@ -156,13 +156,17 @@ pub(crate) async fn ack_listening(
         .map_err(|err| Box::new(database_failed("ack a mailbox", err)))
 }
 
-/// Waits until the instance listens to the others; the answer if it does not in time.
+/// Waits until the instance listens to the others; the answer if it does not in time, which also
+/// goes to the server's output.
 pub(crate) async fn listening(state: &AppState) -> Result<(), Box<Response>> {
     match tokio::time::timeout(LISTEN_WAIT, state.instance.listening()).await {
         Ok(()) => Ok(()),
-        Err(_) => Err(Box::new(server_error(
-            "The server does not listen to its other instances yet.",
-        ))),
+        Err(_) => {
+            error_reports::logged("answer a request", &NOT_LISTENING);
+            Err(Box::new(server_error(
+                "The server does not listen to its other instances yet.",
+            )))
+        }
     }
 }
 

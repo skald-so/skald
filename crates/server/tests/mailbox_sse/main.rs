@@ -20,6 +20,9 @@
 //! - The stream closes when its session ends or its device is revoked, through any instance.
 //! - A stream gets no `space-notice` of a revision stored before it opened, also on an instance
 //!   that did not listen to the others yet.
+//! - An instance that does not listen to the others within 5 seconds answers a stream, and a
+//!   long-poll with a wait, `500` with the problem `server-error`, and writes
+//!   `skald-server: cannot answer a request: <why>` to its output.
 
 #[path = "../common/mod.rs"]
 mod common;
