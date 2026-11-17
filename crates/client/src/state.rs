@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
-use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId};
+use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId, WrapRecipient};
 
 use crate::gaps::{Counters, Source};
 
@@ -252,6 +252,16 @@ const MIGRATIONS: &[&str] = &[
         space TEXT NOT NULL,
         channel TEXT NOT NULL,
         entry BLOB NOT NULL
+    ) STRICT",
+    // The wraps of the channels' history keys the device does not upload again: those the server
+    // took from it, listed to it or refused, by channel, epoch and recipient, a `browser` device
+    // (1) or an account's recovery key (2).
+    "CREATE TABLE settled_wrap (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 1),
+        kind INTEGER NOT NULL CHECK (kind IN (1, 2)),
+        recipient TEXT NOT NULL,
+        PRIMARY KEY (channel, epoch, kind, recipient)
     ) STRICT",
 ];
 
@@ -862,6 +872,49 @@ impl State {
                 "INSERT INTO settled_link (channel, epoch, prev) VALUES (?1, ?2, ?3)
                  ON CONFLICT DO NOTHING",
                 params![channel.to_string(), sql_u64(epoch)?, sql_u64(prev)?],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The wraps of `channel`, by epoch and recipient, the device does not upload again.
+    pub fn settled_wraps(
+        &self,
+        channel: ChannelId,
+    ) -> Result<BTreeSet<(u64, WrapRecipient)>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT epoch, kind, recipient FROM settled_wrap WHERE channel = ?1")?;
+        let rows = query.query_map(params![channel.to_string()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get(2)?))
+        })?;
+        rows.map(|row| {
+            let (epoch, kind, recipient): (i64, i64, String) = row?;
+            let recipient = match kind {
+                1 => WrapRecipient::Browser(id("browser's device ID", &recipient)?),
+                2 => WrapRecipient::Recovery(id("account ID", &recipient)?),
+                _ => return Err(Error::Malformed(format!("the wrap recipient kind {kind}"))),
+            };
+            Ok((read_epoch(channel, epoch)?, recipient))
+        })
+        .collect()
+    }
+
+    /// Keeps `wraps` of `channel`, by epoch and recipient, from being uploaded again.
+    pub fn settle_wraps(
+        &self,
+        channel: ChannelId,
+        wraps: &[(u64, WrapRecipient)],
+    ) -> Result<(), Error> {
+        for &(epoch, recipient) in wraps {
+            let (kind, recipient) = match recipient {
+                WrapRecipient::Browser(device) => (1, device.to_string()),
+                WrapRecipient::Recovery(account) => (2, account.to_string()),
+            };
+            self.db.execute(
+                "INSERT INTO settled_wrap (channel, epoch, kind, recipient)
+                 VALUES (?1, ?2, ?3, ?4) ON CONFLICT DO NOTHING",
+                params![channel.to_string(), sql_u64(epoch)?, kind, recipient],
             )?;
         }
         Ok(())
@@ -2951,6 +3004,26 @@ pub(crate) mod tests {
             BTreeSet::from([(2, 1), (3, 1)])
         );
         assert_eq!(state.settled_links(other).unwrap(), BTreeSet::new());
+    }
+
+    #[test]
+    fn wraps_stay_settled_per_channel_epoch_and_recipient() {
+        let dir = TestDir::new("state-wraps");
+        let state = State::open(&dir).unwrap();
+        let (one, other) = (ChannelId::generate(), ChannelId::generate());
+        let browser = WrapRecipient::Browser(DeviceId::from_signing_key(&[3; 32]));
+        let recovery = WrapRecipient::Recovery(skald_proto::AccountId::generate());
+
+        state
+            .settle_wraps(one, &[(2, browser), (1, browser), (2, recovery)])
+            .unwrap();
+        state.settle_wraps(one, &[(2, browser)]).unwrap();
+
+        assert_eq!(
+            state.settled_wraps(one).unwrap(),
+            BTreeSet::from([(1, browser), (2, browser), (2, recovery)])
+        );
+        assert_eq!(state.settled_wraps(other).unwrap(), BTreeSet::new());
     }
 
     #[test]

@@ -28,7 +28,8 @@
 //!   member uploads the GroupInfo when the server has none of its current epoch.
 //! - It judges each epoch it enters, by creating the group, a Welcome, a Commit, its own or
 //!   another's, or a join or rejoin, after applying the revocations the Commit carries; once its
-//!   Commit is stored, it uploads the new epoch's link ([`crate::key_chain`]).
+//!   Commit is stored, it uploads the new epoch's link ([`crate::key_chain`]) and wraps
+//!   ([`crate::wraps`]).
 //! - It decrypts each application message of its mailbox in its channel's group in that order,
 //!   among the Welcomes and Commits, and keeps what that gave with the entry, sealed under the
 //!   state key, until a run shows it; a replay gives nothing to show. Once an entry of a channel
@@ -69,6 +70,7 @@ use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
 use crate::state::{self, Counted, MlsChanges, MlsOutgoing, Outgoing, State};
+use crate::wraps;
 
 /// The problem of a Commit of an epoch that is not the channel's current one.
 const EPOCH_MISMATCH: &str = "epoch-mismatch";
@@ -393,6 +395,7 @@ fn committed(
     }
     if let Some((_, epoch, true)) = judgment {
         key_chain::upload_new(follower, link, (space, channel), epoch);
+        wraps::upload_new(follower, link, (space, channel), epoch);
     }
     match welcome {
         Some(welcome) => send_out(follower, link, welcome),

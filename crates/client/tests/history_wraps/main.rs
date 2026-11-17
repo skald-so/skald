@@ -31,8 +31,10 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
+mod answered;
 mod barred;
 mod excluded;
+mod hidden;
 mod later;
 mod lost;
 mod unclean;

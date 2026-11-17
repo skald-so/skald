@@ -107,16 +107,7 @@ pub fn upload_new(
 /// that the device can make and the server lacks, settling those the server lists; warns of what
 /// fails.
 pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
-    let account = follower.own.account;
-    let channels: Vec<(SpaceId, ChannelId)> = (follower.accepted.iter())
-        .filter(|(space, _)| !scope.excludes(**space))
-        .flat_map(|(space, (roster, _))| {
-            (roster.body().channels.iter())
-                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
-                .map(|channel| (*space, channel.id))
-        })
-        .collect();
-    let due: Vec<(SpaceId, ChannelId, Pair)> = (channels.into_iter())
+    let due: Vec<(SpaceId, ChannelId, Pair)> = (own_channels(follower, scope).into_iter())
         .flat_map(|(space, channel)| {
             (due(follower, channel, |_| true).into_iter()).map(move |pair| (space, channel, pair))
         })
@@ -155,6 +146,20 @@ pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
         }
     }
     upload(follower, link, missing);
+}
+
+/// The channels within `scope` of each space the run accepted the revisions of, those whose last
+/// accepted revision lists the device's account.
+pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelId)> {
+    let account = follower.own.account;
+    (follower.accepted.iter())
+        .filter(|(space, _)| !scope.excludes(**space))
+        .flat_map(|(space, (roster, _))| {
+            (roster.body().channels.iter())
+                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
+                .map(|channel| (*space, channel.id))
+        })
+        .collect()
 }
 
 /// `HistoryLinks` in the API spec.
