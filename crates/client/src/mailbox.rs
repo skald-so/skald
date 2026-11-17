@@ -7,10 +7,15 @@
 //!
 //! A one-shot run's long-poll asks with a wait of 0 until an answer is empty: the end of its
 //! catch-up. `history` frames go over a WebSocket only.
+//!
+//! A WebSocket or an event stream a run is done with is kept for its next connection as the same
+//! device, and the helper's for its next operations ([`crate::helper`]); catch-up on one after its
+//! first goes over long-poll, which, unlike a later `sync`, ends.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
-use skald_proto::{Cbor as _, Frame, Push, SpaceId};
+use skald_proto::{Cbor as _, DeviceId, Frame, Push, SpaceId};
 use tungstenite::Message;
 
 use crate::connection::{self, WebSocket};
@@ -38,10 +43,117 @@ pub enum Transport {
 }
 
 /// The device's open connection.
-pub enum Mailbox {
+pub struct Mailbox {
+    /// Taken only when it closes or is kept.
+    link: Option<Link>,
+    owner: Owner,
+    /// Whether a catch-up on it has ended: the server sends nothing to end another.
+    caught_up: bool,
+}
+
+/// How a connection reaches the mailbox.
+enum Link {
     WebSocket(WebSocket),
     /// HTTPS requests, with the event stream once open over SSE.
     Https(Option<Events>),
+}
+
+/// Whose a connection is: a server, a device, its session and the protocol version spoken.
+#[derive(Clone, PartialEq)]
+struct Owner {
+    server: String,
+    device: DeviceId,
+    token: String,
+    version: std::num::NonZeroU64,
+}
+
+impl Owner {
+    fn of(follower: &Follower) -> Self {
+        Owner {
+            server: follower.connection.server().to_owned(),
+            device: follower.this,
+            token: follower.token.clone(),
+            version: follower.connection.version(),
+        }
+    }
+}
+
+/// A connection kept for the run's next one, or the helper's next operation, with the transport it
+/// is on.
+struct Kept {
+    mailbox: Mailbox,
+    transport: Transport,
+}
+
+thread_local! {
+    /// The connection kept.
+    static KEPT: RefCell<Option<Kept>> = const { RefCell::new(None) };
+}
+
+/// Reads what came on the kept connection, if any, so the server's pushes, which the next catch-up
+/// gets anyway, do not pile up while the helper waits; a connection that broke or closed is
+/// dropped.
+pub fn drain_kept() {
+    let kept = KEPT.with(|kept| kept.borrow_mut().take());
+    if let Some(mut kept) = kept {
+        if kept.mailbox.drained() {
+            KEPT.with(|slot| *slot.borrow_mut() = Some(kept));
+        } else {
+            kept.mailbox.discard();
+        }
+    }
+}
+
+/// Closes the kept connection, if any.
+pub fn close_kept() {
+    if let Some(kept) = KEPT.with(|kept| kept.borrow_mut().take()) {
+        kept.mailbox.discard();
+    }
+}
+
+/// Gives the kept connection if it is `follower`'s device's and still open, setting the transport
+/// it is on.
+fn reuse(follower: &mut Follower) -> Option<Mailbox> {
+    let mut kept = KEPT.with(|kept| kept.borrow_mut().take())?;
+    if kept.mailbox.owner != Owner::of(follower) || !kept.mailbox.drained() {
+        kept.mailbox.discard();
+        return None;
+    }
+    follower.transport = kept.transport;
+    Some(kept.mailbox)
+}
+
+/// Keeps `link`, a connection a run is done with, for its next one, unless one is kept already or
+/// it is not a connection: long-poll holds none, and the next connection tries a WebSocket again.
+fn keep(link: Link, owner: Owner, caught_up: bool) {
+    let transport = match &link {
+        Link::WebSocket(_) => Transport::WebSocket,
+        Link::Https(Some(_)) => Transport::Sse,
+        Link::Https(None) => return,
+    };
+    // Once the thread's storage is gone, as when a thread ends, the connection closes.
+    let _ = KEPT.try_with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.is_none() {
+            *kept = Some(Kept {
+                mailbox: Mailbox {
+                    link: Some(link),
+                    owner,
+                    caught_up,
+                },
+                transport,
+            });
+        }
+    });
+}
+
+/// Keeps the connection a run drops ([`keep`]).
+impl Drop for Mailbox {
+    fn drop(&mut self) {
+        if let Some(link) = self.link.take() {
+            keep(link, self.owner.clone(), self.caught_up);
+        }
+    }
 }
 
 /// What writes the entries of a frame after the cursor it is given, with the new cursor, and gives
@@ -68,40 +180,78 @@ fn blocked(err: &connection::Error) -> bool {
 }
 
 impl Mailbox {
-    /// Opens the device's connection with its `keys`: a WebSocket, unless one did not work earlier
-    /// in the run; otherwise HTTPS, the event stream opening at catch-up.
+    /// Opens the device's connection with its `keys`: the one kept, if any ([`keep`]); otherwise a
+    /// WebSocket, unless one did not work earlier in the run; otherwise HTTPS, the event stream
+    /// opening at catch-up.
     pub fn open(follower: &mut Follower, keys: &Keys) -> Result<Self, String> {
+        if let Some(kept) = reuse(follower) {
+            return Ok(kept);
+        }
+        let owner = Owner::of(follower);
+        let link = |link| Mailbox {
+            link: Some(link),
+            owner,
+            caught_up: false,
+        };
         if follower.transport == Transport::WebSocket {
             let (token, connection) = (&follower.token, &mut follower.connection);
             match connection.open_websocket_as(WEBSOCKET, token, keys.id(), keys.signing()) {
-                Ok(socket) => return Ok(Mailbox::WebSocket(socket)),
+                Ok(socket) => return Ok(link(Link::WebSocket(socket))),
                 Err(err) if blocked(&err) => follower.transport = Transport::Sse,
                 Err(err) => return Err(err.to_string()),
             }
         }
-        Ok(Mailbox::Https(None))
+        Ok(link(Link::Https(None)))
     }
 
     /// The connection's WebSocket, if it is one.
     pub fn websocket(&mut self) -> Option<&mut WebSocket> {
-        match self {
-            Mailbox::WebSocket(socket) => Some(socket),
-            Mailbox::Https(_) => None,
+        match self.link.as_mut() {
+            Some(Link::WebSocket(socket)) => Some(socket),
+            _ => None,
         }
     }
 
-    /// Closes the connection.
-    pub fn close(self) {
-        if let Mailbox::WebSocket(mut socket) = self {
+    /// Closes the connection rather than keep it, as after a failure: a WebSocket with a close
+    /// frame.
+    pub fn discard(mut self) {
+        if let Some(Link::WebSocket(mut socket)) = self.link.take() {
             let _ = socket.close(None);
             let _ = socket.flush();
+        }
+    }
+
+    /// Reads and drops whatever came on the connection; whether it is still open.
+    fn drained(&mut self) -> bool {
+        match self.link.as_mut() {
+            Some(Link::WebSocket(socket)) => {
+                if set_read_timeout(socket, Duration::from_millis(1)).is_err() {
+                    return false;
+                }
+                loop {
+                    match socket.read() {
+                        Ok(Message::Close(_)) => return false,
+                        Ok(_) => {}
+                        Err(err) => return crate::send::timed_out(&err),
+                    }
+                }
+            }
+            Some(Link::Https(Some(events))) => loop {
+                match events.next(Duration::ZERO) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return true,
+                    Err(_) => return false,
+                }
+            },
+            Some(Link::Https(None)) => true,
+            None => false,
         }
     }
 
     /// Gets the mailbox after the device's cursor until catch-up ends, waiting for each frame for
     /// `timeout`; `write` writes the entries of each frame after the cursor it is given, with the
     /// new cursor, and gives it. Falls back to the next transport as the module says; gives the
-    /// connection it ended on.
+    /// connection it ended on. On a connection whose catch-up has ended, it goes over long-poll.
     pub fn catch_up(
         mut self,
         follower: &mut Follower,
@@ -111,17 +261,22 @@ impl Mailbox {
     ) -> Result<Self, String> {
         loop {
             let cursor = follower.state.cursor().map_err(text)?;
-            let stopped = match &mut self {
-                Mailbox::WebSocket(socket) => {
+            let caught_up = self.caught_up;
+            let stopped = match self.link.as_mut() {
+                _ if caught_up => over_long_poll(follower, keys, cursor, &mut write),
+                Some(Link::WebSocket(socket)) => {
                     over_websocket(socket, follower, (cursor, timeout), &mut write)
                 }
-                Mailbox::Https(events) if follower.transport != Transport::LongPoll => {
+                Some(Link::Https(events)) if follower.transport != Transport::LongPoll => {
                     over_sse(events, follower, keys, (cursor, timeout), &mut write)
                 }
-                Mailbox::Https(_) => over_long_poll(follower, keys, cursor, &mut write),
+                _ => over_long_poll(follower, keys, cursor, &mut write),
             };
             match stopped {
-                Ok(()) => return Ok(self),
+                Ok(()) => {
+                    self.caught_up = true;
+                    return Ok(self);
+                }
                 Err(Stop::Failed(err)) => return Err(err),
                 Err(Stop::Next) => {
                     follower.transport = match follower.transport {
@@ -129,7 +284,8 @@ impl Mailbox {
                         Transport::Sse | Transport::LongPoll => Transport::LongPoll,
                     };
                     // A connection that failed takes no close frame.
-                    self = Mailbox::Https(None);
+                    self.link = Some(Link::Https(None));
+                    self.caught_up = false;
                 }
             }
         }
@@ -140,8 +296,8 @@ impl Mailbox {
     /// dropped, and the next run gets their entries.
     pub fn waiting_notices(&mut self, follower: &mut Follower, keys: &Keys) -> Vec<SpaceId> {
         let mut frames = Vec::new();
-        match self {
-            Mailbox::WebSocket(socket) => {
+        match self.link.as_mut() {
+            Some(Link::WebSocket(socket)) => {
                 if set_read_timeout(socket, Duration::from_millis(1)).is_ok() {
                     while let Ok(message) = socket.read() {
                         if let Message::Binary(bytes) = message {
@@ -150,19 +306,19 @@ impl Mailbox {
                     }
                 }
             }
-            Mailbox::Https(Some(events)) => {
+            Some(Link::Https(Some(events))) => {
                 while let Ok(Some(frame)) = events.next(Duration::ZERO) {
                     frames.push(frame);
                 }
             }
-            Mailbox::Https(None) if follower.transport == Transport::LongPoll => {
+            Some(Link::Https(None)) if follower.transport == Transport::LongPoll => {
                 if let Ok(cursor) = follower.state.cursor()
                     && let Ok(frame) = poll(follower, keys, cursor)
                 {
                     frames.push(frame);
                 }
             }
-            Mailbox::Https(None) => {}
+            Some(Link::Https(None)) | None => {}
         }
         let mut spaces = Vec::new();
         for frame in frames {
@@ -364,7 +520,7 @@ mod tests {
         assert!(!other.iter().any(blocked));
     }
 
-    /// Closing a WebSocket sends its close frame.
+    /// Closing a WebSocket rather than keeping it sends its close frame.
     #[test]
     fn closing_a_websocket_sends_its_close_frame() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local port");
@@ -379,7 +535,17 @@ mod tests {
         let plain = tungstenite::stream::MaybeTlsStream::Plain(stream);
         let (socket, _) = tungstenite::client(url.as_str(), plain).expect("a WebSocket");
 
-        Mailbox::WebSocket(socket).close();
+        let mailbox = Mailbox {
+            link: Some(Link::WebSocket(socket)),
+            owner: Owner {
+                server: url,
+                device: DeviceId::from_signing_key(&[1; 32]),
+                token: String::new(),
+                version: std::num::NonZeroU64::MIN,
+            },
+            caught_up: false,
+        };
+        mailbox.discard();
 
         assert!(matches!(served.join().unwrap(), Message::Close(_)));
     }

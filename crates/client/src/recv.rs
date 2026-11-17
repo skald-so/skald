@@ -27,7 +27,6 @@
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Write as _};
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -48,6 +47,7 @@ use crate::groups::{self, Link, Opened, Rosters};
 use crate::history;
 use crate::key_chain;
 use crate::mailbox::Mailbox;
+use crate::output::{self, Stream};
 use crate::secrets;
 use crate::send;
 use crate::spaces::{self, Follower, Scope};
@@ -149,7 +149,6 @@ fn receive(
         sync_due(follower, scope, &mut due, synced)?;
         due.extend(mailbox.waiting_notices(follower, &keys));
     }
-    mailbox.close();
     Ok(())
 }
 
@@ -456,10 +455,7 @@ fn shown_kept(
     for (seq, sealed) in kept {
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(line) => {
-                let mut out = io::stdout().lock();
-                out.write_all(&line)
-                    .and_then(|()| out.write_all(b"\n"))
-                    .and_then(|()| out.flush())
+                output::write(Stream::Out, &[line.as_slice(), b"\n"].concat())
                     .map_err(|err| format!("cannot write a message to the output: {err}"))?;
             }
             None => eprintln!(

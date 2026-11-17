@@ -17,6 +17,7 @@ What Skald protects against and what it does not. Formats and checks are in the 
   - [A malicious sender](#a-malicious-sender)
   - [A leaked CI secret](#a-leaked-ci-secret)
   - [An agent on the person's own device](#an-agent-on-the-persons-own-device)
+  - [Another account on the machine](#another-account-on-the-machine)
 - [The server sees](#the-server-sees)
 - [The server does not see](#the-server-does-not-see)
 - [Trade-offs](#trade-offs)
@@ -247,6 +248,16 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - A browser runs no agent, so an answer from a linked browser is not an agent's ([agents.md](protocol/agents.md#security-considerations)).
 - A task from another person runs in an executor by default, and in `read-only` it reads only its folder and changes nothing, so it cannot act through the CLI ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
+
+### Another account on the machine
+An OS account on the device's machine other than the one that runs the client.
+
+**Can:**
+- Read what the OS lets it read: as an administrator or root, the device's state and keys.
+
+**Defenses:**
+- The state directory and the key file in it are the client's account's only: on Unix by their permissions, on Windows by the access rights they inherit from `%LOCALAPPDATA%` ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
+- The helper's socket is in the state directory, in a directory of its own that only the client's account reaches; the helper runs no other account's commands ([architecture.md, "Components"](dev/architecture.md#components)).
 
 ## The server sees
 - accounts: sign-in methods and usernames;

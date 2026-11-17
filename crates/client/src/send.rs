@@ -193,9 +193,9 @@ fn through_mailbox(
         eprintln!("skald: warning: {err}");
     }
     let timeout = follower.timeout;
-    match recv::catch_up(follower, None, timeout) {
-        Ok(mailbox) => mailbox.close(),
-        Err(err) => eprintln!("skald: warning: {err}"),
+    // The connection is kept for the run's next one.
+    if let Err(err) = recv::catch_up(follower, None, timeout) {
+        eprintln!("skald: warning: {err}");
     }
     let mut rosters = Rosters::from([(space, synced)]);
     if let Err(err) = groups::take_in(follower, &mut link, scope, &mut rosters) {
@@ -383,18 +383,23 @@ pub fn deliver<W: Wire>(
         };
         let attempt = opened.map_err(|err| (err, false)).and_then(|mut opened| {
             let answers = &mut delivered.answers;
-            match opened.websocket() {
-                Some(socket) => {
-                    for queued in &unanswered {
-                        socket
-                            .send(Message::Binary(queued.frame().to_vec().into()))
-                            .map_err(|err| (broke(err), false))?;
-                    }
-                    read_answers(socket, follower, queued, answers, until)?;
+            let sent = match opened.websocket() {
+                Some(socket) => (unanswered.iter())
+                    .try_for_each(|queued| {
+                        (socket.send(Message::Binary(queued.frame().to_vec().into())))
+                            .map_err(|err| (broke(err), false))
+                    })
+                    .and_then(|()| read_answers(socket, follower, queued, answers, until)),
+                None => one_by_one(follower, &keys, &unanswered, answers),
+            };
+            match sent {
+                Ok(()) => Ok(opened),
+                // The next attempt reconnects.
+                Err(err) => {
+                    opened.discard();
+                    Err(err)
                 }
-                None => one_by_one(follower, &keys, &unanswered, answers)?,
             }
-            Ok(opened)
         });
         match attempt {
             Ok(opened) => {

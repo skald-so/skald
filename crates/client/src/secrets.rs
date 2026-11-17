@@ -25,7 +25,7 @@ const REAL_KEY_STORAGE: &str = "SKALD_TEST_REAL_KEY_STORAGE";
 pub type Map = BTreeMap<String, String>;
 
 /// Where secrets go.
-#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
 pub enum Storage {
     /// The system's key storage; the file when the system has none.
     Auto,
