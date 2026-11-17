@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use skald_proto::{Cbor as _, DeviceId, Frame, Push, SpaceId};
 use tungstenite::Message;
+use tungstenite::stream::MaybeTlsStream;
 
 use crate::connection::{self, Connection, WebSocket};
 use crate::device::Keys;
@@ -312,21 +313,17 @@ impl Mailbox {
         let mut came = Came::Nothing;
         match self.link.as_mut() {
             Some(Link::WebSocket(socket)) => {
-                set_read_timeout(socket, Duration::from_millis(1)).ok()?;
-                loop {
-                    match socket.read() {
-                        Ok(Message::Close(_)) => return None,
-                        Ok(Message::Binary(bytes)) => {
-                            let entries = got(Frame::from_cbor(&bytes).ok());
-                            came.add(&entries);
-                            if let Got::Entries(entries) = entries {
-                                self.pushed.extend(entries);
-                            }
+                let (messages, open) = read_now(socket);
+                for message in messages {
+                    if let Message::Binary(bytes) = message {
+                        let entries = got(Frame::from_cbor(&bytes).ok());
+                        came.add(&entries);
+                        if let Got::Entries(entries) = entries {
+                            self.pushed.extend(entries);
                         }
-                        Ok(_) => {}
-                        Err(err) => return crate::send::timed_out(&err).then_some(came),
                     }
                 }
+                open.then_some(came)
             }
             Some(Link::Https(Some(events))) => loop {
                 match events.next(Duration::ZERO) {
@@ -395,11 +392,9 @@ impl Mailbox {
         let mut frames = Vec::new();
         match self.link.as_mut() {
             Some(Link::WebSocket(socket)) => {
-                if set_read_timeout(socket, Duration::from_millis(1)).is_ok() {
-                    while let Ok(message) = socket.read() {
-                        if let Message::Binary(bytes) = message {
-                            frames.push(bytes.to_vec());
-                        }
+                for message in read_now(socket).0 {
+                    if let Message::Binary(bytes) = message {
+                        frames.push(bytes.to_vec());
                     }
                 }
             }
@@ -434,6 +429,32 @@ impl Mailbox {
             }
         }
         spaces
+    }
+}
+
+/// The messages that came on `socket` and wait to be read, read without waiting, and whether it
+/// is still open: neither closed nor broken.
+fn read_now(socket: &mut WebSocket) -> (Vec<Message>, bool) {
+    let mut messages = Vec::new();
+    if set_nonblocking(socket, true).is_err() {
+        return (messages, false);
+    }
+    let open = loop {
+        match socket.read() {
+            Ok(Message::Close(_)) => break false,
+            Ok(message) => messages.push(message),
+            Err(err) => break crate::send::timed_out(&err),
+        }
+    };
+    (messages, set_nonblocking(socket, false).is_ok() && open)
+}
+
+/// Sets whether a read or write of `socket` returns at once rather than wait.
+fn set_nonblocking(socket: &mut WebSocket, nonblocking: bool) -> std::io::Result<()> {
+    match socket.get_mut() {
+        MaybeTlsStream::Plain(stream) => stream.set_nonblocking(nonblocking),
+        MaybeTlsStream::Rustls(stream) => stream.sock.set_nonblocking(nonblocking),
+        _ => Ok(()),
     }
 }
 

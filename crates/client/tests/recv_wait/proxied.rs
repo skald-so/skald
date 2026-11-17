@@ -8,6 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::behind::{Behind, Forked, TIMEOUT, Transport, answered, recv};
+use crate::cloud::WAIT;
 use crate::filter::{EVENTS, POLL, Seen, WEBSOCKET};
 use crate::fixtures::await_running;
 use crate::helped::{Helped, ONE_SHOT};
@@ -181,6 +182,25 @@ fn helper_on_long_poll_accepts_a_revision_stored_while_its_next_request_is_held_
     forked.assert_late_accepted(&behind, "the helper on long-poll");
 }
 
+/// Waits for up to [`WAIT`] while `run`, if any, goes on until the proxy has seen no request for
+/// [`SETTLE`].
+#[track_caller]
+fn await_settled(behind: &Behind, mut run: Option<&mut Run>) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let from = behind.filter.mark();
+        thread::sleep(SETTLE);
+        if let Some(run) = run.as_mut() {
+            run.assert_running();
+        }
+        let seen = behind.filter.seen_since(from);
+        if seen.is_empty() {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never settled: {seen:#?}");
+    }
+}
+
 /// The requests of `seen` other than long-polls with a wait above 0 and the challenges that prove
 /// them.
 fn not_waiting(seen: &[Seen]) -> Vec<&Seen> {
@@ -223,9 +243,9 @@ fn helper_on_long_poll_sends_only_long_polls_that_wait_and_none_once_no_session_
     let got = session.finish();
     assert!(got.success, "{got:?}");
     behind.assert_shows_bobs(&got.shown(), text);
-    thread::sleep(POLL_WAIT);
+    await_settled(&behind, None);
     let from = behind.filter.mark();
-    thread::sleep(IDLE_WATCH);
+    thread::sleep(POLL_WAIT + SETTLE);
     let seen = behind.filter.seen_since(from);
     assert!(seen.is_empty(), "requests with no session: {seen:#?}");
     assert_eq!(
@@ -251,10 +271,11 @@ fn one_shot_wait_that_moved_to_websocket_long_polls_no_more() {
     await_waiting_poll(&behind, &mut waiting, from);
     assert_moves_to_websocket(&behind, &mut waiting);
 
-    thread::sleep(POLL_WAIT);
+    await_settled(&behind, Some(&mut waiting));
     let from = behind.filter.mark();
-    assert_keeps_waiting(&mut waiting);
+    thread::sleep(POLL_WAIT + SETTLE);
 
+    waiting.assert_running();
     let seen = behind.filter.seen_since(from);
     assert!(seen.is_empty(), "requests on WebSocket: {seen:#?}");
     let text = "bob, once she left long-poll";
