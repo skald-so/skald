@@ -65,7 +65,7 @@ impl Midway {
 
 /// claude's session waits in the middle of writing a message with a long text when the helper is
 /// killed, then the session: it never wrote the text whole. claude's next `skald recv --wait`
-/// starts a new helper and shows the text once, with its `msg_id`. That helper is killed once the
+/// starts a new helper and shows the text once, by its reference. That helper is killed once the
 /// session has exited. Bob's device sends another message, and claude's next `skald recv --wait`
 /// shows only that one.
 #[test]
@@ -95,7 +95,7 @@ fn helper_killed_before_the_mark_hands_the_message_over_again_and_one_killed_aft
 
 /// claude's session is killed while it waits in the middle of writing a message with a long text:
 /// it never wrote the text whole. claude's next `skald recv --wait`, through the same helper, shows
-/// the text once, with its `msg_id`, and exits within [`AT_ONCE`].
+/// the text once, by its reference, and exits within [`AT_ONCE`].
 #[test]
 fn session_killed_before_writing_its_message_leaves_it_to_the_next_wait() {
     let mut midway = Midway::start(

@@ -23,8 +23,8 @@
 //! helpers it starts among them, by their executable, and kill each one they leave
 //! (`helped.rs`).
 //!
-//! The CLI, as these tests use it, beside the commands of the tests of channel messages and of
-//! agents:
+//! The CLI, as these tests use it, beside the commands of the tests of channel messages, of agents
+//! and of compact output:
 //! - `skald helper` runs the helper; a command starts it in the background as its own executable
 //!   with `helper`, so the helper's process runs the command's executable. Its output is not the
 //!   command's: the command's outputs close when the command exits;
@@ -89,3 +89,7 @@ mod played;
 mod talk;
 #[path = "../roster_revisions/world.rs"]
 mod world;
+
+// What an agent reads, as the tests of compact output have it.
+#[path = "../compact_output/lines.rs"]
+mod lines;

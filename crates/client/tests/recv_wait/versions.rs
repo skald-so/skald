@@ -22,7 +22,7 @@ const AGAIN: &str = "again";
 /// started, claude waits, acting as that version too, and keeps waiting while nothing comes. The
 /// person's `skald recv` of the copy's version succeeds; the older helper exits, and the waiting
 /// session fails. Bob's device sends a message to the channel: claude's next `skald recv --wait`
-/// shows it once, with its `msg_id`, through a new helper.
+/// shows it once, by its reference, through a new helper.
 #[test]
 fn session_on_a_helper_that_exits_for_a_newer_command_fails_and_the_next_gets_messages() {
     let mut waits = Waits::new(
@@ -63,7 +63,7 @@ fn session_on_a_helper_that_exits_for_a_newer_command_fails_and_the_next_gets_me
 /// copy's version then starts a helper and waits through it. Bob's device sends a message to Ada as
 /// a person: the older wait ends, failing, saying to run it again and naming both versions, while
 /// claude's session keeps waiting and the helper keeps running. Bob's device then sends a message
-/// to the channel, which claude's session shows once, with its `msg_id`. The older wait and the
+/// to the channel, which claude's session shows once, by its reference. The older wait and the
 /// person's next `skald recv`, through that helper, showed each of Bob's messages once in all.
 #[test]
 fn older_one_shot_wait_ends_when_a_newer_helper_starts_and_the_helper_and_its_sessions_go_on() {
