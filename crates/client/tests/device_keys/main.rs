@@ -420,7 +420,7 @@ fn two_first_machines_at_once_give_the_account_one_master_key() {
     let ada = cloud.user(4_120_666_008, "ada-race-standin");
     let one = Machine::new().with_host_name("ada-one");
     let two = Machine::new().with_host_name("ada-two");
-    cloud.relay.hold(GIVE_MASTER, 2, Duration::from_secs(20));
+    cloud.relay.hold(GIVE_MASTER, 2);
 
     let mut run_one = one.start(&args(&cloud, &[FIRST_DEVICE, YES]));
     let grant_one = shown_grant(&cloud, &mut run_one, 0);

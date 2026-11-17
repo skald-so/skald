@@ -31,6 +31,7 @@ mod refused;
 mod retries;
 mod sent;
 mod unclean;
+mod withheld;
 
 // The links of the tests of the key chain; the front of the tests of sending; the devices the tests
 // of channel groups play; the talk of the tests of channel messages.
