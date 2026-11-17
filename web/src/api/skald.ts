@@ -30,6 +30,7 @@ import type {
   Session,
   SessionId,
   Sessions,
+  SignInMethodId,
   SignInMethods,
   SignInProviders,
   Space,
@@ -624,6 +625,88 @@ export const listSignInMethods = async (
     status: res.status,
     headers: res.headers,
   } as listSignInMethodsResponse;
+};
+
+export type removeSignInMethodResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type removeSignInMethodResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type removeSignInMethodResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type removeSignInMethodResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type removeSignInMethodResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type removeSignInMethodResponse409 = {
+  data: Problem;
+  status: 409;
+};
+
+export type removeSignInMethodResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type removeSignInMethodResponseSuccess =
+  removeSignInMethodResponse204 & {
+    headers: Headers;
+  };
+export type removeSignInMethodResponseError = (
+  | removeSignInMethodResponse400
+  | removeSignInMethodResponse401
+  | removeSignInMethodResponse403
+  | removeSignInMethodResponse404
+  | removeSignInMethodResponse409
+  | removeSignInMethodResponse500
+) & {
+  headers: Headers;
+};
+
+export type removeSignInMethodResponse =
+  removeSignInMethodResponseSuccess | removeSignInMethodResponseError;
+
+export const getRemoveSignInMethodUrl = (method: SignInMethodId) => {
+  return `/account/sign-in-methods/${method}`;
+};
+
+/**
+ * Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused while sign-up is closed, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.
+ * @summary Remove a sign-in method of the account
+ */
+export const removeSignInMethod = async (
+  method: SignInMethodId,
+  options?: RequestInit,
+): Promise<removeSignInMethodResponse> => {
+  const res = await fetch(getRemoveSignInMethodUrl(method), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: removeSignInMethodResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as removeSignInMethodResponse;
 };
 
 export type putUsernameResponse204 = {
