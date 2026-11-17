@@ -6,10 +6,12 @@ import type { DropdownOption } from "../ui/Dropdown.tsx";
 import { Shell, type ShellAccount, type ShellSection } from "../ui/Shell.tsx";
 import { accountPath, providerNames } from "./names.ts";
 import { versioned } from "./api.ts";
+import { ChosenSpace } from "./space.ts";
 
 /** The cabinet's sections, each on its page. */
 const sections: ShellSection[] = [
   { key: "machines", label: "Machines", href: "/" },
+  { key: "members", label: "Members", href: "/members" },
   { key: "access", label: "Access", href: "/access" },
 ];
 
@@ -17,26 +19,32 @@ const sections: ShellSection[] = [
  * The cabinet shell around `children`, the page area, for the account of `session` with `spaces`:
  * the space switcher with the personal space marked, or, with no space, what makes one; the side
  * menu's sections, followed in the page; and the account footer, whose Sign out ends this web
- * session and then calls `onSignedOut`. `menuOpen` opens the side menu at phone width, as on the
- * kit page.
+ * session and then calls `onSignedOut`. The page area gets the chosen space as `ChosenSpace`, at
+ * first `defaultSpace` or the personal space. `menuOpen` opens the side menu at phone width, as on
+ * the kit page.
  */
 export function Cabinet({
   session,
   spaces,
   onSignedOut,
+  defaultSpace,
   menuOpen = false,
   children,
 }: {
   session: Session;
   spaces: readonly ListedSpace[];
   onSignedOut: () => void;
+  defaultSpace?: string;
   menuOpen?: boolean;
   children: ReactNode;
 }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [space, setSpace] = useState(
-    () => (spaces.find((space) => space.personal) ?? spaces[0])?.space ?? "",
+    () =>
+      defaultSpace ??
+      (spaces.find((space) => space.personal) ?? spaces[0])?.space ??
+      "",
   );
   const options: DropdownOption<string>[] = spaces.map((space) => ({
     value: space.space,
@@ -64,7 +72,9 @@ export function Cabinet({
       account={account(session, navigate, onSignedOut)}
       defaultMenuOpen={menuOpen}
     >
-      {children}
+      <ChosenSpace value={spaces.find((listed) => listed.space === space)}>
+        {children}
+      </ChosenSpace>
     </Shell>
   );
 }
