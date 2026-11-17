@@ -1,7 +1,7 @@
 //! History retention: `docs/protocol/membership.md`, "Uploads". The server looks by itself for
-//! entries stored longer ago than the retention and deletes them. Once it has deleted an entry of
-//! an epoch, it deletes the links and wraps of every earlier epoch of the channel and keeps that
-//! epoch as the channel's cutoff, before which [`crate::history`] refuses links and wraps.
+//! entries stored longer ago than the retention and deletes them. A channel's cutoff is the latest
+//! epoch of an entry the server has deleted, and never moves back; the server deletes the links and
+//! wraps of epochs before it, and [`crate::history`] refuses them.
 
 use std::time::Duration;
 
@@ -33,7 +33,7 @@ pub(crate) async fn run(db: PgPool, retention: Duration) {
 }
 
 /// Deletes every entry stored longer ago than `retention` seconds, a page of one channel's at a
-/// time, with the links and wraps their epochs leave behind.
+/// time, with the links and wraps their epochs leave behind; looks again after each page.
 async fn sweep(db: &PgPool, retention: f64) -> Result<(), sqlx::Error> {
     loop {
         let due: Option<(String,)> = sqlx::query_as(
@@ -47,17 +47,16 @@ async fn sweep(db: &PgPool, retention: f64) -> Result<(), sqlx::Error> {
         let Some((channel,)) = due else {
             return Ok(());
         };
-        while delete_page(db, &channel, retention).await? {
-            // Leaves the database to other work between pages.
-            tokio::time::sleep(PAUSE).await;
-        }
+        delete_page(db, &channel, retention).await?;
+        // Leaves the database to other work between pages.
+        tokio::time::sleep(PAUSE).await;
     }
 }
 
 /// Deletes up to [`PAGE`] entries of `channel` stored longer ago than `retention` seconds; then
-/// moves the channel's cutoff up to the latest epoch among them and deletes the links and wraps of
-/// epochs before it. Gives whether it deleted any entry.
-async fn delete_page(db: &PgPool, channel: &str, retention: f64) -> Result<bool, sqlx::Error> {
+/// moves the channel's cutoff up to the latest epoch among them, if it is below, and deletes the
+/// links and wraps of epochs before that epoch.
+async fn delete_page(db: &PgPool, channel: &str, retention: f64) -> Result<(), sqlx::Error> {
     let mut tx = db.begin().await?;
     // The group's row lock, which an upload takes before it stores, makes the upload wait for the
     // new cutoff or the deletion for the upload's link or wrap.
@@ -104,6 +103,5 @@ async fn delete_page(db: &PgPool, channel: &str, retention: f64) -> Result<bool,
                 .await?;
         }
     }
-    tx.commit().await?;
-    Ok(!deleted.is_empty())
+    tx.commit().await
 }

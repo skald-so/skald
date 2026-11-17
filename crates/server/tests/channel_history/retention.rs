@@ -297,6 +297,36 @@ fn after_the_deletion_a_link_or_wrap_of_an_earlier_epoch_is_refused() {
 }
 
 #[test]
+fn the_cutoff_never_moves_back_when_an_entry_of_an_earlier_epoch_is_deleted_later() {
+    let mut s = retained(3_160_810_051);
+    for expected in [2, 3] {
+        assert_eq!(bob_rotates(&mut s), expected, "bob's empty Commit");
+    }
+    let g = s.fixture.general;
+    let [of_3, of_2] = [entry(g, 3), entry(g, 2)];
+    let f = &s.fixture;
+    stores(&mut s.bob, f, &of_3, "bob's entry of epoch 3");
+    stores(&mut s.bob, f, &of_2, "bob's entry of epoch 2");
+    age(f, &of_3, KEPT + DAY);
+    await_history(
+        &s.alice.session,
+        f,
+        [&[], &[], &[&of_2]],
+        "epoch 3's cutoff",
+    );
+
+    // Deleted in a later look, the entry of epoch 2 leaves the cutoff at epoch 3.
+    age(f, &of_2, KEPT + DAY);
+    await_history(&s.alice.session, f, [&[], &[], &[]], "nothing");
+    let t = &f.team;
+    let late = [link(g, 2, 1), wrap(g, 2, &t.alice, &t.bob)];
+    for (item, what) in late.iter().zip(["link of epoch 2", "wrap of epoch 2"]) {
+        refuses(&mut s.bob, f, item, &format!("bob's {what}"));
+    }
+    assert_deleted(f, &[&of_3, &of_2, &late[0], &late[1]]);
+}
+
+#[test]
 fn without_the_setting_an_entry_moved_back_years_stays() {
     let (mut s, _) = formed(3_160_810_041);
     bob_rotates(&mut s);

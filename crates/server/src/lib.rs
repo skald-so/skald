@@ -154,8 +154,8 @@ struct AppState {
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries, deletes history past its retention and listens to the other instances on that database in tasks on the Tokio runtime it is
-/// called on.
+/// entries, deletes history past its retention and listens to the other instances on that database
+/// in tasks on the Tokio runtime it is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
     let instance = instances::Instance::new();
