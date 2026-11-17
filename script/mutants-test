@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Tests script/mutants on a scratch Cargo workspace: it passes when the tests catch every mutant of the
 # code changed since the base, fails naming the survivors otherwise, never mutates unchanged code,
-# runs the tests with cargo-nextest and PostgreSQL and removes PostgreSQL afterwards, compiles
-# through sccache when it is on PATH, fails naming a mutant whose tests run past 3 times the
-# unmutated tree's test time, checks each prototype workspace with the tests of all its crates, fails
-# when cargo-mutants cannot list the mutants, and leaves the working tree clean.
+# runs the tests with cargo-nextest and PostgreSQL and removes PostgreSQL afterwards, on CPUs / jobs
+# threads, compiles through sccache when it is on PATH, fails naming a mutant whose tests run past 3
+# times the unmutated tree's test time, checks each prototype workspace with the tests of all its
+# crates, fails when cargo-mutants cannot list the mutants, and leaves the working tree clean.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -110,6 +110,8 @@ git checkout --quiet dev
 sed -i.bak 's/x + 1/x + 2/' crates/calc/src/lib.rs && rm crates/calc/src/lib.rs.bak
 git commit --quiet --all --message 'change untested'
 git checkout --quiet covered
+# slot: a statement that appends the test's nextest slot to the file %s.
+slot='std::fs::OpenOptions::new().append(true).create(true).open(r"%s").and_then(|mut file| std::io::Write::write_all(&mut file, format!("{}\\n", std::env::var("NEXTEST_TEST_GLOBAL_SLOT").unwrap()).as_bytes())).expect("record the slot");'
 # A stand-in for sccache on PATH, which records each compile and runs it.
 mkdir "$tmp/bin"
 printf '#!/usr/bin/env bash\necho "$*" >>%q\nexec "$@"\n' "$tmp/compiles" >"$tmp/bin/sccache"
@@ -121,6 +123,23 @@ PATH="$tmp/bin:$PATH" run dev
 grep -q -- '--crate-name calc ' "$tmp/compiles" 2>/dev/null || fail "covered: calc was not compiled through sccache"
 expect_clean covered
 expect_postgres_removed covered
+
+# The covered change with as many jobs as CPUs: each run's tests take one thread, so two tests that
+# each take a second never run at once, and nextest gives both the first slot.
+git checkout --quiet -b one-thread covered
+mkdir crates/calc/tests
+printf '#[test]\nfn %s() {\n    %s\n    %s\n}\n\n' \
+  first 'std::thread::sleep(std::time::Duration::from_secs(1));' "$(printf "$slot" "$tmp/slots")" \
+  second 'std::thread::sleep(std::time::Duration::from_secs(1));' "$(printf "$slot" "$tmp/slots")" \
+  >crates/calc/tests/slots.rs
+git add --all
+git commit --quiet --message 'one thread'
+CARGO_MUTANTS_JOBS=$(getconf _NPROCESSORS_ONLN) run dev
+[[ $status -eq 0 ]] || fail "one thread: exit code $status, want 0:"$'\n'"$output"
+slots=$(sort -u "$tmp/slots" 2>/dev/null | paste -sd ' ' -)
+[[ $slots == 0 ]] || fail "one thread: the tests ran in the slots '$slots', not one at a time in 0"
+expect_clean one-thread
+expect_postgres_removed one-thread
 
 # A new function tested only by another crate, next to a covered change, in a moved crate, and a new
 # crate without tests: the run fails and names only the survivors in the changed lines. Only the
