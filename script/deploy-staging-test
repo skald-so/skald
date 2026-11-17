@@ -6,6 +6,10 @@
 # malformed input or secrets and an origin without dev fail without a deploy. An SSH config and an
 # agent with the deploy key change nothing. Its output shows the commit, the digest and the deploy's
 # output, never a secret or the address, and it leaves no file.
+# The web app deploys with the image: `script/deploy-staging <commit> <digest> <archive>`, the archive
+# of the web app built from <commit>, as script/release-web writes it, at a path absolute or relative
+# to the clone; the deploy gets it, byte for byte, on its standard input with `deploy <digest>`.
+# Without it, or with a path that is no file, nothing deploys.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -27,10 +31,12 @@ for key in host other-host client stranger; do
 done
 
 # The stand-in for the deploy command, the key's forced command: it records SSH's command in
-# $tmp/command, prints the deploy's steps and exits with the code in $tmp/deploy-status, 0 without it.
+# $tmp/command and its standard input in $tmp/input, prints the deploy's steps and exits with the code
+# in $tmp/deploy-status, 0 without it.
 cat >"$tmp/deploy" <<EOF
 #!/bin/sh
 printf '%s' "\$SSH_ORIGINAL_COMMAND" >"$tmp/command"
+cat >"$tmp/input"
 echo "deploy: digest \${SSH_ORIGINAL_COMMAND#deploy }"
 if [ -e "$tmp/deploy-status" ]; then
   echo "deploy: health check: HTTP 502"
@@ -129,7 +135,7 @@ pinned_ssh -F /dev/null -i "$tmp/client.pub" -o IdentitiesOnly=yes ||
 # run <args...>: runs script/deploy-staging in the clone with the secrets in $key, $host_key and
 # $destination, setting $status, $output and $command, the command the deploy got.
 run() {
-  rm -f "$tmp/command"
+  rm -f "$tmp/command" "$tmp/input"
   status=0
   output=$(cd "$tmp/clone" && TMPDIR=$tmp/run STAGING_SSH_KEY=$key STAGING_SSH_HOST_KEY=$host_key \
     STAGING_SSH_DESTINATION=$destination "$root/script/deploy-staging" "$@" 2>&1) || status=$?
@@ -224,6 +230,63 @@ destination="-oProxyCommand=true $right_destination"
 run "$head" "$digest"
 expect_refused "a destination with an option"
 destination=$right_destination
+
+# The web app's archive of $head, as script/release-web writes it: its files at its root, outside the
+# clone.
+mkdir "$tmp/web" "$tmp/spa"
+printf '<!doctype html>\n<meta name="skald-commit" content="%s" />\n<title>Skald</title>\n' "$head" \
+  >"$tmp/web/index.html"
+(cd "$tmp/web" && COPYFILE_DISABLE=1 tar -cf - .) | gzip -n >"$tmp/spa/skald-web.tar.gz"
+archive=$tmp/spa/skald-web.tar.gz
+
+# expect_archive_deployed <case>: the last run deployed the digest with the archive on its input.
+expect_archive_deployed() {
+  [[ $command == "deploy $digest" ]] || fail "$1: the deploy got '$command'"
+  cmp -s "$tmp/input" "$archive" || fail "$1: the deploy did not get the web app's archive on its input"
+}
+
+run "$head" "$digest" "$archive"
+[[ $status -eq 0 ]] || fail "web app: head of dev: exit code $status, output: $output"
+expect_archive_deployed "web app: head of dev"
+[[ $output == *"$head"* && $output == *"$digest"* ]] || fail "web app: head of dev: no commit and digest: $output"
+[[ $output == *"deploy: health check: ok"* ]] || fail "web app: head of dev: no health check result: $output"
+[[ $output == *"deploy: passed"* ]] || fail "web app: head of dev: no deploy result: $output"
+expect_secret_free "web app: head of dev"
+
+run "$head" "$digest" ../spa/skald-web.tar.gz
+[[ $status -eq 0 ]] || fail "web app: a path relative to the clone: exit code $status, output: $output"
+expect_archive_deployed "web app: a path relative to the clone"
+expect_secret_free "web app: a path relative to the clone"
+
+run "$older" "$digest" "$archive"
+[[ $status -eq 0 ]] || fail "web app: older commit: exit code $status, output: $output"
+[[ -z $command ]] || fail "web app: older commit: deployed: $command"
+[[ $output == *"dev has moved on to $head"* ]] || fail "web app: older commit: output: $output"
+
+echo 1 >"$tmp/deploy-status"
+run "$head" "$digest" "$archive"
+expect_archive_deployed "web app: failed deploy"
+command=
+expect_refused "web app: failed deploy"
+[[ $output == *"deploy: health check: HTTP 502"* && $output == *"FAILED"* ]] ||
+  fail "web app: failed deploy: no health check result or failure: $output"
+rm "$tmp/deploy-status"
+
+run "$head" "$digest"
+expect_refused "web app: no archive"
+run "$head" "$digest" "$tmp/spa/missing.tar.gz"
+expect_refused "web app: no file at the archive's path"
+run "$head" "$digest" "$tmp/spa"
+expect_refused "web app: a directory for the archive"
+
+host_key=$(cut -d ' ' -f 1,2 "$tmp/other-host.pub")
+run "$head" "$digest" "$archive"
+expect_refused "web app: another host key"
+host_key=$right_host_key
+key=$(base64 <"$tmp/stranger" | tr -d '\n')
+run "$head" "$digest" "$archive"
+expect_refused "web app: an unauthorized key"
+key=$right_key
 
 git -C "$tmp/clone" push --quiet origin --delete dev
 run "$head" "$digest"

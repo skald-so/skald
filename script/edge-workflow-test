@@ -7,6 +7,12 @@
 # reads contents, deploys the published digest of the pushed commit with script/deploy-staging in
 # the environment staging, with its secrets, the only job of any workflow that uses them; the
 # workflow names no connection detail.
+# The web app: one step builds its archive with script/release-web after `npm ci` in web/, from the
+# pushed commit, in a job other than the deploy job, with no condition, on ubuntu-latest, whose token
+# only reads contents and which uses no secret, unless it is the publish job; it uploads the archive,
+# or the directory script/release-web writes it into, as an artifact, and the deploy job, after that job, downloads it and passes it with the digest:
+# `script/deploy-staging "$GITHUB_SHA" "$DIGEST" <path of skald-web.tar.gz>`. The deploy job installs
+# and builds nothing.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -127,6 +133,58 @@ expect "the deploy deploys the published digest of the pushed commit with the en
     },
     \"run\": \"script/deploy-staging \\\"\$GITHUB_SHA\\\" \\\"\$DIGEST\\\"\"
   }"
+
+# The web app: built from the pushed commit by script/release-web in a job without the environment's
+# secrets, then deployed with the image.
+# web_steps: [job, step index, step] of each step that runs script/release-web.
+web_steps='[.jobs | to_entries[] | .key as $job | .value.steps // [] | to_entries[]
+  | select(.value.run // "" | test("(^|[\\s;&|(])script/release-web\\s")) | [$job, .key, .value]]'
+expect "one step builds the web app's archive with script/release-web" "$web_steps | length == 1"
+web_job=$(jq -r "$web_steps | .[0][0] // empty" <<<"$json")
+web_index=$(jq -r "$web_steps | .[0][1] // empty" <<<"$json")
+web_dir=$(jq -r "$web_steps | .[0][2].run // empty" <<<"$json" |
+  sed -nE 's#.*script/release-web[[:space:]]+"?([^"[:space:];&|]+)"?.*#\1#p' | head -n 1)
+if [[ -z $web_job || ! $web_job =~ ^[A-Za-z0-9_-]+$ ]]; then
+  fail "no job builds the web app, so it cannot be deployed"
+else
+  job=".jobs[\"$web_job\"]"
+  expect "the web app is built in a job other than the deploy job, which holds the environment's secrets" \
+    "\"$web_job\" != \"deploy\""
+  expect "the web app's job runs on every push: it has no condition" "$job | has(\"if\") | not"
+  expect "the web app's job runs on ubuntu-latest" "$job[\"runs-on\"] == \"ubuntu-latest\""
+  expect "the web app's job uses no environment, container or service" \
+    "$job | has(\"environment\") or has(\"container\") or has(\"services\") | not"
+  expect "the web app's job checks out the pushed commit before the build" \
+    "[$job.steps[:$web_index][] | select(.uses // \"\" | startswith(\"actions/checkout@\"))] | length == 1"
+  expect "the web app's job installs web/ from its lockfile with npm ci before the build" \
+    "[$job.steps[:$web_index][] | select(.run // \"\" | test(\"npm\\\\s+ci\\\\b\"))
+      | select(.[\"working-directory\"] == \"web\" or (.run | test(\"--prefix[ =]web\\\\b|cd web\\\\b\")))]
+      | length == 1"
+  if [[ $web_job != publish ]]; then
+    expect "the web app's job: its token only reads contents" "$job.permissions == {\"contents\": \"read\"}"
+    expect "the web app's job uses no secret" "$secrets secrets($job) == []"
+  fi
+  # The archive's way to the deploy job: an artifact of the web app's job.
+  upload="[$job.steps[$web_index + 1:][] | select(.uses // \"\" | startswith(\"actions/upload-artifact@\"))]"
+  expect "after the build, the web app's job uploads one artifact" "$upload | length == 1"
+  expect "the artifact holds the archive script/release-web writes into '$web_dir'" \
+    "$upload[0].with.path // \"\" | (\"$web_dir\" != \"\" and startswith(\"$web_dir\"))
+      or test(\"skald-web\\\\.tar\\\\.gz\")"
+  expect "the deploy job runs after the web app's job" \
+    ".jobs.deploy.needs | if type == \"array\" then index(\"$web_job\") != null else . == \"$web_job\" end"
+  expect "the deploy job downloads that artifact before the deploy" \
+    "$upload[0].with.name as \$name | .jobs.deploy.steps as \$steps
+      | (\$steps | map(.name) | index(\"Deploy\")) as \$deploy
+      | \$name != null and \$deploy != null and ([\$steps[:\$deploy][]
+        | select((.uses // \"\" | startswith(\"actions/download-artifact@\")) and .with.name == \$name)] | length == 1)"
+fi
+expect "the deploy passes the web app's archive with the digest of the pushed commit" \
+  '[.jobs.deploy.steps[] | select(.name == "Deploy") | .run
+    | test("^script/deploy-staging \"\\$GITHUB_SHA\" \"\\$DIGEST\" \"?[^\"\\s]*skald-web\\.tar\\.gz\"?$")]
+    == [true]'
+expect "the deploy job installs and builds nothing: no npm, Node.js setup or script/release-web" \
+  '[.jobs.deploy.steps[] | select((.run // "" | test("\\bnpm\\b|\\bnpx\\b|release-web"))
+    or (.uses // "" | startswith("actions/setup-node@")))] == []'
 
 # No other workflow uses the environment or its secrets.
 for file in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
