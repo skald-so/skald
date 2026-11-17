@@ -46,8 +46,9 @@ use crate::follow::{Own, SpaceDevices};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
 use crate::history;
+use crate::intake::{self, Intake};
 use crate::key_chain;
-use crate::mailbox::{self, Mailbox};
+use crate::mailbox::Mailbox;
 use crate::output::{self, Stream};
 use crate::secrets;
 use crate::send;
@@ -72,7 +73,7 @@ pub const AGENT_WAIT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Receives the mailbox of the device of the state in `dir`, its secrets in `storage`, as `agent`
 /// if given; waits for each frame for `timeout`. Gives whether it showed what `skald recv --wait`
 /// waits for: as an agent, a message handed over to it; as the person, anything. For such a run,
-/// if `waits`, leaves its connection to watch ([`mailbox::leave_watched`]).
+/// if `waits`, leaves what takes in what comes next ([`intake::leave`]).
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
@@ -115,13 +116,21 @@ pub fn run(
     let mut synced = BTreeMap::new();
     let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
-    let shown = show(&mut follower, scope, synced);
+    let mut checks = Checks::new(&follower, synced);
+    let shown = match checks.as_mut() {
+        Ok(checks) => show(&mut follower, scope, checks),
+        Err(err) => Err(err.clone()),
+    };
     let handed = match ran_as {
         Some((space, agent)) => hand_over(&follower, space, agent),
         None => show_to_person(&follower),
     };
-    if waits {
-        mailbox::leave_watched(follower);
+    if waits && let Ok(mut checks) = checks {
+        // A failure leaves it to the first message.
+        let _ = checks.ask_server(&mut follower);
+        // Its connection goes back to be kept.
+        link.mailbox = None;
+        intake::leave(Intake::new(follower, checks, link));
     }
     received?;
     aligned?;
@@ -187,12 +196,23 @@ pub fn catch_up(
     mailbox: Option<Mailbox>,
     timeout: Duration,
 ) -> Result<Mailbox, String> {
+    catch_up_noting(follower, mailbox, timeout, &mut BTreeSet::new())
+}
+
+/// As [`catch_up`], adding to `noticed` the space of each `space-notice` catch-up gives.
+pub fn catch_up_noting(
+    follower: &mut Follower,
+    mailbox: Option<Mailbox>,
+    timeout: Duration,
+    noticed: &mut BTreeSet<SpaceId>,
+) -> Result<Mailbox, String> {
     let keys = follower.keys()?;
     let mailbox = match mailbox {
         Some(mailbox) => mailbox,
         None => follower.connect(&keys)?,
     };
     mailbox.catch_up(follower, &keys, timeout, |follower, entries, cursor| {
+        noticed.extend(self::noticed(&entries));
         let written = after(entries, cursor);
         if written.is_empty() {
             return Ok(cursor);
@@ -203,7 +223,7 @@ pub fn catch_up(
 
 /// Syncs into `synced` each space of `due` within `scope` that the device follows, and empties
 /// `due`. A space that fails to sync is warned of, and synced again at its first message.
-fn sync_due(
+pub fn sync_due(
     follower: &mut Follower,
     scope: Scope,
     due: &mut BTreeSet<SpaceId>,
@@ -275,28 +295,49 @@ fn after(entries: Vec<Push>, cursor: u64) -> Vec<(u64, Vec<u8>)> {
         .collect()
 }
 
-/// What a run checks messages with, besides the state: the spaces it synced, each one's last
-/// accepted revision and its accounts' devices, the server's name, once it asked for it, and the
-/// key that opens what decrypting the mailbox's application messages gave, once it needed it.
-struct Checks {
+/// What a run checks messages with, besides the state: the spaces it follows, those it synced,
+/// each one's last accepted revision and its accounts' devices, the server's name, once it asked
+/// for it, and the key that opens what decrypting the mailbox's application messages gave, once it
+/// needed it.
+pub struct Checks {
     keys: crate::device::Keys,
     followed: Vec<state::Space>,
-    synced: Rosters,
+    pub synced: Rosters,
     server: Option<Option<ServerName>>,
     inbox_key: Option<StateKey>,
 }
 
+impl Checks {
+    /// The checks of `follower`'s run, with the spaces it synced, `synced`.
+    pub fn new(follower: &Follower, synced: Rosters) -> Result<Self, String> {
+        Ok(Checks {
+            keys: follower.keys()?,
+            followed: follower.state.spaces().map_err(text)?,
+            synced,
+            server: None,
+            inbox_key: None,
+        })
+    }
+
+    /// Asks `follower`'s server for its name, once, so a later message is checked without asking.
+    pub fn ask_server(&mut self, follower: &mut Follower) -> Result<(), String> {
+        if self.server.is_none() {
+            self.server = Some(server_name(&mut follower.connection)?);
+        }
+        Ok(())
+    }
+
+    /// Reads again the spaces `follower` follows.
+    pub fn follow(&mut self, follower: &Follower) -> Result<(), String> {
+        self.followed = follower.state.spaces().map_err(text)?;
+        Ok(())
+    }
+}
+
 /// Shows each entry the state holds within `scope`, in `seq` order, and takes it out, keeping each
 /// message that passes the checks for the person and the agents it is for; checks messages against
-/// the spaces as `synced` holds them, syncing any other at its first message.
-fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), String> {
-    let mut checks = Checks {
-        keys: follower.keys()?,
-        followed: follower.state.spaces().map_err(text)?,
-        synced,
-        server: None,
-        inbox_key: None,
-    };
+/// the spaces as `checks` holds them, syncing any other at its first message.
+pub fn show(follower: &mut Follower, scope: Scope, checks: &mut Checks) -> Result<(), String> {
     for entry in follower.state.inbox().map_err(text)? {
         let (seq, bytes) = (entry.seq, &entry.frame);
         // A Welcome or Commit waits for a run that can check it.
@@ -318,9 +359,9 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
                     let Some(opened) = groups::opened(follower, key, &entry) else {
                         continue;
                     };
-                    decrypted(follower, &mut checks, (seq, envelope), opened)?
+                    decrypted(follower, checks, (seq, envelope), opened)?
                 } else {
-                    verdict(follower, &mut checks, (seq, envelope))?
+                    verdict(follower, checks, (seq, envelope))?
                 };
                 let header = &envelope.header;
                 match verdict {
@@ -329,8 +370,7 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
                         if let Some(gap) = gap {
                             eprintln!("skald: warning: {}", missing(header.channel, sender, gap));
                         }
-                        let kept =
-                            kept(follower, &mut checks, (seq, header, sender), &message, gap)?;
+                        let kept = kept(follower, checks, (seq, header, sender), &message, gap)?;
                         match counted {
                             Some((source, accepted)) => (follower.state).keep_counted(
                                 seq,
@@ -453,7 +493,7 @@ fn kept_item(seq: u64) -> Vec<u8> {
 
 /// Shows each kept message the person's run has yet to show, in `seq` order, and marks it shown;
 /// gives how many it showed.
-fn show_to_person(follower: &Follower) -> Result<usize, String> {
+pub fn show_to_person(follower: &Follower) -> Result<usize, String> {
     let kept = follower.state.for_person().map_err(text)?;
     shown_kept(follower, kept, |seq| follower.state.shown_to_person(seq))
 }
@@ -461,7 +501,7 @@ fn show_to_person(follower: &Follower) -> Result<usize, String> {
 /// Hands each kept message that waits for `agent` in `space` over to it, in `seq` order: shows it,
 /// then marks it handed over. A message whose wait ended is dropped first. Gives how many it
 /// handed over.
-fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<usize, String> {
+pub fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<usize, String> {
     let kept = (follower.state)
         .for_agent(space, agent.as_str(), state::unix_now())
         .map_err(text)?;

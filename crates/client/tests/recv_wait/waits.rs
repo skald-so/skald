@@ -114,17 +114,26 @@ pub fn assert_keeps_waiting(run: &mut Run) {
     }
 }
 
-/// Waits for up to `limit` from `from` until `run` has shown `text`; fails if it has not by then.
+/// Fails unless `run` shows `text` within `limit` from `from`. It waits for up to [`WAIT`], so a
+/// failure says how long the text took.
 #[track_caller]
 pub fn assert_shown_within(run: &Run, text: &str, (from, limit): (Instant, Duration)) {
-    while !run.shown().contains(text) {
-        assert!(
-            from.elapsed() <= limit,
-            "{text:?} not shown within {limit:?}: {}",
-            run.shown()
-        );
+    while !run.shown().contains(text) && from.elapsed() <= WAIT {
         thread::sleep(Duration::from_millis(10));
     }
+    let took = from.elapsed();
+    assert!(
+        run.shown().contains(text),
+        "{text:?} not shown within {WAIT:?}: {}",
+        run.shown()
+    );
+    assert!(
+        took <= limit,
+        "{text:?} shown after {} ms, over {} ms: {}",
+        took.as_millis(),
+        limit.as_millis(),
+        run.shown()
+    );
 }
 
 /// Waits while `run` goes on until the server has seen `count` WebSocket connections from `since`

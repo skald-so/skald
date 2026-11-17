@@ -42,6 +42,7 @@ mod groups;
 mod helper;
 mod history;
 mod history_reading;
+mod intake;
 mod key_chain;
 mod key_packages;
 mod lock;

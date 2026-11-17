@@ -566,15 +566,20 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     }
 }
 
-/// Runs `session`'s `skald recv` with the state in `dir`, ending the session with its exit code
-/// once the run showed what it waits for, or failed.
-pub fn run_session(session: Session, dir: &Path) -> Ran {
+/// Runs `work` for `session`'s operation, its output going to the session's command, with the
+/// state in `dir`; ends the session with its exit code once `work` gave what the session waits
+/// for, or failed.
+pub fn run_for(
+    session: Session,
+    dir: &Path,
+    work: impl FnOnce(&Operation) -> Result<bool, String>,
+) -> Ran {
     let Session {
         stream,
         cwd,
         operation,
     } = session;
-    let outcome = on_behalf(&stream, dir, &cwd, || crate::received(&operation));
+    let outcome = on_behalf(&stream, dir, &cwd, || work(&operation));
     let code = match outcome {
         Some(Outcome::Waits) => {
             return Ran::Waits(Box::new(Session {
