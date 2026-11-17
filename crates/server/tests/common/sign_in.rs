@@ -188,6 +188,13 @@ impl SignIn {
         self.instance_at(&self.db.url(), args, envs)
     }
 
+    /// Stops the server and starts another as [`SignIn::instance`] does. Connections end with the
+    /// first server; new ones go to the one this gives.
+    pub fn restart(&mut self, args: &[&str], envs: &[(&str, &str)]) -> Server {
+        self.server.stop();
+        self.instance(args, envs)
+    }
+
     /// As [`SignIn::instance`], on the database at `url`, such as its database reached as another
     /// role.
     pub fn instance_at(&self, url: &str, args: &[&str], envs: &[(&str, &str)]) -> Server {

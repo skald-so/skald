@@ -94,7 +94,7 @@ impl SignedBody for HistoryWrapBody {
 }
 
 /// Whom a wrap is sealed to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum WrapRecipient {
     /// A `browser` device, to the `hpke` key of its certificate.
     Browser(DeviceId),

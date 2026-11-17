@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
-use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId};
+use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId, WrapRecipient};
 
 use crate::gaps::{Counters, Source};
 
@@ -243,6 +243,26 @@ const MIGRATIONS: &[&str] = &[
         prev INTEGER NOT NULL CHECK (prev >= 0),
         PRIMARY KEY (channel, epoch, prev)
     ) STRICT;",
+    // The history entries of the device's channel messages that the server has not answered yet,
+    // in the order they go out, by message ID, with their space and channel and the entry's bytes.
+    // One whose message's envelope is in the outbox waits for the server to store it.
+    "CREATE TABLE history_outbox (
+        position INTEGER PRIMARY KEY,
+        msg_id TEXT NOT NULL UNIQUE,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        entry BLOB NOT NULL
+    ) STRICT",
+    // The wraps of the channels' history keys the device does not upload again: those the server
+    // took from it, listed to it or refused, by channel, epoch and recipient, a `browser` device
+    // (1) or an account's recovery key (2).
+    "CREATE TABLE settled_wrap (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 1),
+        kind INTEGER NOT NULL CHECK (kind IN (1, 2)),
+        recipient TEXT NOT NULL,
+        PRIMARY KEY (channel, epoch, kind, recipient)
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -397,6 +417,16 @@ pub struct MlsOutgoing {
     pub envelope: Vec<u8>,
 }
 
+/// The history entry of a channel message of the device's own, as it waits for upload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryOutgoing {
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    /// Its bytes, as they are uploaded every time.
+    pub entry: Vec<u8>,
+}
+
 /// What a step on the MLS state writes with the state it saves, in the same transaction.
 #[derive(Debug, Default)]
 pub struct MlsChanges {
@@ -427,6 +457,8 @@ pub struct MlsChanges {
     /// Each epoch of a channel it judged, and whether clean; an epoch judged already keeps its
     /// judgment.
     pub judged: Vec<(ChannelId, u64, bool)>,
+    /// History entries of the channel messages it puts in the outbox, which wait for upload.
+    pub entries: Vec<HistoryOutgoing>,
 }
 
 impl MlsChanges {
@@ -442,6 +474,7 @@ impl MlsChanges {
             && self.rejoined.is_empty()
             && self.entered.is_empty()
             && self.judged.is_empty()
+            && self.entries.is_empty()
     }
 }
 
@@ -749,6 +782,18 @@ impl State {
                     params![channel.to_string(), sql_u64(*epoch)?, clean],
                 )?;
             }
+            for entry in &changes.entries {
+                tx.execute(
+                    "INSERT INTO history_outbox (msg_id, space, channel, entry)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        entry.msg_id.to_string(),
+                        entry.space.to_string(),
+                        entry.channel.to_string(),
+                        entry.entry
+                    ],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -792,32 +837,34 @@ impl State {
 
     /// Whether the device judged each epoch of `channel` it judged clean ([`MlsChanges::judged`]).
     pub fn judgments(&self, channel: ChannelId) -> Result<BTreeMap<u64, bool>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT epoch, clean FROM epoch_judgment WHERE channel = ?1")?;
-        let rows = query.query_map(params![channel.to_string()], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get(1)?))
-        })?;
-        rows.map(|row| {
-            let (epoch, clean) = row?;
-            Ok((read_epoch(channel, epoch)?, clean))
-        })
-        .collect()
+        let sql = "SELECT epoch, clean FROM epoch_judgment WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?;
+        (rows.into_iter())
+            .map(|(epoch, clean)| Ok((read_epoch(channel, epoch)?, clean)))
+            .collect()
     }
 
     /// The links of `channel`, by epoch and `prev`, the device does not upload again.
     pub fn settled_links(&self, channel: ChannelId) -> Result<BTreeSet<(u64, u64)>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT epoch, prev FROM settled_link WHERE channel = ?1")?;
-        let rows = query.query_map(params![channel.to_string()], |row| {
+        let sql = "SELECT epoch, prev FROM settled_link WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })?;
-        rows.map(|row| {
-            let (epoch, prev) = row?;
-            Ok((read_epoch(channel, epoch)?, read_epoch(channel, prev)?))
-        })
-        .collect()
+        (rows.into_iter())
+            .map(|(epoch, prev)| Ok((read_epoch(channel, epoch)?, read_epoch(channel, prev)?)))
+            .collect()
+    }
+
+    /// The rows `sql` selects with `channel` as its one parameter, each as `row` reads it.
+    fn of_channel<T>(
+        &self,
+        sql: &str,
+        channel: ChannelId,
+        row: impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>,
+    ) -> Result<Vec<T>, Error> {
+        let mut query = self.db.prepare(sql)?;
+        let rows = query.query_map(params![channel.to_string()], row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Keeps `links` of `channel`, by epoch and `prev`, from being uploaded again.
@@ -827,6 +874,47 @@ impl State {
                 "INSERT INTO settled_link (channel, epoch, prev) VALUES (?1, ?2, ?3)
                  ON CONFLICT DO NOTHING",
                 params![channel.to_string(), sql_u64(epoch)?, sql_u64(prev)?],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The wraps of `channel`, by epoch and recipient, the device does not upload again.
+    pub fn settled_wraps(
+        &self,
+        channel: ChannelId,
+    ) -> Result<BTreeSet<(u64, WrapRecipient)>, Error> {
+        let sql = "SELECT epoch, kind, recipient FROM settled_wrap WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get(2)?))
+        })?;
+        (rows.into_iter())
+            .map(|(epoch, kind, recipient): (i64, i64, String)| {
+                let recipient = match kind {
+                    1 => WrapRecipient::Browser(id("browser's device ID", &recipient)?),
+                    2 => WrapRecipient::Recovery(id("account ID", &recipient)?),
+                    _ => return Err(Error::Malformed(format!("the wrap recipient kind {kind}"))),
+                };
+                Ok((read_epoch(channel, epoch)?, recipient))
+            })
+            .collect()
+    }
+
+    /// Keeps `wraps` of `channel`, by epoch and recipient, from being uploaded again.
+    pub fn settle_wraps(
+        &self,
+        channel: ChannelId,
+        wraps: &[(u64, WrapRecipient)],
+    ) -> Result<(), Error> {
+        for &(epoch, recipient) in wraps {
+            let (kind, recipient) = match recipient {
+                WrapRecipient::Browser(device) => (1, device.to_string()),
+                WrapRecipient::Recovery(account) => (2, account.to_string()),
+            };
+            self.db.execute(
+                "INSERT INTO settled_wrap (channel, epoch, kind, recipient)
+                 VALUES (?1, ?2, ?3, ?4) ON CONFLICT DO NOTHING",
+                params![channel.to_string(), sql_u64(epoch)?, kind, recipient],
             )?;
         }
         Ok(())
@@ -1473,18 +1561,56 @@ impl State {
     }
 
     /// Takes the envelope of `msg_id` to `recipient`, none under `mls`, out of the outbox: the
-    /// server answered it.
+    /// server answered it. If it `refused` the envelope, the message's history entry goes too,
+    /// all at once.
     pub fn remove_outgoing(
         &self,
         msg_id: MessageId,
         recipient: Option<DeviceId>,
+        refused: bool,
     ) -> Result<(), Error> {
-        self.db.execute(
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        tx.execute(
             "DELETE FROM outbox WHERE msg_id = ?1 AND recipient IS ?2",
             params![
                 msg_id.to_string(),
                 recipient.map(|device| device.to_string())
             ],
+        )?;
+        if refused {
+            tx.execute(
+                "DELETE FROM history_outbox WHERE msg_id = ?1",
+                params![msg_id.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The history entries of the device's messages whose envelopes the server stored, which wait
+    /// for upload, in the order they went into the outbox.
+    pub fn history_outbox(&self) -> Result<Vec<HistoryOutgoing>, Error> {
+        let rows = self.envelopes(
+            "SELECT msg_id, space, channel, entry FROM history_outbox
+             WHERE msg_id NOT IN (SELECT msg_id FROM outbox) ORDER BY position",
+        )?;
+        rows.into_iter()
+            .map(|([msg_id, space, channel], entry)| {
+                Ok(HistoryOutgoing {
+                    msg_id: id("message ID", &msg_id)?,
+                    space: id("space ID", &space)?,
+                    channel: id("channel ID", &channel)?,
+                    entry,
+                })
+            })
+            .collect()
+    }
+
+    /// Takes the history entry of the message `msg_id` out of the outbox: the server answered it.
+    pub fn remove_history_entry(&self, msg_id: MessageId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM history_outbox WHERE msg_id = ?1",
+            params![msg_id.to_string()],
         )?;
         Ok(())
     }
@@ -2132,12 +2258,69 @@ pub(crate) mod tests {
         assert_eq!(state.channel_counter(channel).unwrap(), 2);
         assert_eq!(state.channel_counter(ChannelId::generate()).unwrap(), 0);
 
-        state.remove_outgoing(first.outgoing.msg_id, None).unwrap();
+        state
+            .remove_outgoing(first.outgoing.msg_id, None, false)
+            .unwrap();
         let state = State::open(&dir).unwrap();
         assert_eq!(
             state.outbox().unwrap(),
             [elsewhere.outgoing, second.outgoing]
         );
+    }
+
+    /// A message's history entry goes into the outbox with its envelope and waits for upload only
+    /// once the server stored the envelope, in order, until it is taken out; a refused envelope
+    /// takes its entry with it.
+    #[test]
+    fn history_entries_wait_for_their_stored_envelopes() {
+        let dir = TestDir::new("state-history-outbox");
+        let state = State::open(&dir).unwrap();
+        let (channel, space) = (ChannelId::generate(), SpaceId::generate());
+        let sent = |counter| {
+            let msg_id = MessageId::generate();
+            let message = Counted {
+                outgoing: Outgoing {
+                    msg_id,
+                    recipient: None,
+                    space,
+                    envelope: vec![1, 2, 3],
+                },
+                channel,
+                counter,
+            };
+            let entry = HistoryOutgoing {
+                msg_id,
+                space,
+                channel,
+                entry: vec![4, 5, u8::try_from(counter).unwrap()],
+            };
+            state
+                .mls_change(|_| {
+                    let changes = MlsChanges {
+                        messages: vec![message],
+                        entries: vec![entry.clone()],
+                        ..MlsChanges::default()
+                    };
+                    Ok((None, changes, ()))
+                })
+                .unwrap();
+            entry
+        };
+        let (first, second, refused) = (sent(1), sent(2), sent(3));
+        assert_eq!(state.history_outbox().unwrap(), []);
+
+        for entry in [&second, &first] {
+            state.remove_outgoing(entry.msg_id, None, false).unwrap();
+        }
+        state.remove_outgoing(refused.msg_id, None, true).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.history_outbox().unwrap(),
+            [first.clone(), second.clone()]
+        );
+        state.remove_history_entry(first.msg_id).unwrap();
+        assert_eq!(state.history_outbox().unwrap(), [second]);
     }
 
     /// An `hpke` envelope an older client left in the outbox keeps its place and its recipient
@@ -2184,9 +2367,9 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(counters, 0, "the counters per recipient device are dropped");
-        state.remove_outgoing(msg_id, None).unwrap();
+        state.remove_outgoing(msg_id, None, false).unwrap();
         assert_eq!(state.outbox().unwrap().len(), 1, "taken out as an mls one");
-        state.remove_outgoing(msg_id, Some(bob)).unwrap();
+        state.remove_outgoing(msg_id, Some(bob), false).unwrap();
         assert_eq!(state.outbox().unwrap(), []);
     }
 
@@ -2212,7 +2395,7 @@ pub(crate) mod tests {
         assert_eq!(state.sent(msg_id).unwrap(), None);
 
         put(&state, &[&message]).unwrap();
-        state.remove_outgoing(msg_id, None).unwrap();
+        state.remove_outgoing(msg_id, None, false).unwrap();
 
         let state = State::open(&dir).unwrap();
         assert_eq!(state.sent(msg_id).unwrap(), Some((space, channel)));
@@ -2821,6 +3004,26 @@ pub(crate) mod tests {
             BTreeSet::from([(2, 1), (3, 1)])
         );
         assert_eq!(state.settled_links(other).unwrap(), BTreeSet::new());
+    }
+
+    #[test]
+    fn wraps_stay_settled_per_channel_epoch_and_recipient() {
+        let dir = TestDir::new("state-wraps");
+        let state = State::open(&dir).unwrap();
+        let (one, other) = (ChannelId::generate(), ChannelId::generate());
+        let browser = WrapRecipient::Browser(DeviceId::from_signing_key(&[3; 32]));
+        let recovery = WrapRecipient::Recovery(skald_proto::AccountId::generate());
+
+        state
+            .settle_wraps(one, &[(2, browser), (1, browser), (2, recovery)])
+            .unwrap();
+        state.settle_wraps(one, &[(2, browser)]).unwrap();
+
+        assert_eq!(
+            state.settled_wraps(one).unwrap(),
+            BTreeSet::from([(1, browser), (2, browser), (2, recovery)])
+        );
+        assert_eq!(state.settled_wraps(other).unwrap(), BTreeSet::new());
     }
 
     #[test]

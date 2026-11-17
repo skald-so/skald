@@ -462,6 +462,40 @@ export interface HistoryWraps {
 }
 
 /**
+ * The member's role in the revision.
+ */
+export type ListedMemberRole =
+  (typeof ListedMemberRole)[keyof typeof ListedMemberRole];
+
+export const ListedMemberRole = {
+  admin: "admin",
+  member: "member",
+} as const;
+
+/**
+ * A member of a space as the web app shows it: no key.
+ */
+export interface ListedMember {
+  /** The member's handle in the revision. */
+  handle: string;
+  /** The member's role in the revision. */
+  role: ListedMemberRole;
+  /** The GitHub login of the account's GitHub method; absent while it has none, or when this server does not hold the account. */
+  github_login?: string;
+  /**
+   * How many of the account's devices `GET /account/devices` gives as `linked`.
+   * @minimum 0
+   */
+  linked_devices: number;
+  /** When the server stored the revision that added the member, after which every revision lists it. */
+  joined_at: string;
+}
+
+export interface ListedMembers {
+  members: ListedMember[];
+}
+
+/**
  * A roster revision's CBOR bytes (docs/protocol/membership.md, "Roster") in base64url without padding (RFC 4648, §5).
  * @pattern ^[A-Za-z0-9_-]+$
  */

@@ -5,7 +5,8 @@
 //! first entry per sending device and `msg_id`, of the channel's current or previous epoch, from a
 //! member device of the current one. It gives them, as the bytes it got, to sessions of the
 //! accounts the latest revision lists as the channel's members; to those without `history`, only
-//! from their account's join ("Access").
+//! from their account's join ("Access"). It refuses links and wraps of epochs before the channel's
+//! cutoff, which the history retention sets ([`crate::history_retention`]).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -68,10 +69,13 @@ impl Upload<'_> {
         }
     }
 
-    /// Whether its epoch is one the channel may take it for, given its current epoch.
-    fn in_epoch(&self, current: u64) -> bool {
+    /// Whether its epoch is one the channel may take it for, given its current epoch and its
+    /// `cutoff`, the earliest epoch whose links and wraps the retention left.
+    fn in_epoch(&self, current: u64, cutoff: u64) -> bool {
         match self {
-            Self::Link { epoch, .. } | Self::Wrap { epoch, .. } => *epoch <= current,
+            Self::Link { epoch, .. } | Self::Wrap { epoch, .. } => {
+                (cutoff..=current).contains(epoch)
+            }
             Self::Entry { epoch, .. } => *epoch == current || *epoch + 1 == current,
         }
     }
@@ -150,9 +154,11 @@ async fn keep(
     let Some(upload) = decode(item, channel) else {
         return Ok(Err(Problem::Malformed));
     };
-    // The group's row lock makes a Commit wait for the upload, or the upload see the Commit.
-    let current: Option<(i64,)> = sqlx::query_as(
-        "SELECT g.epoch FROM channel_groups g JOIN channels c ON c.id = g.channel_id
+    // The group's row lock makes a Commit or the retention's deletion wait for the upload, or the
+    // upload see it.
+    let current: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT g.epoch, g.history_cutoff FROM channel_groups g
+         JOIN channels c ON c.id = g.channel_id
          WHERE g.channel_id = $1::uuid AND c.space_id = $2::uuid AND g.view IS NOT NULL
          FOR SHARE OF g",
     )
@@ -160,11 +166,12 @@ async fn keep(
     .bind(space.to_string())
     .fetch_optional(&mut *tx)
     .await?;
-    let Some((current,)) = current else {
+    let Some((current, cutoff)) = current else {
         return Ok(Err(Problem::NotAMember));
     };
     let current = u64::try_from(current).expect("a stored epoch from 1");
-    if !upload.in_epoch(current) {
+    let cutoff = u64::try_from(cutoff).expect("a stored cutoff from 0");
+    if !upload.in_epoch(current, cutoff) {
         return Ok(Err(Problem::EpochMismatch));
     }
     let member: Option<(bool,)> = sqlx::query_as(
@@ -228,7 +235,7 @@ async fn keep(
 }
 
 /// `epoch` as the database keeps it.
-fn epoch(epoch: u64) -> i64 {
+pub(crate) fn epoch(epoch: u64) -> i64 {
     i64::try_from(epoch).expect("an epoch below 2^63")
 }
 
@@ -395,8 +402,19 @@ mod tests {
             msg_id: String::new(),
             bytes: &[],
         };
-        assert!(entry(3).in_epoch(3) && entry(2).in_epoch(3));
-        assert!(!entry(1).in_epoch(3) && !entry(4).in_epoch(3));
+        assert!(entry(3).in_epoch(3, 0) && entry(2).in_epoch(3, 0));
+        assert!(!entry(1).in_epoch(3, 0) && !entry(4).in_epoch(3, 0));
         assert_eq!(entry(2).uploaders(3), 3, "members of the current epoch");
+    }
+
+    #[test]
+    fn a_link_or_wrap_is_taken_from_the_cutoff_to_the_current_epoch() {
+        let link = |epoch| Upload::Link {
+            epoch,
+            prev: 1,
+            bytes: &[],
+        };
+        assert!(link(3).in_epoch(4, 3) && link(4).in_epoch(4, 3));
+        assert!(!link(2).in_epoch(4, 3) && !link(5).in_epoch(4, 3));
     }
 }
