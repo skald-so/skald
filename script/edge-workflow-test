@@ -71,13 +71,13 @@ expect "the workflow names no connection detail: no SSH URL, account at a host, 
   '[.. | objects | to_entries[] | select(.key != "uses") | .value | strings
     | select(test("ssh://|ssh-[a-z0-9]+ |[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+"))]
     == []'
-expect "two jobs: publish, then deploy" '.jobs | keys == ["deploy", "publish"]'
+expect "three jobs: the web app, publish, then deploy" '.jobs | keys == ["deploy", "publish", "web"]'
 
 # The publish job: the checkout, Buildx, the login, the build, then the move of :edge.
 job='.jobs.publish'
 expect "the publish job runs on every push: it has no condition" "$job | has(\"if\") | not"
-expect "the publish job sets nothing but its name, runner, outputs and steps" \
-  "$job | keys == [\"name\", \"outputs\", \"runs-on\", \"steps\"]"
+expect "the publish job sets nothing but its name, needs, runner, outputs and steps" \
+  "$job | keys == [\"name\", \"needs\", \"outputs\", \"runs-on\", \"steps\"]"
 expect "the publish job's output is the built digest" \
   "$job.outputs == {\"digest\": \"\${{ steps.build.outputs.digest }}\"}"
 expect "the publish job runs on ubuntu-latest, so the image is linux/amd64 like staging" \
@@ -103,9 +103,11 @@ expect "the build pushes $image tagged with the commit" \
   "$build[0].with | .push == true and .tags == \"$image:\${{ github.sha }}\""
 expect "the build reuses the layers of earlier runs" \
   "$build[0].with | .[\"cache-from\"] == \"type=gha\" and .[\"cache-to\"] == \"type=gha,mode=max\""
+expect "the build labels the image with the SHA-256 of the web app's archive" \
+  "$build[0].with.labels == \"so.skald.web.sha256=\${{ needs.web.outputs.sha256 }}\""
 expect "the build sets nothing else, such as a target stage or a platform" \
   "$build[0] | keys == [\"id\", \"uses\", \"with\"] and (.with | keys == [\"build-args\",
-    \"cache-from\", \"cache-to\", \"context\", \"file\", \"push\", \"tags\"])"
+    \"cache-from\", \"cache-to\", \"context\", \"file\", \"labels\", \"push\", \"tags\"])"
 expect "the step after the build moves :edge to the built digest of the pushed commit" \
   "$job.steps as \$steps | (\$steps | map(.id) | index(\"build\")) as \$i
     | \$steps[\$i].uses == $build[0].uses and \$steps[\$i + 1] == {
@@ -114,20 +116,37 @@ expect "the step after the build moves :edge to the built digest of the pushed c
       \"run\": \"script/tag-edge $image \\\"\$GITHUB_SHA\\\" \\\"\$DIGEST\\\"\"
     }"
 
+# The web app's job: the checkout, Node.js without a package cache, the packages, the archive, its
+# SHA-256, then the upload.
+job='.jobs.web'
+expect "the web app's job sets nothing but its name, runner, permissions, outputs and steps" \
+  "$job | keys == [\"name\", \"outputs\", \"permissions\", \"runs-on\", \"steps\"]"
+expect "the web app's job's output is the archive's SHA-256" \
+  "$job.outputs == {\"sha256\": \"\${{ steps.archive.outputs.sha256 }}\"}"
+expect "the web app's job: the checkout, Node.js, the packages, the archive, its SHA-256, the upload" \
+  "[$job.steps[] | .uses // .name | sub(\"@.*\"; \"\")] == [\"actions/checkout\", \"actions/setup-node\",
+    \"Install the web app's packages\", \"Build the archive\", \"The archive's SHA-256\",
+    \"actions/upload-artifact\"]"
+expect "the web app's job: Node.js 26, no package cache" \
+  "$job.steps[1].with == {\"node-version\": 26, \"package-manager-cache\": false}"
+
 # The deploy job: after the publish, the checkout of the pushed commit, then script/deploy-staging.
 job='.jobs.deploy'
-expect "the deploy job runs after the publish, on every push: it has no condition" \
-  "$job.needs == \"publish\" and ($job | has(\"if\") | not)"
+expect "the deploy job runs after the publish and the web app, on every push: it has no condition" \
+  "$job.needs == [\"publish\", \"web\"] and ($job | has(\"if\") | not)"
 expect "the deploy job sets nothing but its name, needs, runner, permissions, environment, timeout and
     steps" \
   "$job | keys == [\"environment\", \"name\", \"needs\", \"permissions\", \"runs-on\", \"steps\",
     \"timeout-minutes\"]"
 expect "the deploy job runs in the environment $environment" "$job.environment == \"$environment\""
 expect "the deploy job runs on ubuntu-latest" "$job[\"runs-on\"] == \"ubuntu-latest\""
-expect "the deploy job: the checkout, then the deploy" \
-  "[$job.steps[] | .uses // .name | sub(\"@.*\"; \"\")] == [\"actions/checkout\", \"Deploy\"]"
+expect "the deploy job: the checkout, the web app's archive, then the deploy" \
+  "[$job.steps[] | .uses // .name | sub(\"@.*\"; \"\")] == [\"actions/checkout\",
+    \"actions/download-artifact\", \"Deploy\"]"
+expect "the deploy job downloads the web app's archive into web-build" \
+  "$job.steps[1].with == {\"name\": \"web\", \"path\": \"web-build\"}"
 expect "the deploy deploys the published digest of the pushed commit with the environment's secrets" \
-  "$job.steps[1] == {
+  "$job.steps[2] == {
     \"name\": \"Deploy\",
     \"env\": {
       \"DIGEST\": \"\${{ needs.publish.outputs.digest }}\",
@@ -135,8 +154,9 @@ expect "the deploy deploys the published digest of the pushed commit with the en
       \"STAGING_SSH_HOST_KEY\": \"\${{ secrets.STAGING_SSH_HOST_KEY }}\",
       \"STAGING_SSH_DESTINATION\": \"\${{ secrets.STAGING_SSH_DESTINATION }}\"
     },
-    \"run\": \"script/deploy-staging \\\"\$GITHUB_SHA\\\" \\\"\$DIGEST\\\"\"
+    \"run\": \"script/deploy-staging \\\"\$GITHUB_SHA\\\" \\\"\$DIGEST\\\" web-build/skald-web.tar.gz\"
   }"
+
 
 # The web app: built from the pushed commit by script/release-web in a job without the environment's
 # secrets, then deployed with the image.

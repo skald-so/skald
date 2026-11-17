@@ -27,8 +27,8 @@ check_ssh_secrets() {
 }
 
 # ssh_deploy <script> <prefix> <command>...: runs <command> over SSH as the key, the host key pinned,
-# whatever SSH config or agent the caller has; exits with 2 if the key is not a base64 private key,
-# with 1, saying so, if SSH or the command fails. Leaves no file.
+# whatever SSH config or agent the caller has, with ssh_deploy's input as its own; exits with 2 if the
+# key is not a base64 private key, with 1, saying so, if SSH or the command fails. Leaves no file.
 ssh_deploy() {
   local script=$1 key=$2_SSH_KEY host_key=$2_SSH_HOST_KEY destination=$2_SSH_DESTINATION tmp status=0
   shift 2
@@ -49,7 +49,7 @@ ssh_deploy() {
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$tmp/known_hosts" \
     -o GlobalKnownHostsFile=/dev/null -o HostKeyAlias=deploy-host -o CheckHostIP=no \
     -o UpdateHostKeys=no -o LogLevel=QUIET -o ConnectTimeout=30 -o ServerAliveInterval=15 \
-    -- "${!destination}" "$@" </dev/null || status=$?
+    -- "${!destination}" "$@" || status=$?
   if [[ $status -eq 255 ]]; then
     echo "$script: FAILED: no SSH session: the connection, the pinned host key or the key failed"
     exit 1

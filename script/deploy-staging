@@ -1,28 +1,35 @@
 #!/usr/bin/env bash
-# Deploys <digest>, the skald-server image built from <commit>, to staging, only while <commit> is the
-# head of dev on origin, so staging never moves back: script/lib/dev-head.sh.
+# Deploys <digest>, the skald-server image built from <commit>, and <archive>, the web app's archive
+# script/release-web built from it, to staging, only while <commit> is the head of dev on origin, so
+# staging never moves back: script/lib/dev-head.sh.
 #
-# Connects over SSH as the deploy key's account and runs `deploy <digest>` there, which passes only
-# when the server runs the image and its health check answers ok; exits 0 only then. The connection
+# Connects over SSH as the deploy key's account and runs `deploy <digest>` there with the archive on
+# its input. The deploy takes the archive only if it is the one the image's label so.skald.web.sha256
+# names, and passes only when the server runs the image, its health check answers ok and the site
+# serves the web app of the image's commit; exits 0 only then. The connection
 # comes only from the secrets of the GitHub environment staging, STAGING_SSH_KEY,
 # STAGING_SSH_HOST_KEY and STAGING_SSH_DESTINATION: script/lib/ssh-deploy.sh.
 # Prints the commit, the digest and the deploy's own output, its steps and the health check result;
 # never these values.
-# Usage: script/deploy-staging <commit> <digest>, in a clone of the repository.
+# Usage: script/deploy-staging <commit> <digest> <archive>, in a clone of the repository.
 set -euo pipefail
 source "$(dirname "$0")/lib/dev-head.sh"
 source "$(dirname "$0")/lib/ssh-deploy.sh"
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <commit> <digest>" >&2
+if [[ $# -ne 3 ]]; then
+  echo "usage: $0 <commit> <digest> <archive>" >&2
   exit 2
 fi
-commit=$1 digest=$2
+commit=$1 digest=$2 archive=$3
 check_commit_and_digest deploy-staging "$commit" "$digest"
+if [[ ! -f $archive ]]; then
+  echo "deploy-staging: the web app's archive is no file: $archive" >&2
+  exit 2
+fi
 check_ssh_secrets deploy-staging STAGING
 
 exit_unless_dev_head deploy-staging "$commit" staging
 
 echo "deploy-staging: deploying $commit, $digest"
-ssh_deploy deploy-staging STAGING deploy "$digest"
+ssh_deploy deploy-staging STAGING deploy "$digest" <"$archive"
 echo "deploy-staging: staging runs $commit, $digest"

@@ -132,6 +132,14 @@ pinned_ssh -F /dev/null -i "$tmp/client.pub" -o IdentitiesOnly=yes ||
   fail "the test's agent does not hold the deploy key"
 [[ -e $tmp/command ]] || fail "the test's agent's key does not deploy"
 
+# The web app's archive of $head, as script/release-web writes it: its files at its root, outside the
+# clone.
+mkdir "$tmp/web" "$tmp/spa"
+printf '<!doctype html>\n<meta name="skald-commit" content="%s" />\n<title>Skald</title>\n' "$head" \
+  >"$tmp/web/index.html"
+(cd "$tmp/web" && COPYFILE_DISABLE=1 tar -cf - .) | gzip -n >"$tmp/spa/skald-web.tar.gz"
+archive=$tmp/spa/skald-web.tar.gz
+
 # run <args...>: runs script/deploy-staging in the clone with the secrets in $key, $host_key and
 # $destination, setting $status, $output and $command, the command the deploy got.
 run() {
@@ -159,7 +167,7 @@ expect_refused() {
   expect_secret_free "$1"
 }
 
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 [[ $status -eq 0 ]] || fail "head of dev: exit code $status, output: $output"
 [[ $command == "deploy $digest" ]] || fail "head of dev: the deploy got '$command'"
 [[ $output == *"deploying $head, $digest"* ]] || fail "head of dev: no commit and digest: $output"
@@ -167,13 +175,13 @@ run "$head" "$digest"
 [[ $output == *"staging runs $head, $digest"* ]] || fail "head of dev: no result: $output"
 expect_secret_free "head of dev"
 
-run "$older" "$digest"
+run "$older" "$digest" "$archive"
 [[ $status -eq 0 ]] || fail "older commit: exit code $status, output: $output"
 [[ -z $command ]] || fail "older commit: deployed: $command"
 [[ $output == *"dev has moved on to $head"* ]] || fail "older commit: output: $output"
 
 echo 1 >"$tmp/deploy-status"
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 [[ $command == "deploy $digest" ]] || fail "failed deploy: the deploy got '$command'"
 command=
 expect_refused "failed deploy"
@@ -183,61 +191,53 @@ rm "$tmp/deploy-status"
 
 right_host_key=$host_key
 host_key=$(cut -d ' ' -f 1,2 "$tmp/other-host.pub")
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "another host key"
 host_key=$right_host_key
 
 right_key=$key
 key=$(base64 <"$tmp/stranger" | tr -d '\n')
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "an unauthorized key"
 key=$right_key
 
 right_destination=$destination
 destination=ssh://$(id -un)@$address:1
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "an unreachable address"
 destination=$right_destination
 
 run "$head"
 expect_refused "one argument"
-run "$head" "$digest" extra
-expect_refused "three arguments"
-expect_malformed_refused
+run "$head" "$digest" "$archive" extra
+expect_refused "four arguments"
+expect_malformed_refused -- "$archive"
 
 for secret in key host_key destination; do
   right=${!secret}
   printf -v "$secret" '%s' ''
-  run "$head" "$digest"
+  run "$head" "$digest" "$archive"
   expect_refused "no $secret"
   printf -v "$secret" '%s' "$right"
 done
 
 key=$(printf 'not a key' | base64)
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "a key that is not a private key"
 key=$right_key
 
 host_key="$right_host_key; echo injected"
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "a malformed host key"
 host_key=$right_host_key
 
 destination=${right_destination#ssh://}
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "a destination that is not an ssh:// URL"
 destination="-oProxyCommand=true $right_destination"
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "a destination with an option"
 destination=$right_destination
-
-# The web app's archive of $head, as script/release-web writes it: its files at its root, outside the
-# clone.
-mkdir "$tmp/web" "$tmp/spa"
-printf '<!doctype html>\n<meta name="skald-commit" content="%s" />\n<title>Skald</title>\n' "$head" \
-  >"$tmp/web/index.html"
-(cd "$tmp/web" && COPYFILE_DISABLE=1 tar -cf - .) | gzip -n >"$tmp/spa/skald-web.tar.gz"
-archive=$tmp/spa/skald-web.tar.gz
 
 # expect_archive_deployed <case>: the last run deployed the digest with the archive on its input.
 expect_archive_deployed() {
@@ -289,7 +289,7 @@ expect_refused "web app: an unauthorized key"
 key=$right_key
 
 git -C "$tmp/clone" push --quiet origin --delete dev
-run "$head" "$digest"
+run "$head" "$digest" "$archive"
 expect_refused "origin without dev"
 
 if [[ $failures -ne 0 ]]; then
