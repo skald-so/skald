@@ -21,20 +21,18 @@ use std::io::{self, Write as _};
 use std::path::Path;
 use std::time::Duration;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::Deserialize;
-use skald_crypto::{HistoryKey, HistoryMessage, MlsDevice, check_device};
+use skald_crypto::{HistoryKey, HistoryMessage, MlsDevice, check_device, follow_links};
 use skald_proto::{
     Address, Cbor as _, Cert, ChannelId, DeviceId, DeviceKind, HistoryEntry, HistoryLink,
-    MessageId, Roster, ServerName, SpaceId, VersionRange,
+    MessageId, Roster, ServerName, VersionRange,
 };
 
 use crate::agents::server_name;
 use crate::connection::printable;
-use crate::devices::{self, text};
+use crate::devices;
 use crate::follow::{self, Own, SpaceDevices, master_of};
 use crate::groups;
+use crate::key_chain;
 use crate::recv::{a2a_text, of_account};
 use crate::secrets;
 use crate::send;
@@ -59,14 +57,11 @@ pub fn run(
         roster,
         devices,
     } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)?;
-    let revisions = accepted(&mut follower, &space, roster)?;
+    let revisions = accepted(&follower, &space, roster)?;
     let server = server_name(&mut follower.connection)?;
     let at = (space.id, channel);
-    let links: Vec<HistoryLink> = (listed(&mut follower, at, LINKS)?.iter())
-        .filter_map(|bytes| HistoryLink::from_cbor(bytes).ok())
-        .filter(|link| link.channel == channel)
-        .collect();
-    let entries = listed(&mut follower, at, ENTRIES)?;
+    let links = key_chain::links(&mut follower, at)?;
+    let entries = key_chain::listed(&mut follower, at, key_chain::ENTRIES)?;
     let keys = follower.keys()?;
     let opened = groups::read(&follower, &keys, |device| {
         open(device, channel, &links, &entries)
@@ -89,61 +84,35 @@ pub fn run(
             .and_then(|()| out.flush())
             .map_err(|err| format!("cannot write a message to the output: {err}"))?;
     }
-    if without_key > 0 {
-        eprintln!(
-            "skald: history entries under no key this device holds, not shown: {without_key}"
-        );
+    if let Some(line) = no_key_line(without_key) {
+        eprintln!("{line}");
     }
     Ok(())
 }
 
-/// The kinds of history items the server lists, as their paths and lists name them.
-const LINKS: &str = "links";
-const ENTRIES: &str = "entries";
+/// The line that says how many entries, `without_key`, the device holds no key for; none for none.
+fn no_key_line(without_key: u64) -> Option<String> {
+    (without_key > 0).then(|| {
+        format!("skald: history entries under no key this device holds, not shown: {without_key}")
+    })
+}
 
-/// The revisions of `space` the device accepted that the server gives, `latest` its last accepted
-/// one first.
+/// The revisions of `space` the device accepted that the server gave the run, `latest` its last
+/// accepted one first.
 fn accepted(
-    follower: &mut Follower,
+    follower: &Follower,
     space: &state::Space,
     latest: Roster,
 ) -> Result<Vec<Roster>, String> {
     let held = follow::read(&follower.state, space.id, &space.name)?;
-    let given = follow::listed(&mut follower.connection, &follower.token, space.id)?;
+    let given = follower.given.get(&space.id).into_iter().flatten();
     let mut revisions = vec![latest];
-    for roster in (given.iter())
-        .filter_map(|entry| URL_SAFE_NO_PAD.decode(entry).ok())
-        .filter_map(|bytes| Roster::from_cbor(&bytes).ok())
-    {
-        if held.hashes.get(&roster.body().revision) == Some(&roster.hash()) {
-            revisions.push(roster);
-        }
-    }
+    revisions.extend(
+        given
+            .filter(|roster| held.hashes.get(&roster.body().revision) == Some(&roster.hash()))
+            .cloned(),
+    );
     Ok(revisions)
-}
-
-/// `HistoryLinks` and `HistoryEntries` in the API spec: the list named by its kind.
-#[derive(Deserialize)]
-struct Listed(BTreeMap<String, Vec<String>>);
-
-/// The items of `kind`, [`LINKS`] or [`ENTRIES`], of `at`'s channel the server lists, each as its
-/// bytes; one that is no base64url, as no bytes, which decode as no item.
-fn listed(
-    follower: &mut Follower,
-    (space, channel): (SpaceId, ChannelId),
-    kind: &str,
-) -> Result<Vec<Vec<u8>>, String> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/{kind}");
-    let body = follower
-        .connection
-        .get_as(&path, &follower.token)
-        .map_err(text)?;
-    let unexpected = || format!("unexpected answer from the server: a channel's history {kind}");
-    let Listed(mut given) = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let items = given.remove(kind).ok_or_else(unexpected)?;
-    Ok((items.iter())
-        .map(|item| URL_SAFE_NO_PAD.decode(item).unwrap_or_default())
-        .collect())
 }
 
 /// What opening an entry gave.
@@ -163,20 +132,15 @@ fn reach(
     channel: ChannelId,
     links: &[HistoryLink],
 ) -> BTreeMap<u64, HistoryKey> {
-    let mut links: Vec<&HistoryLink> = links.iter().collect();
-    // A link's `prev` is below its epoch, so from the latest epoch down each link's key is known
-    // by the time it comes up.
-    links.sort_by_key(|link| std::cmp::Reverse(link.epoch));
+    let held: BTreeSet<u64> = (links.iter())
+        .map(|link| link.epoch)
+        .filter(|&epoch| device.history_key(channel, epoch).is_some())
+        .collect();
     let mut reached = BTreeMap::new();
-    for link in links {
-        if device.history_key(channel, link.prev).is_some() {
-            continue;
-        }
-        let key = (device.history_key(channel, link.epoch))
-            .or_else(|| reached.get(&link.epoch))
-            .and_then(|key| key.open_link(link).ok());
-        if let Some(key) = key {
-            reached.entry(link.prev).or_insert(key);
+    for epoch in held {
+        let key = device.history_key(channel, epoch).expect("a key it holds");
+        for (prev, key) in follow_links(channel, epoch, key, links) {
+            reached.entry(prev).or_insert(key);
         }
     }
     reached
@@ -623,6 +587,40 @@ mod tests {
         let texts: Vec<&str> = read.iter().map(|message| message.text.as_str()).collect();
         assert_eq!(texts, ["once", "next"]);
         assert_eq!(without_key, 2);
+    }
+
+    /// A `service` device passes only while the channel's `services` lists it, though its
+    /// account is a member of the channel; a `client` device the `services` list does not pass.
+    #[test]
+    fn service_devices_pass_only_by_the_channel_s_services() {
+        let world = World::new();
+        let mut body = world.earlier.body().clone();
+        body.channels[0].services = vec![world.bob.0];
+        let unlisted = [skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap()];
+        let checks = world.checks(&unlisted);
+        let service = (world.service.0, &world.service.1);
+        let bob = (world.bob.0, &world.bob.1);
+
+        let refused = checks.check(world.entry(service, world.channel, "acme/ci/deploy", "x"));
+        assert!(
+            refused.unwrap_err().contains("among its services"),
+            "a service device passed outside the channel's services"
+        );
+        let refused = checks.check(world.entry(bob, world.channel, "acme/bob/user", "x"));
+        assert!(
+            refused.unwrap_err().contains("among its services"),
+            "a client device passed as one of the channel's services"
+        );
+    }
+
+    /// The count of entries under no key shows only when there are some.
+    #[test]
+    fn entries_under_no_key_are_said_only_when_there_are_some() {
+        assert_eq!(no_key_line(0), None);
+        assert_eq!(
+            no_key_line(3).as_deref(),
+            Some("skald: history entries under no key this device holds, not shown: 3")
+        );
     }
 
     /// Times show in UTC as RFC 3339 to the second, leap days included.

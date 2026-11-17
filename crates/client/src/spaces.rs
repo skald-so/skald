@@ -15,6 +15,7 @@
 //! until then the space stays at its last accepted revision. When another revision came first, the
 //! device accepts the new revisions, applies its change to the latest and signs again.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -346,6 +347,8 @@ pub struct Follower {
     pub timeout: Duration,
     /// Each space the run accepted the revisions of, as it last did ([`Follower::sync`]).
     pub accepted: groups::Rosters,
+    /// The revisions the server last gave of each space the run followed.
+    pub given: BTreeMap<SpaceId, Vec<Roster>>,
 }
 
 impl Follower {
@@ -416,6 +419,7 @@ impl Follower {
             cert,
             timeout,
             accepted: groups::Rosters::new(),
+            given: BTreeMap::new(),
         }))
     }
 
@@ -613,18 +617,20 @@ impl Follower {
     }
 
     /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
-    /// its accounts and the revisions the server gives.
+    /// its accounts and the revisions the server gives, which it records in [`Follower::given`].
     fn follow(
         &mut self,
         space: &state::Space,
     ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
-        follow::sync(
+        let followed = follow::sync(
             &mut self.connection,
             &self.state,
             &self.token,
             space,
             &self.own,
-        )
+        )?;
+        self.given.insert(space.id, followed.2.clone());
+        Ok(followed)
     }
 
     /// Sends `pending`, in CBOR, the pending revision of `space` after revision 1, until the server
