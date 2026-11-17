@@ -243,6 +243,16 @@ const MIGRATIONS: &[&str] = &[
         prev INTEGER NOT NULL CHECK (prev >= 0),
         PRIMARY KEY (channel, epoch, prev)
     ) STRICT;",
+    // The history entries of the device's channel messages that the server has not answered yet,
+    // in the order they go out, by message ID, with their space and channel and the entry's bytes.
+    // One whose message's envelope is in the outbox waits for the server to store it.
+    "CREATE TABLE history_outbox (
+        position INTEGER PRIMARY KEY,
+        msg_id TEXT NOT NULL UNIQUE,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        entry BLOB NOT NULL
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -397,6 +407,16 @@ pub struct MlsOutgoing {
     pub envelope: Vec<u8>,
 }
 
+/// The history entry of a channel message of the device's own, as it waits for upload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryOutgoing {
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    /// Its bytes, as they are uploaded every time.
+    pub entry: Vec<u8>,
+}
+
 /// What a step on the MLS state writes with the state it saves, in the same transaction.
 #[derive(Debug, Default)]
 pub struct MlsChanges {
@@ -427,6 +447,8 @@ pub struct MlsChanges {
     /// Each epoch of a channel it judged, and whether clean; an epoch judged already keeps its
     /// judgment.
     pub judged: Vec<(ChannelId, u64, bool)>,
+    /// History entries of the channel messages it puts in the outbox, which wait for upload.
+    pub entries: Vec<HistoryOutgoing>,
 }
 
 impl MlsChanges {
@@ -442,6 +464,7 @@ impl MlsChanges {
             && self.rejoined.is_empty()
             && self.entered.is_empty()
             && self.judged.is_empty()
+            && self.entries.is_empty()
     }
 }
 
@@ -747,6 +770,18 @@ impl State {
                     "INSERT INTO epoch_judgment (channel, epoch, clean) VALUES (?1, ?2, ?3)
                      ON CONFLICT DO NOTHING",
                     params![channel.to_string(), sql_u64(*epoch)?, clean],
+                )?;
+            }
+            for entry in &changes.entries {
+                tx.execute(
+                    "INSERT INTO history_outbox (msg_id, space, channel, entry)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        entry.msg_id.to_string(),
+                        entry.space.to_string(),
+                        entry.channel.to_string(),
+                        entry.entry
+                    ],
                 )?;
             }
             Ok(())
@@ -1473,18 +1508,56 @@ impl State {
     }
 
     /// Takes the envelope of `msg_id` to `recipient`, none under `mls`, out of the outbox: the
-    /// server answered it.
+    /// server answered it. If it `refused` the envelope, the message's history entry goes too,
+    /// all at once.
     pub fn remove_outgoing(
         &self,
         msg_id: MessageId,
         recipient: Option<DeviceId>,
+        refused: bool,
     ) -> Result<(), Error> {
-        self.db.execute(
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        tx.execute(
             "DELETE FROM outbox WHERE msg_id = ?1 AND recipient IS ?2",
             params![
                 msg_id.to_string(),
                 recipient.map(|device| device.to_string())
             ],
+        )?;
+        if refused {
+            tx.execute(
+                "DELETE FROM history_outbox WHERE msg_id = ?1",
+                params![msg_id.to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The history entries of the device's messages whose envelopes the server stored, which wait
+    /// for upload, in the order they went into the outbox.
+    pub fn history_outbox(&self) -> Result<Vec<HistoryOutgoing>, Error> {
+        let rows = self.envelopes(
+            "SELECT msg_id, space, channel, entry FROM history_outbox
+             WHERE msg_id NOT IN (SELECT msg_id FROM outbox) ORDER BY position",
+        )?;
+        rows.into_iter()
+            .map(|([msg_id, space, channel], entry)| {
+                Ok(HistoryOutgoing {
+                    msg_id: id("message ID", &msg_id)?,
+                    space: id("space ID", &space)?,
+                    channel: id("channel ID", &channel)?,
+                    entry,
+                })
+            })
+            .collect()
+    }
+
+    /// Takes the history entry of the message `msg_id` out of the outbox: the server answered it.
+    pub fn remove_history_entry(&self, msg_id: MessageId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM history_outbox WHERE msg_id = ?1",
+            params![msg_id.to_string()],
         )?;
         Ok(())
     }
@@ -2132,12 +2205,69 @@ pub(crate) mod tests {
         assert_eq!(state.channel_counter(channel).unwrap(), 2);
         assert_eq!(state.channel_counter(ChannelId::generate()).unwrap(), 0);
 
-        state.remove_outgoing(first.outgoing.msg_id, None).unwrap();
+        state
+            .remove_outgoing(first.outgoing.msg_id, None, false)
+            .unwrap();
         let state = State::open(&dir).unwrap();
         assert_eq!(
             state.outbox().unwrap(),
             [elsewhere.outgoing, second.outgoing]
         );
+    }
+
+    /// A message's history entry goes into the outbox with its envelope and waits for upload only
+    /// once the server stored the envelope, in order, until it is taken out; a refused envelope
+    /// takes its entry with it.
+    #[test]
+    fn history_entries_wait_for_their_stored_envelopes() {
+        let dir = TestDir::new("state-history-outbox");
+        let state = State::open(&dir).unwrap();
+        let (channel, space) = (ChannelId::generate(), SpaceId::generate());
+        let sent = |counter| {
+            let msg_id = MessageId::generate();
+            let message = Counted {
+                outgoing: Outgoing {
+                    msg_id,
+                    recipient: None,
+                    space,
+                    envelope: vec![1, 2, 3],
+                },
+                channel,
+                counter,
+            };
+            let entry = HistoryOutgoing {
+                msg_id,
+                space,
+                channel,
+                entry: vec![4, 5, u8::try_from(counter).unwrap()],
+            };
+            state
+                .mls_change(|_| {
+                    let changes = MlsChanges {
+                        messages: vec![message],
+                        entries: vec![entry.clone()],
+                        ..MlsChanges::default()
+                    };
+                    Ok((None, changes, ()))
+                })
+                .unwrap();
+            entry
+        };
+        let (first, second, refused) = (sent(1), sent(2), sent(3));
+        assert_eq!(state.history_outbox().unwrap(), []);
+
+        for entry in [&second, &first] {
+            state.remove_outgoing(entry.msg_id, None, false).unwrap();
+        }
+        state.remove_outgoing(refused.msg_id, None, true).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.history_outbox().unwrap(),
+            [first.clone(), second.clone()]
+        );
+        state.remove_history_entry(first.msg_id).unwrap();
+        assert_eq!(state.history_outbox().unwrap(), [second]);
     }
 
     /// An `hpke` envelope an older client left in the outbox keeps its place and its recipient
@@ -2184,9 +2314,9 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(counters, 0, "the counters per recipient device are dropped");
-        state.remove_outgoing(msg_id, None).unwrap();
+        state.remove_outgoing(msg_id, None, false).unwrap();
         assert_eq!(state.outbox().unwrap().len(), 1, "taken out as an mls one");
-        state.remove_outgoing(msg_id, Some(bob)).unwrap();
+        state.remove_outgoing(msg_id, Some(bob), false).unwrap();
         assert_eq!(state.outbox().unwrap(), []);
     }
 
@@ -2212,7 +2342,7 @@ pub(crate) mod tests {
         assert_eq!(state.sent(msg_id).unwrap(), None);
 
         put(&state, &[&message]).unwrap();
-        state.remove_outgoing(msg_id, None).unwrap();
+        state.remove_outgoing(msg_id, None, false).unwrap();
 
         let state = State::open(&dir).unwrap();
         assert_eq!(state.sent(msg_id).unwrap(), Some((space, channel)));
