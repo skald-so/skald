@@ -111,8 +111,14 @@ const NAMES: &str = "DNS:skald.test";
 /// The request timeout of Ada's runs once she has signed in, in seconds.
 const TIMEOUT: &str = "4";
 
-/// How soon a run whose catch-up ends at once exits.
-const AT_ONCE: Duration = Duration::from_secs(1);
+/// The request timeout of Ada's runs, in seconds, and the server's longest long-poll wait, in the
+/// test of runs that exit at the end of catch-up: as long as by default, so that a run that waits
+/// out either instead of exiting takes far longer than [`AT_ONCE`].
+const LONG_TIMEOUT: &str = "30";
+const LONG_POLL_WAIT: Duration = Duration::from_secs(30);
+
+/// How soon a run whose catch-up ends at once exits, whatever the load on the machine.
+const AT_ONCE: Duration = Duration::from_secs(5);
 
 /// How far back the tests move the server's times: the hours a recipient stays offline.
 const HOURS_LATER: &str = "10 hours";
@@ -160,11 +166,22 @@ impl Behind {
     /// Ada and Bob, GitHub users `ids` with `logins`, on a server with a mailbox retention of 7
     /// days; at first the proxy blocks nothing.
     fn start(ids: [u64; 2], logins: [&str; 2]) -> Self {
+        Self::start_with(ids, logins, (TIMEOUT, None))
+    }
+
+    /// As [`Behind::start`], Ada's runs with the request timeout `timeout`, in seconds, and the
+    /// server's longest long-poll wait `long_poll`, if given.
+    fn start_with(
+        ids: [u64; 2],
+        logins: [&str; 2],
+        (timeout, long_poll): (&str, Option<Duration>),
+    ) -> Self {
         let keeper = Machine::new();
         let ca = Ca::new(&keeper.root().join("ca"));
         let front = Front::bind(vec![ca.issue(NAMES)]);
         let retained = |settings: &mut Settings| {
             settings.mailbox_retention = Some(Duration::from_secs(WEEK));
+            settings.long_poll_max_wait = long_poll;
         };
         let cloud = Cloud::fronted_over_tls_with(HOST, front.port(), (120, 1), retained);
         let filter = Filter::start(cloud.relay.address());
@@ -189,7 +206,7 @@ impl Behind {
         let joined = recv(&ada.machine);
         assert!(joined.success, "{joined:?}");
         bob.take_in(&world.cloud);
-        ada.machine = (ada.machine).with_env(TIMEOUT_SETTING, TIMEOUT);
+        ada.machine = (ada.machine).with_env(TIMEOUT_SETTING, timeout);
         Behind {
             world,
             filter,
@@ -519,13 +536,15 @@ fn at_once(behind: &Behind, transport: Transport, args: &[&str], what: &str) -> 
 }
 
 /// With the proxy refusing WebSocket, and then the event stream too, `skald recv` and `skald send`
-/// exit within a second over SSE and over long-poll: with an empty mailbox, and with one of Bob's
-/// messages waiting, which `skald recv` shows.
+/// exit at the end of catch-up over SSE and over long-poll, in under [`AT_ONCE`] while the request
+/// timeout and the long-poll wait are 30 s: with an empty mailbox, and with one of Bob's messages
+/// waiting, which `skald recv` shows.
 #[test]
-fn send_and_recv_exit_within_a_second_over_sse_and_long_poll() {
-    let mut behind = Behind::start(
+fn send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll() {
+    let mut behind = Behind::start_with(
         [4_144_041_201, 4_144_041_202],
         ["ada-quick-exit", "bob-quick-exit"],
+        (LONG_TIMEOUT, Some(LONG_POLL_WAIT)),
     );
     for transport in [Transport::Sse, Transport::LongPoll] {
         behind.leave(transport);

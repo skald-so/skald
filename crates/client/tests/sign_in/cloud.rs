@@ -547,7 +547,7 @@ impl Cloud {
     /// by the sign-in that `link` finds there, types its code and clicks `button`; gives the last
     /// visit.
     fn decide_signing_in(&self, page: &Page, link: &str, grant: &Grant, button: &str) -> Visit {
-        page.goto_settled(&grant.verification_uri);
+        loaded(page.goto_settled(&grant.verification_uri));
         if page.count(CODE_FIELD) == 0 {
             assert_eq!(
                 page.count(link),
@@ -555,8 +555,8 @@ impl Cloud {
                 "the page offers {link}: {}",
                 page.text()
             );
-            page.click_settled(&format!("{link} >> nth=0"));
-            page.goto_settled(&grant.verification_uri);
+            loaded(page.click_settled(&format!("{link} >> nth=0")));
+            loaded(page.goto_settled(&grant.verification_uri));
         }
         assert_eq!(
             page.count(CODE_FIELD),
@@ -577,6 +577,14 @@ impl Cloud {
         );
         visit
     }
+}
+
+/// Fails unless `visit`'s page loaded: a page that failed to load offers nothing.
+fn loaded(visit: Visit) {
+    assert!(
+        visit.error.is_none() && visit.status == Some(200),
+        "the page did not load: {visit:?}"
+    );
 }
 
 /// Waits until device authorization has given `run` its grant after the `before` it gave earlier

@@ -12,9 +12,11 @@ import type {
   SignInProviders,
 } from "./api/skald.schemas.ts";
 import { Access } from "./app/Access.tsx";
+import { Account } from "./app/Account.tsx";
 import { versioned } from "./app/api.ts";
 import { Cabinet } from "./app/Cabinet.tsx";
-import { Home } from "./app/Home.tsx";
+import { Machines } from "./app/Machines.tsx";
+import { accountPath } from "./app/names.ts";
 import { CenteredPage, SignInPage } from "./app/SignInPage.tsx";
 import styles from "./app/SignInPage.module.css";
 import { Button } from "./ui/Button.tsx";
@@ -41,6 +43,8 @@ export function App() {
     setView({ kind: "loading" });
     setAttempt((attempt) => attempt + 1);
   }, []);
+  /** Loads the session again behind the page shown: the sign-in page once it has ended. */
+  const refresh = useCallback(() => setAttempt((attempt) => attempt + 1), []);
 
   useEffect(() => {
     const request = new AbortController();
@@ -79,8 +83,26 @@ export function App() {
             onSignedOut={reload}
           >
             <Routes>
-              <Route path="/" element={<Home session={view.session} />} />
+              <Route
+                path="/"
+                element={
+                  <Machines
+                    username={view.session.username}
+                    onSignedOut={reload}
+                  />
+                }
+              />
               <Route path="/access" element={<Access onSignedOut={reload} />} />
+              <Route
+                path={accountPath}
+                element={
+                  <Account
+                    session={view.session}
+                    onChanged={refresh}
+                    onSignedOut={reload}
+                  />
+                }
+              />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Cabinet>

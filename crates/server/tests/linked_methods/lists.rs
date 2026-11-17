@@ -194,8 +194,12 @@ fn device_session_gets_its_accounts_list() {
     assert_eq!(by_device.status, 200, "{:?}", by_device.body);
     let body: Value = serde_json::from_slice(&by_device.body).expect("JSON");
     assert_eq!(methods_in(&body), github_only(&ada));
-    let (status, by_web) = page_get(&page, &flow.stand.public, METHODS);
+    let (status, mut by_web) = page_get(&page, &flow.stand.public, METHODS);
     assert_eq!(status, 200);
+    // The web session signed in with the method: only its list marks it as current.
+    assert_eq!(body["methods"][0]["current"], false, "{body}");
+    assert_eq!(by_web["methods"][0]["current"], true, "{by_web}");
+    by_web["methods"][0]["current"] = false.into();
     assert_eq!(
         body, by_web,
         "the device and the web session get the same list"

@@ -1,19 +1,15 @@
 import { useState, type ReactNode } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useLocation, useNavigate, type NavigateFunction } from "react-router";
 import { endSession } from "../api/skald.ts";
 import type { ListedSpace, Session } from "../api/skald.schemas.ts";
 import type { DropdownOption } from "../ui/Dropdown.tsx";
 import { Shell, type ShellAccount, type ShellSection } from "../ui/Shell.tsx";
+import { accountPath, providerNames } from "./names.ts";
 import { versioned } from "./api.ts";
-
-/** The providers' names for people. */
-const methods = { github: "GitHub", google: "Google" } as const;
-
-/** Where the account's sign-in methods are: the server's page of them. */
-const signInMethodsPage = "/sign-in-methods";
 
 /** The cabinet's sections, each on its page. */
 const sections: ShellSection[] = [
+  { key: "machines", label: "Machines", href: "/" },
   { key: "access", label: "Access", href: "/access" },
 ];
 
@@ -65,7 +61,7 @@ export function Cabinet({
       }
       space={space}
       onSpaceChange={setSpace}
-      account={account(session, onSignedOut)}
+      account={account(session, navigate, onSignedOut)}
       defaultMenuOpen={menuOpen}
     >
       {children}
@@ -75,25 +71,27 @@ export function Cabinet({
 
 /**
  * The account footer of `session`: the username; the method it signed in with, and the GitHub login
- * of the account's GitHub method, as "GitHub · ana" or "Google · GitHub ana"; its menu's Sign out
- * calls `onSignedOut` once the server has answered.
+ * of the account's GitHub method, as "GitHub · ana" or "Google · GitHub ana"; its menu's Account
+ * opens the Account page, and Sign out calls `onSignedOut` once the server has answered.
  */
-function account(session: Session, onSignedOut: () => void): ShellAccount {
-  const method = session.sign_in_method && methods[session.sign_in_method];
+function account(
+  session: Session,
+  navigate: NavigateFunction,
+  onSignedOut: () => void,
+): ShellAccount {
+  const method =
+    session.sign_in_method && providerNames[session.sign_in_method];
   const login = session.github_login;
   const signIn = [
     method,
-    login && (method === methods.github ? login : `GitHub ${login}`),
+    login && (method === providerNames.github ? login : `GitHub ${login}`),
   ].filter(Boolean);
   return {
     name: session.username,
     initials: initials(session.username),
     signIn: signIn.join(" · "),
     actions: [
-      {
-        label: "Sign-in methods",
-        onSelect: () => window.location.assign(signInMethodsPage),
-      },
+      { label: "Account", onSelect: () => navigate(accountPath) },
       {
         label: "Sign out",
         onSelect: () => {

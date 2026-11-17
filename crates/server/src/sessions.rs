@@ -10,9 +10,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
-use sqlx::Postgres;
 use sqlx::postgres::PgArguments;
 use sqlx::query::QueryAs;
+use sqlx::{Postgres, Transaction};
 
 use crate::instances::Event;
 use crate::refusal::{Refusal, answer};
@@ -59,24 +59,35 @@ type Row = (
     bool,
 );
 
-/// The web session of the request's cookie; a device session is refused.
-async fn web_session(state: &AppState, headers: &HeaderMap) -> Result<Session, Refusal> {
+/// What only a web session does: lists or ends the account's sessions.
+const LISTS_OR_ENDS: &str = "lists or ends the account's sessions";
+
+/// The web session of the request's cookie; a device session is refused, as only a web session
+/// `does` this, such as [`LISTS_OR_ENDS`].
+async fn web_session(
+    state: &AppState,
+    headers: &HeaderMap,
+    does: &str,
+) -> Result<Session, Refusal> {
     let session = signed_in(&state.db, headers)
         .await
         .map_err(|err| Refusal::Database("read a session", err))?
         .ok_or(Refusal::NotSignedIn)?;
     // Only web sessions sign in with a method.
     if session.sign_in_method.is_none() {
-        return Err(Refusal::NotAllowed(
-            "Only a web session lists or ends the account's sessions.".to_owned(),
-        ));
+        return Err(Refusal::NotAllowed(format!("Only a web session {does}.")));
     }
     Ok(session)
 }
 
-/// The web session of the request's cookie, if the request comes from a page of this server.
-async fn web_session_from_page(state: &AppState, headers: &HeaderMap) -> Result<Session, Refusal> {
-    let session = web_session(state, headers).await?;
+/// The web session of the request's cookie, as [`web_session`] takes it for what it `does`, if the
+/// request comes from a page of this server.
+pub(crate) async fn web_session_from_page(
+    state: &AppState,
+    headers: &HeaderMap,
+    does: &str,
+) -> Result<Session, Refusal> {
+    let session = web_session(state, headers, does).await?;
     let from_page = state
         .sign_in
         .as_deref()
@@ -92,7 +103,7 @@ async fn web_session_from_page(state: &AppState, headers: &HeaderMap) -> Result<
 /// `GET /account/sessions`: every session of the web session's account that has not ended.
 pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
     answer(async {
-        let session = web_session(&state, &headers).await?;
+        let session = web_session(&state, &headers, LISTS_OR_ENDS).await?;
         // `to_char` gives RFC 3339 in UTC; a device's name is its UTF-8 bytes.
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT s.id::text, s.kind, s.browser, s.os, d.name,
@@ -141,7 +152,7 @@ pub(crate) async fn end_one(
     headers: HeaderMap,
 ) -> Response {
     answer(async {
-        let session = web_session_from_page(&state, &headers).await?;
+        let session = web_session_from_page(&state, &headers, LISTS_OR_ENDS).await?;
         // As text: an ID that is no UUID is no session.
         let ended = end(
             &state,
@@ -166,7 +177,7 @@ pub(crate) async fn end_one(
 /// `POST /account/sessions/end-others`: ends every session of the web session's account but itself.
 pub(crate) async fn end_others(State(state): State<AppState>, headers: HeaderMap) -> Response {
     answer(async {
-        let session = web_session_from_page(&state, &headers).await?;
+        let session = web_session_from_page(&state, &headers, LISTS_OR_ENDS).await?;
         end(
             &state,
             sqlx::query_as(
@@ -199,7 +210,7 @@ pub(crate) async fn sign_out(State(state): State<AppState>, headers: HeaderMap) 
             ended.map(|ended| (ended, None))
         }
         Some(None) => return not_signed_in(),
-        None => match web_session_from_page(&state, &headers).await {
+        None => match web_session_from_page(&state, &headers, LISTS_OR_ENDS).await {
             Ok(session) => {
                 let ended = end(
                     &state,
@@ -240,18 +251,30 @@ async fn end(
     let failed = |err| Refusal::Database("end a session", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
     let ended = delete.fetch_all(&mut *tx).await.map_err(failed)?;
+    tell_ended(state, &mut tx, &ended).await.map_err(failed)?;
+    tx.commit().await.map_err(failed)?;
+    close_ended(state, &ended);
+    Ok(ended.len())
+}
+
+/// Tells the other instances in `tx`, which removes the sessions whose tokens' SHA-256s are
+/// `ended`, that they ended; once `tx` commits, [`close_ended`] closes this instance's connections
+/// of them.
+pub(crate) async fn tell_ended(
+    state: &AppState,
+    tx: &mut Transaction<'_, Postgres>,
+    ended: &[(Vec<u8>,)],
+) -> Result<(), sqlx::Error> {
     let events: Vec<Event> = ended
         .iter()
         .map(|(session,)| Event::SessionEnded(session.clone()))
         .collect();
-    state
-        .instance
-        .tell(&mut tx, &events)
-        .await
-        .map_err(failed)?;
-    tx.commit().await.map_err(failed)?;
-    for (session,) in &ended {
+    state.instance.tell(tx, &events).await
+}
+
+/// Closes this instance's connections of the sessions whose tokens' SHA-256s are `ended`.
+pub(crate) fn close_ended(state: &AppState, ended: &[(Vec<u8>,)]) {
+    for (session,) in ended {
         state.connections.end_session(session);
     }
-    Ok(ended.len())
 }
