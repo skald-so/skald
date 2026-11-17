@@ -174,7 +174,7 @@ impl<'a> Line<'a> {
     }
 
     /// The content of the line in the envelope `msg_id`.
-    fn content(&self, msg_id: MessageId) -> Content {
+    pub fn content(&self, msg_id: MessageId) -> Content {
         let message = json!({
             "role": "ROLE_USER",
             "messageId": self.message_id.unwrap_or(msg_id).to_string(),

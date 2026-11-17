@@ -131,17 +131,28 @@ impl HistoryKey {
     /// it holds no history plaintext; [`HistoryError::OtherChannel`] if the body is of another
     /// channel.
     pub fn open_entry(&self, entry: &HistoryEntry) -> Result<HistoryMessage, HistoryError> {
+        let message = self.decrypt_entry(entry)?;
+        if message.channel() != entry.channel {
+            return Err(HistoryError::OtherChannel);
+        }
+        Ok(message)
+    }
+
+    /// As [`HistoryKey::open_entry`], whatever channel the body names: for a reader that names
+    /// the sender of an entry it drops, checking [`HistoryMessage::channel`] itself.
+    ///
+    /// # Errors
+    /// [`HistoryError::Open`] if it does not decrypt with this key; [`HistoryError::Malformed`] if
+    /// it holds no history plaintext.
+    pub fn decrypt_entry(&self, entry: &HistoryEntry) -> Result<HistoryMessage, HistoryError> {
         let plaintext = self.open(
             &HistoryEntry::associated_data(entry.channel, entry.epoch),
             &entry.nonce,
             &entry.ciphertext,
         )?;
-        let plaintext =
-            HistoryPlaintext::from_cbor(&plaintext).map_err(|_| HistoryError::Malformed)?;
-        if plaintext.body().channel != entry.channel {
-            return Err(HistoryError::OtherChannel);
-        }
-        Ok(HistoryMessage(plaintext))
+        HistoryPlaintext::from_cbor(&plaintext)
+            .map(HistoryMessage)
+            .map_err(|_| HistoryError::Malformed)
     }
 
     fn cipher(&self) -> Aes128Gcm {
@@ -238,6 +249,11 @@ impl HistoryMessage {
     /// The device the body names as its sender.
     pub fn sender(&self) -> DeviceId {
         self.0.body().sender
+    }
+
+    /// The channel the body names.
+    pub fn channel(&self) -> ChannelId {
+        self.0.body().channel
     }
 
     /// The body, once its signature verifies with the signing key of `cert`, which the caller
