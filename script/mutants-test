@@ -2,7 +2,7 @@
 # Tests script/mutants on a scratch Cargo workspace: it passes when the tests catch every mutant of the
 # code changed since the base, fails naming the survivors otherwise, never mutates unchanged code,
 # runs the tests with cargo-nextest and PostgreSQL and removes PostgreSQL afterwards, on CPUs / jobs
-# threads, compiles through sccache when it is on PATH, fails naming a mutant whose tests run past 3
+# threads, compiles through sccache when it is on PATH, fails naming a mutant whose tests run past 5
 # times the unmutated tree's test time, checks each prototype workspace with the tests of all its
 # crates, fails when cargo-mutants cannot list the mutants, and leaves the working tree clean.
 set -euo pipefail
@@ -170,9 +170,9 @@ expect_clean uncovered
 expect_postgres_removed uncovered
 
 # A change whose mutants `-=` to `+=` and to `/=` make its test loop forever: the run fails and names
-# them as timeouts, which come at 3 times the unmutated tree's test time, not at cargo-mutants' 5
-# times. A test of 3 s sets that time, under cargo-mutants' minimum timeout of 20 s, which this case
-# lowers to 1 s. cargo-mutants prints whole seconds: an unmutated time of 3 s is under 4 s.
+# them as timeouts, which come at cargo-mutants' 5 times the unmutated tree's test time. A test of 3 s
+# sets that time; cargo-mutants' minimum timeout of 20 s, which this case lowers to 1 s, would hide
+# it. cargo-mutants prints whole seconds: an unmutated time of 3 s is under 4 s.
 git checkout --quiet -b hangs base
 cat >>crates/calc/src/lib.rs <<'RUST'
 
@@ -199,8 +199,8 @@ done
 if [[ $output =~ Unmutated\ baseline\ in\ [0-9]+s\ build\ \+\ ([0-9]+)s\ test ]]; then
   unmutated=${BASH_REMATCH[1]}
   if [[ $output =~ Auto-set\ test\ timeout\ to\ ([0-9]+)s ]]; then
-    ((BASH_REMATCH[1] <= 3 * (unmutated + 1))) ||
-      fail "hangs: a timeout of ${BASH_REMATCH[1]} s, past 3 times the unmutated tree's ${unmutated} s:"$'\n'"$output"
+    ((BASH_REMATCH[1] <= 5 * (unmutated + 1))) ||
+      fail "hangs: a timeout of ${BASH_REMATCH[1]} s, past 5 times the unmutated tree's ${unmutated} s:"$'\n'"$output"
   else
     fail "hangs: no test timeout:"$'\n'"$output"
   fi

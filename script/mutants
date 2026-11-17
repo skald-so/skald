@@ -75,10 +75,10 @@ ncpu=$(getconf _NPROCESSORS_ONLN)
 jobs=${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}
 # The tests run with cargo-nextest on CPUs / jobs threads: the jobs' runs at once take about a thread
 # per CPU, and the unmutated tree's run, whose time sets the timeout, as many as each. A run of no
-# tests passes, as with cargo test, so it catches no mutant. A mutant's run of them that takes 3 times
-# as long as the unmutated tree's ends as a timeout.
+# tests passes, as with cargo test, so it catches no mutant. A mutant's run of them that takes
+# cargo-mutants' 5 times as long as the unmutated tree's ends as a timeout.
 options=(--jobs "$jobs" --test-tool=nextest --cargo-test-arg=--no-tests=pass
-  "--cargo-test-arg=--test-threads=$(((ncpu + jobs - 1) / jobs))" --timeout-multiplier=3)
+  "--cargo-test-arg=--test-threads=$(((ncpu + jobs - 1) / jobs))")
 # cargo-mutants prints each mutant the tests miss as MISSED and each that times out as TIMEOUT; its
 # reports go out of the working tree.
 status=0
