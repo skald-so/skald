@@ -10,7 +10,8 @@
 # Also tests that script/test rejects an unknown part instead of skipping it, and that with
 # SKALD_TEST_SINCE it checks the parts the changes since that base touch, on a copy that runs no
 # check (script/lib/test-stand-ins.sh): every part when none or when that cannot be told; a change
-# to each path of the Rust code alone runs the checks that read it.
+# to each path of the Rust code alone runs the checks that read it. And that with sccache on PATH,
+# script/test runs cargo with it as the compiler wrapper.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -360,6 +361,16 @@ rm web/new.ts
 # A base the copy cannot compare with: every part.
 checking "$all" SKALD_TEST_SINCE=no-such-commit
 checking 'exit 2' SKALD_TEST_SINCE="$copy_base" SKALD_TEST_PARTS=edits
+# With sccache on PATH, every run of cargo compiles through it.
+mkdir "$tmp/sccache"
+printf '#!/usr/bin/env bash\n' >"$tmp/sccache/sccache"
+printf '#!/usr/bin/env bash\necho "${RUSTC_WRAPPER:-none} $*" >>%q\n' "$tmp/wrapped" >"$tmp/sccache/cargo"
+chmod +x "$tmp/sccache/sccache" "$tmp/sccache/cargo"
+env -u SKALD_TEST_SINCE SKALD_TEST_PARTS=workspace PATH="$tmp/sccache:$copy/bin:$PATH" "$copy/script/test" \
+  >/dev/null 2>&1 || fail "script/test with sccache on PATH fails"
+wrapped=$(cat "$tmp/wrapped" 2>/dev/null) || true
+[[ $wrapped == *'sccache nextest run --workspace --locked'* && $(grep -v '^sccache ' <<<"$wrapped") == '' ]] ||
+  fail "script/test with sccache on PATH runs cargo without it:"$'\n'"$wrapped"
 
 # The checks that read a path run when only it changes: script/test of the copy with
 # SKALD_TEST_SINCE runs the parts script/changed-parts selects, as CI runs them, one job each.
@@ -390,7 +401,8 @@ crate_checks=(
   'cargo build --workspace --all-targets --locked'
   'cargo fmt --all --check'
   'cargo clippy --workspace --all-targets --locked -- -D warnings'
-  'cargo test --workspace --locked'
+  'cargo nextest run --workspace --locked'
+  'cargo test --doc --workspace --locked'
   'cargo clippy --target wasm32-unknown-unknown -p skald-proto -p skald-crypto --all-targets --locked -- -D warnings'
   script/wasm-test
   script/image-test
@@ -411,7 +423,8 @@ prototype() {
     "cargo build $manifest --workspace --all-targets --locked"
     "cargo fmt $manifest --all --check"
     "cargo clippy $manifest --workspace --all-targets --locked -- -D warnings"
-    "cargo test $manifest --workspace --locked"
+    "cargo nextest run $manifest --workspace --locked"
+    "cargo test $manifest --doc --workspace --locked"
   )
 }
 for path in crates/server/src/lib.rs crates/server/Dockerfile Cargo.toml Cargo.lock; do
@@ -445,7 +458,7 @@ for path in docs/dev/roadmap.md README.md web/README.md site/config.mjs; do
 done
 # The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
 # self-host stack's part runs for its packages too.
-reads web/package.json 'cargo test --workspace --locked' script/self-host-test 'web: npm run lint' \
+reads web/package.json 'cargo nextest run --workspace --locked' script/self-host-test 'web: npm run lint' \
   'web: npm test' 'web: npm run build'
 # The self-host stack serves the web app's build.
 reads web/src/App.tsx script/self-host-test 'web: npm run build'

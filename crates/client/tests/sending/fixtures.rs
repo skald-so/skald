@@ -47,7 +47,8 @@ pub fn fronted_with(change: impl FnOnce(&mut Settings)) -> (World, Front) {
     (world, front)
 }
 
-/// `person`, its runs retrying for [`TIMEOUT`].
+/// `person`, its runs retrying for [`TIMEOUT`]. For after a test's setup: on a loaded machine, a
+/// request of the setup may take longer.
 pub fn retrying_for_the_timeout(mut person: Person) -> Person {
     person.machine = person
         .machine

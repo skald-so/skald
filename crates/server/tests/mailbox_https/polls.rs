@@ -51,7 +51,7 @@ fn a_long_poll_with_a_wait_of_0_answers_at_once_with_the_entries_after_its_curso
     let t = &f.team;
     let bob = Https::of(&t.flow, &t.bob);
     let bob_id = t.bob.laptop.id;
-    assert_eq!(bob.poll_now(0).entries, []);
+    assert_eq!(bob.poll_at_once(0).entries, []);
     let sent = bytes(&stored_through(
         &Https::of(&t.flow, &t.alice),
         &f,
@@ -59,11 +59,11 @@ fn a_long_poll_with_a_wait_of_0_answers_at_once_with_the_entries_after_its_curso
         3,
     ));
 
-    assert_eq!(bob.poll_now(0).entries, messages(1, &sent));
-    assert_eq!(bob.poll_now(1).entries, messages(2, &sent[1..]));
+    assert_eq!(bob.poll_at_once(0).entries, messages(1, &sent));
+    assert_eq!(bob.poll_at_once(1).entries, messages(2, &sent[1..]));
     await_seqs(f.db(), bob_id, &[2, 3]);
     assert_nowhere(f.db(), &sent[0]);
-    assert_eq!(bob.poll_now(3).entries, []);
+    assert_eq!(bob.poll_at_once(3).entries, []);
     await_seqs(f.db(), bob_id, &[]);
     for envelope in &sent {
         assert_nowhere(f.db(), envelope);

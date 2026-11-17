@@ -21,7 +21,6 @@ prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.r
 prototypes/mls/scenario/src/scenarios.rs prototypes/mls/scenario/src/scenarios.rs 83
 prototypes/mls/scenario/src/wire.rs prototypes/mls/scenario/src/wire.rs 50
 prototypes/mls/scenario/src/wire.rs prototypes/mls/scenario/src/wire.rs 54
-script/test script/test 56
 web/cabinet.test.ts web/kit.test.ts 52
 web/cabinet.test.ts web/kit.test.ts 86
 web/kit-references.test.ts web/kit-references.test.ts 56
