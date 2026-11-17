@@ -9,8 +9,11 @@
 //! account.
 //!
 //! A device follows only the spaces it has an anchor for: revision 1 of a space it created, its
-//! personal space included, which counts as accepted before the server takes it. Any other revision
-//! counts as accepted only once the server gives it, those the device signed too.
+//! personal space included, which counts as accepted before the server takes it, or the latest
+//! revision its link gave it. Any other revision counts as accepted only once the server gives it,
+//! those the device signed too. A device whose earliest accepted revision is after revision 1 also
+//! takes, without a warning, each earlier one the server gives whose hash is the `prev` of one it
+//! took, back to revision 1: the history checks senders against them ("History entry").
 
 use std::collections::BTreeMap;
 
@@ -209,21 +212,31 @@ fn settle(
 ) -> Result<(Roster, Vec<String>), String> {
     for _ in 0..ATTEMPTS {
         let last = decode(&held.last, name)?;
-        let Followed { accepted, warnings } = follow(&last, &held.hashes, given, devices, own);
-        let Some((newest, before)) = accepted.split_last() else {
-            return Ok((last, warnings));
+        let Followed {
+            accepted,
+            earlier,
+            warnings,
+        } = follow(&last, &held.hashes, given, devices, own);
+        let mut recorded = earlier;
+        // A run that takes nothing writes back the same revision, so it gives what the state
+        // holds if another run accepted revisions first.
+        let newest = match accepted.split_last() {
+            None => last,
+            Some((newest, before)) => {
+                recorded.push((last.body().revision, last.hash()));
+                recorded.extend(
+                    before
+                        .iter()
+                        .map(|roster| (roster.body().revision, roster.hash())),
+                );
+                newest.clone()
+            }
         };
-        let mut recorded = vec![(last.body().revision, last.hash())];
-        recorded.extend(
-            before
-                .iter()
-                .map(|roster| (roster.body().revision, roster.hash())),
-        );
         if state
             .accept(id, &held.last, &recorded, &newest.to_cbor())
             .map_err(text)?
         {
-            return Ok((newest.clone(), warnings));
+            return Ok((newest, warnings));
         }
         held = read(state, id, name)?;
     }
@@ -244,13 +257,16 @@ pub fn decode(bytes: &[u8], name: &str) -> Result<Roster, String> {
 pub struct Followed {
     /// The revisions newly accepted, in order.
     pub accepted: Vec<Roster>,
+    /// The number and hash of each revision newly taken before the earliest accepted one, as
+    /// [`earlier`] gives them.
+    pub earlier: Vec<(u64, [u8; 32])>,
     /// What the device warns its user of.
     pub warnings: Vec<String>,
 }
 
 /// Accepts the revisions of `given`, all those the server gives of a space, that follow `last`,
 /// the space's last accepted revision, the hashes of the earlier ones it accepted in `hashes`, with
-/// `devices`, its accounts', and the master key `own` pinned.
+/// `devices`, its accounts', and the master key `own` pinned; takes those [`earlier`] gives.
 pub fn follow(
     last: &Roster,
     hashes: &BTreeMap<u64, [u8; 32]>,
@@ -265,10 +281,14 @@ pub fn follow(
     };
     let mut known = hashes.clone();
     known.insert(last.body().revision, last.hash());
+    let mut followed = Followed {
+        earlier: earlier(last, &known, given),
+        ..Followed::default()
+    };
+    known.extend(followed.earlier.iter().copied());
     let mut sorted: Vec<&Roster> = given.iter().collect();
     sorted.sort_by_key(|roster| roster.body().revision);
     let mut current = last;
-    let mut followed = Followed::default();
     for &roster in &sorted {
         let number = roster.body().revision;
         let hash = roster.hash();
@@ -316,8 +336,8 @@ pub fn follow(
                     current.body().revision
                 )),
             },
-            // After the next revision: the state records the hash of each revision the device
-            // accepted, so none before the last accepted one comes here.
+            // After the next revision, or before the earliest accepted one and off the chain of
+            // `prev` back from it.
             None => followed.warnings.push(format!(
                 "revision {number} of the space {name} builds on no revision this device \
                  accepted; it has no effect, and this device keeps revision {}",
@@ -326,6 +346,39 @@ pub fn follow(
         }
     }
     followed
+}
+
+/// The number and hash of each revision of `given` before the earliest of `known`, the revisions
+/// accepted by number, that the device takes: going back from that earliest one, as `last` or
+/// `given` holds it, each whose hash is the `prev` of the one after it, down to revision 1 or the
+/// first that `given` lacks.
+fn earlier(
+    last: &Roster,
+    known: &BTreeMap<u64, [u8; 32]>,
+    given: &[Roster],
+) -> Vec<(u64, [u8; 32])> {
+    let Some((&first, &hash)) = known.first_key_value() else {
+        return Vec::new();
+    };
+    let with = |number: u64, hash: [u8; 32]| {
+        std::iter::once(last)
+            .chain(given)
+            .find(|roster| roster.body().revision == number && roster.hash() == hash)
+    };
+    let mut taken = Vec::new();
+    let mut after = with(first, hash);
+    while let Some(roster) = after {
+        let (Some(prev), Some(number)) =
+            (roster.body().prev, roster.body().revision.checked_sub(1))
+        else {
+            break;
+        };
+        after = with(number, prev);
+        if after.is_some() {
+            taken.push((number, prev));
+        }
+    }
+    taken
 }
 
 /// Check 1 of "Roster" with the revocations of `devices`: the `signer` of the revision after
@@ -619,6 +672,7 @@ mod tests {
             followed,
             Followed {
                 accepted: vec![acme.second.clone(), third.clone()],
+                earlier: vec![],
                 warnings: vec![],
             }
         );
@@ -631,6 +685,82 @@ mod tests {
             acme.follow(&acme.second, &[&acme.first, &acme.second]),
             Followed::default()
         );
+    }
+
+    #[test]
+    fn revisions_before_the_earliest_accepted_on_its_prev_chain_are_taken_without_a_warning() {
+        let acme = Acme::new();
+        let third = acme.bob.signs(&acme.second, |_| {});
+        let given = [acme.first.clone(), acme.second.clone(), third.clone()];
+
+        // A device linked at revision 3 holds no earlier one.
+        let followed = follow(
+            &third,
+            &BTreeMap::new(),
+            &given,
+            &acme.devices(),
+            &acme.ada.own(),
+        );
+
+        assert_eq!(
+            followed,
+            Followed {
+                accepted: vec![],
+                earlier: vec![(2, acme.second.hash()), (1, acme.first.hash())],
+                warnings: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn revision_before_the_earliest_accepted_off_its_prev_chain_is_not_taken() {
+        let acme = Acme::new();
+        let third = acme.bob.signs(&acme.second, |_| {});
+        let other_second = acme.ada.signs(&acme.first, |members| {
+            set_role(members, acme.carol.account, Role::Admin);
+        });
+
+        let followed = follow(
+            &third,
+            &BTreeMap::new(),
+            &[acme.first.clone(), other_second, third.clone()],
+            &acme.devices(),
+            &acme.ada.own(),
+        );
+
+        assert_eq!(followed.accepted, vec![]);
+        assert_eq!(followed.earlier, vec![]);
+        assert_eq!(
+            followed.warnings,
+            [1, 2]
+                .map(|number| format!(
+                    "revision {number} of the space acme builds on no revision this device \
+                     accepted; it has no effect, and this device keeps revision 3"
+                ))
+                .to_vec()
+        );
+    }
+
+    #[test]
+    fn linked_device_records_the_revisions_it_takes_before_its_anchor_once() {
+        let acme = Acme::new();
+        let dir = TestDir::new("follow-linked");
+        let state = State::open(&dir).expect("a state");
+        let third = acme.bob.signs(&acme.second, |_| {});
+        let id = acme.first.body().space;
+        state.add_space(id, "acme", &third.to_cbor()).unwrap();
+        let given = [&acme.first, &acme.second, &third];
+
+        let held = state.accepted(id).unwrap().unwrap();
+        assert_eq!(
+            settled(&acme, &state, held, &given),
+            (third.clone(), vec![])
+        );
+        let now = state.accepted(id).unwrap().unwrap();
+        assert_eq!(now, accepted(&third, &[&acme.first, &acme.second]));
+
+        assert_eq!(settled(&acme, &state, now.clone(), &given), (third, vec![]));
+        assert_eq!(state.accepted(id).unwrap().unwrap(), now);
     }
 
     #[test]
@@ -849,6 +979,25 @@ mod tests {
             (race.fourth.clone(), vec![])
         );
         assert_eq!(race.held(), now);
+    }
+
+    #[test]
+    fn run_that_takes_nothing_while_another_run_moved_on_gives_what_the_state_holds() {
+        let acme = Acme::new();
+        let race = Race::new(&acme, "follow-takes-nothing");
+        let all = [&acme.first, &acme.second, &race.third, &race.fourth];
+        assert_eq!(
+            settled(&acme, &race.state, race.held(), &all),
+            (race.fourth.clone(), vec![])
+        );
+
+        // A run that read revision 2 is given no later one.
+        let stale = [&acme.first, &acme.second];
+
+        assert_eq!(
+            settled(&acme, &race.state, race.stale.clone(), &stale),
+            (race.fourth.clone(), vec![])
+        );
     }
 
     #[test]
