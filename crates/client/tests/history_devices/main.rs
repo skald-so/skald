@@ -30,8 +30,8 @@
 //!
 //! The local state, as these tests write it to link a machine by hand: in `state.sqlite3`, the
 //! table `device`, whose `link` becomes `certified` with the pinned `master` and the `cert` in
-//! CBOR, and the tables `space` and `accepted_revision`. The server's table `devices`, whose `cert`
-//! a test sets.
+//! CBOR, and the table `space`, whose `accepted` is the latest revision, as the only one the
+//! machine starts from. The server's table `devices`, whose `cert` a test sets.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]

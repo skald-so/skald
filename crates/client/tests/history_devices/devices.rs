@@ -111,8 +111,8 @@ pub fn second_machine(world: &World, first: &Person, host: &'static str) -> Pers
 }
 
 /// Writes into the local state of `machine`, whose device waits for linking, its certificate
-/// `cert`, in CBOR, the master key `first`'s machine pinned, and each space as `first`'s machine
-/// accepted it.
+/// `cert`, in CBOR, the master key `first`'s machine pinned, and each space with the latest
+/// revision `first`'s machine accepted, but none of the earlier ones.
 fn write_link(machine: &Machine, first: &Person, cert: &[u8]) {
     let state = Connection::open(machine.state_dir().join(STATE_FILE))
         .expect("open the second machine's local state");
@@ -134,8 +134,6 @@ fn write_link(machine: &Machine, first: &Person, cert: &[u8]) {
         .execute_batch(
             "INSERT INTO space (space, name, anchor, accepted, personal)
                  SELECT space, name, anchor, accepted, personal FROM accepted.space;
-             INSERT INTO accepted_revision (space, revision, hash)
-                 SELECT space, revision, hash FROM accepted.accepted_revision;
              DETACH DATABASE accepted;",
         )
         .expect("write the spaces");
