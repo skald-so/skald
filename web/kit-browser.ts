@@ -14,8 +14,9 @@ export const widths = [1440, 360];
 
 /**
  * The screens of the kit page: the kit itself, the cabinet, the cabinet with the phone side menu
- * open, and the web app's sign-in page, cabinet of an account with no space, Access section and its
- * question before "Sign out everywhere else".
+ * open, and the web app's sign-in page, cabinet of an account with no space, Machines section,
+ * Access section and its question before "Sign out everywhere else", and Account page and its
+ * question before removing this session's sign-in method.
  */
 export type Screen =
   | "kit"
@@ -23,8 +24,11 @@ export type Screen =
   | "cabinet-menu"
   | "sign-in"
   | "account"
+  | "machines"
   | "access"
-  | "access-confirm";
+  | "access-confirm"
+  | "account-page"
+  | "account-page-confirm";
 
 export interface KitView {
   page: Page;

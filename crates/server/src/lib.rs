@@ -179,6 +179,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
         .route(
+            "/account/devices",
+            get(devices::shown).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/master",
             get(devices::master)
                 .put(devices::give_master)
@@ -207,6 +211,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/account/sign-in-methods",
             get(links::list).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/sign-in-methods/{method}",
+            delete(links::remove).layer(checked(Statement::Header)),
         )
         .route(
             "/account/username",

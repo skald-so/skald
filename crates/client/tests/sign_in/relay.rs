@@ -8,9 +8,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// One read off a connection: when, which connection, which way, and the bytes.
 struct Chunk {
@@ -50,8 +50,10 @@ struct Rules {
     withholding: HashSet<usize>,
     /// How many answers were lost.
     lost: usize,
-    /// Requests whose line starts so wait until `count` of them have come, or until `until`.
+    /// Requests whose line starts so wait until `count` of them have come.
     hold: Option<Hold>,
+    /// Set once the relay is dropped: nothing waits any more.
+    released: bool,
     /// The answers to requests whose line starts so get their bodies rewritten.
     rewrites: Vec<(String, Rewrite)>,
     /// The connections whose next answer gets its body rewritten, and what of it came so far.
@@ -66,7 +68,6 @@ struct Hold {
     request: String,
     count: usize,
     held: usize,
-    until: Instant,
 }
 
 /// The rules, and the signal of a request that came to a hold.
@@ -141,16 +142,10 @@ impl Shared {
         if held {
             self.came.notify_all();
             while let Some(hold) = &rules.hold {
-                let now = Instant::now();
-                if hold.held >= hold.count || now >= hold.until {
+                if hold.held >= hold.count || rules.released {
                     break;
                 }
-                let wait = hold.until - now;
-                rules = self
-                    .came
-                    .wait_timeout(rules, wait)
-                    .expect("the relay's rules")
-                    .0;
+                rules = self.came.wait(rules).expect("the relay's rules");
             }
         }
         Pass::Forward
@@ -243,15 +238,15 @@ impl Relay {
         self.shared.rules.lock().expect("the relay's rules").lost
     }
 
-    /// Holds each request whose line starts with `request` until `count` of them have come, or for
-    /// `limit` at most, then lets them all go on at once.
-    pub fn hold(&self, request: &str, count: usize, limit: Duration) {
+    /// Holds each request whose line starts with `request` until `count` of them have come, however
+    /// long that takes, then lets them all go on at once. A machine whose request is held waits as
+    /// long; until the relay is dropped, if fewer come.
+    pub fn hold(&self, request: &str, count: usize) {
         let mut rules = self.shared.rules.lock().expect("the relay's rules");
         rules.hold = Some(Hold {
             request: request.to_owned(),
             count,
             held: 0,
-            until: Instant::now() + limit,
         });
     }
 
@@ -400,6 +395,19 @@ impl Relay {
     fn started(&self) -> Instant {
         let reads = self.reads.lock().expect("the relay's reads");
         reads.first().map_or_else(Instant::now, |read| read.at)
+    }
+}
+
+impl Drop for Relay {
+    /// Lets held requests go on: their machines end with the test.
+    fn drop(&mut self) {
+        let mut rules = self
+            .shared
+            .rules
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        rules.released = true;
+        self.shared.came.notify_all();
     }
 }
 

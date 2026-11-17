@@ -12,7 +12,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use skald_proto::{CERT_NAME_MAX, Cbor as _, Cert, DeviceId};
 
-use crate::refusal::{Answer, Refusal, account, answer, parse};
+use crate::refusal::{Answer, Refusal, SignedIn, account, answer, parse};
 use crate::sign_in::{bearer, digest};
 use crate::{AppState, revocations};
 
@@ -234,6 +234,50 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         Ok(Json(Devices::of(found, &revocations)).into_response())
     })
     .await
+}
+
+/// `ListedDevice` in the spec.
+#[derive(Serialize)]
+struct Listed {
+    device: String,
+    name: String,
+    kind: String,
+    registered_at: String,
+    state: String,
+}
+
+/// `ListedDevices` in the spec.
+#[derive(Serialize)]
+struct ListedDevices {
+    devices: Vec<Listed>,
+}
+
+/// `GET /account/devices`: the session's account's devices as the web app shows them, without keys
+/// or certificates. A device is revoked as the account's stored revocations last marked it.
+pub(crate) async fn shown(State(state): State<AppState>, SignedIn(account): SignedIn) -> Answer {
+    // `to_char` gives RFC 3339 in UTC; a device's name is its UTF-8 bytes.
+    let rows: Vec<(String, Vec<u8>, String, String, String)> = sqlx::query_as(
+        "SELECT id::text, name, kind,
+             to_char(registered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
+             CASE WHEN revoked THEN 'revoked' WHEN cert IS NULL THEN 'waiting' ELSE 'linked' END
+         FROM devices WHERE account_id = $1::uuid
+         ORDER BY registered_at, id",
+    )
+    .bind(&account)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| Refusal::Database("read the devices", err))?;
+    let devices = rows
+        .into_iter()
+        .map(|(device, name, kind, registered_at, state)| Listed {
+            device,
+            name: String::from_utf8_lossy(&name).into_owned(),
+            kind,
+            registered_at,
+            state,
+        })
+        .collect();
+    Ok(Json(ListedDevices { devices }).into_response())
 }
 
 /// `GET /account/master`: the session's account's master public key.

@@ -25,8 +25,11 @@ export const screens: { screen: Screen; widths: number[]; window?: true }[] = [
   { screen: "cabinet-menu", widths: [360], window: true },
   { screen: "sign-in", widths },
   { screen: "account", widths },
+  { screen: "machines", widths },
   { screen: "access", widths },
   { screen: "access-confirm", widths, window: true },
+  { screen: "account-page", widths },
+  { screen: "account-page-confirm", widths, window: true },
 ];
 
 /** Every view of the kit page: each screen in both themes at its check widths. */
