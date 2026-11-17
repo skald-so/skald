@@ -5,18 +5,48 @@ use skald_proto::{
     Cbor as _, ChannelId, Content, HistoryBody, HistoryEntry, HistoryItem, MessageId, SpaceId,
 };
 
-use crate::chain::key_of;
+use crate::chain::{adds_to_channel, key_of};
 use crate::cloud::{Cloud, unb64};
-use crate::fixtures::cert_of;
+use crate::fixtures::{cert_of, kill_once};
 use crate::front::Front;
-use crate::talk::{Talk, one_message_sent};
-use crate::world::now;
+use crate::kit::RECV;
+use crate::played::Played;
+use crate::talk::{Talk, commit_sent, one_message_sent};
+use crate::world::{now, revisions_request};
 
 /// What the CLI says of a message of its device that is not in the channel's history.
 pub const NOT_IN_HISTORY: &str = "not in the history";
 
 /// How far an entry's `timestamp` may be from the test's clock, in seconds.
 const CLOCK_SLACK: u64 = 600;
+
+/// While the relay hides the later revisions of the talk's space from Ada's machine, a revision
+/// Bob's device, an admin's, signs adds Carol to the channel, and Bob's device adds `carol`'s:
+/// epoch 2. The relay holds the request for the channel's GroupInfo Ada's `skald recv` makes once
+/// it entered epoch 2 and judged it unclean, as it does not admit Carol's device; the test kills
+/// the run there, before it commits Carol's Remove. The relay then lets the revisions and the
+/// GroupInfo requests through. Gives the number of the front's sends and uploads before the run.
+pub fn killed_in_unclean_epoch(talk: &mut Talk, carol: &Played) -> (usize, usize) {
+    let (cloud, at) = (&talk.world.cloud, talk.at());
+    adds_to_channel(cloud, &talk.played[0].person, at, &carol.person);
+    talk.played[0].welcomes(cloud, at, &carol.person);
+    let (sends, uploads) = (talk.front.sent().len(), talk.front.uploads().len());
+    let group_info = format!("GET /spaces/{}/channels/{}/group-info", at.0, at.1);
+    // Held until the next run asks too.
+    cloud.relay.hold(&group_info, 2);
+    let started = talk.ada.machine.start(&[RECV]);
+    kill_once(started, "a GroupInfo request after epoch 2", || {
+        cloud.relay.held() > 0
+    });
+    assert!(
+        !commit_sent(&talk.front, at.1, sends),
+        "Carol's device removed before the kill"
+    );
+    cloud.relay.rewrite(&revisions_request(at.0), str::to_owned);
+    // Requests for the GroupInfo go on at once from now on.
+    cloud.relay.hold(&group_info, 0);
+    (sends, uploads)
+}
 
 /// The entries of `at`'s channel the server gives the session `token`, as their bytes.
 #[track_caller]

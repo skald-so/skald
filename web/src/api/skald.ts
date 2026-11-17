@@ -17,6 +17,8 @@ import type {
   KeyPackageCount,
   KeyPackageRequest,
   KeyPackageUpload,
+  ListedDevices,
+  ListedMembers,
   MasterKey,
   MasterKeyRequest,
   NewChannel,
@@ -40,6 +42,67 @@ import type {
   StoredRosterRevision,
   UsernameRequest,
 } from "./skald.schemas";
+
+export type listAccountDevicesResponse200 = {
+  data: ListedDevices;
+  status: 200;
+};
+
+export type listAccountDevicesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listAccountDevicesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listAccountDevicesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listAccountDevicesResponseSuccess =
+  listAccountDevicesResponse200 & {
+    headers: Headers;
+  };
+export type listAccountDevicesResponseError = (
+  | listAccountDevicesResponse400
+  | listAccountDevicesResponse401
+  | listAccountDevicesResponse500
+) & {
+  headers: Headers;
+};
+
+export type listAccountDevicesResponse =
+  listAccountDevicesResponseSuccess | listAccountDevicesResponseError;
+
+export const getListAccountDevicesUrl = () => {
+  return `/account/devices`;
+};
+
+/**
+ * Every device of the session's account, in the order they registered, each with its state by the server's checks (docs/protocol/membership.md, "Device checks"); no key or certificate. It is the server's word: `skald` checks devices against the account's pinned master key.
+ * @summary The account's devices as the web app shows them
+ */
+export const listAccountDevices = async (
+  options?: RequestInit,
+): Promise<listAccountDevicesResponse> => {
+  const res = await fetch(getListAccountDevicesUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listAccountDevicesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listAccountDevicesResponse;
+};
 
 export type getMasterKeyResponse200 = {
   data: MasterKey;
@@ -2260,6 +2323,73 @@ export const getSpaceDevices = async (
     status: res.status,
     headers: res.headers,
   } as getSpaceDevicesResponse;
+};
+
+export type listSpaceMembersResponse200 = {
+  data: ListedMembers;
+  status: 200;
+};
+
+export type listSpaceMembersResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listSpaceMembersResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listSpaceMembersResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type listSpaceMembersResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listSpaceMembersResponseSuccess = listSpaceMembersResponse200 & {
+  headers: Headers;
+};
+export type listSpaceMembersResponseError = (
+  | listSpaceMembersResponse400
+  | listSpaceMembersResponse401
+  | listSpaceMembersResponse404
+  | listSpaceMembersResponse500
+) & {
+  headers: Headers;
+};
+
+export type listSpaceMembersResponse =
+  listSpaceMembersResponseSuccess | listSpaceMembersResponseError;
+
+export const getListSpaceMembersUrl = (space: string) => {
+  return `/spaces/${space}/members`;
+};
+
+/**
+ * The members of the space's latest stored revision (docs/protocol/membership.md, "Roster"), in its order, each with its role; no revision or master key. It is the server's word: `skald` checks the space's revisions itself.
+ * @summary The space's members as the web app shows them
+ */
+export const listSpaceMembers = async (
+  space: string,
+  options?: RequestInit,
+): Promise<listSpaceMembersResponse> => {
+  const res = await fetch(getListSpaceMembersUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSpaceMembersResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listSpaceMembersResponse;
 };
 
 export type getRosterRevisionsResponse200 = {

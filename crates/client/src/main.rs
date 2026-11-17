@@ -33,6 +33,7 @@ mod test_dir;
 mod test_dir_tests;
 mod tls;
 mod update;
+mod wraps;
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;

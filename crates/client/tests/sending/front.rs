@@ -13,7 +13,7 @@
 //! that ends a catch-up until the server sends that connection a `space-notice`, which then comes
 //! first. It can hold back a device's `auth`, and what the machine sends after it, until released.
 //! It keeps each `history` frame a machine sent, and can close the connection, both ways, at the
-//! next one that carries a link of a channel, which the server never gets. It can lose the server's
+//! next one that carries a link, or a wrap, of a channel, which the server never gets. It can lose the server's
 //! `history-stored` answers or turn them into `history-refused`.
 
 use std::io::{Read, Write};
@@ -79,6 +79,8 @@ struct State {
     uploads: Vec<Upload>,
     /// The channel at whose next link in a `history` frame it closes the connection.
     cut_link_of: Option<ChannelId>,
+    /// The channel at whose next wrap in a `history` frame it closes the connection.
+    cut_wrap_of: Option<ChannelId>,
     /// The server's `stored` and `send-refused` frames, as it sent them.
     answered: Vec<Frame>,
     answers: Answers,
@@ -184,6 +186,7 @@ impl Front {
                 sent: Vec::new(),
                 uploads: Vec::new(),
                 cut_link_of: None,
+                cut_wrap_of: None,
                 answered: Vec::new(),
                 answers: Answers::Forward,
                 history_answers: Answers::Forward,
@@ -245,6 +248,12 @@ impl Front {
     /// link of `channel`; the server never gets it.
     pub fn cut_next_link(&self, channel: ChannelId) {
         self.shared.state().cut_link_of = Some(channel);
+    }
+
+    /// Closes the connection, both ways, at the next `history` frame a machine sends that carries a
+    /// wrap of `channel`; the server never gets it.
+    pub fn cut_next_wrap(&self, channel: ChannelId) {
+        self.shared.state().cut_wrap_of = Some(channel);
     }
 
     /// The server's `stored` and `send-refused` frames so far, as it sent them.
@@ -454,11 +463,17 @@ fn to_server(
                     ..
                 }) => {
                     let mut state = shared.state();
-                    let cut =
+                    let cut_link =
                         state.cut_link_of == Some(channel) && matches!(item, HistoryItem::Link(_));
-                    if cut {
+                    let cut_wrap =
+                        state.cut_wrap_of == Some(channel) && matches!(item, HistoryItem::Wrap(_));
+                    if cut_link {
                         state.cut_link_of = None;
                     }
+                    if cut_wrap {
+                        state.cut_wrap_of = None;
+                    }
+                    let cut = cut_link || cut_wrap;
                     state.uploads.push(Upload {
                         space,
                         channel,

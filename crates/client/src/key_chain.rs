@@ -26,6 +26,7 @@ use crate::devices::text;
 use crate::groups::{self, Link};
 use crate::send::{broke, closed, set_read_timeout, timed_out};
 use crate::spaces::{Follower, Scope};
+use crate::state::{self, State};
 
 /// An epoch of a link and its `prev`.
 type Pair = (u64, u64);
@@ -49,24 +50,32 @@ fn prev(judgments: &BTreeMap<u64, bool>, epoch: u64) -> Option<u64> {
 /// The links of `channel` the device's judgments give that it may upload, each of an epoch
 /// `wanted` holds: of each clean epoch with a `prev`, unless settled.
 fn due(follower: &Follower, channel: ChannelId, wanted: impl Fn(u64) -> bool) -> Vec<Pair> {
-    let read = || -> Result<_, crate::state::Error> {
-        Ok((
-            follower.state.judgments(channel)?,
-            follower.state.settled_links(channel)?,
-        ))
-    };
-    let (judgments, settled) = match read() {
-        Ok(read) => read,
-        Err(err) => {
-            eprintln!("skald: warning: {err}");
-            return Vec::new();
-        }
+    let Some((judgments, settled)) = judged(follower, channel, State::settled_links) else {
+        return Vec::new();
     };
     (judgments.iter())
         .filter(|&(&epoch, &clean)| clean && wanted(epoch))
         .filter_map(|(&epoch, _)| Some((epoch, prev(&judgments, epoch)?)))
         .filter(|pair| !settled.contains(pair))
         .collect()
+}
+
+/// The device's judgments of the epochs of `channel` and what `settled` reads of it in the state;
+/// none, with a warning, if the state fails.
+pub fn judged<T>(
+    follower: &Follower,
+    channel: ChannelId,
+    settled: impl FnOnce(&State, ChannelId) -> Result<T, state::Error>,
+) -> Option<(BTreeMap<u64, bool>, T)> {
+    let read = || {
+        Ok((
+            follower.state.judgments(channel)?,
+            settled(&follower.state, channel)?,
+        ))
+    };
+    read()
+        .map_err(|err: state::Error| eprintln!("skald: warning: {err}"))
+        .ok()
 }
 
 /// Each of `due`, as a link of its channel sealed with the keys `device` holds; those it lacks a
@@ -107,16 +116,7 @@ pub fn upload_new(
 /// that the device can make and the server lacks, settling those the server lists; warns of what
 /// fails.
 pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
-    let account = follower.own.account;
-    let channels: Vec<(SpaceId, ChannelId)> = (follower.accepted.iter())
-        .filter(|(space, _)| !scope.excludes(**space))
-        .flat_map(|(space, (roster, _))| {
-            (roster.body().channels.iter())
-                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
-                .map(|channel| (*space, channel.id))
-        })
-        .collect();
-    let due: Vec<(SpaceId, ChannelId, Pair)> = (channels.into_iter())
+    let due: Vec<(SpaceId, ChannelId, Pair)> = (own_channels(follower, scope).into_iter())
         .flat_map(|(space, channel)| {
             (due(follower, channel, |_| true).into_iter()).map(move |pair| (space, channel, pair))
         })
@@ -157,33 +157,67 @@ pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
     upload(follower, link, missing);
 }
 
-/// `HistoryLinks` in the API spec.
-#[derive(Deserialize)]
-struct HistoryLinks {
-    links: Vec<String>,
+/// The channels within `scope` of each space the run accepted the revisions of, those whose last
+/// accepted revision lists the device's account.
+pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelId)> {
+    let account = follower.own.account;
+    (follower.accepted.iter())
+        .filter(|(space, _)| !scope.excludes(**space))
+        .flat_map(|(space, (roster, _))| {
+            (roster.body().channels.iter())
+                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
+                .map(|channel| (*space, channel.id))
+        })
+        .collect()
 }
 
 /// The links of `channel` in `space` the server lists, by epoch and `prev`, each settled.
-fn held_links(
+fn held_links(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<BTreeSet<Pair>, String> {
+    let held: BTreeSet<Pair> = (links(follower, at)?.iter())
+        .map(|link| (link.epoch, link.prev))
+        .collect();
+    let pairs: Vec<Pair> = held.iter().copied().collect();
+    follower.state.settle_links(at.1, &pairs).map_err(text)?;
+    Ok(held)
+}
+
+/// The links of `channel` in `space` the server lists that decode as links of it.
+pub fn links(
     follower: &mut Follower,
     (space, channel): (SpaceId, ChannelId),
-) -> Result<BTreeSet<Pair>, String> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/links");
+) -> Result<Vec<HistoryLink>, String> {
+    Ok((listed(follower, (space, channel), LINKS)?.iter())
+        .filter_map(|bytes| HistoryLink::from_cbor(bytes).ok())
+        .filter(|link| link.channel == channel)
+        .collect())
+}
+
+/// The kinds of history items the server lists, as their paths and lists name them.
+pub const LINKS: &str = "links";
+pub const ENTRIES: &str = "entries";
+
+/// `HistoryLinks` and `HistoryEntries` in the API spec: the list named by its kind.
+#[derive(Deserialize)]
+struct Listed(BTreeMap<String, Vec<String>>);
+
+/// The items of `kind`, [`LINKS`] or [`ENTRIES`], of `channel` in `space` the server lists, each
+/// as its bytes; those that are no base64url are left out.
+pub fn listed(
+    follower: &mut Follower,
+    (space, channel): (SpaceId, ChannelId),
+    kind: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    let path = format!("/spaces/{space}/channels/{channel}/history/{kind}");
     let body = follower
         .connection
         .get_as(&path, &follower.token)
         .map_err(text)?;
-    let unexpected = || "unexpected answer from the server: a channel's links".to_owned();
-    let given: HistoryLinks = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let held: BTreeSet<Pair> = (given.links.iter())
-        .filter_map(|link| {
-            let link = HistoryLink::from_cbor(&URL_SAFE_NO_PAD.decode(link).ok()?).ok()?;
-            (link.channel == channel).then_some((link.epoch, link.prev))
-        })
-        .collect();
-    let pairs: Vec<Pair> = held.iter().copied().collect();
-    follower.state.settle_links(channel, &pairs).map_err(text)?;
-    Ok(held)
+    let unexpected = || format!("unexpected answer from the server: a channel's history {kind}");
+    let Listed(mut given) = serde_json::from_slice(&body).map_err(|_| unexpected())?;
+    let items = given.remove(kind).ok_or_else(unexpected)?;
+    Ok((items.iter())
+        .filter_map(|item| URL_SAFE_NO_PAD.decode(item).ok())
+        .collect())
 }
 
 /// Uploads `links`, each of its space, in `history` frames on the device's connection, and settles

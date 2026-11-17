@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use skald_proto::{Role, Roster, SpaceId};
 
-use crate::cloud::{Cloud, WAIT};
+use crate::cloud::Cloud;
 use crate::fixtures::{await_running, fronted};
 use crate::front::Front;
 use crate::machine::{Finished, Machine, Run};
@@ -330,7 +330,7 @@ fn revision_stored_after_the_fetch_at_the_end_of_catch_up_is_accepted_by_its_not
     let acme = shared_space(cloud, &ada, &bob, ACME);
     let demoted = ada_demoted(&acme, &ada, &bob);
     let devices = devices_request(acme.id());
-    cloud.relay.hold(&devices, 2, WAIT);
+    cloud.relay.hold(&devices, 2);
 
     let mut run = ada.machine.start(&[RECV]);
     await_running(&mut run, "devices request held back", || {
