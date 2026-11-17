@@ -39,15 +39,15 @@ impl Team {
     pub fn new(ids: [u64; 2], logins: [&str; 2], retrying: bool) -> Self {
         let (world, front) = fronted();
         let ada = world.sign_up(ids[0], logins[0], ADA_HOST);
+        let bob = Played::new(&world.cloud, world.sign_up(ids[1], logins[1], BOB_HOST));
+        let cloud = &world.cloud;
+        let space = create_space(cloud, &ada, ACME);
+        let channel = with_channel(cloud, space.id, &ada, &[(&bob.person, Role::Member)]);
         let ada = if retrying {
             crate::fixtures::retrying_for_the_timeout(ada)
         } else {
             ada
         };
-        let bob = Played::new(&world.cloud, world.sign_up(ids[1], logins[1], BOB_HOST));
-        let cloud = &world.cloud;
-        let space = create_space(cloud, &ada, ACME);
-        let channel = with_channel(cloud, space.id, &ada, &[(&bob.person, Role::Member)]);
         Team {
             world,
             front,

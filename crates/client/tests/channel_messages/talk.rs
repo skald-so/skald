@@ -67,11 +67,6 @@ impl Talk {
     ) -> Self {
         let (world, front) = fronted_with(change);
         let ada = world.sign_up(ids[0], logins[0], ADA_HOST);
-        let ada = if retrying {
-            retrying_for_the_timeout(ada)
-        } else {
-            ada
-        };
         let cloud = &world.cloud;
         let mut played: Vec<Played> = ids[1..]
             .iter()
@@ -83,6 +78,11 @@ impl Talk {
         let added: Vec<(&Person, Role)> = played.iter().map(|one| (&one.person, role)).collect();
         let channel = with_channel(cloud, space.id, &ada, &added);
         received(&ada.machine);
+        let ada = if retrying {
+            retrying_for_the_timeout(ada)
+        } else {
+            ada
+        };
         let mut devices = vec![ada.device];
         devices.extend(played.iter().map(Played::device));
         for one in &mut played {

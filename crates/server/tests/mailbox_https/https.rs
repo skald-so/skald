@@ -425,9 +425,18 @@ impl Https {
         batch_of(&self.poll_request(cursor, wait, Some(self.proof())).call())
     }
 
-    /// The long-poll from `cursor` with a wait of 0, which answers at once; gives its `batch`.
+    /// The long-poll from `cursor` with a wait of 0; gives its `batch`. Only the tests of answers at
+    /// once time it, with [`Https::poll_at_once`]: on a loaded machine any request may take longer
+    /// than [`AT_ONCE`].
     #[track_caller]
     pub fn poll_now(&self, cursor: u64) -> Batch {
+        batch_of(&self.poll_request(cursor, 0, Some(self.proof())).call())
+    }
+
+    /// The long-poll from `cursor` with a wait of 0, which answers within [`AT_ONCE`]; gives its
+    /// `batch`.
+    #[track_caller]
+    pub fn poll_at_once(&self, cursor: u64) -> Batch {
         let request = self.poll_request(cursor, 0, Some(self.proof()));
         let sent = Instant::now();
         let response = request.call();
