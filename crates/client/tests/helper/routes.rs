@@ -115,9 +115,7 @@ fn sign_in_stops_a_running_helper() {
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    let first = helped.send_with(&talk, &[(IDLE_SETTING, LONG_IDLE)], FIRST);
-    assert!(first.success, "{first:?}");
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[(IDLE_SETTING, LONG_IDLE)], FIRST);
     let url = talk.cloud().url.clone();
 
     let signed_in = helped.run(&[SIGN_IN, SERVER, &url]);
@@ -144,9 +142,7 @@ fn sign_in_beside_a_newer_helper_fails_naming_both_versions() {
     );
     let helped = Helped::new(&talk.ada.machine);
     let newer = newer();
-    let first = helped.send_with(&talk, &[(VERSION_SETTING, newer.as_str())], FIRST);
-    assert!(first.success, "{first:?}");
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[(VERSION_SETTING, newer.as_str())], FIRST);
     let url = talk.cloud().url.clone();
 
     let refused = helped.run(&[SIGN_IN, SERVER, &url]);

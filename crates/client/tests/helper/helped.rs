@@ -162,6 +162,14 @@ impl Helped {
         finished
     }
 
+    /// As [`Helped::sent`], with `settings`; gives the one helper running then.
+    #[track_caller]
+    pub fn helper_after_sending(&self, talk: &Talk, settings: &[(&str, &str)], text: &str) -> u32 {
+        let finished = self.send_with(talk, settings, text);
+        assert!(finished.success, "{text:?} not sent: {finished:?}");
+        self.one_helper()
+    }
+
     /// Runs `skald recv`; fails unless it succeeds.
     #[track_caller]
     pub fn received(&self) -> Finished {
