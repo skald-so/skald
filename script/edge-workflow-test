@@ -207,16 +207,19 @@ else
     fail "the image's build sets the label so.skald.web.sha256 once, in its labels: '$label'"
   label=$(head -n 1 <<<"$label" | sed 's/[[:space:]]*$//')
   step_output=
+  # step_output_of <expression>: "<step id> <output>" of a step's output expression, or nothing.
+  step_output_of() {
+    [[ $1 =~ ^\$\{\{\ *steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\ *\}\}$ ]] &&
+      echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" || true
+  }
   if [[ $web_job == publish ]]; then
-    [[ $label =~ ^\$\{\{\ *steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\ *\}\}$ ]] &&
-      step_output="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+    step_output=$(step_output_of "$label")
   else
     expect "publish runs after the web app's job, so the archive is built before the image" \
       ".jobs.publish.needs | if type == \"array\" then index(\"$web_job\") != null else . == \"$web_job\" end"
     if [[ $label =~ ^\$\{\{\ *needs\.$web_job\.outputs\.([A-Za-z0-9_-]+)\ *\}\}$ ]]; then
       output=$(jq -r "$job.outputs[\"${BASH_REMATCH[1]}\"] // \"\"" <<<"$json")
-      [[ $output =~ ^\$\{\{\ *steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)\ *\}\}$ ]] &&
-        step_output="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+      step_output=$(step_output_of "$output")
     fi
   fi
   if [[ -z $step_output ]]; then
