@@ -20,15 +20,36 @@ pub struct Lock {
     _file: File,
 }
 
+/// What waiting for the lock gave.
+pub enum Taken {
+    /// The lock, if there is a state to lock.
+    Lock(Option<Lock>),
+    /// Nothing: the wait gave way.
+    GaveWay,
+}
+
 /// Takes the lock of the state in `dir`, waiting for another run that holds it for up to
 /// `timeout`. A missing `dir` is created if `create`; otherwise, without a state in `dir`, there is
 /// nothing to lock, and the run holds no lock and leaves no file.
 pub fn take(dir: &Path, create: bool, timeout: Duration) -> Result<Option<Lock>, String> {
+    match take_unless(dir, create, timeout, || false)? {
+        Taken::Lock(lock) => Ok(lock),
+        Taken::GaveWay => unreachable!("the wait gives way to nothing"),
+    }
+}
+
+/// As [`take`], giving way as soon as `give_way` says so while it waits.
+pub fn take_unless(
+    dir: &Path,
+    create: bool,
+    timeout: Duration,
+    mut give_way: impl FnMut() -> bool,
+) -> Result<Taken, String> {
     let unusable = |err| format!("cannot use the state directory {}: {err}", dir.display());
     if create {
         state::create_dir(dir).map_err(unusable)?;
     } else if !dir.join(state::FILE).is_file() {
-        return Ok(None);
+        return Ok(Taken::Lock(None));
     }
     let path = dir.join(FILE);
     let file = OpenOptions::new()
@@ -45,7 +66,8 @@ pub fn take(dir: &Path, create: bool, timeout: Duration) -> Result<Option<Lock>,
     let deadline = Instant::now().checked_add(timeout);
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(Some(Lock { _file: file })),
+            Ok(()) => return Ok(Taken::Lock(Some(Lock { _file: file }))),
+            Err(TryLockError::WouldBlock) if give_way() => return Ok(Taken::GaveWay),
             Err(TryLockError::WouldBlock) => {}
             Err(TryLockError::Error(err)) => {
                 return Err(format!(

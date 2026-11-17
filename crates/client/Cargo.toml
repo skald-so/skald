@@ -56,7 +56,14 @@ toml = "1.2"
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
 
 [target.'cfg(windows)'.dependencies]
+# The helper's socket: AF_UNIX, which std offers on Unix only.
+uds_windows = "1.2"
 windows-native-keyring-store = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+[target.'cfg(unix)'.dependencies]
+# setsid, which detaches the helper from the terminal of the command that starts it.
+libc = "0.2"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }

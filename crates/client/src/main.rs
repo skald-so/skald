@@ -1,5 +1,32 @@
 //! The `skald` client binary.
 
+// The crate's printing macros write to the run's output, which a helper sends to the command it runs
+// the operation for ([`output`]).
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::output::print($crate::output::Stream::Out, format_args!($($arg)*))
+    };
+}
+macro_rules! println {
+    () => {
+        $crate::output::print($crate::output::Stream::Out, format_args!("\n"))
+    };
+    ($($arg:tt)*) => {
+        $crate::output::print(
+            $crate::output::Stream::Out,
+            format_args!("{}\n", format_args!($($arg)*)),
+        )
+    };
+}
+macro_rules! eprintln {
+    ($($arg:tt)*) => {
+        $crate::output::print(
+            $crate::output::Stream::Err,
+            format_args!("{}\n", format_args!($($arg)*)),
+        )
+    };
+}
+
 mod admin;
 mod agents;
 mod channels;
@@ -12,10 +39,12 @@ mod folders;
 mod follow;
 mod gaps;
 mod groups;
+mod helper;
 mod key_chain;
 mod key_packages;
 mod lock;
 mod mailbox;
+mod output;
 mod plain_path;
 mod proxy;
 mod recv;
@@ -39,9 +68,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use clap::builder::FalseyValueParser;
 use clap::{Parser, Subcommand};
 use connection::{Connection, TIMEOUT};
 use device::First;
+use serde::{Deserialize, Serialize};
 use skald_proto::VersionRange;
 use spaces::Scope;
 
@@ -117,11 +148,21 @@ struct Cli {
     #[arg(long, value_name = "NAME", global = true)]
     agent: Option<String>,
 
+    /// One-shot mode, as for CI and sandboxes: the command starts no helper, but goes through one
+    /// that already runs.
+    #[arg(
+        long,
+        env = "SKALD_ONE_SHOT",
+        global = true,
+        value_parser = FalseyValueParser::new()
+    )]
+    one_shot: bool,
+
     #[command(subcommand)]
     command: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Serialize, Deserialize)]
 enum Command {
     /// Shows whether the server is reachable and speaks a compatible protocol version.
     Status {
@@ -361,6 +402,16 @@ enum Command {
         )]
         github_api_url: String,
     },
+    /// Runs the helper of this machine's local state, which the first command that connects as the
+    /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
+    /// the device's connection and the local state's lock, and each command that changes the local
+    /// state goes through it. Only this OS account reaches it. It exits after an idle time, on
+    /// sign-out, and for a command of a newer skald.
+    Helper {
+        /// How long it waits idle before it exits, in seconds, for tests [default: 600].
+        #[arg(long, env = "SKALD_HELPER_IDLE", value_name = "SECONDS", hide = true)]
+        idle: Option<NonZeroU64>,
+    },
 }
 
 impl Command {
@@ -382,15 +433,37 @@ impl Command {
         }
     }
 
+    /// Whether the command connects as the device, so that, out of one-shot mode, it starts the
+    /// helper when none runs.
+    fn starts_helper(&self) -> bool {
+        matches!(
+            self,
+            Command::Send { .. }
+                | Command::Recv
+                | Command::Spaces
+                | Command::Members { .. }
+                | Command::Channels { .. }
+                | Command::CreateSpace { .. }
+                | Command::CreateChannel { .. }
+                | Command::RemoveMember { .. }
+                | Command::ExcludeDevice { .. }
+                | Command::AddToChannel { .. }
+                | Command::RemoveFromChannel { .. }
+                | Command::SetHistoryPeriod { .. }
+                | Command::Address
+        )
+    }
+
     /// Whether the run takes the local state's lock before the command, for the whole run, as one
     /// that may change the local state does: `None` if not; otherwise whether it creates a missing
-    /// state directory.
+    /// state directory. While a helper runs, such a run goes through it ([`helper::route`]).
     fn locks(&self) -> Option<bool> {
         match self {
             Command::Status { .. }
             | Command::Rules
             | Command::Folder { .. }
-            | Command::Update { .. } => None,
+            | Command::Update { .. }
+            | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
@@ -400,7 +473,7 @@ impl Command {
 }
 
 /// A member of a space in a channel of it, as a command names them.
-#[derive(clap::Args)]
+#[derive(clap::Args, Serialize, Deserialize)]
 struct InChannel {
     /// The space's name, such as acme.
     #[arg(value_name = "SPACE", allow_hyphen_values = true)]
@@ -421,7 +494,7 @@ impl InChannel {
 }
 
 /// An answer to a question.
-#[derive(Clone, Copy, clap::ValueEnum)]
+#[derive(Clone, Copy, clap::ValueEnum, Serialize, Deserialize)]
 enum Answer {
     Yes,
     No,
@@ -451,28 +524,91 @@ const HOST_NAME: &str = "SKALD_HOST_NAME";
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let speaks = cli.protocol_versions.unwrap_or_default();
-    clock::set_offset(cli.clock_offset.unwrap_or(0));
-    let timeout = cli
-        .timeout
-        .map_or(TIMEOUT, |seconds| Duration::from_secs(seconds.get()));
-    let agent = match cli.agent.as_deref().map(agents::name).transpose() {
-        Ok(agent) => agent,
-        Err(err) => return exit(Err(err)),
+    let one_shot = cli.one_shot;
+    let operation = Operation {
+        speaks: cli.protocol_versions.unwrap_or_default(),
+        timeout: cli
+            .timeout
+            .map_or(TIMEOUT, |seconds| Duration::from_secs(seconds.get())),
+        clock_offset: cli.clock_offset.unwrap_or(0),
+        state_dir: cli.state_dir,
+        key_storage: cli.key_storage,
+        agent: cli.agent,
+        command: cli.command,
     };
-    if agent.is_some()
-        && let Some(command) = cli.command.person_only()
-    {
-        return exit(Err(agents::person_only(command)));
+    if let Err(err) = operation.agent() {
+        return exit(Err(err));
     }
-    // Held until the run exits.
-    let _lock = match cli.command.locks().map(|create| {
-        state::dir(cli.state_dir.clone()).and_then(|dir| lock::take(&dir, create, timeout))
-    }) {
-        Some(Err(err)) => return exit(Err(err)),
-        taken => taken,
+    if let Command::Helper { idle } = operation.command {
+        let idle = idle.map_or(helper::IDLE, |seconds| Duration::from_secs(seconds.get()));
+        return exit(
+            state::dir(operation.state_dir)
+                .and_then(|dir| helper::serve(&dir, idle, operation.timeout)),
+        );
+    }
+    let Some(create) = operation.command.locks() else {
+        return exit(here(operation));
     };
-    match cli.command {
+    let route = state::dir(operation.state_dir.clone()).and_then(|dir| {
+        let starts = !one_shot && operation.command.starts_helper();
+        helper::route(&dir, &operation, create, starts)
+    });
+    match route {
+        // Held until the run exits.
+        Ok(helper::Route::Here(_lock)) => exit(here(operation)),
+        Ok(helper::Route::Helped(code)) => code,
+        Err(err) => exit(Err(err)),
+    }
+}
+
+/// Runs `operation` in this process, then closes the connection it kept.
+fn here(operation: Operation) -> Result<(), String> {
+    let result = perform(operation);
+    mailbox::close_kept();
+    result
+}
+
+/// A run's operation, its settings resolved: what a command hands to the helper.
+#[derive(Serialize, Deserialize)]
+struct Operation {
+    #[serde(with = "helper::versions")]
+    speaks: VersionRange,
+    timeout: Duration,
+    clock_offset: u64,
+    state_dir: Option<PathBuf>,
+    key_storage: secrets::Storage,
+    agent: Option<String>,
+    command: Command,
+}
+
+impl Operation {
+    /// The agent the run acts as, if any; fails for a name that is not an agent's, or a command of
+    /// the person's.
+    fn agent(&self) -> Result<Option<skald_proto::Name>, String> {
+        let agent = self.agent.as_deref().map(agents::name).transpose()?;
+        if agent.is_some()
+            && let Some(command) = self.command.person_only()
+        {
+            return Err(agents::person_only(command));
+        }
+        Ok(agent)
+    }
+}
+
+/// Runs `operation`; a run whose command changes the local state holds its lock already, or a
+/// helper does.
+fn perform(operation: Operation) -> Result<(), String> {
+    let agent = operation.agent()?;
+    clock::set_offset(operation.clock_offset);
+    let Operation {
+        speaks,
+        timeout,
+        state_dir,
+        key_storage,
+        command,
+        ..
+    } = operation;
+    match command {
         Command::Status { server } => status(&server, speaks, timeout),
         Command::SignIn {
             server,
@@ -480,7 +616,7 @@ fn main() -> ExitCode {
             name,
         } => {
             let options = sign_in::Options {
-                storage: cli.key_storage,
+                storage: key_storage,
                 first: match first_device {
                     Some(Answer::Yes) => First::Yes,
                     Some(Answer::No) => First::No,
@@ -492,9 +628,10 @@ fn main() -> ExitCode {
                     .to_string_lossy()
                     .into_owned(),
             };
-            let result = state::dir(cli.state_dir).and_then(|dir| {
+            state::dir(state_dir).and_then(|dir| {
                 let mut connection =
                     Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
+                helper::stop(&dir, timeout)?;
                 let _lock = lock::take(&dir, true, timeout)?;
                 sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())?;
                 // An agent's run takes nothing of another space than its folder's.
@@ -502,70 +639,49 @@ fn main() -> ExitCode {
                     spaces::take_personal(&dir, options.storage, speaks, timeout);
                 }
                 Ok(())
-            });
-            exit(result)
+            })
         }
         Command::Devices => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| devices::run(&dir, cli.key_storage, speaks, timeout));
-            exit(result)
+            state::dir(state_dir).and_then(|dir| devices::run(&dir, key_storage, speaks, timeout))
         }
-        Command::RevokeDevice { device } => exit(
-            state::dir(cli.state_dir)
-                .and_then(|dir| revocations::run(&dir, cli.key_storage, speaks, timeout, &device)),
-        ),
+        Command::RevokeDevice { device } => state::dir(state_dir)
+            .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device)),
         Command::SignOut => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| sign_out::run(&dir, cli.key_storage, speaks, timeout));
-            exit(result)
+            state::dir(state_dir).and_then(|dir| sign_out::run(&dir, key_storage, speaks, timeout))
         }
-        Command::SetUsername { username } => {
-            let result = state::dir(cli.state_dir).and_then(|dir| {
-                set_username::run(&dir, cli.key_storage, speaks, timeout, &username)
-            });
-            exit(result)
-        }
-        Command::CreateSpace { name } => {
-            let result = state::dir(cli.state_dir)
-                .and_then(|dir| spaces::create(&dir, cli.key_storage, speaks, timeout, &name));
-            exit(result)
-        }
-        Command::Spaces => {
-            let result = state::dir(cli.state_dir).and_then(|dir| match agent {
-                Some(_) => agents::spaces(&dir, cli.key_storage, speaks, timeout),
-                None => spaces::list(&dir, cli.key_storage, speaks, timeout, Scope::All),
-            });
-            exit(result)
-        }
-        Command::Members { space } => exit(
-            synced(
-                cli.state_dir,
-                cli.key_storage,
-                speaks,
-                timeout,
-                &space,
-                agent.is_some(),
-            )
-            .and_then(spaces::members),
-        ),
-        Command::CreateChannel { space } => exit(
-            synced(
-                cli.state_dir,
-                cli.key_storage,
-                speaks,
-                timeout,
-                &space,
-                agent.is_some(),
-            )
-            .and_then(channels::create),
-        ),
+        Command::SetUsername { username } => state::dir(state_dir)
+            .and_then(|dir| set_username::run(&dir, key_storage, speaks, timeout, &username)),
+        Command::CreateSpace { name } => state::dir(state_dir)
+            .and_then(|dir| spaces::create(&dir, key_storage, speaks, timeout, &name)),
+        Command::Spaces => state::dir(state_dir).and_then(|dir| match agent {
+            Some(_) => agents::spaces(&dir, key_storage, speaks, timeout),
+            None => spaces::list(&dir, key_storage, speaks, timeout, Scope::All),
+        }),
+        Command::Members { space } => synced(
+            state_dir,
+            key_storage,
+            speaks,
+            timeout,
+            &space,
+            agent.is_some(),
+        )
+        .and_then(spaces::members),
+        Command::CreateChannel { space } => synced(
+            state_dir,
+            key_storage,
+            speaks,
+            timeout,
+            &space,
+            agent.is_some(),
+        )
+        .and_then(channels::create),
         Command::RemoveMember { space, handle } => edit(
-            (cli.state_dir, cli.key_storage, speaks, timeout),
+            (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::RemoveMember(handle),
         ),
         Command::ExcludeDevice { space, device } => edit(
-            (cli.state_dir, cli.key_storage, speaks, timeout),
+            (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::Exclude(device),
         ),
@@ -575,76 +691,60 @@ fn main() -> ExitCode {
                 handle,
                 history: matches!(history, Answer::Yes),
             });
-            edit(
-                (cli.state_dir, cli.key_storage, speaks, timeout),
-                &space,
-                change,
-            )
+            edit((state_dir, key_storage, speaks, timeout), &space, change)
         }
         Command::RemoveFromChannel { member } => {
             let (space, change) =
                 member.edit(|channel, handle| admin::Edit::RemoveFromChannel { channel, handle });
-            edit(
-                (cli.state_dir, cli.key_storage, speaks, timeout),
-                &space,
-                change,
-            )
+            edit((state_dir, key_storage, speaks, timeout), &space, change)
         }
         Command::SetHistoryPeriod { space, period } => edit(
-            (cli.state_dir, cli.key_storage, speaks, timeout),
+            (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::HistoryPeriod(period),
         ),
-        Command::Channels { space } => exit(
-            synced(
-                cli.state_dir,
-                cli.key_storage,
-                speaks,
-                timeout,
-                &space,
-                agent.is_some(),
-            )
-            .and_then(channels::list),
-        ),
-        Command::Send { channel, text } => exit(state::dir(cli.state_dir).and_then(|dir| {
+        Command::Channels { space } => synced(
+            state_dir,
+            key_storage,
+            speaks,
+            timeout,
+            &space,
+            agent.is_some(),
+        )
+        .and_then(channels::list),
+        Command::Send { channel, text } => state::dir(state_dir).and_then(|dir| {
             send::run(
                 &dir,
-                cli.key_storage,
+                key_storage,
                 speaks,
                 timeout,
                 &channel,
                 &text,
                 agent.as_ref(),
             )
-        })),
-        Command::Recv => exit(
-            state::dir(cli.state_dir)
-                .and_then(|dir| recv::run(&dir, cli.key_storage, speaks, timeout, agent.as_ref())),
-        ),
+        }),
+        Command::Recv => state::dir(state_dir)
+            .and_then(|dir| recv::run(&dir, key_storage, speaks, timeout, agent.as_ref())),
         Command::AddRule { folder, space } => {
-            exit(state::dir(cli.state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space)))
+            state::dir(state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space))
         }
-        Command::Rules => exit(state::dir(cli.state_dir).and_then(|dir| folders::rules(&dir))),
+        Command::Rules => state::dir(state_dir).and_then(|dir| folders::rules(&dir)),
         Command::RemoveRule { folder } => {
-            exit(state::dir(cli.state_dir).and_then(|dir| folders::remove_rule(&dir, &folder)))
+            state::dir(state_dir).and_then(|dir| folders::remove_rule(&dir, &folder))
         }
         Command::ApproveBinding { folder } => {
-            exit(state::dir(cli.state_dir).and_then(|dir| folders::approve(&dir, &folder)))
+            state::dir(state_dir).and_then(|dir| folders::approve(&dir, &folder))
         }
-        Command::Folder { folder } => exit(
-            state::dir(cli.state_dir)
-                .and_then(|dir| folders::show(&dir, folder.as_deref(), agent.is_some())),
-        ),
-        Command::Address => exit(
-            agent
-                .ok_or_else(|| "name the agent: skald --agent <name> address".to_owned())
-                .and_then(|agent| {
-                    state::dir(cli.state_dir).and_then(|dir| {
-                        agents::address(&dir, cli.key_storage, &agent, speaks, timeout)
-                    })
-                }),
-        ),
-        Command::Update { github_api_url } => exit(update::run(&github_api_url, timeout)),
+        Command::Folder { folder } => state::dir(state_dir)
+            .and_then(|dir| folders::show(&dir, folder.as_deref(), agent.is_some())),
+        Command::Address => agent
+            .ok_or_else(|| "name the agent: skald --agent <name> address".to_owned())
+            .and_then(|agent| {
+                state::dir(state_dir)
+                    .and_then(|dir| agents::address(&dir, key_storage, &agent, speaks, timeout))
+            }),
+        Command::Update { github_api_url } => update::run(&github_api_url, timeout),
+        Command::Helper { .. } => Err("the helper runs only as itself".to_owned()),
     }
 }
 
@@ -674,12 +774,10 @@ fn edit(
     ),
     space: &str,
     change: admin::Edit,
-) -> ExitCode {
+) -> Result<(), String> {
     // Agents run none of the admin commands.
-    exit(
-        synced(state_dir, storage, speaks, timeout, space, false)
-            .and_then(|synced| admin::run(synced, &change)),
-    )
+    synced(state_dir, storage, speaks, timeout, space, false)
+        .and_then(|synced| admin::run(synced, &change))
 }
 
 /// Exits as `result` says, printing its error.
@@ -694,14 +792,8 @@ fn exit(result: Result<(), String>) -> ExitCode {
 }
 
 /// `skald status`: requests the protocol versions and opens a WebSocket, then reports.
-fn status(server: &str, speaks: VersionRange, timeout: Duration) -> ExitCode {
-    let mut connection = match Connection::new(server, speaks, timeout) {
-        Ok(connection) => connection,
-        Err(err) => {
-            eprintln!("skald: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
+fn status(server: &str, speaks: VersionRange, timeout: Duration) -> Result<(), String> {
+    let mut connection = Connection::new(server, speaks, timeout).map_err(|err| err.to_string())?;
     let result = connection
         .get("/protocol")
         .and_then(|_| connection.open_websocket("/ws"))
@@ -716,7 +808,7 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> ExitCode {
                     "Update available: the server speaks protocol version {latest}; update skald"
                 );
             }
-            ExitCode::SUCCESS
+            Ok(())
         }
         Err(err) => {
             let reached = if err.reached() {
@@ -728,8 +820,7 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> ExitCode {
             if err.incompatible() {
                 println!("Protocol: incompatible");
             }
-            eprintln!("skald: {err}");
-            ExitCode::FAILURE
+            Err(err.to_string())
         }
     }
 }
