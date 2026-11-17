@@ -34,5 +34,5 @@ Versions as of 2026-11-09.
 | SDK | Rust |
 | Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package `skald-so` that runs the release's binary (`npx skald-so`); Claude Code plugin; server Docker image |
 | Server image | Built in the `rust` Debian 13 image; runs on distroless `cc-debian13` as a non-root user; base images pinned by digest |
-| Infrastructure | Docker Compose, Caddy, WAL-G, Prometheus, Grafana, Sentry; details in [infrastructure.md](infrastructure.md) |
+| Infrastructure | Docker Compose, Caddy, WAL-G, Prometheus, Alertmanager, Grafana, Loki, Alloy; details in [infrastructure.md](infrastructure.md) |
 | Rate limits | Caddy has none built in: production's Caddy is a build with the module `github.com/mholt/caddy-ratelimit`, made by xcaddy in the `caddy` builder image and copied onto the `caddy` image, both pinned by digest, the module to a commit |

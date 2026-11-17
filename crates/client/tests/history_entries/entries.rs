@@ -5,10 +5,8 @@ use skald_proto::{
     Cbor as _, ChannelId, Content, HistoryBody, HistoryEntry, HistoryItem, MessageId, SpaceId,
 };
 
-use std::time::Duration;
-
 use crate::chain::{adds_to_channel, key_of};
-use crate::cloud::{Cloud, WAIT, unb64};
+use crate::cloud::{Cloud, unb64};
 use crate::fixtures::{cert_of, kill_once};
 use crate::front::Front;
 use crate::kit::RECV;
@@ -35,7 +33,7 @@ pub fn killed_in_unclean_epoch(talk: &mut Talk, carol: &Played) -> (usize, usize
     let (sends, uploads) = (talk.front.sent().len(), talk.front.uploads().len());
     let group_info = format!("GET /spaces/{}/channels/{}/group-info", at.0, at.1);
     // Held until the next run asks too.
-    cloud.relay.hold(&group_info, 2, WAIT);
+    cloud.relay.hold(&group_info, 2);
     let started = talk.ada.machine.start(&[RECV]);
     kill_once(started, "a GroupInfo request after epoch 2", || {
         cloud.relay.held() > 0
@@ -46,7 +44,7 @@ pub fn killed_in_unclean_epoch(talk: &mut Talk, carol: &Played) -> (usize, usize
     );
     cloud.relay.rewrite(&revisions_request(at.0), str::to_owned);
     // Requests for the GroupInfo go on at once from now on.
-    cloud.relay.hold(&group_info, 0, Duration::ZERO);
+    cloud.relay.hold(&group_info, 0);
     (sends, uploads)
 }
 

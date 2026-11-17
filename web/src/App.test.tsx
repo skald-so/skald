@@ -20,6 +20,7 @@ import {
   getGetSessionMockHandler500,
   getGetSpacesMockHandler200,
   getGetSpacesMockHandler500,
+  getListAccountDevicesMockHandler200,
 } from "./api/skald.msw.ts";
 import { getGetHealthUrl, getGetSessionUrl } from "./api/skald.ts";
 
@@ -36,7 +37,7 @@ afterAll(() => server.close());
 /** The server fails the account's session and spaces: the web app does not load. */
 const failing = [getGetSessionMockHandler500(), getGetSpacesMockHandler500()];
 
-/** A web session of `ana` with no space. */
+/** A web session of `ana` with no space and no device. */
 const signedIn = [
   getGetSessionMockHandler200({
     account: "01968a2e-0000-7000-8000-000000000001",
@@ -44,6 +45,7 @@ const signedIn = [
     sign_in_method: "github",
   }),
   getGetSpacesMockHandler200({ spaces: [] }),
+  getListAccountDevicesMockHandler200({ devices: [] }),
 ];
 
 test("when the web app does not load, shows that the server is up", async () => {
@@ -94,7 +96,9 @@ test("Try again loads the web app again", async () => {
   server.resetHandlers(...signedIn);
   await user.click(retry);
   expect(await screen.findByRole("button", { name: "Account" })).toBeTruthy();
-  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("ana");
+  expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+    "Machines",
+  );
 });
 
 test("a page the cabinet does not have says so and links to the cabinet", async () => {
