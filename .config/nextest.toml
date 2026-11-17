@@ -1,7 +1,7 @@
 # cargo-nextest's settings for the workspace's tests: script/test and script/mutants.
 
-# The tests that wait out over a minute of the server's clock start first: started late, they end the
-# run alone.
+# Unit tests start first. They take milliseconds; a mutant they catch then ends its run in
+# script/mutants before a slower test starts, which nextest would let finish.
 [[profile.default.overrides]]
-filter = 'package(skald-server) & (test(/expired_challenge/) | test(=list::last_use_follows_a_later_request))'
+filter = 'kind(lib) | kind(bin)'
 priority = 100
