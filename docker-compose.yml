@@ -61,7 +61,7 @@ services:
 
   postgres:
     # Renovate keeps it on major version 19: renovate.json.
-    image: postgres:19rc2@sha256:3c5f322ffe97481b51a1ebee693f58d0c081514d2bc3026500a9400b7428bea9
+    image: postgres:19rc2@sha256:15924313d5606f326836976643a5f681a64fb30f591e79fcb15e160979323802
     restart: unless-stopped
     logging: *logging
     environment:
@@ -81,7 +81,7 @@ services:
   # The guide's backup and restore, `docker compose run --rm backup`; `up` leaves its profile off.
   # PostgreSQL's image, for pg_dump, psql and tar.
   backup:
-    image: postgres:19rc2@sha256:3c5f322ffe97481b51a1ebee693f58d0c081514d2bc3026500a9400b7428bea9
+    image: postgres:19rc2@sha256:15924313d5606f326836976643a5f681a64fb30f591e79fcb15e160979323802
     profiles: [backup]
     # Not json-file: its log would hold a copy of the backup, which it writes to its output.
     logging:
