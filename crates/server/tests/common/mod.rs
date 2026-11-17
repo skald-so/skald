@@ -220,6 +220,23 @@ impl Server {
         self.output.lock().expect("server output").clone()
     }
 
+    /// Checks that the server prints `text` within `within`.
+    #[track_caller]
+    pub fn assert_prints_within(&self, text: &str, within: Duration) {
+        let deadline = Instant::now() + within;
+        loop {
+            let printed = self.output.lock().expect("server output").clone();
+            if printed.contains(text) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{text:?} not printed within {within:?}: {printed}"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     pub fn get(&self, path: &str) -> Response {
         self.get_with(path, &[])
     }
