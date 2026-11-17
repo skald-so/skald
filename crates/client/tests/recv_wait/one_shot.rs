@@ -1,23 +1,29 @@
 //! `skald recv --wait` in one-shot mode: it holds its own connection and takes the local state's
 //! lock only to write, so a run beside it neither waits nor loses a change, and it goes on through
-//! a helper that starts while it waits.
+//! a helper that starts while it waits. What comes while it takes in something else is not lost.
 
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::fixtures::SEND;
+use crate::agents::{CLAUDE, CODEX};
+use crate::fixtures::{SEND, await_running};
 use crate::gaps::{bob_in, bob_sends};
 use crate::helped::{Helped, TIMEOUT_FLAG, bob_reads};
 use crate::kit::{RECV, received};
 use crate::locked::{LONG, holding, release, start};
 use crate::machine::Run;
-use crate::talk::{BOB_HOST, Talk, assert_shows_once};
-use crate::waits::{WAIT_FLAG, assert_keeps_waiting, await_connections};
+use crate::talk::{BOB_HOST, Line, Talk, assert_shows_once};
+use crate::waits::{WAIT_FLAG, Waits, assert_got, assert_keeps_waiting, await_connections};
+use crate::world::{AGENT, devices_request};
 
 /// What Bob's device says and Ada sends; none is anywhere else.
 const BOB_SAYS: &str = "one-shot test: the staging deploy is green";
 const FIRST: &str = "one-shot test: promoting staging now";
 const SECOND: &str = "one-shot test: production is next";
+
+/// What Bob's device says to codex, and to the channel while claude's wait takes that in.
+const TO_CODEX: &str = "one-shot test: codex, the lint job is yours";
+const MEANWHILE: &str = "one-shot test: the release notes are drafted";
 
 /// The request timeout of a run that must not wait for the lock, in seconds: it fails after it if
 /// it does.
@@ -146,4 +152,42 @@ fn one_shot_wait_goes_on_through_a_helper_started_while_it_waits() {
         [helper],
         "the helper did not keep running"
     );
+}
+
+/// claude's `skald recv --wait` in `~/work/acme`, in one-shot mode, waits on its own connection.
+/// Bob's device sends a message to codex, which claude's wait takes in, showing nothing; the relay
+/// holds that run's fetch of acme's devices, which comes after it has taken in the mailbox, and
+/// meanwhile Bob's device sends a message to the channel, which reaches the waiting run. Once the
+/// fetch goes on, the wait shows that message once, with its `msg_id`, and exits.
+#[test]
+fn one_shot_wait_shows_what_came_while_it_took_in_something_else() {
+    let mut waits = Waits::new(
+        [4_148_064_001, 4_148_064_002],
+        ["ada-waits-through-a-burst", "bob-writes-twice-fast"],
+    );
+    waits.agents.run_as(CLAUDE);
+    let talk = &waits.agents.talk;
+    let since = talk.cloud().relay.mark();
+    let args = [AGENT, CLAUDE, RECV, WAIT_FLAG];
+    let mut waiting = talk.ada.machine.start_in(&waits.agents.folder, &args);
+    await_connections(talk, &mut waiting, (since, 1));
+    assert_keeps_waiting(&mut waiting);
+    let devices = devices_request(talk.space.id);
+    talk.cloud().relay.hold(&devices, 2);
+    let bob = waits.agents.bob();
+    let mut to_codex = Line::new(&bob, 1, TO_CODEX);
+    to_codex.to = Some(waits.agents.address(CODEX));
+    waits.agents.bob_sends(&to_codex);
+    let relay = &waits.agents.talk.cloud().relay;
+    await_running(&mut waiting, "the fetch of acme's devices", || {
+        relay.held() > 0
+    });
+
+    let id = waits.agents.bob_sends(&Line::new(&bob, 2, MEANWHILE));
+    thread::sleep(PUSHED);
+    waits.agents.talk.cloud().relay.send_through(&devices);
+
+    let got = waiting.finish();
+    assert_got(&got, MEANWHILE, id);
+    assert!(!got.shown().contains(TO_CODEX), "{got:?}");
 }
