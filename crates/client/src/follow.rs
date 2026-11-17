@@ -92,11 +92,7 @@ pub fn sync(
     let mut warnings = Vec::new();
     let mut given = Vec::new();
     for (place, entry) in listed(connection, token, id)?.iter().enumerate() {
-        match URL_SAFE_NO_PAD
-            .decode(entry)
-            .ok()
-            .and_then(|bytes| Roster::from_cbor(&bytes).ok())
-        {
+        match decoded(entry) {
             Some(roster) => given.push(roster),
             None => warnings.push(format!(
                 "revision {} the server gives of the space {name} does not decode, so it has no \
@@ -147,6 +143,22 @@ pub fn device_changes(
         )?);
     }
     Ok(warnings)
+}
+
+/// The revisions of the space `id` the server gives the session `token` that decode.
+pub fn given(connection: &mut Connection, token: &str, id: SpaceId) -> Result<Vec<Roster>, String> {
+    Ok(listed(connection, token, id)?
+        .iter()
+        .filter_map(|entry| decoded(entry))
+        .collect())
+}
+
+/// The revision `entry`, in base64url as the server gives it, if it decodes.
+fn decoded(entry: &str) -> Option<Roster> {
+    URL_SAFE_NO_PAD
+        .decode(entry)
+        .ok()
+        .and_then(|bytes| Roster::from_cbor(&bytes).ok())
 }
 
 /// The revisions of the space `id` the server gives the session `token`, each in base64url as it
