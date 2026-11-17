@@ -8,8 +8,13 @@
   - mailboxes, history, queues;
   - push, notification relay, quotas, anti-abuse.
 - **`skald`** — the client, a single binary: CLI, MCP server (stdio), hook handler, local helper. Keys and all encryption live only here and in a linked browser.
-  - **One-shot mode** (CI, cron, sandboxes): load state → sync → run the operation → save.
-  - **Helper `skald helper`:** started by the first client. Holds the WebSocket, dispatches messages to sessions over a unix socket, exits after being idle. No root or system service needed.
+  - **One-shot mode** (CI, cron, sandboxes; `--one-shot` or `SKALD_ONE_SHOT=1`): load state → sync → run the operation → save. Such a command starts no helper, but goes through one that runs.
+  - **Helper `skald helper`:** one per local state, started in the background by the first command that connects as the device, such as `skald send` or `skald recv`. Holds the device's connection over any transport and the local state's lock, dispatches messages to sessions. No root or system service needed.
+    - Each command that changes the local state hands its operation, working directory and `--agent` to the helper over a unix socket in the state directory, and shows its output and exit code. A command whose helper cannot start runs one-shot.
+    - The helper reaches the server with the environment, such as `HTTPS_PROXY`, of the command that started it.
+    - A helper older than a command exits for it; a command older than the helper fails, naming both versions, and the helper keeps running.
+    - It exits after 10 minutes idle, on sign-out and before a sign-in.
+    - Only the OS account that runs it reaches its socket: [threat model](../threat-model.md#another-account-on-the-machine).
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.
 - **GitHub Action:** the client in one-shot mode and the GitHub bridge, which runs inside the Action, not on the server. A `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment. The trust level of such tasks: [threat model](../threat-model.md#the-idp-or-github).
 - **Frontend** — a single static SPA at `app.skald.so`:
@@ -69,7 +74,7 @@
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default. An idle SSE stream sends a keep-alive every `--sse-keep-alive` (`SKALD_SSE_KEEP_ALIVE`), 15 seconds by default.
-- The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked; a dropped connection tries WebSocket first again. History items wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
+- The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked and its connection, and the helper keeps it between commands; a catch-up on a connection after its first goes over long-poll. A dropped connection tries WebSocket first again. History items wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
   - a notification names a mailbox with new entries, a stored roster revision, an ended session or a revoked device, never an envelope;
   - an instance takes no device connection before it first listens;
