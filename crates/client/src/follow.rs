@@ -218,8 +218,9 @@ fn settle(
             warnings,
         } = follow(&last, &held.hashes, given, devices, own);
         let mut recorded = earlier;
+        // A run that takes nothing writes back the same revision, so it gives what the state
+        // holds if another run accepted revisions first.
         let newest = match accepted.split_last() {
-            None if recorded.is_empty() => return Ok((last, warnings)),
             None => last,
             Some((newest, before)) => {
                 recorded.push((last.body().revision, last.hash()));
@@ -978,6 +979,25 @@ mod tests {
             (race.fourth.clone(), vec![])
         );
         assert_eq!(race.held(), now);
+    }
+
+    #[test]
+    fn run_that_takes_nothing_while_another_run_moved_on_gives_what_the_state_holds() {
+        let acme = Acme::new();
+        let race = Race::new(&acme, "follow-takes-nothing");
+        let all = [&acme.first, &acme.second, &race.third, &race.fourth];
+        assert_eq!(
+            settled(&acme, &race.state, race.held(), &all),
+            (race.fourth.clone(), vec![])
+        );
+
+        // A run that read revision 2 is given no later one.
+        let stale = [&acme.first, &acme.second];
+
+        assert_eq!(
+            settled(&acme, &race.state, race.stale.clone(), &stale),
+            (race.fourth.clone(), vec![])
+        );
     }
 
     #[test]
