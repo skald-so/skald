@@ -5,8 +5,8 @@ use skald_proto::{
     Cbor as _, ChannelId, Content, HistoryBody, HistoryEntry, HistoryItem, MessageId, SpaceId,
 };
 
-use crate::chain::{adds_to_channel, key_of};
-use crate::cloud::{Cloud, unb64};
+use crate::chain::{adds_to_channel, key_of, listed, uploads_in};
+use crate::cloud::Cloud;
 use crate::fixtures::{cert_of, kill_once};
 use crate::front::Front;
 use crate::kit::RECV;
@@ -50,16 +50,8 @@ pub fn killed_in_unclean_epoch(talk: &mut Talk, carol: &Played) -> (usize, usize
 
 /// The entries of `at`'s channel the server gives the session `token`, as their bytes.
 #[track_caller]
-pub fn entries(cloud: &Cloud, token: &str, (space, channel): (SpaceId, ChannelId)) -> Vec<Vec<u8>> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/entries");
-    let (status, body) = cloud.get_as(&path, token);
-    assert_eq!(status, 200, "GET {path}: {body}");
-    body["entries"]
-        .as_array()
-        .unwrap_or_else(|| panic!("GET {path}: {body}"))
-        .iter()
-        .map(|entry| unb64(entry.as_str().expect("an entry in base64url")))
-        .collect()
+pub fn entries(cloud: &Cloud, token: &str, at: (SpaceId, ChannelId)) -> Vec<Vec<u8>> {
+    listed(cloud, token, at, "entries")
 }
 
 /// As [`entries`], of the talk's channel, for the session of Ada's machine.
@@ -87,11 +79,7 @@ pub struct Uploaded {
 /// The entries of `channel` the front saw the machines send after its first `from` uploads, in
 /// order.
 pub fn entries_sent(front: &Front, channel: ChannelId, from: usize) -> Vec<Uploaded> {
-    front
-        .uploads()
-        .split_off(from)
-        .into_iter()
-        .filter(|upload| upload.channel == channel)
+    (uploads_in(front, channel, from).into_iter())
         .filter_map(|upload| match upload.item {
             HistoryItem::Entry { msg_id, entry } => Some(Uploaded {
                 msg_id,

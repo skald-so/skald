@@ -194,14 +194,15 @@ pub fn links(
 
 /// The kinds of history items the server lists, as their paths and lists name them.
 pub const LINKS: &str = "links";
+pub const WRAPS: &str = "wraps";
 pub const ENTRIES: &str = "entries";
 
-/// `HistoryLinks` and `HistoryEntries` in the API spec: the list named by its kind.
+/// `HistoryLinks`, `HistoryWraps` and `HistoryEntries` in the API spec: the list named by its kind.
 #[derive(Deserialize)]
 struct Listed(BTreeMap<String, Vec<String>>);
 
-/// The items of `kind`, [`LINKS`] or [`ENTRIES`], of `channel` in `space` the server lists, each
-/// as its bytes; those that are no base64url are left out.
+/// The items of `kind`, [`LINKS`], [`WRAPS`] or [`ENTRIES`], of `channel` in `space` the server
+/// lists, each as its bytes; those that are no base64url are left out.
 pub fn listed(
     follower: &mut Follower,
     (space, channel): (SpaceId, ChannelId),

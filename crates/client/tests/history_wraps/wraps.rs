@@ -10,8 +10,8 @@ use skald_proto::{
     SpaceId, WrapRecipient,
 };
 
-use crate::chain::{key_of, links, same};
-use crate::cloud::{Cloud, unb64};
+use crate::chain::{key_of, links, listed, same, uploads_in};
+use crate::cloud::Cloud;
 use crate::entries::talk_entries;
 use crate::fixtures::{Issuer, Keyed, add_device_of_kind, cert_of};
 use crate::front::Front;
@@ -31,21 +31,10 @@ pub fn valid_browser(cloud: &Cloud, owner: &Person, name: &str) -> Keyed {
 
 /// The wraps of `at`'s channel the server gives the session `token`, each as it decodes.
 #[track_caller]
-pub fn wraps(
-    cloud: &Cloud,
-    token: &str,
-    (space, channel): (SpaceId, ChannelId),
-) -> Vec<HistoryWrap> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/wraps");
-    let (status, body) = cloud.get_as(&path, token);
-    assert_eq!(status, 200, "GET {path}: {body}");
-    body["wraps"]
-        .as_array()
-        .unwrap_or_else(|| panic!("GET {path}: {body}"))
-        .iter()
-        .map(|wrap| {
-            let bytes = unb64(wrap.as_str().expect("a wrap in base64url"));
-            HistoryWrap::from_cbor(&bytes)
+pub fn wraps(cloud: &Cloud, token: &str, at: (SpaceId, ChannelId)) -> Vec<HistoryWrap> {
+    (listed(cloud, token, at, "wraps").iter())
+        .map(|bytes| {
+            HistoryWrap::from_cbor(bytes)
                 .unwrap_or_else(|err| panic!("a wrap that does not decode: {err}"))
         })
         .collect()
@@ -84,11 +73,7 @@ pub struct SentWrap {
 /// The wraps of `channel` the front saw the machines send after its first `from` uploads, in
 /// order.
 pub fn wraps_sent(front: &Front, channel: ChannelId, from: usize) -> Vec<SentWrap> {
-    front
-        .uploads()
-        .split_off(from)
-        .into_iter()
-        .filter(|upload| upload.channel == channel)
+    (uploads_in(front, channel, from).into_iter())
         .filter_map(|upload| match &upload.item {
             HistoryItem::Wrap(bytes) => {
                 let wrap = HistoryWrap::from_cbor(bytes)

@@ -1,6 +1,6 @@
-//! What the tests share: the links of a channel the server gives and those Ada's machine uploads,
-//! opening them with the played devices' history keys, and the Commits, joins and links of the
-//! played devices.
+//! What the tests share: the history items of a channel the server gives and those the machines
+//! upload; the links among them, opening them with the played devices' history keys; and the
+//! Commits, joins and links of the played devices.
 
 use std::collections::BTreeSet;
 
@@ -8,7 +8,7 @@ use skald_crypto::{HistoryKey, follow_links};
 use skald_proto::{Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, HistoryLink, Role, SpaceId};
 
 use crate::cloud::{Cloud, unb64};
-use crate::front::Front;
+use crate::front::{Front, Upload};
 use crate::joins::group_info_bytes;
 use crate::kit::{Change, group, latest, revise};
 use crate::played::Played;
@@ -18,23 +18,32 @@ use crate::world::{Person, now};
 /// An epoch of a link and its `prev`.
 pub type Pair = (u64, u64);
 
-/// The links of `at`'s channel the server gives the session `token`, each as it decodes.
+/// The history items of `kind`, `links`, `wraps` or `entries`, of `at`'s channel the server gives
+/// the session `token`, as their bytes.
 #[track_caller]
-pub fn links(
+pub fn listed(
     cloud: &Cloud,
     token: &str,
     (space, channel): (SpaceId, ChannelId),
-) -> Vec<HistoryLink> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/links");
+    kind: &str,
+) -> Vec<Vec<u8>> {
+    let path = format!("/spaces/{space}/channels/{channel}/history/{kind}");
     let (status, body) = cloud.get_as(&path, token);
     assert_eq!(status, 200, "GET {path}: {body}");
-    body["links"]
+    body[kind]
         .as_array()
         .unwrap_or_else(|| panic!("GET {path}: {body}"))
         .iter()
-        .map(|link| {
-            let bytes = unb64(link.as_str().expect("a link in base64url"));
-            HistoryLink::from_cbor(&bytes)
+        .map(|item| unb64(item.as_str().expect("an item in base64url")))
+        .collect()
+}
+
+/// The links of `at`'s channel the server gives the session `token`, each as it decodes.
+#[track_caller]
+pub fn links(cloud: &Cloud, token: &str, at: (SpaceId, ChannelId)) -> Vec<HistoryLink> {
+    (listed(cloud, token, at, "links").iter())
+        .map(|bytes| {
+            HistoryLink::from_cbor(bytes)
                 .unwrap_or_else(|err| panic!("a link that does not decode: {err}"))
         })
         .collect()
@@ -181,14 +190,18 @@ pub struct Sent {
     pub forwarded: bool,
 }
 
+/// The `history` frames of `channel` the front saw the machines send after its first `from`
+/// uploads, in order.
+pub fn uploads_in(front: &Front, channel: ChannelId, from: usize) -> Vec<Upload> {
+    let mut uploads = front.uploads().split_off(from);
+    uploads.retain(|upload| upload.channel == channel);
+    uploads
+}
+
 /// The links of `channel` the front saw the machines send after its first `from` uploads, in
 /// order.
 pub fn links_sent(front: &Front, channel: ChannelId, from: usize) -> Vec<Sent> {
-    front
-        .uploads()
-        .split_off(from)
-        .into_iter()
-        .filter(|upload| upload.channel == channel)
+    (uploads_in(front, channel, from).into_iter())
         .filter_map(|upload| match &upload.item {
             HistoryItem::Link(bytes) => {
                 let link = HistoryLink::from_cbor(bytes)

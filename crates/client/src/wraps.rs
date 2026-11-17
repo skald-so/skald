@@ -12,9 +12,6 @@
 
 use std::collections::BTreeSet;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::Deserialize;
 use skald_crypto::{MlsDevice, SigningKey};
 use skald_proto::{
     Cbor as _, Cert, ChannelId, DeviceId, DeviceKind, HistoryItem, HistoryWrap, SpaceId,
@@ -170,27 +167,15 @@ fn upload_due(follower: &mut Follower, link: &mut Link, due: &[Due]) {
     }
 }
 
-/// `HistoryWraps` in the API spec.
-#[derive(Deserialize)]
-struct HistoryWraps {
-    wraps: Vec<String>,
-}
-
 /// The wraps of `channel` in `space` the server lists, by epoch and recipient, each settled.
 fn held_wraps(
     follower: &mut Follower,
     (space, channel): (SpaceId, ChannelId),
 ) -> Result<BTreeSet<Held>, String> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/wraps");
-    let body = follower
-        .connection
-        .get_as(&path, &follower.token)
-        .map_err(text)?;
-    let unexpected = || "unexpected answer from the server: a channel's wraps".to_owned();
-    let given: HistoryWraps = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let held: BTreeSet<Held> = (given.wraps.iter())
-        .filter_map(|wrap| {
-            let wrap = HistoryWrap::from_cbor(&URL_SAFE_NO_PAD.decode(wrap).ok()?).ok()?;
+    let given = key_chain::listed(follower, (space, channel), key_chain::WRAPS)?;
+    let held: BTreeSet<Held> = (given.iter())
+        .filter_map(|bytes| {
+            let wrap = HistoryWrap::from_cbor(bytes).ok()?;
             let body = wrap.body();
             (body.channel == channel).then_some((body.epoch, body.recipient))
         })
