@@ -47,6 +47,14 @@ fn each_refusal_gives_its_error() {
         key.open_entry(&foreign).unwrap_err(),
         HistoryError::OtherChannel
     );
+    let decrypted = key.decrypt_entry(&foreign).unwrap();
+    assert_eq!(decrypted.sender(), device_id(6));
+    assert_ne!(decrypted.channel(), channel);
+    assert_eq!(other.decrypt_entry(&entry).unwrap_err(), HistoryError::Open);
+    assert_eq!(
+        key.decrypt_entry(&malformed).unwrap_err(),
+        HistoryError::Malformed
+    );
 
     let cert = |seed: u8| &admitted()[usize::from(seed)];
     let message = || key.open_entry(&entry).unwrap();

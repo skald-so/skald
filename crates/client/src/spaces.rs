@@ -1137,8 +1137,8 @@ pub fn of_channel(
     Err(match scope {
         Scope::All => format!("no space this device follows has the channel {channel}"),
         Scope::Only(_) => format!(
-            "the space of the agent's folder has no channel {channel}: as an agent, skald sends \
-             only to its channels"
+            "the space of the agent's folder has no channel {channel}: as an agent, skald uses \
+             only its channels"
         ),
     })
 }
