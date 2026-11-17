@@ -26,6 +26,7 @@ use crate::devices::text;
 use crate::groups::{self, Link};
 use crate::send::{broke, closed, set_read_timeout, timed_out};
 use crate::spaces::{Follower, Scope};
+use crate::state::{self, State};
 
 /// An epoch of a link and its `prev`.
 type Pair = (u64, u64);
@@ -49,24 +50,32 @@ fn prev(judgments: &BTreeMap<u64, bool>, epoch: u64) -> Option<u64> {
 /// The links of `channel` the device's judgments give that it may upload, each of an epoch
 /// `wanted` holds: of each clean epoch with a `prev`, unless settled.
 fn due(follower: &Follower, channel: ChannelId, wanted: impl Fn(u64) -> bool) -> Vec<Pair> {
-    let read = || -> Result<_, crate::state::Error> {
-        Ok((
-            follower.state.judgments(channel)?,
-            follower.state.settled_links(channel)?,
-        ))
-    };
-    let (judgments, settled) = match read() {
-        Ok(read) => read,
-        Err(err) => {
-            eprintln!("skald: warning: {err}");
-            return Vec::new();
-        }
+    let Some((judgments, settled)) = judged(follower, channel, State::settled_links) else {
+        return Vec::new();
     };
     (judgments.iter())
         .filter(|&(&epoch, &clean)| clean && wanted(epoch))
         .filter_map(|(&epoch, _)| Some((epoch, prev(&judgments, epoch)?)))
         .filter(|pair| !settled.contains(pair))
         .collect()
+}
+
+/// The device's judgments of the epochs of `channel` and what `settled` reads of it in the state;
+/// none, with a warning, if the state fails.
+pub fn judged<T>(
+    follower: &Follower,
+    channel: ChannelId,
+    settled: impl FnOnce(&State, ChannelId) -> Result<T, state::Error>,
+) -> Option<(BTreeMap<u64, bool>, T)> {
+    let read = || {
+        Ok((
+            follower.state.judgments(channel)?,
+            settled(&follower.state, channel)?,
+        ))
+    };
+    read()
+        .map_err(|err: state::Error| eprintln!("skald: warning: {err}"))
+        .ok()
 }
 
 /// Each of `due`, as a link of its channel sealed with the keys `device` holds; those it lacks a

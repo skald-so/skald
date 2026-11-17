@@ -26,6 +26,7 @@ use crate::devices::text;
 use crate::groups::{self, Link};
 use crate::key_chain;
 use crate::spaces::{Follower, Scope};
+use crate::state::State;
 
 /// A wrap of an epoch's key the device may upload: of `epoch` of `channel` in `space`, to the
 /// browser `browser` with its certificate's `hpke` key.
@@ -64,18 +65,9 @@ fn browsers(follower: &Follower, space: SpaceId, channel: ChannelId) -> Vec<(Dev
 /// The wraps of `epoch` of `channel` in `space` the device may upload: to each of [`browsers`] if
 /// the device judged the epoch clean, unless settled.
 fn due(follower: &Follower, (space, channel): (SpaceId, ChannelId), epoch: u64) -> Vec<Due> {
-    let read = || -> Result<_, crate::state::Error> {
-        Ok((
-            follower.state.judgments(channel)?,
-            follower.state.settled_wraps(channel)?,
-        ))
-    };
-    let (judgments, settled) = match read() {
-        Ok(read) => read,
-        Err(err) => {
-            eprintln!("skald: warning: {err}");
-            return Vec::new();
-        }
+    let Some((judgments, settled)) = key_chain::judged(follower, channel, State::settled_wraps)
+    else {
+        return Vec::new();
     };
     if judgments.get(&epoch) != Some(&true) {
         return Vec::new();

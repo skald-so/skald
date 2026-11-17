@@ -837,32 +837,34 @@ impl State {
 
     /// Whether the device judged each epoch of `channel` it judged clean ([`MlsChanges::judged`]).
     pub fn judgments(&self, channel: ChannelId) -> Result<BTreeMap<u64, bool>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT epoch, clean FROM epoch_judgment WHERE channel = ?1")?;
-        let rows = query.query_map(params![channel.to_string()], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get(1)?))
-        })?;
-        rows.map(|row| {
-            let (epoch, clean) = row?;
-            Ok((read_epoch(channel, epoch)?, clean))
-        })
-        .collect()
+        let sql = "SELECT epoch, clean FROM epoch_judgment WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?;
+        (rows.into_iter())
+            .map(|(epoch, clean)| Ok((read_epoch(channel, epoch)?, clean)))
+            .collect()
     }
 
     /// The links of `channel`, by epoch and `prev`, the device does not upload again.
     pub fn settled_links(&self, channel: ChannelId) -> Result<BTreeSet<(u64, u64)>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT epoch, prev FROM settled_link WHERE channel = ?1")?;
-        let rows = query.query_map(params![channel.to_string()], |row| {
+        let sql = "SELECT epoch, prev FROM settled_link WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })?;
-        rows.map(|row| {
-            let (epoch, prev) = row?;
-            Ok((read_epoch(channel, epoch)?, read_epoch(channel, prev)?))
-        })
-        .collect()
+        (rows.into_iter())
+            .map(|(epoch, prev)| Ok((read_epoch(channel, epoch)?, read_epoch(channel, prev)?)))
+            .collect()
+    }
+
+    /// The rows `sql` selects with `channel` as its one parameter, each as `row` reads it.
+    fn of_channel<T>(
+        &self,
+        sql: &str,
+        channel: ChannelId,
+        row: impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>,
+    ) -> Result<Vec<T>, Error> {
+        let mut query = self.db.prepare(sql)?;
+        let rows = query.query_map(params![channel.to_string()], row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Keeps `links` of `channel`, by epoch and `prev`, from being uploaded again.
@@ -882,22 +884,20 @@ impl State {
         &self,
         channel: ChannelId,
     ) -> Result<BTreeSet<(u64, WrapRecipient)>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT epoch, kind, recipient FROM settled_wrap WHERE channel = ?1")?;
-        let rows = query.query_map(params![channel.to_string()], |row| {
+        let sql = "SELECT epoch, kind, recipient FROM settled_wrap WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get(2)?))
         })?;
-        rows.map(|row| {
-            let (epoch, kind, recipient): (i64, i64, String) = row?;
-            let recipient = match kind {
-                1 => WrapRecipient::Browser(id("browser's device ID", &recipient)?),
-                2 => WrapRecipient::Recovery(id("account ID", &recipient)?),
-                _ => return Err(Error::Malformed(format!("the wrap recipient kind {kind}"))),
-            };
-            Ok((read_epoch(channel, epoch)?, recipient))
-        })
-        .collect()
+        (rows.into_iter())
+            .map(|(epoch, kind, recipient): (i64, i64, String)| {
+                let recipient = match kind {
+                    1 => WrapRecipient::Browser(id("browser's device ID", &recipient)?),
+                    2 => WrapRecipient::Recovery(id("account ID", &recipient)?),
+                    _ => return Err(Error::Malformed(format!("the wrap recipient kind {kind}"))),
+                };
+                Ok((read_epoch(channel, epoch)?, recipient))
+            })
+            .collect()
     }
 
     /// Keeps `wraps` of `channel`, by epoch and recipient, from being uploaded again.
