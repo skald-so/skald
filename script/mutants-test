@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Tests script/mutants on a scratch Cargo workspace: it passes when the tests catch every mutant of the
 # code changed since the base, fails naming the survivors otherwise, never mutates unchanged code,
-# runs the tests with PostgreSQL and removes it afterwards, checks each prototype workspace with the
-# tests of all its crates, fails when cargo-mutants cannot list the mutants, and leaves the working
-# tree clean.
+# runs the tests with cargo-nextest and PostgreSQL and removes PostgreSQL afterwards, on CPUs / jobs
+# threads, compiles through sccache when it is on PATH, fails naming a mutant whose tests run past 5
+# times the unmutated tree's test time, checks each prototype workspace with the tests of all its
+# crates, fails when cargo-mutants cannot list the mutants, and leaves the working tree clean.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -57,7 +58,8 @@ cd "$tmp/repo"
 git init --quiet --initial-branch dev
 
 # A workspace like this one: a virtual manifest and crates/*. `untested` has no test and is never
-# changed; `postgres_is_reachable` records the database it reached for expect_postgres_removed.
+# changed; `postgres_is_reachable` records the database it reached for expect_postgres_removed, and
+# `records_its_runner` whether cargo-nextest runs it.
 mkdir -p crates/calc/src
 printf '[workspace]\nmembers = ["crates/*"]\nresolver = "3"\n' >Cargo.toml
 printf '[package]\nname = "calc"\nversion = "0.1.0"\nedition = "2024"\n' >crates/calc/Cargo.toml
@@ -84,6 +86,12 @@ mod tests {
         std::net::TcpStream::connect(addr).expect("connect to PostgreSQL");
         std::fs::write(r"$tmp/postgres-url", url).expect("record the database");
     }
+
+    #[test]
+    fn records_its_runner() {
+        let runner = if std::env::var_os("NEXTEST").is_some() { "nextest" } else { "cargo test" };
+        std::fs::write(r"$tmp/runner", runner).expect("record the test runner");
+    }
 }
 RUST
 echo /target >.gitignore
@@ -102,14 +110,40 @@ git checkout --quiet dev
 sed -i.bak 's/x + 1/x + 2/' crates/calc/src/lib.rs && rm crates/calc/src/lib.rs.bak
 git commit --quiet --all --message 'change untested'
 git checkout --quiet covered
-run dev
+# slot: a statement that appends the test's nextest slot to the file %s.
+slot='std::fs::OpenOptions::new().append(true).create(true).open(r"%s").and_then(|mut file| std::io::Write::write_all(&mut file, format!("{}\\n", std::env::var("NEXTEST_TEST_GLOBAL_SLOT").unwrap()).as_bytes())).expect("record the slot");'
+# A stand-in for sccache on PATH, which records each compile and runs it.
+mkdir "$tmp/bin"
+printf '#!/usr/bin/env bash\necho "$*" >>%q\nexec "$@"\n' "$tmp/compiles" >"$tmp/bin/sccache"
+chmod +x "$tmp/bin/sccache"
+PATH="$tmp/bin:$PATH" run dev
 [[ $status -eq 0 ]] || fail "covered: exit code $status, want 0:"$'\n'"$output"
 [[ $output != *untested* ]] || fail "covered: mutated unchanged code:"$'\n'"$output"
+[[ $(cat "$tmp/runner" 2>/dev/null) == nextest ]] || fail "covered: cargo-nextest did not run the tests"
+grep -q -- '--crate-name calc ' "$tmp/compiles" 2>/dev/null || fail "covered: calc was not compiled through sccache"
 expect_clean covered
 expect_postgres_removed covered
 
-# A new function tested only by another crate, next to a covered change, in a moved crate: the run
-# fails and names only the survivors in the changed lines. Only the mutated crate's tests count.
+# The covered change with as many jobs as CPUs: each run's tests take one thread, so two tests that
+# each take a second never run at once, and nextest gives both the first slot.
+git checkout --quiet -b one-thread covered
+mkdir crates/calc/tests
+printf '#[test]\nfn %s() {\n    %s\n    %s\n}\n\n' \
+  first 'std::thread::sleep(std::time::Duration::from_secs(1));' "$(printf "$slot" "$tmp/slots")" \
+  second 'std::thread::sleep(std::time::Duration::from_secs(1));' "$(printf "$slot" "$tmp/slots")" \
+  >crates/calc/tests/slots.rs
+git add --all
+git commit --quiet --message 'one thread'
+CARGO_MUTANTS_JOBS=$(getconf _NPROCESSORS_ONLN) run dev
+[[ $status -eq 0 ]] || fail "one thread: exit code $status, want 0:"$'\n'"$output"
+slots=$(sort -u "$tmp/slots" 2>/dev/null | paste -sd ' ' -)
+[[ $slots == 0 ]] || fail "one thread: the tests ran in the slots '$slots', not one at a time in 0"
+expect_clean one-thread
+expect_postgres_removed one-thread
+
+# A new function tested only by another crate, next to a covered change, in a moved crate, and a new
+# crate without tests: the run fails and names only the survivors in the changed lines. Only the
+# mutated crate's tests count; a crate's run of no tests catches no mutant.
 git checkout --quiet -b uncovered base
 git mv crates/calc crates/math
 sed -i.bak 's/x \* 2/x << 1/' crates/math/src/lib.rs && rm crates/math/src/lib.rs.bak
@@ -118,6 +152,9 @@ mkdir -p crates/report/src
 printf '[package]\nname = "report"\nversion = "0.1.0"\nedition = "2024"\n\n[dependencies]\n%s\n' \
   'calc = { path = "../math" }' >crates/report/Cargo.toml
 printf '#[test]\nfn triple() {\n    assert_eq!(calc::triple(2), 6);\n}\n' >crates/report/src/lib.rs
+mkdir -p crates/label/src
+printf '[package]\nname = "label"\nversion = "0.1.0"\nedition = "2024"\n' >crates/label/Cargo.toml
+printf 'pub fn label(x: u32) -> String {\n    format!("#{x}")\n}\n' >crates/label/src/lib.rs
 cargo generate-lockfile --quiet --offline
 git add --all
 git commit --quiet --message uncovered
@@ -125,10 +162,53 @@ run base
 [[ $status -ne 0 ]] || fail "uncovered: exit code 0, want non-zero:"$'\n'"$output"
 [[ $output =~ crates/math/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ triple\ -\>\ u32\ with\ 0 ]] ||
   fail "uncovered: the survivor is not named:"$'\n'"$output"
+[[ $output =~ crates/label/src/lib\.rs:[0-9]+:[0-9]+:\ replace\ label\ -\>\ String\ with\ String::new\(\) ]] ||
+  fail "uncovered: the survivor in the crate without tests is not named:"$'\n'"$output"
 [[ $output != *untested* && $output != *double* ]] ||
   fail "uncovered: names mutants outside the changed lines or caught ones:"$'\n'"$output"
 expect_clean uncovered
 expect_postgres_removed uncovered
+
+# A change whose mutants `-=` to `+=` and to `/=` make its test loop forever: the run fails and names
+# them as timeouts, which come at cargo-mutants' 5 times the unmutated tree's test time. A test of 3 s
+# sets that time; cargo-mutants' minimum timeout of 20 s, which this case lowers to 1 s, would hide
+# it. cargo-mutants prints whole seconds: an unmutated time of 3 s is under 4 s.
+git checkout --quiet -b hangs base
+cat >>crates/calc/src/lib.rs <<'RUST'
+
+pub fn steps(mut x: u64) -> u64 {
+    let mut n = 0;
+    while x != 0 {
+        x -= 1;
+        n += 1;
+    }
+    n
+}
+RUST
+mkdir crates/calc/tests
+printf '#[test]\nfn steps() {\n    assert_eq!(calc::steps(3), 3);\n}\n\n#[test]\nfn three_seconds() {\n    %s\n}\n' \
+  'std::thread::sleep(std::time::Duration::from_secs(3));' >crates/calc/tests/steps.rs
+git add --all
+git commit --quiet --message hangs
+CARGO_MUTANTS_MINIMUM_TEST_TIMEOUT=1 run base
+[[ $status -ne 0 ]] || fail "hangs: exit code 0, want non-zero:"$'\n'"$output"
+for op in '+=' '/='; do
+  grep '^TIMEOUT .*crates/calc/src/lib\.rs:' <<<"$output" | grep -qF ": replace -= with $op in steps" ||
+    fail "hangs: the timeout of -= to $op is not named:"$'\n'"$output"
+done
+if [[ $output =~ Unmutated\ baseline\ in\ [0-9]+s\ build\ \+\ ([0-9]+)s\ test ]]; then
+  unmutated=${BASH_REMATCH[1]}
+  if [[ $output =~ Auto-set\ test\ timeout\ to\ ([0-9]+)s ]]; then
+    ((BASH_REMATCH[1] <= 5 * (unmutated + 1))) ||
+      fail "hangs: a timeout of ${BASH_REMATCH[1]} s, past 5 times the unmutated tree's ${unmutated} s:"$'\n'"$output"
+  else
+    fail "hangs: no test timeout:"$'\n'"$output"
+  fi
+else
+  fail "hangs: no unmutated tree's test time:"$'\n'"$output"
+fi
+expect_clean hangs
+expect_postgres_removed hangs
 
 # Changes only in two prototype workspaces, each apart from the others: in each, code tested only by
 # another of its crates is covered, and an untested function is named as a survivor.

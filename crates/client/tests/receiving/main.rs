@@ -308,10 +308,11 @@ impl Pair {
     fn start(ids: [u64; 2], logins: [&str; 2], change: impl FnOnce(&mut Settings)) -> Self {
         let (world, front) = fronted_with(change);
         let cloud = &world.cloud;
-        let ada = retrying_for_the_timeout(world.sign_up(ids[0], logins[0], "ada-workstation"));
+        let ada = world.sign_up(ids[0], logins[0], "ada-workstation");
         let mut bob = Played::new(cloud, world.sign_up(ids[1], logins[1], "bob-workstation"));
         let channel = acme(cloud, &ada, &[&bob.person], &[&bob.person], &[]);
         received(&ada.machine);
+        let ada = retrying_for_the_timeout(ada);
         bob.take_in(cloud);
         assert_members(&bob.members(channel.id), &[ada.device, bob.device()]);
         Pair {

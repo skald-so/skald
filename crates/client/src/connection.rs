@@ -1397,12 +1397,26 @@ pub(crate) mod tests {
         connection.get("/status").expect_err("no answer");
         connection.open_websocket("/ws").expect_err("no answer");
 
-        let accepted = |listener: &TcpListener| {
+        // The connection's requests a listener took, by their first lines. Another test process may
+        // connect to a port it freed that a listener here then got: its connection is no request
+        // of this connection's.
+        let requests = |listener: &TcpListener| {
             listener.set_nonblocking(true).unwrap();
-            std::iter::from_fn(|| listener.accept().ok()).count()
+            std::iter::from_fn(|| listener.accept().ok())
+                .map(|(stream, _)| {
+                    stream.set_nonblocking(false).unwrap();
+                    stream.set_read_timeout(Some(SECOND)).unwrap();
+                    let mut line = String::new();
+                    let _ = BufReader::new(stream).read_line(&mut line);
+                    line.trim_end().to_owned()
+                })
+                .filter(|line| line.starts_with("GET /status ") || line.starts_with("GET /ws "))
+                .collect::<Vec<_>>()
         };
-        assert_eq!(accepted(&server), 2);
-        assert_eq!(accepted(&elsewhere), 0);
+        let mut at_server = requests(&server);
+        at_server.sort();
+        assert_eq!(at_server, ["GET /status HTTP/1.1", "GET /ws HTTP/1.1"]);
+        assert_eq!(requests(&elsewhere), Vec::<String>::new());
     }
 
     /// What the stand-in server saw: the challenge request's line and headers, in lowercase, and
