@@ -150,12 +150,23 @@ impl Cloud {
     /// front, such as `https/front.rs`, which the test runs on the port `front`. Machines reach the
     /// server there, at [`Cloud::public`]; [`Cloud::url`] is the relay's.
     pub fn fronted_over_tls(host: &str, front: u16, lifetime: u64, interval: u64) -> Self {
+        Self::fronted_over_tls_with(host, front, (lifetime, interval), |_| {})
+    }
+
+    /// As [`Cloud::fronted_over_tls`], codes living and polling as `(lifetime, interval)` says, and
+    /// the server's settings changed by `change`.
+    pub fn fronted_over_tls_with(
+        host: &str,
+        front: u16,
+        codes: (u64, u64),
+        change: impl FnOnce(&mut Settings),
+    ) -> Self {
         Self::serving_at(
             Providers::GitHub,
             &format!("https://{host}"),
             Some(front),
-            (lifetime, interval),
-            |_| {},
+            codes,
+            change,
         )
     }
 

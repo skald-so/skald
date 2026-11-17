@@ -31,6 +31,7 @@ export const screens: { screen: Screen; widths: number[]; window?: true }[] = [
   { screen: "access-confirm", widths, window: true },
   { screen: "account-page", widths },
   { screen: "account-page-confirm", widths, window: true },
+  { screen: "usage", widths },
 ];
 
 /** Every view of the kit page: each screen in both themes at its check widths. */

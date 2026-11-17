@@ -13,6 +13,7 @@ const sections: ShellSection[] = [
   { key: "machines", label: "Machines", href: "/" },
   { key: "members", label: "Members", href: "/members" },
   { key: "access", label: "Access", href: "/access" },
+  { key: "usage", label: "Usage", href: "/usage" },
 ];
 
 /**

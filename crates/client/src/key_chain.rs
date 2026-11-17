@@ -288,7 +288,8 @@ pub fn upload_items<T>(
 
 /// Sends `frames` on the device's connection, then reads the server's answers to the uploads of
 /// `waiting` for the run's timeout, taking each answered one out and giving it to `answered`;
-/// fails if the connection ends or `answered` fails.
+/// fails if the connection ends, or is not a WebSocket, which alone carries them, or `answered`
+/// fails.
 fn answers<T>(
     follower: &mut Follower,
     link: &mut Link,
@@ -296,9 +297,17 @@ fn answers<T>(
     waiting: &mut BTreeMap<u64, T>,
     mut answered: impl FnMut(&Follower, T, Option<&str>) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut socket = match link.socket.take() {
-        Some(socket) => socket,
+    let mut mailbox = match link.mailbox.take() {
+        Some(mailbox) => mailbox,
         None => follower.connect(&link.keys)?,
+    };
+    let Some(socket) = mailbox.websocket() else {
+        link.mailbox = Some(mailbox);
+        return Err(
+            "history items go to the server over a WebSocket only, and this network lets none \
+             through"
+                .to_owned(),
+        );
     };
     for frame in frames {
         socket
@@ -311,7 +320,7 @@ fn answers<T>(
         if wait.is_zero() {
             break;
         }
-        set_read_timeout(&mut socket, wait).map_err(|err| broke(err.into()))?;
+        set_read_timeout(socket, wait).map_err(|err| broke(err.into()))?;
         let (upload, refused) = match socket.read() {
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::HistoryStored { upload }) => (upload, None),
@@ -329,7 +338,7 @@ fn answers<T>(
         };
         answered(follower, known, refused.as_deref())?;
     }
-    link.socket = Some(socket);
+    link.mailbox = Some(mailbox);
     Ok(())
 }
 

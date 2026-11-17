@@ -12,6 +12,7 @@ import type {
 
 import { SignInProvider } from "./skald.schemas";
 import type {
+  AccountUsage,
   ChannelGroup,
   Device,
   DeviceRegistration,
@@ -45,6 +46,7 @@ import type {
   SignInProviders,
   Space,
   SpaceRequest,
+  SpaceUsage,
   Spaces,
   StoredRevocation,
   StoredRosterRevision,
@@ -817,6 +819,102 @@ export const getRemoveSignInMethodResponseMock409 = (
 });
 
 export const getRemoveSignInMethodResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetAccountUsageResponseMock = (
+  overrideResponse: Partial<Extract<AccountUsage, object>> = {},
+): AccountUsage => ({
+  owned_spaces: {
+    count: faker.number.int({ min: 1 }),
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+    spaces: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      space: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    })),
+  },
+  devices: {
+    count: faker.number.int({ min: 0 }),
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  ...overrideResponse,
+});
+
+export const getGetAccountUsageResponseMock200 = (
+  overrideResponse: Partial<Extract<AccountUsage, object>> = {},
+): AccountUsage => ({
+  owned_spaces: {
+    count: faker.number.int({ min: 1 }),
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+    spaces: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      space: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      name: faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    })),
+  },
+  devices: {
+    count: faker.number.int({ min: 0 }),
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  ...overrideResponse,
+});
+
+export const getGetAccountUsageResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetAccountUsageResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetAccountUsageResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -2647,6 +2745,116 @@ export const getStoreRosterRevisionResponseMock500 = (
   ...overrideResponse,
 });
 
+export const getGetSpaceUsageResponseMock = (
+  overrideResponse: Partial<Extract<SpaceUsage, object>> = {},
+): SpaceUsage => ({
+  monthly_messages: {
+    count: faker.number.int({ min: 0 }),
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  message_size: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  mailbox_retention: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  history_retention: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  ...overrideResponse,
+});
+
+export const getGetSpaceUsageResponseMock200 = (
+  overrideResponse: Partial<Extract<SpaceUsage, object>> = {},
+): SpaceUsage => ({
+  monthly_messages: {
+    count: faker.number.int({ min: 0 }),
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  message_size: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  mailbox_retention: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  history_retention: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  ...overrideResponse,
+});
+
+export const getGetSpaceUsageResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetSpaceUsageResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetSpaceUsageResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetSpaceUsageResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getListAccountDevicesMockHandler = (
   overrideResponse?:
     | ListedDevices
@@ -4227,6 +4435,135 @@ export const getRemoveSignInMethodMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getRemoveSignInMethodResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAccountUsageMockHandler = (
+  overrideResponse?:
+    | AccountUsage
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<AccountUsage> | AccountUsage),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/usage",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAccountUsageResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAccountUsageMockHandler200 = (
+  overrideResponse?:
+    | AccountUsage
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<AccountUsage> | AccountUsage),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/usage",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAccountUsageResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAccountUsageMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/usage",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAccountUsageResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAccountUsageMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/usage",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAccountUsageResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAccountUsageMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/usage",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAccountUsageResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -8375,6 +8712,162 @@ export const getStoreRosterRevisionMockHandler500 = (
     options,
   );
 };
+
+export const getGetSpaceUsageMockHandler = (
+  overrideResponse?:
+    | SpaceUsage
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<SpaceUsage> | SpaceUsage),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/usage",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSpaceUsageResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSpaceUsageMockHandler200 = (
+  overrideResponse?:
+    | SpaceUsage
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<SpaceUsage> | SpaceUsage),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/usage",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSpaceUsageResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSpaceUsageMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/usage",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSpaceUsageResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSpaceUsageMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/usage",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSpaceUsageResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSpaceUsageMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/usage",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSpaceUsageResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSpaceUsageMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/usage",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSpaceUsageResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
 export const getSkaldAPIMock = () => [
   getListAccountDevicesMockHandler(),
   getGetMasterKeyMockHandler(),
@@ -8386,6 +8879,7 @@ export const getSkaldAPIMock = () => [
   getEndAccountSessionMockHandler(),
   getListSignInMethodsMockHandler(),
   getRemoveSignInMethodMockHandler(),
+  getGetAccountUsageMockHandler(),
   getPutUsernameMockHandler(),
   getGetSignInProvidersMockHandler(),
   getGetDevicesMockHandler(),
@@ -8411,4 +8905,5 @@ export const getSkaldAPIMock = () => [
   getListSpaceMembersMockHandler(),
   getGetRosterRevisionsMockHandler(),
   getStoreRosterRevisionMockHandler(),
+  getGetSpaceUsageMockHandler(),
 ];

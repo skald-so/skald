@@ -1,7 +1,9 @@
 //! The client's connection to a Skald server: it states the protocol version on every request and
 //! WebSocket opening request and acts on the answers as `docs/protocol/README.md`, "Server answers",
 //! says. It goes over HTTPS and WSS, through the proxy `HTTPS_PROXY` names if any, or in plain
-//! HTTP and WS to this machine only: `docs/dev/architecture.md`, "Network".
+//! HTTP and WS to this machine only: `docs/dev/architecture.md`, "Network". A device proves itself
+//! on a WebSocket in its first frame, and in each HTTPS request of its mailbox in a header
+//! (`docs/protocol/delivery.md`, "Connecting").
 
 use std::fmt;
 use std::io::{self, Read as _, Write as _};
@@ -17,8 +19,8 @@ use rustls::{ClientConfig, ClientConnection, StreamOwned};
 use serde::Deserialize;
 use skald_crypto::SigningKey;
 use skald_proto::{
-    AUTH_LABEL, Cbor as _, DeviceId, Frame, LATEST_HEADER, VERSION_HEADER, VersionProblem,
-    VersionRange, describe_versions, parse_version,
+    AUTH_LABEL, Cbor as _, DeviceId, Frame, LATEST_HEADER, PROOF_HEADER, REQUEST_LABEL,
+    RequestProof, VERSION_HEADER, VersionProblem, VersionRange, describe_versions, parse_version,
 };
 use tungstenite::Message;
 use tungstenite::client::IntoClientRequest;
@@ -30,6 +32,7 @@ use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, LazyBuffers, NextTimeout, RustlsConnector, Transport,
 };
 
+use crate::events::Events;
 use crate::proxy::Proxy;
 use crate::tls::Roots;
 
@@ -328,7 +331,7 @@ fn connect(
 }
 
 /// The error of an I/O operation on the server connection.
-fn io_error(err: io::Error, timeout: Duration) -> Error {
+pub(crate) fn io_error(err: io::Error, timeout: Duration) -> Error {
     match err.kind() {
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Error::Timeout(timeout),
         _ => Error::Unreachable(err.to_string()),
@@ -421,6 +424,34 @@ fn proxy_head(stream: &mut TcpStream) -> io::Result<String> {
         head.extend_from_slice(&byte);
     }
     Ok(String::from_utf8_lossy(&head).into_owned())
+}
+
+/// What opens a connection's WebSockets and event streams: streams it dials as [`dial`] says, as
+/// its HTTP requests do, over TLS to an `https://` server.
+struct Streams {
+    tls: Option<Arc<ClientConfig>>,
+    resolver: Pinned,
+    proxy: Option<Proxy>,
+    agent: ureq::Agent,
+    timeout: Duration,
+}
+
+impl Streams {
+    /// A stream to the host and port of `uri`; a TLS handshake runs on its first read or write.
+    fn open(&self, uri: &Uri) -> Result<MaybeTlsStream<TcpStream>, Error> {
+        let config = self.agent.config();
+        let stream = dial(
+            self.proxy.as_ref(),
+            uri,
+            self.timeout,
+            &self.resolver,
+            config,
+        )?;
+        Ok(match &self.tls {
+            Some(config) => MaybeTlsStream::Rustls(over_tls(config, uri, stream)?),
+            None => MaybeTlsStream::Plain(stream),
+        })
+    }
 }
 
 /// The connector of the connection's HTTP requests: it dials as [`dial`] says, directly or through
@@ -534,7 +565,7 @@ impl Transport for Socket {
 }
 
 /// What `read` gives, read again while a signal interrupts it.
-fn uninterrupted<T>(mut read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+pub(crate) fn uninterrupted<T>(mut read: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     loop {
         match read() {
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
@@ -561,11 +592,11 @@ impl Resolver for Deferred {
 /// A connection to the server at one base URL.
 pub struct Connection {
     base: String,
-    /// The TLS config of its WebSockets, to an `https://` server.
+    /// The TLS config of its WebSockets and event streams, to an `https://` server.
     tls: Option<Arc<ClientConfig>>,
-    /// The resolver of its WebSockets; its HTTP requests' is in `agent`.
+    /// The resolver of its WebSockets and event streams; its HTTP requests' is in `agent`.
     resolver: Pinned,
-    /// The proxy of its WebSockets, if any; its HTTP requests' is in `agent`.
+    /// The proxy of its WebSockets and event streams, if any; its HTTP requests' is in `agent`.
     proxy: Option<Proxy>,
     speaks: VersionRange,
     timeout: Duration,
@@ -590,6 +621,13 @@ enum Body<'a> {
     Form(&'a [(&'a str, &'a str)]),
     /// JSON.
     Json(Method, &'a [u8]),
+    /// A frame, `POST`ed with the device's proof `proof`, its answer awaited for `wait` more than
+    /// the timeout.
+    Frame {
+        frame: &'a [u8],
+        proof: &'a str,
+        wait: Duration,
+    },
 }
 
 /// The method of a request with a JSON body.
@@ -770,11 +808,26 @@ impl Connection {
         self.http(path, Some(token), Body::Json(method, json))
     }
 
+    /// `POST <path>` of `frame` as the device of `proof`, on the device session of `token`; the body
+    /// of the answer that serves it, awaited for `wait` more than the timeout.
+    pub fn post_frame_as(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+        frame: &[u8],
+        wait: Duration,
+    ) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), Body::Frame { frame, proof, wait })
+    }
+
     /// A request to `path` with `body`, with the session of `token` if given.
     fn http(&mut self, path: &str, token: Option<&str>, body: Body<'_>) -> Result<Vec<u8>, Error> {
         let url = format!("{}{path}", self.base);
         let agent = self.agent.clone();
-        let timeout = self.timeout;
+        let timeout = match body {
+            Body::Frame { wait, .. } => self.timeout + wait,
+            _ => self.timeout,
+        };
         let bearer = token.map(|token| format!("Bearer {token}"));
         self.exchange(|version| {
             let version = version.to_string();
@@ -792,6 +845,15 @@ impl Connection {
                 }
                 .content_type("application/json")
                 .send(json),
+                Body::Frame { frame, proof, .. } => {
+                    with_headers(agent.post(&url), &version, bearer)
+                        .header(PROOF_HEADER, proof)
+                        .content_type("application/cbor")
+                        .config()
+                        .timeout_global(Some(timeout))
+                        .build()
+                        .send(frame)
+                }
             };
             let mut response = sent.map_err(|err| unanswered(err, timeout))?;
             let status = response.status().as_u16();
@@ -818,10 +880,7 @@ impl Connection {
     pub fn open_websocket(&mut self, path: &str) -> Result<WebSocket, Error> {
         let url = websocket_url(&self.base, path, self.tls.is_some());
         let timeout = self.timeout;
-        let tls = self.tls.clone();
-        let resolver = self.resolver.clone();
-        let proxy = self.proxy.clone();
-        let agent = self.agent.clone();
+        let streams = self.streams();
         self.exchange(|version| {
             let mut request = url
                 .as_str()
@@ -832,17 +891,7 @@ impl Connection {
             request
                 .headers_mut()
                 .insert(header::SEC_WEBSOCKET_PROTOCOL, offer);
-            let stream = dial(
-                proxy.as_ref(),
-                request.uri(),
-                timeout,
-                &resolver,
-                agent.config(),
-            )?;
-            let stream = match &tls {
-                Some(config) => MaybeTlsStream::Rustls(over_tls(config, request.uri(), stream)?),
-                None => MaybeTlsStream::Plain(stream),
-            };
+            let stream = streams.open(request.uri())?;
             match tungstenite::client(request, stream) {
                 Ok((socket, response)) => Ok(Answer::Served(socket, latest(response.headers()))),
                 // A blocking stream is interrupted only when a read or write times out.
@@ -862,9 +911,37 @@ impl Connection {
         })
     }
 
+    /// A new challenge of the device session of `token`.
+    fn challenge(&mut self, token: &str) -> Result<Vec<u8>, Error> {
+        let answer = self.post_as(CHALLENGE_PATH, token)?;
+        serde_json::from_slice::<Challenge>(&answer)
+            .ok()
+            .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
+            .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))
+    }
+
+    /// The proof of an HTTPS request of the device `device`, whose signing key is `key`, on a new
+    /// challenge of the device session of `token`: the value of its `Skald-Device-Proof` header.
+    pub fn request_proof(
+        &mut self,
+        token: &str,
+        device: DeviceId,
+        key: &SigningKey,
+    ) -> Result<String, Error> {
+        let challenge = self.challenge(token)?;
+        let signature = key.sign(REQUEST_LABEL, &[&challenge, origin(&self.base).as_bytes()]);
+        let proof = RequestProof {
+            challenge,
+            device,
+            signature,
+        };
+        Ok(URL_SAFE_NO_PAD.encode(proof.to_cbor()))
+    }
+
     /// Opens a WebSocket at `path` as the device `device`, whose signing key is `key`, on the device
-    /// session of `token`: its first frame, `auth`, signs a new challenge of the session over the
-    /// server's origin (`docs/protocol/delivery.md`, "Connecting").
+    /// session of `token`: once it is open, its first frame, `auth`, signs a new challenge of the
+    /// session over the server's origin (`docs/protocol/delivery.md`, "Connecting"). A WebSocket a
+    /// proxy refuses costs no challenge.
     pub fn open_websocket_as(
         &mut self,
         path: &str,
@@ -872,18 +949,14 @@ impl Connection {
         device: DeviceId,
         key: &SigningKey,
     ) -> Result<WebSocket, Error> {
-        let answer = self.post_as(CHALLENGE_PATH, token)?;
-        let challenge = serde_json::from_slice::<Challenge>(&answer)
-            .ok()
-            .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
-            .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))?;
+        let mut socket = self.open_websocket(path)?;
+        let challenge = self.challenge(token)?;
         let signature = key.sign(AUTH_LABEL, &[&challenge, origin(&self.base).as_bytes()]);
         let auth = Frame::Auth {
             challenge,
             device,
             signature,
         };
-        let mut socket = self.open_websocket(path)?;
         socket
             .send(Message::Binary(auth.to_cbor().into()))
             .map_err(|err| match err {
@@ -891,6 +964,67 @@ impl Connection {
                 err => Error::Unreachable(err.to_string()),
             })?;
         Ok(socket)
+    }
+
+    /// Opens the event stream at `path` as the device of `proof`, on the device session of `token`,
+    /// stating `cursor` in `Last-Event-ID` (`docs/protocol/delivery.md`, "Frames"). The connect
+    /// and the answer's head fail after the connection's timeout.
+    pub fn open_events_as(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+        cursor: u64,
+    ) -> Result<Events, Error> {
+        let uri: Uri = format!("{}{path}", self.base)
+            .parse()
+            .map_err(|err: tungstenite::http::uri::InvalidUri| Error::Url(err.to_string()))?;
+        let timeout = self.timeout;
+        let streams = self.streams();
+        self.exchange(|version| {
+            let stream = streams.open(&uri)?;
+            let target = uri.path_and_query().map_or("/", |target| target.as_str());
+            let authority = uri.authority().map_or("", |authority| authority.as_str());
+            let request = format!(
+                "GET {target} HTTP/1.1\r\nhost: {authority}\r\naccept: text/event-stream\r\n\
+                 cache-control: no-cache\r\n{VERSION_HEADER}: {version}\r\n\
+                 authorization: Bearer {token}\r\n{PROOF_HEADER}: {proof}\r\n\
+                 last-event-id: {cursor}\r\n\r\n"
+            );
+            let mut events = Events::new(stream);
+            events
+                .send(request.as_bytes(), timeout)
+                .map_err(|err| io_error(err, timeout))?;
+            let (status, headers) = events.head(timeout)?;
+            if status != 200 {
+                return Ok(Answer::Refused {
+                    status,
+                    content: content(&headers),
+                    body: events.body(timeout)?,
+                });
+            }
+            let media = headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default();
+            if !media.starts_with("text/event-stream") {
+                return Err(Error::Unexpected(format!(
+                    "an answer of {} that is not an event stream",
+                    printable(media)
+                )));
+            }
+            Ok(Answer::Served(events, latest(&headers)))
+        })
+    }
+
+    /// What opens the connection's WebSockets and event streams.
+    fn streams(&self) -> Streams {
+        Streams {
+            tls: self.tls.clone(),
+            resolver: self.resolver.clone(),
+            proxy: self.proxy.clone(),
+            agent: self.agent.clone(),
+            timeout: self.timeout,
+        }
     }
 
     /// Sends a request with `send`, which states the version it is given, and acts on the answer:
@@ -995,7 +1129,7 @@ fn content(headers: &HeaderMap) -> Content {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpListener};
     use std::thread;
@@ -1278,13 +1412,15 @@ mod tests {
         first: Vec<u8>,
     }
 
-    /// A stand-in server that answers one challenge request with `challenge`, then takes one
-    /// WebSocket, selecting the subprotocol it offers, and reads its first frame.
+    /// A stand-in server that takes one WebSocket, selecting the subprotocol it offers, answers one
+    /// challenge request with `challenge`, then reads the WebSocket's first frame.
     fn challenging(challenge: &[u8]) -> (String, thread::JoinHandle<Seen>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let url = format!("http://{}", listener.local_addr().expect("the address"));
         let body = format!(r#"{{"challenge":"{}"}}"#, URL_SAFE_NO_PAD.encode(challenge));
         let served = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("the WebSocket");
+            let mut socket = tungstenite::accept_hdr(stream, select).expect("a WebSocket");
             let (stream, _) = listener.accept().expect("the challenge request");
             let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
             let mut request = Vec::new();
@@ -1304,8 +1440,6 @@ mod tests {
             )
             .expect("answer");
             drop(stream);
-            let (stream, _) = listener.accept().expect("the WebSocket");
-            let mut socket = tungstenite::accept_hdr(stream, select).expect("a WebSocket");
             let first = match socket.read().expect("a frame") {
                 Message::Binary(bytes) => bytes.to_vec(),
                 other => panic!("not a binary frame: {other:?}"),
@@ -1325,9 +1459,9 @@ mod tests {
         Ok(response)
     }
 
-    /// A device asks for a challenge under the server's path with its session's token, then sends
-    /// `auth` first: the device, signed with its key over the challenge and the server's origin,
-    /// without the path of its URL.
+    /// A device opens its WebSocket, asks for a challenge under the server's path with its
+    /// session's token, then sends `auth` first: the device, signed with its key over the challenge
+    /// and the server's origin, without the path of its URL.
     #[test]
     fn websocket_as_a_device_proves_its_key_on_a_challenge() {
         const TOKEN: &str = "token-1";
@@ -1368,8 +1502,188 @@ mod tests {
         .expect("signed over the challenge and the origin");
     }
 
+    /// A request a stand-in server took: its line and headers, in lowercase, and its body.
+    struct Taken {
+        head: Vec<String>,
+        body: Vec<u8>,
+    }
+
+    /// A stand-in server that answers each request in turn with the next of `answers`, a head and
+    /// body after a pause; gives what it took.
+    fn serving(answers: Vec<(Duration, String)>) -> (String, thread::JoinHandle<Vec<Taken>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let served = thread::spawn(move || {
+            (answers.into_iter())
+                .map(|(pause, answer)| {
+                    let (stream, _) = listener.accept().expect("a request");
+                    let request = take(&stream);
+                    thread::sleep(pause);
+                    // The client may have left.
+                    let _ = (&stream).write_all(answer.as_bytes());
+                    request
+                })
+                .collect()
+        });
+        (origin, served)
+    }
+
+    /// The request on `stream`, its body by its `content-length`.
+    fn take(stream: &TcpStream) -> Taken {
+        let mut reader = BufReader::new(stream);
+        let mut head: Vec<String> = Vec::new();
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("a request line");
+            if line == "\r\n" {
+                break;
+            }
+            head.push(line.trim_end().to_ascii_lowercase());
+        }
+        let length = (head.iter())
+            .find_map(|line| line.strip_prefix("content-length: "))
+            .map_or(0, |length| length.parse().expect("a length"));
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).expect("the body");
+        Taken { head, body }
+    }
+
+    /// An answer with the JSON `json`.
+    fn json(json: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n{json}",
+            json.len()
+        )
+    }
+
+    /// A challenge's answer.
+    fn challenge_answer(challenge: &[u8]) -> (Duration, String) {
+        let body = format!(r#"{{"challenge":"{}"}}"#, URL_SAFE_NO_PAD.encode(challenge));
+        (Duration::ZERO, json(&body))
+    }
+
+    /// An HTTPS request of a device's mailbox carries its frame as CBOR and, in
+    /// `Skald-Device-Proof`, the device, signed with its key, with the label of requests, over a
+    /// new challenge of its session and the server's origin.
+    #[test]
+    fn mailbox_request_proves_the_device_on_a_challenge() {
+        const TOKEN: &str = "token-2";
+        let challenge = [0x5a; 32];
+        let answer = "HTTP/1.1 200 OK\r\ncontent-type: application/cbor\r\ncontent-length: 3\r\n\
+                      connection: close\r\n\r\nabc"
+            .to_owned();
+        let (origin, served) =
+            serving(vec![challenge_answer(&challenge), (Duration::ZERO, answer)]);
+        let key = SigningKey::generate();
+        let id = DeviceId::from_signing_key(&key.public_key());
+        let mut connection =
+            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+
+        let proof = connection.request_proof(TOKEN, id, &key).expect("a proof");
+        let body = connection
+            .post_frame_as("/mailbox/send", (TOKEN, &proof), b"frame", Duration::ZERO)
+            .expect("an answer");
+
+        assert_eq!(body, b"abc");
+        let taken = served.join().unwrap();
+        assert_eq!(taken[0].head[0], "post /session/challenge http/1.1");
+        let request = &taken[1];
+        assert_eq!(request.head[0], "post /mailbox/send http/1.1");
+        assert_eq!(request.body, b"frame");
+        for header in [
+            "content-type: application/cbor",
+            "authorization: bearer token-2",
+        ] {
+            assert!(request.head.iter().any(|line| line == header), "{header}");
+        }
+        let sent = (request.head.iter())
+            .find_map(|line| line.strip_prefix("skald-device-proof: "))
+            .expect("a proof");
+        assert_eq!(sent, proof.to_ascii_lowercase());
+        let decoded = RequestProof::from_cbor(&URL_SAFE_NO_PAD.decode(&proof).unwrap()).unwrap();
+        assert_eq!(
+            (decoded.challenge.as_slice(), decoded.device),
+            (challenge.as_slice(), id)
+        );
+        skald_crypto::verify(
+            &key.public_key(),
+            REQUEST_LABEL,
+            &[&challenge, origin.as_bytes()],
+            &decoded.signature,
+        )
+        .expect("signed over the challenge and the origin");
+    }
+
+    /// A long-poll's answer is awaited for its wait more than the timeout, and no longer.
+    #[test]
+    fn mailbox_request_awaits_its_wait_more_than_the_timeout() {
+        let late = || {
+            let answer = "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+            (SECOND / 2, answer.to_owned())
+        };
+        let (origin, served) = serving(vec![late(), late()]);
+        let mut connection =
+            Connection::new(&origin, VersionRange::default(), SECOND / 4).expect("a connection");
+        let poll = |connection: &mut Connection, wait| {
+            connection.post_frame_as("/mailbox/poll?wait=1", ("token", "proof"), b"", wait)
+        };
+
+        poll(&mut connection, SECOND).expect("answered within the wait");
+        let error = poll(&mut connection, Duration::ZERO).expect_err("not within the timeout");
+
+        assert!(matches!(error, Error::Timeout(_)), "{error:?}");
+        served.join().unwrap();
+    }
+
+    /// The event stream states the cursor in `Last-Event-ID` with the device's proof, and gives the
+    /// frames of its events; a refusal that is not the server's problem is unexpected, and so is
+    /// an answer that is not an event stream.
+    #[test]
+    fn event_stream_states_the_cursor_and_gives_frames() {
+        let stream = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\
+             \r\n{:x}\r\ndata: {}\n\n\r\n",
+            "data: \n\n".len() + URL_SAFE_NO_PAD.encode(b"frame").len(),
+            URL_SAFE_NO_PAD.encode(b"frame")
+        );
+        let forbidden = "HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\
+                         content-length: 7\r\n\r\nblocked"
+            .to_owned();
+        let page = "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 0\r\n\r\n";
+        let answers = [stream, forbidden, page.to_owned()];
+        let (origin, served) = serving(answers.map(|it| (Duration::ZERO, it)).into());
+        let mut connection =
+            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+        let open = |connection: &mut Connection| {
+            connection.open_events_as("/mailbox/events", ("token", "proof"), 7)
+        };
+
+        let mut events = open(&mut connection).expect("a stream");
+        assert_eq!(events.next(10 * SECOND).unwrap(), Some(b"frame".to_vec()));
+        let refused = open(&mut connection).err().expect("refused");
+        let page = open(&mut connection).err().expect("not a stream");
+
+        assert!(
+            matches!(&refused, Error::Unexpected(why) if why == "HTTP 403"),
+            "{refused:?}"
+        );
+        assert!(matches!(page, Error::Unexpected(_)), "{page:?}");
+        let taken = served.join().unwrap();
+        let head = &taken[0].head;
+        assert_eq!(head[0], "get /mailbox/events http/1.1");
+        for header in [
+            "accept: text/event-stream",
+            "last-event-id: 7",
+            "skald-device-proof: proof",
+            "authorization: bearer token",
+        ] {
+            assert!(head.iter().any(|line| line == header), "{header}: {head:?}");
+        }
+    }
+
     /// A connection over this machine: the client's end and its peer's.
-    fn pair() -> (TcpStream, TcpStream) {
+    pub(crate) fn pair() -> (TcpStream, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let stream = TcpStream::connect(listener.local_addr().unwrap()).expect("connect");
         let (peer, _) = listener.accept().expect("accept");

@@ -1006,6 +1006,88 @@
         }
       }
     },
+    "/account/usage": {
+      "get": {
+        "operationId": "getAccountUsage",
+        "summary": "The spaces the account owns and its devices, with their limits",
+        "description": "The spaces the session's account owns and its devices, each counted as its limit counts it, with the limit while the server has its setting (docs/dev/architecture.md, \"Cloud limits\"). Asking creates no personal space.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's usage.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountUsage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/username": {
       "put": {
         "operationId": "putUsername",
@@ -4955,6 +5037,106 @@
         }
       }
     },
+    "/spaces/{space}/usage": {
+      "get": {
+        "operationId": "getSpaceUsage",
+        "summary": "The space's messages this month, with the limits on its messages",
+        "description": "The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, and the server's limits on the space's messages and history while it has their settings (docs/dev/architecture.md, \"Cloud limits\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The space's usage.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceUsage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ws": {
       "get": {
         "operationId": "openWebSocket",
@@ -5098,6 +5280,21 @@
         "description": "An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "AccountUsage": {
+        "description": "The spaces an account owns and its devices, each with its limit while one applies.",
+        "type": "object",
+        "required": ["owned_spaces", "devices"],
+        "properties": {
+          "owned_spaces": {
+            "$ref": "#/components/schemas/OwnedSpaces"
+          },
+          "devices": {
+            "description": "The account's devices with a certificate, `service` and revoked devices aside, as `--devices-limit` counts them; the limit is its value.",
+            "$ref": "#/components/schemas/UsageCount"
+          }
+        },
+        "additionalProperties": false
       },
       "Certificate": {
         "description": "A device certificate's CBOR bytes (docs/protocol/membership.md, \"Device certificate\") in base64url without padding (RFC 4648, §5).",
@@ -5710,6 +5907,29 @@
         },
         "additionalProperties": false
       },
+      "OwnedSpaces": {
+        "description": "The spaces an account owns, as `--owned-spaces-limit` counts them: the ones it created, its personal space included also before it is created. `spaces` lists those that exist.",
+        "type": "object",
+        "required": ["count", "spaces"],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit": {
+            "description": "The value of `--owned-spaces-limit`; absent without it.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Space"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Problem": {
         "description": "A problem details object (RFC 9457).",
         "type": "object",
@@ -5991,6 +6211,35 @@
         },
         "additionalProperties": false
       },
+      "SpaceUsage": {
+        "description": "A space's messages this month and the limits on its messages and history, each while one applies.",
+        "type": "object",
+        "required": [
+          "monthly_messages",
+          "message_size",
+          "mailbox_retention",
+          "history_retention"
+        ],
+        "properties": {
+          "monthly_messages": {
+            "description": "The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`.",
+            "$ref": "#/components/schemas/UsageCount"
+          },
+          "message_size": {
+            "description": "The longest payload of an envelope, in bytes: the value of `--message-size-limit`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
+          "mailbox_retention": {
+            "description": "How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
+          "history_retention": {
+            "description": "How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          }
+        },
+        "additionalProperties": false
+      },
       "Spaces": {
         "type": "object",
         "required": ["spaces"],
@@ -6039,6 +6288,33 @@
         },
         "minItems": 1,
         "maxItems": 2
+      },
+      "UsageCount": {
+        "description": "A count and its limit; `limit` is absent while no limit applies.",
+        "type": "object",
+        "required": ["count"],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageLimit": {
+        "description": "A limit; `limit` is absent while no limit applies.",
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
       },
       "Username": {
         "description": "An account's username: a `name` of an agent address (docs/protocol/README.md, \"Agent address\"), unique on the server; `skald`, `admin`, `support` and `root` are reserved.",
