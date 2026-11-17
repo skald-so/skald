@@ -188,16 +188,20 @@ export function TwoLine({
   detail,
   detailTone = "muted",
   mono,
+  regular,
 }: {
   children: ReactNode;
   detail?: ReactNode;
   detailTone?: Tone;
   /** The value is a key or an ID. */
   mono?: boolean;
+  /** The value is in regular weight, as where a session signed in. */
+  regular?: boolean;
 }) {
+  const value = mono ? styles.code : regular ? undefined : styles.name;
   return (
     <span className={styles.lines}>
-      <span className={mono ? styles.code : styles.name}>{children}</span>
+      <span className={value}>{children}</span>
       {detail && (
         <span className={`${styles.detail} ${styles[detailTone]}`}>
           {detail}

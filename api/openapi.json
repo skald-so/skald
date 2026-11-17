@@ -6,6 +6,88 @@
     "description": "A server has two addresses. `<public URL>`, the server setting `--public-url`, is where the CLI and devices reach it. `<web URL>`, the setting `--web-url`, by default the public URL, is where browsers sign in: the providers' callbacks, the pages a sign-in returns to, its cookies, the `Origin` its browser forms are taken from and the verification page."
   },
   "paths": {
+    "/account/devices": {
+      "get": {
+        "operationId": "listAccountDevices",
+        "summary": "The account's devices as the web app shows them",
+        "description": "Every device of the session's account, in the order they registered, each with its state by the server's checks (docs/protocol/membership.md, \"Device checks\"); no key or certificate. It is the server's word: `skald` checks devices against the account's pinned master key.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's devices.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListedDevices"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/master": {
       "get": {
         "operationId": "getMasterKey",
@@ -425,6 +507,298 @@
         }
       }
     },
+    "/account/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "summary": "The account's sessions",
+        "description": "Every session of the web session's account that has not ended or expired, web and device sessions alike, newest first. A request with a device session lists nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's sessions.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sessions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown, ended or expired one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the request's session is a device session; only a web session lists or ends the account's sessions.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/sessions/end-others": {
+      "post": {
+        "operationId": "endOtherSessions",
+        "summary": "End every other session",
+        "description": "Ends every session of the web session's account but itself at once, web and device sessions alike, as `DELETE /account/sessions/{session}` ends one. Only with a web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Every other session is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown, ended or expired one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the request's session is a device session, or the request does not come from a page of the web URL. Nothing is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/sessions/{session}": {
+      "delete": {
+        "operationId": "endAccountSession",
+        "summary": "End a session of the account",
+        "description": "Ends a session of the web session's account at once: every later request with it is refused, and its WebSocket connections close with the reason `session-ended`, on every instance. A web session's links in progress end with it. A device session's device, its keys and its certificate stay, as at `DELETE /session`. Only with a web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "required": true,
+            "description": "The session's ID, as `GET /account/sessions` lists it.",
+            "schema": {
+              "$ref": "#/components/schemas/SessionId"
+            }
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The session is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown, ended or expired one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the request's session is a device session, or the request does not come from a page of the web URL. Nothing is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-session`: the account has no such session, or it has ended or expired.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/sign-in-methods": {
       "get": {
         "operationId": "listSignInMethods",
@@ -454,6 +828,214 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SignInMethods"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/sign-in-methods/{method}": {
+      "delete": {
+        "operationId": "removeSignInMethod",
+        "summary": "Remove a sign-in method of the account",
+        "description": "Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused while sign-up is closed, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "name": "method",
+            "in": "path",
+            "required": true,
+            "description": "The method's ID, as `GET /account/sign-in-methods` lists it.",
+            "schema": {
+              "$ref": "#/components/schemas/SignInMethodId"
+            }
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The method is removed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown, ended or expired one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Nothing is removed. The problem `https://skald.so/problems/not-allowed`: the request's session is a device session, or the request does not come from a page of the web URL. The problem `https://skald.so/problems/sign-in-too-old`: the web session's sign-in is older than `--link-sign-in-age`; the person signs in again first.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-sign-in-method`: the account has no such sign-in method.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The problem `https://skald.so/problems/last-sign-in-method`: it is the account's last sign-in method, which is never removed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/usage": {
+      "get": {
+        "operationId": "getAccountUsage",
+        "summary": "The spaces the account owns and its devices, with their limits",
+        "description": "The spaces the session's account owns and its devices, each counted as its limit counts it, with the limit while the server has its setting (docs/dev/architecture.md, \"Cloud limits\"). Asking creates no personal space.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's usage.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountUsage"
                 }
               }
             }
@@ -918,7 +1500,18 @@
       "post": {
         "operationId": "startGitHubLink",
         "summary": "Start a link of a GitHub sign-in method",
-        "description": "Submitted by the form of `GET /sign-in-methods`, with the web session's cookie, from a page of the web URL: a request whose `Origin` is any other, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to GitHub as `GET /auth/github` does, with a `state` that also binds the link to this web session; GitHub comes back through `GET /auth/github/callback`. The link works only while the session lasts.",
+        "description": "Submitted by a form of a page of the web URL, such as `GET /sign-in-methods`, with the web session's cookie: a request whose `Origin` is any other, or that has none, links nothing. The web session's sign-in has to be more recent than the server setting `--link-sign-in-age`. Sends the browser to GitHub as `GET /auth/github` does, with a `state` that also binds the link to this web session; GitHub comes back through `GET /auth/github/callback`. The link works only while the session lasts.",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "required": false,
+            "description": "The page of the web URL the link returns to, as `return_to` of `GET /auth/github` names it; by default `GET /sign-in-methods`. Anything else, such as another site's address, returns to `/` of the web URL.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "security": [
           {
             "session": []
@@ -1216,6 +1809,17 @@
         "operationId": "startGoogleLink",
         "summary": "Start a link of a Google sign-in method",
         "description": "Starts a link as `POST /auth/github/link` does, with Google: sends the browser to Google as `GET /auth/google` does, with `prompt=select_account`, so that the person chooses the Google account; Google comes back through `GET /auth/google/callback`.",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "required": false,
+            "description": "The page of the web URL the link returns to, as for `POST /auth/github/link`.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "security": [
           {
             "session": []
@@ -2285,6 +2889,105 @@
         }
       }
     },
+    "/mailbox/events": {
+      "get": {
+        "operationId": "streamMailbox",
+        "summary": "Stream the mailbox",
+        "description": "Server-sent events (docs/protocol/delivery.md, \"Frames\" and \"Mailbox\"). Acks the device's mailbox up to the cursor in `Last-Event-ID`, then sends the entries after it in `seq` order, then an empty `batch` once it has sent every entry the mailbox held at the opening, then each new entry and `space-notice`, through any instance. Each event's `data` is one frame, its CBOR in base64url without padding; the `id` of a `message` or `status` event is its `seq`. While idle, the stream sends a comment line at the interval of the server setting `--sse-keep-alive`. It ends when its session ends or its device is revoked. The device sends and acks with `POST /mailbox/send` and `POST /mailbox/ack`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The device's cursor; 0 without it.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stream.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a `Last-Event-ID` that is not a `seq`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The stream is not proved, and the server reads and acks nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mailbox/poll": {
       "post": {
         "operationId": "pollMailbox",
@@ -2713,8 +3416,8 @@
       },
       "delete": {
         "operationId": "endSession",
-        "summary": "End the device session",
-        "description": "Signs a machine out: ends the device session of the request's bearer token at once, so that every later request with it is refused. The account's other sessions, its devices and its master key stay.",
+        "summary": "Sign the session out",
+        "description": "Ends the request's session at once, as `DELETE /account/sessions/{session}` ends one: the device session of its bearer token, which signs a machine out, or the web session of its cookie, only from a page of the web URL. The account's other sessions, its devices and its master key stay.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -2723,6 +3426,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "session": []
           }
         ],
         "responses": {
@@ -2731,6 +3437,12 @@
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Set-Cookie": {
+                "description": "For a web session: removes its cookie.",
+                "schema": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -2750,7 +3462,7 @@
             }
           },
           "401": {
-            "description": "The request has no `Authorization` header, one that is not `Bearer <token>`, or the token of no device session, such as an ended one.",
+            "description": "The request has no session it may end: no `Authorization` header and no web session's cookie, an `Authorization` header that is not `Bearer <token>` or the token of no device session, such as an ended one, or a web session's cookie on a request whose `Origin` is not the web URL's, or that has none.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3517,7 +4229,7 @@
       "get": {
         "operationId": "getHistoryEntries",
         "summary": "The channel's history entries",
-        "description": "The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, \"History entry\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members.",
+        "description": "The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, \"History entry\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3635,7 +4347,7 @@
       "get": {
         "operationId": "getHistoryLinks",
         "summary": "The channel's history links",
-        "description": "The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, \"Key chain\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members.",
+        "description": "The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, \"Key chain\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, \"Access\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3753,7 +4465,7 @@
       "get": {
         "operationId": "getHistoryWraps",
         "summary": "The channel's history wraps",
-        "description": "The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, \"Wraps\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members.",
+        "description": "The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, \"Wraps\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3899,6 +4611,106 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Devices"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/members": {
+      "get": {
+        "operationId": "listSpaceMembers",
+        "summary": "The space's members as the web app shows them",
+        "description": "The members of the space's latest stored revision (docs/protocol/membership.md, \"Roster\"), in its order, each with its role; no revision or master key. It is the server's word: `skald` checks the space's revisions itself.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The space's members; none before its revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListedMembers"
                 }
               }
             }
@@ -4225,6 +5037,106 @@
         }
       }
     },
+    "/spaces/{space}/usage": {
+      "get": {
+        "operationId": "getSpaceUsage",
+        "summary": "The space's messages this month, with the limits on its messages",
+        "description": "The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, and the server's limits on the space's messages and history while it has their settings (docs/dev/architecture.md, \"Cloud limits\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The space's usage.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpaceUsage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/ws": {
       "get": {
         "operationId": "openWebSocket",
@@ -4368,6 +5280,21 @@
         "description": "An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "AccountUsage": {
+        "description": "The spaces an account owns and its devices, each with its limit while one applies.",
+        "type": "object",
+        "required": ["owned_spaces", "devices"],
+        "properties": {
+          "owned_spaces": {
+            "$ref": "#/components/schemas/OwnedSpaces"
+          },
+          "devices": {
+            "description": "The account's devices with a certificate, `service` and revoked devices aside, as `--devices-limit` counts them; the limit is its value.",
+            "$ref": "#/components/schemas/UsageCount"
+          }
+        },
+        "additionalProperties": false
       },
       "Certificate": {
         "description": "A device certificate's CBOR bytes (docs/protocol/membership.md, \"Device certificate\") in base64url without padding (RFC 4648, §5).",
@@ -4754,6 +5681,146 @@
         },
         "additionalProperties": false
       },
+      "ListedDevice": {
+        "description": "A device of the account as the web app shows it: no key or certificate.",
+        "type": "object",
+        "required": ["device", "name", "kind", "registered_at", "state"],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "name": {
+            "description": "The name the device registered with.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "The device's kind, as it registered.",
+            "type": "string",
+            "enum": ["client", "browser", "service"]
+          },
+          "registered_at": {
+            "description": "When the device registered.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "description": "By checks 3 and 4 of docs/protocol/membership.md, \"Device checks\", with the account's stored revocations: `linked`, a device with a certificate they do not revoke; `waiting`, a device with no certificate yet, waiting for linking; `revoked`, a device they revoke, as one certified by a revoked device.",
+            "type": "string",
+            "enum": ["linked", "waiting", "revoked"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListedDevices": {
+        "type": "object",
+        "required": ["devices"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedDevice"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListedMember": {
+        "description": "A member of a space as the web app shows it: no key.",
+        "type": "object",
+        "required": ["handle", "role", "linked_devices", "joined_at"],
+        "properties": {
+          "handle": {
+            "description": "The member's handle in the revision.",
+            "type": "string"
+          },
+          "role": {
+            "description": "The member's role in the revision.",
+            "type": "string",
+            "enum": ["admin", "member"]
+          },
+          "github_login": {
+            "description": "The GitHub login of the account's GitHub method; absent while it has none, or when this server does not hold the account.",
+            "type": "string"
+          },
+          "linked_devices": {
+            "description": "How many of the account's devices `GET /account/devices` gives as `linked`.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "joined_at": {
+            "description": "When the server stored the revision that added the member, after which every revision lists it.",
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListedMembers": {
+        "type": "object",
+        "required": ["members"],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedMember"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListedSession": {
+        "description": "A session of the account: a web session, from a sign-in in the browser, or a device session, from the device flow. No IP address or location.",
+        "type": "object",
+        "required": [
+          "session",
+          "kind",
+          "started_at",
+          "last_used_at",
+          "current"
+        ],
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "kind": {
+            "description": "`web` for a web session, `device` for a device session.",
+            "type": "string",
+            "enum": ["web", "device"]
+          },
+          "browser": {
+            "description": "A web session's browser, as the `User-Agent` of its sign-in names it, such as `Chrome`; only when it names a known one.",
+            "type": "string"
+          },
+          "os": {
+            "description": "A web session's operating system, as the `User-Agent` of its sign-in names it, such as `macOS`; only when it names a known one.",
+            "type": "string"
+          },
+          "device_name": {
+            "description": "The name of the device a device session last registered or connected as; only once it has.",
+            "type": "string"
+          },
+          "started_at": {
+            "description": "The session's sign-in.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The session's last request, to the minute: a request records its use only when the last one is a minute old or more.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "description": "When a web session expires: 30 days after its sign-in, its cookie with it. The server then refuses it as an ended one and lists it no more. Only for a web session: a device session lasts until it ends.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "current": {
+            "description": "Whether it is the request's own session.",
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "ListedSpace": {
         "description": "A space of the account's spaces list.",
         "type": "object",
@@ -4836,6 +5903,29 @@
           },
           "error_description": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OwnedSpaces": {
+        "description": "The spaces an account owns, as `--owned-spaces-limit` counts them: the ones it created, its personal space included also before it is created. `spaces` lists those that exist.",
+        "type": "object",
+        "required": ["count", "spaces"],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "limit": {
+            "description": "The value of `--owned-spaces-limit`; absent without it.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "spaces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Space"
+            }
           }
         },
         "additionalProperties": false
@@ -4998,11 +6088,32 @@
         },
         "additionalProperties": false
       },
+      "SessionId": {
+        "description": "A session's ID: random, it reveals nothing of the session's token.",
+        "type": "string",
+        "format": "uuid"
+      },
+      "Sessions": {
+        "type": "object",
+        "required": ["sessions"],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedSession"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "SignInMethod": {
         "description": "A sign-in method: a provider and the subject it gives the person, which the server does not show.",
         "type": "object",
-        "required": ["provider", "linked_at"],
+        "required": ["method", "provider", "linked_at", "current"],
         "properties": {
+          "method": {
+            "$ref": "#/components/schemas/SignInMethodId"
+          },
           "provider": {
             "description": "`github`, or `google` for the server's OIDC provider.",
             "type": "string",
@@ -5016,9 +6127,18 @@
           "github_login": {
             "description": "A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub.",
             "type": "string"
+          },
+          "current": {
+            "description": "Whether the request's web session signed in with this method; `false` for a device session.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false
+      },
+      "SignInMethodId": {
+        "description": "A sign-in method's ID: random, it reveals nothing of the method's subject.",
+        "type": "string",
+        "format": "uuid"
       },
       "SignInMethods": {
         "type": "object",
@@ -5091,6 +6211,35 @@
         },
         "additionalProperties": false
       },
+      "SpaceUsage": {
+        "description": "A space's messages this month and the limits on its messages and history, each while one applies.",
+        "type": "object",
+        "required": [
+          "monthly_messages",
+          "message_size",
+          "mailbox_retention",
+          "history_retention"
+        ],
+        "properties": {
+          "monthly_messages": {
+            "description": "The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`.",
+            "$ref": "#/components/schemas/UsageCount"
+          },
+          "message_size": {
+            "description": "The longest payload of an envelope, in bytes: the value of `--message-size-limit`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
+          "mailbox_retention": {
+            "description": "How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
+          "history_retention": {
+            "description": "How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          }
+        },
+        "additionalProperties": false
+      },
       "Spaces": {
         "type": "object",
         "required": ["spaces"],
@@ -5139,6 +6288,33 @@
         },
         "minItems": 1,
         "maxItems": 2
+      },
+      "UsageCount": {
+        "description": "A count and its limit; `limit` is absent while no limit applies.",
+        "type": "object",
+        "required": ["count"],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageLimit": {
+        "description": "A limit; `limit` is absent while no limit applies.",
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
       },
       "Username": {
         "description": "An account's username: a `name` of an agent address (docs/protocol/README.md, \"Agent address\"), unique on the server; `skald`, `admin`, `support` and `root` are reserved.",

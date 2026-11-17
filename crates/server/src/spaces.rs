@@ -2,6 +2,8 @@
 //! creates a space by name, the server stores its revisions in order and only from its admins'
 //! sessions, and gives a space only to its members' sessions.
 
+use std::collections::HashMap;
+
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{FromRequestParts, Path, State};
@@ -14,10 +16,11 @@ use skald_proto::{
 };
 use sqlx::PgPool;
 
+use crate::accounts::GITHUB;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
-use crate::{AppState, revocations};
+use crate::{AppState, history, mailboxes, revocations};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -28,9 +31,9 @@ struct SpaceRequest {
 
 /// `Space` in the spec.
 #[derive(Serialize)]
-struct Space {
-    space: String,
-    name: String,
+pub(crate) struct Space {
+    pub(crate) space: String,
+    pub(crate) name: String,
 }
 
 /// `ListedSpace` in the spec.
@@ -65,6 +68,23 @@ struct Revisions {
 struct StoredRevision {
     space: String,
     revision: u64,
+}
+
+/// `ListedMember` in the spec.
+#[derive(Serialize)]
+struct ListedMember {
+    handle: String,
+    role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    github_login: Option<String>,
+    linked_devices: i64,
+    joined_at: String,
+}
+
+/// `ListedMembers` in the spec.
+#[derive(Serialize)]
+struct ListedMembers {
+    members: Vec<ListedMember>,
 }
 
 /// `NewChannel` in the spec.
@@ -108,7 +128,7 @@ pub(crate) async fn find(db: &PgPool, space: &str, account: &str) -> Result<Foun
 }
 
 /// The space of the request's path, which the session's account gets, as a handler's argument.
-pub(crate) struct Gotten(Found);
+pub(crate) struct Gotten(pub(crate) Found);
 
 impl FromRequestParts<AppState> for Gotten {
     type Rejection = Refusal;
@@ -293,6 +313,69 @@ pub(crate) async fn devices(State(state): State<AppState>, Gotten(found): Gotten
     Ok(Json(Devices::of(listed, &revocations)).into_response())
 }
 
+/// `GET /spaces/<space>/members`: the members of the space's latest stored revision as the web app
+/// shows them, in its order. A member joined when the server stored the first revision of the run
+/// up to the latest that lists it.
+pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
+    let space = found.id.to_string();
+    let latest = mailboxes::latest(&state.db, found.id)
+        .await
+        .map_err(|err| Refusal::Database("read the latest revision", err))?;
+    let Some(roster) = latest else {
+        return Ok(Json(ListedMembers { members: vec![] }).into_response());
+    };
+    let revision =
+        i64::try_from(roster.body().revision).expect("a stored revision's number fits its column");
+    // `to_char` gives RFC 3339 in UTC; an account this server does not hold has no login or device.
+    let rows: Vec<(String, Option<String>, i64, String)> = sqlx::query_as(
+        "SELECT m.account_id::text,
+             (SELECT login FROM sign_in_methods
+              WHERE account_id = m.account_id AND provider = $3 ORDER BY created_at LIMIT 1),
+             (SELECT count(*) FROM devices
+              WHERE account_id = m.account_id AND cert IS NOT NULL AND NOT revoked),
+             to_char(r.stored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')
+         FROM roster_members m
+         JOIN roster_revisions r ON r.space_id = m.space_id AND r.revision = 1 + COALESCE(
+             (SELECT max(o.revision) FROM roster_revisions o
+              WHERE o.space_id = m.space_id AND o.revision < m.revision
+                  AND NOT EXISTS (SELECT 1 FROM roster_members x
+                      WHERE x.space_id = o.space_id AND x.revision = o.revision
+                          AND x.account_id = m.account_id)),
+             0)
+         WHERE m.space_id = $1::uuid AND m.revision = $2",
+    )
+    .bind(&space)
+    .bind(revision)
+    .bind(GITHUB)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| Refusal::Database("read the space's members", err))?;
+    let mut shown: HashMap<String, (Option<String>, i64, String)> = rows
+        .into_iter()
+        .map(|(account, login, linked, joined)| (account, (login, linked, joined)))
+        .collect();
+    let members = roster
+        .body()
+        .members
+        .iter()
+        .filter_map(|member| {
+            let (github_login, linked_devices, joined_at) =
+                shown.remove(&member.account.to_string())?;
+            Some(ListedMember {
+                handle: member.handle.to_string(),
+                role: match member.role {
+                    Role::Admin => "admin",
+                    Role::Member => "member",
+                },
+                github_login,
+                linked_devices,
+                joined_at,
+            })
+        })
+        .collect();
+    Ok(Json(ListedMembers { members }).into_response())
+}
+
 /// `POST /spaces/<space>/channels`: a new channel ID for the space, for an admin's session.
 pub(crate) async fn channel(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     if !found.admin {
@@ -398,7 +481,7 @@ pub(crate) async fn store(
         return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
-    insert(&state, found.id, &roster, &sent).await
+    insert(&state, found.id, &roster, previous.as_ref(), &sent).await
 }
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after
@@ -540,9 +623,16 @@ pub(crate) async fn certs(
 }
 
 /// Stores `roster`, received as `sent`, as the next revision of `space`, with its members, and
-/// gives their accounts' connections a notice of `space`, on each instance. Of two revisions with
-/// one number at once, the first is stored and the other refused.
-async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) -> Answer {
+/// gives their accounts' connections a notice of `space`, on each instance; with the accounts it
+/// adds to channels after `previous`. Of two revisions with one number at once, the first is stored
+/// and the other refused.
+async fn insert(
+    state: &AppState,
+    space: SpaceId,
+    roster: &Roster,
+    previous: Option<&Roster>,
+    sent: &[u8],
+) -> Answer {
     let db = &state.db;
     let body = roster.body();
     let number = body.revision;
@@ -587,6 +677,9 @@ async fn insert(state: &AppState, space: SpaceId, roster: &Roster, sent: &[u8]) 
     .execute(&mut *tx)
     .await
     .map_err(|err| Refusal::Database("store a revision's members", err))?;
+    history::added(&mut tx, roster, previous)
+        .await
+        .map_err(|err| Refusal::Database("store a revision's channel additions", err))?;
     state
         .instance
         .tell(&mut tx, &[Event::Revision(space, revision)])

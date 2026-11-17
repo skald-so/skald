@@ -79,7 +79,7 @@ timestamp = uint       ; seconds since the Unix epoch
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: each request proves its device ([Connecting](#connecting)). `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request's body is a `sync` with the cursor; its answer is a `batch` ([Mailbox](#mailbox)).
-  - SSE: one `message`, `status` or `space-notice` per event, the event's `id` the `seq` of a `message` or `status`; `Last-Event-ID` states the cursor. The client sends `send` and `ack` over HTTPS.
+  - SSE: a stream that proves its device as an HTTPS request does. Its events ([Encoding](README.md#encoding)): a `message`, `status` or `space-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
 
 ## Connecting
@@ -112,13 +112,13 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 
 - `signature` signs, with the label `skald request`, `["skald request", challenge, origin]`, `origin` as in `auth`. A different label keeps a proof from serving as `auth` and the other way round.
 - The server checks it as `auth`, and also that the challenge is of the bearer token's session. A request it does not take reads, acks and stores nothing: `401` with the reason as its problem, `auth-required` for a missing or malformed proof, or `not-signed-in` for a token of no device session.
-- A waiting long-poll ends with the refusal a new request would get when its session ends or its device is revoked.
+- A waiting long-poll ends with the refusal a new request would get when its session ends or its device is revoked; an SSE stream ends.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
 - The idempotency key of an envelope is its sending device, its `msg_id` and, under `hpke`, its recipient device. It has no field of its own: `msg_id` is unique per sending device, and the server knows the sending device from the authenticated connection.
 - The server stores at most one envelope per idempotency key and keeps the key for at least its mailbox retention. It answers a retry as it answered the first send, whatever the retry's bytes.
-- `stored` is sent only after the envelope and its mailbox entries are committed. In the cloud, after the replica has the write: [infrastructure.md, "Cloud"](../dev/infrastructure.md#cloud).
+- `stored` is sent only after the envelope and its mailbox entries are committed.
 - `send-refused` names one of these problems. A client treats a problem it does not know as a refusal too.
 
 | Problem | The envelope |
@@ -142,7 +142,7 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
   - On WebSocket, the server sends no `message` or `status` on a connection before its first `sync`.
   - Every `sync` acks like `ack`. Only the first `sync` of a connection starts catch-up; a later one only acks.
 - **Catch-up:** after the cursor a device states on connecting, the server sends the remaining entries in `seq` order, then pushes new entries as they are added.
-  - On WebSocket, once catch-up has sent every entry the mailbox held at the first `sync`, the server sends an empty `batch`, so a client that runs once knows it has them all.
+  - On WebSocket and SSE, once catch-up has sent every entry the mailbox held at the first `sync` or the stream's opening, the server sends an empty `batch`, so a client that runs once knows it has them all.
   - On HTTPS, catch-up ends at the first empty answer to a long-poll with a wait of 0.
 - **Long-poll:** a request states its cursor and a wait in seconds, cut to the server's maximum. Its answer is a `batch`:
   - the entries after the cursor in `seq` order, up to a server limit per answer;

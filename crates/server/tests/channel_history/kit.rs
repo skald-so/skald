@@ -377,7 +377,12 @@ pub fn entry(channel: ChannelId, epoch: u64) -> Item {
 /// carol are its members, dave is a channel member but not in the group, eve is outside the space.
 /// GitHub user IDs from `github` on.
 pub fn formed(github: u64) -> (Scene, Formed) {
-    let mut s = Scene::new(github);
+    formed_with(github, &[])
+}
+
+/// As [`formed`], on a server with the extra arguments `args`.
+pub fn formed_with(github: u64, args: &[&str]) -> (Scene, Formed) {
+    let mut s = Scene::with(github, args);
     let t = &s.fixture.team;
     let accounts = [
         t.alice.account,
@@ -385,12 +390,8 @@ pub fn formed(github: u64) -> (Scene, Formed) {
         t.carol.account,
         t.dave.account,
     ];
-    let general = s.fixture.general;
-    s.fixture.revise(|body| {
-        let channel = (body.channels.iter_mut())
-            .find(|channel| channel.id == general)
-            .expect("the channel");
-        channel.members = (accounts.iter())
+    revise_members(&mut s, |members| {
+        *members = (accounts.iter())
             .map(|&account| ChannelMember {
                 account,
                 history: true,
@@ -399,6 +400,18 @@ pub fn formed(github: u64) -> (Scene, Formed) {
     });
     let formed = s.form();
     (s, formed)
+}
+
+/// Stores the next revision, signed by alice's laptop, with `change` applied to the members of the
+/// scene's channel.
+pub fn revise_members(s: &mut Scene, change: impl FnOnce(&mut Vec<ChannelMember>)) {
+    let general = s.fixture.general;
+    s.fixture.revise(|body| {
+        let channel = (body.channels.iter_mut())
+            .find(|channel| channel.id == general)
+            .expect("the channel");
+        change(&mut channel.members);
+    });
 }
 
 /// bob commits an empty Commit, which the server stores, and uploads the GroupInfo of the new

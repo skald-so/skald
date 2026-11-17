@@ -141,3 +141,20 @@ test("the choices are buttons that submit no form", async () => {
   await userEvent.setup().click(screen.getByRole("button", { name: "Banned" }));
   expect(onSubmit).not.toHaveBeenCalled();
 });
+
+test("a choice with a count names it after its label", () => {
+  render(
+    <FilterButtons
+      label="Filter members"
+      options={[
+        { value: "all", label: "All", count: 3 },
+        { value: "admin", label: "Admins", count: 0 },
+      ]}
+      value="all"
+      onChange={() => {}}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "All 3" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Admins 0" })).toBeTruthy();
+});

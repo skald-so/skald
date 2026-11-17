@@ -24,6 +24,8 @@ const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
 const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
 /// The longest `--long-poll-max-wait`, in seconds: a day.
 const LONG_POLL_LONGEST: u64 = 24 * 3_600;
+/// The longest `--sse-keep-alive`, in seconds: an hour.
+const SSE_KEEP_ALIVE_LONGEST: u64 = 3_600;
 
 /// `--sign-up`.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -95,8 +97,8 @@ struct Cli {
     )]
     sign_in_state_lifetime: u64,
 
-    /// How recent a web session's sign-in has to be to link another sign-in method to its account;
-    /// with an older one, the person signs in again first.
+    /// How recent a web session's sign-in has to be to link another sign-in method to its account
+    /// or remove one; with an older one, the person signs in again first.
     #[arg(
         long,
         env = "SKALD_LINK_SIGN_IN_AGE",
@@ -201,6 +203,16 @@ struct Cli {
     )]
     mailbox_retention: Option<u64>,
 
+    /// How long the server keeps a channel's history entries, at most 100 years; it deletes the
+    /// links and wraps of epochs before those of the entries it deletes [default: kept for good].
+    #[arg(
+        long,
+        env = "SKALD_HISTORY_RETENTION",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=skald_server::HISTORY_LONGEST)
+    )]
+    history_retention: Option<u64>,
+
     /// The longest payload of an envelope a device sends, in bytes; a longer one is refused with
     /// too-large [default: no limit].
     #[arg(
@@ -240,6 +252,16 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=LONG_POLL_LONGEST)
     )]
     long_poll_max_wait: Option<u64>,
+
+    /// How often an idle mailbox stream over server-sent events sends a keep-alive, in seconds, at
+    /// most an hour [default: 15].
+    #[arg(
+        long,
+        env = "SKALD_SSE_KEEP_ALIVE",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=SSE_KEEP_ALIVE_LONGEST)
+    )]
+    sse_keep_alive: Option<u64>,
 
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
@@ -457,10 +479,12 @@ impl Cli {
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
+            history_retention: self.history_retention.map(Duration::from_secs),
             message_size_limit: self.message_size_limit,
             monthly_messages_limit: self.monthly_messages_limit,
             devices_limit: self.devices_limit,
             long_poll_max_wait: self.long_poll_max_wait.map(Duration::from_secs),
+            sse_keep_alive: self.sse_keep_alive.map(Duration::from_secs),
         })
     }
 }
@@ -576,6 +600,26 @@ mod tests {
     }
 
     #[test]
+    fn the_history_retention_is_from_a_second_to_100_years() {
+        let retention = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--history-retention",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.history_retention)
+            .ok()
+        };
+        assert_eq!(retention(1), Some(Some(1)));
+        let longest = skald_server::HISTORY_LONGEST;
+        assert_eq!(retention(longest), Some(Some(longest)));
+        assert_eq!(retention(0), None);
+        assert_eq!(retention(longest + 1), None);
+    }
+
+    #[test]
     fn the_longest_wait_of_a_long_poll_is_from_a_second_to_a_day() {
         let wait = |seconds: u64| {
             Cli::try_parse_from([
@@ -592,6 +636,25 @@ mod tests {
         assert_eq!(wait(86_400), Some(Some(86_400)));
         assert_eq!(wait(0), None);
         assert_eq!(wait(86_401), None);
+    }
+
+    #[test]
+    fn the_keep_alive_of_a_stream_is_from_a_second_to_an_hour() {
+        let interval = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--sse-keep-alive",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.sse_keep_alive)
+            .ok()
+        };
+        assert_eq!(interval(1), Some(Some(1)));
+        assert_eq!(interval(3_600), Some(Some(3_600)));
+        assert_eq!(interval(0), None);
+        assert_eq!(interval(3_601), None);
     }
 
     #[test]

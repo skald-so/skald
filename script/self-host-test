@@ -63,7 +63,8 @@
 #   proxy-host-site      the site block of a Caddy on the machine (Caddyfile)
 #   proxy-join           the proxy variant's .env for a proxy in a container that joins the stack's
 #                        network
-#   proxy-join-connect   connects the proxy's container to the stack's network, after `up`
+#   proxy-join-connect   connects the proxy's container to the stack's network, after `up`; the
+#                        proxy's default route stays on its own network
 #   proxy-network        the proxy variant's .env for a proxy in a container on a network .env names
 #   proxy-container-site the site block of a Caddy in a container (Caddyfile)
 # The part substitutes only these, in every block: SKALD_VERSION, SKALD_DIGEST and SKALD_FILES, to
@@ -113,7 +114,8 @@
 #     not show the secret key.
 #   proxy-host, proxy-join, proxy-network: the proxy variant behind a stand-in for the admin's proxy,
 #     Caddy with the guide's site block and a certificate from the ACME server: on the machine for the
-#     loopback form; in a container that the guide's command joins to the stack's network; in a
+#     loopback form; in a container on a network of its own, sorting after `skald`, that the guide's
+#     command joins to the stack's network, its default route staying on its own network; in a
 #     container on a network that exists before the stack. The stack publishes ports only on
 #     loopback in the first form and not at all in the others, and port 8080 does not answer on the
 #     machine's address; /health and skald status answer through the proxy. The stack's own Caddy
@@ -126,6 +128,8 @@
 #     disk fails, leaves no file there, and after it too.
 #     With the attachments volume emptied, the guide's restore into that stack, whose database holds
 #     data, fails and changes neither its database nor its volume.
+#     Pasted into a shell through `bash -s` with a command after them, the backup and the refused
+#     restore leave that command to the shell, which runs it.
 #   restore-files: release, files, env, github, google; the stack's containers created and removed,
 #     files in its attachments volume. The guide's restore fails, leaves the volume as it was and
 #     the database without a table.
@@ -1509,10 +1513,21 @@ fi
 check_env proxy-host
 stack_down proxy-host
 
+# check_proxy_route <scenario>: the proxy's default route goes through its own network's gateway.
+# Its network's name sorts after the stack's `skald`, which would otherwise take the route.
+check_proxy_route() {
+  local gateway route
+  gateway=$(m docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' "$proxy_network")
+  route=$(m docker exec "$proxy_container" ip route | grep '^default ' || true)
+  [[ -n $gateway && $route == "default via $gateway "* ]] ||
+    fail "$1: the proxy's default route left its own network ($gateway): '$route'"
+}
+
 scenario proxy-join release files web-files web env github proxy-join :before_up up proxy-container-site \
-  :proxy_in_container proxy-join-connect :wait_https :trust_acme status :trust_system
+  ":proxy_in_container network" proxy-join-connect :wait_https :trust_acme status :trust_system
 if run_scenario proxy-join <<<"$github_secret"; then
   check_proxied proxy-join none
+  check_proxy_route proxy-join
   spa_through proxy-join "the guide's install"
 fi
 stack_down proxy-join
@@ -1592,6 +1607,16 @@ m mkdir -p "$backups"
 
 # with_backup <scenario> <path>: the scenario's script with <path> for `<backup file>`.
 with_backup() { edit_script "$1" "s|<backup file>|$2|g"; }
+
+# run_pasted <scenario>: runs the scenario's script as pasted into a shell with one more command
+# after it: through `bash -s`, without errexit, so that command runs after a refusal too. Fails
+# unless it runs: a guide's command that reads standard input would take it.
+run_pasted() {
+  { sed '1s/^set -eo pipefail$/set -o pipefail/' "$work/run/$1/script.sh"; echo 'echo self-host-test: pasted after'; } |
+    mi env HOME=/root sh -c 'cd /root && timeout 1500 bash -s' >"$work/run/$1/output" 2>&1 || true
+  grep -qx 'self-host-test: pasted after' "$work/run/$1/output" ||
+    fail "$1: a command pasted after the guide's blocks does not run; the output's end:"$'\n'"$(tail -n 20 "$work/run/$1/output")"
+}
 
 # run_refused <scenario> <step>: runs the scenario's script on the machine, as run_scenario does,
 # where it ends with the guide's <step>; fails unless the script reaches <step> and exits non-zero.
@@ -1756,6 +1781,13 @@ if [[ -n $backup_ok ]]; then
   lists_as_before backup backup/ada-machine "the guide's backup" "$ada_before"
   lists_as_before backup backup/grace-machine "the guide's backup" "$grace_before"
 
+  # The guide's backup, pasted with a command after it.
+  scenario backup-pasted ":resume backup" backup
+  with_backup backup-pasted "$backup_file-pasted"
+  run_pasted backup-pasted
+  m rm -f "$backup_file-pasted"
+  answers_health backup "the guide's backup, pasted" || true
+
   # A backup that fails: its disk full.
   m sh -c 'mkdir -p /self-host/full && mount -t tmpfs -o size=4k tmpfs /self-host/full'
   scenario backup-full ":resume backup" backup
@@ -1778,6 +1810,10 @@ if [[ -n $backup_ok ]]; then
     scenario restore-data ":resume backup" restore
     with_backup restore-data "$backup_file"
     run_refused restore-data restore || true
+    # The refused restore, pasted with a command after it.
+    scenario restore-data-pasted ":resume backup" restore
+    with_backup restore-data-pasted "$backup_file"
+    run_pasted restore-data-pasted
     [[ $(database_print backup || true) == "$database" ]] ||
       fail "restore-data: the refused restore changes the stack's database"
     [[ $(attachment_files backup) == "$files" ]] ||

@@ -37,6 +37,8 @@ const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
 const PROOF_WAIT: Duration = Duration::from_secs(5);
 /// How long a proved connection waits for the instance to listen to the others.
 pub(crate) const LISTEN_WAIT: Duration = Duration::from_secs(5);
+/// Why a connection or a request fails when the instance does not listen within [`LISTEN_WAIT`].
+pub(crate) const NOT_LISTENING: &str = "the instance does not listen to the others yet";
 
 /// Why the server closes a connection: the reasons of "Connecting".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,7 +266,7 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
                 .await
                 .is_err()
             {
-                report_closing("the instance does not listen to the others");
+                report_closing(&error_reports::logged("serve a connection", &NOT_LISTENING));
                 return close(socket, Closing::ServerError).await;
             }
             let sender = Sender {
@@ -508,6 +510,17 @@ pub(crate) async fn check(
         proof.signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
+    // The session lists the device it proved, and its use to the minute, as `sign_in::find` does.
+    sqlx::query(
+        "UPDATE sessions SET device_id = $1::uuid, last_used_at = now()
+         WHERE token_hash = $2 AND (device_id IS DISTINCT FROM $1::uuid
+             OR last_used_at <= now() - interval '1 minute')",
+    )
+    .bind(proof.device.to_string())
+    .bind(&of)
+    .execute(&state.db)
+    .await
+    .map_err(|err| Unproved::Failed("record a session's device", err))?;
     Ok(Proved {
         device: proof.device,
         account: account.parse().expect("a stored account ID"),

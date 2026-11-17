@@ -45,7 +45,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **Self-host stack:** `script/self-host-test`, the Rust code's part `self-host`, alone in a job: the stack by [self-host.md](../self-host.md) on a clean machine, a privileged Docker-in-Docker container, with stand-ins for Let's Encrypt, the bucket, GitHub and Google.
   - `script/changed-parts` marks it for the paths of the part `image`, `web/package.json`, `web/package-lock.json`, the paths of the web app's build, `docker-compose.yml`, `Caddyfile`, the guide and its tests; the guide is the one path in `docs/` that marks a part other than `site`.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
-- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the Release PR workflow (`script/release-pr-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of `script/install-git-cliff` and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/release-web-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the release check against stand-ins for a release and the verification commands, and its jobs (`script/release-check-test`, `script/release-check-steps-test`, `script/release-check-workflow-test`); the Pages workflow (`script/pages-workflow-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
+- **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow (`script/ci-workflow-test`), of the edge image and staging deploy workflow, of the Release PR workflow (`script/release-pr-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of `script/install-git-cliff` and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/release-web-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the release check against stand-ins for a release and the verification commands, and its jobs (`script/release-check-test`, `script/release-check-steps-test`, `script/release-check-workflow-test`); the Pages workflow (`script/pages-workflow-test`); the production deploy job (`script/production-deploy-workflow-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
 - **Release PR and tag:** in the Rust code's part `repository`, on fixture repositories: `script/release-pr-test` and `script/release-tag-test`. `script/release-pr-test` also checks the section git-cliff writes for `v0.1.0` against `CHANGELOG.md`, so the Rust jobs check out the whole history and the tags.
 - **Website and docs:** `script/site-test`, the part `site`: `docs/` builds with `site/build.mjs`, which fails on a broken internal link: to a page, to a heading of one, or to a repository file outside `docs/` or its heading. `script/changed-parts` marks it for `docs/`, `site/`, any Markdown file and a removed path that `docs/` links to or that lies in a directory it links to.
 - **Copied code:** `script/duplicates` fails on a block copied in Rust, TypeScript or shell code, found by jscpd, unless `script/duplicates-known` lists it.
@@ -151,7 +151,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Until the repository's Pages publishes from GitHub Actions, GitHub's API answering 404, the publish job is skipped and the run passes. Pages set up from a branch fails the run.
   - Only the publish job writes: `pages` and `id-token`, for the deployment.
 - GitHub Pages serves one custom domain per site, so there is one site: its custom domain is `skald.so`, HTTPS enforced.
-  - `docs.skald.so` answers every path with a permanent redirect to the same path on `skald.so`, over HTTPS; the DNS provider keeps it, as GitHub Pages serves no redirect.
+  - `docs.skald.so` answers every path with a permanent redirect to the same path on `skald.so`, over HTTPS; the cloud's Caddy keeps it, as GitHub Pages serves no redirect and the DNS provider's has no HTTPS.
 
 ## Trust in builds
 - Release files get **GitHub Artifact Attestations** (Sigstore build provenance) from the release workflow at the release tag ("Release").
@@ -182,16 +182,21 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Its Google sign-in uses an OAuth client of its own; `script/check-google-sign-in https://dev.skald.so <client ID>` checks it without a person.
   - Every merge into `dev` is deployed to it by this repository's CI: after `.github/workflows/edge.yml` publishes `:edge`, its deploy job deploys that digest over SSH with `script/deploy-staging`: one deploy at a time, only of the head of `dev`, so staging never moves back.
   - The job runs in the environment `staging`: only `dev` deploys from it, only this job uses it. Its secrets are the connection `script/deploy-staging` reads, described there: `STAGING_SSH_KEY`, `STAGING_SSH_HOST_KEY`, `STAGING_SSH_DESTINATION`. The key runs only the deploy on the VPS.
-- **Production:** dedicated Hetzner servers, a primary and a replica.
-  - PostgreSQL 19 with synchronous streaming replication: `stored` is sent after the replica has the write. If the replica is down, replication switches to asynchronous and an alert fires.
-  - WAL-G backups to object storage.
+- **Production:** one server, the VPS staging runs on, behind its one Caddy, within caps that leave the other sites their resources. Production publishes no port.
+  - PostgreSQL 19, without a replica.
+  - Attachments on a disk volume of the server.
+  - Encrypted WAL-G backups on the server's disk.
+  - On a push of a stable release's tag, once the release check passes, the release workflow's job `deploy-production` waits for the owner's approval, then deploys the release over SSH with `script/deploy-production`: its deploy command there deploys only a signed and attested release no older than the running one. One deploy at a time.
+  - The job runs in the environment `production`: the owner is its required reviewer, only `v*` tags deploy from it, only this job uses it. Its secrets are the connection `script/deploy-production` reads, described there: `PRODUCTION_SSH_KEY`, `PRODUCTION_SSH_HOST_KEY`, `PRODUCTION_SSH_DESTINATION`. The key runs only the deploy command with one version.
+  - Until `production` is set up, the job is skipped: a release deploys nothing and does not fail.
 - **Deployment:**
   - Docker Compose + Caddy; Caddy obtains TLS automatically;
-  - production rollout requires manual approval in GitHub Environments;
   - a server refuses a database that a newer server migrated, so a rollback restores the backup from before the upgrade; self-hosted: [Rollback](../self-host.md#rollback);
   - short downtime during a deploy is acceptable: clients reconnect and catch up from the cursor. Zero-downtime deploys (Kamal) later, if needed.
-- **Monitoring:** Prometheus, Grafana, Sentry, uptime checks, status page.
-  - The server reports its errors to Sentry only with the server setting `--sentry-dsn` (`SKALD_SENTRY_DSN`); what a report holds: [threat-model.md, "The server sees"](../threat-model.md#the-server-sees).
+- **Monitoring:** on the production server, seen in Grafana there; no external service.
+  - Prometheus scrapes the host, the containers, PostgreSQL, Caddy's metrics and the blackbox exporter's health checks; Loki keeps the containers' logs, shipped by Alloy.
+  - Alertmanager groups the alerts of Prometheus and Loki and sends them nowhere: Grafana shows them, with the dashboards, the logs and the server's errors.
+  - The server reports its errors to Sentry only with the server setting `--sentry-dsn` (`SKALD_SENTRY_DSN`), an option production does not set; what a report holds: [threat-model.md, "The server sees"](../threat-model.md#the-server-sees).
 - **Addresses:** `skald.so` — website, `app.` — web UI, `api.` — API, `docs.` — documentation.
 
 ## Self-host

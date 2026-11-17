@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel, agent addresses, folders bound to spaces.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces.
 - The client cannot add a person to a space or link a second device yet, so `skald send` has no other device to send to.
 - A lost first device cannot be recovered yet: the account's master private key is not kept, and the client has no recovery key.
 - What comes next: [roadmap](docs/dev/roadmap.md).
@@ -70,12 +70,13 @@ npm install -g skald-so
 ### 3. Spaces, channels and messages
 
 ```sh
-skald create-space <name>    # create a team space, with the account as its first admin
-skald spaces                 # the device's spaces and the account's role in each
-skald channels <space>       # a space's channels: each one's ID and members
-skald send <channel> <text>  # send a text to the channel's other member devices
-skald recv                   # receive the device's messages
-skald --agent <name> recv    # the messages handed over to the agent in the working directory's space
+skald create-space <name>         # create a team space, with the account as its first admin
+skald spaces                      # the device's spaces and the account's role in each
+skald channels <space>            # a space's channels: each one's ID and members
+skald send <channel> <text>       # send a text to the channel's other member devices
+skald recv                        # receive the device's messages
+skald history <channel> [<text>]  # the channel's history, oldest first; with <text>, only the messages that contain it
+skald --agent <name> recv         # the messages handed over to the agent in the working directory's space
 ```
 
 `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.

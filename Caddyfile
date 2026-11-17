@@ -5,16 +5,17 @@
 # an unknown one to its index page.
 {$SKALD_SITE} {
 	@server {
-		path /account/master /account/personal-space /account/revocations
-		path /account/sign-in-methods /account/username
+		path /account/devices /account/master /account/personal-space /account/revocations
+		path /account/sessions /account/sessions/end-others /account/sessions/*
+		path /account/sign-in-methods /account/sign-in-methods/* /account/usage /account/username
 		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
-		path /auth/google/callback /auth/google/link /auth/providers /auth/token
-		path /device /devices /devices/*/key-packages /health /key-packages
-		path /mailbox/ack /mailbox/poll /mailbox/send /openapi.json /protocol /server
-		path /session /session/challenge /sign-in-methods /spaces /spaces/*/channels
-		path /spaces/*/channels/*/group-info /spaces/*/channels/*/history/entries
-		path /spaces/*/channels/*/history/links /spaces/*/channels/*/history/wraps
-		path /spaces/*/devices /spaces/*/revisions /ws
+		path /auth/google/callback /auth/google/link /auth/providers /auth/token /device /devices
+		path /devices/*/key-packages /health /key-packages /mailbox/ack /mailbox/events
+		path /mailbox/poll /mailbox/send /openapi.json /protocol /server /session /session/challenge
+		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
+		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
+		path /spaces/*/channels/*/history/wraps /spaces/*/devices /spaces/*/members
+		path /spaces/*/revisions /spaces/*/usage /ws
 	}
 	handle @server {
 		reverse_proxy skald-server:8080

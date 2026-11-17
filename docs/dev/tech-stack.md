@@ -10,7 +10,7 @@ Versions as of 2026-11-09.
 | Client HTTP, WebSocket | ureq 3 and tungstenite 0.30, blocking. HTTPS and WSS, to the server and in `skald update`, with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8; `SSL_CERT_FILE` replaces them); plain HTTP and WS only to a server on this machine ([Network](architecture.md#network)). `HTTPS_PROXY` in `skald update`; `HTTPS_PROXY` and `NO_PROXY` apply to the server too |
 | Client updates | `skald update` compares versions with semver 1 and unpacks the release archives with flate2 1 and tar 0.4 (`.tar.gz`) and zip 9 (`.zip`) |
 | Database | PostgreSQL 19 (in production, from 19.1), sqlx 0.9: `SKIP LOCKED`, `LISTEN/NOTIFY` |
-| Files | A disk volume by default; optionally S3-compatible storage (Cloudflare R2 or Hetzner Object Storage): rusty-s3 0.11 signs the requests, path-style, and the server's HTTP client sends them. Its tests use versitygw in a container, pinned by digest |
+| Files | A disk volume by default; optionally S3-compatible storage: rusty-s3 0.11 signs the requests, path-style, and the server's HTTP client sends them. Its tests use versitygw in a container, pinned by digest |
 | MLS | mls-rs 0.57.1 with mls-rs-core 0.27 and mls-rs-crypto-rustcrypto 0.23: [choice](mls-prototypes.md#choice). chacha20poly1305 0.11 seals the MLS state with XChaCha20-Poly1305; aes-gcm 0.11 seals history links and entries with AES-128-GCM |
 | HPKE, signatures | hpke 0.15, ed25519-dalek 3, x25519-dalek 3 |
 | PAKE | CPace in `crypto` on curve25519-dalek 5 and sha2 0.11, checked against its draft's test vectors: [link code](../protocol/membership.md#link-code) |
@@ -19,6 +19,7 @@ Versions as of 2026-11-09.
 | Local state | SQLite, bundled with rusqlite 0.39, the newest that sqlx 0.9 allows: [deny.toml](../../deny.toml) |
 | MCP | rmcp 3.9, stdio |
 | Authentication | GitHub OAuth over the server's HTTP client; OIDC over it too, with no OIDC or JOSE crate: the server's own code reads the metadata, keys and ID tokens with serde_json and base64, and ring 0.17 verifies RS256 and ES256; device flow (RFC 8628) |
+| Session list | The server's own code, no parser crate, reads a web session's browser and OS by name from the `User-Agent` of its sign-in; no version, IP address or location is kept |
 | Server HTTP client | ureq 3 with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8), blocking, in tokio's blocking threads |
 | API | HTTPS + JSON, OpenAPI spec |
 | Envelopes | Deterministic CBOR (RFC 8949, §4.2) with a CDDL schema, over WebSocket, HTTPS and SSE: [protocol spec](../protocol/README.md#encoding). ciborium-ll 0.2 reads and writes CBOR heads; `proto` checks the spec's encoding rules on decoding |
@@ -33,5 +34,5 @@ Versions as of 2026-11-09.
 | SDK | Rust |
 | Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package `skald-so` that runs the release's binary (`npx skald-so`); Claude Code plugin; server Docker image |
 | Server image | Built in the `rust` Debian 13 image; runs on distroless `cc-debian13` as a non-root user; base images pinned by digest |
-| Infrastructure | Hetzner, Docker Compose, Caddy, WAL-G, Prometheus, Grafana, Sentry; details in [infrastructure.md](infrastructure.md) |
+| Infrastructure | Docker Compose, Caddy, WAL-G, Prometheus, Alertmanager, Grafana, Loki, Alloy; details in [infrastructure.md](infrastructure.md) |
 | Rate limits | Caddy has none built in: production's Caddy is a build with the module `github.com/mholt/caddy-ratelimit`, made by xcaddy in the `caddy` builder image and copied onto the `caddy` image, both pinned by digest, the module to a commit |

@@ -11,8 +11,13 @@
 //!   has not had;
 //! - it gives them, as the bytes it got, only to sessions of accounts the latest revision lists as
 //!   the channel's members;
+//! - to an account whose `history` is false in the latest revision, only the links whose `prev` is
+//!   at or after the epoch whose Commit added the account, and the wraps and entries of that epoch
+//!   and later ones ("Access");
 //! - a database migrated from before history keeps the member devices of each followed group's
-//!   current epoch.
+//!   current epoch;
+//! - with the history retention set, it deletes entries past it and the links and wraps of epochs
+//!   before theirs, and refuses those later; without it, it keeps everything (`retention.rs`).
 //!
 //! Against a `skald-server` with the scene of the tests of the server as the MLS Delivery Service:
 //! its channel's group, formed by test devices running MLS with `skald-crypto`, the member epochs
@@ -60,7 +65,9 @@ mod common;
 mod kit;
 
 mod access;
+mod earlier_history;
 mod first_kept;
 mod migration;
 mod refusals;
+mod retention;
 mod storing;

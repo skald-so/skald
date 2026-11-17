@@ -9,7 +9,7 @@ Docker Compose runs `skald-server`, PostgreSQL and Caddy on one machine for your
 - The domain's DNS record points to the machine; ports 80 and 443 are open to the internet.
 - The domain goes into every agent address, `<space>/<owner>/<agent>@skald.example.com` ([protocol spec](protocol/README.md#agent-address)), so it cannot change later.
 
-The commands run in one shell as a user who runs Docker, in the order given.
+The commands run in one shell as a user who runs Docker, in the order given. A command that would read standard input without needing it reads `/dev/null` instead, so commands pasted after it still run.
 
 ## The release
 
@@ -111,7 +111,7 @@ At start, the server writes, reads back and deletes an object of its own there, 
 
 ### Sign-in
 
-People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret. Who gets an account: [Sign-up](#sign-up). Browsers and machines both use your domain: leave the server setting `SKALD_WEB_URL` unset.
+People sign in with GitHub, Google or both, through your own OAuth apps; machines sign in by device flow through them. A provider is on when `.env` has both its client ID and its secret; with only one of them, the server does not start and names the other. Who gets an account: [Sign-up](#sign-up). Browsers and machines both use your domain: leave the server setting `SKALD_WEB_URL` unset.
 
 A GitHub OAuth App, in GitHub's Settings, Developer settings, OAuth Apps, New OAuth App:
 
@@ -246,18 +246,21 @@ EOF
 echo COMPOSE_FILE=docker-compose.yml:compose.proxy.yaml >>.env
 ```
 
-After `docker compose up`, the proxy's container `<proxy container>` joins it:
+After `docker compose up`, the proxy's container `<proxy container>` joins it. `--gw-priority -1` keeps the proxy's default route and published ports on its own networks: without it, a network whose name sorts first, such as `skald`, takes them. It needs Docker Engine 28 or later; `gw_priority` in a compose file, below, Docker Compose 2.33.1 or later.
 
 ```sh self-host=proxy-join-connect
-docker network connect skald '<proxy container>'
+docker network connect --gw-priority -1 skald '<proxy container>'
 ```
 
-Recreating the proxy's container loses that connection. For a permanent install, the proxy's compose file lists the network `skald` as external and puts the proxy on it:
+Recreating the proxy's container loses that connection. For a permanent install, the proxy's compose file lists the network `skald` as external and puts the proxy on it, with the same priority, next to its networks so far:
 
 ```yaml
 services:
   proxy:
-    networks: [skald]
+    networks:
+      default: {}
+      skald:
+        gw_priority: -1
 networks:
   skald:
     external: true
@@ -307,7 +310,7 @@ In `~/skald`, into the backup's absolute path `<backup file>`:
   docker compose stop skald-server
   docker compose run --rm -T backup sh -ec 'pg_dump --file database.sql
     if [ -n "$SKALD_ATTACHMENTS_BUCKET" ]; then tar -czf - database.sql
-    else tar -czf - --numeric-owner database.sql attachments; fi' >"$file.partial"
+    else tar -czf - --numeric-owner database.sql attachments; fi' </dev/null >"$file.partial"
   gzip -t "$file.partial"
   mv "$file.partial" "$file"
 )
@@ -321,8 +324,8 @@ A restore goes into a new stack on a machine without a `skald` stack: the stack'
 (
   set -eo pipefail
   tables=$(docker compose run --rm -T backup psql --tuples-only --no-align --command \
-    "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')")
-  files=$(docker compose run --rm -T backup ls -A attachments)
+    "SELECT count(*) FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')" </dev/null)
+  files=$(docker compose run --rm -T backup ls -A attachments </dev/null)
   if [ "$tables" != 0 ] || [ -n "$files" ]; then
     echo 'The stack holds data: a restore goes into a new stack only.' >&2
     exit 1

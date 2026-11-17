@@ -16,15 +16,13 @@
 //!   number is a forked roster, warned of on a line that says `fork`, and the device keeps its own.
 //!   The tests tell that a run accepted a revision this way.
 
-use std::io::{Read as _, Write as _};
-use std::net::TcpStream;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use skald_proto::{Role, Roster, SpaceId};
 
-use crate::cloud::{Cloud, WAIT};
+use crate::cloud::Cloud;
 use crate::fixtures::{await_running, fronted};
 use crate::front::Front;
 use crate::machine::{Finished, Machine, Run};
@@ -299,20 +297,6 @@ fn revision_and_message_stored_while_the_run_connects_reach_it() {
     assert_shows_once(&finished.shown(), &joining.shown());
 }
 
-/// Sends `request`, such as `GET /spaces/<id>/devices`, through the relay without a session, so
-/// that a request the relay holds until a second one comes goes on.
-fn through_relay(cloud: &Cloud, request: &str) {
-    let address = cloud.relay.address();
-    let mut stream = TcpStream::connect(address).expect("reach the relay");
-    write!(
-        stream,
-        "{request} HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\n\r\n"
-    )
-    .expect("send a request to the relay");
-    let mut answer = Vec::new();
-    let _ = stream.read_to_end(&mut answer);
-}
-
 /// Once catch-up has ended, Ada's `skald recv` fetches the revisions of `acme`, then the devices of
 /// its accounts, which the relay holds back; meanwhile Bob's device stores a revision, whose
 /// `space-notice` reaches the connection. The run fetched the revisions before that one was
@@ -330,7 +314,7 @@ fn revision_stored_after_the_fetch_at_the_end_of_catch_up_is_accepted_by_its_not
     let acme = shared_space(cloud, &ada, &bob, ACME);
     let demoted = ada_demoted(&acme, &ada, &bob);
     let devices = devices_request(acme.id());
-    cloud.relay.hold(&devices, 2, WAIT);
+    cloud.relay.hold(&devices, 2);
 
     let mut run = ada.machine.start(&[RECV]);
     await_running(&mut run, "devices request held back", || {
@@ -342,7 +326,7 @@ fn revision_stored_after_the_fetch_at_the_end_of_catch_up_is_accepted_by_its_not
     });
     // The notice reaches the machine's socket while its request waits.
     thread::sleep(Duration::from_millis(100));
-    through_relay(cloud, &devices);
+    cloud.relay.send_through(&devices);
     let finished = run.finish();
 
     assert!(finished.success, "{finished:?}");

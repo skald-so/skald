@@ -68,7 +68,8 @@
   - a proxy that fails fails the command, named by its host and port only; the client never connects directly instead.
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
-- Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default.
+- Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default. An idle SSE stream sends a keep-alive every `--sse-keep-alive` (`SKALD_SSE_KEEP_ALIVE`), 15 seconds by default.
+- The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked; a dropped connection tries WebSocket first again. History items wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
   - a notification names a mailbox with new entries, a stored roster revision, an ended session or a revoked device, never an envelope;
   - an instance takes no device connection before it first listens;
@@ -81,7 +82,7 @@
 | Entity | Description |
 |---|---|
 | Account | A person or organization. Reached through its sign-in methods; optionally bound to an SSH key on GitHub. Its master key is the root of trust for its devices: [Device linking](#device-linking). Has its own username, which any of its sessions changes: `Username` in the [OpenAPI spec](../../api/openapi.json). Sign-up makes it from the GitHub login, or from the email's local part for Google: lowercased, each run of characters a [`name`](../protocol/README.md#agent-address) does not allow made `-`, cut to 63 characters, `-` trimmed at both ends, `user` if nothing is left; when that is taken or reserved, the first free of `-2`, `-3` and on is appended, within 63 characters |
-| Sign-in method | A provider and the subject it gives the person: GitHub and the GitHub user's ID, or an OIDC provider by its issuer and the ID token's `sub`. Belongs to one account and never moves to another; the first sign-in with it creates the account, the same way for every provider, unless the server's sign-up is closed and the identity is on none of its lists: then it creates nothing ([self-host.md, "Sign-up"](../self-host.md#sign-up)). A web session links another one to its account: `startGitHubLink` and `startGoogleLink` in the [OpenAPI spec](../../api/openapi.json). A GitHub method keeps the GitHub login for display, updated at each sign-in. A web session records the method it signed in with and ends with it: `Session` in the OpenAPI spec |
+| Sign-in method | A provider and the subject it gives the person: GitHub and the GitHub user's ID, or an OIDC provider by its issuer and the ID token's `sub`. Belongs to one account at a time and never moves to another; once removed, it may sign up anew or be linked to another account. The first sign-in with it creates the account, the same way for every provider, unless the server's sign-up is closed and the identity is on none of its lists: then it creates nothing ([self-host.md, "Sign-up"](../self-host.md#sign-up)). A web session links another one to its account and removes one, never the last: `startGitHubLink`, `startGoogleLink` and `removeSignInMethod` in the [OpenAPI spec](../../api/openapi.json). A GitHub method keeps the GitHub login for display, updated at each sign-in. A web session records the method it signed in with and ends with it: `Session` in the OpenAPI spec |
 | Device | A client installation. Ed25519, MLS credential, HPKE X25519. The certificate binds it to the account: [Device linking](#device-linking) |
 | Agent | A named endpoint on a device bound to a session, or a service agent (`ci/deploy-bot`) with its own key and a scoped token |
 | Space | A team space and trust boundary. Signed roster and policy: [Membership](#membership); a device can belong to N spaces |
@@ -187,4 +188,6 @@ The public cloud applies these limits; a self-hosted server does not.
 | Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), the payload in bytes; unset, no limit |
 | Attachment | 10 MB |
 | Undelivered messages kept | 7 days: the server setting `--mailbox-retention` (`SKALD_MAILBOX_RETENTION`), in seconds; unset, until delivered or the envelope's `ttl` ends |
-| History kept | 90 days |
+| History kept | 90 days: the server setting `--history-retention` (`SKALD_HISTORY_RETENTION`), in seconds, each entry from when the server stored it ([Uploads](../protocol/membership.md#uploads)); unset, kept for good |
+
+The web app's Usage section shows the owned spaces, devices and monthly messages with their limits, and the message text, undelivered messages and history limits, each limit while it is set: `getAccountUsage` and `getSpaceUsage` in the [OpenAPI spec](../../api/openapi.json). The server counts them also without the settings.

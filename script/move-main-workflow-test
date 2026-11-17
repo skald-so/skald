@@ -6,7 +6,9 @@
 //     the run's inputs, variables and step outputs;
 //   - it runs only after every job that publishes the release succeeds: when any of them fails, it
 //     is skipped; a job publishes when its permissions are not set, its token writes anything, it
-//     reads a secret other than GITHUB_TOKEN or it calls a workflow of another repository;
+//     reads a secret other than GITHUB_TOKEN or it calls a workflow of another repository, unless it
+//     is the production deploy, the job in the environment production, which runs after the release
+//     check and publishes nothing (script/production-deploy-workflow-test);
 //   - its step that runs script/move-main runs on a push of a stable release's tag and gives it the
 //     tag;
 //   - it runs in a GitHub environment no other job of any workflow names;
@@ -107,6 +109,8 @@ const publisher = (workflow, j) => {
   const p = permissions(workflow, j);
   if (p === null) return 'its permissions are not set';
   if (writes(p).length > 0) return `its token writes ${writes(p).join(', ')}`;
+  // The production deploy: script/production-deploy-workflow-test.
+  if (j.environment === 'production') return null;
   if (secretsOf(j).length > 0 || j.secrets === 'inherit') return 'it reads secrets';
   if (typeof j.uses === 'string' && !j.uses.startsWith('./')) return `it calls ${j.uses}`;
   return null;
