@@ -11,14 +11,18 @@
 //! A WebSocket or an event stream a run is done with is kept for its next connection as the same
 //! device, and the helper's for its next operations ([`crate::helper`]); catch-up on one after its
 //! first goes over long-poll, which, unlike a later `sync`, ends.
+//!
+//! A run of `skald recv --wait` watches for what comes between its runs of `skald recv`
+//! ([`crate::wait`]): on the connection kept, or, with none, on a long-poll that waits
+//! ([`Watched`]).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use skald_proto::{Cbor as _, DeviceId, Frame, Push, SpaceId};
 use tungstenite::Message;
 
-use crate::connection::{self, WebSocket};
+use crate::connection::{self, Connection, WebSocket};
 use crate::device::Keys;
 use crate::devices::text;
 use crate::events::Events;
@@ -88,20 +92,43 @@ struct Kept {
 thread_local! {
     /// The connection kept.
     static KEPT: RefCell<Option<Kept>> = const { RefCell::new(None) };
+    /// Whether a run of this thread read and dropped what came on its connection, which a later
+    /// run gets: a run that waits for what comes, and ran before it, missed it.
+    static MISSED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Reads what came on the kept connection, if any, so the server's pushes, which the next catch-up
-/// gets anyway, do not pile up while the helper waits; a connection that broke or closed is
-/// dropped.
-pub fn drain_kept() {
-    let kept = KEPT.with(|kept| kept.borrow_mut().take());
-    if let Some(mut kept) = kept {
-        if kept.mailbox.drained() {
+/// Whether a run of this thread dropped what came on its connection since this was last asked.
+pub fn missed() -> bool {
+    MISSED.with(|missed| missed.replace(false))
+}
+
+/// Notes that a run dropped what came on its connection.
+fn miss() {
+    MISSED.with(|missed| missed.set(true));
+}
+
+/// Whether something came on the kept connection since it was last read: a frame, or the
+/// connection's end, which drops it; with none kept, true. It reads and drops what came, so the
+/// server's pushes, which the next catch-up gets anyway, do not pile up while the helper waits.
+pub fn kept_came() -> bool {
+    let Some(mut kept) = KEPT.with(|kept| kept.borrow_mut().take()) else {
+        return true;
+    };
+    match kept.mailbox.waiting() {
+        Some(came) => {
             KEPT.with(|slot| *slot.borrow_mut() = Some(kept));
-        } else {
+            came
+        }
+        None => {
             kept.mailbox.discard();
+            true
         }
     }
+}
+
+/// The transport of the kept connection, if any.
+pub fn kept_transport() -> Option<Transport> {
+    KEPT.with(|kept| kept.borrow().as_ref().map(|kept| kept.transport))
 }
 
 /// Closes the kept connection, if any.
@@ -115,9 +142,15 @@ pub fn close_kept() {
 /// it is on.
 fn reuse(follower: &mut Follower) -> Option<Mailbox> {
     let mut kept = KEPT.with(|kept| kept.borrow_mut().take())?;
-    if kept.mailbox.owner != Owner::of(follower) || !kept.mailbox.drained() {
+    let waiting = (kept.mailbox.owner == Owner::of(follower))
+        .then(|| kept.mailbox.waiting())
+        .flatten();
+    let Some(came) = waiting else {
         kept.mailbox.discard();
         return None;
+    };
+    if came {
+        miss();
     }
     follower.transport = kept.transport;
     Some(kept.mailbox)
@@ -221,30 +254,31 @@ impl Mailbox {
         }
     }
 
-    /// Reads and drops whatever came on the connection; whether it is still open.
-    fn drained(&mut self) -> bool {
+    /// Reads and drops whatever came on the connection: whether a frame came, `None` once the
+    /// connection has closed or broken.
+    fn waiting(&mut self) -> Option<bool> {
+        let mut came = false;
         match self.link.as_mut() {
             Some(Link::WebSocket(socket)) => {
-                if set_read_timeout(socket, Duration::from_millis(1)).is_err() {
-                    return false;
-                }
+                set_read_timeout(socket, Duration::from_millis(1)).ok()?;
                 loop {
                     match socket.read() {
-                        Ok(Message::Close(_)) => return false,
+                        Ok(Message::Close(_)) => return None,
+                        Ok(Message::Binary(_)) => came = true,
                         Ok(_) => {}
-                        Err(err) => return crate::send::timed_out(&err),
+                        Err(err) => return crate::send::timed_out(&err).then_some(came),
                     }
                 }
             }
             Some(Link::Https(Some(events))) => loop {
                 match events.next(Duration::ZERO) {
-                    Ok(Some(_)) => {}
-                    Ok(None) => return true,
-                    Err(_) => return false,
+                    Ok(Some(_)) => came = true,
+                    Ok(None) => return Some(came),
+                    Err(_) => return None,
                 }
             },
-            Some(Link::Https(None)) => true,
-            None => false,
+            Some(Link::Https(None)) => Some(false),
+            None => None,
         }
     }
 
@@ -324,6 +358,12 @@ impl Mailbox {
         for frame in frames {
             if let Got::Entries(entries) = got(Frame::from_cbor(&frame).ok()) {
                 spaces.extend(noticed(&entries));
+                if entries
+                    .iter()
+                    .any(|push| !matches!(push, Push::SpaceNotice { .. }))
+                {
+                    miss();
+                }
             }
         }
         spaces
@@ -352,21 +392,91 @@ pub fn request(
     frame: &[u8],
     wait: Duration,
 ) -> Result<Vec<u8>, connection::Error> {
-    let connection = &mut follower.connection;
-    let proof = connection.request_proof(&follower.token, keys.id(), keys.signing())?;
-    connection.post_frame_as(path, (&follower.token, &proof), frame, wait)
+    request_on(
+        &mut follower.connection,
+        (&follower.token, keys),
+        path,
+        frame,
+        wait,
+    )
+}
+
+/// [`request`] on `connection`, on the device session of `token`.
+fn request_on(
+    connection: &mut Connection,
+    (token, keys): (&str, &Keys),
+    path: &str,
+    frame: &[u8],
+    wait: Duration,
+) -> Result<Vec<u8>, connection::Error> {
+    let proof = connection.request_proof(token, keys.id(), keys.signing())?;
+    connection.post_frame_as(path, (token, &proof), frame, wait)
+}
+
+/// A long-poll after `cursor`, acking it, that waits up to `wait` for what comes: the frame it
+/// answers.
+fn poll_on(
+    connection: &mut Connection,
+    session: (&str, &Keys),
+    cursor: u64,
+    wait: Duration,
+) -> Result<Vec<u8>, connection::Error> {
+    let frame = Frame::Sync { cursor }.to_cbor();
+    let path = format!("{POLL}?wait={}", wait.as_secs());
+    request_on(connection, session, &path, &frame, wait)
 }
 
 /// A long-poll with a wait of 0 after `cursor`, acking it: the frame it answers.
 fn poll(follower: &mut Follower, keys: &Keys, cursor: u64) -> Result<Vec<u8>, connection::Error> {
-    let frame = Frame::Sync { cursor }.to_cbor();
-    request(
-        follower,
+    let session = (follower.token.as_str(), keys);
+    poll_on(&mut follower.connection, session, cursor, Duration::ZERO)
+}
+
+/// What a run of `skald recv --wait` that keeps no connection watches with: the device's
+/// connection to its server, its session and keys, the cursor its run ended with, and the transport
+/// it was on.
+pub struct Watched {
+    connection: Connection,
+    token: String,
+    keys: Keys,
+    cursor: u64,
+    pub transport: Transport,
+}
+
+thread_local! {
+    /// What the last run of `skald recv --wait` on this thread left to watch with.
+    static WATCHED: RefCell<Option<Watched>> = const { RefCell::new(None) };
+}
+
+/// Leaves what `follower`, at the end of a run of `skald recv --wait`, watches with
+/// ([`take_watched`]); nothing if its keys or cursor do not read.
+pub fn leave_watched(follower: Follower) {
+    let (Ok(keys), Ok(cursor)) = (follower.keys(), follower.state.cursor()) else {
+        return;
+    };
+    let watched = Watched {
+        connection: follower.connection,
+        token: follower.token,
         keys,
-        &format!("{POLL}?wait=0"),
-        &frame,
-        Duration::ZERO,
-    )
+        cursor,
+        transport: follower.transport,
+    };
+    WATCHED.with(|slot| *slot.borrow_mut() = Some(watched));
+}
+
+/// What the last run of `skald recv --wait` on this thread left to watch with, if any.
+pub fn take_watched() -> Option<Watched> {
+    WATCHED.with(|slot| slot.borrow_mut().take())
+}
+
+impl Watched {
+    /// A long-poll after the cursor that waits up to `wait`: whether anything came, an entry or a
+    /// `space-notice`.
+    pub fn poll(&mut self, wait: Duration) -> Result<bool, connection::Error> {
+        let session = (self.token.as_str(), &self.keys);
+        let answer = poll_on(&mut self.connection, session, self.cursor, wait)?;
+        Ok(!matches!(Frame::from_cbor(&answer), Ok(Frame::Batch(entries)) if entries.is_empty()))
+    }
 }
 
 /// Catch-up over `socket`: states `cursor` in `sync`, then writes each frame's entries with

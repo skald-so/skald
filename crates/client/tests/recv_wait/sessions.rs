@@ -1,20 +1,22 @@
 //! Sessions that wait through one helper, each for its own messages; the person's wait for anything
-//! the person's `skald recv` shows; and a wait with messages already there.
+//! the person's `skald recv` shows; a wait with messages already there; waits that reach the server
+//! for nothing while nothing comes; and a session that a command beside it gives its messages.
 
 use std::time::Instant;
 
 use crate::agents::CLAUDE;
 use crate::fixtures::person_address;
 use crate::helped::{Helped, WEBSOCKET, times, with_client_b};
-use crate::kit::{RECV, bind_client_a};
+use crate::kit::{RECV, bind_client_a, received};
 use crate::machine::Finished;
 use crate::talk::{
     BOB_HOST, Line, Talk, assert_shows_once, delivered, encrypted, one_message_sent, stored,
 };
 use crate::waits::{
-    ARRIVAL, AT_ONCE, WAIT_FLAG, Waits, assert_got, assert_keeps_waiting, assert_shown_within,
+    ARRIVAL, AT_ONCE, WAIT_FLAG, Waits, assert_got, assert_idle, assert_keeps_waiting,
+    assert_shown_within,
 };
-use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
+use crate::world::{ACME, ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
 
 /// What Bob's device says in each space; none is anywhere else.
 const BOB_IN_A: &str = "wait test: clienta's invoices 7 and 9 are open";
@@ -27,6 +29,8 @@ const WAITING: [&str; 2] = [
     "wait test: the first report is in",
     "wait test: the second report is in",
 ];
+const AFTER_QUIET: &str = "wait test: the backup finished overnight";
+const KEPT_FOR_CLAUDE: &str = "wait test: claude, the acme invoices are due";
 
 /// Ada's machine follows `clienta` and `clientb`, each with a channel that holds Bob's device;
 /// `~/work/clientA` is bound to `clienta` and `~/work/clientB` to `clientb`, and the device has
@@ -93,9 +97,11 @@ fn sessions_in_two_folders_wait_through_one_helper_and_each_gets_only_its_own_me
     assert_only(&got_a, BOB_IN_A, BOB_IN_B);
     assert_only(&got_b, BOB_IN_B, BOB_IN_A);
     assert_eq!(helped.helpers(), [helper], "not the same helper");
+    // Bob's device, which the test plays, opens one through the same relay for each of its two
+    // messages.
     assert_eq!(
         talk.cloud().count_sent(since, WEBSOCKET),
-        1,
+        1 + 2,
         "not one connection for every session"
     );
 }
@@ -201,4 +207,57 @@ fn wait_with_messages_waiting_shows_them_and_exits_at_once() {
         assert_got(&agent, text, *id);
     }
     assert!(took < AT_ONCE, "claude's wait took {took:?}: {agent:?}");
+}
+
+/// The device has run as claude in `~/work/acme`, and the person's `skald recv` has shown what came
+/// so far. While nothing comes, the server sees no request of the person's `skald recv --wait` in
+/// one-shot mode, nor, once claude's `skald recv --wait` in `~/work/acme` has started a helper, of
+/// the two waits. Bob's device then sends a message to the channel: claude's wait shows it once,
+/// with its `msg_id`, and so does the person's.
+#[test]
+fn waits_reach_the_server_for_nothing_while_nothing_comes() {
+    let mut waits = Waits::new(
+        [4_148_091_001, 4_148_091_002],
+        ["ada-waits-quietly", "bob-writes-at-last"],
+    );
+    waits.agents.run_as(CLAUDE);
+    received(&waits.agents.talk.ada.machine);
+    let mut person = (waits.agents.talk.ada.machine).start(&[RECV, WAIT_FLAG]);
+    assert_idle(&waits.agents.talk, &mut [&mut person]);
+    let mut session = waits.session(CLAUDE);
+    assert_idle(&waits.agents.talk, &mut [&mut person, &mut session]);
+    let bob = waits.agents.bob();
+
+    let id = waits.agents.bob_sends(&Line::new(&bob, 1, AFTER_QUIET));
+
+    assert_got(&session.finish(), AFTER_QUIET, id);
+    let shown = person.finish();
+    assert!(shown.success, "{shown:?}");
+    let channel = waits.agents.talk.channel;
+    assert_shows_once(&shown.shown(), AFTER_QUIET, (channel, &bob, BOB_HOST));
+}
+
+/// The device has run as claude in `~/work/acme`; Bob's device sends a message to the channel, and
+/// the person's `skald recv` shows it, keeping it for claude. claude's `skald recv --wait` in
+/// `~/work/other`, in the personal space, starts a helper and keeps waiting. `skald add-rule` binds
+/// `~/work/other` to `acme` through the helper: the session shows the message once, with its
+/// `msg_id`, and exits.
+#[test]
+fn session_gets_the_messages_a_command_through_its_helper_makes_its_own() {
+    let mut waits = Waits::new(
+        [4_148_092_001, 4_148_092_002],
+        ["ada-moves-her-agent", "bob-writes-to-acme"],
+    );
+    waits.agents.run_as(CLAUDE);
+    let bob = waits.agents.bob();
+    let id = waits.agents.bob_sends(&Line::new(&bob, 1, KEPT_FOR_CLAUDE));
+    received(&waits.agents.talk.ada.machine);
+    let other = dir_of(&waits.agents.talk.ada.machine, "work/other");
+    let mut session = (waits.helped).start_in(&other, &[], &[AGENT, CLAUDE, RECV, WAIT_FLAG]);
+    assert_keeps_waiting(&mut session);
+
+    let bound = waits.helped.run(&[ADD_RULE, path(&other), ACME]);
+
+    assert!(bound.success, "not bound: {bound:?}");
+    assert_got(&session.finish(), KEPT_FOR_CLAUDE, id);
 }

@@ -1,7 +1,8 @@
 //! Waits behind a proxy that blocks WebSocket and streaming, as in the tests of the transports'
-//! fallback (`transport_fallback/main.rs`): over long-poll, a wait gets what comes; once the proxy
-//! lets WebSocket upgrades through, the helper and a one-shot wait move to WebSocket within the
-//! interval; and a helper on long-poll accepts a revision stored between two of its requests.
+//! fallback (`transport_fallback/main.rs`): over long-poll, a wait gets what comes, sending only
+//! long-polls that wait while nothing comes; once the proxy lets WebSocket upgrades through, the
+//! helper and a one-shot wait move to WebSocket within the interval; and a helper on long-poll
+//! accepts a revision stored between two of its requests.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,7 +13,9 @@ use crate::fixtures::await_running;
 use crate::helped::{Helped, ONE_SHOT};
 use crate::kit::RECV;
 use crate::machine::Run;
-use crate::waits::{RETRY_SETTING, WAIT_FLAG};
+use crate::waits::{
+    IDLE_WATCH, RETRY_SETTING, WAIT_FLAG, assert_keeps_waiting, await_helper_beside,
+};
 use crate::world::{devices_request, store};
 
 /// The server's longest long-poll wait in these tests: short, so a connection on long-poll sends
@@ -29,6 +32,9 @@ const HELD_BACK: Duration = Duration::from_secs(4);
 
 /// How long a test gives the helper to settle what it fetched.
 const SETTLE: Duration = Duration::from_secs(1);
+
+/// The request that gives the challenge an HTTPS request of a device proves.
+const CHALLENGE: &str = "/session/challenge";
 
 /// Ada and Bob behind the proxy, on a server whose long-poll waits at most [`POLL_WAIT`], the proxy
 /// leaving long-poll alone working; nothing waits for Ada's machine.
@@ -173,4 +179,87 @@ fn helper_on_long_poll_accepts_a_revision_stored_while_its_next_request_is_held_
     await_running(&mut helper, "the space's devices fetched", fetched);
     thread::sleep(SETTLE);
     forked.assert_late_accepted(&behind, "the helper on long-poll");
+}
+
+/// The requests of `seen` other than long-polls with a wait above 0 and the challenges that prove
+/// them.
+fn not_waiting(seen: &[Seen]) -> Vec<&Seen> {
+    let waits = |one: &Seen| one.is("POST", POLL) && one.parameter("wait") != Some("0");
+    (seen.iter())
+        .filter(|one| !one.is("POST", CHALLENGE) && !waits(one))
+        .collect()
+}
+
+/// Behind the proxy, the person's `skald recv --wait` starts a helper, which waits over long-poll.
+/// While nothing comes, for two of the server's longest long-poll waits, the proxy sees only
+/// long-polls with a wait above 0 and the challenges that prove them. Bob's device then sends a
+/// message, which the session shows once; the helper keeps running, and, with no session left,
+/// sends nothing more once its long-poll in flight has ended.
+#[test]
+fn helper_on_long_poll_sends_only_long_polls_that_wait_and_none_once_no_session_waits() {
+    let mut behind = on_long_poll(
+        [4_148_074_001, 4_148_074_002],
+        ["ada-polls-quietly", "bob-writes-to-the-poller"],
+    );
+    let helped = Helped::new(&behind.ada.machine);
+    let from = behind.filter.mark();
+    let mut session = helped.start(&[], &[RECV, WAIT_FLAG]);
+    await_waiting_poll(&behind, &mut session, from);
+    let from = behind.filter.mark();
+
+    assert_keeps_waiting(&mut session);
+    thread::sleep((2 * POLL_WAIT).saturating_sub(IDLE_WATCH));
+
+    let seen = behind.filter.seen_since(from);
+    let other = not_waiting(&seen);
+    assert!(
+        other.is_empty(),
+        "not only long-polls that wait: {other:#?}"
+    );
+    assert!(waiting_poll(&seen), "no long-poll that waits: {seen:#?}");
+    let helper = await_helper_beside(&helped, &[&session]);
+    let text = "bob, to the quiet poller";
+    behind.bob_sends(text);
+    let got = session.finish();
+    assert!(got.success, "{got:?}");
+    behind.assert_shows_bobs(&got.shown(), text);
+    thread::sleep(POLL_WAIT);
+    let from = behind.filter.mark();
+    thread::sleep(IDLE_WATCH);
+    let seen = behind.filter.seen_since(from);
+    assert!(seen.is_empty(), "requests with no session: {seen:#?}");
+    assert_eq!(
+        helped.helpers(),
+        [helper],
+        "the helper did not keep running"
+    );
+}
+
+/// Behind the proxy, Ada's `skald recv --wait` in one-shot mode, retrying WebSocket every
+/// [`RETRY`] seconds, waits over long-poll. Once the proxy lets WebSocket upgrades through and the
+/// wait has opened a WebSocket, it sends nothing more once its long-poll in flight has ended. Bob's
+/// device then sends a message, which the wait shows once.
+#[test]
+fn one_shot_wait_that_moved_to_websocket_long_polls_no_more() {
+    let mut behind = on_long_poll(
+        [4_148_075_001, 4_148_075_002],
+        ["ada-leaves-long-poll", "bob-writes-over-websocket"],
+    );
+    let helped = Helped::new(&behind.ada.machine);
+    let from = behind.filter.mark();
+    let mut waiting = helped.start(&[(RETRY_SETTING, RETRY)], &[ONE_SHOT, RECV, WAIT_FLAG]);
+    await_waiting_poll(&behind, &mut waiting, from);
+    assert_moves_to_websocket(&behind, &mut waiting);
+
+    thread::sleep(POLL_WAIT);
+    let from = behind.filter.mark();
+    assert_keeps_waiting(&mut waiting);
+
+    let seen = behind.filter.seen_since(from);
+    assert!(seen.is_empty(), "requests on WebSocket: {seen:#?}");
+    let text = "bob, once she left long-poll";
+    behind.bob_sends(text);
+    let got = waiting.finish();
+    assert!(got.success, "{got:?}");
+    behind.assert_shows_bobs(&got.shown(), text);
 }

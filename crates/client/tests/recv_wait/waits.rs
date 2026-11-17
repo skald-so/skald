@@ -69,6 +69,41 @@ impl Waits {
     }
 }
 
+/// How long the server sees nothing of Ada's machine before a test takes its runs as settled.
+pub const QUIET: Duration = Duration::from_secs(1);
+
+/// Waits for up to [`WAIT`] while `runs` go on until the server has seen no request for
+/// [`QUIET`]; then fails unless they keep waiting for [`IDLE_WATCH`] each, the server seeing no
+/// request meanwhile: while nothing comes, a run that waits reaches the server for nothing.
+#[track_caller]
+pub fn assert_idle(talk: &Talk, runs: &mut [&mut Run]) {
+    let relay = &talk.cloud().relay;
+    let heads = |from| -> Vec<String> {
+        (relay.sent_since(from).iter())
+            .filter_map(|sent| sent.head.lines().next().map(str::to_owned))
+            .collect()
+    };
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let from = relay.mark();
+        thread::sleep(QUIET);
+        for run in runs.iter_mut() {
+            run.assert_running();
+        }
+        let sent = heads(from);
+        if sent.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never settled: {sent:?}");
+    }
+    let from = relay.mark();
+    for run in runs.iter_mut() {
+        assert_keeps_waiting(run);
+    }
+    let sent = heads(from);
+    assert!(sent.is_empty(), "requests while nothing came: {sent:?}");
+}
+
 /// Fails unless `run` keeps running for [`IDLE_WATCH`].
 #[track_caller]
 pub fn assert_keeps_waiting(run: &mut Run) {

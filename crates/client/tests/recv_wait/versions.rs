@@ -1,5 +1,6 @@
 //! Waits beside a helper of another version: a helper that exits for a newer command ends its
-//! sessions, and an older one-shot wait gives way to a newer helper that starts meanwhile.
+//! sessions, and an older one-shot wait gives way to a newer helper that starts meanwhile, even with
+//! nothing come.
 
 use crate::agents::CLAUDE;
 use crate::helped::{EXIT_LIMIT, ONE_SHOT, VERSION, VERSION_SETTING, older, times};
@@ -107,4 +108,28 @@ fn older_one_shot_wait_ends_when_a_newer_helper_starts_and_the_helper_and_its_se
         assert_shows_once(&shown, text, (channel, &bob, BOB_HOST));
     }
     assert_eq!(waits.helped.helpers(), [helper], "not the same helper");
+}
+
+/// The person's `skald recv` has shown what came so far. The person's `skald recv --wait` in
+/// one-shot mode, acting as an older version than the copy's, keeps waiting. The person's
+/// `skald recv` of the copy's version then starts a helper. With nothing come, the older
+/// wait ends, failing, saying to run it again, and the helper keeps running.
+#[test]
+fn older_one_shot_wait_ends_once_a_newer_helper_starts_with_nothing_come() {
+    let waits = Waits::new(
+        [4_148_043_001, 4_148_043_002],
+        ["ada-updates-mid-wait", "bob-has-nothing-to-say"],
+    );
+    let older = older();
+    received(&waits.agents.talk.ada.machine);
+    let args = [ONE_SHOT, RECV, WAIT_FLAG];
+    let mut stale = (waits.helped).start(&[(VERSION_SETTING, &older)], &args);
+    assert_keeps_waiting(&mut stale);
+
+    waits.helped.received();
+
+    let ended = stale.finish();
+    assert!(!ended.success, "{ended:?}");
+    assert!(ended.shown().to_lowercase().contains(AGAIN), "{ended:?}");
+    waits.helped.one_helper();
 }
