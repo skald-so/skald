@@ -1565,41 +1565,6 @@ refused_before web-unattested web-check web
 unpacked=$(web_unpacked web-unattested "$work/web/hashes")
 [[ -z $unpacked ]] || fail "web-unattested: the refused archive is unpacked:"$'\n'"$unpacked"
 stack_down web-unattested
-if [[ -n $release_web ]]; then
-  mkdir -p "$work/release-web/files"
-  if curl --fail --silent --show-error --location --retry 3 --output "$work/release-web/$web_archive" \
-    "$release_web/$web_archive" && tar -xzf "$work/release-web/$web_archive" -C "$work/release-web/files"; then
-    (cd "$work/release-web/files" && find . -type f -size +0 | sort | while read -r file; do
-      echo "$(sha256 <"$file") ${file#./}"
-    done) >"$work/release-web/hashes"
-    scenario web-release release :last_release files :here web-files web-check web
-    if run_scenario web-release </dev/null; then
-      [[ -n $(web_unpacked web-release "$work/release-web/hashes") ]] ||
-        fail "web-release: the guide's steps leave v$version's web app packed"
-    fi
-    stack_down web-release
-    scenario web-other-release release :last_release files :here web-files web-check web
-    edit_script web-other-release 's|^self_host_last_release$|self_host_last_release; SKALD_VERSION=0.0.1|'
-    refused_before web-other-release web-check web
-    unpacked=$(web_unpacked web-other-release "$work/release-web/hashes")
-    [[ -z $unpacked ]] || fail "web-other-release: the refused archive is unpacked:"$'\n'"$unpacked"
-    stack_down web-other-release
-    scenario web-other-workflow release :last_release files :here web-files web-check web
-    edit_script web-other-workflow 's|/\.github/workflows/release\.yml@|/.github/workflows/edge.yml@|g'
-    if grep -qF '/.github/workflows/edge.yml@' "$work/run/web-other-workflow/script.sh"; then
-      refused_before web-other-workflow web-check web
-      unpacked=$(web_unpacked web-other-workflow "$work/release-web/hashes")
-      [[ -z $unpacked ]] || fail "web-other-workflow: the refused archive is unpacked:"$'\n'"$unpacked"
-    else
-      fail "$guide: the step web-check does not pin the release workflow, .github/workflows/release.yml@"
-    fi
-    stack_down web-other-workflow
-  else
-    fail "web-release: cannot get $release_web/$web_archive"
-  fi
-else
-  echo "self-host-test: skipped the guide's archive check of the last release: v$version has no $web_archive"
-fi
 
 # --- Backup and restore, of the stack of a machine that signed in and created spaces.
 backups=/self-host/backups
@@ -2017,6 +1982,43 @@ self_host_release_platform=linux/amd64
 self_host_release_attachments=$release_attachments
 self_host_rc_files=file:///self-host/rc-files
 EOF
+# The guide's archive check of the last release's web app, once it has one: after the part's
+# values of the last release are on the machine.
+if [[ -n $release_web ]]; then
+  mkdir -p "$work/release-web/files"
+  if curl --fail --silent --show-error --location --retry 3 --output "$work/release-web/$web_archive" \
+    "$release_web/$web_archive" && tar -xzf "$work/release-web/$web_archive" -C "$work/release-web/files"; then
+    (cd "$work/release-web/files" && find . -type f -size +0 | sort | while read -r file; do
+      echo "$(sha256 <"$file") ${file#./}"
+    done) >"$work/release-web/hashes"
+    scenario web-release release :last_release files :here web-files web-check web
+    if run_scenario web-release </dev/null; then
+      [[ -n $(web_unpacked web-release "$work/release-web/hashes") ]] ||
+        fail "web-release: the guide's steps leave v$version's web app packed"
+    fi
+    stack_down web-release
+    scenario web-other-release release :last_release files :here web-files web-check web
+    edit_script web-other-release 's|^self_host_last_release$|self_host_last_release; SKALD_VERSION=0.0.1|'
+    refused_before web-other-release web-check web
+    unpacked=$(web_unpacked web-other-release "$work/release-web/hashes")
+    [[ -z $unpacked ]] || fail "web-other-release: the refused archive is unpacked:"$'\n'"$unpacked"
+    stack_down web-other-release
+    scenario web-other-workflow release :last_release files :here web-files web-check web
+    edit_script web-other-workflow 's|/\.github/workflows/release\.yml@|/.github/workflows/edge.yml@|g'
+    if grep -qF '/.github/workflows/edge.yml@' "$work/run/web-other-workflow/script.sh"; then
+      refused_before web-other-workflow web-check web
+      unpacked=$(web_unpacked web-other-workflow "$work/release-web/hashes")
+      [[ -z $unpacked ]] || fail "web-other-workflow: the refused archive is unpacked:"$'\n'"$unpacked"
+    else
+      fail "$guide: the step web-check does not pin the release workflow, .github/workflows/release.yml@"
+    fi
+    stack_down web-other-workflow
+  else
+    fail "web-release: cannot get $release_web/$web_archive"
+  fi
+else
+  echo "self-host-test: skipped the guide's archive check of the last release: v$version has no $web_archive"
+fi
 # This commit's migrations that the last release lacks.
 new_migrations=$(comm -13 <(git ls-tree --name-only "$release_tag:crates/server/migrations" 2>/dev/null | sort) \
   <(ls crates/server/migrations | sort))
