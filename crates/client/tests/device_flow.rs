@@ -12,7 +12,6 @@ mod machine;
 
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
 
 use common::{Stub, cleartext, elsewhere, response};
 use machine::{
@@ -174,20 +173,24 @@ fn session_on_another_server_is_never_sent_to_this_one() {
     assert_eq!(machine.files_holding(TOKEN).len(), 1);
 }
 
+/// The code lives 2 s and is polled every second, so a run sends at most 2 polls before it expires;
+/// a third poll, past its lifetime, gets the code denied.
 #[test]
 fn code_still_pending_at_its_lifetime_stops_the_sign_in() {
+    static POLLS: AtomicUsize = AtomicUsize::new(0);
     let stub = Stub::start(|path| match path {
         "/auth/device" => grant(2),
+        "/auth/token" if POLLS.fetch_add(1, Ordering::SeqCst) >= 2 => oauth_error("access_denied"),
         _ => oauth_error("authorization_pending"),
     });
     let machine = Machine::new();
-    let started = Instant::now();
 
     let finished = machine.sign_in(&stub.url).finish();
 
     assert!(!finished.success, "{finished:?}");
     assert!(finished.shown().contains("expired"), "{finished:?}");
-    assert!(started.elapsed() < Duration::from_secs(10), "{finished:?}");
+    let polls = requests_to(&stub, "/auth/token");
+    assert!(polls.len() <= 2, "{polls:?}");
     assert_eq!(
         machine.files_holding(TOKEN),
         Vec::<std::path::PathBuf>::new()
