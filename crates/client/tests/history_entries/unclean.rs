@@ -1,13 +1,10 @@
 //! A message sent in an epoch the device judged unclean leaves no entry: no copy under a key that a
 //! device the members did not admit holds.
 
-use std::time::Duration;
-
 use skald_crypto::MlsFraming;
 use skald_proto::{Role, Roster};
 
 use crate::chain::{adds_to_channel, assert_none_sent_of, bob_commits_empty, carol};
-use crate::cloud::WAIT;
 use crate::entries::{ada_s_message, assert_ada_s_entry, entries_of, entries_sent, talk_entries};
 use crate::fixtures::kill_once;
 use crate::kit::{RECV, rosters};
@@ -57,7 +54,7 @@ fn message_sent_in_an_epoch_judged_unclean_leaves_no_entry() {
     let (sends, uploads) = (talk.front.sent().len(), talk.front.uploads().len());
     let group_info = format!("GET /spaces/{}/channels/{}/group-info", at.0, at.1);
     // Held until the next run asks too.
-    cloud.relay.hold(&group_info, 2, WAIT);
+    cloud.relay.hold(&group_info, 2);
     let started = talk.ada.machine.start(&[RECV]);
     kill_once(started, "a GroupInfo request after epoch 2", || {
         cloud.relay.held() > 0
@@ -68,7 +65,7 @@ fn message_sent_in_an_epoch_judged_unclean_leaves_no_entry() {
     );
     cloud.relay.rewrite(&revisions_request(at.0), str::to_owned);
     // Requests for the GroupInfo go on at once from now on.
-    cloud.relay.hold(&group_info, 0, Duration::ZERO);
+    cloud.relay.hold(&group_info, 0);
 
     let ran = talk.send("a line in an unclean epoch");
 
