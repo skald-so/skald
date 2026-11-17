@@ -206,7 +206,8 @@ fn archive_of(work: &Path, tag: &str, skald: &Path) -> Vec<u8> {
 }
 
 /// A program for this machine that prints `skald <version>`, built once with the toolchain that
-/// builds these tests.
+/// builds these tests. Test processes that build it at once, as under nextest, each build from a
+/// source of their own and move the program into place whole.
 fn skald_printing(version: &str) -> PathBuf {
     static BUILDS: Mutex<()> = Mutex::new(());
     let _one_at_a_time = BUILDS
@@ -220,7 +221,7 @@ fn skald_printing(version: &str) -> PathBuf {
         return exe;
     }
     fs::create_dir_all(&dir).expect("create the stand-in's directory");
-    let source = dir.join("main.rs");
+    let source = dir.join(format!("main_{}.rs", process::id()));
     fs::write(
         &source,
         format!("fn main() {{\n    println!(\"skald {version}\");\n}}\n"),
@@ -244,6 +245,7 @@ fn skald_printing(version: &str) -> PathBuf {
         .arg(&source)
         .status()
         .expect("run rustc");
+    let _ = fs::remove_file(&source);
     assert!(status.success(), "rustc failed on the stand-in: {status}");
     fs::rename(&built, &exe).expect("move the stand-in into place");
     exe

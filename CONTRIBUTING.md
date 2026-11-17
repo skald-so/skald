@@ -8,7 +8,8 @@ Follow [rules.md](rules.md). Branches and PR checks: [infrastructure.md](docs/de
 
 ## Requirements
 - Rust stable with `rustfmt` and `clippy`, via [rustup](https://rustup.rs).
-- `cargo-deny` and `cargo-mutants`: `cargo install cargo-deny cargo-mutants --locked`.
+- `cargo-deny`, `cargo-mutants` and `cargo-nextest`, which runs the tests of the Rust code: `cargo install cargo-deny cargo-mutants cargo-nextest --locked`.
+- Optional: sccache, `cargo install sccache --locked`. With it on `PATH`, `script/test` and `script/mutants` compile through it, so a new worktree reuses the dependencies compiled in another.
 - git-cliff for the Release PR tests: they install it with `script/install-git-cliff` into `skald/` in `CARGO_HOME`, `~/.cargo` by default.
 - dist of the version in `dist-workspace.toml`, only to build the release archives by hand, `dist build`; `script/test` does not run it: `cargo install cargo-dist --version <version> --locked`.
 - Docker that runs privileged containers: PostgreSQL for the integration tests, the `skald-server` image, Chrome for the kit page screenshots, the self-host stack's clean machine.

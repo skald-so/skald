@@ -3,7 +3,8 @@
 # diff <base-ref>...HEAD and runs the tests of the mutated crate, with PostgreSQL and the S3-compatible
 # server as in script/test; in each prototype workspace, prototypes/*, the tests of the whole
 # workspace.
-# Exits 0 only if the tests catch every mutant; otherwise lists the mutants they miss.
+# Exits 0 only if the tests catch every mutant; otherwise lists the mutants they miss or that time
+# out.
 # Usage: script/mutants <base-ref>, in the repository to check, with its changes committed.
 # CARGO_MUTANTS_JOBS sets how many mutants are tested in parallel; the default is half the CPUs.
 set -euo pipefail
@@ -15,8 +16,9 @@ fi
 base=$1
 source "$(dirname "$0")/lib/postgres.sh"
 source "$(dirname "$0")/lib/s3.sh"
+source "$(dirname "$0")/lib/sccache.sh"
 
-for tool in cargo-mutants docker; do
+for tool in cargo-mutants cargo-nextest docker; do
   if ! command -v "$tool" >/dev/null; then
     echo "script/mutants: $tool is missing; see CONTRIBUTING.md, \"Requirements\"" >&2
     exit 1
@@ -68,9 +70,14 @@ if [[ -z $root_mutants && ${#prototypes[@]} -eq 0 ]]; then
   exit 0
 fi
 
+sccache_use
 ncpu=$(getconf _NPROCESSORS_ONLN)
-jobs=(--jobs "${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}")
-# cargo-mutants prints each mutant the tests miss as MISSED; its reports go out of the working tree.
+# The tests run with cargo-nextest; a run of no tests passes, as with cargo test, so it catches no
+# mutant. A mutant's run of them that takes 3 times as long as the unmutated tree's ends as a timeout.
+options=(--jobs "${CARGO_MUTANTS_JOBS:-$(((ncpu + 1) / 2))}" --test-tool=nextest
+  --cargo-test-arg=--no-tests=pass --timeout-multiplier=3)
+# cargo-mutants prints each mutant the tests miss as MISSED and each that times out as TIMEOUT; its
+# reports go out of the working tree.
 status=0
 if [[ -n $root_mutants ]]; then
   postgres_start
@@ -78,13 +85,13 @@ if [[ -n $root_mutants ]]; then
   postgres_wait
   s3_wait
   mkdir "$tmp/root"
-  cargo mutants "${root[@]}" --test-workspace=false "${jobs[@]}" --output "$tmp/root" || status=$?
+  cargo mutants "${root[@]}" --test-workspace=false "${options[@]}" --output "$tmp/root" || status=$?
 fi
 # Bash 3.2, macOS's, treats an empty array as unset.
 for name in ${prototypes[@]+"${prototypes[@]}"}; do
   echo "script/mutants: the prototypes in prototypes/$name"
   mkdir "$tmp/prototypes/$name"
   cargo mutants --dir "prototypes/$name" --workspace --in-diff "$tmp/prototypes/$name.diff" \
-    --test-workspace=true "${jobs[@]}" --output "$tmp/prototypes/$name" || status=$?
+    --test-workspace=true "${options[@]}" --output "$tmp/prototypes/$name" || status=$?
 done
 exit $status

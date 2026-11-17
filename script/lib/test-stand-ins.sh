@@ -14,6 +14,7 @@ test_stand_ins() {
   mkdir -p "$dir/script/lib" "$dir/bin" "$dir/web" "$dir/site" "$dir/prototypes/mls" \
     "$dir/sysroot/lib/rustlib/wasm32-unknown-unknown"
   cp "$root/script/test" "$root/script/changed-parts" "$dir/script/"
+  cp "$root/script/lib/sccache.sh" "$dir/script/lib/"
   echo 'postgres_start() { :; }; postgres_wait() { :; }; postgres_stop() { :; }' \
     >"$dir/script/lib/postgres.sh"
   echo 's3_start() { :; }; s3_wait() { :; }; s3_stop() { :; }' >"$dir/script/lib/s3.sh"
@@ -24,7 +25,7 @@ test_stand_ins() {
       stand_in "$dir" "$name" "$name"
     fi
   done
-  for name in cargo cargo-deny cargo-mutants node npm npx jq curl docker openssl tar \
+  for name in cargo cargo-deny cargo-mutants cargo-nextest node npm npx jq curl docker openssl tar \
     ssh ssh-add ssh-agent ssh-keygen sshd; do
     stand_in "$dir" "bin/$name" "$name"
   done

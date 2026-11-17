@@ -36,11 +36,15 @@
 #              references) and build; the web app's archive of a release (script/release-web-test)
 #   site       the website and docs built from docs/, which fails on a broken internal link
 #              (script/site-test)
+# The native tests of the Rust code run with cargo-nextest, each in a process of its own, and the
+# doctests, which it does not run, with cargo test. With sccache on PATH, cargo compiles through it
+# (script/lib/sccache.sh).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source script/lib/postgres.sh
 source script/lib/s3.sh
+source script/lib/sccache.sh
 
 all='workspace wasm image self-host mls agents edits repository tooling web site'
 rust='workspace wasm image self-host mls agents edits repository'
@@ -137,6 +141,10 @@ if checks tooling; then
     fi
   done
 fi
+if checks_any workspace mls agents edits tooling && ! command -v cargo-nextest >/dev/null; then
+  echo "script/test: cargo-nextest is missing; the tests of the Rust code and script/mutants run with it: install it: cargo install cargo-nextest --locked" >&2
+  exit 1
+fi
 if checks tooling && ! command -v cargo-mutants >/dev/null; then
   echo "script/test: cargo-mutants is missing; install it: cargo install cargo-mutants --locked" >&2
   exit 1
@@ -165,6 +173,8 @@ if checks_any $rust && ! command -v tar >/dev/null; then
   echo "script/test: tar is missing; the client's update tests pack a stand-in release's archives with it" >&2
   exit 1
 fi
+
+sccache_use
 
 # web_packages: installs the packages of web/ from its lockfile, once per run, and the Chrome Headless
 # Shell of its playwright-core, unless SKALD_CHROME names another browser: CONTRIBUTING.md. The web UI
@@ -197,7 +207,8 @@ if checks workspace; then
   web_packages
   postgres_wait
   s3_wait
-  cargo test --workspace --locked
+  cargo nextest run --workspace --locked
+  cargo test --doc --workspace --locked
 fi
 
 if checks wasm; then
@@ -227,7 +238,8 @@ if checks mls; then
   cargo build "${prototypes[@]}" --workspace --all-targets --locked
   cargo fmt "${prototypes[@]}" --all --check
   cargo clippy "${prototypes[@]}" --workspace --all-targets --locked -- -D warnings
-  cargo test "${prototypes[@]}" --workspace --locked
+  cargo nextest run "${prototypes[@]}" --workspace --locked
+  cargo test "${prototypes[@]}" --doc --workspace --locked
   # The prototypes in WASM: the scenario suite and the benchmarks' smoke run run in Node.js, the
   # test runner that prototypes/mls/.cargo/config.toml sets. Cargo reads that config only from its
   # directory.
@@ -247,7 +259,8 @@ if checks agents; then
   cargo build "${prototypes[@]}" --workspace --all-targets --locked
   cargo fmt "${prototypes[@]}" --all --check
   cargo clippy "${prototypes[@]}" --workspace --all-targets --locked -- -D warnings
-  cargo test "${prototypes[@]}" --workspace --locked
+  cargo nextest run "${prototypes[@]}" --workspace --locked
+  cargo test "${prototypes[@]}" --doc --workspace --locked
 fi
 
 if checks edits; then
@@ -256,7 +269,8 @@ if checks edits; then
   cargo build "${edits[@]}" --workspace --all-targets --locked
   cargo fmt "${edits[@]}" --all --check
   cargo clippy "${edits[@]}" --workspace --all-targets --locked -- -D warnings
-  cargo test "${edits[@]}" --workspace --locked
+  cargo nextest run "${edits[@]}" --workspace --locked
+  cargo test "${edits[@]}" --doc --workspace --locked
 fi
 
 if checks tooling; then
