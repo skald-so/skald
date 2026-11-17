@@ -1,10 +1,9 @@
 //! A wrap the server refuses is not uploaded again, and the run's warning names its browser.
 
+use crate::answered::{assert_none_sent_again, wraps_first_epoch_answered};
 use crate::front::Answers;
-use crate::kit::{RECV, received};
 use crate::talk::Talk;
-use crate::world::run;
-use crate::wraps::{held_epochs, sent_to, valid_browser};
+use crate::wraps::{held_epochs, valid_browser};
 
 /// The test sets up a browser of Ada's account, and the front turns the server's answers to Ada's
 /// uploads into `history-refused` while her next run wraps epoch 1 to it: the run's warning names
@@ -18,16 +17,8 @@ fn refused_wrap_is_not_uploaded_again() {
         false,
     );
     let browser = valid_browser(&talk.world.cloud, &talk.ada, "ada-browser-refused");
-    let from = talk.front.uploads().len();
-    talk.front
-        .answer_history(Answers::Refuse("not-a-member".to_owned()));
-    let ran = run(&talk.ada.machine, &[RECV]);
-    talk.front.answer_history(Answers::Forward);
-    let sent = sent_to(&talk.front, talk.channel, from, browser.id);
-    assert!(
-        sent.iter().any(|one| one.epoch == 1 && one.forwarded),
-        "no wrap of epoch 1 sent: {sent:?}"
-    );
+    let refused = Answers::Refuse("not-a-member".to_owned());
+    let ran = wraps_first_epoch_answered(&talk, &browser, refused);
     assert!(
         (ran.stderr.lines())
             .any(|line| line.contains("refused") && line.contains(&browser.id.to_string())),
@@ -37,13 +28,9 @@ fn refused_wrap_is_not_uploaded_again() {
         "DELETE FROM history_wraps WHERE channel_id = '{}'::uuid",
         talk.channel
     ));
-    let later = talk.front.uploads().len();
 
-    received(&talk.ada.machine);
-    received(&talk.ada.machine);
+    assert_none_sent_again(&talk, &browser);
 
-    let sent = sent_to(&talk.front, talk.channel, later, browser.id);
-    assert!(sent.is_empty(), "wraps sent again: {sent:?}");
     assert!(
         held_epochs(&talk, browser.id).is_empty(),
         "the server holds a wrap"
