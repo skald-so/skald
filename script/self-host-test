@@ -221,10 +221,11 @@
 #   web-mismatch, web-unattested: release, files, web-files, web-check, web with this commit's
 #     archive and a checksum of other bytes, or its checksum and the attestation of nothing: the steps
 #     fail before web, the latter at web-check, and the stack's directory holds no file of the
-#     archive. Once the last release has the archive, web-release: these steps pass for it and unpack
-#     it; web-other-release, web-other-workflow: they fail at web-check for it checked as v0.0.1's,
-#     or against .github/workflows/edge.yml, unpacking nothing. Until then, the part names the check
-#     skipped.
+#     archive. Once the last release has the archive, web-release-mismatch: its archive and
+#     attestation with a checksum of other bytes fail at web-check, unpacking nothing; web-release:
+#     these steps pass for it and unpack it; web-other-release, web-other-workflow: they fail at
+#     web-check for it checked as v0.0.1's, or against .github/workflows/edge.yml, unpacking
+#     nothing. Until then, the part names the check skipped.
 #   The upgrade tests also: after upgrade, the stack serves this commit's web app; after rollback, /
 #     and /machines answer as before the upgrade. proxy-last-release: the last release's stack in
 #     the proxy variant's loopback form, with its guide's proxy-host and proxy-host-site; proxy-upgrade:
@@ -1997,6 +1998,22 @@ if [[ -n $release_web ]]; then
         fail "web-release: the guide's steps leave v$version's web app packed"
     fi
     stack_down web-release
+    # Its archive and attestation with a checksum of other bytes: the checksum the one flaw.
+    mkdir -p "$work/release-mismatch"
+    cp "$work/release-web/$web_archive" "$work/release-mismatch/"
+    echo "$(printf 'other bytes' | sha256)  $web_archive" >"$work/release-mismatch/$web_archive.sha256"
+    if curl --fail --silent --show-error --location --retry 3 \
+      --output "$work/release-mismatch/$web_archive.sigstore.json" "$release_web/$web_archive.sigstore.json"; then
+      docker cp "$work/release-mismatch" "$machine:/self-host/web/release-mismatch"
+      scenario web-release-mismatch release :last_release ":web release-mismatch" files :here web-files \
+        web-check web
+      refused_before web-release-mismatch web-check web
+      unpacked=$(web_unpacked web-release-mismatch "$work/release-web/hashes")
+      [[ -z $unpacked ]] || fail "web-release-mismatch: the refused archive is unpacked:"$'\n'"$unpacked"
+      stack_down web-release-mismatch
+    else
+      fail "web-release-mismatch: cannot get $release_web/$web_archive.sigstore.json"
+    fi
     scenario web-other-release release :last_release files :here web-files web-check web
     edit_script web-other-release 's|^self_host_last_release$|self_host_last_release; SKALD_VERSION=0.0.1|'
     refused_before web-other-release web-check web
