@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BrowserRouter, Link, Route, Routes } from "react-router";
 import {
   getHealth,
@@ -11,10 +11,15 @@ import type {
   Session,
   SignInProviders,
 } from "./api/skald.schemas.ts";
+import { Access } from "./app/Access.tsx";
+import { Account } from "./app/Account.tsx";
 import { versioned } from "./app/api.ts";
 import { Cabinet } from "./app/Cabinet.tsx";
-import { Home } from "./app/Home.tsx";
+import { Machines } from "./app/Machines.tsx";
+import { Members } from "./app/Members.tsx";
+import { accountPath } from "./app/names.ts";
 import { CenteredPage, SignInPage } from "./app/SignInPage.tsx";
+import { Usage } from "./app/Usage.tsx";
 import styles from "./app/SignInPage.module.css";
 import { Button } from "./ui/Button.tsx";
 import { EmptyState } from "./ui/EmptyState.tsx";
@@ -35,6 +40,13 @@ type View =
 export function App() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
+  /** Loads the web app again, as when it starts. */
+  const reload = useCallback(() => {
+    setView({ kind: "loading" });
+    setAttempt((attempt) => attempt + 1);
+  }, []);
+  /** Loads the session again behind the page shown: the sign-in page once it has ended. */
+  const refresh = useCallback(() => setAttempt((attempt) => attempt + 1), []);
 
   useEffect(() => {
     const request = new AbortController();
@@ -52,14 +64,7 @@ export function App() {
         </CenteredPage>
       );
     case "failed":
-      return (
-        <Failed
-          onRetry={() => {
-            setView({ kind: "loading" });
-            setAttempt(attempt + 1);
-          }}
-        />
-      );
+      return <Failed onRetry={reload} />;
     case "signed-out":
       return (
         <SignInPage
@@ -74,9 +79,37 @@ export function App() {
     case "signed-in":
       return (
         <BrowserRouter>
-          <Cabinet session={view.session} spaces={view.spaces}>
+          <Cabinet
+            session={view.session}
+            spaces={view.spaces}
+            onSignedOut={reload}
+          >
             <Routes>
-              <Route path="/" element={<Home session={view.session} />} />
+              <Route
+                path="/"
+                element={
+                  <Machines
+                    username={view.session.username}
+                    onSignedOut={reload}
+                  />
+                }
+              />
+              <Route
+                path="/members"
+                element={<Members onSignedOut={reload} />}
+              />
+              <Route path="/access" element={<Access onSignedOut={reload} />} />
+              <Route path="/usage" element={<Usage onSignedOut={reload} />} />
+              <Route
+                path={accountPath}
+                element={
+                  <Account
+                    session={view.session}
+                    onChanged={refresh}
+                    onSignedOut={reload}
+                  />
+                }
+              />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Cabinet>

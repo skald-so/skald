@@ -1629,8 +1629,9 @@ test("the screenshot command saves every view of the kit page, as the references
     await promisify(execFile)(process.execPath, ["kit-screenshots.ts", dir], {
       cwd: import.meta.dirname,
     });
-    // The kit page and the cabinet in full, the open side menu at phone width in the window; the
-    // sign-in page and the cabinet of an account with no space fill the window.
+    // The kit page and the cabinet in full, the open side menu at phone width and the questions over
+    // Access and the Account page in the window; the sign-in page, the cabinet of an account with
+    // no space, Machines, Members, Access, the Account page and Usage fill the window.
     const expected = [
       ["kit-light-1440.png", 1440, "Background", "light"],
       ["kit-light-360.png", 360, "Background", "light"],
@@ -1650,6 +1651,34 @@ test("the screenshot command saves every view of the kit page, as the references
       ["account-light-360.png", 360, "Side panel", "light", 900],
       ["account-dark-1440.png", 1440, "Side panel", "dark", 900],
       ["account-dark-360.png", 360, "Side panel", "dark", 900],
+      ["machines-light-1440.png", 1440, "Side panel", "light", 900],
+      ["machines-light-360.png", 360, "Side panel", "light", 900],
+      ["machines-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["machines-dark-360.png", 360, "Side panel", "dark", 900],
+      ["members-light-1440.png", 1440, "Side panel", "light", 900],
+      ["members-light-360.png", 360, "Side panel", "light", 900],
+      ["members-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["members-dark-360.png", 360, "Side panel", "dark", 900],
+      ["access-light-1440.png", 1440, "Side panel", "light", 900],
+      ["access-light-360.png", 360, "Side panel", "light", 900],
+      ["access-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["access-dark-360.png", 360, "Side panel", "dark", 900],
+      ["access-confirm-light-1440.png", 1440, null, "light", 900],
+      ["access-confirm-light-360.png", 360, null, "light", 900],
+      ["access-confirm-dark-1440.png", 1440, null, "dark", 900],
+      ["access-confirm-dark-360.png", 360, null, "dark", 900],
+      ["account-page-light-1440.png", 1440, "Side panel", "light", 900],
+      ["account-page-light-360.png", 360, "Side panel", "light", 900],
+      ["account-page-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["account-page-dark-360.png", 360, "Side panel", "dark", 900],
+      ["account-page-confirm-light-1440.png", 1440, null, "light", 900],
+      ["account-page-confirm-light-360.png", 360, null, "light", 900],
+      ["account-page-confirm-dark-1440.png", 1440, null, "dark", 900],
+      ["account-page-confirm-dark-360.png", 360, null, "dark", 900],
+      ["usage-light-1440.png", 1440, "Side panel", "light", 900],
+      ["usage-light-360.png", 360, "Side panel", "light", 900],
+      ["usage-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["usage-dark-360.png", 360, "Side panel", "dark", 900],
     ] as const;
     expect(readdirSync(dir).sort()).toEqual(
       expected.map(([file]) => file).sort(),
@@ -1661,8 +1690,10 @@ test("the screenshot command saves every view of the kit page, as the references
       expect(png.readUInt32BE(16), file).toBe(width);
       if (height) expect(png.readUInt32BE(20), file).toBe(height);
       else expect(png.readUInt32BE(20), file).toBeGreaterThan(900);
-      // The top left corner is the page background, or the side menu of the cabinet.
-      expect(await topLeftPixel(png), file).toBe(color(corner, theme));
+      // The top left corner is the page background, or the side menu of the cabinet; a dialog's
+      // backdrop dims it.
+      if (corner)
+        expect(await topLeftPixel(png), file).toBe(color(corner, theme));
       // The same pinned Chrome as the comparison: `npm run kit:references` saves passing references.
       expect(
         compare(png, readFileSync(join(referenceDir, file))).same,

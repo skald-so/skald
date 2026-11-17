@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Deploys the stable release <version>, X.Y.Z, to production: connects over SSH as the deploy key's
+# account and runs `deploy <version>` there, which deploys only a signed and attested release no
+# older than the running one and passes only when the server runs it and its health check answers
+# ok; exits 0 only then. The connection comes only from the secrets of the GitHub environment
+# production, PRODUCTION_SSH_KEY, PRODUCTION_SSH_HOST_KEY and PRODUCTION_SSH_DESTINATION:
+# script/lib/ssh-deploy.sh.
+# Prints the version and the deploy's own output: its steps, the digest and the health check result;
+# never these values.
+# Usage: script/deploy-production <version>
+set -euo pipefail
+source "$(dirname "$0")/lib/ssh-deploy.sh"
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <version>" >&2
+  exit 2
+fi
+version=$1
+if [[ ! $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+  echo "deploy-production: '$version' is not a stable release's version, X.Y.Z" >&2
+  exit 2
+fi
+check_ssh_secrets deploy-production PRODUCTION
+
+echo "deploy-production: deploying $version"
+ssh_deploy deploy-production PRODUCTION deploy "$version"
+echo "deploy-production: production runs $version"

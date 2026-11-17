@@ -15,6 +15,7 @@
 //! until then the space stays at its last accepted revision. When another revision came first, the
 //! device accepts the new revisions, applies its change to the latest and signs again.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,13 +27,14 @@ use skald_proto::{
     NonEmpty, Role, Roster, RosterBody, SpaceId, Unknown, VersionRange,
 };
 
-use crate::connection::{self, Connection, Method, WebSocket, printable};
+use crate::connection::{self, Connection, Method, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
 use crate::groups;
 use crate::key_packages;
+use crate::mailbox::{Mailbox, Transport};
 use crate::revocations;
 use crate::secrets;
 use crate::sign_in;
@@ -346,6 +348,12 @@ pub struct Follower {
     pub timeout: Duration,
     /// Each space the run accepted the revisions of, as it last did ([`Follower::sync`]).
     pub accepted: groups::Rosters,
+    /// The transport the device's next connection tries first ([`crate::mailbox`]).
+    pub transport: Transport,
+    /// Whether the run has kept the device's KeyPackages on the server.
+    kept: bool,
+    /// The revisions the server last gave of each space the run followed or synced.
+    pub given: BTreeMap<SpaceId, Vec<Roster>>,
 }
 
 impl Follower {
@@ -416,25 +424,29 @@ impl Follower {
             cert,
             timeout,
             accepted: groups::Rosters::new(),
+            transport: Transport::default(),
+            kept: false,
+            given: BTreeMap::new(),
         }))
     }
 
-    /// A WebSocket at `/ws` to the server as the device, proving its `keys`, once the device kept
-    /// its KeyPackages on the server, warning if it cannot.
-    pub fn connect(&mut self, keys: &device::Keys) -> Result<WebSocket, String> {
-        let kept = key_packages::keep(
-            &mut self.connection,
-            &self.token,
-            &self.state,
-            keys,
-            &self.secrets,
-        );
-        if let Err(err) = kept {
-            key_packages::warn(&err);
+    /// A connection to the server as the device, proving its `keys` ([`Mailbox::open`]), once the
+    /// device kept its KeyPackages on the server, warning if it cannot; a run keeps them once.
+    pub fn connect(&mut self, keys: &device::Keys) -> Result<Mailbox, String> {
+        if !self.kept {
+            let kept = key_packages::keep(
+                &mut self.connection,
+                &self.token,
+                &self.state,
+                keys,
+                &self.secrets,
+            );
+            match kept {
+                Ok(()) => self.kept = true,
+                Err(err) => key_packages::warn(&err),
+            }
         }
-        self.connection
-            .open_websocket_as("/ws", &self.token, keys.id(), keys.signing())
-            .map_err(text)
+        Mailbox::open(self, keys)
     }
 
     /// The device's keys.
@@ -570,6 +582,8 @@ impl Follower {
                     &self.state,
                     space.id,
                 )?;
+                let given = follow::given(&mut self.connection, &self.token, space.id)?;
+                self.given.insert(space.id, given);
                 return Ok((follow::decode(&held.last, &space.name)?, devices));
             }
         }
@@ -613,18 +627,20 @@ impl Follower {
     }
 
     /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
-    /// its accounts and the revisions the server gives.
+    /// its accounts and the revisions the server gives, which it records in [`Follower::given`].
     fn follow(
         &mut self,
         space: &state::Space,
     ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
-        follow::sync(
+        let followed = follow::sync(
             &mut self.connection,
             &self.state,
             &self.token,
             space,
             &self.own,
-        )
+        )?;
+        self.given.insert(space.id, followed.2.clone());
+        Ok(followed)
     }
 
     /// Sends `pending`, in CBOR, the pending revision of `space` after revision 1, until the server
@@ -1137,8 +1153,8 @@ pub fn of_channel(
     Err(match scope {
         Scope::All => format!("no space this device follows has the channel {channel}"),
         Scope::Only(_) => format!(
-            "the space of the agent's folder has no channel {channel}: as an agent, skald sends \
-             only to its channels"
+            "the space of the agent's folder has no channel {channel}: as an agent, skald uses \
+             only its channels"
         ),
     })
 }

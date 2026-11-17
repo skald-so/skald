@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use skald_proto::ServerName;
@@ -22,11 +22,13 @@ mod delivery;
 mod device_flow;
 mod devices;
 mod error_reports;
+mod events;
 mod expiry;
 mod github;
 mod google;
 mod groups;
 mod history;
+mod history_retention;
 mod http_client;
 mod instances;
 mod key_packages;
@@ -38,12 +40,16 @@ mod protocol;
 mod refusal;
 mod requests;
 mod revocations;
+mod sessions;
 mod sign_in;
 mod sign_up;
 mod spaces;
+mod usage;
+mod user_agent;
 
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use error_reports::{SentryDsn, report_errors_to};
+pub use events::SSE_KEEP_ALIVE;
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 use google::Google;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
@@ -62,6 +68,9 @@ pub static MIGRATOR: Migrator = sqlx::migrate!();
 /// The longest time the server keeps a mailbox entry, in seconds: 100 years. It bounds the mailbox
 /// retention and an envelope's `ttl`.
 pub const MAILBOX_LONGEST: u64 = 100 * 365 * 24 * 3_600;
+
+/// The longest history retention, in seconds: 100 years.
+pub const HISTORY_LONGEST: u64 = MAILBOX_LONGEST;
 
 /// How long to wait for a PostgreSQL connection, and for PostgreSQL to answer the health check.
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -104,6 +113,9 @@ pub struct Settings {
     /// it, entries wait for their device's ack, unless an envelope's `ttl` ends first, and keys are
     /// kept for good.
     pub mailbox_retention: Option<Duration>,
+    /// How long the server keeps a channel's history entries, up to 100 years
+    /// (`docs/protocol/membership.md`, "Uploads"); without it, the history is kept for good.
+    pub history_retention: Option<Duration>,
     /// The longest payload of an envelope, in bytes (`docs/dev/architecture.md`, "Cloud limits"); no
     /// limit without it.
     pub message_size_limit: Option<u64>,
@@ -116,6 +128,9 @@ pub struct Settings {
     /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
     /// [`LONG_POLL_MAX_WAIT`] without it.
     pub long_poll_max_wait: Option<Duration>,
+    /// How often an idle mailbox stream sends a keep-alive (`docs/protocol/delivery.md`,
+    /// "Frames"); [`SSE_KEEP_ALIVE`] without it.
+    pub sse_keep_alive: Option<Duration>,
 }
 
 /// The state the handlers share.
@@ -129,9 +144,11 @@ struct AppState {
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
+    history_retention: Option<Duration>,
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
     long_poll_max_wait: Duration,
+    sse_keep_alive: Duration,
     instance: instances::Instance,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
@@ -139,8 +156,8 @@ struct AppState {
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries and listens to the other instances on that database in tasks on the Tokio runtime it is
-/// called on.
+/// entries, deletes history past its retention and listens to the other instances on that database
+/// in tasks on the Tokio runtime it is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
     let instance = instances::Instance::new();
@@ -152,6 +169,9 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         Arc::clone(&wakers),
         settings.mailbox_retention,
     ));
+    if let Some(retention) = settings.history_retention {
+        tokio::spawn(history_retention::run(db.clone(), retention));
+    }
     tokio::spawn(instances::listen(
         instance.clone(),
         instances::Local {
@@ -171,6 +191,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
         .route(
+            "/account/devices",
+            get(devices::shown).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/master",
             get(devices::master)
                 .put(devices::give_master)
@@ -185,8 +209,28 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             post(revocations::store).layer(checked(Statement::Header)),
         )
         .route(
+            "/account/sessions",
+            get(sessions::list).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/sessions/end-others",
+            post(sessions::end_others).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/sessions/{session}",
+            delete(sessions::end_one).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/sign-in-methods",
             get(links::list).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/sign-in-methods/{method}",
+            delete(links::remove).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/usage",
+            get(usage::account).layer(checked(Statement::Header)),
         )
         .route(
             "/account/username",
@@ -236,6 +280,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             post(requests::ack).layer(checked(Statement::Header)),
         )
         .route(
+            "/mailbox/events",
+            get(events::events).layer(checked(Statement::Header)),
+        )
+        .route(
             "/mailbox/poll",
             post(requests::poll).layer(checked(Statement::Header)),
         )
@@ -252,7 +300,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/session",
             get(sign_in::session)
-                .delete(sign_in::end)
+                .delete(sessions::sign_out)
                 .layer(checked(Statement::Header)),
         )
         .route(
@@ -293,10 +341,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(spaces::devices).layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/members",
+            get(spaces::members).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/revisions",
             get(spaces::revisions)
                 .post(spaces::store)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/usage",
+            get(usage::space).layer(checked(Statement::Header)),
         )
         .route(
             "/ws",
@@ -309,12 +365,14 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             mailbox_retention: settings.mailbox_retention,
+            history_retention: settings.history_retention,
             limits: mailboxes::Limits {
                 message_size: settings.message_size_limit,
                 monthly_messages: settings.monthly_messages_limit,
             },
             devices_limit: settings.devices_limit,
             long_poll_max_wait: settings.long_poll_max_wait.unwrap_or(LONG_POLL_MAX_WAIT),
+            sse_keep_alive: settings.sse_keep_alive.unwrap_or(SSE_KEEP_ALIVE),
             instance,
             connections,
             wakers,

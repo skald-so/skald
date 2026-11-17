@@ -50,7 +50,7 @@ function Screen({
   initial?: string;
   onNavigate?: (key: string) => void;
   onSpaceChange?: (space: string) => void;
-} & Partial<Pick<ShellProps, "defaultMenuOpen">>) {
+} & Partial<Pick<ShellProps, "defaultMenuOpen" | "onFollow">>) {
   const [current, setCurrent] = useState(initial);
   const [space, setSpace] = useState("team-a");
   return (
@@ -198,6 +198,30 @@ test("choosing a section reports it and the screen marks it current", async () =
     ["Messages", "true"],
     ["# review", "page"],
   ]);
+});
+
+test("with onFollow, a plain click on a link is followed in the page, a click with a modifier is left to the browser", async () => {
+  const onFollow = vi.fn();
+  const clicks: boolean[] = [];
+  render(<Screen onFollow={onFollow} />);
+  const queues = screen.getByRole("link", { name: /^Queues/ });
+  // After React's handler: whether the browser would follow the link.
+  const record = (event: MouseEvent) => {
+    if (queues.contains(event.target as Node))
+      clicks.push(event.defaultPrevented);
+  };
+  document.addEventListener("click", record);
+  const user = userEvent.setup();
+
+  await user.click(queues);
+  await user.click(screen.getByRole("link", { name: "skald" }));
+  await user.keyboard("{Control>}");
+  await user.click(queues);
+  await user.keyboard("{/Control}");
+  document.removeEventListener("click", record);
+
+  expect(onFollow.mock.calls).toEqual([["#queues"], ["/"]]);
+  expect(clicks).toEqual([true, false]);
 });
 
 test("choosing a space by click or keyboard reports it and shows it", async () => {

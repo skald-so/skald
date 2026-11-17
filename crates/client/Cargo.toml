@@ -38,6 +38,9 @@ zeroize = "1"
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
 
 [dev-dependencies]
+# History entries a compromised device seals as skald-crypto never would, such as one whose body
+# names another channel.
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
 axum = "0.8.9"
 curve25519-dalek = "5"
 # A device the members do not admit, which joins a channel's group by an external Commit.

@@ -12,6 +12,9 @@
 //! redelivery. It keeps each `space-notice` the server sent a device, and can hold back the `batch`
 //! that ends a catch-up until the server sends that connection a `space-notice`, which then comes
 //! first. It can hold back a device's `auth`, and what the machine sends after it, until released.
+//! It keeps each `history` frame a machine sent, and can close the connection, both ways, at the
+//! next one that carries a link, or a wrap, of a channel, which the server never gets. It can lose the server's
+//! `history-stored` answers or turn them into `history-refused`.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -21,7 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use skald_proto::{Cbor as _, DeviceId, Frame, Push, RawEnvelope, SpaceId};
+use skald_proto::{Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, Push, RawEnvelope, SpaceId};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -29,14 +32,15 @@ const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
 /// The WebSocket opcode of a binary message.
 const BINARY: u8 = 2;
 
-/// What the front does with the server's `stored` answers.
+/// What the front does with the server's `stored` answers, or with its `history-stored` ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answers {
     /// Forwards them.
     Forward,
     /// Loses them.
     Lose,
-    /// Gives the machine a `send-refused` with this problem instead, for the same envelope.
+    /// Gives the machine a `send-refused` with this problem instead, for the same envelope, or a
+    /// `history-refused`, for the same upload.
     Refuse(String),
 }
 
@@ -58,12 +62,29 @@ pub struct Sent {
     pub report: bool,
 }
 
+/// A `history` frame a machine sent.
+#[derive(Debug, Clone)]
+pub struct Upload {
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub item: HistoryItem,
+    /// Whether the front forwarded it to the server.
+    pub forwarded: bool,
+}
+
 /// What came through so far, and the rules.
 struct State {
     sent: Vec<Sent>,
+    /// Every `history` frame the machines sent, in the order they came.
+    uploads: Vec<Upload>,
+    /// The channel at whose next link in a `history` frame it closes the connection.
+    cut_link_of: Option<ChannelId>,
+    /// The channel at whose next wrap in a `history` frame it closes the connection.
+    cut_wrap_of: Option<ChannelId>,
     /// The server's `stored` and `send-refused` frames, as it sent them.
     answered: Vec<Frame>,
     answers: Answers,
+    history_answers: Answers,
     /// How many `stored` answers were lost.
     lost: usize,
     swallow: bool,
@@ -163,8 +184,12 @@ impl Front {
             target: OnceLock::new(),
             state: Mutex::new(State {
                 sent: Vec::new(),
+                uploads: Vec::new(),
+                cut_link_of: None,
+                cut_wrap_of: None,
                 answered: Vec::new(),
                 answers: Answers::Forward,
+                history_answers: Answers::Forward,
                 lost: 0,
                 swallow: false,
                 swallowed: 0,
@@ -214,6 +239,23 @@ impl Front {
         self.shared.state().sent.clone()
     }
 
+    /// Every `history` frame the machines sent so far, in the order they came, cut ones included.
+    pub fn uploads(&self) -> Vec<Upload> {
+        self.shared.state().uploads.clone()
+    }
+
+    /// Closes the connection, both ways, at the next `history` frame a machine sends that carries a
+    /// link of `channel`; the server never gets it.
+    pub fn cut_next_link(&self, channel: ChannelId) {
+        self.shared.state().cut_link_of = Some(channel);
+    }
+
+    /// Closes the connection, both ways, at the next `history` frame a machine sends that carries a
+    /// wrap of `channel`; the server never gets it.
+    pub fn cut_next_wrap(&self, channel: ChannelId) {
+        self.shared.state().cut_wrap_of = Some(channel);
+    }
+
     /// The server's `stored` and `send-refused` frames so far, as it sent them.
     pub fn answered(&self) -> Vec<Frame> {
         self.shared.state().answered.clone()
@@ -222,6 +264,11 @@ impl Front {
     /// From now on, does `answers` with the server's `stored` answers.
     pub fn answer(&self, answers: Answers) {
         self.shared.state().answers = answers;
+    }
+
+    /// From now on, does `answers` with the server's `history-stored` answers.
+    pub fn answer_history(&self, answers: Answers) {
+        self.shared.state().history_answers = answers;
     }
 
     /// How many `stored` answers it lost.
@@ -409,6 +456,38 @@ fn to_server(
                     }
                     false
                 }
+                Some(Frame::History {
+                    space,
+                    channel,
+                    item,
+                    ..
+                }) => {
+                    let mut state = shared.state();
+                    let cut_link =
+                        state.cut_link_of == Some(channel) && matches!(item, HistoryItem::Link(_));
+                    let cut_wrap =
+                        state.cut_wrap_of == Some(channel) && matches!(item, HistoryItem::Wrap(_));
+                    if cut_link {
+                        state.cut_link_of = None;
+                    }
+                    if cut_wrap {
+                        state.cut_wrap_of = None;
+                    }
+                    let cut = cut_link || cut_wrap;
+                    state.uploads.push(Upload {
+                        space,
+                        channel,
+                        item,
+                        forwarded: !cut,
+                    });
+                    if cut {
+                        drop(state);
+                        let _ = machine.shutdown(Shutdown::Both);
+                        let _ = server.shutdown(Shutdown::Both);
+                        return;
+                    }
+                    false
+                }
                 Some(Frame::Auth { device, .. }) => {
                     *link.device.lock().expect("a connection's device") = Some(device);
                     let held = |state: &State| state.hold_auth_of == Some(device);
@@ -548,6 +627,13 @@ fn forward_answers(
                 shared.state().answered.push(refused);
                 Some(raw)
             }
+            Some(Frame::HistoryStored { upload }) => match shared.state().history_answers.clone() {
+                Answers::Forward => Some(raw),
+                Answers::Lose => None,
+                Answers::Refuse(problem) => Some(server_frame(
+                    &Frame::HistoryRefused { upload, problem }.to_cbor(),
+                )),
+            },
             Some(Frame::Push(Push::Message { seq, .. })) => {
                 link.saw(seq.get());
                 let mut state = shared.state();

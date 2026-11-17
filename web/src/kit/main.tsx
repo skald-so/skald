@@ -1,6 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { KitAccount, KitSignIn } from "./KitApp.tsx";
+import {
+  KitAccess,
+  KitAccount,
+  KitAccountPage,
+  KitMachines,
+  KitMembers,
+  KitSignIn,
+  KitUsage,
+} from "./KitApp.tsx";
 import { KitCabinet } from "./KitCabinet.tsx";
 import { KitPage, type Theme } from "./KitPage.tsx";
 import "../theme/index.ts";
@@ -8,7 +16,11 @@ import "../theme/index.ts";
 // ?theme=light or ?theme=dark forces a theme; otherwise it follows the system setting.
 // ?screen=cabinet shows the cabinet around Machines; ?screen=cabinet-menu opens its side menu at
 // phone width; ?screen=sign-in shows the web app's sign-in page, ?screen=account the cabinet of an
-// account with no space, its side menu open at phone width. Without it, the kit page.
+// account with no space, its side menu open at phone width, ?screen=machines the Machines section,
+// ?screen=members the Members section, ?screen=access the Access section,
+// ?screen=access-confirm its question before "Sign out everywhere else", ?screen=account-page the
+// Account page, ?screen=account-page-confirm its question before removing this session's sign-in
+// method and ?screen=usage the Usage section. Without it, the kit page.
 const params = new URLSearchParams(location.search);
 const param = params.get("theme");
 const theme: Theme | undefined =
@@ -24,6 +36,16 @@ createRoot(document.getElementById("root")!).render(
       <KitSignIn />
     ) : screen === "account" ? (
       <KitAccount />
+    ) : screen === "machines" ? (
+      <KitMachines />
+    ) : screen === "members" ? (
+      <KitMembers />
+    ) : screen === "access" || screen === "access-confirm" ? (
+      <KitAccess asking={screen === "access-confirm"} />
+    ) : screen === "account-page" || screen === "account-page-confirm" ? (
+      <KitAccountPage asking={screen === "account-page-confirm"} />
+    ) : screen === "usage" ? (
+      <KitUsage />
     ) : (
       <KitPage theme={theme} />
     )}

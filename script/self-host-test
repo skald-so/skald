@@ -63,7 +63,8 @@
 #   proxy-host-site      the site block of a Caddy on the machine (Caddyfile)
 #   proxy-join           the proxy variant's .env for a proxy in a container that joins the stack's
 #                        network
-#   proxy-join-connect   connects the proxy's container to the stack's network, after `up`
+#   proxy-join-connect   connects the proxy's container to the stack's network, after `up`; the
+#                        proxy's default route stays on its own network
 #   proxy-network        the proxy variant's .env for a proxy in a container on a network .env names
 #   proxy-container-site the site block of a Caddy in a container (Caddyfile)
 # The part substitutes only these, in every block: SKALD_VERSION, SKALD_DIGEST and SKALD_FILES, to
@@ -113,7 +114,8 @@
 #     not show the secret key.
 #   proxy-host, proxy-join, proxy-network: the proxy variant behind a stand-in for the admin's proxy,
 #     Caddy with the guide's site block and a certificate from the ACME server: on the machine for the
-#     loopback form; in a container that the guide's command joins to the stack's network; in a
+#     loopback form; in a container on a network of its own, sorting after `skald`, that the guide's
+#     command joins to the stack's network, its default route staying on its own network; in a
 #     container on a network that exists before the stack. The stack publishes ports only on
 #     loopback in the first form and not at all in the others, and port 8080 does not answer on the
 #     machine's address; /health and skald status answer through the proxy. The stack's own Caddy
@@ -126,6 +128,8 @@
 #     disk fails, leaves no file there, and after it too.
 #     With the attachments volume emptied, the guide's restore into that stack, whose database holds
 #     data, fails and changes neither its database nor its volume.
+#     Pasted into a shell through `bash -s` with a command after them, the backup and the refused
+#     restore leave that command to the shell, which runs it.
 #   restore-files: release, files, env, github, google; the stack's containers created and removed,
 #     files in its attachments volume. The guide's restore fails, leaves the volume as it was and
 #     the database without a table.
@@ -1509,10 +1513,21 @@ fi
 check_env proxy-host
 stack_down proxy-host
 
+# check_proxy_route <scenario>: the proxy's default route goes through its own network's gateway.
+# Its network's name sorts after the stack's `skald`, which would otherwise take the route.
+check_proxy_route() {
+  local gateway route
+  gateway=$(m docker network inspect -f '{{(index .IPAM.Config 0).Gateway}}' "$proxy_network")
+  route=$(m docker exec "$proxy_container" ip route | grep '^default ' || true)
+  [[ -n $gateway && $route == "default via $gateway "* ]] ||
+    fail "$1: the proxy's default route left its own network ($gateway): '$route'"
+}
+
 scenario proxy-join release files web-files web env github proxy-join :before_up up proxy-container-site \
-  :proxy_in_container proxy-join-connect :wait_https :trust_acme status :trust_system
+  ":proxy_in_container network" proxy-join-connect :wait_https :trust_acme status :trust_system
 if run_scenario proxy-join <<<"$github_secret"; then
   check_proxied proxy-join none
+  check_proxy_route proxy-join
   spa_through proxy-join "the guide's install"
 fi
 stack_down proxy-join
@@ -1550,41 +1565,6 @@ refused_before web-unattested web-check web
 unpacked=$(web_unpacked web-unattested "$work/web/hashes")
 [[ -z $unpacked ]] || fail "web-unattested: the refused archive is unpacked:"$'\n'"$unpacked"
 stack_down web-unattested
-if [[ -n $release_web ]]; then
-  mkdir -p "$work/release-web/files"
-  if curl --fail --silent --show-error --location --retry 3 --output "$work/release-web/$web_archive" \
-    "$release_web/$web_archive" && tar -xzf "$work/release-web/$web_archive" -C "$work/release-web/files"; then
-    (cd "$work/release-web/files" && find . -type f -size +0 | sort | while read -r file; do
-      echo "$(sha256 <"$file") ${file#./}"
-    done) >"$work/release-web/hashes"
-    scenario web-release release :last_release files :here web-files web-check web
-    if run_scenario web-release </dev/null; then
-      [[ -n $(web_unpacked web-release "$work/release-web/hashes") ]] ||
-        fail "web-release: the guide's steps leave v$version's web app packed"
-    fi
-    stack_down web-release
-    scenario web-other-release release :last_release files :here web-files web-check web
-    edit_script web-other-release 's|^self_host_last_release$|self_host_last_release; SKALD_VERSION=0.0.1|'
-    refused_before web-other-release web-check web
-    unpacked=$(web_unpacked web-other-release "$work/release-web/hashes")
-    [[ -z $unpacked ]] || fail "web-other-release: the refused archive is unpacked:"$'\n'"$unpacked"
-    stack_down web-other-release
-    scenario web-other-workflow release :last_release files :here web-files web-check web
-    edit_script web-other-workflow 's|/\.github/workflows/release\.yml@|/.github/workflows/edge.yml@|g'
-    if grep -qF '/.github/workflows/edge.yml@' "$work/run/web-other-workflow/script.sh"; then
-      refused_before web-other-workflow web-check web
-      unpacked=$(web_unpacked web-other-workflow "$work/release-web/hashes")
-      [[ -z $unpacked ]] || fail "web-other-workflow: the refused archive is unpacked:"$'\n'"$unpacked"
-    else
-      fail "$guide: the step web-check does not pin the release workflow, .github/workflows/release.yml@"
-    fi
-    stack_down web-other-workflow
-  else
-    fail "web-release: cannot get $release_web/$web_archive"
-  fi
-else
-  echo "self-host-test: skipped the guide's archive check of the last release: v$version has no $web_archive"
-fi
 
 # --- Backup and restore, of the stack of a machine that signed in and created spaces.
 backups=/self-host/backups
@@ -1592,6 +1572,16 @@ m mkdir -p "$backups"
 
 # with_backup <scenario> <path>: the scenario's script with <path> for `<backup file>`.
 with_backup() { edit_script "$1" "s|<backup file>|$2|g"; }
+
+# run_pasted <scenario>: runs the scenario's script as pasted into a shell with one more command
+# after it: through `bash -s`, without errexit, so that command runs after a refusal too. Fails
+# unless it runs: a guide's command that reads standard input would take it.
+run_pasted() {
+  { sed '1s/^set -eo pipefail$/set -o pipefail/' "$work/run/$1/script.sh"; echo 'echo self-host-test: pasted after'; } |
+    mi env HOME=/root sh -c 'cd /root && timeout 1500 bash -s' >"$work/run/$1/output" 2>&1 || true
+  grep -qx 'self-host-test: pasted after' "$work/run/$1/output" ||
+    fail "$1: a command pasted after the guide's blocks does not run; the output's end:"$'\n'"$(tail -n 20 "$work/run/$1/output")"
+}
 
 # run_refused <scenario> <step>: runs the scenario's script on the machine, as run_scenario does,
 # where it ends with the guide's <step>; fails unless the script reaches <step> and exits non-zero.
@@ -1756,6 +1746,13 @@ if [[ -n $backup_ok ]]; then
   lists_as_before backup backup/ada-machine "the guide's backup" "$ada_before"
   lists_as_before backup backup/grace-machine "the guide's backup" "$grace_before"
 
+  # The guide's backup, pasted with a command after it.
+  scenario backup-pasted ":resume backup" backup
+  with_backup backup-pasted "$backup_file-pasted"
+  run_pasted backup-pasted
+  m rm -f "$backup_file-pasted"
+  answers_health backup "the guide's backup, pasted" || true
+
   # A backup that fails: its disk full.
   m sh -c 'mkdir -p /self-host/full && mount -t tmpfs -o size=4k tmpfs /self-host/full'
   scenario backup-full ":resume backup" backup
@@ -1778,6 +1775,10 @@ if [[ -n $backup_ok ]]; then
     scenario restore-data ":resume backup" restore
     with_backup restore-data "$backup_file"
     run_refused restore-data restore || true
+    # The refused restore, pasted with a command after it.
+    scenario restore-data-pasted ":resume backup" restore
+    with_backup restore-data-pasted "$backup_file"
+    run_pasted restore-data-pasted
     [[ $(database_print backup || true) == "$database" ]] ||
       fail "restore-data: the refused restore changes the stack's database"
     [[ $(attachment_files backup) == "$files" ]] ||
@@ -1981,6 +1982,43 @@ self_host_release_platform=linux/amd64
 self_host_release_attachments=$release_attachments
 self_host_rc_files=file:///self-host/rc-files
 EOF
+# The guide's archive check of the last release's web app, once it has one: after the part's
+# values of the last release are on the machine.
+if [[ -n $release_web ]]; then
+  mkdir -p "$work/release-web/files"
+  if curl --fail --silent --show-error --location --retry 3 --output "$work/release-web/$web_archive" \
+    "$release_web/$web_archive" && tar -xzf "$work/release-web/$web_archive" -C "$work/release-web/files"; then
+    (cd "$work/release-web/files" && find . -type f -size +0 | sort | while read -r file; do
+      echo "$(sha256 <"$file") ${file#./}"
+    done) >"$work/release-web/hashes"
+    scenario web-release release :last_release files :here web-files web-check web
+    if run_scenario web-release </dev/null; then
+      [[ -n $(web_unpacked web-release "$work/release-web/hashes") ]] ||
+        fail "web-release: the guide's steps leave v$version's web app packed"
+    fi
+    stack_down web-release
+    scenario web-other-release release :last_release files :here web-files web-check web
+    edit_script web-other-release 's|^self_host_last_release$|self_host_last_release; SKALD_VERSION=0.0.1|'
+    refused_before web-other-release web-check web
+    unpacked=$(web_unpacked web-other-release "$work/release-web/hashes")
+    [[ -z $unpacked ]] || fail "web-other-release: the refused archive is unpacked:"$'\n'"$unpacked"
+    stack_down web-other-release
+    scenario web-other-workflow release :last_release files :here web-files web-check web
+    edit_script web-other-workflow 's|/\.github/workflows/release\.yml@|/.github/workflows/edge.yml@|g'
+    if grep -qF '/.github/workflows/edge.yml@' "$work/run/web-other-workflow/script.sh"; then
+      refused_before web-other-workflow web-check web
+      unpacked=$(web_unpacked web-other-workflow "$work/release-web/hashes")
+      [[ -z $unpacked ]] || fail "web-other-workflow: the refused archive is unpacked:"$'\n'"$unpacked"
+    else
+      fail "$guide: the step web-check does not pin the release workflow, .github/workflows/release.yml@"
+    fi
+    stack_down web-other-workflow
+  else
+    fail "web-release: cannot get $release_web/$web_archive"
+  fi
+else
+  echo "self-host-test: skipped the guide's archive check of the last release: v$version has no $web_archive"
+fi
 # This commit's migrations that the last release lacks.
 new_migrations=$(comm -13 <(git ls-tree --name-only "$release_tag:crates/server/migrations" 2>/dev/null | sort) \
   <(ls crates/server/migrations | sort))
