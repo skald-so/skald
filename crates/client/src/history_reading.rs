@@ -32,11 +32,12 @@ use skald_proto::{
 
 use crate::agents::server_name;
 use crate::connection::printable;
-use crate::devices::text;
+use crate::devices::{self, text};
 use crate::follow::{self, Own, SpaceDevices, master_of};
 use crate::groups;
 use crate::recv::{a2a_text, of_account};
 use crate::secrets;
+use crate::send;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state;
 
@@ -50,9 +51,7 @@ pub fn run(
     search: Option<&str>,
     agent: bool,
 ) -> Result<(), String> {
-    let channel: ChannelId = channel
-        .parse()
-        .map_err(|_| format!("\"{}\" is not a channel ID", printable(channel)))?;
+    let channel = send::channel_id(channel)?;
     let scope = Scope::of_run(dir, agent)?;
     let Synced {
         mut follower,
@@ -379,26 +378,12 @@ impl Checks<'_> {
 /// `seconds` since the Unix epoch in UTC as RFC 3339 to the second, such as
 /// `2026-11-17T08:43:03Z`.
 fn rfc3339(seconds: u64) -> String {
-    let (days, of_day) = (seconds / 86_400, seconds % 86_400);
-    // The civil date of a day count from 1970-01-01, by Howard Hinnant's algorithm, from
-    // 0000-03-01.
-    let shifted = days + 719_468;
-    let era = shifted / 146_097;
-    let of_era = shifted % 146_097;
-    let year_of_era = (of_era - of_era / 1_460 + of_era / 36_524 - of_era / 146_096) / 365;
-    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * of_year + 2) / 153;
-    let day = of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + u64::from(month <= 2);
+    let of_day = seconds % 86_400;
     format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        "{}T{:02}:{:02}:{:02}Z",
+        devices::date(seconds),
         of_day / 3_600,
-        of_day % 3_600 / 60,
+        of_day / 60 % 60,
         of_day % 60
     )
 }
@@ -649,6 +634,8 @@ mod tests {
             (1_795_336_983, "2026-11-22T08:43:03Z"),
             (4_107_542_399, "2100-02-28T23:59:59Z"),
             (4_107_542_400, "2100-03-01T00:00:00Z"),
+            (13_574_563_200, "2400-02-29T00:00:00Z"),
+            (u64::MAX, "584554051223-11-09T07:00:15Z"),
         ] {
             assert_eq!(rfc3339(seconds), shown, "{seconds}");
         }
