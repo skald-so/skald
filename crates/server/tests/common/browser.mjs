@@ -640,40 +640,42 @@ const ops = {
 
   /**
    * From now on records each answer to a `fetch` or XHR request of the page's browser, in any of its
-   * tabs: its request's method, its URL, status, headers and body.
+   * tabs, whole: its request's method, its URL, status, headers and body. A request the page left
+   * before its answer was read to its end, by a navigation or an abort, records nothing: it fires
+   * `requestfailed`, not `requestfinished`. Nor does an answer whose body the browser dropped, with
+   * its page, before it was recorded.
    */
   async recordAnswers({ page: id }) {
     const found = page(id);
     if (found.answers) return null;
     found.answers = [];
-    found.reading = [];
-    found.context.on("response", (response) => {
-      const request = response.request();
+    found.context.on("requestfinished", (request) => {
       if (!["fetch", "xhr"].includes(request.resourceType())) return;
-      const answer = {
-        method: request.method(),
-        url: response.url(),
-        status: response.status(),
-        headers: {},
-        body: "",
-      };
-      found.answers.push(answer);
-      found.reading.push(
-        Promise.all([response.allHeaders(), response.text()])
-          .then(([headers, body]) => {
-            Object.assign(answer, { headers, body });
-          })
-          .catch(() => {}),
+      found.answers.push(
+        (async () => {
+          const response = await request.response();
+          const [headers, body] = await Promise.all([
+            response.allHeaders(),
+            response.text(),
+          ]);
+          return {
+            method: request.method(),
+            url: response.url(),
+            status: response.status(),
+            headers,
+            body,
+          };
+        })().catch(() => null),
       );
     });
     return null;
   },
 
-  /** The answers recorded so far, each with its body once read. */
+  /** The answers recorded so far, in the order they came. */
   async answers({ page: id }) {
     const found = page(id);
-    await Promise.all(found.reading ?? []);
-    return found.answers ?? [];
+    const answers = await Promise.all(found.answers ?? []);
+    return answers.filter((answer) => answer !== null);
   },
 };
 

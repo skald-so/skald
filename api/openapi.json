@@ -2807,6 +2807,105 @@
         }
       }
     },
+    "/mailbox/events": {
+      "get": {
+        "operationId": "streamMailbox",
+        "summary": "Stream the mailbox",
+        "description": "Server-sent events (docs/protocol/delivery.md, \"Frames\" and \"Mailbox\"). Acks the device's mailbox up to the cursor in `Last-Event-ID`, then sends the entries after it in `seq` order, then an empty `batch` once it has sent every entry the mailbox held at the opening, then each new entry and `space-notice`, through any instance. Each event's `data` is one frame, its CBOR in base64url without padding; the `id` of a `message` or `status` event is its `seq`. While idle, the stream sends a comment line at the interval of the server setting `--sse-keep-alive`. It ends when its session ends or its device is revoked. The device sends and acks with `POST /mailbox/send` and `POST /mailbox/ack`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "description": "The device's cursor; 0 without it.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stream.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a `Last-Event-ID` that is not a `seq`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The stream is not proved, and the server reads and acks nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mailbox/poll": {
       "post": {
         "operationId": "pollMailbox",
@@ -4044,6 +4143,360 @@
         }
       }
     },
+    "/spaces/{space}/channels/{channel}/history/entries": {
+      "get": {
+        "operationId": "getHistoryEntries",
+        "summary": "The channel's history entries",
+        "description": "The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, \"History entry\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel's history entries, in no particular order.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryEntries"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it, or the space's latest revision lists no such channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/channels/{channel}/history/links": {
+      "get": {
+        "operationId": "getHistoryLinks",
+        "summary": "The channel's history links",
+        "description": "The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, \"Key chain\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, \"Access\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel's links, in no particular order.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryLinks"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it, or the space's latest revision lists no such channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/channels/{channel}/history/wraps": {
+      "get": {
+        "operationId": "getHistoryWraps",
+        "summary": "The channel's history wraps",
+        "description": "The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, \"Wraps\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel's wraps, in no particular order.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryWraps"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it, or the space's latest revision lists no such channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/devices": {
       "get": {
         "operationId": "getSpaceDevices",
@@ -4936,6 +5389,51 @@
         },
         "additionalProperties": false
       },
+      "HistoryEntries": {
+        "type": "object",
+        "required": ["entries"],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "description": "An encoded `history-entry` (docs/protocol/membership.md, \"History entry\"), in base64url without padding (RFC 4648, §5).",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryLinks": {
+        "type": "object",
+        "required": ["links"],
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "description": "An encoded `history-link` (docs/protocol/membership.md, \"Key chain\"), in base64url without padding (RFC 4648, §5).",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryWraps": {
+        "type": "object",
+        "required": ["wraps"],
+        "properties": {
+          "wraps": {
+            "type": "array",
+            "items": {
+              "description": "An encoded `history-wrap` (docs/protocol/membership.md, \"Wraps\"), in base64url without padding (RFC 4648, §5).",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "KeyPackage": {
         "description": "A KeyPackage in an `MLSMessage` (RFC 9420, §6 and §10) in base64url without padding (RFC 4648, §5).",
         "type": "string",
@@ -5391,7 +5889,7 @@
       "SignInMethod": {
         "description": "A sign-in method: a provider and the subject it gives the person, which the server does not show.",
         "type": "object",
-        "required": ["method", "provider", "linked_at"],
+        "required": ["method", "provider", "linked_at", "current"],
         "properties": {
           "method": {
             "$ref": "#/components/schemas/SignInMethodId"
@@ -5409,6 +5907,10 @@
           "github_login": {
             "description": "A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub.",
             "type": "string"
+          },
+          "current": {
+            "description": "Whether the request's web session signed in with this method; `false` for a device session.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false

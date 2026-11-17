@@ -12,12 +12,12 @@ use sqlx::PgPool;
 
 use crate::AppState;
 use crate::accounts::{GITHUB, Method};
-use crate::refusal::{Refusal, account, answer};
+use crate::refusal::{Refusal, answer};
 use crate::sessions::{self, WEB_LIFETIME};
 use crate::sign_in::{
     self, Failure, Flow, Provider, SignInSettings, escape, flows, form_page, form_page_failed,
     from_this_server, off, param, provider_off, refresh_page, session_hashes, sign_in_links,
-    start_with,
+    signed_in, start_with,
 };
 
 /// The page of the account's sign-in methods.
@@ -47,6 +47,8 @@ struct Stored {
     login: Option<String>,
     /// When it was linked, as an RFC 3339 date-time in UTC.
     linked_at: String,
+    /// Whether the web session asked about signed in with it.
+    current: bool,
 }
 
 impl Stored {
@@ -60,23 +62,31 @@ impl Stored {
     }
 }
 
-/// The sign-in methods of `account`, oldest first.
-async fn stored(db: &PgPool, account: &str) -> Result<Vec<Stored>, sqlx::Error> {
-    let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT id::text, provider, login,
-                to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')
-         FROM sign_in_methods WHERE account_id = $1::uuid ORDER BY created_at, provider, subject",
+/// The sign-in methods of `account`, oldest first, each marked if the web session whose token's
+/// SHA-256 is `session` signed in with it.
+async fn stored(db: &PgPool, account: &str, session: &[u8]) -> Result<Vec<Stored>, sqlx::Error> {
+    let rows: Vec<(String, String, Option<String>, String, bool)> = sqlx::query_as(
+        "SELECT m.id::text, m.provider, m.login,
+                to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
+                EXISTS (
+                    SELECT 1 FROM sessions s WHERE s.token_hash = $2
+                        AND s.method_provider = m.provider AND s.method_subject = m.subject
+                )
+         FROM sign_in_methods m WHERE m.account_id = $1::uuid
+         ORDER BY m.created_at, m.provider, m.subject",
     )
     .bind(account)
+    .bind(session)
     .fetch_all(db)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, provider, login, linked_at)| Stored {
+        .map(|(id, provider, login, linked_at, current)| Stored {
             id,
             provider,
             login,
             linked_at,
+            current,
         })
         .collect())
 }
@@ -102,7 +112,7 @@ pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> R
         }
         Err(err) => return failed("read a session", err),
     };
-    let methods = match stored(&state.db, &session.account).await {
+    let methods = match stored(&state.db, &session.account, &session.token_hash).await {
         Ok(methods) => methods,
         Err(err) => return failed("read the sign-in methods", err),
     };
@@ -155,13 +165,17 @@ struct SignInMethod {
     linked_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     github_login: Option<String>,
+    current: bool,
 }
 
 /// `GET /account/sign-in-methods`: the sign-in methods of the session's account, web or device.
 pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> Response {
     answer(async {
-        let account = account(&state.db, &headers).await?;
-        let methods = stored(&state.db, &account)
+        let session = signed_in(&state.db, &headers)
+            .await
+            .map_err(|err| Refusal::Database("read a session", err))?
+            .ok_or(Refusal::NotSignedIn)?;
+        let methods = stored(&state.db, &session.account, &session.token_hash)
             .await
             .map_err(|err| Refusal::Database("read the sign-in methods", err))?;
         let methods = methods
@@ -171,6 +185,7 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
                 method: method.id,
                 github_login: method.login.filter(|_| method.provider == GITHUB),
                 linked_at: method.linked_at,
+                current: method.current,
             })
             .collect();
         Ok(Json(SignInMethods { methods }).into_response())
@@ -305,7 +320,7 @@ pub(crate) async fn start<P: Provider>(
             .await
         }
         Ok(Some((_, account, false))) => {
-            let methods = match stored(&state.db, &account).await {
+            let methods = match stored(&state.db, &account, &[]).await {
                 Ok(methods) => methods,
                 Err(err) => return failed("read the sign-in methods", err),
             };
@@ -330,7 +345,7 @@ pub(crate) async fn start<P: Provider>(
             "Not signed in",
             &format!(
                 "<p>Not signed in. {}</p>",
-                sign_in_links(&flows(state), "", PAGE_PATH)
+                sign_in_links(&flows(state), "", return_to)
             ),
         ),
         Err(err) => failed("read a session", err),

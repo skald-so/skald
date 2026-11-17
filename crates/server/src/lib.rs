@@ -22,10 +22,12 @@ mod delivery;
 mod device_flow;
 mod devices;
 mod error_reports;
+mod events;
 mod expiry;
 mod github;
 mod google;
 mod groups;
+mod history;
 mod http_client;
 mod instances;
 mod key_packages;
@@ -45,6 +47,7 @@ mod user_agent;
 
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use error_reports::{SentryDsn, report_errors_to};
+pub use events::SSE_KEEP_ALIVE;
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 use google::Google;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
@@ -117,6 +120,9 @@ pub struct Settings {
     /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
     /// [`LONG_POLL_MAX_WAIT`] without it.
     pub long_poll_max_wait: Option<Duration>,
+    /// How often an idle mailbox stream sends a keep-alive (`docs/protocol/delivery.md`,
+    /// "Frames"); [`SSE_KEEP_ALIVE`] without it.
+    pub sse_keep_alive: Option<Duration>,
 }
 
 /// The state the handlers share.
@@ -133,6 +139,7 @@ struct AppState {
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
     long_poll_max_wait: Duration,
+    sse_keep_alive: Duration,
     instance: instances::Instance,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
@@ -257,6 +264,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             post(requests::ack).layer(checked(Statement::Header)),
         )
         .route(
+            "/mailbox/events",
+            get(events::events).layer(checked(Statement::Header)),
+        )
+        .route(
             "/mailbox/poll",
             post(requests::poll).layer(checked(Statement::Header)),
         )
@@ -298,6 +309,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/channels/{channel}/history/entries",
+            get(history::given::<{ history::ENTRIES }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/history/links",
+            get(history::given::<{ history::LINKS }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/history/wraps",
+            get(history::given::<{ history::WRAPS }>).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/devices",
             get(spaces::devices).layer(checked(Statement::Header)),
         )
@@ -328,6 +351,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             },
             devices_limit: settings.devices_limit,
             long_poll_max_wait: settings.long_poll_max_wait.unwrap_or(LONG_POLL_MAX_WAIT),
+            sse_keep_alive: settings.sse_keep_alive.unwrap_or(SSE_KEEP_ALIVE),
             instance,
             connections,
             wakers,

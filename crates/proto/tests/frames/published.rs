@@ -40,7 +40,7 @@ type IsType = fn(&Frame) -> bool;
 #[test]
 fn the_test_vectors_publish_every_frame_type() {
     let published = published_frames();
-    let types: [(&str, IsType); 9] = [
+    let types: [(&str, IsType); 12] = [
         ("send", |frame| matches!(frame, Frame::Send { .. })),
         ("stored", |frame| matches!(frame, Frame::Stored(_))),
         ("send-refused", |frame| {
@@ -57,6 +57,13 @@ fn the_test_vectors_publish_every_frame_type() {
         ("batch", |frame| matches!(frame, Frame::Batch(_))),
         ("space-notice", |frame| {
             matches!(frame, Frame::Push(Push::SpaceNotice { .. }))
+        }),
+        ("history", |frame| matches!(frame, Frame::History { .. })),
+        ("history-stored", |frame| {
+            matches!(frame, Frame::HistoryStored { .. })
+        }),
+        ("history-refused", |frame| {
+            matches!(frame, Frame::HistoryRefused { .. })
         }),
     ];
     let missing: Vec<&str> = types

@@ -3,7 +3,7 @@
 //! content is overwritten with zeros (`secure_delete`), and a save of the MLS state checkpoints
 //! the WAL with `TRUNCATE`, so no older sealed state stays in the database file or its WAL.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -202,6 +202,47 @@ const MIGRATIONS: &[&str] = &[
         epoch INTEGER NOT NULL CHECK (epoch >= 0),
         entered INTEGER NOT NULL CHECK (entered >= 0)
     ) STRICT",
+    // Handing messages over to agents (`docs/protocol/delivery.md`, "Device to agent"): when the
+    // device wrote each inbox entry, in Unix seconds, none for one an older client wrote; each agent
+    // the device has run as in each space, with its cursor then, so each entry after it is for the
+    // agent; and each message that passed the checks, by its entry's `seq`, with its space, its line
+    // as the CLI shows it, sealed under the state key, until when it waits for an agent, in Unix
+    // seconds, and whether the person's run has yet to show it, with each agent it waits for. A
+    // message is kept until the person's run showed it and no agent waits for it.
+    "ALTER TABLE inbox ADD COLUMN written INTEGER;
+    CREATE TABLE agent (
+        space TEXT NOT NULL,
+        name TEXT NOT NULL,
+        since INTEGER NOT NULL CHECK (since >= 0),
+        PRIMARY KEY (space, name)
+    ) STRICT;
+    CREATE TABLE kept (
+        seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+        space TEXT NOT NULL,
+        line BLOB NOT NULL,
+        expires INTEGER NOT NULL,
+        person INTEGER NOT NULL CHECK (person IN (0, 1))
+    ) STRICT;
+    CREATE TABLE handover (
+        seq INTEGER NOT NULL,
+        agent TEXT NOT NULL,
+        PRIMARY KEY (seq, agent)
+    ) STRICT;",
+    // The key chain: whether the device judged each epoch of a channel it entered clean, and the
+    // links, by epoch and `prev`, it does not upload again: those the server took from it, listed
+    // to it or refused.
+    "CREATE TABLE epoch_judgment (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 0),
+        clean INTEGER NOT NULL CHECK (clean IN (0, 1)),
+        PRIMARY KEY (channel, epoch)
+    ) STRICT;
+    CREATE TABLE settled_link (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 0),
+        prev INTEGER NOT NULL CHECK (prev >= 0),
+        PRIMARY KEY (channel, epoch, prev)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -333,6 +374,19 @@ pub struct Entry {
     pub opened: Option<Vec<u8>>,
 }
 
+/// How the device keeps a message that passed the checks until the person's run shows it and it
+/// is handed over to `agents`, the agents it is for (`docs/protocol/delivery.md`, "Device to
+/// agent").
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kept {
+    pub space: SpaceId,
+    /// Its line as the CLI shows it, sealed under the state key.
+    pub line: Vec<u8>,
+    /// How long it waits for an agent after the device wrote its entry, in seconds.
+    pub wait: u64,
+    pub agents: Vec<String>,
+}
+
 /// A Commit or Welcome of the device's own in the outbox.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MlsOutgoing {
@@ -370,6 +424,9 @@ pub struct MlsChanges {
     /// Each channel whose group it is in at an epoch, with when it entered that epoch; an epoch
     /// recorded already keeps its time.
     pub entered: Vec<(ChannelId, u64, u64)>,
+    /// Each epoch of a channel it judged, and whether clean; an epoch judged already keeps its
+    /// judgment.
+    pub judged: Vec<(ChannelId, u64, bool)>,
 }
 
 impl MlsChanges {
@@ -384,6 +441,7 @@ impl MlsChanges {
             && self.rejoin.is_empty()
             && self.rejoined.is_empty()
             && self.entered.is_empty()
+            && self.judged.is_empty()
     }
 }
 
@@ -684,6 +742,13 @@ impl State {
                     params![channel.to_string(), sql_u64(*epoch)?, sql_u64(*entered)?],
                 )?;
             }
+            for (channel, epoch, clean) in &changes.judged {
+                tx.execute(
+                    "INSERT INTO epoch_judgment (channel, epoch, clean) VALUES (?1, ?2, ?3)
+                     ON CONFLICT DO NOTHING",
+                    params![channel.to_string(), sql_u64(*epoch)?, clean],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -723,6 +788,48 @@ impl State {
             Ok((read(epoch)?, read(entered)?))
         })
         .transpose()
+    }
+
+    /// Whether the device judged each epoch of `channel` it judged clean ([`MlsChanges::judged`]).
+    pub fn judgments(&self, channel: ChannelId) -> Result<BTreeMap<u64, bool>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT epoch, clean FROM epoch_judgment WHERE channel = ?1")?;
+        let rows = query.query_map(params![channel.to_string()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get(1)?))
+        })?;
+        rows.map(|row| {
+            let (epoch, clean) = row?;
+            Ok((read_epoch(channel, epoch)?, clean))
+        })
+        .collect()
+    }
+
+    /// The links of `channel`, by epoch and `prev`, the device does not upload again.
+    pub fn settled_links(&self, channel: ChannelId) -> Result<BTreeSet<(u64, u64)>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT epoch, prev FROM settled_link WHERE channel = ?1")?;
+        let rows = query.query_map(params![channel.to_string()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.map(|row| {
+            let (epoch, prev) = row?;
+            Ok((read_epoch(channel, epoch)?, read_epoch(channel, prev)?))
+        })
+        .collect()
+    }
+
+    /// Keeps `links` of `channel`, by epoch and `prev`, from being uploaded again.
+    pub fn settle_links(&self, channel: ChannelId, links: &[(u64, u64)]) -> Result<(), Error> {
+        for &(epoch, prev) in links {
+            self.db.execute(
+                "INSERT INTO settled_link (channel, epoch, prev) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO NOTHING",
+                params![channel.to_string(), sql_u64(epoch)?, sql_u64(prev)?],
+            )?;
+        }
+        Ok(())
     }
 
     /// The device's own Commits and Welcomes in the outbox, in the order they go out.
@@ -1105,8 +1212,9 @@ impl State {
     }
 
     /// Writes `entries`, mailbox entries by `seq`, each as its frame, those after the cursor, with
-    /// the new cursor, all at once; gives the cursor.
+    /// the new cursor and when it wrote them, all at once; gives the cursor.
     pub fn write_entries(&self, entries: &[(u64, Vec<u8>)]) -> Result<u64, Error> {
+        let written = i64::try_from(unix_now()).unwrap_or(i64::MAX);
         let tx = self.db.unchecked_transaction()?;
         let read: i64 = tx.query_row("SELECT mailbox_cursor FROM device", [], |row| row.get(0))?;
         let mut cursor = read;
@@ -1117,8 +1225,8 @@ impl State {
                 continue;
             }
             tx.execute(
-                "INSERT INTO inbox (seq, entry) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
-                params![seq, entry],
+                "INSERT INTO inbox (seq, entry, written) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+                params![seq, entry, written],
             )?;
             cursor = cursor.max(seq);
         }
@@ -1163,17 +1271,116 @@ impl State {
         Ok(found.is_some())
     }
 
-    /// Records that the device showed the message `msg_id` from the device `sender`, the entry
-    /// `seq`, and takes the entry out of the inbox, at once.
-    pub fn shown(&self, seq: u64, sender: DeviceId, msg_id: MessageId) -> Result<(), Error> {
+    /// Records that the device received the message `msg_id` from the device `sender`, the entry
+    /// `seq`, keeps it as `kept` says and takes the entry out of the inbox, at once.
+    pub fn keep(
+        &self,
+        seq: u64,
+        (sender, msg_id): (DeviceId, MessageId),
+        kept: &Kept,
+    ) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO received (sender, msg_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
             params![sender.to_string(), msg_id.to_string()],
         )?;
+        add_kept(&tx, sql_seq(seq)?, kept)?;
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![sql_seq(seq)?])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Records that the device has run as the agent `name` in the space `space`, unless it has:
+    /// each entry after its cursor now is for the agent.
+    pub fn add_agent(&self, space: SpaceId, name: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO agent (space, name, since)
+             SELECT ?1, ?2, mailbox_cursor FROM device WHERE true
+             ON CONFLICT DO NOTHING",
+            params![space.to_string(), name],
+        )?;
+        Ok(())
+    }
+
+    /// The agents the device had run as in the space `space` when it wrote the entry `seq`.
+    pub fn agents(&self, space: SpaceId, seq: u64) -> Result<Vec<String>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT name FROM agent WHERE space = ?1 AND since < ?2 ORDER BY name")?;
+        let names = query.query_map(params![space.to_string(), sql_seq(seq)?], |row| row.get(0))?;
+        Ok(names.collect::<Result<_, _>>()?)
+    }
+
+    /// The kept messages the person's run has yet to show, by `seq`, each with its sealed line.
+    pub fn for_person(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        self.lines(
+            "SELECT seq, line FROM kept WHERE person = 1 ORDER BY seq",
+            params![],
+        )
+    }
+
+    /// Records that the person's run showed the kept message `seq`.
+    pub fn shown_to_person(&self, seq: u64) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE kept SET person = 0 WHERE seq = ?1",
+            params![sql_seq(seq)?],
+        )?;
+        drop_done(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The kept messages that wait for the agent `agent` in the space `space`, by `seq`, each with
+    /// its sealed line, once those whose wait ended by `now`, in Unix seconds, are dropped for
+    /// every agent.
+    pub fn for_agent(
+        &self,
+        space: SpaceId,
+        agent: &str,
+        now: u64,
+    ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        let now = i64::try_from(now).unwrap_or(i64::MAX);
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM handover WHERE seq IN (SELECT seq FROM kept WHERE expires <= ?1)",
+            params![now],
+        )?;
+        drop_done(&tx)?;
+        tx.commit()?;
+        self.lines(
+            "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
+             WHERE kept.space = ?1 AND handover.agent = ?2 ORDER BY kept.seq",
+            params![space.to_string(), agent],
+        )
+    }
+
+    /// Records that the kept message `seq` was handed over to the agent `agent`.
+    pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
+            params![sql_seq(seq)?, agent],
+        )?;
+        drop_done(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `seq` and sealed line of each kept message `sql` selects with `params`.
+    fn lines(
+        &self,
+        sql: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        let mut query = self.db.prepare(sql)?;
+        let rows = query.query_map(params, |row| Ok((row.get::<_, i64>(0)?, row.get(1)?)))?;
+        rows.map(|row| {
+            let (seq, line) = row?;
+            let seq = u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+            Ok((seq, line))
+        })
+        .collect()
     }
 
     /// The counters the device accepted from `source` that hold for the entry `seq`: none before
@@ -1210,13 +1417,13 @@ impl State {
         })
     }
 
-    /// Records `counters` as those the device accepted from `source` with the entry `seq`, and
-    /// takes the entry out of the inbox, at once.
-    pub fn shown_counted(
+    /// Records `counters` as those the device accepted from `source` with the entry `seq`, keeps
+    /// its message as `kept` says and takes the entry out of the inbox, at once.
+    pub fn keep_counted(
         &self,
         seq: u64,
-        source: &Source,
-        counters: &Counters,
+        (source, counters): (&Source, &Counters),
+        kept: &Kept,
     ) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
@@ -1232,6 +1439,7 @@ impl State {
                 seq
             ],
         )?;
+        add_kept(&tx, seq, kept)?;
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
         Ok(())
@@ -1287,6 +1495,43 @@ fn sql_seq(seq: u64) -> Result<i64, Error> {
     i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))
 }
 
+/// Now, in Unix seconds.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// Keeps the message of the inbox entry `seq` for the person and the agents `kept` names, in `tx`;
+/// it waits for them `kept.wait` after the device wrote the entry, or after now if it did not
+/// record when.
+fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
+    let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
+    let wait = i64::try_from(kept.wait).unwrap_or(i64::MAX);
+    tx.execute(
+        "INSERT INTO kept (seq, space, line, expires, person)
+         SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1
+         WHERE true ON CONFLICT DO NOTHING",
+        params![seq, kept.space.to_string(), kept.line, now, wait],
+    )?;
+    for agent in &kept.agents {
+        tx.execute(
+            "INSERT INTO handover (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+            params![seq, agent],
+        )?;
+    }
+    Ok(())
+}
+
+/// Drops, in `tx`, each kept message the person's run showed that no agent waits for.
+fn drop_done(tx: &Transaction) -> Result<(), Error> {
+    tx.execute(
+        "DELETE FROM kept WHERE person = 0 AND seq NOT IN (SELECT seq FROM handover)",
+        [],
+    )?;
+    Ok(())
+}
+
 /// `value` as SQLite stores it; fails past `i64`.
 fn sql_u64(value: u64) -> Result<i64, Error> {
     i64::try_from(value).map_err(|_| Error::Malformed(format!("the number {value}")))
@@ -1335,6 +1580,12 @@ fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
         params![msg_id, space, channel],
     )?;
     Ok(())
+}
+
+/// `epoch`, as SQLite keeps an epoch of `channel`.
+fn read_epoch(channel: ChannelId, epoch: i64) -> Result<u64, Error> {
+    u64::try_from(epoch)
+        .map_err(|_| Error::Malformed(format!("an epoch of the channel {channel}: {epoch}")))
 }
 
 /// A row of an outbox: three IDs, as text, and an envelope's bytes.
@@ -1993,7 +2244,7 @@ pub(crate) mod tests {
 
         let (sender, msg_id) = (DeviceId::from_signing_key(&[2; 32]), MessageId::generate());
         assert!(!state.received(sender, msg_id).unwrap());
-        state.shown(1, sender, msg_id).unwrap();
+        state.keep(1, (sender, msg_id), &kept(&[])).unwrap();
         state.remove_entry(4).unwrap();
 
         let state = State::open(&dir).unwrap();
@@ -2002,6 +2253,90 @@ pub(crate) mod tests {
         assert!(!state.received(sender, MessageId::generate()).unwrap());
         let other = DeviceId::from_signing_key(&[3; 32]);
         assert!(!state.received(other, msg_id).unwrap());
+    }
+
+    /// What keeps a message in `space_of_kept()` for `agents`, its line `b"line"`, for a day.
+    pub(crate) fn kept(agents: &[&str]) -> Kept {
+        Kept {
+            space: space_of_kept(),
+            line: b"line".to_vec(),
+            wait: 86_400,
+            agents: agents.iter().map(|&agent| agent.to_owned()).collect(),
+        }
+    }
+
+    /// The space of [`kept`].
+    fn space_of_kept() -> SpaceId {
+        "0190b6a2-1f3c-7d4e-8a5b-6c7d8e9f0a1b".parse().unwrap()
+    }
+
+    /// An agent the device has run as in a space gets each entry written after that, there only.
+    /// A kept message waits for the person's run and each agent it is for until each takes it, and
+    /// for an agent until its wait after its entry was written ends; then the state drops it.
+    #[test]
+    fn kept_messages_wait_for_the_person_and_their_agents_until_handed_over_or_expired() {
+        let dir = TestDir::new("state-handover");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        let (space, other) = (space_of_kept(), SpaceId::generate());
+        state.write_entries(&[(1, vec![1])]).unwrap();
+        state.add_agent(space, "claude").unwrap();
+        state.write_entries(&[(2, vec![2]), (3, vec![3])]).unwrap();
+        // Running again keeps when it first ran.
+        state.add_agent(space, "claude").unwrap();
+        state.add_agent(space, "codex").unwrap();
+        state.add_agent(other, "gemini").unwrap();
+        assert!(state.agents(space, 1).unwrap().is_empty());
+        assert_eq!(state.agents(space, 2).unwrap(), ["claude"]);
+        assert_eq!(state.agents(space, 4).unwrap(), ["claude", "codex"]);
+        assert_eq!(state.agents(other, 4).unwrap(), ["gemini"]);
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        state
+            .keep(
+                2,
+                (sender, MessageId::generate()),
+                &kept(&["claude", "codex"]),
+            )
+            .unwrap();
+        let mut short = kept(&["claude"]);
+        short.wait = 10;
+        state
+            .keep(3, (sender, MessageId::generate()), &short)
+            .unwrap();
+        let now = unix_now();
+        let lines = |seqs: &[u64]| -> Vec<(u64, Vec<u8>)> {
+            seqs.iter().map(|&seq| (seq, b"line".to_vec())).collect()
+        };
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.for_person().unwrap(), lines(&[2, 3]));
+        assert_eq!(
+            state.for_agent(space, "claude", now).unwrap(),
+            lines(&[2, 3])
+        );
+        assert!(state.for_agent(other, "claude", now).unwrap().is_empty());
+        state.handed_over(2, "claude").unwrap();
+        assert_eq!(state.for_agent(space, "claude", now).unwrap(), lines(&[3]));
+        assert_eq!(state.for_agent(space, "codex", now).unwrap(), lines(&[2]));
+        state.shown_to_person(2).unwrap();
+        state.shown_to_person(3).unwrap();
+        assert!(state.for_person().unwrap().is_empty());
+        // The short wait ends: the message is dropped for every agent.
+        assert!(
+            state
+                .for_agent(space, "claude", now + 11)
+                .unwrap()
+                .is_empty()
+        );
+        state.handed_over(2, "codex").unwrap();
+
+        let kept: i64 = state
+            .db
+            .query_row("SELECT count(*) FROM kept", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kept, 0, "a message no one waits for is kept");
     }
 
     /// The counters accepted from a sending device are kept per channel and scheme with the entry
@@ -2028,8 +2363,12 @@ pub(crate) mod tests {
         };
         assert_eq!(state.counters(&mls, 5).unwrap(), None);
 
-        state.shown_counted(3, &mls, &kept).unwrap();
-        state.shown_counted(4, &hpke, &Counters::default()).unwrap();
+        state
+            .keep_counted(3, (&mls, &kept), &self::kept(&[]))
+            .unwrap();
+        state
+            .keep_counted(4, (&hpke, &Counters::default()), &self::kept(&[]))
+            .unwrap();
 
         let state = State::open(&dir).unwrap();
         assert!(state.inbox().unwrap().is_empty());
@@ -2053,7 +2392,9 @@ pub(crate) mod tests {
         assert_eq!(state.counters(&mls, 5).unwrap(), None);
         assert_eq!(state.counters(&mls, 6).unwrap(), None);
         assert_eq!(state.counters(&hpke, 6).unwrap(), Some(Counters::default()));
-        state.shown_counted(6, &mls, &kept).unwrap();
+        state
+            .keep_counted(6, (&mls, &kept), &self::kept(&[]))
+            .unwrap();
         assert_eq!(state.counters(&mls, 7).unwrap(), Some(kept.clone()));
 
         // Two Welcomes after the entry last accepted: an entry between them follows the first.
@@ -2443,6 +2784,43 @@ pub(crate) mod tests {
             state.device_statuses(&[(ada, false)]).unwrap(),
             vec![(ada, false)]
         );
+    }
+
+    #[test]
+    fn epoch_keeps_its_first_judgment_and_links_stay_settled_per_channel() {
+        let dir = TestDir::new("state-key-chain");
+        let state = State::open(&dir).unwrap();
+        let (one, other) = (ChannelId::generate(), ChannelId::generate());
+        let judge = |judged: Vec<(ChannelId, u64, bool)>| {
+            state
+                .mls_change(|_| {
+                    let changes = MlsChanges {
+                        judged,
+                        ..MlsChanges::default()
+                    };
+                    Ok((None, changes, ()))
+                })
+                .unwrap();
+        };
+
+        judge(vec![(one, 1, true), (one, 2, false), (other, 1, false)]);
+        judge(vec![(one, 1, false), (one, 2, true), (one, 3, true)]);
+        state.settle_links(one, &[(3, 1), (2, 1)]).unwrap();
+        state.settle_links(one, &[(3, 1)]).unwrap();
+
+        assert_eq!(
+            state.judgments(one).unwrap(),
+            BTreeMap::from([(1, true), (2, false), (3, true)])
+        );
+        assert_eq!(
+            state.judgments(other).unwrap(),
+            BTreeMap::from([(1, false)])
+        );
+        assert_eq!(
+            state.settled_links(one).unwrap(),
+            BTreeSet::from([(2, 1), (3, 1)])
+        );
+        assert_eq!(state.settled_links(other).unwrap(), BTreeSet::new());
     }
 
     #[test]
