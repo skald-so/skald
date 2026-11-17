@@ -44,6 +44,7 @@ use crate::recv;
 use crate::secrets;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{Outgoing, State};
+use crate::wraps;
 
 /// The first pause between attempts, and the longest.
 const FIRST_PAUSE: Duration = Duration::from_millis(500);
@@ -170,9 +171,9 @@ pub fn run(
 /// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the
 /// device's Commits and Welcomes that wait, writes each entry after the cursor, goes through the
 /// Welcomes and Commits, brings in line the groups of the channels of each space the run accepted
-/// the revisions of and uploads the links of their key chains the server lacks. Gives the last
-/// accepted revision of `space` and its accounts' devices, `synced` as the run synced them first,
-/// as they are then. Warns of what fails.
+/// the revisions of and uploads the links of their key chains and the wraps of their current
+/// epochs the server lacks. Gives the last accepted revision of `space` and its accounts' devices,
+/// `synced` as the run synced them first, as they are then. Warns of what fails.
 fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
@@ -197,6 +198,7 @@ fn through_mailbox(
     }
     groups::align_with(follower, &mut link);
     key_chain::upload_missing(follower, &mut link, scope);
+    wraps::upload_missing(follower, &mut link, scope);
     Ok(rosters.remove(&space).expect("the channel's space"))
 }
 

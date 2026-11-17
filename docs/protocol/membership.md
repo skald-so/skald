@@ -526,7 +526,7 @@ wrap-recipient = [1, device: id] / [2, account: id]  ; a browser, or an account'
 ```
 
 - HPKE in base mode as in [Scheme `hpke`](README.md#scheme-hpke), to the `hpke` key of a `browser` device's certificate or to the recovery HPKE key of an account's [record](#account); `info` `skald history wrap`, `aad` the encoded `[channel, epoch, recipient]`.
-- Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate. `client` devices take keys from MLS and the key chain and need no wrap.
+- Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate, unless that member's `excluded` in the latest revision the wrapping device accepted lists it. `client` devices take keys from MLS and the key chain and need no wrap.
 - A browser linked later gets wraps of the current epochs from member devices that find them missing.
 
 A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, revoked or not. That certificate MUST pass checks 1 and 2 of [Device checks](#device-checks) with the master key of an account that an accepted revision lists as a member of the space.

@@ -4,12 +4,14 @@
 use skald_crypto::MlsFraming;
 use skald_proto::{Role, Roster};
 
-use crate::chain::{adds_to_channel, assert_none_sent_of, bob_commits_empty, carol};
-use crate::entries::{ada_s_message, assert_ada_s_entry, entries_of, entries_sent, talk_entries};
-use crate::fixtures::kill_once;
-use crate::kit::{RECV, rosters};
+use crate::chain::{assert_none_sent_of, bob_commits_empty, carol};
+use crate::entries::{
+    ada_s_message, assert_ada_s_entry, entries_of, entries_sent, killed_in_unclean_epoch,
+    talk_entries,
+};
+use crate::kit::rosters;
 use crate::talk::{Talk, commit_sent, messages_sent};
-use crate::world::{ACME, revisions_request, serve_revisions};
+use crate::world::{ACME, serve_revisions};
 
 /// The epoch of the `mls` message envelope `payload` holds.
 fn epoch_of(payload: &[u8]) -> u64 {
@@ -48,24 +50,8 @@ fn message_sent_in_an_epoch_judged_unclean_leaves_no_entry() {
     );
     hide_later_revisions(&talk);
     let carol = carol(&talk, 4_165_006_003, "carol-admitted-unseen");
-    let (cloud, at) = (&talk.world.cloud, talk.at());
-    adds_to_channel(cloud, &talk.played[0].person, at, &carol.person);
-    talk.played[0].welcomes(cloud, at, &carol.person);
-    let (sends, uploads) = (talk.front.sent().len(), talk.front.uploads().len());
-    let group_info = format!("GET /spaces/{}/channels/{}/group-info", at.0, at.1);
-    // Held until the next run asks too.
-    cloud.relay.hold(&group_info, 2);
-    let started = talk.ada.machine.start(&[RECV]);
-    kill_once(started, "a GroupInfo request after epoch 2", || {
-        cloud.relay.held() > 0
-    });
-    assert!(
-        !commit_sent(&talk.front, at.1, sends),
-        "Carol's device removed before the kill"
-    );
-    cloud.relay.rewrite(&revisions_request(at.0), str::to_owned);
-    // Requests for the GroupInfo go on at once from now on.
-    cloud.relay.hold(&group_info, 0);
+    let at = talk.at();
+    let (sends, uploads) = killed_in_unclean_epoch(&mut talk, &carol);
 
     let ran = talk.send("a line in an unclean epoch");
 
