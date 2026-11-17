@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/skald-so/skald/compare/v0.1.1...v0.1.2) - 2026-11-17
+
+### Added
+
+- *(client)* wrap history keys to linked browsers ([#266](https://github.com/skald-so/skald/pull/266))
+- *(client)* keep a signed history entry of each sent message ([#262](https://github.com/skald-so/skald/pull/262))
+- *(server)* delete channel history past the retention ([#260](https://github.com/skald-so/skald/pull/260))
+- *(web)* show each space's members and roles on Members ([#259](https://github.com/skald-so/skald/pull/259))
+- *(web)* list the account's devices and their states on Machines ([#256](https://github.com/skald-so/skald/pull/256))
+- *(web)* link and remove sign-in methods on the Account page ([#252](https://github.com/skald-so/skald/pull/252))
+- *(client)* judge clean epochs and upload key chain links ([#250](https://github.com/skald-so/skald/pull/250))
+- *(server)* stream a device's mailbox over server-sent events ([#243](https://github.com/skald-so/skald/pull/243))
+- *(web)* list and end sessions, and expire web sessions after 30 days ([#249](https://github.com/skald-so/skald/pull/249))
+- *(server)* give members without earlier history only epochs from their join ([#245](https://github.com/skald-so/skald/pull/245))
+- *(server)* keep channels' history links, wraps and entries ([#240](https://github.com/skald-so/skald/pull/240))
+- *(client)* hand each message over to the agents it is for ([#239](https://github.com/skald-so/skald/pull/239))
+- *(release)* publish the web app's archive in GitHub Releases ([#242](https://github.com/skald-so/skald/pull/242))
+- *(client)* reach the server through HTTPS_PROXY ([#236](https://github.com/skald-so/skald/pull/236))
+- *(web)* sign in to the web app and land in the cabinet ([#241](https://github.com/skald-so/skald/pull/241))
+- *(client)* rotate history keys on schedule and set the period ([#237](https://github.com/skald-so/skald/pull/237))
+- *(client)* serialize runs on one local state with a file lock ([#234](https://github.com/skald-so/skald/pull/234))
+- *(server)* serve a device's mailbox over HTTPS long-poll ([#238](https://github.com/skald-so/skald/pull/238))
+
+### Fixed
+
+- *(server)* log every server error to the server's output ([#267](https://github.com/skald-so/skald/pull/267))
+- *(test)* make the master key race and the code lifetime tests deterministic ([#258](https://github.com/skald-so/skald/pull/258))
+
+### Other
+
+- say the cloud's Caddy keeps the docs redirect ([#264](https://github.com/skald-so/skald/pull/264))
+- monitor production in Grafana with no external service ([#255](https://github.com/skald-so/skald/pull/255))
+- keep production's encrypted backups on the server's disk ([#257](https://github.com/skald-so/skald/pull/257))
+- *(self-host)* keep the proxy's route and commands pasted after backup or restore ([#251](https://github.com/skald-so/skald/pull/251))
+- *(infra)* run production on the VPS shared with staging ([#254](https://github.com/skald-so/skald/pull/254))
+- run production on one server without a replica ([#253](https://github.com/skald-so/skald/pull/253))
+- *(release)* deploy stable releases to production after one approval ([#244](https://github.com/skald-so/skald/pull/244))
+- report a claimed task's progress and why it died, default to the cloud ([#248](https://github.com/skald-so/skald/pull/248))
+- say what works now and trim the README ([#246](https://github.com/skald-so/skald/pull/246))
+
 ## [0.1.1](https://github.com/skald-so/skald/compare/v0.1.0...v0.1.1) - 2026-11-16
 
 ### Added
