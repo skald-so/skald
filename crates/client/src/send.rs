@@ -133,9 +133,7 @@ pub fn run(
     text: &str,
     agent: Option<&Name>,
 ) -> Result<(), String> {
-    let channel: ChannelId = channel
-        .parse()
-        .map_err(|_| format!("\"{}\" is not a channel ID", printable(channel)))?;
+    let channel = channel_id(channel)?;
     let scope = Scope::of_run(dir, agent.is_some())?;
     let Synced {
         mut follower,
@@ -169,6 +167,13 @@ pub fn run(
         Err(err) => eprintln!("skald: warning: {err}"),
     }
     report(&queued, &delivered, timeout)
+}
+
+/// The channel ID `given` names, as a command takes it.
+pub fn channel_id(given: &str) -> Result<ChannelId, String> {
+    given
+        .parse()
+        .map_err(|_| format!("\"{}\" is not a channel ID", printable(given)))
 }
 
 /// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the

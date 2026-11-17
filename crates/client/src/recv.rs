@@ -34,8 +34,9 @@ use std::time::Duration;
 
 use skald_crypto::{HpkeError, HpkeMessage, MemberDevice, StateKey, open_message};
 use skald_proto::{
-    Address, Body, Cbor as _, Cert, ChannelId, Content, DeliveryStatus, DeviceId, DeviceKind,
-    Envelope, Frame, Header, Name, Push, Roster, ServerName, ServerStatus, SpaceId, VersionRange,
+    AccountId, Address, Body, Cbor as _, Cert, ChannelId, Content, DeliveryStatus, DeviceId,
+    DeviceKind, Envelope, Frame, Header, MessageId, Name, Push, Roster, RosterBody, ServerName,
+    ServerStatus, SpaceId, VersionRange,
 };
 
 use crate::agents::server_name;
@@ -709,14 +710,7 @@ fn check(
             "revision {revision} of the space {name} has no such channel"
         ));
     }
-    let from = &content.from;
-    let handle = body
-        .member(cert.body().account)
-        .map(|member| &member.handle);
-    if from.space() != &body.name
-        || Some(from.owner()) != handle
-        || Some(from.server()) != context.server
-    {
+    if !of_account(&content.from, body, cert.body().account, context.server) {
         return Err(format!(
             "its from is no address of the sending device's account in the space {name}"
         ));
@@ -731,21 +725,7 @@ fn check(
     if content.counter.is_none() {
         return Err("its content has no counter".to_owned());
     }
-    let Some(Body::A2a(json)) = &content.body else {
-        return Err("it holds no A2A message".to_owned());
-    };
-    let message: serde_json::Value =
-        serde_json::from_str(json).map_err(|_| "its A2A message is no JSON".to_owned())?;
-    if message["messageId"].as_str() != Some(header.msg_id.to_string().as_str()) {
-        return Err("its A2A messageId is not its msg_id".to_owned());
-    }
-    let text = message["parts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = a2a_text(&content, header.msg_id)?;
     Ok(Received {
         from: content.from,
         to: content.to,
@@ -753,6 +733,38 @@ fn check(
         text,
         counter: content.counter,
     })
+}
+
+/// Whether `from` is an address of `account` in the space of `body`, a revision of it, on
+/// `server`: check 2 of "Envelope" for a device other than a `service` one.
+pub fn of_account(
+    from: &Address,
+    body: &RosterBody,
+    account: AccountId,
+    server: Option<&ServerName>,
+) -> bool {
+    let handle = body.member(account).map(|member| &member.handle);
+    from.space() == &body.name && Some(from.owner()) == handle && Some(from.server()) == server
+}
+
+/// The text of `content`'s A2A message, its text parts each on a line, once its `messageId` is
+/// `msg_id` in text form: check 4 of "Envelope".
+pub fn a2a_text(content: &Content, msg_id: MessageId) -> Result<String, String> {
+    let Some(Body::A2a(json)) = &content.body else {
+        return Err("it holds no A2A message".to_owned());
+    };
+    let message: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| "its A2A message is no JSON".to_owned())?;
+    if message["messageId"].as_str() != Some(msg_id.to_string().as_str()) {
+        return Err("its A2A messageId is not its msg_id".to_owned());
+    }
+    Ok(message["parts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// The line of `status`, of a message of this device in `channel`, if the state recorded it.

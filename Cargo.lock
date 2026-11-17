@@ -2900,6 +2900,7 @@ version = "0.1.2"
 name = "skald-client"
 version = "0.1.2"
 dependencies = [
+ "aes-gcm",
  "apple-native-keyring-store",
  "axum",
  "base64 0.23.1",

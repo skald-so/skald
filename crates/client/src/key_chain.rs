@@ -171,33 +171,53 @@ pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelI
         .collect()
 }
 
-/// `HistoryLinks` in the API spec.
-#[derive(Deserialize)]
-struct HistoryLinks {
-    links: Vec<String>,
+/// The links of `channel` in `space` the server lists, by epoch and `prev`, each settled.
+fn held_links(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<BTreeSet<Pair>, String> {
+    let held: BTreeSet<Pair> = (links(follower, at)?.iter())
+        .map(|link| (link.epoch, link.prev))
+        .collect();
+    let pairs: Vec<Pair> = held.iter().copied().collect();
+    follower.state.settle_links(at.1, &pairs).map_err(text)?;
+    Ok(held)
 }
 
-/// The links of `channel` in `space` the server lists, by epoch and `prev`, each settled.
-fn held_links(
+/// The links of `channel` in `space` the server lists that decode as links of it.
+pub fn links(
     follower: &mut Follower,
     (space, channel): (SpaceId, ChannelId),
-) -> Result<BTreeSet<Pair>, String> {
-    let path = format!("/spaces/{space}/channels/{channel}/history/links");
+) -> Result<Vec<HistoryLink>, String> {
+    Ok((listed(follower, (space, channel), LINKS)?.iter())
+        .filter_map(|bytes| HistoryLink::from_cbor(bytes).ok())
+        .filter(|link| link.channel == channel)
+        .collect())
+}
+
+/// The kinds of history items the server lists, as their paths and lists name them.
+pub const LINKS: &str = "links";
+pub const ENTRIES: &str = "entries";
+
+/// `HistoryLinks` and `HistoryEntries` in the API spec: the list named by its kind.
+#[derive(Deserialize)]
+struct Listed(BTreeMap<String, Vec<String>>);
+
+/// The items of `kind`, [`LINKS`] or [`ENTRIES`], of `channel` in `space` the server lists, each
+/// as its bytes; those that are no base64url are left out.
+pub fn listed(
+    follower: &mut Follower,
+    (space, channel): (SpaceId, ChannelId),
+    kind: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    let path = format!("/spaces/{space}/channels/{channel}/history/{kind}");
     let body = follower
         .connection
         .get_as(&path, &follower.token)
         .map_err(text)?;
-    let unexpected = || "unexpected answer from the server: a channel's links".to_owned();
-    let given: HistoryLinks = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let held: BTreeSet<Pair> = (given.links.iter())
-        .filter_map(|link| {
-            let link = HistoryLink::from_cbor(&URL_SAFE_NO_PAD.decode(link).ok()?).ok()?;
-            (link.channel == channel).then_some((link.epoch, link.prev))
-        })
-        .collect();
-    let pairs: Vec<Pair> = held.iter().copied().collect();
-    follower.state.settle_links(channel, &pairs).map_err(text)?;
-    Ok(held)
+    let unexpected = || format!("unexpected answer from the server: a channel's history {kind}");
+    let Listed(mut given) = serde_json::from_slice(&body).map_err(|_| unexpected())?;
+    let items = given.remove(kind).ok_or_else(unexpected)?;
+    Ok((items.iter())
+        .filter_map(|item| URL_SAFE_NO_PAD.decode(item).ok())
+        .collect())
 }
 
 /// Uploads `links`, each of its space, in `history` frames on the device's connection, and settles
