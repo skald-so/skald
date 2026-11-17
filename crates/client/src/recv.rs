@@ -32,6 +32,7 @@
 //! status is shown only if `expired` and a warning in a line of its own without IDs, and as JSON
 //! with `--json`.
 
+use std::cell::Cell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
@@ -61,6 +62,16 @@ use crate::send::{self, Reported};
 use crate::spaces::{self, Follower, Scope};
 use crate::state::{self, Kept, State};
 use crate::wraps;
+
+thread_local! {
+    /// The space the last run of this thread kept to, if it kept to one: an agent's.
+    static SPACE: Cell<Option<SpaceId>> = const { Cell::new(None) };
+}
+
+/// The space the last run of this thread kept to, if it kept to one: an agent's.
+pub fn last_space() -> Option<SpaceId> {
+    SPACE.with(Cell::get)
+}
 
 /// How long a message waits for an agent at most: the cloud's mailbox retention
 /// (`architecture.md`, "Cloud limits").
@@ -112,6 +123,12 @@ fn received(
 ) -> Result<bool, String> {
     let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
+    SPACE.with(|space| {
+        space.set(match scope {
+            Scope::Only(only) => Some(only),
+            Scope::All => None,
+        });
+    });
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
     let ran_as = match (scope, agent) {
         (Scope::Only(space), Some(agent)) => {
