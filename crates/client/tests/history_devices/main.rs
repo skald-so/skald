@@ -40,48 +40,14 @@ mod devices;
 mod new_device;
 mod revoked;
 
-// The modules other test targets share, by name: the helpers of the tests of signing in, sending,
-// receiving, channel groups and messages, joining channels, the key chain, revoking devices,
-// removing members, scheduled rotation and reading the history, and the server's tests'.
+// The modules the tests of the channel history share (`history_common/mod.rs`), and the helpers of
+// the tests of scheduled rotation and reading the history, and the server's tests' times.
+#[path = "../history_common/mod.rs"]
+mod history_common;
+use history_common::*;
 #[path = "../history_rotation/aged.rs"]
 mod aged;
-#[path = "../../../server/tests/key_packages/answers.rs"]
-mod answers;
-#[path = "../../../server/tests/common/browser.rs"]
-mod browser;
-#[path = "../key_chain/chain.rs"]
-mod chain;
-#[path = "../sign_in/cloud.rs"]
-mod cloud;
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../member_removal/edits.rs"]
-mod edits;
-#[path = "../sending/fixtures.rs"]
-mod fixtures;
-#[path = "../sending/front.rs"]
-mod front;
-#[path = "../channel_joins/joins.rs"]
-mod joins;
-#[path = "../device_keys/keys.rs"]
-mod keys;
-#[path = "../channel_groups/kit.rs"]
-mod kit;
-#[path = "../sign_in/machine.rs"]
-mod machine;
-#[path = "../receiving/peer.rs"]
-mod peer;
-#[path = "../channel_groups/played.rs"]
-mod played;
 #[path = "../history_reading/reading.rs"]
 mod reading;
-#[path = "../sign_in/relay.rs"]
-mod relay;
-#[path = "../device_revocation/revocations.rs"]
-mod revocations;
-#[path = "../channel_messages/talk.rs"]
-mod talk;
 #[path = "../../../server/tests/common/times.rs"]
 mod times;
-#[path = "../roster_revisions/world.rs"]
-mod world;
