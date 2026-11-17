@@ -347,7 +347,7 @@ pub struct Follower {
     pub timeout: Duration,
     /// Each space the run accepted the revisions of, as it last did ([`Follower::sync`]).
     pub accepted: groups::Rosters,
-    /// The revisions the server last gave of each space the run followed.
+    /// The revisions the server last gave of each space the run followed or synced.
     pub given: BTreeMap<SpaceId, Vec<Roster>>,
 }
 
@@ -574,6 +574,8 @@ impl Follower {
                     &self.state,
                     space.id,
                 )?;
+                let given = follow::given(&mut self.connection, &self.token, space.id)?;
+                self.given.insert(space.id, given);
                 return Ok((follow::decode(&held.last, &space.name)?, devices));
             }
         }

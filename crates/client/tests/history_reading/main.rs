@@ -52,6 +52,7 @@ mod reading;
 mod search;
 mod shown;
 mod unaccepted;
+mod waiting;
 
 // The server's tests' readers of the KeyPackages API's answers; the server, the front before it
 // and the relay, of the tests of signing in and of sending; the times the server keeps.
